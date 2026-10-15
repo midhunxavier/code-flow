@@ -27,12 +27,47 @@ npm start            # http://localhost:4317
 
 Prerequisites: Node 20+, git, and at least one of `claude`, `codex`, `agy` installed and logged in. Run each CLI once interactively first. The header shows which agents were found.
 
-In the UI, pick a repo with **Browse…**, or type an absolute path. The folder browser is served by the local server, because browsers don't expose absolute paths. It marks git repos and lists your recent ones. Optionally choose a **base branch** and a **result branch prefix**. Then enter a task, pick a pattern, assign agents to roles, and press **Start run**. When the run finishes, each result is a branch such as `codeflow/<run>/build`. Review it and merge it yourself:
+Using it:
+
+1. Click the **repository button** in the top bar to choose a repo. The folder browser is served by the local server, because browsers don't expose absolute paths. It marks git repos and remembers recent ones.
+2. Describe the task. Drag files from the **Files** panel, or from Finder, onto the task box to give the agents context.
+3. Pick how the agents work together, and click an agent for each role. The sentence under the team, such as *"Claude plans → Codex builds → Claude reviews"*, shows what will happen.
+4. Optionally open **Settings** to pick the base branch, the result branch name, rounds, and the model and effort per provider.
+5. Press **Start run** (⌘↵).
+   - The run view shows each step in a timeline, with the selected agent's live transcript beside it.
+   - When the run finishes, each result is a branch such as `codeflow/<run>/build`, with buttons to copy its diff and merge commands.
+   - **Edit & run again** puts the task back in the composer.
+
+Review and merge results yourself:
 
 ```bash
 git diff main...codeflow/<run>/build
 git merge codeflow/<run>/build
 ```
+
+## Giving agents context
+
+The **Files** panel shows the selected repo: ignored files are hidden, files with uncommitted changes are marked **M**, and untracked files **U**. To add something to the task's context, drag it onto the task box, click **+**, or double-click it. You can also add files from your computer, such as specs, screenshots or logs (up to 10 MB each, 25 MB in total). Drop them from Finder, or use **Attach**.
+
+Every agent's first prompt gets a *Context from the user* section listing these items. Nothing is pasted into the prompt:
+
+- Repo files and folders that are identical in the base branch are referenced by path; every worktree already has them.
+- Your **working-copy** version of a file is copied into `.codeflow-context/repo/<path>` in each worktree when the file is uncommitted or differs from the base branch. The agent sees exactly what you see.
+- Dropped files are copied into `.codeflow-context/attachments/`.
+- `.codeflow-context/` is listed in `.git/info/exclude`, so it never ends up in an agent's commit.
+- Folders that aren't in the base branch are rejected. Commit them, or drop the individual files.
+
+## Models and effort
+
+**Settings → Models & effort** sets a model and a reasoning effort per provider. Every role that uses that provider runs with them. Leave either on *Default* to use the CLI's own configuration.
+
+| Provider | Model list | Flags passed |
+|---|---|---|
+| Claude Code | aliases `fable`, `opus`, `sonnet`, `haiku`, or any full model name via *Other…* | `--model`, `--effort` (low … max) |
+| Codex | `codex debug models`, with each model's supported efforts; the default comes from `~/.codex/config.toml` | `-m`, `-c model_reasoning_effort=…` |
+| Antigravity | `agy models` | `--model`, `--effort` (low … max) |
+
+Model lists are cached for 10 minutes. Your choices are remembered in the browser.
 
 ## Worktrees and branches
 
@@ -67,7 +102,9 @@ src/server.ts            HTTP API + SSE on 127.0.0.1 (Host/Origin checked)
 src/engine.ts            RunManager, TeamContext (ask / worktree / commit / diff), event log
 src/patterns/*.ts        the five team patterns, written against TeamContext
 src/adapters/*.ts        AgentAdapter per CLI → normalized AgentEvent stream
-src/git.ts               worktrees, commits, diffs, merges
+src/git.ts               worktrees, branches, commits, diffs, merges
+src/repo-tree.ts         file tree + search for the Files panel
+src/context.ts           validates and stages task context for agents
 ```
 
 - **AgentAdapter** (`src/adapters/types.ts`): `run({prompt, cwd, mode, resumeSessionId}, onEvent) → {ok, finalText, sessionId}`. Adapters convert each CLI's JSONL into `text | thinking | tool_call | tool_result | usage | status | error` events.

@@ -6,7 +6,31 @@ import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 
 const [vendor, ...args] = process.argv.slice(2);
+
+// Model listings, in each CLI's real output format.
+if (vendor === "codex" && args[0] === "debug" && args[1] === "models") {
+  const levels = (...efforts) => efforts.map((effort) => ({ effort, description: effort }));
+  process.stdout.write(JSON.stringify({
+    models: [
+      { slug: "gpt-b", display_name: "GPT-B", visibility: "list", priority: 2, default_reasoning_level: "medium", supported_reasoning_levels: levels("low", "medium") },
+      { slug: "gpt-a", display_name: "GPT-A", visibility: "list", priority: 1, default_reasoning_level: "low", supported_reasoning_levels: levels("low", "medium", "high", "ultra") },
+      { slug: "hidden", display_name: "Hidden", visibility: "hide", priority: 0, supported_reasoning_levels: [] },
+    ],
+  }));
+  process.exit(0);
+}
+if (vendor === "agy" && args[0] === "models") {
+  process.stdout.write("Fetching available models...\nmodel-one\tModel One (High)\nmodel-two\tModel Two\n");
+  process.exit(0);
+}
+
 const prompt = vendor === "codex" ? args[args.length - 1] : args[args.indexOf("-p") + 1];
+
+// Let tests inspect exactly what code-flow passed to the CLI.
+if (process.env.FAKE_RECORD_DIR) {
+  writeFileSync(`${process.env.FAKE_RECORD_DIR}/${vendor}-${Date.now()}-${randomUUID().slice(0, 6)}.json`,
+    JSON.stringify({ vendor, args, prompt, cwd: process.cwd() }));
+}
 const write =
   (vendor === "claude" && args.includes("acceptEdits")) ||
   (vendor === "codex" && args.includes('sandbox_mode="workspace-write"')) ||

@@ -1,7 +1,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { agentAvailability, adapters, isAgentId, type AgentId } from "./adapters/index.js";
+import {
+  agentAvailability,
+  agentCatalog,
+  adapters,
+  isAgentId,
+  validateAgentSettings,
+  type AgentId,
+} from "./adapters/index.js";
+import { listTree, searchFiles } from "./repo-tree.js";
 import { PORT } from "./config.js";
 import { RunManager, type Pattern } from "./engine.js";
 import { findPattern, patterns } from "./patterns/index.js";
@@ -24,18 +32,23 @@ function send(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
+// Run requests can carry base64 attachments (up to 25 MB of files).
+const MAX_BODY_BYTES = 40 * 1024 * 1024;
+
 async function readJson(req: IncomingMessage): Promise<any> {
   // Requiring JSON forces a CORS preflight, which this server never approves.
   if (!req.headers["content-type"]?.startsWith("application/json")) {
     throw new HttpError(415, "Expected application/json");
   }
-  let raw = "";
-  for await (const chunk of req) {
-    raw += chunk;
-    if (raw.length > 1_000_000) throw new HttpError(413, "Body too large");
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req as AsyncIterable<Buffer>) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) throw new HttpError(413, "Request too large: attached files must total under 25 MB");
+    chunks.push(chunk);
   }
   try {
-    return JSON.parse(raw || "{}");
+    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
   } catch {
     throw new HttpError(400, "Invalid JSON");
   }
@@ -46,6 +59,14 @@ function checkOrigin(req: IncomingMessage) {
   if (!allowedHosts.has(req.headers.host ?? "")) throw new HttpError(403, "Bad Host header");
   const origin = req.headers.origin;
   if (origin && !allowedHosts.has(origin.replace(/^https?:\/\//, ""))) throw new HttpError(403, "Cross-origin request refused");
+}
+
+async function requestedRepo(url: URL): Promise<string> {
+  const requested = url.searchParams.get("repo") ?? "";
+  if (!requested.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
+  return repoRoot(requested).catch(() => {
+    throw new HttpError(400, "Not a git repository");
+  });
 }
 
 function describePattern(p: Pattern) {
@@ -131,12 +152,29 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return send(res, 200, listing);
   }
   if (req.method === "GET" && parts[1] === "branches") {
-    const requested = url.searchParams.get("repo") ?? "";
-    if (!requested.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
-    const repo = await repoRoot(requested).catch(() => {
-      throw new HttpError(400, "Not a git repository");
-    });
+    const repo = await requestedRepo(url);
     return send(res, 200, { repo, worktreeRoot: worktreeRoot(repo), ...(await listBranches(repo)) });
+  }
+  if (req.method === "GET" && parts[1] === "tree") {
+    const repo = await requestedRepo(url);
+    const listing = await listTree(repo, url.searchParams.get("path") ?? "").catch((err: NodeJS.ErrnoException) => {
+      throw new HttpError(err.code === "ENOENT" ? 404 : 400, err.code === "ENOENT" ? "Folder not found" : err.message);
+    });
+    return send(res, 200, listing);
+  }
+  if (req.method === "GET" && parts[1] === "search") {
+    const repo = await requestedRepo(url);
+    return send(res, 200, await searchFiles(repo, url.searchParams.get("q") ?? ""));
+  }
+  if (req.method === "GET" && parts[1] === "models") {
+    const agents = await agentAvailability();
+    const entries = await Promise.all(
+      agents.map(async (a) => {
+        if (!a.available) return [a.id, { error: "not installed" }] as const;
+        return [a.id, await agentCatalog(a.id).catch((err: Error) => ({ error: err.message }))] as const;
+      }),
+    );
+    return send(res, 200, Object.fromEntries(entries));
   }
 
   if (parts[1] === "runs") {
@@ -158,6 +196,14 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
             repo,
             baseRef: body.baseRef ? String(body.baseRef) : undefined,
             branchPrefix: body.branchPrefix ? String(body.branchPrefix) : undefined,
+            context: body.context && typeof body.context === "object" ? body.context : undefined,
+            agentSettings: (() => {
+              try {
+                return validateAgentSettings(body.agentSettings);
+              } catch (err) {
+                throw new HttpError(400, (err as Error).message);
+              }
+            })(),
             roles: await validateRoles(pattern, body.roles),
             options: validateOptions(pattern, body.options),
           })

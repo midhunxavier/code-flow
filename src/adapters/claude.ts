@@ -1,4 +1,4 @@
-import type { AgentAdapter, AgentEvent, RunOptions, RunResult } from "./types.js";
+import type { AgentAdapter, AgentEvent, ModelCatalog, RunOptions, RunResult } from "./types.js";
 import { commandExists, describeFailure, runJsonlProcess, stringify, truncate } from "./process.js";
 
 /**
@@ -47,11 +47,27 @@ export const claudeAdapter: AgentAdapter = {
   binary: "claude",
   available: () => commandExists("claude"),
 
+  // The CLI has no model-listing command; it accepts these aliases (always the latest
+  // model of each family) or any full model name.
+  async catalog(): Promise<ModelCatalog> {
+    return {
+      models: [
+        { id: "fable", label: "Fable (latest)" },
+        { id: "opus", label: "Opus (latest)" },
+        { id: "sonnet", label: "Sonnet (latest)" },
+        { id: "haiku", label: "Haiku (latest)" },
+      ],
+      efforts: ["low", "medium", "high", "xhigh", "max"],
+      allowCustom: true,
+    };
+  },
+
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
     // The prompt goes right after -p: --allowedTools is variadic and would swallow it.
     const args = ["-p", opts.prompt, "--output-format", "stream-json", "--verbose"];
     if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
     if (opts.model) args.push("--model", opts.model);
+    if (opts.effort) args.push("--effort", opts.effort);
     if (opts.mode === "write") {
       args.push("--permission-mode", "acceptEdits", "--allowedTools", writeTools().join(","));
     } else {

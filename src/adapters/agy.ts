@@ -1,5 +1,5 @@
-import type { AgentAdapter, AgentEvent, RunOptions, RunResult } from "./types.js";
-import { commandExists, describeFailure, runJsonlProcess, stringify, truncate } from "./process.js";
+import type { AgentAdapter, AgentEvent, ModelCatalog, RunOptions, RunResult } from "./types.js";
+import { captureOutput, commandExists, describeFailure, runJsonlProcess, stringify, truncate } from "./process.js";
 
 /**
  * Google Antigravity CLI via `agy -p --output-format stream-json`.
@@ -39,6 +39,17 @@ export const agyAdapter: AgentAdapter = {
   binary: "agy",
   available: () => commandExists("agy"),
 
+  async catalog(): Promise<ModelCatalog> {
+    // `agy models` prints "<slug>\t<display name>" per model after a "Fetching…" line.
+    const out = await captureOutput("agy", ["models"], 45_000);
+    const models = out
+      .split("\n")
+      .map((line) => line.split("\t"))
+      .filter((cols) => cols.length >= 2 && cols[0]!.trim())
+      .map(([id, label]) => ({ id: id!.trim(), label: label!.trim() }));
+    return { models, efforts: ["low", "medium", "high", "xhigh", "max"], allowCustom: true };
+  },
+
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
     const timeoutMs = opts.timeoutMs ?? 30 * 60_000;
     const args = [
@@ -49,6 +60,7 @@ export const agyAdapter: AgentAdapter = {
     ];
     if (opts.resumeSessionId) args.push("--conversation", opts.resumeSessionId);
     if (opts.model) args.push("--model", opts.model);
+    if (opts.effort) args.push("--effort", opts.effort);
     if (skipPermissions()) args.push("--dangerously-skip-permissions");
 
     let sessionId = opts.resumeSessionId;

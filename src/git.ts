@@ -48,20 +48,50 @@ export function worktreeRoot(repo: string): string {
   return resolve(repo, WORKTREE_DIR);
 }
 
+/** Folder inside every worktree that holds the user's context files for agents to read. */
+export const CONTEXT_DIR = ".codeflow-context";
+
 /**
- * Keep in-repo worktrees out of `git status` by listing the folder in .git/info/exclude,
- * which is local to this clone and never committed (your .gitignore is left alone).
+ * Keep code-flow's folders out of `git status` and out of agents' commits by listing them
+ * in .git/info/exclude. It is local to this clone (shared by all its worktrees) and never
+ * committed, so your .gitignore is left alone.
  */
-export async function ensureWorktreeDirExcluded(repo: string): Promise<void> {
+export async function ensureCodeflowExcludes(repo: string): Promise<void> {
+  const patterns = [`/${CONTEXT_DIR}/`];
   const rel = relative(repo, worktreeRoot(repo));
-  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return;
-  const pattern = `/${rel.split(sep).join("/")}/`;
+  if (rel && !rel.startsWith("..") && !isAbsolute(rel)) patterns.unshift(`/${rel.split(sep).join("/")}/`);
+
   const excludeFile = resolve(repo, await gitOk(["rev-parse", "--git-path", "info/exclude"], repo));
   const current = await readFile(excludeFile, "utf8").catch(() => "");
-  if (current.split("\n").some((line) => line.trim() === pattern)) return;
+  const existing = new Set(current.split("\n").map((line) => line.trim()));
+  const missing = patterns.filter((p) => !existing.has(p));
+  if (!missing.length) return;
   await mkdir(dirname(excludeFile), { recursive: true });
   const newline = current && !current.endsWith("\n") ? "\n" : "";
-  await appendFile(excludeFile, `${newline}# code-flow worktrees\n${pattern}\n`);
+  await appendFile(excludeFile, `${newline}# code-flow\n${missing.join("\n")}\n`);
+}
+
+/** Run git with data on stdin (used for `check-ignore --stdin`). */
+export function gitWithInput(args: string[], cwd: string, input: string): Promise<GitResult> {
+  return new Promise((resolve) => {
+    const child = execFile("git", args, { cwd, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const code = err ? (typeof (err as any).code === "number" ? (err as any).code : 1) : 0;
+      resolve({ code, stdout: stdout.toString(), stderr: stderr.toString() });
+    });
+    child.stdin?.end(input);
+  });
+}
+
+/** "blob" or "tree" if `path` exists in commit `ref`, else null. */
+export async function objectTypeAt(repo: string, ref: string, path: string): Promise<"blob" | "tree" | null> {
+  const res = await git(["cat-file", "-t", `${ref}:${path}`], repo);
+  const type = res.stdout.trim();
+  return res.code === 0 && (type === "blob" || type === "tree") ? type : null;
+}
+
+/** True when the working-copy file differs from its version in commit `ref`. */
+export async function workingCopyDiffers(repo: string, ref: string, path: string): Promise<boolean> {
+  return (await git(["diff", "--quiet", ref, "--", path], repo)).code !== 0;
 }
 
 /** Create a new branch from `fromRef` and check it out in a worktree at `path`. */

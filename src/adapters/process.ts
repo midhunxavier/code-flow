@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 export interface JsonlProcessOptions {
@@ -97,6 +97,16 @@ export function runJsonlProcess(opts: JsonlProcessOptions): Promise<ProcessOutco
     });
     // "close" fires after stdout is drained, so every line has been handled.
     child.on("close", (code) => finish(code));
+  });
+}
+
+/** Run a short command and return its stdout (used for model listings). */
+export function captureOutput(command: string, args: string[], timeoutMs = 30_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) reject(new Error(`${command} ${args.join(" ")} failed: ${stderr.toString().trim() || err.message}`));
+      else resolve(stdout.toString());
+    });
   });
 }
 

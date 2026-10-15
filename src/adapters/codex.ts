@@ -1,5 +1,8 @@
-import type { AgentAdapter, AgentEvent, RunOptions, RunResult } from "./types.js";
-import { commandExists, describeFailure, runJsonlProcess, stringify, truncate } from "./process.js";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { AgentAdapter, AgentEvent, ModelCatalog, ModelInfo, RunOptions, RunResult } from "./types.js";
+import { captureOutput, commandExists, describeFailure, runJsonlProcess, stringify, truncate } from "./process.js";
 
 /**
  * Codex via `codex exec --json` (JSONL thread/turn/item events).
@@ -16,11 +19,34 @@ export const codexAdapter: AgentAdapter = {
   binary: "codex",
   available: () => commandExists("codex"),
 
+  async catalog(): Promise<ModelCatalog> {
+    const raw = JSON.parse(await captureOutput("codex", ["debug", "models"]));
+    const models: ModelInfo[] = (raw.models ?? [])
+      .filter((m: any) => m.slug && m.visibility !== "hide")
+      .sort((a: any, b: any) => (a.priority ?? 999) - (b.priority ?? 999))
+      .map((m: any) => ({
+        id: m.slug,
+        label: m.display_name ?? m.slug,
+        efforts: (m.supported_reasoning_levels ?? []).map((l: any) => l.effort).filter(Boolean),
+        defaultEffort: m.default_reasoning_level,
+      }));
+    const config = await readFile(join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml"), "utf8").catch(() => "");
+    const efforts = [...new Set(models.flatMap((m) => m.efforts ?? []))];
+    return {
+      models,
+      efforts: efforts.length ? efforts : ["low", "medium", "high"],
+      defaultModel: topLevelTomlString(config, "model"),
+      defaultEffort: topLevelTomlString(config, "model_reasoning_effort"),
+      allowCustom: true,
+    };
+  },
+
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
     const sandbox = opts.mode === "write" ? "workspace-write" : "read-only";
     // `-c sandbox_mode=` works for both `exec` and `exec resume` (resume has no -s flag).
     const common = ["--json", "--skip-git-repo-check", "-c", `sandbox_mode="${sandbox}"`];
     if (opts.model) common.push("-m", opts.model);
+    if (opts.effort) common.push("-c", `model_reasoning_effort="${opts.effort}"`);
 
     const args = opts.resumeSessionId
       ? ["exec", "resume", ...common, opts.resumeSessionId, opts.prompt]
@@ -79,6 +105,12 @@ export const codexAdapter: AgentAdapter = {
     return { ok: true, finalText, sessionId };
   },
 };
+
+/** `key = "value"` from the top of a TOML file (before the first [table]). */
+function topLevelTomlString(toml: string, key: string): string | undefined {
+  const top = toml.split(/^\s*\[/m)[0] ?? "";
+  return top.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"`, "m"))?.[1];
+}
 
 function handleItem(
   phase: string,

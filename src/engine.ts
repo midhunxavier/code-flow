@@ -1,16 +1,25 @@
 import { EventEmitter } from "node:events";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, cp, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { adapters, type AccessMode, type AgentEvent, type AgentId, type RunResult } from "./adapters/index.js";
-import { CODEFLOW_HOME, MAX_DIFF_CHARS, STEP_TIMEOUT_MS } from "./config.js";
 import {
+  adapters,
+  type AccessMode,
+  type AgentEvent,
+  type AgentId,
+  type AgentSettings,
+  type RunResult,
+} from "./adapters/index.js";
+import { CODEFLOW_HOME, MAX_DIFF_CHARS, STEP_TIMEOUT_MS } from "./config.js";
+import { contextPrompt, hasStagedFiles, prepareContext, type ContextInput, type RunContext } from "./context.js";
+import {
+  CONTEXT_DIR,
   commitAll,
   createWorktree,
   diffSince,
   diffStat,
   discardChanges,
-  ensureWorktreeDirExcluded,
+  ensureCodeflowExcludes,
   isClean,
   repoRoot,
   resolveCommit,
@@ -18,6 +27,9 @@ import {
   worktreeRoot,
   type Worktree,
 } from "./git.js";
+
+/** Per-run staging folder (inside the run's worktree folder) for context files. */
+const STAGE_DIR = ".context";
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -60,6 +72,10 @@ export interface Run {
   branchPrefix: string;
   /** Folder holding this run's worktrees. */
   worktreeDir: string;
+  /** Files and folders the user handed to every agent. */
+  context: RunContext;
+  /** Model and effort per provider; unset means the CLI's own default. */
+  agentSettings: AgentSettings;
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
   status: Status;
@@ -149,8 +165,9 @@ export class TeamContext {
     private readonly manager: RunManager,
   ) {}
 
+  /** The user's task plus the context they attached — what every agent should be given. */
   get task() {
-    return this.run.task;
+    return this.run.task + contextPrompt(this.run.context);
   }
 
   agents(role: string): AgentId[] {
@@ -186,6 +203,10 @@ export class TeamContext {
       fromRef,
     );
     this.log(`Created worktree ${wt.path} on branch ${wt.branch}`);
+    if (hasStagedFiles(this.run.context)) {
+      // Git-excluded, so it is never committed and doesn't count as a change.
+      await cp(join(this.run.worktreeDir, STAGE_DIR), join(wt.path, CONTEXT_DIR), { recursive: true });
+    }
     return wt;
   }
 
@@ -238,6 +259,8 @@ export class TeamContext {
         cwd: params.cwd.path,
         mode: params.mode,
         resumeSessionId: params.resume?.sessionId,
+        model: this.run.agentSettings[params.agent]?.model,
+        effort: this.run.agentSettings[params.agent]?.effort,
         signal: this.signal,
         timeoutMs: STEP_TIMEOUT_MS,
       },
@@ -276,6 +299,8 @@ export interface StartRunInput {
   baseRef?: string;
   /** Defaults to `codeflow/<run id>`. */
   branchPrefix?: string;
+  context?: ContextInput;
+  agentSettings?: AgentSettings;
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
 }
@@ -324,7 +349,13 @@ export class RunManager {
     const id = newRunId();
     const branchPrefix = input.branchPrefix?.trim().replace(/^\/+|\/+$/g, "") || `codeflow/${id}`;
     await validateBranchPrefix(repo, branchPrefix);
-    await ensureWorktreeDirExcluded(repo);
+    await ensureCodeflowExcludes(repo);
+
+    const worktreeDir = join(worktreeRoot(repo), id);
+    const context = await prepareContext(repo, baseRef, input.context, join(worktreeDir, STAGE_DIR)).catch(async (err) => {
+      await rm(worktreeDir, { recursive: true, force: true });
+      throw err;
+    });
 
     const run: Run = {
       id,
@@ -334,7 +365,9 @@ export class RunManager {
       baseRef,
       baseLabel,
       branchPrefix,
-      worktreeDir: join(worktreeRoot(repo), id),
+      worktreeDir,
+      context,
+      agentSettings: input.agentSettings ?? {},
       roles: input.roles,
       options: input.options,
       status: "running",

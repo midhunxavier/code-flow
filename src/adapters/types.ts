@@ -21,7 +21,10 @@ export interface RunOptions {
   mode: AccessMode;
   /** Continue a previous conversation of this same agent (keeps its context). */
   resumeSessionId?: string;
+  /** Model id or alias; undefined = the CLI's configured default. */
   model?: string;
+  /** Reasoning effort; undefined = the CLI's configured default. */
+  effort?: string;
   signal?: AbortSignal;
   /** Hard cap per run. Defaults to 30 minutes. */
   timeoutMs?: number;
@@ -46,6 +49,26 @@ export interface RunResult {
   error?: string;
 }
 
+export interface ModelInfo {
+  id: string;
+  label: string;
+  /** Efforts this model supports, when the CLI says; otherwise the adapter's list applies. */
+  efforts?: string[];
+  defaultEffort?: string;
+}
+
+export interface ModelCatalog {
+  models: ModelInfo[];
+  efforts: string[];
+  /** Model the CLI uses when none is chosen, if known. */
+  defaultModel?: string;
+  defaultEffort?: string;
+  /** Free-text model ids are accepted (aliases, full names). */
+  allowCustom: boolean;
+}
+
+export type AgentSettings = Partial<Record<AgentId, { model?: string; effort?: string }>>;
+
 export interface AgentAdapter {
   id: AgentId;
   displayName: string;
@@ -53,5 +76,7 @@ export interface AgentAdapter {
   binary: string;
   /** True when the CLI is on PATH. Login state is only discovered on first run. */
   available(): Promise<boolean>;
+  /** Models and effort levels this CLI offers. */
+  catalog(): Promise<ModelCatalog>;
   run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult>;
 }
