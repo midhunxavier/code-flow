@@ -77,7 +77,13 @@
   .run-item:hover { background: var(--sunken); }
   .run-item.active { background: var(--accent-soft); }
   .run-item .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; background: var(--faint); }
-  .dot.running { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; } .dot.done { background: var(--ok); } .dot.failed { background: var(--err); } .dot.cancelled, .dot.stopped, .dot.failing { background: var(--warn); }
+  .dot.running { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; } .dot.done { background: var(--ok); } .dot.failed { background: var(--err); } .dot.cancelled, .dot.stopped, .dot.failing, .dot.interrupted { background: var(--warn); }
+  .rail-section { display: flex; align-items: center; justify-content: space-between; }
+  .rail-section .count { font-size: 11px; font-weight: 700; color: var(--accent-text); background: var(--accent); border-radius: 999px; padding: 0 7px; }
+  .rail-section button { border: 0; background: none; color: var(--faint); font-size: 11px; padding: 0 4px; }
+  .run-item.unseen .t { font-weight: 700; }
+  .run-item.archived { opacity: .6; }
+  .bell[aria-pressed="true"] { color: var(--accent); }
   @keyframes pulse { 50% { opacity: .35; } }
   .run-item .t { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .run-item .s { grid-column: 2; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -198,7 +204,7 @@
   .status-pill.running { background: var(--accent-soft); color: var(--accent); }
   .status-pill.done { background: var(--ok-soft); color: var(--ok); }
   .status-pill.failed { background: var(--err-soft); color: var(--err); }
-  .status-pill.cancelled, .status-pill.stopped, .status-pill.failing { background: var(--warn-soft); color: var(--warn); }
+  .status-pill.cancelled, .status-pill.stopped, .status-pill.failing, .status-pill.interrupted { background: var(--warn-soft); color: var(--warn); }
   .usage { color: var(--faint); }
   .run-task { margin: 10px 0 0; white-space: pre-wrap; max-height: 7.5em; overflow: auto; }
   .run-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 12px; color: var(--muted); align-items: center; }
@@ -211,7 +217,7 @@
   .result .rh { padding: 10px 14px; font-weight: 600; display: flex; gap: 8px; align-items: center; }
   .result.done .rh { background: var(--ok-soft); color: var(--ok); }
   .result.failed .rh { background: var(--err-soft); color: var(--err); }
-  .result.cancelled .rh, .result.stopped .rh, .result.failing .rh { background: var(--warn-soft); color: var(--warn); }
+  .result.cancelled .rh, .result.stopped .rh, .result.failing .rh, .result.interrupted .rh { background: var(--warn-soft); color: var(--warn); }
   .result.stopped, .result.failing { border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
   .tag-cf { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--muted); }
   .tag-cf::before { content: "⚙"; font-size: 11px; }
@@ -232,7 +238,7 @@
   .tl-step .ic { font-size: 12px; line-height: 20px; text-align: center; }
   .tl-step .ic.running { width: 12px; height: 12px; margin: 4px 3px; border-radius: 50%; border: 2px solid var(--accent-soft); border-top-color: var(--accent); animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .tl-step .ic.done { color: var(--ok); } .tl-step .ic.failed { color: var(--err); } .tl-step .ic.cancelled { color: var(--warn); }
+  .tl-step .ic.done { color: var(--ok); } .tl-step .ic.failed { color: var(--err); } .tl-step .ic.cancelled, .tl-step .ic.interrupted { color: var(--warn); }
   .tl-step .tt { font-weight: 500; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tl-step .tm { grid-column: 2; display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
   .tl-empty { color: var(--faint); font-size: 12px; padding: 10px; }
@@ -309,12 +315,12 @@
   </button>
   <span class="spacer"></span>
   <div class="agent-status" id="agentStatus"></div>
+  <button class="btn ghost bell" id="bellBtn" title="Notify me when a run needs me" aria-pressed="false">🔔</button>
 </header>
 
 <div class="app" id="app">
   <nav class="rail" id="rail">
     <button class="btn primary new-run" id="newRunBtn">＋ New run</button>
-    <div class="rail-title">Runs</div>
     <div id="runList"><div class="rail-empty">No runs yet</div></div>
   </nav>
 
@@ -1095,15 +1101,82 @@ async function startRun() {
 }
 
 // ===================================================================== runs rail
+// ---- runs: one live list for the sidebar, notifications and the tab title
+const runsById = new Map();
+let showArchived = false;
+/** A run needs you when it finished and you haven't looked, or it was interrupted. */
+const needsYou = (r) => !r.archived && r.status !== "running" && (r.status === "interrupted" || !r.seen);
+
 async function refreshRuns() {
-  let runs;
-  try { runs = await api("/api/runs"); } catch { return; }
-  $("#runList").replaceChildren(...(runs.length ? runs.map((r) =>
-    el("button", { type: "button", class: `run-item ${state.run?.id === r.id ? "active" : ""}`, title: r.task, onclick: () => { openRun(r.id); $("#rail").classList.remove("open"); } },
-      el("span", { class: `dot ${runState(r)}` }),
-      el("span", { class: "t" }, r.task.split("\n")[0] || "(no task)"),
-      el("span", { class: "s" }, `${state.patterns.find((p) => p.id === r.pattern)?.name ?? r.pattern} · ${baseName(r.repo)} · ${ago(r.createdAt)}`)))
-    : [el("div", { class: "rail-empty" }, "No runs yet — start one on the right")]));
+  try {
+    for (const r of await api("/api/runs")) runsById.set(r.id, r);
+  } catch { return; }
+  renderRail();
+}
+
+function renderRail() {
+  const runs = [...runsById.values()].sort((a, b) => b.createdAt - a.createdAt);
+  const item = (r) => el("button", {
+      type: "button",
+      class: `run-item ${state.run?.id === r.id ? "active" : ""} ${needsYou(r) ? "unseen" : ""} ${r.archived ? "archived" : ""}`,
+      title: r.task,
+      onclick: () => { openRun(r.id); $("#rail").classList.remove("open"); },
+    },
+    el("span", { class: `dot ${runState(r)}` }),
+    el("span", { class: "t" }, r.task.split("\n")[0] || "(no task)"),
+    el("span", { class: "s" }, `${STATUS_TEXT[r.status] ?? r.status} · ${state.patterns.find((p) => p.id === r.pattern)?.name ?? r.pattern} · ${baseName(r.repo)} · ${ago(r.createdAt)}`));
+  const groups = [
+    ["Needs you", runs.filter(needsYou), true],
+    ["Running", runs.filter((r) => r.status === "running"), false],
+    ["Recent", runs.filter((r) => !r.archived && r.status !== "running" && !needsYou(r)), false],
+  ];
+  const archived = runs.filter((r) => r.archived);
+  const nodes = [];
+  for (const [title, list, counted] of groups) {
+    if (!list.length) continue;
+    nodes.push(el("div", { class: "rail-title rail-section" }, title, counted ? el("span", { class: "count" }, list.length) : null), list.map(item));
+  }
+  if (archived.length) {
+    nodes.push(el("div", { class: "rail-title rail-section" }, `Archived (${archived.length})`,
+      el("button", { type: "button", onclick: () => { showArchived = !showArchived; renderRail(); } }, showArchived ? "hide" : "show")));
+    if (showArchived) nodes.push(archived.map(item));
+  }
+  $("#runList").replaceChildren(...(nodes.length ? nodes.flat() : [el("div", { class: "rail-empty" }, "No runs yet — start one on the right")]));
+  const waiting = runs.filter(needsYou).length;
+  document.title = waiting ? `(${waiting}) code-flow` : "code-flow";
+}
+
+/** Live updates for every run (sidebar, notifications) over one event stream. */
+function watchAllRuns() {
+  const source = new EventSource("/api/events");
+  source.onmessage = (msg) => {
+    const { run } = JSON.parse(msg.data);
+    const before = runsById.get(run.id);
+    runsById.set(run.id, run);
+    if (before?.status === "running" && run.status !== "running") notifyFinished(run);
+    renderRail();
+  };
+}
+
+// ---- notifications
+const canNotify = () => "Notification" in window && Notification.permission === "granted" && store.get("notify") !== "0";
+function renderBell() {
+  $("#bellBtn").setAttribute("aria-pressed", String(canNotify()));
+  $("#bellBtn").title = canNotify() ? "Notifications on — click to turn off" : "Notify me when a run finishes or needs me";
+}
+$("#bellBtn").addEventListener("click", async () => {
+  if (!("Notification" in window)) return toast("This browser doesn't support notifications");
+  if (canNotify()) { store.set("notify", "0"); renderBell(); return toast("Notifications off"); }
+  const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+  store.set("notify", permission === "granted" ? "1" : "0");
+  renderBell();
+  toast(permission === "granted" ? "You'll be notified when a run needs you" : "Notifications are blocked in the browser settings");
+});
+function notifyFinished(run) {
+  if (!canNotify() || (state.run?.id === run.id && !document.hidden)) return;
+  const verdicts = { done: run.verdict === "failing" ? "finished, but its check fails" : "finished", failed: "failed", stopped: "stopped at a limit", interrupted: "was interrupted" };
+  const n = new Notification(`code-flow: run ${verdicts[run.status] ?? run.status}`, { body: run.task.split("\n")[0], tag: run.id });
+  n.onclick = () => { window.focus(); openRun(run.id); n.close(); };
 }
 $("#newRunBtn").addEventListener("click", () => { showComposer(); $("#rail").classList.remove("open"); taskInput.focus(); });
 $("#menuBtn").addEventListener("click", () => $("#rail").classList.toggle("open"));
@@ -1118,10 +1191,10 @@ function showComposer() {
 }
 
 // ===================================================================== run view
-const STATUS_TEXT = { running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled", stopped: "Stopped at limit" };
+const STATUS_TEXT = { running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled", stopped: "Stopped at limit", interrupted: "Interrupted" };
 /** Visual state: a finished run whose result fails its check is a warning, not a success. */
 const runState = (run) => (run.status === "done" && run.verdict === "failing" ? "failing" : run.status);
-const STEP_ICON = { done: "✓", failed: "✕", cancelled: "■" };
+const STEP_ICON = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
 
 function openRun(id) {
   state.run?.source.close();
@@ -1135,7 +1208,9 @@ function openRun(id) {
         el("span", { class: "status-pill", id: "runStatus" }),
         el("h2", { id: "runTitle" }),
         el("span", { class: "spacer" }),
+        el("button", { class: "btn primary", id: "resumeBtn", hidden: true, onclick: () => resumeRun(id) }, "▶ Resume"),
         el("button", { class: "btn", id: "rerunBtn", hidden: true, onclick: () => editAndRerun() }, "✎ Edit & run again"),
+        el("button", { class: "btn", id: "archiveBtn", hidden: true, onclick: () => toggleArchive(id) }, "Archive"),
         el("button", { class: "btn danger", id: "cancelBtn", hidden: true, onclick: () => cancelRun(id) }, "Stop run")),
       el("p", { class: "run-task", id: "runTask" }),
       el("div", { class: "run-chips", id: "runChips" }),
@@ -1158,6 +1233,20 @@ function openRun(id) {
   };
   source.onerror = () => { if (state.run?.run?.status !== "running") source.close(); };
   refreshRuns();
+}
+
+async function resumeRun(id) {
+  try {
+    await api(`/api/runs/${id}/resume`, { method: "POST" });
+    openRun(id); // reconnect to pick up the resumed steps
+  } catch (err) { toast(err.message); }
+}
+async function toggleArchive(id) {
+  const run = runsById.get(id);
+  try {
+    await api(`/api/runs/${id}/archive`, { method: "POST", body: JSON.stringify({ archived: !run?.archived }) });
+    toast(run?.archived ? "Moved back to your runs" : "Archived");
+  } catch (err) { toast(err.message); }
 }
 
 async function cancelRun(id) {
@@ -1190,8 +1279,15 @@ function renderRunHeader(run) {
   const status = $("#runStatus");
   status.className = `status-pill ${runState(run)}`;
   status.textContent = runState(run) === "failing" ? "Done · check failing" : STATUS_TEXT[run.status] ?? run.status;
-  $("#cancelBtn").hidden = run.status !== "running";
-  $("#rerunBtn").hidden = run.status === "running";
+  const finished = run.status !== "running";
+  $("#cancelBtn").hidden = finished;
+  $("#rerunBtn").hidden = !finished;
+  $("#resumeBtn").hidden = !["interrupted", "stopped", "failed", "cancelled"].includes(run.status);
+  $("#resumeBtn").title = run.status === "interrupted" ? "Continue where it stopped; finished steps aren't redone" : "Continue with a fresh budget; finished steps aren't redone";
+  $("#archiveBtn").hidden = !finished;
+  $("#archiveBtn").textContent = run.archived ? "Unarchive" : "Archive";
+  if (finished && !run.seen && !document.hidden) api(`/api/runs/${run.id}/seen`, { method: "POST" }).catch(() => {});
+  runsById.set(run.id, run);
   $("#runTask").textContent = run.task;
 
   const ctx = run.context || { paths: [], attachments: [] };
@@ -1202,7 +1298,7 @@ function renderRunHeader(run) {
 
   const team = Object.entries(run.roles).filter(([, ids]) => ids.length).map(([role, ids]) =>
     el("span", {}, `${role}: `, ids.map((id, i) => [i ? ", " : "", agentTag(id, modelNote(run, id))])));
-  $("#runMeta").replaceChildren(
+  $("#runMeta").replaceChildren(...[
     el("span", { title: run.repo }, `📁 ${baseName(run.repo)}`),
     el("span", {}, `from ${run.baseLabel} @ ${run.baseRef.slice(0, 7)}`),
     run.loop?.check
@@ -1210,10 +1306,11 @@ function renderRunHeader(run) {
           run.lastCheck ? (run.lastCheck.ok ? " · last check ✓" : " · last check ✕") : "")
       : null,
     el("span", { class: "team-line" }, team),
-    run.usage ? el("span", { class: "usage" }, `${run.usage.agentSteps}/${run.loop.maxSteps} agent steps · ${duration((run.endedAt ?? Date.now()) - run.createdAt)} of ${run.loop.maxMinutes} min`) : null);
+    run.usage ? el("span", { class: "usage" }, `${run.usage.agentSteps}/${run.loop.maxSteps} agent steps · ${duration((run.endedAt ?? Date.now()) - run.createdAt)} of ${run.loop.maxMinutes} min`) : null,
+  ].filter(Boolean));
 
   if (run.status !== "running") renderResult(run);
-  if (!prev || prev.status !== run.status) refreshRuns();
+  if (!prev || prev.status !== run.status) renderRail();
 }
 
 function renderResult(run) {
@@ -1223,6 +1320,7 @@ function renderResult(run) {
     failed: "✕ Failed",
     cancelled: "■ Stopped by you",
     stopped: `■ Stopped at the ${run.stopReason ?? "limit"} — work so far is kept below`,
+    interrupted: "■ Interrupted — press Resume to continue where it stopped",
   };
   const artifacts = run.artifacts.map((a) => el("div", { class: "artifact" },
     el("div", { class: "ah" }, el("b", {}, a.label), el("code", {}, a.branch),
@@ -1389,7 +1487,10 @@ function inline(node, text) {
   const saved = store.get("repo");
   if (saved) setRepo(saved, { remember: false }); else renderRepo();
   await refreshRuns();
-  setInterval(refreshRuns, 5000);
+  watchAllRuns();
+  renderBell();
+  setInterval(refreshRuns, 30000); // safety net if the event stream drops
+  setInterval(renderRail, 60000); // keep "5m ago" labels fresh
 })();
 </script>
 </body>

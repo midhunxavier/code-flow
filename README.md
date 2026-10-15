@@ -89,6 +89,17 @@ Agents may suggest their own test command (the tester in Test-first does). code-
 
 > **Security:** a check runs the agents' code (tests, scripts) on your machine, outside Codex's and agy's sandboxes, as your CI would. Use code-flow on repos and tasks you trust, or run it inside a container or VM.
 
+## Runs survive restarts
+
+Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and the server rebuilds the run list from those files when it starts.
+
+- **Interrupted runs:** if code-flow stops while a run is going (Ctrl-C, a restart, a crash), the run comes back as **Interrupted**.
+  - **Resume** re-runs the pattern from the top. Each step that already finished (agent turns, checks, commits, worktrees) is replayed instantly from a journal (`<run>.journal.jsonl`), and real work continues at the first unfinished step. Nothing finished is redone.
+  - Runs that hit a time or step limit, failed, or were stopped by you can be resumed the same way, with a fresh budget.
+- **Clean shutdown:** Ctrl-C or SIGTERM stops running agents and marks their runs interrupted. A second Ctrl-C exits at once.
+- **Needs you:** the sidebar groups runs into *Needs you* (finished runs you haven't opened, and interrupted runs), *Running*, *Recent* and *Archived*. The browser tab shows the count, and 🔔 turns on desktop notifications for when a run finishes or needs you.
+- **Two servers:** `npm start` is your server (port 4317, `~/.codeflow`). `npm run dev` is a development server (port 4318, `.codeflow-dev/`) with **fake agents**, so working on code-flow never touches your real runs or quota. `npm run dev:real` is the same dev server with the real CLIs.
+
 ## Worktrees and branches
 
 Every worktree a pattern needs (`build`, `candidate-a`, `integration`, …) is created with:
@@ -165,11 +176,9 @@ The suite runs every pattern end to end against fake `claude` / `codex` / `agy` 
 - **agy permissions** (tested with agy 1.3.5): when headless agy hits a tool it isn't allowed to use, it doesn't work around it. The turn ends with an empty answer, which code-flow reports as a failed step that names the denied action. That's why code-flow passes `--dangerously-skip-permissions` together with `--sandbox` by default. The sandbox confines writes to the worktree, and code-flow reverts any changes made during read-only steps. Older agy versions printed nothing when piped; code-flow reports that as an error too.
 - Headless agents can't ask you anything. Tools that are not pre-allowed are denied, and the agent works around it or reports it.
 - Claude's write mode can run allow-listed commands such as `npm`, `node` and `make`, and those can run arbitrary project scripts. Only run it on repos you trust. Codex is additionally confined by its own sandbox.
-- Runs are kept in memory, so restarting the server clears the run list. The JSONL logs on disk remain.
 - Next steps worth doing:
   - Use `codex app-server` instead of `exec` for mid-turn steering and real approvals.
   - Add human approval gates between steps.
-  - Save runs to disk so they survive a restart and can resume.
   - Add triggers: scheduled loops, and CI or GitHub events that start runs. Only after runs are saved to disk.
   - Track quota per vendor and route work to whichever plan has headroom.
   - Add a "council review" pattern for existing PRs.

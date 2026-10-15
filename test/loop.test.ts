@@ -39,7 +39,7 @@ async function run(pattern: string, roles: Record<string, any>, extra: Record<st
 }
 
 /** The run's activity log, from memory (the on-disk log is written asynchronously). */
-const log = (r: Run) => manager.events(r.id).map((e) => (e.type === "log" ? e.text : "")).join("\n");
+const log = async (r: Run) => (await manager.events(r.id)).map((e) => (e.type === "log" ? e.text : "")).join("\n");
 const titles = (r: Run) => r.steps.map((s) => `${s.title}${s.kind === "agent" ? ` [${s.agent}]` : ""}:${s.status}`);
 
 test("detects the repo's test command", async () => {
@@ -98,7 +98,7 @@ test("loop until green hands off to the next vendor when one is stuck", async ()
       "Round 3 [claude]:done",
       "Check after round 3:done",
     ]);
-    assert.match(log(r), /made no progress for 2 rounds; handing over to Claude Code/);
+    assert.match(await log(r), /made no progress for 2 rounds; handing over to Claude Code/);
     assert.match(r.summary!, /Check passes\*\* after 3 rounds/);
   } finally {
     delete process.env.FAKE_NOOP_VENDOR;
@@ -141,7 +141,7 @@ test("race: a candidate that fails the check can't win", async () => {
   assert.equal(one.status, "done", one.error);
   assert.match(one.summary!, /Winner: Candidate A — claude/);
   assert.equal(one.verdict, "passed");
-  assert.match(log(one), /Passing the check: A \(only these can win\)/);
+  assert.match(await log(one), /Passing the check: A \(only these can win\)/);
   assert.ok(!one.steps.some((s) => s.title === "Judge candidates"), "no judge needed when only one passes");
 
   // Two pass (Claude, Antigravity) and one fails (Codex): the judge only chooses between passing ones.
@@ -151,8 +151,8 @@ test("race: a candidate that fails the check can't win", async () => {
     { loop: { check: "ls claude-*.txt agy-*.txt 2>/dev/null | grep -q ." } },
   );
   assert.equal(two.status, "done", two.error);
-  assert.match(log(two), /Passing the check: A, C \(only these can win\)/);
-  assert.match(log(two), /Judge picked candidate B, but it fails the check; using passing candidate A/);
+  assert.match(await log(two), /Passing the check: A, C \(only these can win\)/);
+  assert.match(await log(two), /Judge picked candidate B, but it fails the check; using passing candidate A/);
   assert.match(two.summary!, /Winner: Candidate A — claude/);
 });
 

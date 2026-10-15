@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { WORKTREE_DIR } from "./config.js";
 
 export interface GitResult {
@@ -94,11 +95,28 @@ export async function workingCopyDiffers(repo: string, ref: string, path: string
   return (await git(["diff", "--quiet", ref, "--", path], repo)).code !== 0;
 }
 
-/** Create a new branch from `fromRef` and check it out in a worktree at `path`. */
-export async function createWorktree(repo: string, name: string, path: string, branch: string, fromRef: string): Promise<Worktree> {
+/**
+ * A worktree at `path` on `branch`: reused if it already exists, re-attached if only the
+ * branch survives (e.g. the folder was deleted), otherwise created from `fromRef`.
+ */
+export async function openWorktree(
+  repo: string,
+  name: string,
+  path: string,
+  branch: string,
+  fromRef: string,
+): Promise<{ wt: Worktree; created: boolean }> {
+  const base = await resolveCommit(repo, fromRef);
+  const wt = { name, path, branch, base };
+  if (existsSync(join(path, ".git"))) return { wt, created: false };
   await mkdir(dirname(path), { recursive: true });
+  if ((await git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repo)).code === 0) {
+    await git(["worktree", "prune"], repo);
+    await gitOk(["worktree", "add", path, branch], repo);
+    return { wt, created: false };
+  }
   await gitOk(["worktree", "add", "-b", branch, path, fromRef], repo);
-  return { name, path, branch, base: await resolveCommit(repo, fromRef) };
+  return { wt, created: true };
 }
 
 export interface BranchInfo {

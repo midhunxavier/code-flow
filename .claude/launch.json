@@ -1,6 +1,22 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "code-flow", "runtimeExecutable": "npm", "runtimeArgs": ["start"], "port": 4317 }
+    {
+      "name": "code-flow",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "start"
+      ],
+      "port": 4317
+    },
+    {
+      "name": "code-flow-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 4318
+    }
   ]
 }

@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import { appendFile, cp, mkdir, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { cp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import {
@@ -10,18 +11,18 @@ import {
   type AgentSettings,
   type RunResult,
 } from "./adapters/index.js";
-import { CODEFLOW_HOME, MAX_DIFF_CHARS, STEP_TIMEOUT_MS } from "./config.js";
+import { MAX_DIFF_CHARS, STEP_TIMEOUT_MS } from "./config.js";
 import { runCheck, type CheckResult } from "./checks.js";
 import { contextPrompt, hasStagedFiles, prepareContext, type ContextInput, type RunContext } from "./context.js";
 import {
   CONTEXT_DIR,
   commitAll,
-  createWorktree,
   diffSince,
   diffStat,
   discardChanges,
   ensureCodeflowExcludes,
   isClean,
+  openWorktree,
   repoRoot,
   resolveCommit,
   uncommittedCount,
@@ -29,6 +30,7 @@ import {
   worktreeRoot,
   type Worktree,
 } from "./git.js";
+import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines } from "./store.js";
 
 /** Per-run staging folder (inside the run's worktree folder) for context files. */
 const STAGE_DIR = ".context";
@@ -37,8 +39,11 @@ const STAGE_DIR = ".context";
 // Data model
 // ---------------------------------------------------------------------------
 
-/** "stopped" = ended by a budget (time or step limit), not by the user or an error. */
-export type Status = "running" | "done" | "failed" | "cancelled" | "stopped";
+/**
+ * "stopped" = ended by a budget (time or step limit); "interrupted" = code-flow shut down
+ * while it was running. Both can be resumed.
+ */
+export type Status = "running" | "done" | "failed" | "cancelled" | "stopped" | "interrupted";
 
 export interface Step {
   id: string;
@@ -93,6 +98,11 @@ export interface Run {
   /** Why a "stopped" run stopped. */
   stopReason?: string;
   worktrees: { name: string; branch: string; path: string }[];
+  /** The user has looked at the finished run (otherwise it "needs you"). */
+  seen: boolean;
+  archived: boolean;
+  /** How many times the run was resumed. */
+  resumes?: number;
   status: Status;
   createdAt: number;
   endedAt?: number;
@@ -101,6 +111,8 @@ export interface Run {
   steps: Step[];
   artifacts: Artifact[];
 }
+
+export type RunSummary = Omit<Run, "steps">;
 
 export interface LoopSettings {
   /** Shell command code-flow runs itself to decide "done" (e.g. `npm test`). Empty = agents' judgment only. */
@@ -118,7 +130,7 @@ export interface LoopSettings {
 export const DEFAULT_LOOP: LoopSettings = { maxMinutes: 60, maxSteps: 40, checkTimeoutMin: 10 };
 
 export type RunEvent = { seq: number; ts: number; runId: string } & (
-  | { type: "run"; run: Omit<Run, "steps"> }
+  | { type: "run"; run: RunSummary }
   | { type: "step"; step: Step }
   | { type: "agent"; stepId: string; event: AgentEvent }
   | { type: "log"; level: "info" | "warn"; text: string }
@@ -161,7 +173,10 @@ export interface Pattern {
   options: OptionSpec[];
   /** The pattern can't run without a "done when" check command. */
   requiresCheck?: boolean;
-  /** Runs the team; returns a markdown summary. */
+  /**
+   * Runs the team; returns a markdown summary. Must be deterministic given the results of
+   * ctx calls (ask/check/commit/worktree/remember) so an interrupted run can be replayed.
+   */
   run(ctx: TeamContext): Promise<string>;
 }
 
@@ -192,13 +207,20 @@ export class CancelledError extends Error {
 /** What a pattern sees: the task, its team, and primitives to coordinate them. */
 export class TeamContext {
   readonly signal: AbortSignal;
+  private readonly counters = new Map<string, number>();
+  /** Agent turns taken in this attempt (the step budget restarts on resume). */
+  private attemptSteps = 0;
+  /** True while re-running already-journaled steps after a resume. */
+  private replaying: boolean;
 
   constructor(
     readonly run: Run,
     private readonly controller: AbortController,
     private readonly manager: RunManager,
+    private readonly journal: Map<string, unknown> = new Map(),
   ) {
     this.signal = controller.signal;
+    this.replaying = journal.size > 0;
   }
 
   /** End the run because a budget ran out; in-flight agents and checks are stopped. */
@@ -219,17 +241,67 @@ export class TeamContext {
     this.run.verdict = verdict;
   }
 
+  /** The user's task plus the context they attached — what every agent should be given. */
+  get task() {
+    return this.run.task + contextPrompt(this.run.context);
+  }
+
+  agents(role: string): AgentId[] {
+    return this.run.roles[role] ?? [];
+  }
+
+  agent(role: string): AgentId {
+    const [first] = this.agents(role);
+    if (!first) throw new Error(`No agent assigned to role "${role}"`);
+    return first;
+  }
+
+  option<T extends number | boolean>(id: string, fallback: T): T {
+    const value = this.run.options[id];
+    return (value ?? fallback) as T;
+  }
+
+  log(text: string, level: "info" | "warn" = "info") {
+    if (this.replaying) return; // already in the log from the original attempt
+    this.manager.emit(this.run, { type: "log", level, text });
+  }
+
+  checkCancelled() {
+    if (this.signal.aborted) throw new CancelledError();
+  }
+
+  /**
+   * Run `fn` once and record its result; on a resumed run the recorded result is returned
+   * instead. Keys are kind + identity + occurrence, which stay stable across parallel
+   * branches as long as identities differ (titles, worktree names).
+   */
+  async remember<T>(kind: string, identity: string, fn: () => Promise<T>): Promise<T> {
+    const base = `${kind}:${identity}`;
+    const n = (this.counters.get(base) ?? 0) + 1;
+    this.counters.set(base, n);
+    const key = `${base}#${n}`;
+    if (this.journal.has(key)) return this.journal.get(key) as T;
+    this.replaying = false;
+    const value = await fn();
+    this.journal.set(key, value);
+    journalEntry(this.run.id, key, value ?? null);
+    return value;
+  }
+
   /**
    * Run the "done when" check in a worktree — code-flow runs it, not an agent, so the result
    * can be trusted. Returns null when no check is configured.
    */
   async check(wt: Worktree, title = "Check", command = this.run.loop.check): Promise<CheckResult | null> {
     if (!command) return null;
-    const result = await this.command("check", title, wt, command);
-    this.run.usage.checks++;
-    this.run.lastCheck = { ok: result.ok, command, worktree: wt.name, at: Date.now() };
-    this.manager.emitRun(this.run);
-    return result;
+    this.checkCancelled();
+    return this.remember("check", `${wt.name}|${title}|${command}`, async () => {
+      const result = await this.command("check", title, wt, command);
+      this.run.usage.checks++;
+      this.run.lastCheck = { ok: result.ok, command, worktree: wt.name, at: Date.now() };
+      this.manager.emitRun(this.run);
+      return result;
+    });
   }
 
   /** Run a shell command in a worktree as a visible step (used for checks and setup). */
@@ -257,7 +329,7 @@ export class TeamContext {
       event: { kind: "tool_result", callId: step.id, output: result.output.slice(-8_000) || "(no output)", isError: !result.ok },
     });
     step.endedAt = Date.now();
-    step.status = this.signal.aborted ? "cancelled" : result.ok ? "done" : "failed";
+    step.status = this.signal.aborted ? this.abortedStatus() : result.ok ? "done" : "failed";
     step.finalText = result.ok
       ? `Passed in ${Math.round(result.durationMs / 1000)}s`
       : result.timedOut
@@ -269,45 +341,38 @@ export class TeamContext {
     return result;
   }
 
-  /** The user's task plus the context they attached — what every agent should be given. */
-  get task() {
-    return this.run.task + contextPrompt(this.run.context);
+  private abortedStatus(): Status {
+    return this.manager.isShuttingDown ? "interrupted" : "cancelled";
   }
 
-  agents(role: string): AgentId[] {
-    return this.run.roles[role] ?? [];
-  }
-
-  agent(role: string): AgentId {
-    const [first] = this.agents(role);
-    if (!first) throw new Error(`No agent assigned to role "${role}"`);
-    return first;
-  }
-
-  option<T extends number | boolean>(id: string, fallback: T): T {
-    const value = this.run.options[id];
-    return (value ?? fallback) as T;
-  }
-
-  log(text: string, level: "info" | "warn" = "info") {
-    this.manager.emit(this.run, { type: "log", level, text });
-  }
-
-  checkCancelled() {
-    if (this.signal.aborted) throw new CancelledError();
-  }
-
+  /** A worktree for this run; reused if it already exists (e.g. when resuming). */
   async worktree(name: string, fromRef = this.run.baseRef): Promise<Worktree> {
     this.checkCancelled();
-    const wt = await createWorktree(
+    const wt = await this.remember("worktree", name, () => this.openWorktreeLive(name, fromRef));
+    if (!existsSync(wt.path)) {
+      // Removed since it was recorded: check the branch out again.
+      const { wt: reopened } = await openWorktree(this.run.repo, name, wt.path, wt.branch, fromRef);
+      return reopened;
+    }
+    return wt;
+  }
+
+  private async openWorktreeLive(name: string, fromRef: string): Promise<Worktree> {
+    const { wt, created } = await openWorktree(
       this.run.repo,
       name,
       join(this.run.worktreeDir, name),
       `${this.run.branchPrefix}/${name}`,
       fromRef,
     );
+    if (!this.run.worktrees.some((w) => w.name === name)) {
+      this.run.worktrees.push({ name: wt.name, branch: wt.branch, path: wt.path });
+    }
+    if (!created) {
+      this.log(`Reusing existing worktree ${wt.path} (branch ${wt.branch})`);
+      return wt;
+    }
     this.log(`Created worktree ${wt.path} on branch ${wt.branch}`);
-    this.run.worktrees.push({ name: wt.name, branch: wt.branch, path: wt.path });
     if (hasStagedFiles(this.run.context)) {
       // Git-excluded, so it is never committed and doesn't count as a change.
       await cp(join(this.run.worktreeDir, STAGE_DIR), join(wt.path, CONTEXT_DIR), { recursive: true });
@@ -315,16 +380,17 @@ export class TeamContext {
     if (this.run.loop.setup) {
       const setup = await this.command("setup", `Setup ${name}`, wt, this.run.loop.setup);
       if (!setup.ok) throw new Error(`Setup command \`${this.run.loop.setup}\` failed in worktree ${name}`);
-      // Setup output (e.g. node_modules) should be ignored; anything else it changed is not the agents' work.
       if (!(await isClean(wt.path))) this.log(`Setup left changes in ${name}; they'll appear in its diff`, "warn");
     }
     return wt;
   }
 
   async commit(wt: Worktree, message: string): Promise<string | null> {
-    const sha = await commitAll(wt, message);
-    if (sha) this.log(`Committed ${sha.slice(0, 8)} on ${wt.branch}: ${message}`);
-    return sha;
+    return this.remember("commit", `${wt.name}|${message}`, async () => {
+      const sha = await commitAll(wt, message);
+      if (sha) this.log(`Committed ${sha.slice(0, 8)} on ${wt.branch}: ${message}`);
+      return sha;
+    });
   }
 
   /** Diff of the worktree against its base, truncated to fit in a prompt. */
@@ -336,8 +402,10 @@ export class TeamContext {
       : full;
   }
 
+  /** Publish a result branch (replaces an earlier artifact with the same label). */
   async artifact(label: string, wt: Worktree) {
     const stat = await diffStat(wt, this.run.baseRef).catch(() => "");
+    this.run.artifacts = this.run.artifacts.filter((a) => a.label !== label);
     this.run.artifacts.push({ label, branch: wt.branch, path: wt.path, stat });
     this.manager.emitRun(this.run);
   }
@@ -348,10 +416,15 @@ export class TeamContext {
     if (params.resume && params.resume.agent !== params.agent) {
       throw new Error(`Cannot resume a ${params.resume.agent} session with ${params.agent}`);
     }
-    if (this.run.usage.agentSteps >= this.run.loop.maxSteps) {
+    return this.remember("ask", `${params.role}|${params.agent}|${params.cwd.name}|${params.title}`, () => this.askLive(params));
+  }
+
+  private async askLive(params: AskParams): Promise<StepOutcome> {
+    if (this.attemptSteps >= this.run.loop.maxSteps) {
       this.stop(`step limit (${this.run.loop.maxSteps} agent steps)`);
       this.checkCancelled();
     }
+    this.attemptSteps++;
     this.run.usage.agentSteps++;
     const step: Step = {
       id: `s${this.run.steps.length + 1}`,
@@ -381,7 +454,10 @@ export class TeamContext {
         signal: this.signal,
         timeoutMs: STEP_TIMEOUT_MS,
       },
-      (event) => this.manager.emit(this.run, { type: "agent", stepId: step.id, event }),
+      (event) => {
+        if (event.kind === "session") step.sessionId = event.sessionId;
+        this.manager.emit(this.run, { type: "agent", stepId: step.id, event });
+      },
     );
 
     if (guardReadOnly && !(await isClean(params.cwd.path))) {
@@ -393,7 +469,7 @@ export class TeamContext {
     step.sessionId = result.sessionId;
     step.finalText = result.finalText;
     step.error = result.error;
-    step.status = this.signal.aborted ? "cancelled" : result.ok ? "done" : "failed";
+    step.status = this.signal.aborted ? this.abortedStatus() : result.ok ? "done" : "failed";
     this.manager.emit(this.run, { type: "step", step: { ...step } });
 
     this.checkCancelled();
@@ -427,14 +503,45 @@ export class RunManager {
   private readonly runs = new Map<string, Run>();
   private readonly history = new Map<string, RunEvent[]>();
   private readonly controllers = new Map<string, AbortController>();
+  private readonly active = new Map<string, Promise<void>>();
   private readonly bus = new EventEmitter();
   private seq = 0;
+  private shuttingDown = false;
 
-  constructor() {
+  constructor(private readonly findPattern: (id: string) => Pattern | undefined = () => undefined) {
     this.bus.setMaxListeners(0);
   }
 
-  list(): Omit<Run, "steps">[] {
+  get isShuttingDown() {
+    return this.shuttingDown;
+  }
+
+  /** Rebuild runs from their event logs; runs that were mid-flight become "interrupted". */
+  async load(): Promise<void> {
+    for (const id of await listRunIds()) {
+      if (this.runs.has(id)) continue;
+      const events = await readJsonLines<RunEvent>(`${id}.jsonl`);
+      for (const e of events) if (typeof e.seq === "number" && e.seq > this.seq) this.seq = e.seq;
+      const run = rebuildRun(events);
+      if (!run) continue;
+      this.runs.set(id, run);
+      if (run.status === "running") {
+        run.status = "interrupted";
+        run.error = "code-flow stopped while this run was in progress. Resume to continue.";
+        run.endedAt = run.endedAt ?? Date.now();
+        run.seen = false;
+        for (const step of run.steps) {
+          if (step.status === "running") {
+            step.status = "interrupted";
+            this.emit(run, { type: "step", step: { ...step } });
+          }
+        }
+        this.emitRun(run);
+      }
+    }
+  }
+
+  list(): RunSummary[] {
     return [...this.runs.values()].map(strip).sort((a, b) => b.createdAt - a.createdAt);
   }
 
@@ -442,8 +549,12 @@ export class RunManager {
     return this.runs.get(id);
   }
 
-  events(id: string): RunEvent[] {
-    return this.history.get(id) ?? [];
+  /** Full event history of a run (from memory, or from its log for runs loaded from disk). */
+  async events(id: string): Promise<RunEvent[]> {
+    const cached = this.history.get(id);
+    if (cached) return cached;
+    await flushWrites();
+    return readJsonLines<RunEvent>(`${id}.jsonl`);
   }
 
   subscribe(id: string, listener: (e: RunEvent) => void): () => void {
@@ -451,11 +562,33 @@ export class RunManager {
     return () => this.bus.off(id, listener);
   }
 
+  /** Every run snapshot as it changes, for the sidebar and notifications. */
+  subscribeAll(listener: (run: RunSummary) => void): () => void {
+    this.bus.on("*", listener);
+    return () => this.bus.off("*", listener);
+  }
+
   cancel(id: string): boolean {
     const controller = this.controllers.get(id);
     if (!controller) return false;
     controller.abort();
     return true;
+  }
+
+  setSeen(id: string, seen = true) {
+    const run = this.runs.get(id);
+    if (!run || run.seen === seen) return;
+    run.seen = seen;
+    this.emitRun(run);
+  }
+
+  setArchived(id: string, archived: boolean) {
+    const run = this.runs.get(id);
+    if (!run) throw new Error("Run not found");
+    if (run.status === "running") throw new Error("Stop the run before archiving it");
+    run.archived = archived;
+    if (archived) run.seen = true;
+    this.emitRun(run);
   }
 
   async start(input: StartRunInput): Promise<Run> {
@@ -500,22 +633,65 @@ export class RunManager {
       loop,
       usage: { agentSteps: 0, checks: 0 },
       worktrees: [],
+      seen: false,
+      archived: false,
       status: "running",
       createdAt: Date.now(),
       steps: [],
       artifacts: [],
     };
-    const controller = new AbortController();
     this.runs.set(run.id, run);
     this.history.set(run.id, []);
-    this.controllers.set(run.id, controller);
     this.emitRun(run);
+    this.execute(run, input.pattern, new Map());
+    return run;
+  }
 
-    const ctx = new TeamContext(run, controller, this);
-    const timeBudget = setTimeout(() => ctx.stop(`time limit (${loop.maxMinutes} min)`), loop.maxMinutes * 60_000);
+  /**
+   * Continue a run that was interrupted, stopped at a limit, failed or cancelled. Its pattern
+   * runs again from the top; every step that already completed is replayed from the journal
+   * instantly, and real work resumes at the first unfinished step — with a fresh budget.
+   */
+  async resume(id: string): Promise<Run> {
+    const run = this.runs.get(id);
+    if (!run) throw new Error("Run not found");
+    if (run.status === "running") throw new Error("This run is already running");
+    const pattern = this.findPattern(run.pattern);
+    if (!pattern) throw new Error(`Unknown pattern "${run.pattern}"`);
+    if (!existsSync(run.repo)) throw new Error(`Repository ${run.repo} no longer exists`);
+
+    if (!this.history.has(id)) this.history.set(id, await this.events(id));
+    const journal = await loadJournal(id);
+    run.status = "running";
+    run.error = undefined;
+    run.stopReason = undefined;
+    run.summary = undefined;
+    run.verdict = undefined;
+    run.endedAt = undefined;
+    run.seen = false;
+    run.archived = false;
+    run.resumes = (run.resumes ?? 0) + 1;
+    run.artifacts = run.artifacts.filter((a) => !a.label.startsWith("Work so far"));
+    this.emitRun(run);
+    this.emit(run, {
+      type: "log",
+      level: "info",
+      text: journal.size
+        ? `Resuming: replaying ${journal.size} recorded results, then continuing with a fresh budget`
+        : "Resuming from the start: no completed steps were recorded (existing worktrees are reused)",
+    });
+    this.execute(run, pattern, journal);
+    return run;
+  }
+
+  private execute(run: Run, pattern: Pattern, journal: Map<string, unknown>) {
+    const controller = new AbortController();
+    this.controllers.set(run.id, controller);
+    const ctx = new TeamContext(run, controller, this, journal);
+    const timeBudget = setTimeout(() => ctx.stop(`time limit (${run.loop.maxMinutes} min)`), run.loop.maxMinutes * 60_000);
     timeBudget.unref?.();
 
-    void input.pattern
+    const done = pattern
       .run(ctx)
       .then((summary) => {
         run.summary = summary;
@@ -523,19 +699,36 @@ export class RunManager {
       })
       .catch((err: Error) => {
         const aborted = controller.signal.aborted || err instanceof CancelledError;
-        run.status = run.stopReason ? "stopped" : aborted ? "cancelled" : "failed";
-        run.error = run.stopReason ? `Stopped at the ${run.stopReason}.` : err.message;
+        if (aborted && this.shuttingDown && !run.stopReason) {
+          run.status = "interrupted";
+          run.error = "code-flow was shut down while this run was in progress. Resume to continue.";
+        } else {
+          run.status = run.stopReason ? "stopped" : aborted ? "cancelled" : "failed";
+          run.error = run.stopReason ? `Stopped at the ${run.stopReason}.` : err.message;
+        }
       })
-      .then(() => (run.status === "done" ? undefined : collectUnfinishedWork(run)))
+      .then(() => (run.status === "done" || run.status === "interrupted" ? undefined : collectUnfinishedWork(run)))
       .catch(() => undefined)
       .finally(() => {
         clearTimeout(timeBudget);
         run.endedAt = Date.now();
+        run.seen = run.status === "cancelled"; // you stopped it yourself; nothing to review
         this.controllers.delete(run.id);
+        this.active.delete(run.id);
         this.emitRun(run);
       });
+    this.active.set(run.id, done);
+  }
 
-    return run;
+  /** Stop every running run as "interrupted" (resumable) and make sure the logs are on disk. */
+  async shutdown(timeoutMs = 10_000): Promise<void> {
+    this.shuttingDown = true;
+    for (const controller of this.controllers.values()) controller.abort();
+    await Promise.race([
+      Promise.allSettled([...this.active.values()]),
+      new Promise((resolve) => setTimeout(resolve, timeoutMs).unref?.()),
+    ]);
+    await flushWrites();
   }
 
   emitRun(run: Run) {
@@ -546,7 +739,8 @@ export class RunManager {
     const event = { seq: ++this.seq, ts: Date.now(), runId: run.id, ...body } as RunEvent;
     this.history.get(run.id)?.push(event);
     this.bus.emit(run.id, event);
-    void persist(event);
+    if (event.type === "run") this.bus.emit("*", event.run);
+    appendLine(`${run.id}.jsonl`, event);
   }
 }
 
@@ -563,23 +757,40 @@ async function collectUnfinishedWork(run: Run) {
   }
 }
 
-function strip(run: Run): Omit<Run, "steps"> {
+/** Rebuild a run from its event log: the last run snapshot plus the latest state of each step. */
+function rebuildRun(events: RunEvent[]): Run | undefined {
+  let snapshot: RunSummary | undefined;
+  const steps = new Map<string, Step>();
+  for (const e of events) {
+    if (e.type === "run") snapshot = e.run;
+    else if (e.type === "step") steps.set(e.step.id, { ...e.step, kind: e.step.kind ?? "agent" });
+  }
+  if (!snapshot) return undefined;
+  // Logs written before newer fields existed get sensible defaults.
+  const legacy = snapshot as Partial<Run> & RunSummary;
+  return {
+    ...legacy,
+    context: legacy.context ?? { paths: [], attachments: [] },
+    agentSettings: legacy.agentSettings ?? {},
+    loop: { ...DEFAULT_LOOP, ...(legacy.loop ?? {}) },
+    usage: legacy.usage ?? { agentSteps: 0, checks: 0 },
+    worktrees: legacy.worktrees ?? [],
+    baseLabel: legacy.baseLabel ?? "HEAD",
+    branchPrefix: legacy.branchPrefix ?? `codeflow/${legacy.id}`,
+    worktreeDir: legacy.worktreeDir ?? join(worktreeRoot(legacy.repo), legacy.id),
+    seen: legacy.seen ?? true,
+    archived: legacy.archived ?? false,
+    artifacts: legacy.artifacts ?? [],
+    steps: [...steps.values()],
+  };
+}
+
+function strip(run: Run): RunSummary {
   const { steps: _steps, ...rest } = run;
-  return { ...rest, artifacts: [...rest.artifacts] };
+  return { ...rest, artifacts: [...rest.artifacts], worktrees: [...rest.worktrees] };
 }
 
 function newRunId(): string {
   const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(2, 12);
   return `${stamp}-${randomBytes(2).toString("hex")}`;
-}
-
-const runsDir = join(CODEFLOW_HOME, "runs");
-let writeQueue: Promise<unknown> = mkdir(runsDir, { recursive: true }).catch(() => undefined);
-
-/** Append-only JSONL log per run, for auditing what each agent did. Writes are queued so lines stay in order. */
-function persist(event: RunEvent) {
-  const line = `${JSON.stringify(event)}\n`;
-  writeQueue = writeQueue
-    .then(() => appendFile(join(runsDir, `${event.runId}.jsonl`), line))
-    .catch(() => undefined); // logging must never break a run
 }

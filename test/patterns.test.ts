@@ -135,7 +135,7 @@ test("changes made by a read-only step are reverted", async () => {
   const run = await runPattern("pipeline", { planner: ["agy"], builder: ["codex"], reviewer: ["claude"] }, "SNEAKY task");
   assert.equal(run.status, "done", run.error);
   // The read-only planner wrote sneaky.txt and had it reverted (the write-mode builder may write it legitimately later).
-  const logs = lastManager!.events(run.id).map((e) => (e.type === "log" ? e.text : "")).join("\n");
+  const logs = (await lastManager!.events(run.id)).map((e) => (e.type === "log" ? e.text : "")).join("\n");
   assert.match(logs, /Plan \(agy\) modified files in read-only mode; changes were reverted/);
 });
 

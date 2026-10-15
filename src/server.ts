@@ -10,14 +10,14 @@ import {
   type AgentId,
 } from "./adapters/index.js";
 import { listTree, searchFiles } from "./repo-tree.js";
-import { PORT } from "./config.js";
+import { CODEFLOW_HOME, PORT } from "./config.js";
 import { RunManager, type LoopSettings, type Pattern } from "./engine.js";
 import { detectCheckCommand } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
 import { listBranches, repoRoot, worktreeRoot } from "./git.js";
 
-const manager = new RunManager();
+const manager = new RunManager(findPattern);
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
 const HOST = "127.0.0.1";
 const allowedHosts = new Set([`${HOST}:${PORT}`, `localhost:${PORT}`]);
@@ -134,21 +134,30 @@ function validateOptions(pattern: Pattern, input: unknown): Record<string, numbe
   return options;
 }
 
-function streamEvents(req: IncomingMessage, res: ServerResponse, runId: string) {
+function openStream(req: IncomingMessage, res: ServerResponse): (event: unknown) => void {
   res.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
     connection: "keep-alive",
   });
-  const write = (event: unknown) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  const ping = setInterval(() => res.write(": ping\n\n"), 15_000);
+  req.on("close", () => clearInterval(ping));
+  return (event: unknown) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+async function streamEvents(req: IncomingMessage, res: ServerResponse, runId: string) {
+  const write = openStream(req, res);
   // Subscribe before replaying so nothing emitted in between is lost; the client de-dupes by seq.
   const unsubscribe = manager.subscribe(runId, write);
-  for (const event of manager.events(runId)) write(event);
-  const ping = setInterval(() => res.write(": ping\n\n"), 15_000);
-  req.on("close", () => {
-    clearInterval(ping);
-    unsubscribe();
-  });
+  req.on("close", unsubscribe);
+  for (const event of await manager.events(runId)) write(event);
+}
+
+/** Every run's status changes, for the sidebar and notifications. */
+function streamAllRuns(req: IncomingMessage, res: ServerResponse) {
+  const write = openStream(req, res);
+  const unsubscribe = manager.subscribeAll((run) => write({ type: "run", run }));
+  req.on("close", unsubscribe);
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse) {
@@ -165,6 +174,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (parts[0] !== "api") throw new HttpError(404, "Not found");
 
   if (req.method === "GET" && parts[1] === "agents") return send(res, 200, await agentAvailability());
+  if (req.method === "GET" && parts[1] === "events") return streamAllRuns(req, res);
   if (req.method === "GET" && parts[1] === "patterns") return send(res, 200, patterns.map(describePattern));
   if (req.method === "GET" && parts[1] === "fs") {
     const listing = await listDirectories(url.searchParams.get("path") ?? undefined, url.searchParams.get("hidden") === "1")
@@ -247,18 +257,55 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (req.method === "GET" && parts.length === 3) return send(res, 200, run);
     if (req.method === "GET" && parts[3] === "events") return streamEvents(req, res, run.id);
     if (req.method === "POST" && parts[3] === "cancel") return send(res, 200, { cancelled: manager.cancel(run.id) });
+    if (req.method === "POST" && parts[3] === "resume") {
+      await manager.resume(run.id).catch((err: Error) => {
+        throw new HttpError(400, err.message);
+      });
+      return send(res, 200, { resumed: true });
+    }
+    if (req.method === "POST" && parts[3] === "seen") {
+      manager.setSeen(run.id, true);
+      return send(res, 200, { seen: true });
+    }
+    if (req.method === "POST" && parts[3] === "archive") {
+      const body = await readJson(req);
+      try {
+        manager.setArchived(run.id, body.archived !== false);
+      } catch (err) {
+        throw new HttpError(400, (err as Error).message);
+      }
+      return send(res, 200, { archived: body.archived !== false });
+    }
   }
 
   throw new HttpError(404, "Not found");
 }
 
-createServer((req, res) => {
+await manager.load();
+
+const server = createServer((req, res) => {
   handle(req, res).catch((err: Error) => {
     if (res.headersSent) return res.end();
     send(res, err instanceof HttpError ? err.status : 500, { error: err.message });
   });
 }).listen(PORT, HOST, async () => {
   const agents = await agentAvailability();
-  console.log(`code-flow running at http://localhost:${PORT}`);
+  const runs = manager.list();
+  console.log(`code-flow running at http://localhost:${PORT}  (${runs.length} runs loaded from ${CODEFLOW_HOME})`);
   for (const a of agents) console.log(`  ${a.available ? "✓" : "✗"} ${a.displayName} (${a.binary})`);
+  const interrupted = runs.filter((r) => r.status === "interrupted").length;
+  if (interrupted) console.log(`  ${interrupted} interrupted run(s) can be resumed from the UI`);
 });
+
+// Stop cleanly: running agents are stopped and their runs marked "interrupted" (resumable).
+let stopping = false;
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, async () => {
+    if (stopping) process.exit(1); // second Ctrl-C: don't wait
+    stopping = true;
+    console.log("\nStopping code-flow: interrupting running runs so they can be resumed…");
+    server.close();
+    await manager.shutdown();
+    process.exit(0);
+  });
+}

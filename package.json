@@ -5,8 +5,9 @@
   "description": "Run Claude Code, Codex and Antigravity CLI as a team of coding agents using your own subscriptions.",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
+    "dev": "PORT=4318 CODEFLOW_HOME=.codeflow-dev PATH=\"$PWD/test/fake-bin:$PATH\" tsx watch src/server.ts",
+    "dev:real": "PORT=4318 CODEFLOW_HOME=.codeflow-dev tsx watch src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts"
   },

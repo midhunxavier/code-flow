@@ -86,7 +86,7 @@ if (prompt.includes('"subtasks"')) {
   answer = `Implemented changes as ${vendor}.`;
 }
 
-if (process.env.FAKE_SLEEP_MS) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_SLEEP_MS));
+if (process.env.FAKE_SLEEP_MS && (!process.env.FAKE_SLEEP_VENDOR || process.env.FAKE_SLEEP_VENDOR === vendor)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_SLEEP_MS));
 
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 const session = randomUUID();
