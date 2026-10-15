@@ -1,0 +1,21 @@
+{
+  "name": "code-flow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Run Claude Code, Codex and Antigravity CLI as a team of coding agents using your own subscriptions.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

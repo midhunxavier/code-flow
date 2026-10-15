@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>code-flow</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --border: #e3e2dd;
+    --accent: #2f5bd3; --ok: #1f8a4c; --warn: #b7791f; --err: #c0392b; --code: #f1f0ec;
+    --claude: #c96442; --codex: #10a37f; --agy: #4285f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --panel: #1e1e1c; --text: #ecebe6; --muted: #9a9993; --border: #33322f;
+      --accent: #7c9cf5; --ok: #4fbf7f; --warn: #e0a84a; --err: #f07167; --code: #262624;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .chip.on { color: var(--text); }
+  .agent { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 4px; color: #fff; }
+  .agent.claude { background: var(--claude); } .agent.codex { background: var(--codex); } .agent.agy { background: var(--agy); }
+  main { display: grid; grid-template-columns: 380px 1fr; min-height: calc(100vh - 47px); }
+  aside { border-right: 1px solid var(--border); padding: 16px; overflow-y: auto; background: var(--panel); }
+  section.run { padding: 16px 20px; overflow-x: hidden; }
+  label { display: block; font-weight: 600; font-size: 12px; margin: 12px 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+  input[type=text], textarea, select, input[type=number] {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit;
+  }
+  textarea { min-height: 90px; resize: vertical; }
+  button { font: inherit; border: 1px solid var(--border); background: var(--panel); color: var(--text); padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; width: 100%; padding: 9px; margin-top: 14px; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .patterns { display: grid; gap: 6px; }
+  .pattern { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; cursor: pointer; }
+  .pattern.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .pattern b { display: block; font-size: 13px; }
+  .pattern span { font-size: 12px; color: var(--muted); }
+  .role { margin-top: 8px; }
+  .role .name { font-size: 13px; font-weight: 600; }
+  .role .desc { font-size: 12px; color: var(--muted); }
+  .role .picks { display: flex; gap: 10px; margin-top: 4px; flex-wrap: wrap; }
+  .role .picks label { display: flex; gap: 4px; align-items: center; margin: 0; text-transform: none; font-weight: 400; color: var(--text); font-size: 13px; letter-spacing: 0; }
+  .error { color: var(--err); font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
+  .runs { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 8px; }
+  .runitem { padding: 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .runitem:hover, .runitem.active { background: var(--bg); }
+  .runitem .meta { color: var(--muted); font-size: 12px; }
+  .status { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .status.running { color: var(--accent); } .status.done { color: var(--ok); } .status.failed { color: var(--err); } .status.cancelled { color: var(--warn); }
+  .empty { color: var(--muted); margin-top: 20vh; text-align: center; }
+  .runhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .runhead h2 { margin: 0; font-size: 18px; }
+  .task { white-space: pre-wrap; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+  .summary { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--ok); border-radius: 8px; padding: 10px 14px; margin: 10px 0; }
+  .summary.failed { border-left-color: var(--err); }
+  .summary h2 { font-size: 14px; margin: 12px 0 4px; }
+  .artifacts { display: grid; gap: 8px; margin: 10px 0; }
+  .artifact { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 13px; }
+  .artifact pre { margin: 6px 0 0; }
+  .log { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted); max-height: 140px; overflow-y: auto; margin: 10px 0; }
+  .log .warn { color: var(--warn); }
+  .steps { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 12px; margin-top: 12px; }
+  .step { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; min-height: 200px; max-height: 560px; }
+  .step .head { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .step .head .title { font-weight: 600; flex: 1; min-width: 0; }
+  .step .head .sub { font-size: 12px; color: var(--muted); }
+  .step .body { padding: 8px 12px; overflow-y: auto; flex: 1; font-size: 13px; }
+  .ev { margin: 6px 0; }
+  .ev.text { white-space: pre-wrap; }
+  .ev.thinking { color: var(--muted); font-style: italic; white-space: pre-wrap; }
+  .ev.status { color: var(--muted); font-size: 12px; white-space: pre-wrap; }
+  .ev.error { color: var(--err); white-space: pre-wrap; }
+  details.tool { border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; background: var(--bg); }
+  details.tool summary { cursor: pointer; font-family: ui-monospace, Menlo, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  details.tool.err summary { color: var(--err); }
+  pre, code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  pre { background: var(--code); padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
+  code { background: var(--code); padding: 0 4px; border-radius: 4px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid var(--border); } .steps { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>code-flow</h1>
+  <div class="chips" id="agentChips"></div>
+</header>
+<main>
+  <aside>
+    <form id="form">
+      <label for="repo">Repository (absolute path)</label>
+      <input type="text" id="repo" placeholder="/Users/me/code/my-project" required />
+      <label for="task">Task</label>
+      <textarea id="task" placeholder="Add rate limiting to the /login endpoint…" required></textarea>
+      <label>Team pattern</label>
+      <div class="patterns" id="patterns"></div>
+      <label>Roles</label>
+      <div id="roles"></div>
+      <div id="options"></div>
+      <button class="primary" id="start" type="submit">Start run</button>
+      <div class="error" id="formError"></div>
+    </form>
+    <div class="runs">
+      <label>Runs</label>
+      <div id="runList"></div>
+    </div>
+  </aside>
+  <section class="run" id="runView"><div class="empty">Pick a pattern, assign agents to roles, and start a run.</div></section>
+</main>
+
+<script>
+const $ = (sel, root = document) => root.querySelector(sel);
+const el = (tag, attrs = {}, ...children) => {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null && v !== false) node.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children.flat()) if (c != null) node.append(c instanceof Node ? c : String(c));
+  return node;
+};
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+
+let agents = [];
+let patterns = [];
+let selectedPattern = null;
+let currentRun = null; // { id, source, run, steps: Map, seen: Set }
+
+const agentName = (id) => agents.find((a) => a.id === id)?.displayName ?? id;
+const agentBadge = (id) => el("span", { class: `agent ${id}` }, agentName(id));
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+// ---------- form ----------
+function renderPatterns() {
+  const box = $("#patterns");
+  box.replaceChildren(...patterns.map((p) =>
+    el("div", {
+      class: `pattern ${p.id === selectedPattern?.id ? "selected" : ""}`,
+      title: p.description,
+      onclick: () => { selectedPattern = p; store.set("pattern", p.id); renderPatterns(); renderRoles(); },
+    }, el("b", {}, p.name), el("span", {}, p.summary))
+  ));
+}
+
+function renderRoles() {
+  const p = selectedPattern;
+  $("#roles").replaceChildren(...p.roles.map((role) => {
+    const picks = el("div", { class: "picks" });
+    if (role.multiple) {
+      for (const a of agents) {
+        picks.append(el("label", {},
+          el("input", { type: "checkbox", name: `role-${role.id}`, value: a.id, checked: role.default.includes(a.id) && a.available, disabled: !a.available }),
+          agentBadge(a.id)));
+      }
+    } else {
+      const select = el("select", { name: `role-${role.id}` },
+        role.optional ? el("option", { value: "" }, "— none —") : null,
+        agents.map((a) => el("option", { value: a.id, disabled: !a.available, selected: role.default[0] === a.id }, a.displayName + (a.available ? "" : " (not installed)"))));
+      picks.append(select);
+    }
+    return el("div", { class: "role" }, el("div", { class: "name" }, role.label), el("div", { class: "desc" }, role.description), picks);
+  }));
+  $("#options").replaceChildren(...p.options.map((o) =>
+    el("div", {}, el("label", { for: `opt-${o.id}` }, o.label),
+      o.type === "boolean"
+        ? el("input", { type: "checkbox", id: `opt-${o.id}`, checked: o.default })
+        : el("input", { type: "number", id: `opt-${o.id}`, value: o.default, min: o.min, max: o.max }))));
+}
+
+$("#form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const p = selectedPattern;
+  const roles = {};
+  for (const role of p.roles) {
+    roles[role.id] = role.multiple
+      ? [...document.querySelectorAll(`input[name="role-${role.id}"]:checked`)].map((i) => i.value)
+      : [$(`select[name="role-${role.id}"]`).value].filter(Boolean);
+  }
+  const options = {};
+  for (const o of p.options) {
+    const input = $(`#opt-${o.id}`);
+    options[o.id] = o.type === "boolean" ? input.checked : Number(input.value);
+  }
+  const repo = $("#repo").value.trim();
+  store.set("repo", repo);
+  $("#start").disabled = true;
+  $("#formError").textContent = "";
+  try {
+    const { id } = await api("/api/runs", { method: "POST", body: JSON.stringify({ repo, task: $("#task").value, pattern: p.id, roles, options }) });
+    await refreshRuns();
+    openRun(id);
+  } catch (err) {
+    $("#formError").textContent = err.message;
+  } finally {
+    $("#start").disabled = false;
+  }
+});
+
+// ---------- run list ----------
+async function refreshRuns() {
+  const runs = await api("/api/runs");
+  $("#runList").replaceChildren(...(runs.length ? runs.map((r) =>
+    el("div", { class: `runitem ${currentRun?.id === r.id ? "active" : ""}`, onclick: () => openRun(r.id) },
+      el("div", {}, el("span", { class: `status ${r.status}` }, r.status), " ", patterns.find((p) => p.id === r.pattern)?.name ?? r.pattern),
+      el("div", { class: "meta" }, r.task.slice(0, 80)))) : [el("div", { class: "meta" }, "No runs yet")]));
+}
+
+// ---------- run view ----------
+function openRun(id) {
+  currentRun?.source.close();
+  const view = $("#runView");
+  view.replaceChildren(
+    el("div", { class: "runhead" }, el("h2", { id: "runTitle" }), el("span", { class: "status", id: "runStatus" }),
+      el("button", { id: "cancelBtn", onclick: () => api(`/api/runs/${id}/cancel`, { method: "POST" }) }, "Cancel")),
+    el("div", { class: "task", id: "runTask" }),
+    el("div", { id: "runSummary" }),
+    el("div", { class: "artifacts", id: "runArtifacts" }),
+    el("div", { class: "log", id: "runLog" }),
+    el("div", { class: "steps", id: "runSteps" }),
+  );
+  const source = new EventSource(`/api/runs/${id}/events`);
+  currentRun = { id, source, steps: new Map(), seen: new Set() };
+  source.onmessage = (msg) => {
+    const ev = JSON.parse(msg.data);
+    if (currentRun?.id !== id || currentRun.seen.has(ev.seq)) return;
+    currentRun.seen.add(ev.seq);
+    handleEvent(ev);
+  };
+  refreshRuns();
+}
+
+function handleEvent(ev) {
+  if (ev.type === "run") return renderRunHeader(ev.run);
+  if (ev.type === "log") {
+    const log = $("#runLog");
+    log.append(el("div", { class: ev.level }, `${new Date(ev.ts).toLocaleTimeString()}  ${ev.text}`));
+    log.scrollTop = log.scrollHeight;
+    return;
+  }
+  if (ev.type === "step") return renderStep(ev.step);
+  if (ev.type === "agent") return appendAgentEvent(ev.stepId, ev.event);
+}
+
+function renderRunHeader(run) {
+  const p = patterns.find((x) => x.id === run.pattern);
+  $("#runTitle").textContent = p?.name ?? run.pattern;
+  const status = $("#runStatus");
+  status.className = `status ${run.status}`;
+  status.textContent = run.status;
+  $("#cancelBtn").hidden = run.status !== "running";
+  $("#runTask").replaceChildren(
+    el("div", {}, run.task),
+    el("div", { class: "meta", style: "margin-top:6px;font-size:12px;color:var(--muted)" },
+      `${run.repo} @ ${run.baseRef.slice(0, 8)} — `,
+      Object.entries(run.roles).filter(([, a]) => a.length).map(([role, ids]) => el("span", {}, `${role}: `, ids.map(agentBadge), "  "))));
+  if (run.summary || run.error) {
+    $("#runSummary").replaceChildren(el("div", { class: `summary ${run.error ? "failed" : ""}` },
+      run.error ? el("div", { class: "error" }, run.error) : renderMarkdown(run.summary)));
+  }
+  $("#runArtifacts").replaceChildren(...run.artifacts.map((a) =>
+    el("div", { class: "artifact" }, el("b", {}, a.label), " — ", el("code", {}, a.branch),
+      el("pre", {}, `${a.stat || "(no changes)"}\n\n# inspect:  cd ${a.path}\n# merge:    git merge ${a.branch}`))));
+  if (run.status !== "running") refreshRuns();
+}
+
+function renderStep(step) {
+  let entry = currentRun.steps.get(step.id);
+  if (!entry) {
+    const card = el("div", { class: "step" },
+      el("div", { class: "head" }, agentBadge(step.agent), el("span", { class: "title" }, step.title), el("span", { class: "status" })),
+      el("div", { class: "head sub" }),
+      el("div", { class: "body" }));
+    $("#runSteps").append(card);
+    entry = { card, body: $(".body", card), tools: new Map(), lastText: null, agent: step.agent };
+    currentRun.steps.set(step.id, entry);
+  }
+  const status = $(".head .status", entry.card);
+  status.className = `status ${step.status}`;
+  status.textContent = step.status;
+  const secs = step.endedAt ? ` · ${Math.round((step.endedAt - step.startedAt) / 1000)}s` : "";
+  $(".head.sub", entry.card).textContent = `${step.role} · ${step.mode === "write" ? "can edit" : "read-only"} · worktree ${step.worktree}${secs}`;
+}
+
+function appendAgentEvent(stepId, e) {
+  const entry = currentRun.steps.get(stepId);
+  if (!entry) return;
+  const body = entry.body;
+  const stick = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+  if (e.kind === "text") {
+    // agy streams deltas; the other CLIs send whole blocks.
+    if (entry.agent === "agy" && entry.lastText) entry.lastText.textContent += e.text;
+    else body.append(entry.lastText = el("div", { class: "ev text" }, e.text));
+  } else {
+    entry.lastText = null;
+    if (e.kind === "thinking") body.append(el("div", { class: "ev thinking" }, e.text.slice(0, 600)));
+    else if (e.kind === "tool_call") {
+      const d = el("details", { class: "ev tool" }, el("summary", {}, `${e.name}  ${e.input.replace(/\s+/g, " ").slice(0, 120)}`), el("pre", {}, e.input));
+      entry.tools.set(e.callId, d);
+      body.append(d);
+    } else if (e.kind === "tool_result") {
+      const d = entry.tools.get(e.callId);
+      if (d) { if (e.isError) d.classList.add("err"); d.append(el("pre", {}, e.output || "(no output)")); }
+    } else if (e.kind === "status") body.append(el("div", { class: "ev status" }, e.text));
+    else if (e.kind === "error") body.append(el("div", { class: "ev error" }, e.message));
+    else if (e.kind === "usage") {
+      const parts = [e.inputTokens && `${e.inputTokens} in`, e.outputTokens && `${e.outputTokens} out`].filter(Boolean);
+      if (parts.length) body.append(el("div", { class: "ev status" }, `tokens: ${parts.join(" / ")}`));
+    }
+  }
+  if (stick) body.scrollTop = body.scrollHeight;
+}
+
+/** Tiny, safe markdown: headings, bold, inline code, fenced code, lists. */
+function renderMarkdown(md) {
+  const root = el("div");
+  const blocks = md.split(/```[a-z]*\n?/);
+  blocks.forEach((block, i) => {
+    if (i % 2 === 1) return root.append(el("pre", {}, block));
+    for (const line of block.split("\n")) {
+      if (!line.trim()) continue;
+      const h = line.match(/^#{1,3}\s+(.*)/);
+      const li = line.match(/^\s*[-*]\s+(.*)/);
+      const node = h ? el("h2") : li ? el("div", { style: "padding-left:12px" }, "• ") : el("div");
+      inline(node, h ? h[1] : li ? li[1] : line);
+      root.append(node);
+    }
+  });
+  return root;
+}
+function inline(node, text) {
+  for (const part of text.split(/(\*\*[^*]+\*\*|`[^`]+`)/)) {
+    if (part.startsWith("**") && part.endsWith("**")) node.append(el("b", {}, part.slice(2, -2)));
+    else if (part.startsWith("`") && part.endsWith("`") && part.length > 1) node.append(el("code", {}, part.slice(1, -1)));
+    else if (part) node.append(part);
+  }
+}
+
+// ---------- boot ----------
+(async () => {
+  [agents, patterns] = await Promise.all([api("/api/agents"), api("/api/patterns")]);
+  $("#agentChips").replaceChildren(...agents.map((a) => el("span", { class: `chip ${a.available ? "on" : ""}`, title: a.binary }, `${a.available ? "●" : "○"} ${a.displayName}`)));
+  selectedPattern = patterns.find((p) => p.id === store.get("pattern")) ?? patterns[0];
+  $("#repo").value = store.get("repo") ?? "";
+  renderPatterns();
+  renderRoles();
+  await refreshRuns();
+  setInterval(refreshRuns, 5000);
+})();
+</script>
+</body>
+</html>
