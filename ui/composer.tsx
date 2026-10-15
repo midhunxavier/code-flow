@@ -42,8 +42,12 @@ import {
   setSetup,
   setTask,
   setupCmd,
+  source,
   task,
+  ghPicker,
+  type RoleValue,
 } from "./state.js";
+import { SourceChip, Templates } from "./github.js";
 import type { AgentId, AgentInfo, ContextItem, ModelCatalog, PatternInfo, TreeEntry } from "./types.js";
 
 const DRAG_TYPE = "application/x-codeflow-path";
@@ -71,6 +75,7 @@ export function Composer() {
         roles,
         options: optionsFor(p),
         baseRef: baseRef.value,
+        source: source.value ? { kind: source.value.kind, number: source.value.number, ciLogs: !!source.value.ciLogs } : undefined,
         branchPrefix: branchPrefix.value.trim(),
         context: {
           paths: [...contextPaths.value.values()].map((c) => ({ path: c.path })),
@@ -92,6 +97,7 @@ export function Composer() {
       // Fresh composer for the next run; "Edit & run again" brings these back.
       setTask("");
       branchPrefix.value = "";
+      source.value = null;
       contextPaths.value = new Map();
       attachments.value = [];
       await refreshRuns();
@@ -128,6 +134,7 @@ export function Composer() {
           )}
         </div>
       ) : null}
+      {repoInfo.value ? <Templates /> : null}
       <TaskBox onStart={start} />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
 
@@ -178,7 +185,7 @@ export function Composer() {
   );
 }
 
-function startProblem(p: PatternInfo | undefined, roles: Record<string, AgentId[]>): string {
+function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>): string {
   if (!repo.value) return "Choose a repository first";
   if (!task.value.trim()) return "Describe the task to start";
   if (!p) return "Pick how the agents work together";
@@ -186,7 +193,7 @@ function startProblem(p: PatternInfo | undefined, roles: Record<string, AgentId[
   if (p.id === "race" && (roles.contestants?.length ?? 0) < 2) return "A race needs at least two contestants";
   if (p.id === "debate" && (roles.debaters?.length ?? 0) < 2) return "A debate needs at least two debaters";
   if (p.requiresCheck && !checkCmd.value.trim()) return `${p.name} needs a “Done when” command, e.g. npm test`;
-  const used = new Set(Object.values(roles).flat());
+  const used = new Set<RoleValue>(Object.values(roles).flat());
   const signedOut = health.value?.find((h) => used.has(h.id) && h.installed && h.signedIn === false);
   if (signedOut) return `${signedOut.name} isn't signed in — open Health in the top bar`;
   return "";
@@ -271,6 +278,9 @@ function TaskBox({ onStart }: { onStart: () => void }) {
         <button class="btn ghost small" title="Attach files from your computer" onClick={() => fileInput.current?.click()}>
           📎 Attach
         </button>
+        <button class="btn ghost small" title="Start from a GitHub issue or pull request" onClick={() => (ghPicker.value = { kind: source.value?.kind ?? "issue" })}>
+          ⇄ GitHub
+        </button>
         <button
           class="btn ghost small"
           title="Show repository files"
@@ -309,6 +319,7 @@ function ContextChips() {
   };
   return (
     <div class="chips">
+      <SourceChip />
       {[...contextPaths.value.values()].map((c) => (
         <span key={c.path} class="chip-ctx" title={c.path}>
           <span class="n">
@@ -371,7 +382,7 @@ async function addAttachments(files: File[], folders: string[] = []) {
 }
 
 // ---------------------------------------------------------------- team
-function Team({ p, roles }: { p: PatternInfo; roles: Record<string, AgentId[]> }) {
+function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]> }) {
   return (
     <div class="team">
       {p.roles.map((role) => {
@@ -384,7 +395,7 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, AgentId[]> }
                 {role.multiple ? <span class="rd"> · pick several</span> : null}
               </div>
               <div class="rd">{role.description}</div>
-              {selected.length ? <RoleModels p={p} roleId={role.id} agents={selected} /> : null}
+              {selected.some((id) => id !== "auto") ? <RoleModels p={p} roleId={role.id} agents={selected.filter((id): id is AgentId => id !== "auto")} /> : null}
             </div>
             <div class="pills">
               {agents.value.map((a) => {
@@ -403,6 +414,18 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, AgentId[]> }
                   </button>
                 );
               })}
+              <button
+                type="button"
+                class="pill auto"
+                aria-pressed={selected.includes("auto")}
+                title="code-flow picks an installed agent when the run starts, skipping plans that are near their usage limit"
+                onClick={() => {
+                  const on = selected.includes("auto");
+                  setRoles(p.id, role.id, role.multiple ? (on ? selected.filter((x) => x !== "auto") : [...selected, "auto"]) : ["auto"]);
+                }}
+              >
+                Auto
+              </button>
               {role.optional ? (
                 <button type="button" class="pill none" aria-pressed={!selected.length} onClick={() => setRoles(p.id, role.id, [])}>
                   Skip
@@ -420,7 +443,7 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, AgentId[]> }
   );
 }
 
-function teamSentence(p: PatternInfo, roles: Record<string, AgentId[]>): string {
+function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>): string {
   const one = (r: string) => (roles[r]?.[0] ? SHORT[roles[r]![0]!] : "—");
   const many = (r: string) => {
     const n = (roles[r] ?? []).map((id) => SHORT[id]);
@@ -440,6 +463,8 @@ function teamSentence(p: PatternInfo, roles: Record<string, AgentId[]>): string 
       return `${one("supervisor")} splits the work → ${many("workers")} build the parts in parallel → ${one("supervisor")} merges and reviews${doneWhen}`;
     case "tdd":
       return `${one("tester")} writes tests → ${one("builder")} makes them pass → ${one("tester")} tries to break it${doneWhen}`;
+    case "council":
+      return `${many("reviewers")} review on their own, read-only → ${one("chair")} merges what they found · nothing is changed or posted without you`;
     case "loop": {
       const w = roles.workers ?? [];
       const handoff = w.length > 1 ? `, handing over to ${w.slice(1).map((id) => SHORT[id]).join(", then ")} if stuck` : "";
@@ -510,16 +535,17 @@ function RoleModels({ p, roleId, agents: ids }: { p: PatternInfo; roleId: string
 }
 
 // ---------------------------------------------------------------- settings
-function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, AgentId[]> }) {
+function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]> }) {
   const info = repoInfo.value;
-  const used = new Set(Object.values(roles).flat());
+  const used = new Set(Object.values(roles).flat().filter((id): id is AgentId => id !== "auto"));
   const models = [...used]
     .map((id) => {
       const s = agentSettings.value[id];
       return s?.model || s?.effort ? `${SHORT[id]}: ${[s.model, s.effort].filter(Boolean).join(" ")}` : null;
     })
     .filter(Boolean);
-  const baseLabel = baseRef.value || (info?.current ? `HEAD (${info.current})` : "HEAD");
+  const fromPr = source.value?.kind === "pr" ? source.value : null;
+  const baseLabel = fromPr ? `PR #${fromPr.number}'s branch` : baseRef.value || (info?.current ? `HEAD (${info.current})` : "HEAD");
   const opts = optionsFor(p);
   return (
     <details class="settings">
@@ -535,7 +561,7 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, AgentId[
             <label class="lbl" for="baseRef">
               Start from branch
             </label>
-            <select class="field" id="baseRef" value={baseRef.value} onChange={(e) => (baseRef.value = e.currentTarget.value)}>
+            <select class="field" id="baseRef" value={baseRef.value} disabled={!!fromPr} title={fromPr ? `Runs from a PR start from the PR's branch (${fromPr.headRefName})` : undefined} onChange={(e) => (baseRef.value = e.currentTarget.value)}>
               <option value="">{info?.current ? `Current HEAD (${info.current})` : "Current HEAD"}</option>
               {(
                 [

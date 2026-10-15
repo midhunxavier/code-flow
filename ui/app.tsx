@@ -1,7 +1,8 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Composer, FilesPanel } from "./composer.js";
 import { RunView } from "./run.js";
 import { Review } from "./review.js";
+import { GitHubPicker } from "./github.js";
 import { ago, api, baseName, showToast, STATUS_TEXT, store, toast } from "./lib.js";
 import {
   agents,
@@ -23,6 +24,7 @@ import {
   runState,
   setRepo,
   waitingCount,
+  watchNeedingYou,
 } from "./state.js";
 import type { DirListing, RunSummary } from "./types.js";
 
@@ -50,6 +52,7 @@ export function App() {
         {view === "composer" ? <FilesPanel open={showFiles} /> : null}
       </div>
       <FolderPicker />
+      <GitHubPicker />
       {healthOpen.value ? <HealthDialog /> : null}
       {toast.value ? (
         <div class="toast" role="status" key={toast.value.id}>
@@ -134,7 +137,12 @@ export function notifyFinished(run: RunSummary) {
     stopped: "stopped at a limit",
     interrupted: "was interrupted",
   };
-  const title = run.awaiting ? `code-flow: ${run.awaiting.title.toLowerCase()}` : `code-flow: run ${verbs[run.status] ?? run.status}`;
+  const watch = run.status !== "running" && !run.awaiting ? watchNeedingYou(run) : undefined;
+  const title = run.awaiting
+    ? `code-flow: ${run.awaiting.title.toLowerCase()}`
+    : watch
+      ? `code-flow: PR needs you — ${watch.detail}`
+      : `code-flow: run ${verbs[run.status] ?? run.status}`;
   const n = new Notification(title, { body: run.task.split("\n")[0], tag: run.id });
   n.onclick = () => {
     window.focus();
@@ -283,18 +291,23 @@ function FolderPicker() {
   const [status, setStatus] = useState("");
   const [hidden, setHidden] = useState(false);
   const dialog = useDialog(pickerOpen.value, () => (pickerOpen.value = false));
+  // Only the latest listing counts: a slow earlier one must not replace a path you just typed.
+  const latest = useRef(0);
 
   const browse = async (target?: string, showHidden = hidden) => {
+    const request = ++latest.current;
     setStatus("Loading…");
     const q = new URLSearchParams();
     if (target) q.set("path", target);
     if (showHidden) q.set("hidden", "1");
     try {
       const d = await api<DirListing>(`/api/fs?${q}`);
+      if (request !== latest.current) return;
       setDir(d);
       setPath(d.path);
       setStatus(d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked GIT, or type a path");
     } catch (err) {
+      if (request !== latest.current) return;
       setStatus((err as Error).message);
       if (!dir) void browse(undefined, showHidden);
     }

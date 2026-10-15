@@ -43,7 +43,7 @@ export const ago = (ts: number) => {
 };
 export const duration = (ms: number) => (ms < 60000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`);
 
-export const SHORT: Record<AgentId, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
+export const SHORT: Record<AgentId | "auto", string> = { claude: "Claude", codex: "Codex", agy: "Antigravity", auto: "Auto" };
 export const FLOWS: Record<string, string> = {
   pipeline: "One plans, one builds, another reviews",
   loop: "Fix → run check → repeat until green",
@@ -51,6 +51,7 @@ export const FLOWS: Record<string, string> = {
   debate: "Propose → Debate → Synthesize",
   supervisor: "Split → Build in parallel → Integrate",
   tdd: "Tests first → Implement → Verify",
+  council: "Review independently → Chair merges",
 };
 export const STATUS_TEXT: Record<string, string> = {
   running: "Running",

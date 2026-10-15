@@ -98,6 +98,18 @@ if (prompt.includes('"subtasks"')) {
   answer = json({ test_command: "node --test spec.test.mjs", test_files: ["spec.test.mjs"] });
 } else if (prompt.includes('"verdict": "pass" | "fail"')) {
   answer = json({ verdict: "pass", failures: [] });
+} else if (prompt.includes('"raised_by"')) {
+  // Review council chair: merge the reviewers' findings.
+  answer = json({
+    verdict: "changes_requested",
+    summary: "Two reviewers found the same off-by-one.",
+    findings: [
+      { severity: "low", file: "README.md", problem: "Typo", fix: "Fix the typo", raised_by: ["B"] },
+      { severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use < instead of <=", raised_by: ["A", "B"] },
+    ],
+  });
+} else if (prompt.includes("Other reviewers are reviewing the same changes")) {
+  answer = json({ verdict: "changes_requested", issues: [{ severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use <" }] });
 } else if (prompt.includes('"verdict": "approve" | "changes_requested"')) {
   // State lives outside the worktree: read-only steps have their file changes reverted.
   const marker = `${process.env.CODEFLOW_HOME}/.reviewed-once`;

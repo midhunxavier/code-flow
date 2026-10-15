@@ -143,6 +143,33 @@ Verdicts, judge picks, subtask lists and test specs are **schema-constrained**: 
 
 Judging in a race is blind: no author summaries, a shuffled order (seeded per run, so a resumed run replays identically), and an optional **panel** of judges that vote. Pick vendors that aren't competing; the UI suggests one, and the log warns when a judge also competes.
 
+## Start from where the work lives
+
+Runs can start from GitHub instead of a blank task box, using GitHub CLI (`gh`) with your own login:
+
+- **Templates** above the task box set up common jobs:
+
+  | Template | Pattern | Starts from |
+  |---|---|---|
+  | **Fix an issue** | Plan → Build → Review | an issue; the PR you open later says `Closes #N` |
+  | **Fix failing CI** | Plan → Build → Review | a PR, with its failing checks and their job logs (`gh run view --log-failed`) given to the agents |
+  | **Review a PR as a council** | Review council | a PR |
+  | **Upgrade a dependency** | Plan → Build → Review | the task box (replace `PACKAGE`) |
+
+- **⇄ GitHub** in the task box starts from any open issue or PR:
+  - An **issue's** title and description go to every agent with the task.
+  - A **PR's** branch is fetched (`pull/N/head`, so forks work too) and becomes the run's base. Its description goes to the agents, and its changes are compared against the PR's target branch.
+  - When a run came from a PR, a result has **Push to PR #N**. It pushes to the PR's branch and is never forced, so it fails if someone else pushed in the meantime. You can't push to a PR from a fork; you can still review it.
+- **Review council** is a read-only pattern: several agents review the same changes independently, and a chair merges their findings.
+  - Reviewers are anonymous to the chair ("Reviewer A/B"), and findings several reviewers agree on rank first.
+  - Nothing is changed. **Post to PR #N** posts the review as a comment, and only when you click it.
+- **Follow-through** (**Watch PR**) works on a result that has a PR. code-flow checks it every minute:
+  - **Failing CI:** the failed jobs' logs go to the agent you picked, which fixes the cause. code-flow commits and pushes to the PR.
+  - **New comments** from the repo's owners, members or collaborators go to the agent in the same way. Anyone else's comments are logged and ignored, and comments that were there before you started watching are never acted on.
+  - **Stops:** after the number of fixes you allow, if someone else pushed to the PR, or when the PR is merged or closed. It then shows under *Needs you* with a notification.
+  - It **never merges**.
+- **Auto** in a role picks an installed agent when the run starts. It skips plans that are at 90% or more of a usage window or recently hit a rate limit (Claude reports its windows; the others report only when they're limited). The pick is written to the run's activity log.
+
 ## Talking to a run
 
 Runs are conversations, not fire-and-forget jobs:
@@ -193,6 +220,7 @@ git worktree add -b <prefix>/<name> <repo>/.worktrees/<run-id>/<name> <base>
 | **Debate → Synthesize → Build** | debaters (2+), synthesizer, builder (optional) | Independent proposals → critique rounds where each debater sees the others' proposals and revises → synthesizer merges and records each decision → builder implements | Architecture, API design, big refactors. Leave the builder empty for design only |
 | **Supervisor → Workers** | supervisor, workers (1+) | Supervisor splits the task into parallel subtasks and assigns workers → workers build on separate branches → branches merge into an integration branch; the supervisor resolves conflicts, reviews and fixes | Larger tasks that split cleanly (backend / frontend / tests) |
 | **Test-first (adversarial tester)** | tester, builder | Tester writes failing tests → builder makes them pass without editing them (code-flow flags it if it does) → tester runs them, adds edge-case tests, and sends failures back | Behavior you can specify with tests. Stops an agent from grading its own homework |
+| **Review council** | reviewers (1+), chair | Reviewers review the PR's or branch's changes independently, read-only → the chair merges the findings without knowing who wrote what, and agreement ranks first | Reviewing a PR before merging. Nothing is changed or posted without you |
 
 Every pattern works with any mix of agents. A good default is to have a **different vendor review or judge** than the one that wrote the code.
 
@@ -204,8 +232,12 @@ scripts/build-ui.mjs     bundles the UI into one self-contained public/index.htm
 src/server.ts            HTTP API + SSE on 127.0.0.1 (Host/Origin checked)
 src/store.ts             run logs and the replay journal on disk
 src/ship.ts              per-file diffs, safe merges, pull requests, worktree cleanup
+src/github.ts            gh: issues, PRs, checks, failed-job logs, comments, pushes
+src/watch.ts             PR follow-through: polls watched PRs and sends CI failures and comments back
+src/routing.ts           "Auto" roles: pick an agent whose plan has room
+src/templates.ts         starting points (fix an issue, fix failing CI, council review…)
 src/engine.ts            RunManager, TeamContext (ask / worktree / commit / diff), event log
-src/patterns/*.ts        the five team patterns, written against TeamContext
+src/patterns/*.ts        the team patterns, written against TeamContext
 src/adapters/*.ts        AgentAdapter per CLI → normalized AgentEvent stream
 src/git.ts               worktrees, branches, commits, diffs, merges
 src/repo-tree.ts         file tree + search for the Files panel
@@ -234,6 +266,7 @@ Implement `AgentAdapter` in `src/adapters/`, then register it in `src/adapters/i
 | `CODEFLOW_STEP_TIMEOUT_MIN` | `30` | Timeout per agent step |
 | `CODEFLOW_MAX_DIFF_CHARS` | `60000` | Diffs longer than this are truncated before being passed to another agent |
 | `CODEFLOW_CLAUDE_WRITE_TOOLS` | build/test allow-list | Comma-separated Claude tool rules for write mode, e.g. `Edit,Bash` |
+| `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments |
 | `CODEFLOW_AGY_SKIP_PERMISSIONS` | `1` | Set to `0` to stop passing `--dangerously-skip-permissions` to agy; then configure `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` |
 
 ## Tests
@@ -243,7 +276,7 @@ npm test           # unit + workflow tests against fake CLIs
 npm run test:e2e   # the real UI in Chrome (headless) against a server with fake agents
 ```
 
-The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota. The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, test tampering detection, and the guarantee that your checkout is untouched.
+The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota. A fake `gh` keeps issues, PRs, checks and comments in a JSON file and pushes to a local bare repository, so the GitHub flows (fix CI → push → watch → fix again) are tested without touching GitHub. The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, test tampering detection, and the guarantee that your checkout is untouched.
 
 ## Caveats and next steps
 
@@ -252,6 +285,6 @@ The suite runs every pattern end to end against fake `claude` / `codex` / `agy` 
 - Claude's write mode can run allow-listed commands such as `npm`, `node` and `make`, and those can run arbitrary project scripts. Only run it on repos you trust. Codex is additionally confined by its own sandbox.
 - Next steps worth doing:
   - Use `codex app-server` instead of `exec` for mid-turn steering and real approvals.
-  - Add triggers: scheduled loops, and CI or GitHub events that start runs. Only after runs are saved to disk.
-  - Track quota per vendor and route work to whichever plan has headroom.
-  - Add a "council review" pattern for existing PRs.
+  - Add triggers: scheduled loops, and CI or GitHub events that start runs.
+  - Read PR line comments (review threads), not just conversation comments and review summaries.
+  - Linear as a source, next to GitHub issues.

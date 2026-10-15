@@ -19,8 +19,13 @@ import { detectCheckCommand } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
 import { listBranches, repoRoot, worktreeRoot } from "./git.js";
+import { listIssues, listPullRequests } from "./github.js";
+import { resolveAuto } from "./routing.js";
+import { templates } from "./templates.js";
+import { PrWatcher } from "./watch.js";
 
 const manager = new RunManager(findPattern);
+const watcher = new PrWatcher(manager);
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
 const HOST = "127.0.0.1";
 const allowedHosts = new Set([`${HOST}:${PORT}`, `localhost:${PORT}`]);
@@ -87,13 +92,21 @@ function describePattern(p: Pattern) {
   return rest;
 }
 
-async function validateRoles(pattern: Pattern, input: unknown): Promise<Record<string, AgentId[]>> {
+/** Who fills each role; "auto" picks an installed agent whose plan has room (see routing.ts). */
+async function validateRoles(pattern: Pattern, input: unknown): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const requested: Record<string, string[]> = {};
+  for (const spec of pattern.roles) {
+    const value = raw[spec.id];
+    const list = (Array.isArray(value) ? value : value ? [value] : []).filter((v): v is string => v === "auto" || isAgentId(v));
+    requested[spec.id] = spec.multiple ? list.slice(0, 6) : list.slice(0, 1);
+  }
+  const installed = new Set((await agentAvailability()).filter((a) => a.available).map((a) => a.id));
+  const resolved = resolveAuto(requested, manager.quota, installed);
   const roles: Record<string, AgentId[]> = {};
   const needed = new Set<AgentId>();
   for (const spec of pattern.roles) {
-    const value = raw[spec.id];
-    const list = (Array.isArray(value) ? value : value ? [value] : []).filter(isAgentId);
+    const list = resolved.roles[spec.id] ?? [];
     const agents = spec.multiple ? [...new Set(list)] : list.slice(0, 1);
     if (agents.length === 0 && !spec.optional) throw new HttpError(400, `Pick an agent for "${spec.label}"`);
     agents.forEach((a) => needed.add(a));
@@ -104,7 +117,17 @@ async function validateRoles(pattern: Pattern, input: unknown): Promise<Record<s
       throw new HttpError(400, `${adapters[agent].displayName} (\`${adapters[agent].binary}\`) is not installed or not on PATH`);
     }
   }
-  return roles;
+  return { roles, notes: resolved.notes };
+}
+
+/** { kind: "issue" | "pr", number, ciLogs? } — where a run starts from on GitHub. */
+function validateSource(input: unknown): { kind: "issue" | "pr"; number: number; ciLogs?: boolean } | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const raw = input as Record<string, unknown>;
+  const number = Number(raw.number);
+  if (raw.kind !== "issue" && raw.kind !== "pr") throw new HttpError(400, "Source must be an issue or a pull request");
+  if (!Number.isInteger(number) || number < 1) throw new HttpError(400, "Source needs an issue or PR number");
+  return { kind: raw.kind, number, ciLogs: raw.ciLogs === true };
 }
 
 /** Per-role model/effort overrides: { role: { agent: { model, effort } } }, each validated like agentSettings. */
@@ -225,6 +248,11 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return send(res, 200, listing);
   }
   if (req.method === "GET" && parts[1] === "doctor") return send(res, 200, await doctor(manager.quota));
+  if (req.method === "GET" && parts[1] === "templates") return send(res, 200, templates);
+  if (req.method === "GET" && parts[1] === "github" && (parts[2] === "issues" || parts[2] === "prs")) {
+    const repo = await requestedRepo(url);
+    return send(res, 200, await attempt<unknown[]>(() => (parts[2] === "issues" ? listIssues(repo) : listPullRequests(repo))));
+  }
   if (req.method === "GET" && parts[1] === "repo-config") {
     const repo = await requestedRepo(url);
     return send(res, 200, await readRepoConfig(repo));
@@ -260,6 +288,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
         const repo = String(body.repo ?? "").trim();
         if (!task) throw new HttpError(400, "Describe the task");
         if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
+        const { roles, notes } = await validateRoles(pattern, body.roles);
         const run = await manager
           .start({
             pattern,
@@ -280,7 +309,9 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
                 throw new HttpError(400, (err as Error).message);
               }
             })(),
-            roles: await validateRoles(pattern, body.roles),
+            source: validateSource(body.source),
+            routing: notes,
+            roles,
             options: validateOptions(pattern, body.options),
           })
           .catch((err: Error) => {
@@ -377,12 +408,32 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       const prUrl = await attempt(() => manager.pullRequest(run.id, { branch: String(body.branch ?? ""), into: String(body.into ?? "") }));
       return send(res, 200, { url: prUrl });
     }
+    if (req.method === "POST" && parts[3] === "push-pr") {
+      const body = await readJson(req);
+      return send(res, 200, await attempt(() => manager.pushToPr(run.id, { branch: String(body.branch ?? "") })));
+    }
+    if (req.method === "POST" && parts[3] === "post-review") {
+      return send(res, 200, { url: await attempt(() => manager.postReview(run.id)) });
+    }
+    if (req.method === "POST" && parts[3] === "watch") {
+      const body = await readJson(req);
+      const branch = String(body.branch ?? "");
+      if (body.stop) {
+        await attempt(async () => manager.unwatchPr(run.id, branch));
+        return send(res, 200, { watching: false });
+      }
+      if (!isAgentId(body.agent)) throw new HttpError(400, "Pick the agent that fixes problems");
+      const watch = await attempt(async () => manager.watchPr(run.id, { branch, agent: body.agent, maxFixes: Number(body.maxFixes) || undefined }));
+      void watcher.poll();
+      return send(res, 200, watch);
+    }
   }
 
   throw new HttpError(404, "Not found");
 }
 
 await manager.load();
+watcher.start();
 
 const server = createServer((req, res) => {
   handle(req, res).catch((err: Error) => {
@@ -419,6 +470,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     stopping = true;
     console.log("\nStopping code-flow: interrupting running runs so they can be resumed…");
     server.close();
+    watcher.stop();
     await manager.shutdown();
     process.exit(0);
   });

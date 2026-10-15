@@ -30,3 +30,12 @@ export const SUBTASKS_SCHEMA = obj({
 export const TEST_SPEC_SCHEMA = obj({ test_command: str, test_files: strings });
 
 export const TEST_VERDICT_SCHEMA = obj({ verdict: { type: "string", enum: ["pass", "fail"] }, failures: strings });
+
+export const COUNCIL_SCHEMA = obj({
+  verdict: { type: "string", enum: ["approve", "changes_requested"] },
+  summary: str,
+  findings: {
+    type: "array",
+    items: obj({ severity: { type: "string", enum: ["high", "medium", "low"] }, file: str, problem: str, fix: str, raised_by: strings }),
+  },
+});

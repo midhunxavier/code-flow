@@ -64,7 +64,9 @@ export const attachments = signal<Attachment[]>([]);
 export const contextError = signal("");
 export const patternId = signal(store.get("pattern") ?? "pipeline");
 export const pattern = computed(() => patterns.value.find((p) => p.id === patternId.value) ?? patterns.value[0]);
-export const roleSel = signal<Record<string, Record<string, AgentId[]>>>(store.json("roleSel", {}));
+/** A role is filled by an agent, or "auto": code-flow picks one whose plan has room. */
+export type RoleValue = AgentId | "auto";
+export const roleSel = signal<Record<string, Record<string, RoleValue[]>>>(store.json("roleSel", {}));
 export const optionValues = signal<Record<string, Record<string, number | boolean>>>({});
 export const agentSettings = signal<AgentSettings>(store.json("agentSettings", {}));
 export const baseRef = signal(store.get("baseRef") ?? "");
@@ -128,7 +130,7 @@ export function setPattern(id: string) {
   patternId.value = id;
   store.set("pattern", id);
 }
-export function setRoles(patternId: string, roleId: string, ids: AgentId[]) {
+export function setRoles(patternId: string, roleId: string, ids: RoleValue[]) {
   roleSel.value = { ...roleSel.value, [patternId]: { ...(roleSel.value[patternId] ?? {}), [roleId]: ids } };
   store.set("roleSel", JSON.stringify(roleSel.value));
 }
@@ -150,20 +152,20 @@ export function setLimits(patch: Partial<{ maxMinutes: number; maxSteps: number 
 }
 
 /** Who fills each role: saved choice, else the pattern default — only installed agents. */
-export function rolesFor(p: PatternInfo | undefined): Record<string, AgentId[]> {
+export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]> {
   if (!p) return {};
   const saved = roleSel.value[p.id] ?? {};
   const firstAvailable = agents.value.find((a) => a.available)?.id;
-  const roles: Record<string, AgentId[]> = {};
+  const roles: Record<string, RoleValue[]> = {};
   for (const role of p.roles) {
-    let ids = (saved[role.id] ?? role.default).filter(available);
+    let ids = (saved[role.id] ?? role.default).filter((id) => id === "auto" || available(id));
     if (!role.multiple) ids = ids.slice(0, 1);
     if (!ids.length && !role.optional && !saved[role.id] && firstAvailable) ids = [firstAvailable];
     roles[role.id] = ids;
   }
   // A race is fairer when the judge isn't also competing: default to a vendor that isn't.
   if (p.id === "race" && !saved.judge) {
-    const outsider = agents.value.find((a) => a.available && !roles.contestants?.includes(a.id));
+    const outsider = agents.value.find((a) => a.available && !roles.contestants?.includes(a.id) && !roles.contestants?.includes("auto"));
     if (outsider) roles.judge = [outsider.id];
   }
   return roles;
@@ -255,7 +257,44 @@ export function watchAllRuns(onFinished: (run: RunSummary) => void) {
     upsertRun(run);
     if (before?.status === "running" && run.status !== "running") onFinished(run);
     else if (run.awaiting && !before?.awaiting) onFinished(run); // paused for your decision
+    else if (watchNeedingYou(run) && !watchNeedingYou(before)) onFinished(run); // a PR watch handed back to you
   };
+}
+
+/** A PR watch that gave up and handed the PR back to you. */
+export const watchNeedingYou = (run?: RunSummary) => Object.values(run?.watches ?? {}).find((w) => w.state === "needs-you");
+
+// ---------------------------------------------------------------- GitHub
+export interface Template {
+  id: string;
+  name: string;
+  description: string;
+  pattern: string;
+  task: string;
+  needs?: "issue" | "pr";
+  ciLogs?: boolean;
+}
+export interface SourcePick {
+  kind: "issue" | "pr";
+  number: number;
+  title: string;
+  url: string;
+  headRefName?: string;
+  baseRefName?: string;
+  isCrossRepository?: boolean;
+  ciLogs?: boolean;
+}
+export const templates = signal<Template[]>([]);
+/** The issue or PR the next run starts from. */
+export const source = signal<SourcePick | null>(null);
+/** The GitHub picker, and the template waiting for its pick. */
+export const ghPicker = signal<{ kind: "issue" | "pr"; template?: Template } | null>(null);
+
+export function applyTemplate(t: Template, pick?: SourcePick) {
+  setPattern(t.pattern);
+  const fill = (text: string) => (pick ? text.replace(/\{number\}/g, String(pick.number)).replace(/\{title\}/g, pick.title) : text);
+  setTask(fill(t.task));
+  source.value = pick ? { ...pick, ciLogs: !!t.ciLogs } : null;
 }
 
 export const markSeen = (id: string) => post(`/api/runs/${id}/seen`).catch(() => {});

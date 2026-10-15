@@ -3,7 +3,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,7 @@ let server: ChildProcess;
 let browser: Browser;
 let page: Page;
 let repo: string;
+let ghState: string;
 
 before(async () => {
   repo = mkdtempSync(join(tmpdir(), "codeflow-e2e-repo-"));
@@ -26,6 +27,26 @@ before(async () => {
   writeFileSync(join(repo, "check.mjs"), 'import { readdirSync } from "node:fs"; process.exit(readdirSync(".").some((f) => f.startsWith("claude-")) ? 0 : 1);\n');
   git("add", ".");
   git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+  // A local "GitHub": a bare origin with PR #1, and the fake gh's state.
+  const origin = mkdtempSync(join(tmpdir(), "codeflow-e2e-origin-"));
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main"], { cwd: origin });
+  git("remote", "add", "origin", origin);
+  git("push", "-q", "origin", "main");
+  git("checkout", "-q", "-b", "feature");
+  writeFileSync(join(repo, "feature.txt"), "for (i = 0; i <= n; i++)\n");
+  git("add", ".");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "feature");
+  git("push", "-q", "origin", "feature", "feature:refs/pull/1/head");
+  git("checkout", "-q", "main");
+  git("branch", "-q", "-D", "feature");
+  ghState = join(mkdtempSync(join(tmpdir(), "codeflow-e2e-gh-")), "state.json");
+  writeFileSync(
+    ghState,
+    JSON.stringify({
+      issues: [],
+      prs: { 1: { number: 1, title: "Add feature loop", body: "", url: "https://github.com/o/r/pull/1", headRefName: "feature", baseRefName: "main", author: { login: "alice" }, isDraft: false, isCrossRepository: false, state: "OPEN", comments: [] } },
+    }),
+  );
 
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
   server = spawn("npx", ["tsx", "src/server.ts"], {
@@ -35,8 +56,9 @@ before(async () => {
       PORT: String(PORT),
       CODEFLOW_HOME: mkdtempSync(join(tmpdir(), "codeflow-e2e-home-")),
       PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`,
+      FAKE_GH_STATE: ghState,
     },
-    stdio: "ignore",
+    stdio: process.env.E2E_DEBUG ? "inherit" : "ignore",
   });
   for (let i = 0; i < 100; i++) {
     if (await fetch(`${BASE}/api/agents`).then((r) => r.ok, () => false)) break;
@@ -109,4 +131,23 @@ test("approve the plan from the UI: ask for changes, then approve", async () => 
   await page.getByRole("button", { name: "✓ Approve" }).click();
   await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
   assert.equal(await page.locator(".tl-step", { hasText: "Revise the plan (1)" }).count(), 1);
+});
+
+test("start from a PR with a template: the council's findings are ranked, and posting takes your click", async () => {
+  await page.goto(BASE);
+  await page.getByRole("button", { name: /Review a PR as a council/ }).click();
+  await page.locator(".gh-item", { hasText: "Add feature loop" }).click();
+  assert.match(await page.getByLabel("Task", { exact: true }).inputValue(), /^Review pull request #1: Add feature loop/);
+  await page.locator(".chip-ctx.source", { hasText: "PR #1" }).waitFor();
+  await page.getByRole("button", { name: /^Start run/ }).click();
+
+  await page.locator(".council .badge", { hasText: "Changes requested" }).waitFor({ timeout: 30_000 });
+  assert.equal(await page.locator(".findings li").count(), 2);
+  assert.match(await page.locator(".findings li").first().innerText(), /2 reviewers agree/);
+  assert.equal(JSON.parse(readFileSync(ghState, "utf8")).prs[1].comments.length, 0, "nothing posted yet");
+
+  page.once("dialog", (d) => void d.accept());
+  await page.getByRole("button", { name: "Post to PR #1" }).click();
+  await page.getByText("Posted to PR #1").waitFor();
+  assert.match(JSON.parse(readFileSync(ghState, "utf8")).prs[1].comments.at(-1).body, /Off-by-one in the loop/);
 });

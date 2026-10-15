@@ -19,9 +19,10 @@ import {
   setRepo,
   setTask,
   setupCmd,
+  source,
   upsertRun,
 } from "./state.js";
-import type { AgentEvent, AgentId, Artifact, MergeOutcome, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
+import type { AgentEvent, AgentId, Artifact, FollowUp, MergeOutcome, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
 const modelNote = (run: RunSummary | null, id?: AgentId) =>
@@ -224,6 +225,11 @@ function RunMeta({ run }: { run: RunSummary }) {
   return (
     <div class="run-meta">
       <span title={run.repo}>📁 {baseName(run.repo)}</span>
+      {run.source ? (
+        <a class="src-link" href={run.source.url} target="_blank" rel="noreferrer" title={run.source.title}>
+          {run.source.kind === "issue" ? "◎ issue" : "⇄ PR"} #{run.source.number} ↗
+        </a>
+      ) : null}
       <span>
         from {run.baseLabel} @ {run.baseRef.slice(0, 7)}
       </span>
@@ -272,6 +278,8 @@ function ResultCard({ run, steps }: { run: RunSummary; steps: Step[] }) {
         <div class="rb">
           <div class="ev error">{run.error}</div>
         </div>
+      ) : run.review ? (
+        <ReviewCard run={run} />
       ) : run.summary ? (
         <div class="rb">
           <Markdown text={run.summary} />
@@ -283,7 +291,8 @@ function ResultCard({ run, steps }: { run: RunSummary; steps: Step[] }) {
           {run.followUps.map((f) => (
             <div key={f.id} class={`followup ${f.status}`}>
               <span class={`ic ${f.status === "done" ? "done" : f.status === "failed" ? "failed" : ""}`}>{f.status === "done" ? "✓" : f.status === "failed" ? "✕" : "…"}</span>
-              <AgentTag id={f.agent} /> {f.kind === "resolve-conflicts" ? `resolve conflicts with ${f.mergeFrom}` : "review comments"} in {f.worktree}
+              <AgentTag id={f.agent} /> {followUpLabel(f)} in {f.worktree}
+              {f.pushed ? <span class="ok"> · pushed {f.pushed.slice(0, 7)}</span> : f.pushError ? <span class="note"> · push failed: {f.pushError}</span> : null}
               {f.checkPassed === false ? <span class="note"> · check fails</span> : f.checkPassed ? <span class="ok"> · check passes</span> : null}
             </div>
           ))}
@@ -300,12 +309,98 @@ function ResultCard({ run, steps }: { run: RunSummary; steps: Step[] }) {
   );
 }
 
+const followUpLabel = (f: FollowUp) =>
+  f.kind === "resolve-conflicts"
+    ? `resolve conflicts with ${f.mergeFrom}`
+    : f.kind === "reply"
+      ? "your reply"
+      : f.kind === "ci-fix"
+        ? "fix failing CI"
+        : f.from
+          ? `comments from ${f.from}`
+          : "review comments";
+
+/** A review council's result: findings ranked by how many reviewers agree, and a post button. */
+function ReviewCard({ run }: { run: RunSummary }) {
+  const review = run.review!;
+  const [busy, setBusy] = useState(false);
+  const pr = run.source?.kind === "pr" ? run.source : undefined;
+  return (
+    <div class="rb council">
+      <div class="council-head">
+        <span class={`badge ${review.verdict === "approve" ? "ok" : "warn"}`}>{review.verdict === "approve" ? "Approve" : "Changes requested"}</span>
+        <span class="help">
+          {review.reviewers.map((r, i) => (
+            <span key={r.agent}>
+              {i ? " · " : ""}
+              <AgentTag id={r.agent} /> {r.verdict === "approve" ? "approves" : `${r.issues} issue${r.issues === 1 ? "" : "s"}`}
+            </span>
+          ))}
+        </span>
+        <span class="spacer" />
+        {pr ? (
+          review.postedTo ? (
+            <a class="badge ok" href={review.postedTo} target="_blank" rel="noreferrer">
+              Posted to PR #{pr.number} ↗
+            </a>
+          ) : (
+            <button
+              class="btn small primary"
+              disabled={busy || run.status === "running"}
+              onClick={async () => {
+                if (!confirm(`Post this review as a comment on PR #${pr.number}? Everyone with access to the PR will see it.`)) return;
+                setBusy(true);
+                try {
+                  await post(`/api/runs/${run.id}/post-review`);
+                  showToast("Review posted");
+                } catch (err) {
+                  showToast((err as Error).message, 5000);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? "Posting…" : `Post to PR #${pr.number}`}
+            </button>
+          )
+        ) : null}
+        <button class="btn small" onClick={() => copy(review.markdown, "Review copied as Markdown")}>
+          Copy
+        </button>
+      </div>
+      {review.summary ? <p>{review.summary}</p> : null}
+      {review.findings.length ? (
+        <ol class="findings">
+          {review.findings.map((f, i) => (
+            <li key={i} class={`sev-${f.severity}`}>
+              <div>
+                <span class={`sev ${f.severity}`}>{f.severity}</span> <code>{f.file || "general"}</code> {f.problem}
+              </div>
+              <div class="help">Fix: {f.fix}</div>
+              <div class="raised">
+                {f.raisedBy.length > 1 ? <b>{f.raisedBy.length} reviewers agree · </b> : null}
+                {f.raisedBy.map((a) => (
+                  <AgentTag key={a} id={a} />
+                ))}
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p class="help">No problems found.</p>
+      )}
+    </div>
+  );
+}
+
 function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Artifact; steps: Step[] }) {
   const [panel, setPanel] = useState<"merge" | "pr" | null>(null);
   const worktree = (run.worktrees ?? []).find((w) => w.branch === artifact.branch);
   const merged = run.merges?.filter((m) => m.branch === artifact.branch) ?? [];
   const pr = run.prs?.[artifact.branch];
   const canReview = run.status === "done" && !!worktree;
+  const fromPr = run.source?.kind === "pr" ? run.source : undefined;
+  const [pushing, setPushing] = useState(false);
   return (
     <div class="artifact">
       <div class="ah">
@@ -332,7 +427,28 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
               Merge…
             </button>
           ) : null}
-          {worktree ? (
+          {worktree && fromPr && !fromPr.isCrossRepository && run.status !== "running" ? (
+            <button
+              class="btn small primary"
+              disabled={pushing}
+              title={`Push this branch to ${fromPr.headRefName}, updating PR #${fromPr.number} (never forced)`}
+              onClick={async () => {
+                if (!confirm(`Push ${artifact.branch} to ${fromPr.headRefName}? This updates PR #${fromPr.number} on GitHub.`)) return;
+                setPushing(true);
+                try {
+                  await post(`/api/runs/${run.id}/push-pr`, { branch: artifact.branch });
+                  showToast(`Pushed to PR #${fromPr.number}`);
+                } catch (err) {
+                  showToast((err as Error).message, 6000);
+                } finally {
+                  setPushing(false);
+                }
+              }}
+            >
+              {pushing ? "Pushing…" : `Push to PR #${fromPr.number}`}
+            </button>
+          ) : null}
+          {worktree && !fromPr ? (
             <button class="btn small" aria-pressed={panel === "pr"} onClick={() => setPanel(panel === "pr" ? null : "pr")}>
               Open PR…
             </button>
@@ -349,6 +465,62 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
       {worktree && existsHint(run) ? <WorkspaceTools run={run} worktree={worktree.name} /> : null}
       {panel === "merge" && worktree ? <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : null}
       {panel === "pr" ? <PrPanel run={run} branch={artifact.branch} /> : null}
+      {pr && worktree ? <WatchPanel run={run} branch={artifact.branch} steps={steps} worktree={worktree.name} /> : null}
+    </div>
+  );
+}
+
+const WATCH_TEXT: Record<string, string> = {
+  watching: "Watching",
+  fixing: "Fixing",
+  green: "CI green",
+  "needs-you": "Needs you",
+  closed: "PR closed",
+  stopped: "Not watching",
+};
+
+/** PR follow-through: fix failing CI and collaborators' comments, push; never merge. */
+function WatchPanel({ run, branch, steps, worktree }: { run: RunSummary; branch: string; steps: Step[]; worktree: string }) {
+  const watch = run.watches?.[branch];
+  const active = watch && ["watching", "fixing", "green"].includes(watch.state);
+  const [agent, setAgent] = useState<AgentId>(watch?.agent ?? lastAgentIn(steps, worktree) ?? "claude");
+  const [maxFixes, setMaxFixes] = useState(watch?.maxFixes ?? 3);
+  const call = (body: object) => post(`/api/runs/${run.id}/watch`, { branch, ...body }).catch((e) => showToast(e.message, 5000));
+  return (
+    <div class={`watch ${watch?.state ?? "off"}`}>
+      {watch ? (
+        <div class="row">
+          <span class={`badge ${watch.state === "green" ? "ok" : watch.state === "needs-you" ? "warn" : ""}`}>{WATCH_TEXT[watch.state]}</span>
+          <span class="detail">{watch.detail}</span>
+          {watch.checks ? (
+            <span class="help">
+              CI: {watch.checks.pass} ✓ · {watch.checks.fail} ✕{watch.checks.pending ? ` · ${watch.checks.pending} running` : ""}
+            </span>
+          ) : null}
+          <span class="help">
+            {watch.fixes}/{watch.maxFixes} fixes{watch.lastPolled ? ` · checked ${new Date(watch.lastPolled).toLocaleTimeString()}` : ""}
+          </span>
+          <span class="spacer" />
+          {active ? (
+            <button class="btn small" onClick={() => call({ stop: true })}>
+              Stop watching
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {!active && watch?.state !== "closed" ? (
+        <div class="row">
+          <span class="lbl">Follow through</span>
+          <span>When CI fails or a collaborator comments,</span>
+          <AgentPicker value={agent} onChange={setAgent} />
+          <span>fixes it and pushes — up to</span>
+          <input class="field inline num" type="number" min={1} max={10} value={maxFixes} onInput={(e) => setMaxFixes(Number(e.currentTarget.value) || 3)} />
+          <span>times. Never merges.</span>
+          <button class="btn small primary" onClick={() => call({ agent, maxFixes })}>
+            {watch ? "Watch again" : "Watch PR"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -890,6 +1062,18 @@ function editAndRerun(run: RunSummary) {
     checkCmd.value = run.loop?.check ?? "";
     setupCmd.value = run.loop?.setup ?? "";
     limits.value = { maxMinutes: run.loop?.maxMinutes ?? 60, maxSteps: run.loop?.maxSteps ?? 40 };
+    source.value = run.source
+      ? {
+          kind: run.source.kind,
+          number: run.source.number,
+          title: run.source.title,
+          url: run.source.url,
+          headRefName: run.source.headRefName,
+          baseRefName: run.source.baseRefName,
+          isCrossRepository: run.source.isCrossRepository,
+          ciLogs: !!run.source.ci,
+        }
+      : null;
   };
   route.value = { view: "composer" };
   if (run.repo !== repo.value) void setRepo(run.repo).then(restore);

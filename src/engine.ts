@@ -36,6 +36,7 @@ import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJso
 import { branchDiff, mergeInto, openPullRequest, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
+import { commentOnPr, loadSource, mergeBase, pushBranch, sourcePrompt, type RunSource } from "./github.js";
 
 /** Per-run staging folder (inside the run's worktree folder) for context files. */
 const STAGE_DIR = ".context";
@@ -126,8 +127,18 @@ export interface Run {
   followUps: FollowUp[];
   /** Result branches merged from the UI. */
   merges: { branch: string; into: string; commit: string; at: number }[];
-  /** Pull requests opened from the UI, by branch. */
+  /** Pull requests opened from the UI (or the PR the run started from, once pushed to), by branch. */
   prs: Record<string, string>;
+  /** The GitHub issue or pull request the run started from. */
+  source?: RunSource;
+  /** Commit the changes under review are compared against (a PR's merge base). */
+  reviewBase?: string;
+  /** A review council's merged review. */
+  review?: CouncilReview;
+  /** PRs code-flow keeps an eye on after they're opened, by result branch. */
+  watches: Record<string, PrWatch>;
+  /** How "Auto" roles were filled when the run started. */
+  routing?: string[];
   status: Status;
   createdAt: number;
   endedAt?: number;
@@ -156,16 +167,67 @@ export interface ApprovalAnswer {
 
 export interface FollowUp {
   id: string;
-  kind: "comments" | "reply" | "resolve-conflicts";
+  kind: "comments" | "reply" | "resolve-conflicts" | "ci-fix";
   worktree: string;
   agent: AgentId;
-  /** What to tell the agent (the user's comments), or the branch to merge for conflicts. */
+  /** What to tell the agent (comments, a reply, CI failures), or the branch to merge for conflicts. */
   message: string;
   mergeFrom?: string;
+  /** Who the comments are from, when it isn't you (e.g. "@alice on the pull request"). */
+  from?: string;
+  /** Push the result to this branch on origin afterwards (PR follow-through). */
+  push?: string;
+  /** The result branch whose PR watch asked for this follow-up. */
+  watch?: string;
   status: "pending" | "done" | "failed";
   result?: string;
   checkPassed?: boolean;
+  pushed?: string;
+  pushError?: string;
   at: number;
+}
+
+export interface CouncilFinding {
+  severity: "high" | "medium" | "low";
+  file: string;
+  problem: string;
+  fix: string;
+  /** Reviewers who raised it; more agreement ranks first. */
+  raisedBy: AgentId[];
+}
+
+export interface CouncilReview {
+  verdict: "approve" | "changes_requested";
+  summary: string;
+  findings: CouncilFinding[];
+  reviewers: { agent: AgentId; verdict: string; issues: number }[];
+  markdown: string;
+  /** Set when you posted it to the pull request. */
+  postedTo?: string;
+  postedAt?: number;
+}
+
+/**
+ * Follow-through on an open PR: failing CI and new comments from the repo's collaborators go
+ * back to `agent` as follow-ups, whose fixes are pushed to the PR. Never merges.
+ */
+export interface PrWatch {
+  branch: string;
+  pr: string;
+  /** Branch on origin that fixes are pushed to. */
+  remoteBranch: string;
+  agent: AgentId;
+  maxFixes: number;
+  fixes: number;
+  state: "watching" | "fixing" | "green" | "needs-you" | "closed" | "stopped";
+  detail: string;
+  checks?: { pass: number; fail: number; pending: number };
+  /** PR head commits already sent for a CI fix. */
+  fixedHeads: string[];
+  /** Comment ids already handled (or ignored); unset until the first poll. */
+  seenComments?: string[];
+  lastPolled?: number;
+  startedAt: number;
 }
 
 export interface LoopSettings {
@@ -380,9 +442,16 @@ export class TeamContext {
     this.run.verdict = verdict;
   }
 
-  /** The user's task plus the context they attached — what every agent should be given. */
+  /** The user's task plus its source (issue, PR) and attached context — what every agent is given. */
   get task() {
-    return this.run.task + contextPrompt(this.run.context);
+    return this.run.task + sourcePrompt(this.run.source) + contextPrompt(this.run.context);
+  }
+
+  /** Record a review council's result (shown as the run's review, postable to the PR). */
+  setReview(review: CouncilReview) {
+    const posted = this.run.review?.markdown === review.markdown ? this.run.review : undefined;
+    this.run.review = { ...review, postedTo: posted?.postedTo, postedAt: posted?.postedAt };
+    this.manager.emitRun(this.run);
   }
 
   agents(role: string): AgentId[] {
@@ -683,6 +752,10 @@ export interface StartRunInput {
   parentRunId?: string;
   roleSettings?: Record<string, AgentSettings>;
   trust?: Trust;
+  /** Start from a GitHub issue or PR (a PR's branch becomes the base). */
+  source?: { kind: "issue" | "pr"; number: number; ciLogs?: boolean };
+  /** How "Auto" roles were resolved, for the log. */
+  routing?: string[];
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
 }
@@ -806,7 +879,10 @@ export class RunManager {
   }
 
   /** Send work back to an agent after the run (review comments, or resolving merge conflicts). */
-  async followUp(id: string, input: { kind?: FollowUp["kind"]; worktree: string; agent: AgentId; message?: string; mergeFrom?: string }) {
+  async followUp(
+    id: string,
+    input: { kind?: FollowUp["kind"]; worktree: string; agent: AgentId; message?: string; mergeFrom?: string; from?: string; push?: string; watch?: string },
+  ) {
     const run = this.require(id);
     if (run.status !== "done") throw new Error("Follow-ups can be sent once the run has finished");
     if (!run.worktrees.some((w) => w.name === input.worktree)) throw new Error(`Unknown worktree "${input.worktree}"`);
@@ -820,6 +896,9 @@ export class RunManager {
       agent: input.agent,
       message: input.message?.trim() ?? "",
       mergeFrom: input.mergeFrom,
+      from: input.from,
+      push: input.push,
+      watch: input.watch,
       status: "pending",
       at: Date.now(),
     });
@@ -849,6 +928,7 @@ export class RunManager {
     const agents = [...new Set(Object.values(run.roles).flat())].join(", ");
     const body = [
       run.task,
+      run.source?.kind === "issue" ? `\nCloses #${run.source.number}` : "",
       "",
       "---",
       `Made by a code-flow team (${this.findPattern(run.pattern)?.name ?? run.pattern}; agents: ${agents}).`,
@@ -861,6 +941,92 @@ export class RunManager {
     this.emit(run, { type: "log", level: "info", text: `Opened pull request ${url}` });
     this.emitRun(run);
     return url;
+  }
+
+  /** Push a result branch to the pull request the run started from (fast-forward only). */
+  async pushToPr(id: string, input: { branch: string }) {
+    const run = this.require(id);
+    if (run.status === "running") throw new Error("Wait for the run to finish before pushing");
+    const source = run.source;
+    if (source?.kind !== "pr") throw new Error("This run didn't start from a pull request");
+    if (source.isCrossRepository) throw new Error("This pull request comes from a fork, so code-flow can't push to it");
+    if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
+    const sha = await pushBranch(run.repo, input.branch, source.headRefName!);
+    run.prs[input.branch] = source.url;
+    this.emit(run, { type: "log", level: "info", text: `Pushed ${input.branch} to ${source.headRefName} (${sha.slice(0, 8)}), updating ${source.url}` });
+    this.emitRun(run);
+    return { url: source.url, sha };
+  }
+
+  /** Post the review council's review as a comment on the pull request the run started from. */
+  async postReview(id: string) {
+    const run = this.require(id);
+    if (!run.review) throw new Error("This run has no review to post");
+    if (run.source?.kind !== "pr") throw new Error("This run didn't start from a pull request");
+    await commentOnPr(run.repo, String(run.source.number), run.review.markdown);
+    run.review.postedTo = run.source.url;
+    run.review.postedAt = Date.now();
+    this.emit(run, { type: "log", level: "info", text: `Posted the review to ${run.source.url}` });
+    this.emitRun(run);
+    return run.source.url;
+  }
+
+  /** Keep an eye on a branch's open PR: fix failing CI and collaborators' comments, push, never merge. */
+  watchPr(id: string, input: { branch: string; agent: AgentId; maxFixes?: number }): PrWatch {
+    const run = this.require(id);
+    const url = run.prs[input.branch];
+    if (!url) throw new Error("Open a pull request for this branch first");
+    if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
+    const fromSource = run.source?.kind === "pr" && run.source.url === url;
+    const watch: PrWatch = {
+      branch: input.branch,
+      pr: url,
+      remoteBranch: fromSource ? run.source!.headRefName! : input.branch,
+      agent: input.agent,
+      maxFixes: Math.min(10, Math.max(1, Math.round(input.maxFixes ?? 3))),
+      fixes: 0,
+      state: "watching",
+      detail: "Starting to watch",
+      fixedHeads: [],
+      startedAt: Date.now(),
+    };
+    run.watches[input.branch] = watch;
+    this.emit(run, {
+      type: "log",
+      level: "info",
+      text: `Watching ${url}: failing CI and new comments from collaborators go to ${input.agent} (up to ${watch.maxFixes} fixes), and fixes are pushed. code-flow never merges.`,
+    });
+    this.emitRun(run);
+    return watch;
+  }
+
+  unwatchPr(id: string, branch: string) {
+    const run = this.require(id);
+    const watch = run.watches[branch];
+    if (!watch) throw new Error("That branch isn't being watched");
+    this.updateWatch(id, branch, { state: "stopped", detail: "You stopped watching" });
+  }
+
+  /** Runs that have at least one watch, for the PR watcher. */
+  watchedRuns(): Run[] {
+    return [...this.runs.values()].filter((r) => Object.keys(r.watches).length);
+  }
+
+  updateWatch(id: string, branch: string, patch: Partial<PrWatch>) {
+    const run = this.require(id);
+    const watch = run.watches[branch];
+    if (!watch) return;
+    const wasNeedsYou = watch.state === "needs-you";
+    Object.assign(watch, patch);
+    if (watch.state === "needs-you" && !wasNeedsYou) {
+      run.seen = false;
+      this.emit(run, { type: "log", level: "warn", text: `PR watch needs you: ${watch.detail}` });
+    }
+    this.emitRun(run);
+  }
+
+  log(id: string, text: string, level: "info" | "warn" = "info") {
+    this.emit(this.require(id), { type: "log", level, text });
   }
 
   private readonly waiters = new Map<string, (answer: ApprovalAnswer) => void>();
@@ -936,10 +1102,14 @@ export class RunManager {
       throw new Error(`${input.pattern.name} needs a check command (Settings → Done when), e.g. "npm test"`);
     }
     const repo = await repoRoot(input.repo);
-    const baseLabel = input.baseRef?.trim() || "HEAD";
+    // A PR's own branch is the base; its changes are reviewed against the PR's target.
+    const fromGitHub = input.source ? await loadSource(repo, input.source) : undefined;
+    const baseLabel = fromGitHub?.branch ?? (input.baseRef?.trim() || "HEAD");
     const baseRef = await resolveCommit(repo, baseLabel).catch(() => {
       throw new Error(`Base branch "${baseLabel}" not found in ${repo}`);
     });
+    const source = fromGitHub?.source;
+    const reviewBase = source?.kind === "pr" ? await mergeBase(repo, `origin/${source.baseRefName}`, baseRef) : undefined;
     const id = newRunId();
     const branchPrefix = input.branchPrefix?.trim().replace(/^\/+|\/+$/g, "") || `codeflow/${id}`;
     await validateBranchPrefix(repo, branchPrefix);
@@ -976,6 +1146,10 @@ export class RunManager {
       parentRunId: input.parentRunId,
       merges: [],
       prs: {},
+      source,
+      reviewBase,
+      watches: {},
+      routing: input.routing?.length ? input.routing : undefined,
       seen: false,
       archived: false,
       status: "running",
@@ -986,6 +1160,7 @@ export class RunManager {
     this.runs.set(run.id, run);
     this.history.set(run.id, []);
     this.emitRun(run);
+    for (const note of input.routing ?? []) this.emit(run, { type: "log", level: "info", text: note });
     this.execute(run, input.pattern, new Map());
     return run;
   }
@@ -1104,7 +1279,16 @@ async function runFollowUps(ctx: TeamContext, run: Run) {
     // Continue the agent's own session in this worktree when it has one.
     const previous = [...run.steps].reverse().find((s) => s.kind === "agent" && s.agent === f.agent && s.worktree === f.worktree && s.sessionId);
     const outcome = await ctx.ask({
-      title: f.kind === "resolve-conflicts" ? `Resolve conflicts with ${f.mergeFrom}` : f.kind === "reply" ? "Your reply" : "Address review comments",
+      title:
+        f.kind === "resolve-conflicts"
+          ? `Resolve conflicts with ${f.mergeFrom}`
+          : f.kind === "reply"
+            ? "Your reply"
+            : f.kind === "ci-fix"
+              ? "Fix failing CI"
+              : f.from
+                ? "Address PR comments"
+                : "Address review comments",
       role: "follow-up",
       agent: f.agent,
       mode: "write",
@@ -1118,20 +1302,50 @@ async function runFollowUps(ctx: TeamContext, run: Run) {
             "remove all conflict markers, make sure it builds, and summarize. Don't run git merge --abort or commit."
           : f.kind === "reply"
             ? `The user replied to your work:\n\n${f.message}\n\nDo what they ask (or answer their question), run the relevant tests if you change code, and summarize. Don't commit; code-flow does.`
-            : `The user reviewed your changes and left these comments:\n\n${f.message}\n\nAddress each one, run the relevant tests, and summarize what you changed. Don't commit; code-flow does.`),
+            : f.kind === "ci-fix"
+              ? `CI fails on the pull request for this branch.\n\n${f.message}\n\nFind and fix the cause in the code — don't disable, skip or weaken tests or CI steps. ` +
+                "Run what you can locally to confirm, then summarize. Don't commit or push; code-flow does."
+              : `${f.from ? `${f.from} left these comments` : "The user reviewed your changes and left these comments"}:\n\n${f.message}\n\n` +
+                "Address each one, run the relevant tests, and summarize what you changed. Don't commit; code-flow does."),
     });
-    await ctx.commit(
+    const sha = await ctx.commit(
       wt,
       f.kind === "resolve-conflicts"
         ? `Merge ${f.mergeFrom} (conflicts resolved by ${f.agent})`
         : f.kind === "reply"
           ? `${f.agent}: follow-up to your reply (${f.id})`
-          : `${f.agent}: address review comments (${f.id})`,
+          : f.kind === "ci-fix"
+            ? `${f.agent}: fix failing CI (${f.id})`
+            : `${f.agent}: address review comments (${f.id})`,
     );
     const check = await ctx.check(wt, `Check after follow-up ${f.id}`);
     f.status = outcome.ok ? "done" : "failed";
     f.result = outcome.ok ? outcome.finalText : outcome.error;
     f.checkPassed = check ? check.ok : undefined;
+    if (f.push && outcome.ok && sha) {
+      try {
+        f.pushed = await ctx.remember("push", `${f.id}|${f.push}`, () => pushBranch(run.repo, wt.branch, f.push!));
+        ctx.log(`Pushed ${f.pushed.slice(0, 8)} to ${f.push}`);
+      } catch (err) {
+        f.pushError = (err as Error).message;
+        ctx.log(`Couldn't push: ${f.pushError}`, "warn");
+      }
+    }
+    const watch = f.watch ? run.watches[f.watch] : undefined;
+    if (watch?.state === "fixing") {
+      const ok = outcome.ok && sha && f.pushed;
+      Object.assign(watch, {
+        state: ok ? "watching" : "needs-you",
+        detail: ok
+          ? `Pushed a fix (${sha!.slice(0, 8)}); waiting for CI`
+          : !outcome.ok
+            ? `${f.agent} couldn't finish the fix`
+            : !sha
+              ? `${f.agent} didn't change anything`
+              : `Couldn't push: ${f.pushError}`,
+      });
+      if (!ok) run.seen = false;
+    }
     const artifact = run.artifacts.find((a) => a.branch === wt.branch);
     if (artifact) await ctx.artifact(artifact.label, wt);
     ctx.publish();
@@ -1145,9 +1359,18 @@ async function runFollowUps(ctx: TeamContext, run: Run) {
     run.summary += `\n\n## Follow-ups\n${finished
       .map((f) => {
         const what =
-          f.kind === "resolve-conflicts" ? `resolved conflicts with \`${f.mergeFrom}\`` : f.kind === "reply" ? "followed up on your reply" : "addressed your review comments";
+          f.kind === "resolve-conflicts"
+            ? `resolved conflicts with \`${f.mergeFrom}\``
+            : f.kind === "reply"
+              ? "followed up on your reply"
+              : f.kind === "ci-fix"
+                ? "fixed failing CI"
+                : f.from
+                  ? `addressed comments from ${f.from}`
+                  : "addressed your review comments";
+        const pushed = f.pushed ? `, pushed to ${f.push}` : f.pushError ? " (push failed)" : "";
         const check = f.checkPassed === undefined ? "" : f.checkPassed ? " — check passes" : " — check still fails";
-        return `- ${f.agent} ${f.status === "done" ? what : "couldn't finish"} in ${f.worktree}${check}`;
+        return `- ${f.agent} ${f.status === "done" ? what : "couldn't finish"} in ${f.worktree}${pushed}${check}`;
       })
       .join("\n")}`;
   }
@@ -1194,6 +1417,7 @@ function rebuildRun(events: RunEvent[]): Run | undefined {
     approvals: legacy.approvals ?? {},
     merges: legacy.merges ?? [],
     prs: legacy.prs ?? {},
+    watches: legacy.watches ?? {},
     seen: legacy.seen ?? true,
     archived: legacy.archived ?? false,
     artifacts: legacy.artifacts ?? [],
@@ -1203,7 +1427,14 @@ function rebuildRun(events: RunEvent[]): Run | undefined {
 
 function strip(run: Run): RunSummary {
   const { steps: _steps, ...rest } = run;
-  return { ...rest, artifacts: [...rest.artifacts], worktrees: [...rest.worktrees], followUps: rest.followUps.map((f) => ({ ...f })) };
+  return {
+    ...rest,
+    artifacts: [...rest.artifacts],
+    worktrees: [...rest.worktrees],
+    followUps: rest.followUps.map((f) => ({ ...f })),
+    watches: Object.fromEntries(Object.entries(rest.watches).map(([k, w]) => [k, { ...w }])),
+    review: rest.review ? { ...rest.review } : undefined,
+  };
 }
 
 function newRunId(): string {
