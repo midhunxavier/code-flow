@@ -68,6 +68,7 @@ export const claudeAdapter: AgentAdapter = {
     if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push("--effort", opts.effort);
+    if (opts.jsonSchema) args.push("--json-schema", JSON.stringify(opts.jsonSchema));
     if (opts.mode === "write") {
       args.push("--permission-mode", "acceptEdits", "--allowedTools", writeTools().join(","));
     } else {
@@ -83,6 +84,7 @@ export const claudeAdapter: AgentAdapter = {
     let lastAssistantText = "";
     let resultError: string | undefined;
     let sawResult = false;
+    let structured: unknown;
 
     const outcome = await runJsonlProcess({
       command: "claude",
@@ -143,6 +145,7 @@ export const claudeAdapter: AgentAdapter = {
             sawResult = true;
             finalText = typeof msg.result === "string" ? msg.result : lastAssistantText;
             if (msg.session_id) sessionId = msg.session_id;
+            if (msg.structured_output !== undefined) structured = msg.structured_output;
             if (msg.is_error) resultError = finalText || msg.subtype || "Claude reported an error";
             onEvent({
               kind: "usage",
@@ -164,6 +167,6 @@ export const claudeAdapter: AgentAdapter = {
       onEvent({ kind: "error", message: error });
       return { ok: false, finalText: finalText || lastAssistantText, sessionId, error };
     }
-    return { ok: true, finalText, sessionId };
+    return { ok: true, finalText, sessionId, structured };
   },
 };

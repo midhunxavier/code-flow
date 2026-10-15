@@ -1,11 +1,11 @@
 import type { Pattern } from "../engine.js";
-import { extractJson } from "../json.js";
+import { JUDGE_SCHEMA } from "./schemas.js";
 import { checkSection, fence, jsonInstruction, LETTERS, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface JudgeVerdict {
   winner: string;
-  ranking?: string[];
-  reasons?: string;
+  ranking: string[];
+  reasons: string;
 }
 
 /**
@@ -28,14 +28,21 @@ export const racePattern: Pattern = {
       multiple: true,
       default: ["claude", "codex"],
     },
-    { id: "judge", label: "Judge", description: "Compares the anonymized results", default: ["claude"] },
+    {
+      id: "judge",
+      label: "Judge",
+      description: "Compares the results blind; pick several for a majority vote, ideally vendors that aren't competing",
+      multiple: true,
+      default: ["agy"],
+    },
   ],
   options: [],
 
   async run(ctx) {
     const contestants = ctx.agents("contestants");
     if (contestants.length < 2) throw new Error("A race needs at least two contestants");
-    const judge = ctx.agent("judge");
+    const judges = ctx.agents("judge");
+    if (!judges.length) throw new Error("Pick at least one judge");
 
     const entries = await Promise.all(
       contestants.map(async (agent, i) => {
@@ -74,46 +81,57 @@ export const racePattern: Pattern = {
     }
 
     let winner = viable[0]!;
-    let verdict: JudgeVerdict | undefined;
+    let reasons: string[] = [];
     if (viable.length > 1) {
+      const competing = judges.filter((j) => contestants.includes(j));
+      if (competing.length) ctx.log(`${competing.join(", ")} both competes and judges; a judge from another vendor is fairer`, "warn");
       const judgeWt = await ctx.worktree("judge");
-      const judged = await ctx.ask({
-        title: "Judge candidates",
-        role: "judge",
-        agent: judge,
-        mode: "read",
-        cwd: judgeWt,
-        prompt:
-          preamble("judge", judge, `${READ_ONLY} You are looking at the original, unmodified code; the candidates' changes are shown as diffs.`) +
-          section("Task", ctx.task) +
-          viable
-            .map((e) =>
+      // Blind judging: no author summaries (they can name the vendor), and the presentation
+      // order is shuffled — deterministically per run, so a resumed run replays the same way.
+      const order = seededShuffle(viable, ctx.run.id);
+      const labels = viable.map((e) => e.label);
+      const votes = await Promise.all(
+        judges.map((judge, i) =>
+          ctx.decide<JudgeVerdict>({
+            title: judges.length > 1 ? `Judge ${i + 1}` : "Judge candidates",
+            role: "judge",
+            agent: judge,
+            mode: "read",
+            cwd: judgeWt,
+            schema: JUDGE_SCHEMA,
+            what: "pick",
+            validate: (v: JudgeVerdict) =>
+              changed.some((e) => e.label === v.winner.trim().toUpperCase()) ? undefined : `winner must be one of ${changed.map((e) => e.label).join(", ")}`,
+            prompt:
+              preamble("judge", judge, `${READ_ONLY} You are looking at the original, unmodified code; each candidate's changes are shown as a diff.`) +
+              section("Task", ctx.task) +
+              order.map((e) => section(`Candidate ${e.label}`, fence(e.diff, "diff") + (e.check ? checkSection(e.check, 2_000) : ""))).join("") +
               section(
-                `Candidate ${e.label}`,
-                `Author's summary:\n${e.result.finalText}\n\n${fence(e.diff, "diff")}` + (e.check ? checkSection(e.check, 2_000) : ""),
-              ),
-            )
-            .join("") +
-          section(
-            "Deliverable",
-            "Compare the candidates on correctness, completeness, test coverage, simplicity and risk. Pick one winner.",
-          ) +
-          jsonInstruction('{"winner": "A", "ranking": ["A", "B"], "reasons": "..."}'),
-      });
-      verdict = extractJson<JudgeVerdict>(judged.finalText);
-      const choice = verdict?.winner?.trim().toUpperCase();
-      const picked = viable.find((e) => e.label === choice);
-      if (picked) winner = picked;
-      else if (choice && changed.some((e) => e.label === choice)) {
-        ctx.log(`Judge picked candidate ${choice}, but it fails the check; using passing candidate ${winner.label}`, "warn");
-      } else ctx.log(`Judge verdict unreadable; defaulting to candidate ${winner.label}`, "warn");
+                "Deliverable",
+                `Compare the candidates on correctness, completeness, test coverage, simplicity and risk. Pick one winner from: ${labels.join(", ")}.`,
+              ) +
+              jsonInstruction('{"winner": "A", "ranking": ["A", "B"], "reasons": "..."}'),
+          }),
+        ),
+      );
+      // Majority vote among candidates that can win; ties go to the earlier label.
+      const tally = new Map<string, number>();
+      for (const { value } of votes) {
+        const choice = value.winner.trim().toUpperCase();
+        if (viable.some((e) => e.label === choice)) tally.set(choice, (tally.get(choice) ?? 0) + 1);
+        else ctx.log(`Judge picked candidate ${choice}, but it fails the check${tally.size || votes.length > 1 ? "" : `; using passing candidate ${winner.label}`}`, "warn");
+        reasons.push(value.reasons);
+      }
+      const best = [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+      if (best) winner = viable.find((e) => e.label === best[0])!;
+      if (judges.length > 1) ctx.log(`Votes: ${[...tally.entries()].map(([label, n]) => `${label}=${n}`).join(", ") || "none valid"}`);
     }
 
     ctx.log(`Winner: candidate ${winner.label} (${winner.agent})`);
     if (ctx.hasCheck) ctx.setVerdict(winner.check?.ok ? "passed" : "failing");
     return [
       `**Winner: Candidate ${winner.label} — ${winner.agent}** on branch \`${winner.wt.branch}\``,
-      verdict?.reasons ? section("Judge's reasoning", verdict.reasons) : "",
+      reasons.length ? section(reasons.length > 1 ? "Judges' reasoning" : "Judge's reasoning", reasons.join("\n\n")) : "",
       section(
         "All candidates",
         entries
@@ -127,3 +145,20 @@ export const racePattern: Pattern = {
     ].join("\n");
   },
 };
+
+/** Deterministic shuffle (seeded by the run id) so position bias is broken but replays match. */
+function seededShuffle<T>(items: T[], seed: string): T[] {
+  let h = 2166136261;
+  for (const ch of seed) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+  const random = () => {
+    h = Math.imul(h ^ (h >>> 15), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    return ((h ^= h >>> 16) >>> 0) / 4294967296;
+  };
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [out[i], out[j]] = [out[j]!, out[i]!];
+  }
+  return out;
+}

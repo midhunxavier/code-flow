@@ -3,6 +3,7 @@
 // format and answers the structured prompts the patterns send, so workflows can be
 // exercised end to end without spending subscription quota.
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 
 const [vendor, ...args] = process.argv.slice(2);
@@ -57,8 +58,15 @@ if (prompt.includes('"subtasks"')) {
     ],
   });
 } else if (prompt.includes("Resolve every conflict")) {
-  writeFileSync("shared.txt", "resolved by fake agent\n");
+  // Resolve whatever is actually conflicted (falls back to shared.txt for the supervisor test).
+  const conflicted = execFileSync("git", ["diff", "--name-only", "--diff-filter=U"]).toString().split("\n").filter(Boolean);
+  for (const file of conflicted.length ? conflicted : ["shared.txt"]) writeFileSync(file, "resolved by fake agent\n");
   answer = "Resolved the conflicts.";
+} else if (prompt.includes("did not contain a valid")) {
+  // A format retry: answer with a minimal object that fits the schema in the prompt.
+  const schema = JSON.parse(prompt.match(/```json\n([\s\S]*?)\n```/)[1]);
+  const instance = (s) => s.enum ? s.enum[0] : s.type === "object" ? Object.fromEntries(Object.entries(s.properties ?? {}).map(([k, v]) => [k, instance(v)])) : s.type === "array" ? [] : s.type === "number" ? 0 : s.type === "boolean" ? false : "x";
+  answer = json(instance(schema));
 } else if (prompt.includes('"test_command"')) {
   // A real test: passes once any agent has written its "<vendor>-<id>.txt" implementation file.
   writeFileSync("spec.test.mjs", [
@@ -75,7 +83,7 @@ if (prompt.includes('"subtasks"')) {
   const marker = `${process.env.CODEFLOW_HOME}/.reviewed-once`;
   const fail = process.env.FAKE_REVIEW_FAIL_ONCE && !existsSync(marker);
   if (fail) writeFileSync(marker, "1");
-  answer = json(fail ? { verdict: "changes_requested", issues: [{ problem: "missing edge case" }] } : { verdict: "approve", issues: [] });
+  answer = json(fail ? { verdict: "changes_requested", issues: [{ severity: "medium", file: "src/x.ts", problem: "missing edge case", fix: "handle it" }] } : { verdict: "approve", issues: [] });
 } else if (prompt.includes('"winner"')) {
   answer = json({ winner: "B", ranking: ["B", "A"], reasons: "B is simpler" });
 } else if (write && process.env.FAKE_NOOP_VENDOR === vendor) {
@@ -85,6 +93,18 @@ if (prompt.includes('"subtasks"')) {
   else writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
   answer = `Implemented changes as ${vendor}.`;
 }
+
+// Schema-constrained output, the way each real CLI returns it (see the adapters).
+const schemaRequested = args.includes("--json-schema") || args.includes("--output-schema");
+const garbleMarker = `${process.env.CODEFLOW_HOME}/.garbled-once`;
+const garbled =
+  schemaRequested &&
+  process.env.FAKE_GARBLE_VENDOR === vendor &&
+  (!process.env.FAKE_GARBLE_ONCE || (!existsSync(garbleMarker) && (writeFileSync(garbleMarker, "1"), true)));
+if (garbled) answer = "Looks fine to me overall.";
+const fenced = answer.match(/```json\n([\s\S]*?)\n```/);
+const structured = schemaRequested && !garbled && fenced ? JSON.parse(fenced[1]) : undefined;
+if (vendor === "codex" && structured) answer = JSON.stringify(structured);
 
 if (process.env.FAKE_SLEEP_MS && (!process.env.FAKE_SLEEP_VENDOR || process.env.FAKE_SLEEP_VENDOR === vendor)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_SLEEP_MS));
 
@@ -96,7 +116,7 @@ if (vendor === "claude") {
   out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "x" } }] } });
   out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } });
   out({ type: "assistant", message: { content: [{ type: "text", text: answer }] } });
-  out({ type: "result", subtype: "success", is_error: false, result: answer, session_id: session, usage: { input_tokens: 1, output_tokens: 2 } });
+  out({ type: "result", subtype: "success", is_error: false, result: answer, structured_output: structured, session_id: session, usage: { input_tokens: 1, output_tokens: 2 } });
 } else if (vendor === "codex") {
   out({ type: "thread.started", thread_id: session });
   out({ type: "turn.started" });
@@ -116,5 +136,5 @@ if (vendor === "claude") {
   for (const chunk of answer.match(/[\s\S]{1,10}/g)) {
     out({ event: "step_update", step_update: { step_type: "agent_response", state: "ACTIVE", text_delta: chunk } });
   }
-  out({ event: "result", result: { conversation_id: session, status: "SUCCESS", response: answer, usage: { input_tokens: 1 } } });
+  out({ event: "result", result: { conversation_id: session, status: "SUCCESS", response: answer, structured_output: structured, usage: { input_tokens: 1 } } });
 }

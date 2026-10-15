@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { AgentAdapter, AgentEvent, ModelCatalog, ModelInfo, RunOptions, RunResult } from "./types.js";
 import { captureOutput, commandExists, describeFailure, runJsonlProcess, stringify, truncate } from "./process.js";
 
@@ -47,6 +47,8 @@ export const codexAdapter: AgentAdapter = {
     const common = ["--json", "--skip-git-repo-check", "-c", `sandbox_mode="${sandbox}"`];
     if (opts.model) common.push("-m", opts.model);
     if (opts.effort) common.push("-c", `model_reasoning_effort="${opts.effort}"`);
+    const schemaFile = opts.jsonSchema ? await writeSchemaFile(opts.jsonSchema) : undefined;
+    if (schemaFile) common.push("--output-schema", schemaFile);
 
     const args = opts.resumeSessionId
       ? ["exec", "resume", ...common, opts.resumeSessionId, opts.prompt]
@@ -97,14 +99,30 @@ export const codexAdapter: AgentAdapter = {
       },
     });
 
+    if (schemaFile) await rm(dirname(schemaFile), { recursive: true, force: true }).catch(() => undefined);
     if (!completed || turnError || outcome.exitCode !== 0) {
       const error = turnError ?? describeFailure("codex", outcome);
       onEvent({ kind: "error", message: error });
       return { ok: false, finalText, sessionId, error };
     }
-    return { ok: true, finalText, sessionId };
+    let structured: unknown;
+    if (opts.jsonSchema) {
+      try {
+        structured = JSON.parse(finalText);
+      } catch {
+        // not valid JSON; the caller falls back to extracting it from the text
+      }
+    }
+    return { ok: true, finalText, sessionId, structured };
   },
 };
+
+async function writeSchemaFile(schema: object): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "codeflow-schema-"));
+  const file = join(dir, "schema.json");
+  await writeFile(file, JSON.stringify(schema));
+  return file;
+}
 
 /** `key = "value"` from the top of a TOML file (before the first [table]). */
 function topLevelTomlString(toml: string, key: string): string | undefined {

@@ -62,6 +62,15 @@ function checkOrigin(req: IncomingMessage) {
   if (origin && !allowedHosts.has(origin.replace(/^https?:\/\//, ""))) throw new HttpError(403, "Cross-origin request refused");
 }
 
+/** Run an action whose errors are the user's to fix (shown as 400 with the message). */
+async function attempt<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    throw err instanceof HttpError ? err : new HttpError(400, (err as Error).message);
+  }
+}
+
 async function requestedRepo(url: URL): Promise<string> {
   const requested = url.searchParams.get("repo") ?? "";
   if (!requested.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
@@ -269,12 +278,41 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     if (req.method === "POST" && parts[3] === "archive") {
       const body = await readJson(req);
-      try {
-        manager.setArchived(run.id, body.archived !== false);
-      } catch (err) {
-        throw new HttpError(400, (err as Error).message);
+      if (body.archived === false) {
+        await attempt(async () => manager.setArchived(run.id, false));
+        return send(res, 200, { archived: false });
       }
-      return send(res, 200, { archived: body.archived !== false });
+      const result = await attempt(() => manager.archive(run.id, { cleanup: body.cleanup !== false, deleteBranches: !!body.deleteBranches }));
+      return send(res, 200, { archived: true, ...result });
+    }
+    if (req.method === "GET" && parts[3] === "diff") {
+      return send(res, 200, await attempt(() => manager.diff(run.id, url.searchParams.get("branch") ?? "")));
+    }
+    if (req.method === "POST" && parts[3] === "followups") {
+      const body = await readJson(req);
+      if (!isAgentId(body.agent)) throw new HttpError(400, "Pick an agent");
+      await attempt(() =>
+        manager.followUp(run.id, {
+          kind: body.kind === "resolve-conflicts" ? "resolve-conflicts" : "comments",
+          worktree: String(body.worktree ?? ""),
+          agent: body.agent,
+          message: typeof body.message === "string" ? body.message : undefined,
+          mergeFrom: typeof body.mergeFrom === "string" ? body.mergeFrom : undefined,
+        }),
+      );
+      return send(res, 200, { ok: true });
+    }
+    if (req.method === "POST" && parts[3] === "merge") {
+      const body = await readJson(req);
+      const outcome = await attempt(() =>
+        manager.merge(run.id, { branch: String(body.branch ?? ""), into: String(body.into ?? ""), archiveAfter: !!body.archiveAfter }),
+      );
+      return send(res, 200, outcome);
+    }
+    if (req.method === "POST" && parts[3] === "pr") {
+      const body = await readJson(req);
+      const prUrl = await attempt(() => manager.pullRequest(run.id, { branch: String(body.branch ?? ""), into: String(body.into ?? "") }));
+      return send(res, 200, { url: prUrl });
     }
   }
 

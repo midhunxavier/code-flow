@@ -89,6 +89,26 @@ Agents may suggest their own test command (the tester in Test-first does). code-
 
 > **Security:** a check runs the agents' code (tests, scripts) on your machine, outside Codex's and agy's sandboxes, as your CI would. Use code-flow on repos and tasks you trust, or run it inside a container or VM.
 
+## Review & ship
+
+When a run finishes, each result branch has **Review changes**, **Merge…** and **Open PR…** buttons.
+
+- **Review changes** opens a per-file diff. Click any line to comment on it, and add an overall comment if you like.
+  - **Send N comments to [agent]** queues a *follow-up* in the same run: that agent continues its own session in the worktree, addresses the comments, and code-flow commits and re-runs the check.
+  - Follow-ups are recorded on the run, so they survive restarts. The result header and summary reflect the latest follow-up.
+  - Draft comments are kept if you navigate away.
+- **Merge…** merges the result into one of your branches, and only when that's safe:
+  - If the target branch is checked out (e.g. `main` in your checkout), the merge happens there, and only when it has no uncommitted changes. On conflict it aborts cleanly.
+  - Otherwise code-flow builds the merge with `git merge-tree` and moves the branch, so no checkout is touched.
+  - On conflict you see the files and can **ask an agent to resolve them**: code-flow merges the target into the result branch and the agent fixes the markers. Then merge again.
+  - By default the run is archived after merging (worktrees removed, branches kept).
+- **Open PR…** pushes the branch to `origin` and opens a pull request with `gh`, using the task and summary as the description.
+- **Archive…** removes a run's worktrees (optionally its branches too). Kept branches can still be merged or resumed later.
+
+Verdicts, judge picks, subtask lists and test specs are **schema-constrained**: `claude --json-schema`, `codex --output-schema` and `agy --json-schema`. An answer that still doesn't fit gets one retry in the same session, and then the run **fails**: an unreadable review is never treated as approval.
+
+Judging in a race is blind: no author summaries, a shuffled order (seeded per run, so a resumed run replays identically), and an optional **panel** of judges that vote. Pick vendors that aren't competing; the UI suggests one, and the log warns when a judge also competes.
+
 ## Runs survive restarts
 
 Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and the server rebuilds the run list from those files when it starts.
@@ -129,8 +149,11 @@ Every pattern works with any mix of agents. A good default is to have a **differ
 ## Architecture
 
 ```
-public/index.html        single-page UI (vanilla JS, SSE)
+ui/*.tsx                 UI: Preact + TypeScript, compiled against the server's own types
+scripts/build-ui.mjs     bundles the UI into one self-contained public/index.html (npm start builds it)
 src/server.ts            HTTP API + SSE on 127.0.0.1 (Host/Origin checked)
+src/store.ts             run logs and the replay journal on disk
+src/ship.ts              per-file diffs, safe merges, pull requests, worktree cleanup
 src/engine.ts            RunManager, TeamContext (ask / worktree / commit / diff), event log
 src/patterns/*.ts        the five team patterns, written against TeamContext
 src/adapters/*.ts        AgentAdapter per CLI → normalized AgentEvent stream
@@ -166,7 +189,8 @@ Implement `AgentAdapter` in `src/adapters/`, then register it in `src/adapters/i
 ## Tests
 
 ```bash
-npm test
+npm test           # unit + workflow tests against fake CLIs
+npm run test:e2e   # the real UI in Chrome (headless) against a server with fake agents
 ```
 
 The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota. The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, test tampering detection, and the guarantee that your checkout is untouched.
@@ -182,4 +206,3 @@ The suite runs every pattern end to end against fake `claude` / `codex` / `agy` 
   - Add triggers: scheduled loops, and CI or GitHub events that start runs. Only after runs are saved to disk.
   - Track quota per vendor and route work to whichever plan has headroom.
   - Add a "council review" pattern for existing PRs.
-  - Add a button to clean up worktrees (`git worktree remove`).

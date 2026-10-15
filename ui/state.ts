@@ -1,0 +1,201 @@
+import { computed, signal } from "@preact/signals";
+import { api, post, store } from "./lib.js";
+import type {
+  AgentId,
+  AgentInfo,
+  AgentSettings,
+  Attachment,
+  CatalogOrError,
+  ContextItem,
+  PatternInfo,
+  RepoInfo,
+  RunSummary,
+} from "./types.js";
+
+// ---------------------------------------------------------------- app-wide
+export const agents = signal<AgentInfo[]>([]);
+export const patterns = signal<PatternInfo[]>([]);
+export const catalogs = signal<Record<string, CatalogOrError>>({});
+export const runs = signal<Map<string, RunSummary>>(new Map());
+
+export type Route = { view: "composer" } | { view: "run"; id: string } | { view: "review"; id: string; branch: string };
+export const route = signal<Route>({ view: "composer" });
+export const railOpen = signal(false);
+export const pickerOpen = signal(false);
+export const filesOpen = signal(store.get("filesOpen") ? store.get("filesOpen") === "1" : window.innerWidth > 1180);
+
+export const available = (id: AgentId) => agents.value.find((a) => a.id === id)?.available ?? false;
+
+// ---------------------------------------------------------------- repository
+export const repoInfo = signal<RepoInfo | null>(null);
+export const repoError = signal("");
+export const repoChecking = signal(false);
+export const repo = computed(() => repoInfo.value?.repo ?? "");
+
+export async function setRepo(path: string, remember = true) {
+  path = path.trim();
+  const previous = repo.value;
+  repoChecking.value = true;
+  repoError.value = "";
+  try {
+    const info = await api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(path)}`);
+    repoInfo.value = info;
+    if (remember) {
+      store.set("repo", info.repo);
+      store.set("recentRepos", JSON.stringify([info.repo, ...recentRepos().filter((p) => p !== info.repo)].slice(0, 8)));
+    }
+  } catch (err) {
+    repoInfo.value = null;
+    repoError.value = path ? `${path.split("/").pop()} isn't a git repository` : "";
+  } finally {
+    repoChecking.value = false;
+  }
+  if (repo.value !== previous) {
+    contextPaths.value = new Map(); // paths are relative to the repo they came from
+    void loadCheck();
+  }
+}
+export const recentRepos = () => store.json<string[]>("recentRepos", []);
+
+// ---------------------------------------------------------------- composer
+export const task = signal(store.get("draftTask") ?? "");
+export const contextPaths = signal<Map<string, ContextItem>>(new Map());
+export const attachments = signal<Attachment[]>([]);
+export const contextError = signal("");
+export const patternId = signal(store.get("pattern") ?? "pipeline");
+export const pattern = computed(() => patterns.value.find((p) => p.id === patternId.value) ?? patterns.value[0]);
+export const roleSel = signal<Record<string, Record<string, AgentId[]>>>(store.json("roleSel", {}));
+export const optionValues = signal<Record<string, Record<string, number | boolean>>>({});
+export const agentSettings = signal<AgentSettings>(store.json("agentSettings", {}));
+export const baseRef = signal(store.get("baseRef") ?? "");
+export const branchPrefix = signal("");
+export const checkCmd = signal("");
+export const checkHint = signal("");
+export const setupCmd = signal("");
+export const limits = signal(store.json("limits", { maxMinutes: 60, maxSteps: 40 }));
+
+export function setTask(value: string) {
+  task.value = value;
+  store.set("draftTask", value);
+}
+export function setPattern(id: string) {
+  patternId.value = id;
+  store.set("pattern", id);
+}
+export function setRoles(patternId: string, roleId: string, ids: AgentId[]) {
+  roleSel.value = { ...roleSel.value, [patternId]: { ...(roleSel.value[patternId] ?? {}), [roleId]: ids } };
+  store.set("roleSel", JSON.stringify(roleSel.value));
+}
+export function setAgentSetting(id: AgentId, patch: { model?: string; effort?: string }) {
+  agentSettings.value = { ...agentSettings.value, [id]: { ...(agentSettings.value[id] ?? {}), ...patch } };
+  store.set("agentSettings", JSON.stringify(agentSettings.value));
+}
+export function setCheck(value: string) {
+  checkCmd.value = value;
+  if (repo.value) store.set(`check:${repo.value}`, value);
+}
+export function setSetup(value: string) {
+  setupCmd.value = value;
+  if (repo.value) store.set(`setup:${repo.value}`, value);
+}
+export function setLimits(patch: Partial<{ maxMinutes: number; maxSteps: number }>) {
+  limits.value = { ...limits.value, ...patch };
+  store.set("limits", JSON.stringify(limits.value));
+}
+
+/** Who fills each role: saved choice, else the pattern default — only installed agents. */
+export function rolesFor(p: PatternInfo | undefined): Record<string, AgentId[]> {
+  if (!p) return {};
+  const saved = roleSel.value[p.id] ?? {};
+  const firstAvailable = agents.value.find((a) => a.available)?.id;
+  const roles: Record<string, AgentId[]> = {};
+  for (const role of p.roles) {
+    let ids = (saved[role.id] ?? role.default).filter(available);
+    if (!role.multiple) ids = ids.slice(0, 1);
+    if (!ids.length && !role.optional && !saved[role.id] && firstAvailable) ids = [firstAvailable];
+    roles[role.id] = ids;
+  }
+  // A race is fairer when the judge isn't also competing: default to a vendor that isn't.
+  if (p.id === "race" && !saved.judge) {
+    const outsider = agents.value.find((a) => a.available && !roles.contestants?.includes(a.id));
+    if (outsider) roles.judge = [outsider.id];
+  }
+  return roles;
+}
+
+export function optionsFor(p: PatternInfo | undefined): Record<string, number | boolean> {
+  if (!p) return {};
+  const current = optionValues.value[p.id] ?? {};
+  return Object.fromEntries(p.options.map((o) => [o.id, current[o.id] ?? o.default]));
+}
+export function setOption(p: PatternInfo, id: string, value: number | boolean) {
+  optionValues.value = { ...optionValues.value, [p.id]: { ...(optionValues.value[p.id] ?? {}), [id]: value } };
+}
+
+/** "Done when" check: remembered per repo; auto-detected until you edit it. */
+export async function loadCheck() {
+  const r = repo.value;
+  setupCmd.value = r ? store.get(`setup:${r}`) ?? "" : "";
+  if (!r) {
+    checkCmd.value = "";
+    checkHint.value = "";
+    return;
+  }
+  const saved = store.get(`check:${r}`);
+  if (saved !== null) {
+    checkCmd.value = saved;
+    checkHint.value = "";
+    return;
+  }
+  checkCmd.value = "";
+  try {
+    const d = await api<{ command: string | null; source?: string }>(`/api/check?repo=${encodeURIComponent(r)}`);
+    checkCmd.value = d.command ?? "";
+    checkHint.value = d.command ? `Detected from ${d.source}.` : "No test command found in this repo.";
+  } catch {
+    checkHint.value = "";
+  }
+}
+
+export async function loadModels() {
+  try {
+    catalogs.value = await api("/api/models");
+  } catch {
+    catalogs.value = {};
+  }
+}
+
+// ---------------------------------------------------------------- runs
+/** A run needs you when it finished and you haven't looked, or it was interrupted. */
+export const needsYou = (r: RunSummary) => !r.archived && r.status !== "running" && (r.status === "interrupted" || !r.seen);
+/** A finished run whose result fails its check is a warning, not a success. */
+export const runState = (r: { status: string; verdict?: string }) => (r.status === "done" && r.verdict === "failing" ? "failing" : r.status);
+
+export function upsertRun(run: RunSummary) {
+  const next = new Map(runs.value);
+  next.set(run.id, run);
+  runs.value = next;
+}
+
+export async function refreshRuns() {
+  try {
+    const list = await api<RunSummary[]>("/api/runs");
+    runs.value = new Map(list.map((r) => [r.id, r]));
+  } catch {
+    // keep what we have; the event stream will catch up
+  }
+}
+
+export const waitingCount = computed(() => [...runs.value.values()].filter(needsYou).length);
+
+export function watchAllRuns(onFinished: (run: RunSummary) => void) {
+  const source = new EventSource("/api/events");
+  source.onmessage = (msg) => {
+    const { run } = JSON.parse(msg.data) as { run: RunSummary };
+    const before = runs.value.get(run.id);
+    upsertRun(run);
+    if (before?.status === "running" && run.status !== "running") onFinished(run);
+  };
+}
+
+export const markSeen = (id: string) => post(`/api/runs/${id}/seen`).catch(() => {});

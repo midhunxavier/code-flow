@@ -1,6 +1,6 @@
 import type { CheckResult } from "../checks.js";
 import type { Pattern, StepOutcome } from "../engine.js";
-import { extractJson } from "../json.js";
+import { REVIEW_SCHEMA } from "./schemas.js";
 import { checkSection, fence, fixUntilGreen, jsonInstruction, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface ReviewVerdict {
@@ -84,8 +84,10 @@ export const pipelinePattern: Pattern = {
       }
 
       const diff = await ctx.diff(wt);
-      review = await ctx.ask({
+      const decided = await ctx.decide<ReviewVerdict>({
         title: `Review (round ${round})`,
+        schema: REVIEW_SCHEMA,
+        what: "review verdict",
         role: "reviewer",
         agent: reviewer,
         mode: "read",
@@ -107,11 +109,8 @@ export const pipelinePattern: Pattern = {
           ),
       });
 
-      verdict = extractJson<ReviewVerdict>(review.finalText);
-      if (!verdict) {
-        ctx.log("Reviewer did not return a parseable verdict; treating it as approval.", "warn");
-        break;
-      }
+      review = decided.outcome;
+      verdict = decided.value;
       ctx.log(`Review round ${round}: ${verdict.verdict} (${verdict.issues?.length ?? 0} issues)`);
       if (verdict.verdict === "approve" || round === maxRounds) break;
 

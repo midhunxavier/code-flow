@@ -61,6 +61,7 @@ export const agyAdapter: AgentAdapter = {
     if (opts.resumeSessionId) args.push("--conversation", opts.resumeSessionId);
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push("--effort", opts.effort);
+    if (opts.jsonSchema) args.push("--json-schema", JSON.stringify(opts.jsonSchema));
     if (skipPermissions()) args.push("--dangerously-skip-permissions");
 
     let sessionId = opts.resumeSessionId;
@@ -68,6 +69,7 @@ export const agyAdapter: AgentAdapter = {
     let streamedText = "";
     let resultError: string | undefined;
     let sawResult = false;
+    let structured: unknown;
     const openTools = new Set<string>();
 
     const outcome = await runJsonlProcess({
@@ -130,6 +132,7 @@ export const agyAdapter: AgentAdapter = {
             const result = msg.result ?? {};
             finalText = result.response ?? streamedText;
             if (result.conversation_id) sessionId = result.conversation_id;
+            if (result.structured_output !== undefined) structured = result.structured_output;
             if (result.status && result.status !== "SUCCESS") {
               resultError = result.error ?? `agy finished with status ${result.status}`;
             } else if (!finalText.trim() && result.denied_actions?.length) {
@@ -157,6 +160,6 @@ export const agyAdapter: AgentAdapter = {
       onEvent({ kind: "error", message: error });
       return { ok: false, finalText: finalText || streamedText, sessionId, error };
     }
-    return { ok: true, finalText, sessionId };
+    return { ok: true, finalText, sessionId, structured };
   },
 };

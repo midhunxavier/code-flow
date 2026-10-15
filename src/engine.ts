@@ -14,6 +14,7 @@ import {
 import { MAX_DIFF_CHARS, STEP_TIMEOUT_MS } from "./config.js";
 import { runCheck, type CheckResult } from "./checks.js";
 import { contextPrompt, hasStagedFiles, prepareContext, type ContextInput, type RunContext } from "./context.js";
+import { extractJson, shapeProblem } from "./json.js";
 import {
   CONTEXT_DIR,
   commitAll,
@@ -22,6 +23,7 @@ import {
   discardChanges,
   ensureCodeflowExcludes,
   isClean,
+  mergeBranch,
   openWorktree,
   repoRoot,
   resolveCommit,
@@ -31,6 +33,7 @@ import {
   type Worktree,
 } from "./git.js";
 import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines } from "./store.js";
+import { branchDiff, mergeInto, openPullRequest, removeWorktrees, type DiffFile } from "./ship.js";
 
 /** Per-run staging folder (inside the run's worktree folder) for context files. */
 const STAGE_DIR = ".context";
@@ -103,6 +106,12 @@ export interface Run {
   archived: boolean;
   /** How many times the run was resumed. */
   resumes?: number;
+  /** Work you sent back to an agent after the run (review comments, conflict fixes). */
+  followUps: FollowUp[];
+  /** Result branches merged from the UI. */
+  merges: { branch: string; into: string; commit: string; at: number }[];
+  /** Pull requests opened from the UI, by branch. */
+  prs: Record<string, string>;
   status: Status;
   createdAt: number;
   endedAt?: number;
@@ -113,6 +122,20 @@ export interface Run {
 }
 
 export type RunSummary = Omit<Run, "steps">;
+
+export interface FollowUp {
+  id: string;
+  kind: "comments" | "resolve-conflicts";
+  worktree: string;
+  agent: AgentId;
+  /** What to tell the agent (the user's comments), or the branch to merge for conflicts. */
+  message: string;
+  mergeFrom?: string;
+  status: "pending" | "done" | "failed";
+  result?: string;
+  checkPassed?: boolean;
+  at: number;
+}
 
 export interface LoopSettings {
   /** Shell command code-flow runs itself to decide "done" (e.g. `npm test`). Empty = agents' judgment only. */
@@ -191,6 +214,16 @@ export interface AskParams {
   resume?: StepOutcome;
   /** Return a failed outcome instead of throwing (useful for races). */
   allowFailure?: boolean;
+  /** Constrain the answer to this JSON Schema. Prefer `ctx.decide()`, which also validates. */
+  schema?: object;
+}
+
+export interface DecideParams extends AskParams {
+  schema: object;
+  /** What the answer is, for messages: "review verdict", "subtask list"… */
+  what: string;
+  /** Extra checks beyond the schema; return a problem description to reject the answer. */
+  validate?: (value: any) => string | undefined;
 }
 
 export interface StepOutcome extends RunResult {
@@ -234,6 +267,11 @@ export class TeamContext {
   /** True when the user configured a "done when" check command. */
   get hasCheck(): boolean {
     return !!this.run.loop.check;
+  }
+
+  /** Publish the run's current state (for engine helpers outside the class). */
+  publish() {
+    this.manager.emitRun(this.run);
   }
 
   /** Record whether the final result passes its check (shown in the result header). */
@@ -410,6 +448,38 @@ export class TeamContext {
     this.manager.emitRun(this.run);
   }
 
+  /**
+   * Ask for a structured answer (verdict, pick, plan…). The CLI enforces the JSON Schema; if the
+   * answer is still unusable the agent is asked once more in the same session, and then the
+   * run fails — an unreadable answer is never treated as approval.
+   */
+  async decide<T>(params: DecideParams): Promise<{ value: T; outcome: StepOutcome }> {
+    const read = (outcome: StepOutcome) => {
+      const value = outcome.structured ?? extractJson(outcome.finalText);
+      const problem = value === undefined ? "no JSON answer" : shapeProblem(params.schema, value) ?? params.validate?.(value);
+      return { value: value as T, problem };
+    };
+    const first = await this.ask(params);
+    const firstRead = read(first);
+    if (!firstRead.problem) return { value: firstRead.value, outcome: first };
+
+    this.log(`${params.title}: no valid ${params.what} (${firstRead.problem}); asking again`, "warn");
+    const retry = await this.ask({
+      ...params,
+      title: `${params.title} (retry)`,
+      resume: first.sessionId ? first : params.resume,
+      prompt:
+        `Your previous answer did not contain a valid ${params.what}: ${firstRead.problem}.\n` +
+        `Reply again with only a JSON object matching this schema:\n\`\`\`json\n${JSON.stringify(params.schema)}\n\`\`\`` +
+        (first.sessionId ? "" : `\n\nThe original request was:\n${params.prompt}`),
+    });
+    const retryRead = read(retry);
+    if (retryRead.problem) {
+      throw new Error(`${params.title} (${params.agent}) did not return a valid ${params.what}, even after a retry: ${retryRead.problem}`);
+    }
+    return { value: retryRead.value, outcome: retry };
+  }
+
   /** Run one agent turn as a visible step in this run. */
   async ask(params: AskParams): Promise<StepOutcome> {
     this.checkCancelled();
@@ -451,6 +521,7 @@ export class TeamContext {
         resumeSessionId: params.resume?.sessionId,
         model: this.run.agentSettings[params.agent]?.model,
         effort: this.run.agentSettings[params.agent]?.effort,
+        jsonSchema: params.schema,
         signal: this.signal,
         timeoutMs: STEP_TIMEOUT_MS,
       },
@@ -583,12 +654,101 @@ export class RunManager {
   }
 
   setArchived(id: string, archived: boolean) {
-    const run = this.runs.get(id);
-    if (!run) throw new Error("Run not found");
+    const run = this.require(id);
     if (run.status === "running") throw new Error("Stop the run before archiving it");
     run.archived = archived;
     if (archived) run.seen = true;
     this.emitRun(run);
+  }
+
+  /**
+   * Archive a run and, optionally, remove its worktrees (branches are kept unless asked).
+   * A later Resume re-attaches kept branches, so nothing committed is lost.
+   */
+  async archive(id: string, opts: { cleanup?: boolean; deleteBranches?: boolean } = {}) {
+    const run = this.require(id);
+    this.setArchived(id, true);
+    if (!opts.cleanup) return { removed: [], deletedBranches: [] };
+    const result = await removeWorktrees(run.repo, run.worktrees, !!opts.deleteBranches);
+    this.emit(run, {
+      type: "log",
+      level: "info",
+      text: `Archived: removed ${result.removed.length} worktree(s)${result.deletedBranches.length ? ` and ${result.deletedBranches.length} branch(es)` : "; branches kept"}`,
+    });
+    return result;
+  }
+
+  /** Per-file diff of one of the run's branches against the run's base. */
+  async diff(id: string, branch: string): Promise<DiffFile[]> {
+    const run = this.require(id);
+    if (!run.worktrees.some((w) => w.branch === branch) && !run.artifacts.some((a) => a.branch === branch)) {
+      throw new Error("That branch doesn't belong to this run");
+    }
+    return branchDiff(run.repo, run.baseRef, branch);
+  }
+
+  /** Send work back to an agent after the run (review comments, or resolving merge conflicts). */
+  async followUp(id: string, input: { kind?: FollowUp["kind"]; worktree: string; agent: AgentId; message?: string; mergeFrom?: string }) {
+    const run = this.require(id);
+    if (run.status !== "done") throw new Error("Follow-ups can be sent once the run has finished");
+    if (!run.worktrees.some((w) => w.name === input.worktree)) throw new Error(`Unknown worktree "${input.worktree}"`);
+    const kind = input.kind ?? "comments";
+    if (kind === "comments" && !input.message?.trim()) throw new Error("Write at least one comment");
+    if (kind === "resolve-conflicts" && !input.mergeFrom) throw new Error("Say which branch to merge");
+    run.followUps.push({
+      id: `f${run.followUps.length + 1}`,
+      kind,
+      worktree: input.worktree,
+      agent: input.agent,
+      message: input.message?.trim() ?? "",
+      mergeFrom: input.mergeFrom,
+      status: "pending",
+      at: Date.now(),
+    });
+    return this.resume(id);
+  }
+
+  /** Merge a result branch into one of your branches (see `mergeInto` for how it stays safe). */
+  async merge(id: string, input: { branch: string; into: string; archiveAfter?: boolean }) {
+    const run = this.require(id);
+    if (run.status === "running") throw new Error("Wait for the run to finish before merging");
+    if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
+    const outcome = await mergeInto(run.repo, input.branch, input.into, `Merge ${input.branch} into ${input.into} (code-flow run ${run.id})`);
+    if (outcome.ok) {
+      run.merges.push({ branch: input.branch, into: input.into, commit: outcome.commit, at: Date.now() });
+      this.emit(run, { type: "log", level: "info", text: `Merged ${input.branch} into ${input.into} (${outcome.commit.slice(0, 8)})` });
+      this.emitRun(run);
+      if (input.archiveAfter) await this.archive(id, { cleanup: true });
+    }
+    return outcome;
+  }
+
+  /** Push a result branch and open a pull request for it. */
+  async pullRequest(id: string, input: { branch: string; into: string }) {
+    const run = this.require(id);
+    if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
+    const title = run.task.split("\n")[0]!.slice(0, 72) || `code-flow run ${run.id}`;
+    const agents = [...new Set(Object.values(run.roles).flat())].join(", ");
+    const body = [
+      run.task,
+      "",
+      "---",
+      `Made by a code-flow team (${this.findPattern(run.pattern)?.name ?? run.pattern}; agents: ${agents}).`,
+      run.loop.check ? `Check: \`${run.loop.check}\` — ${run.verdict === "passed" ? "passing" : run.verdict === "failing" ? "failing" : "not run"}.` : "",
+      "",
+      run.summary ?? "",
+    ].join("\n");
+    const url = await openPullRequest(run.repo, input.branch, input.into, title, body);
+    run.prs[input.branch] = url;
+    this.emit(run, { type: "log", level: "info", text: `Opened pull request ${url}` });
+    this.emitRun(run);
+    return url;
+  }
+
+  private require(id: string): Run {
+    const run = this.runs.get(id);
+    if (!run) throw new Error("Run not found");
+    return run;
   }
 
   async start(input: StartRunInput): Promise<Run> {
@@ -633,6 +793,9 @@ export class RunManager {
       loop,
       usage: { agentSteps: 0, checks: 0 },
       worktrees: [],
+      followUps: [],
+      merges: [],
+      prs: {},
       seen: false,
       archived: false,
       status: "running",
@@ -693,8 +856,9 @@ export class RunManager {
 
     const done = pattern
       .run(ctx)
-      .then((summary) => {
+      .then(async (summary) => {
         run.summary = summary;
+        await runFollowUps(ctx, run);
         run.status = "done";
       })
       .catch((err: Error) => {
@@ -744,6 +908,57 @@ export class RunManager {
   }
 }
 
+/** Work the user sent back after the run: each follow-up is one agent turn, then the check. */
+async function runFollowUps(ctx: TeamContext, run: Run) {
+  for (const f of run.followUps) {
+    if (f.status !== "pending") continue;
+    const wt = await ctx.worktree(f.worktree);
+    if (f.kind === "resolve-conflicts" && f.mergeFrom) {
+      // code-flow starts the merge; the agent only resolves the conflict markers.
+      await ctx.remember("merge-start", `${f.id}|${f.mergeFrom}`, () => mergeBranch(wt, f.mergeFrom!));
+    }
+    // Continue the agent's own session in this worktree when it has one.
+    const previous = [...run.steps].reverse().find((s) => s.kind === "agent" && s.agent === f.agent && s.worktree === f.worktree && s.sessionId);
+    const outcome = await ctx.ask({
+      title: f.kind === "resolve-conflicts" ? `Resolve conflicts with ${f.mergeFrom}` : "Address review comments",
+      role: "follow-up",
+      agent: f.agent,
+      mode: "write",
+      cwd: wt,
+      allowFailure: true,
+      resume: previous ? { ok: true, finalText: previous.finalText ?? "", sessionId: previous.sessionId, stepId: previous.id, agent: f.agent } : undefined,
+      prompt:
+        (previous ? "" : `You are working in a git worktree for this task:\n${ctx.task}\n\n`) +
+        (f.kind === "resolve-conflicts"
+          ? `code-flow merged \`${f.mergeFrom}\` into this branch and it has conflicts. Resolve every conflict so both sides' intent is kept, ` +
+            "remove all conflict markers, make sure it builds, and summarize. Don't run git merge --abort or commit."
+          : `The user reviewed your changes and left these comments:\n\n${f.message}\n\nAddress each one, run the relevant tests, and summarize what you changed. Don't commit; code-flow does.`),
+    });
+    await ctx.commit(wt, f.kind === "resolve-conflicts" ? `Merge ${f.mergeFrom} (conflicts resolved by ${f.agent})` : `${f.agent}: address review comments (${f.id})`);
+    const check = await ctx.check(wt, `Check after follow-up ${f.id}`);
+    f.status = outcome.ok ? "done" : "failed";
+    f.result = outcome.ok ? outcome.finalText : outcome.error;
+    f.checkPassed = check ? check.ok : undefined;
+    const artifact = run.artifacts.find((a) => a.branch === wt.branch);
+    if (artifact) await ctx.artifact(artifact.label, wt);
+    ctx.publish();
+  }
+  // The latest follow-up's check is the current truth about the result, and the summary
+  // (rebuilt by the pattern on every replay) should say what happened after the run.
+  const lastChecked = [...run.followUps].reverse().find((f) => f.status === "done" && f.checkPassed !== undefined);
+  if (lastChecked) ctx.setVerdict(lastChecked.checkPassed ? "passed" : "failing");
+  const finished = run.followUps.filter((f) => f.status !== "pending");
+  if (finished.length) {
+    run.summary += `\n\n## Follow-ups\n${finished
+      .map((f) => {
+        const what = f.kind === "resolve-conflicts" ? `resolved conflicts with \`${f.mergeFrom}\`` : "addressed your review comments";
+        const check = f.checkPassed === undefined ? "" : f.checkPassed ? " — check passes" : " — check still fails";
+        return `- ${f.agent} ${f.status === "done" ? what : "couldn't finish"} in ${f.worktree}${check}`;
+      })
+      .join("\n")}`;
+  }
+}
+
 /** When a run doesn't finish, list each worktree that holds work so you can still use it. */
 async function collectUnfinishedWork(run: Run) {
   const listed = new Set(run.artifacts.map((a) => a.branch));
@@ -778,6 +993,9 @@ function rebuildRun(events: RunEvent[]): Run | undefined {
     baseLabel: legacy.baseLabel ?? "HEAD",
     branchPrefix: legacy.branchPrefix ?? `codeflow/${legacy.id}`,
     worktreeDir: legacy.worktreeDir ?? join(worktreeRoot(legacy.repo), legacy.id),
+    followUps: legacy.followUps ?? [],
+    merges: legacy.merges ?? [],
+    prs: legacy.prs ?? {},
     seen: legacy.seen ?? true,
     archived: legacy.archived ?? false,
     artifacts: legacy.artifacts ?? [],
@@ -787,7 +1005,7 @@ function rebuildRun(events: RunEvent[]): Run | undefined {
 
 function strip(run: Run): RunSummary {
   const { steps: _steps, ...rest } = run;
-  return { ...rest, artifacts: [...rest.artifacts], worktrees: [...rest.worktrees] };
+  return { ...rest, artifacts: [...rest.artifacts], worktrees: [...rest.worktrees], followUps: rest.followUps.map((f) => ({ ...f })) };
 }
 
 function newRunId(): string {

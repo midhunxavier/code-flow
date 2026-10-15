@@ -28,6 +28,8 @@ export interface RunOptions {
   signal?: AbortSignal;
   /** Hard cap per run. Defaults to 30 minutes. */
   timeoutMs?: number;
+  /** Constrain the final answer to this JSON Schema (all three CLIs support it). */
+  jsonSchema?: object;
 }
 
 /** Normalized event stream — the UI and workflow engine only ever see these. */
@@ -47,6 +49,8 @@ export interface RunResult {
   finalText: string;
   sessionId?: string;
   error?: string;
+  /** The schema-constrained answer, when `jsonSchema` was given and the CLI returned one. */
+  structured?: unknown;
 }
 
 export interface ModelInfo {

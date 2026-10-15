@@ -41,3 +41,46 @@ function matchingBrace(text: string, end: number): number {
   }
   return -1;
 }
+
+/**
+ * Minimal JSON Schema check for the shapes code-flow asks agents for (objects, arrays,
+ * strings, numbers, booleans, enums, required keys). Returns a problem description, or
+ * undefined when the value fits.
+ */
+export function shapeProblem(schema: any, value: unknown, path = "answer"): string | undefined {
+  if (!schema || typeof schema !== "object") return undefined;
+  if (Array.isArray(schema.enum)) {
+    return schema.enum.includes(value) ? undefined : `${path} must be one of ${schema.enum.map((v: unknown) => JSON.stringify(v)).join(", ")}`;
+  }
+  switch (schema.type) {
+    case "object": {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return `${path} must be an object`;
+      for (const key of schema.required ?? []) {
+        if (!(key in (value as object))) return `${path}.${key} is missing`;
+      }
+      for (const [key, sub] of Object.entries(schema.properties ?? {})) {
+        if (key in (value as object)) {
+          const problem = shapeProblem(sub, (value as Record<string, unknown>)[key], `${path}.${key}`);
+          if (problem) return problem;
+        }
+      }
+      return undefined;
+    }
+    case "array":
+      if (!Array.isArray(value)) return `${path} must be an array`;
+      for (let i = 0; i < value.length; i++) {
+        const problem = shapeProblem(schema.items, value[i], `${path}[${i}]`);
+        if (problem) return problem;
+      }
+      return undefined;
+    case "string":
+      return typeof value === "string" ? undefined : `${path} must be a string`;
+    case "number":
+    case "integer":
+      return typeof value === "number" ? undefined : `${path} must be a number`;
+    case "boolean":
+      return typeof value === "boolean" ? undefined : `${path} must be true or false`;
+    default:
+      return undefined;
+  }
+}

@@ -1,7 +1,7 @@
 import { adapters, isAgentId, type AgentId } from "../adapters/index.js";
 import type { Pattern } from "../engine.js";
 import { hasConflictMarkers, mergeBranch } from "../git.js";
-import { extractJson } from "../json.js";
+import { REVIEW_SCHEMA, SUBTASKS_SCHEMA } from "./schemas.js";
 import { checkSection, fence, fixUntilGreen, jsonInstruction, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface Subtask {
@@ -13,7 +13,7 @@ interface Subtask {
 
 interface Review {
   verdict: "approve" | "changes_requested";
-  issues?: { problem: string; fix?: string }[];
+  issues: { severity: string; file: string; problem: string; fix: string }[];
 }
 
 /**
@@ -54,8 +54,11 @@ export const supervisorPattern: Pattern = {
     const roster = workers.map((w) => `"${w}" (${adapters[w].displayName})`).join(", ");
 
     const integration = await ctx.worktree("integration");
-    const plan = await ctx.ask({
+    const decomposed = await ctx.decide<{ subtasks: Subtask[] }>({
       title: "Decompose task",
+      schema: SUBTASKS_SCHEMA,
+      what: "subtask list",
+      validate: (v: { subtasks: Subtask[] }) => (v.subtasks.length ? undefined : "the list is empty"),
       role: "supervisor",
       agent: supervisor,
       mode: "read",
@@ -75,9 +78,8 @@ export const supervisorPattern: Pattern = {
         ),
     });
 
-    const parsed = extractJson<{ subtasks?: Subtask[] }>(plan.finalText);
-    const subtasks = (parsed?.subtasks ?? []).slice(0, maxSubtasks);
-    if (subtasks.length === 0) throw new Error("Supervisor did not return any subtasks");
+    const plan = decomposed.outcome;
+    const subtasks = decomposed.value.subtasks.slice(0, maxSubtasks);
 
     // Respect the supervisor's assignment when it named a worker on the roster; otherwise round-robin.
     const assigned = subtasks.map((sub, i) => ({
@@ -114,7 +116,7 @@ export const supervisorPattern: Pattern = {
         ctx.log(`Skipping failed subtask "${r.sub.title}"`, "warn");
         continue;
       }
-      const merge = await mergeBranch(integration, r.wt.branch);
+      const merge = await ctx.remember("merge", r.wt.branch, () => mergeBranch(integration, r.wt.branch));
       if (merge.ok) {
         ctx.log(`Merged ${r.wt.branch}`);
         continue;
@@ -148,8 +150,10 @@ export const supervisorPattern: Pattern = {
     let { check } = await fixUntilGreen(ctx, { agent: supervisor, role: "supervisor", wt: integration, attempts: 2 });
 
     const diff = await ctx.diff(integration);
-    const review = await ctx.ask({
+    const reviewed = await ctx.decide<Review>({
       title: "Integration review",
+      schema: REVIEW_SCHEMA,
+      what: "review verdict",
       role: "supervisor",
       agent: supervisor,
       mode: "read",
@@ -160,10 +164,10 @@ export const supervisorPattern: Pattern = {
         "missing pieces, inconsistencies between parts, broken integration, failing tests." +
         section("Combined diff", fence(diff, "diff")) +
         (check ? checkSection(check, 3_000) : "") +
-        jsonInstruction('{"verdict": "approve" | "changes_requested", "issues": [{"problem": "...", "fix": "..."}]}'),
+        jsonInstruction('{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}'),
     });
 
-    const verdict = extractJson<Review>(review.finalText);
+    const verdict = reviewed.value;
     if (verdict?.verdict === "changes_requested" && verdict.issues?.length) {
       await ctx.ask({
         title: "Fix integration issues",
@@ -191,7 +195,7 @@ export const supervisorPattern: Pattern = {
           .map((r) => `- ${r.sub.title} → ${r.agent}: ${r.result.ok ? "done" : `failed (${r.result.error})`}`)
           .join("\n"),
       ),
-      section("Integration review", verdict ? `${verdict.verdict} — ${verdict.issues?.length ?? 0} issues` : review.finalText),
+      section("Integration review", `${verdict.verdict} — ${verdict.issues.length} issues`),
     ].join("\n");
   },
 };

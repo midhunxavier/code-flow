@@ -2,3 +2,4 @@ node_modules/
 .codeflow/
 *.log
 .codeflow-dev/
+public/index.html

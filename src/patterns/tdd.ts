@@ -1,7 +1,7 @@
 import type { Pattern, StepOutcome } from "../engine.js";
 import { isPlainTestCommand, type CheckResult } from "../checks.js";
 import { changedFiles, resolveCommit } from "../git.js";
-import { extractJson } from "../json.js";
+import { TEST_SPEC_SCHEMA, TEST_VERDICT_SCHEMA } from "./schemas.js";
 import { checkSection, fence, jsonInstruction, preamble, section, WRITE } from "./prompts.js";
 
 interface TestSpec {
@@ -38,8 +38,10 @@ export const tddPattern: Pattern = {
     const maxRounds = ctx.option("maxRounds", 3);
     const wt = await ctx.worktree("tdd");
 
-    let testerStep = await ctx.ask({
+    const written = await ctx.decide<TestSpec>({
       title: "Write failing tests",
+      schema: TEST_SPEC_SCHEMA,
+      what: "test command",
       role: "tester",
       agent: tester,
       mode: "write",
@@ -54,7 +56,8 @@ export const tddPattern: Pattern = {
         ) +
         jsonInstruction('{"test_command": "command that runs these tests", "test_files": ["path/to/test"]}'),
     });
-    const spec = extractJson<TestSpec>(testerStep.finalText);
+    let testerStep = written.outcome;
+    const spec: TestSpec | undefined = written.value;
     const testsCommit = await ctx.commit(wt, `${tester}: failing tests`);
     const testFiles = testsCommit ? await changedFiles(wt.path, wt.base, testsCommit) : spec?.test_files ?? [];
 
@@ -97,7 +100,7 @@ export const tddPattern: Pattern = {
 
     for (let round = 1; round <= maxRounds; round++) {
       // Only the builder's own changes count when checking for edited tests.
-      const before = await resolveCommit(wt.path);
+      const before = await ctx.remember("head", `before round ${round}`, () => resolveCommit(wt.path));
       builderStep = await ctx.ask({
         title: round === 1 ? "Implement to pass tests" : `Fix failures (round ${round})`,
         role: "builder",
@@ -133,8 +136,10 @@ export const tddPattern: Pattern = {
         }
       }
 
-      testerStep = await ctx.ask({
+      const probed = await ctx.decide<TestVerdict>({
         title: `Try to break it (round ${round})`,
+        schema: TEST_VERDICT_SCHEMA,
+        what: "test verdict",
         role: "tester",
         agent: tester,
         mode: "write",
@@ -149,7 +154,8 @@ export const tddPattern: Pattern = {
           jsonInstruction('{"verdict": "pass" | "fail", "failures": ["what failed and why"]}'),
       });
       await ctx.commit(wt, `${tester}: edge-case tests round ${round}`);
-      verdict = extractJson<TestVerdict>(testerStep.finalText);
+      testerStep = probed.outcome;
+      verdict = probed.value;
       const gaps = (verdict?.failures ?? []).map((f) => `- ${f}`).join("\n");
 
       if (evidence) {

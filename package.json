@@ -5,18 +5,26 @@
   "description": "Run Claude Code, Codex and Antigravity CLI as a team of coding agents using your own subscriptions.",
   "type": "module",
   "scripts": {
-    "start": "tsx src/server.ts",
-    "dev": "PORT=4318 CODEFLOW_HOME=.codeflow-dev PATH=\"$PWD/test/fake-bin:$PATH\" tsx watch src/server.ts",
-    "dev:real": "PORT=4318 CODEFLOW_HOME=.codeflow-dev tsx watch src/server.ts",
+    "build": "node scripts/build-ui.mjs",
+    "start": "node scripts/build-ui.mjs && tsx src/server.ts",
+    "dev": "PORT=4318 CODEFLOW_HOME=.codeflow-dev PATH=\"$PWD/test/fake-bin:$PATH\" node scripts/dev.mjs",
+    "dev:real": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts",
+    "test:e2e": "tsx --test test/e2e/*.e2e.ts"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "esbuild": "^0.25.12",
+    "playwright-core": "^1.64.1",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@preact/signals": "^1.3.4",
+    "preact": "^10.29.8"
   }
 }
