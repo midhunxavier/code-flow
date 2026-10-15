@@ -73,6 +73,14 @@ export const checkCmd = signal("");
 export const checkHint = signal("");
 export const setupCmd = signal("");
 export const limits = signal(store.json("limits", { maxMinutes: 60, maxSteps: 40 }));
+/** "Let me approve the plan before agents build" (patterns that have a plan step). */
+export const approvePlan = signal(store.get("approvePlan") === "1");
+export function setApprovePlan(on: boolean) {
+  approvePlan.value = on;
+  store.set("approvePlan", on ? "1" : "0");
+}
+/** Patterns with a plan checkpoint, and what you approve there. */
+export const CHECKPOINTS: Record<string, string> = { pipeline: "the plan", debate: "the plan", supervisor: "the subtasks", tdd: "the tests" };
 
 export function setTask(value: string) {
   task.value = value;
@@ -167,7 +175,7 @@ export async function loadModels() {
 
 // ---------------------------------------------------------------- runs
 /** A run needs you when it finished and you haven't looked, or it was interrupted. */
-export const needsYou = (r: RunSummary) => !r.archived && r.status !== "running" && (r.status === "interrupted" || !r.seen);
+export const needsYou = (r: RunSummary) => !r.archived && (!!r.awaiting || (r.status !== "running" && (r.status === "interrupted" || !r.seen)));
 /** A finished run whose result fails its check is a warning, not a success. */
 export const runState = (r: { status: string; verdict?: string }) => (r.status === "done" && r.verdict === "failing" ? "failing" : r.status);
 
@@ -195,6 +203,7 @@ export function watchAllRuns(onFinished: (run: RunSummary) => void) {
     const before = runs.value.get(run.id);
     upsertRun(run);
     if (before?.status === "running" && run.status !== "running") onFinished(run);
+    else if (run.awaiting && !before?.awaiting) onFinished(run); // paused for your decision
   };
 }
 

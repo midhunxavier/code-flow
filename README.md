@@ -109,6 +109,22 @@ Verdicts, judge picks, subtask lists and test specs are **schema-constrained**: 
 
 Judging in a race is blind: no author summaries, a shuffled order (seeded per run, so a resumed run replays identically), and an optional **panel** of judges that vote. Pick vendors that aren't competing; the UI suggests one, and the log warns when a judge also competes.
 
+## Talking to a run
+
+Runs are conversations, not fire-and-forget jobs:
+
+- **Approve the plan:** tick *Let me approve the plan* (the subtasks for Supervisor, the tests for Test-first). The run pauses at that checkpoint, and its time budget with it.
+  - **Approve:** the agents start building.
+  - **Ask for changes:** your note goes to the author, who revises in its own session and asks again.
+  - **Reject:** the run ends without building anything.
+  - A pending checkpoint survives restarts. Waiting runs show under *Needs you*, with a notification.
+- **Message the team** while it runs: your note is delivered at the start of the next turn of the agent you pick (or whoever goes next), never into a turn that has already started. The run view shows each note as queued or delivered.
+- **Reply** after it finishes:
+  - to an agent in its worktree: it continues its own session, then code-flow commits and re-runs the check;
+  - or to *the whole team again*: a new run that starts from this run's result branch, with your feedback added to the task.
+
+Prompts are passed on **stdin**, not as command-line arguments (`claude -p` reading stdin, `codex exec -`, and agy's stream-json input), so long tasks and diffs aren't limited by the operating system's argument size.
+
 ## Runs survive restarts
 
 Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and the server rebuilds the run list from those files when it starts.
@@ -202,7 +218,6 @@ The suite runs every pattern end to end against fake `claude` / `codex` / `agy` 
 - Claude's write mode can run allow-listed commands such as `npm`, `node` and `make`, and those can run arbitrary project scripts. Only run it on repos you trust. Codex is additionally confined by its own sandbox.
 - Next steps worth doing:
   - Use `codex app-server` instead of `exec` for mid-turn steering and real approvals.
-  - Add human approval gates between steps.
   - Add triggers: scheduled loops, and CI or GitHub events that start runs. Only after runs are saved to disk.
   - Track quota per vendor and route work to whichever plan has headroom.
   - Add a "council review" pattern for existing PRs.

@@ -52,8 +52,9 @@ export const agyAdapter: AgentAdapter = {
 
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
     const timeoutMs = opts.timeoutMs ?? 30 * 60_000;
+    // Prompt as one stream-json message on stdin (-p would need it as an argument).
     const args = [
-      "-p", opts.prompt,
+      "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--print-timeout", `${Math.ceil(timeoutMs / 60_000)}m`,
       "--sandbox",
@@ -75,6 +76,7 @@ export const agyAdapter: AgentAdapter = {
     const outcome = await runJsonlProcess({
       command: "agy",
       args,
+      input: `${JSON.stringify({ event: "user", message: { content: opts.prompt } })}\n`,
       cwd: opts.cwd,
       env: sandboxGitEnv(),
       signal: opts.signal,

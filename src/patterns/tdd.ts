@@ -1,4 +1,4 @@
-import type { Pattern, StepOutcome } from "../engine.js";
+import { RejectedError, type Pattern, type StepOutcome } from "../engine.js";
 import { isPlainTestCommand, type CheckResult } from "../checks.js";
 import { changedFiles, resolveCommit } from "../git.js";
 import { TEST_SPEC_SCHEMA, TEST_VERDICT_SCHEMA } from "./schemas.js";
@@ -6,7 +6,7 @@ import { checkSection, fence, jsonInstruction, preamble, section, WRITE } from "
 
 interface TestSpec {
   test_command: string;
-  test_files?: string[];
+  test_files: string[];
 }
 
 interface TestVerdict {
@@ -38,7 +38,7 @@ export const tddPattern: Pattern = {
     const maxRounds = ctx.option("maxRounds", 3);
     const wt = await ctx.worktree("tdd");
 
-    const written = await ctx.decide<TestSpec>({
+    let written = await ctx.decide<TestSpec>({
       title: "Write failing tests",
       schema: TEST_SPEC_SCHEMA,
       what: "test command",
@@ -56,6 +56,29 @@ export const tddPattern: Pattern = {
         ) +
         jsonInstruction('{"test_command": "command that runs these tests", "test_files": ["path/to/test"]}'),
     });
+    // Checkpoint: the tests are the spec — approve them before anyone implements.
+    for (let round = 1; ; round++) {
+      const answer = await ctx.approve(
+        "plan",
+        round === 1 ? "Approve the tests" : `Approve the revised tests (${round})`,
+        `${written.outcome.finalText}\n\nTest command: \`${written.value.test_command}\`\nFiles: ${written.value.test_files.join(", ") || "(none listed)"}`,
+      );
+      if (answer.decision === "approve") break;
+      if (answer.decision === "reject") throw new RejectedError(`You rejected the tests.${answer.note ? ` (${answer.note})` : ""}`);
+      written = await ctx.decide<TestSpec>({
+        title: `Revise the tests (${round})`,
+        schema: TEST_SPEC_SCHEMA,
+        what: "test command",
+        role: "tester",
+        agent: tester,
+        mode: "write",
+        cwd: wt,
+        resume: written.outcome.sessionId ? written.outcome : undefined,
+        prompt:
+          `The user asked for changes to your tests:\n${answer.note}\n\nUpdate the tests (still no implementation) and report again.` +
+          jsonInstruction('{"test_command": "command that runs these tests", "test_files": ["path/to/test"]}'),
+      });
+    }
     let testerStep = written.outcome;
     const spec: TestSpec | undefined = written.value;
     const testsCommit = await ctx.commit(wt, `${tester}: failing tests`);

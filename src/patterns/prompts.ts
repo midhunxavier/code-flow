@@ -1,6 +1,6 @@
 import { adapters, type AgentId } from "../adapters/index.js";
 import type { CheckResult } from "../checks.js";
-import type { StepOutcome, TeamContext } from "../engine.js";
+import { RejectedError, type StepOutcome, type TeamContext } from "../engine.js";
 import type { Worktree } from "../git.js";
 
 /** Shared framing so every agent knows it is one member of a team. */
@@ -29,6 +29,34 @@ export function jsonInstruction(shape: string): string {
 }
 
 export const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/**
+ * "Approve the plan" checkpoint: you approve, ask for changes (the author revises in its own
+ * session and asks again), or reject (the run ends). A no-op unless the run enabled it.
+ */
+export async function planCheckpoint(
+  ctx: TeamContext,
+  opts: { agent: AgentId; role: string; wt: Worktree; plan: StepOutcome; what: string; render?: (text: string) => string },
+): Promise<StepOutcome> {
+  let plan = opts.plan;
+  for (let round = 1; ; round++) {
+    const title = round === 1 ? `Approve the ${opts.what}` : `Approve the revised ${opts.what} (${round})`;
+    const answer = await ctx.approve("plan", title, opts.render ? opts.render(plan.finalText) : plan.finalText);
+    if (answer.decision === "approve") return plan;
+    if (answer.decision === "reject") throw new RejectedError(`You rejected the ${opts.what}.${answer.note ? ` (${answer.note})` : ""}`);
+    plan = await ctx.ask({
+      title: `Revise the ${opts.what} (${round})`,
+      role: opts.role,
+      agent: opts.agent,
+      mode: "read",
+      cwd: opts.wt,
+      resume: plan.sessionId ? plan : undefined,
+      prompt:
+        (plan.sessionId ? "" : `Your earlier ${opts.what}:\n${plan.finalText}\n\n`) +
+        `The user asked for changes to your ${opts.what}:\n${answer.note}\n\nRevise it and reply with the complete updated ${opts.what}.`,
+    });
+  }
+}
 
 /** What code-flow's own run of the check showed — the evidence agents should act on. */
 export function checkSection(result: CheckResult, maxOutput = 6_000): string {

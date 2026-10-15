@@ -104,6 +104,14 @@ export interface Run {
   /** The user has looked at the finished run (otherwise it "needs you"). */
   seen: boolean;
   archived: boolean;
+  /** Messages you sent while the run was going; delivered at the start of an agent's next turn. */
+  notes: Note[];
+  /** Checkpoints you asked to approve (e.g. the plan before building). */
+  approvals: { plan?: boolean };
+  /** Set while the run is paused for your decision. */
+  awaiting?: { kind: "plan"; title: string; content: string; at: number };
+  /** The run this one continues (a "whole team again" reply). */
+  parentRunId?: string;
   /** How many times the run was resumed. */
   resumes?: number;
   /** Work you sent back to an agent after the run (review comments, conflict fixes). */
@@ -123,9 +131,24 @@ export interface Run {
 
 export type RunSummary = Omit<Run, "steps">;
 
+export interface Note {
+  id: string;
+  text: string;
+  /** Deliver to this agent's next turn; undefined = whichever agent goes next. */
+  agent?: AgentId;
+  status: "queued" | "delivered";
+  deliveredTo?: { stepId: string; agent: AgentId };
+  at: number;
+}
+
+export interface ApprovalAnswer {
+  decision: "approve" | "revise" | "reject";
+  note?: string;
+}
+
 export interface FollowUp {
   id: string;
-  kind: "comments" | "resolve-conflicts";
+  kind: "comments" | "reply" | "resolve-conflicts";
   worktree: string;
   agent: AgentId;
   /** What to tell the agent (the user's comments), or the branch to merge for conflicts. */
@@ -231,6 +254,9 @@ export interface StepOutcome extends RunResult {
   agent: AgentId;
 }
 
+/** You rejected a checkpoint (e.g. the plan); the run ends without building. */
+export class RejectedError extends Error {}
+
 export class CancelledError extends Error {
   constructor() {
     super("Run cancelled");
@@ -254,6 +280,71 @@ export class TeamContext {
   ) {
     this.signal = controller.signal;
     this.replaying = journal.size > 0;
+  }
+
+  private clock?: { timer?: ReturnType<typeof setTimeout>; remaining: number; startedAt: number };
+
+  /** Start the run's time budget; it pauses while the run waits for you. */
+  startClock(minutes: number) {
+    this.clock = { remaining: minutes * 60_000, startedAt: Date.now() };
+    this.armClock();
+  }
+  private armClock() {
+    if (!this.clock) return;
+    this.clock.startedAt = Date.now();
+    this.clock.timer = setTimeout(() => this.stop(`time limit (${this.run.loop.maxMinutes} min)`), this.clock.remaining);
+    this.clock.timer.unref?.();
+  }
+  pauseClock() {
+    if (!this.clock?.timer) return;
+    clearTimeout(this.clock.timer);
+    this.clock.timer = undefined;
+    this.clock.remaining -= Date.now() - this.clock.startedAt;
+  }
+  resumeClock() {
+    if (this.clock && !this.clock.timer) this.armClock();
+  }
+  stopClock() {
+    if (this.clock?.timer) clearTimeout(this.clock.timer);
+    this.clock = undefined;
+  }
+
+  /**
+   * A checkpoint: if you asked to approve this kind of decision, the run pauses (time budget
+   * too) until you approve, ask for changes, or reject. Answers are journaled, so a resumed run
+   * doesn't ask again. Without the checkpoint enabled, this approves immediately.
+   */
+  async approve(kind: "plan", title: string, content: string): Promise<ApprovalAnswer> {
+    if (!this.run.approvals?.[kind]) return { decision: "approve" };
+    this.checkCancelled();
+    return this.remember("approval", title, async () => {
+      this.run.awaiting = { kind, title, content, at: Date.now() };
+      this.run.seen = false;
+      this.pauseClock();
+      this.manager.emitRun(this.run);
+      this.log(`Waiting for you: ${title}`);
+      try {
+        const answer = await this.manager.waitForAnswer(this.run.id, this.signal);
+        this.log(`You chose to ${answer.decision === "revise" ? "ask for changes" : answer.decision}${answer.note ? `: ${answer.note}` : ""}`);
+        return answer;
+      } finally {
+        this.run.awaiting = undefined;
+        this.resumeClock();
+        this.manager.emitRun(this.run);
+      }
+    });
+  }
+
+  /** Notes you queued for the agent that's about to take a turn. */
+  private takeNotes(agent: AgentId, stepId: string): string {
+    const due = this.run.notes.filter((n) => n.status === "queued" && (!n.agent || n.agent === agent));
+    if (!due.length) return "";
+    for (const n of due) {
+      n.status = "delivered";
+      n.deliveredTo = { stepId, agent };
+    }
+    this.manager.emitRun(this.run);
+    return `## A message from the user\n(Sent while the team was working — take it into account.)\n${due.map((n) => `- ${n.text}`).join("\n")}\n\n`;
   }
 
   /** End the run because a budget ran out; in-flight agents and checks are stopped. */
@@ -507,6 +598,9 @@ export class TeamContext {
       status: "running",
       startedAt: Date.now(),
     };
+    // Notes are picked up before the step is announced: anything sent after it shows as
+    // running goes to the next turn, never into a turn that already started.
+    const notes = this.takeNotes(params.agent, step.id);
     this.run.steps.push(step);
     this.manager.emit(this.run, { type: "step", step: { ...step } });
 
@@ -515,7 +609,7 @@ export class TeamContext {
 
     const result = await adapters[params.agent].run(
       {
-        prompt: params.prompt,
+        prompt: notes + params.prompt,
         cwd: params.cwd.path,
         mode: params.mode,
         resumeSessionId: params.resume?.sessionId,
@@ -566,6 +660,8 @@ export interface StartRunInput {
   context?: ContextInput;
   agentSettings?: AgentSettings;
   loop?: Partial<LoopSettings>;
+  approvals?: { plan?: boolean };
+  parentRunId?: string;
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
 }
@@ -693,7 +789,7 @@ export class RunManager {
     if (run.status !== "done") throw new Error("Follow-ups can be sent once the run has finished");
     if (!run.worktrees.some((w) => w.name === input.worktree)) throw new Error(`Unknown worktree "${input.worktree}"`);
     const kind = input.kind ?? "comments";
-    if (kind === "comments" && !input.message?.trim()) throw new Error("Write at least one comment");
+    if (kind !== "resolve-conflicts" && !input.message?.trim()) throw new Error(kind === "reply" ? "Write a reply" : "Write at least one comment");
     if (kind === "resolve-conflicts" && !input.mergeFrom) throw new Error("Say which branch to merge");
     run.followUps.push({
       id: `f${run.followUps.length + 1}`,
@@ -745,6 +841,46 @@ export class RunManager {
     return url;
   }
 
+  private readonly waiters = new Map<string, (answer: ApprovalAnswer) => void>();
+
+  /** Resolves when the user answers the run's checkpoint; rejects if the run is stopped. */
+  waitForAnswer(id: string, signal: AbortSignal): Promise<ApprovalAnswer> {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) return reject(new CancelledError());
+      const onAbort = () => {
+        this.waiters.delete(id);
+        reject(new CancelledError());
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.waiters.set(id, (answer) => {
+        signal.removeEventListener("abort", onAbort);
+        this.waiters.delete(id);
+        resolve(answer);
+      });
+    });
+  }
+
+  /** Your answer to a checkpoint: approve, ask for changes (with a note), or reject. */
+  answer(id: string, answer: ApprovalAnswer) {
+    const run = this.require(id);
+    const waiter = this.waiters.get(id);
+    if (!run.awaiting || !waiter) throw new Error("This run isn't waiting for a decision");
+    if (answer.decision === "revise" && !answer.note?.trim()) throw new Error("Say what should change");
+    waiter({ decision: answer.decision, note: answer.note?.trim() || undefined });
+  }
+
+  /** Queue a message for the running team; it reaches the next turn of `agent` (or of anyone). */
+  addNote(id: string, text: string, agent?: AgentId): Note {
+    const run = this.require(id);
+    if (run.status !== "running") throw new Error("The run has finished — use Reply instead");
+    if (!text.trim()) throw new Error("Write a message");
+    const note: Note = { id: `n${run.notes.length + 1}`, text: text.trim(), agent, status: "queued", at: Date.now() };
+    run.notes.push(note);
+    this.emit(run, { type: "log", level: "info", text: `Message queued for ${agent ?? "the next agent"}: ${note.text}` });
+    this.emitRun(run);
+    return note;
+  }
+
   private require(id: string): Run {
     const run = this.runs.get(id);
     if (!run) throw new Error("Run not found");
@@ -794,6 +930,9 @@ export class RunManager {
       usage: { agentSteps: 0, checks: 0 },
       worktrees: [],
       followUps: [],
+      notes: [],
+      approvals: input.approvals ?? {},
+      parentRunId: input.parentRunId,
       merges: [],
       prs: {},
       seen: false,
@@ -851,8 +990,7 @@ export class RunManager {
     const controller = new AbortController();
     this.controllers.set(run.id, controller);
     const ctx = new TeamContext(run, controller, this, journal);
-    const timeBudget = setTimeout(() => ctx.stop(`time limit (${run.loop.maxMinutes} min)`), run.loop.maxMinutes * 60_000);
-    timeBudget.unref?.();
+    ctx.startClock(run.loop.maxMinutes);
 
     const done = pattern
       .run(ctx)
@@ -863,7 +1001,10 @@ export class RunManager {
       })
       .catch((err: Error) => {
         const aborted = controller.signal.aborted || err instanceof CancelledError;
-        if (aborted && this.shuttingDown && !run.stopReason) {
+        if (err instanceof RejectedError) {
+          run.status = "cancelled";
+          run.error = err.message;
+        } else if (aborted && this.shuttingDown && !run.stopReason) {
           run.status = "interrupted";
           run.error = "code-flow was shut down while this run was in progress. Resume to continue.";
         } else {
@@ -874,7 +1015,8 @@ export class RunManager {
       .then(() => (run.status === "done" || run.status === "interrupted" ? undefined : collectUnfinishedWork(run)))
       .catch(() => undefined)
       .finally(() => {
-        clearTimeout(timeBudget);
+        ctx.stopClock();
+        run.awaiting = undefined;
         run.endedAt = Date.now();
         run.seen = run.status === "cancelled"; // you stopped it yourself; nothing to review
         this.controllers.delete(run.id);
@@ -920,7 +1062,7 @@ async function runFollowUps(ctx: TeamContext, run: Run) {
     // Continue the agent's own session in this worktree when it has one.
     const previous = [...run.steps].reverse().find((s) => s.kind === "agent" && s.agent === f.agent && s.worktree === f.worktree && s.sessionId);
     const outcome = await ctx.ask({
-      title: f.kind === "resolve-conflicts" ? `Resolve conflicts with ${f.mergeFrom}` : "Address review comments",
+      title: f.kind === "resolve-conflicts" ? `Resolve conflicts with ${f.mergeFrom}` : f.kind === "reply" ? "Your reply" : "Address review comments",
       role: "follow-up",
       agent: f.agent,
       mode: "write",
@@ -932,9 +1074,18 @@ async function runFollowUps(ctx: TeamContext, run: Run) {
         (f.kind === "resolve-conflicts"
           ? `code-flow merged \`${f.mergeFrom}\` into this branch and it has conflicts. Resolve every conflict so both sides' intent is kept, ` +
             "remove all conflict markers, make sure it builds, and summarize. Don't run git merge --abort or commit."
-          : `The user reviewed your changes and left these comments:\n\n${f.message}\n\nAddress each one, run the relevant tests, and summarize what you changed. Don't commit; code-flow does.`),
+          : f.kind === "reply"
+            ? `The user replied to your work:\n\n${f.message}\n\nDo what they ask (or answer their question), run the relevant tests if you change code, and summarize. Don't commit; code-flow does.`
+            : `The user reviewed your changes and left these comments:\n\n${f.message}\n\nAddress each one, run the relevant tests, and summarize what you changed. Don't commit; code-flow does.`),
     });
-    await ctx.commit(wt, f.kind === "resolve-conflicts" ? `Merge ${f.mergeFrom} (conflicts resolved by ${f.agent})` : `${f.agent}: address review comments (${f.id})`);
+    await ctx.commit(
+      wt,
+      f.kind === "resolve-conflicts"
+        ? `Merge ${f.mergeFrom} (conflicts resolved by ${f.agent})`
+        : f.kind === "reply"
+          ? `${f.agent}: follow-up to your reply (${f.id})`
+          : `${f.agent}: address review comments (${f.id})`,
+    );
     const check = await ctx.check(wt, `Check after follow-up ${f.id}`);
     f.status = outcome.ok ? "done" : "failed";
     f.result = outcome.ok ? outcome.finalText : outcome.error;
@@ -951,7 +1102,8 @@ async function runFollowUps(ctx: TeamContext, run: Run) {
   if (finished.length) {
     run.summary += `\n\n## Follow-ups\n${finished
       .map((f) => {
-        const what = f.kind === "resolve-conflicts" ? `resolved conflicts with \`${f.mergeFrom}\`` : "addressed your review comments";
+        const what =
+          f.kind === "resolve-conflicts" ? `resolved conflicts with \`${f.mergeFrom}\`` : f.kind === "reply" ? "followed up on your reply" : "addressed your review comments";
         const check = f.checkPassed === undefined ? "" : f.checkPassed ? " — check passes" : " — check still fails";
         return `- ${f.agent} ${f.status === "done" ? what : "couldn't finish"} in ${f.worktree}${check}`;
       })
@@ -994,6 +1146,8 @@ function rebuildRun(events: RunEvent[]): Run | undefined {
     branchPrefix: legacy.branchPrefix ?? `codeflow/${legacy.id}`,
     worktreeDir: legacy.worktreeDir ?? join(worktreeRoot(legacy.repo), legacy.id),
     followUps: legacy.followUps ?? [],
+    notes: legacy.notes ?? [],
+    approvals: legacy.approvals ?? {},
     merges: legacy.merges ?? [],
     prs: legacy.prs ?? {},
     seen: legacy.seen ?? true,

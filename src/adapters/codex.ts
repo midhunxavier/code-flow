@@ -50,9 +50,10 @@ export const codexAdapter: AgentAdapter = {
     const schemaFile = opts.jsonSchema ? await writeSchemaFile(opts.jsonSchema) : undefined;
     if (schemaFile) common.push("--output-schema", schemaFile);
 
+    // "-" reads the prompt from stdin, so its size isn't limited by argv.
     const args = opts.resumeSessionId
-      ? ["exec", "resume", ...common, opts.resumeSessionId, opts.prompt]
-      : ["exec", ...common, "-C", opts.cwd, opts.prompt];
+      ? ["exec", "resume", ...common, opts.resumeSessionId, "-"]
+      : ["exec", ...common, "-C", opts.cwd, "-"];
 
     let sessionId = opts.resumeSessionId;
     let finalText = "";
@@ -62,6 +63,7 @@ export const codexAdapter: AgentAdapter = {
     const outcome = await runJsonlProcess({
       command: "codex",
       args,
+      input: opts.prompt,
       cwd: opts.cwd,
       signal: opts.signal,
       timeoutMs: opts.timeoutMs,

@@ -63,8 +63,8 @@ export const claudeAdapter: AgentAdapter = {
   },
 
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
-    // The prompt goes right after -p: --allowedTools is variadic and would swallow it.
-    const args = ["-p", opts.prompt, "--output-format", "stream-json", "--verbose"];
+    // The prompt goes on stdin (no positional argument), so its size isn't limited by argv.
+    const args = ["-p", "--output-format", "stream-json", "--verbose"];
     if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push("--effort", opts.effort);
@@ -89,6 +89,7 @@ export const claudeAdapter: AgentAdapter = {
     const outcome = await runJsonlProcess({
       command: "claude",
       args,
+      input: opts.prompt,
       cwd: opts.cwd,
       signal: opts.signal,
       timeoutMs: opts.timeoutMs,

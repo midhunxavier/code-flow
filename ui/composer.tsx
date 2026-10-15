@@ -4,6 +4,9 @@ import { api, enc, fmtSize, FLOWS, post, readBase64, SHORT, store } from "./lib.
 import {
   agents,
   agentSettings,
+  approvePlan,
+  CHECKPOINTS,
+  setApprovePlan,
   attachments,
   baseRef,
   branchPrefix,
@@ -68,6 +71,7 @@ export function Composer() {
           attachments: attachments.value.map((a) => ({ name: a.name, data: a.data })),
         },
         agentSettings: agentSettings.value,
+        approvals: { plan: !!CHECKPOINTS[p.id] && approvePlan.value },
         loop: { check: checkCmd.value.trim(), setup: setupCmd.value.trim(), maxMinutes: limits.value.maxMinutes, maxSteps: limits.value.maxSteps },
       });
       store.set("baseRef", baseRef.value);
@@ -113,6 +117,14 @@ export function Composer() {
         </div>
         {p ? <p class="pattern-why">{p.description}</p> : null}
         {p ? <Team p={p} roles={roles} /> : null}
+        {p && CHECKPOINTS[p.id] && (p.id !== "debate" || roles.builder?.length) ? (
+          <label class="checkpoint">
+            <input type="checkbox" checked={approvePlan.value} onChange={(e) => setApprovePlan(e.currentTarget.checked)} />
+            <span>
+              <b>Let me approve {CHECKPOINTS[p.id]}</b> before agents build — the run pauses (and its time budget with it) until you approve, ask for changes, or reject.
+            </span>
+          </label>
+        ) : null}
         <div class={`donewhen ${p?.requiresCheck && !checkCmd.value.trim() ? "required" : ""}`}>
           <label class="lbl" for="checkCmd">
             Done when this passes
@@ -386,7 +398,7 @@ function teamSentence(p: PatternInfo, roles: Record<string, AgentId[]>): string 
   };
   const opts = optionsFor(p);
   const check = checkCmd.value.trim();
-  const doneWhen = check ? ` · done when “${check}” passes` : "";
+  const doneWhen = (check ? ` · done when “${check}” passes` : "") + (CHECKPOINTS[p.id] && approvePlan.value && (p.id !== "debate" || roles.builder?.length) ? ` · you approve ${CHECKPOINTS[p.id]} first` : "");
   switch (p.id) {
     case "pipeline":
       return `${one("planner")} plans → ${one("builder")} builds → ${one("reviewer")} reviews (up to ${opts.maxRounds} rounds of fixes)${doneWhen}`;

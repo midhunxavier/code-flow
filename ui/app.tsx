@@ -121,7 +121,7 @@ function Bell() {
 }
 
 export function notifyFinished(run: RunSummary) {
-  const viewing = route.value.view !== "composer" && "id" in route.value && route.value.id === run.id;
+  const viewing = route.value.view !== "composer" && route.value.id === run.id;
   if (!canNotify() || (viewing && !document.hidden)) return;
   const verbs: Record<string, string> = {
     done: run.verdict === "failing" ? "finished, but its check fails" : "finished",
@@ -129,7 +129,8 @@ export function notifyFinished(run: RunSummary) {
     stopped: "stopped at a limit",
     interrupted: "was interrupted",
   };
-  const n = new Notification(`code-flow: run ${verbs[run.status] ?? run.status}`, { body: run.task.split("\n")[0], tag: run.id });
+  const title = run.awaiting ? `code-flow: ${run.awaiting.title.toLowerCase()}` : `code-flow: run ${verbs[run.status] ?? run.status}`;
+  const n = new Notification(title, { body: run.task.split("\n")[0], tag: run.id });
   n.onclick = () => {
     window.focus();
     route.value = { view: "run", id: run.id };
@@ -163,7 +164,7 @@ function Rail() {
       <span class={`dot ${runState(r)}`} />
       <span class="t">{r.task.split("\n")[0] || "(no task)"}</span>
       <span class="s">
-        {STATUS_TEXT[r.status] ?? r.status} · {patterns.value.find((p) => p.id === r.pattern)?.name ?? r.pattern} · {baseName(r.repo)} · {ago(r.createdAt)}
+        {r.awaiting ? "Waiting for you" : STATUS_TEXT[r.status] ?? r.status} · {patterns.value.find((p) => p.id === r.pattern)?.name ?? r.pattern} · {baseName(r.repo)} · {ago(r.createdAt)}
       </span>
     </button>
   );

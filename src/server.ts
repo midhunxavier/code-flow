@@ -244,6 +244,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
             branchPrefix: body.branchPrefix ? String(body.branchPrefix) : undefined,
             context: body.context && typeof body.context === "object" ? body.context : undefined,
             loop: validateLoop(body.loop),
+            approvals: { plan: body.approvals?.plan === true },
+            parentRunId: typeof body.parentRunId === "string" && manager.get(body.parentRunId) ? body.parentRunId : undefined,
             agentSettings: (() => {
               try {
                 return validateAgentSettings(body.agentSettings);
@@ -293,13 +295,25 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       if (!isAgentId(body.agent)) throw new HttpError(400, "Pick an agent");
       await attempt(() =>
         manager.followUp(run.id, {
-          kind: body.kind === "resolve-conflicts" ? "resolve-conflicts" : "comments",
+          kind: body.kind === "resolve-conflicts" ? "resolve-conflicts" : body.kind === "reply" ? "reply" : "comments",
           worktree: String(body.worktree ?? ""),
           agent: body.agent,
           message: typeof body.message === "string" ? body.message : undefined,
           mergeFrom: typeof body.mergeFrom === "string" ? body.mergeFrom : undefined,
         }),
       );
+      return send(res, 200, { ok: true });
+    }
+    if (req.method === "POST" && parts[3] === "notes") {
+      const body = await readJson(req);
+      const note = await attempt(async () => manager.addNote(run.id, String(body.text ?? ""), isAgentId(body.agent) ? body.agent : undefined));
+      return send(res, 200, note);
+    }
+    if (req.method === "POST" && parts[3] === "answer") {
+      const body = await readJson(req);
+      const decision = body.decision;
+      if (decision !== "approve" && decision !== "revise" && decision !== "reject") throw new HttpError(400, "Unknown decision");
+      await attempt(async () => manager.answer(run.id, { decision, note: typeof body.note === "string" ? body.note : undefined }));
       return send(res, 200, { ok: true });
     }
     if (req.method === "POST" && parts[3] === "merge") {

@@ -1,7 +1,7 @@
 import type { CheckResult } from "../checks.js";
 import type { Pattern, StepOutcome } from "../engine.js";
 import { REVIEW_SCHEMA } from "./schemas.js";
-import { checkSection, fence, fixUntilGreen, jsonInstruction, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { checkSection, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface ReviewVerdict {
   verdict: "approve" | "changes_requested";
@@ -37,7 +37,7 @@ export const pipelinePattern: Pattern = {
     const maxRounds = ctx.option("maxRounds", 2);
     const wt = await ctx.worktree("build");
 
-    const plan = await ctx.ask({
+    let plan = await ctx.ask({
       title: "Plan",
       role: "planner",
       agent: planner,
@@ -52,6 +52,8 @@ export const pipelinePattern: Pattern = {
             "edge cases, and how to verify it (tests or commands). Keep it under 400 words.",
         ),
     });
+
+    plan = await planCheckpoint(ctx, { agent: planner, role: "planner", wt, plan, what: "plan" });
 
     const build = await ctx.ask({
       title: "Implement plan",

@@ -1,6 +1,6 @@
 import { adapters } from "../adapters/index.js";
 import type { Pattern, StepOutcome } from "../engine.js";
-import { fixUntilGreen, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { fixUntilGreen, planCheckpoint, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
 /**
  * Debate → Synthesize → Build.
@@ -89,7 +89,7 @@ export const debatePattern: Pattern = {
     }
 
     const synthesizer = ctx.agent("synthesizer");
-    const plan = await ctx.ask({
+    let plan = await ctx.ask({
       title: "Synthesize plan",
       role: "synthesizer",
       agent: synthesizer,
@@ -111,6 +111,7 @@ export const debatePattern: Pattern = {
       return section("Synthesized plan", plan.finalText);
     }
 
+    plan = await planCheckpoint(ctx, { agent: synthesizer, role: "synthesizer", wt: designWt, plan, what: "plan" });
     const buildWt = await ctx.worktree("build");
     const build = await ctx.ask({
       title: "Implement synthesized plan",

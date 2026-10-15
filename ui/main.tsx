@@ -27,6 +27,7 @@ async function boot() {
     if (location.hash !== hash) history.pushState(null, "", hash);
   });
   window.addEventListener("popstate", () => (route.value = routeFromHash()));
+  window.addEventListener("hashchange", () => (route.value = routeFromHash()));
   render(<App />, document.getElementById("root")!);
   void loadModels();
   const saved = store.get("repo");

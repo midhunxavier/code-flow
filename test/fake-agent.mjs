@@ -25,7 +25,9 @@ if (vendor === "agy" && args[0] === "models") {
   process.exit(0);
 }
 
-const prompt = vendor === "codex" ? args[args.length - 1] : args[args.indexOf("-p") + 1];
+// Prompts arrive on stdin, as the real CLIs receive them from code-flow.
+const stdin = readFileSync(0, "utf8");
+const prompt = vendor === "agy" ? JSON.parse(stdin.split("\n")[0]).message.content : stdin;
 
 // Let tests inspect exactly what code-flow passed to the CLI.
 if (process.env.FAKE_RECORD_DIR) {

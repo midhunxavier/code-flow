@@ -359,3 +359,20 @@
     .review-body { grid-template-columns: 210px minmax(0, 1fr); }
     .comment-row td { padding-left: 56px; }
   }
+
+  /* ---------- M3: checkpoints and conversation ---------- */
+  .checkpoint { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--raised); font-size: 13px; color: var(--muted); cursor: pointer; }
+  .checkpoint b { color: var(--text); }
+  .checkpoint input { margin-top: 3px; }
+  .status-pill.awaiting { background: var(--warn-soft); color: var(--warn); }
+  .awaiting-card { margin: 14px 24px 0; border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--border)); border-radius: var(--radius); background: var(--raised); box-shadow: var(--shadow); overflow: hidden; }
+  .aw-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 14px; background: var(--warn-soft); }
+  .aw-body { padding: 10px 14px; max-height: 320px; overflow: auto; font-size: 13px; }
+  .aw-actions { padding: 10px 14px 14px; display: grid; gap: 8px; border-top: 1px solid var(--border); }
+  .aw-actions .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .convo { border-top: 1px solid var(--border); background: var(--panel); padding: 10px 18px; display: grid; gap: 8px; }
+  .convo-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .convo-row .lbl { margin: 0; }
+  .convo-row input.field { flex: 1; min-width: 220px; }
+  .notes { display: flex; gap: 6px; flex-wrap: wrap; }
+  .note-chip.delivered { opacity: .7; }

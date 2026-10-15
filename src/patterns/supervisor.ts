@@ -1,5 +1,5 @@
 import { adapters, isAgentId, type AgentId } from "../adapters/index.js";
-import type { Pattern } from "../engine.js";
+import { RejectedError, type Pattern } from "../engine.js";
 import { hasConflictMarkers, mergeBranch } from "../git.js";
 import { REVIEW_SCHEMA, SUBTASKS_SCHEMA } from "./schemas.js";
 import { checkSection, fence, fixUntilGreen, jsonInstruction, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
@@ -54,7 +54,7 @@ export const supervisorPattern: Pattern = {
     const roster = workers.map((w) => `"${w}" (${adapters[w].displayName})`).join(", ");
 
     const integration = await ctx.worktree("integration");
-    const decomposed = await ctx.decide<{ subtasks: Subtask[] }>({
+    let decomposed = await ctx.decide<{ subtasks: Subtask[] }>({
       title: "Decompose task",
       schema: SUBTASKS_SCHEMA,
       what: "subtask list",
@@ -77,6 +77,32 @@ export const supervisorPattern: Pattern = {
           '{"subtasks": [{"id": "short-kebab-id", "title": "...", "instructions": "...", "agent": "claude|codex|agy"}]}',
         ),
     });
+
+    // Checkpoint: approve (or revise, or reject) the split before any worker starts.
+    for (let round = 1; ; round++) {
+      const answer = await ctx.approve(
+        "plan",
+        round === 1 ? "Approve the subtasks" : `Approve the revised subtasks (${round})`,
+        decomposed.value.subtasks.map((t, i) => `${i + 1}. **${t.title}** → ${t.agent}\n   ${t.instructions}`).join("\n"),
+      );
+      if (answer.decision === "approve") break;
+      if (answer.decision === "reject") throw new RejectedError(`You rejected the subtasks.${answer.note ? ` (${answer.note})` : ""}`);
+      decomposed = await ctx.decide<{ subtasks: Subtask[] }>({
+        title: `Revise the subtasks (${round})`,
+        schema: SUBTASKS_SCHEMA,
+        what: "subtask list",
+        validate: (v: { subtasks: Subtask[] }) => (v.subtasks.length ? undefined : "the list is empty"),
+        role: "supervisor",
+        agent: supervisor,
+        mode: "read",
+        cwd: integration,
+        resume: decomposed.outcome.sessionId ? decomposed.outcome : undefined,
+        prompt:
+          `The user asked for changes to the subtask split:\n${answer.note}\n\nReply with the complete revised subtask list ` +
+          `(at most ${maxSubtasks}; workers: ${roster}).` +
+          jsonInstruction('{"subtasks": [{"id": "short-kebab-id", "title": "...", "instructions": "...", "agent": "claude|codex|agy"}]}'),
+      });
+    }
 
     const plan = decomposed.outcome;
     const subtasks = decomposed.value.subtasks.slice(0, maxSubtasks);

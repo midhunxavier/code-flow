@@ -8,6 +8,8 @@ export interface JsonlProcessOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** Written to stdin, which is then closed. Prompts go here, not argv (Linux caps one arg at 128 KB). */
+  input?: string;
   /** Called for every stdout line that parses as JSON. */
   onJson: (obj: any) => void;
   /** Called for stdout lines that are not JSON. */
@@ -24,16 +26,20 @@ export interface ProcessOutcome {
 const DEFAULT_TIMEOUT = 30 * 60_000;
 
 /**
- * Spawn a CLI with stdin closed and parse its stdout as JSON Lines.
- * stdin is closed on purpose: the CLIs otherwise wait for piped input.
+ * Spawn a CLI and parse its stdout as JSON Lines. stdin carries the prompt when given, and is
+ * otherwise closed (the CLIs would wait for piped input).
  */
 export function runJsonlProcess(opts: JsonlProcessOptions): Promise<ProcessOutcome> {
   return new Promise((resolve) => {
     const child = spawn(opts.command, opts.args, {
       cwd: opts.cwd,
       env: opts.env ?? process.env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [opts.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
+    if (opts.input !== undefined) {
+      child.stdin?.on("error", () => {}); // the CLI may exit before reading everything
+      child.stdin?.end(opts.input);
+    }
 
     let stderr = "";
     let aborted = false;
@@ -60,7 +66,7 @@ export function runJsonlProcess(opts: JsonlProcessOptions): Promise<ProcessOutco
     }, opts.timeoutMs ?? DEFAULT_TIMEOUT);
     timer.unref();
 
-    const lines = createInterface({ input: child.stdout });
+    const lines = createInterface({ input: child.stdout! });
     lines.on("line", (line) => {
       const trimmed = line.trim();
       if (!trimmed) return;
@@ -78,7 +84,7 @@ export function runJsonlProcess(opts: JsonlProcessOptions): Promise<ProcessOutco
       }
     });
 
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stderr!.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
       if (stderr.length > 64_000) stderr = stderr.slice(-64_000);
     });

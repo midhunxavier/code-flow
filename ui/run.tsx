@@ -89,7 +89,9 @@ export function RunView({ id }: { id: string }) {
     <div class="runview">
       <div class="run-head">
         <div class="run-title">
-          <span class={`status-pill ${state}`}>{state === "failing" ? "Done · check failing" : STATUS_TEXT[run.status] ?? run.status}</span>
+          <span class={`status-pill ${run.awaiting ? "awaiting" : state}`}>
+            {run.awaiting ? "Waiting for you" : state === "failing" ? "Done · check failing" : STATUS_TEXT[run.status] ?? run.status}
+          </span>
           <h2>{p?.name ?? run.pattern}</h2>
           <span class="spacer" />
           {["interrupted", "stopped", "failed", "cancelled"].includes(run.status) ? (
@@ -130,10 +132,16 @@ export function RunView({ id }: { id: string }) {
           ) : null}
         </div>
         <p class="run-task">{run.task}</p>
+        {run.parentRunId ? (
+          <a class="help" href={`#/run/${run.parentRunId}`}>
+            ↩ continues an earlier run
+          </a>
+        ) : null}
         <RunChips run={run} />
         <RunMeta run={run} />
       </div>
 
+      {run.awaiting ? <AwaitingCard run={run} /> : null}
       {finished ? <ResultCard run={run} steps={steps} /> : null}
 
       <div class="run-body">
@@ -165,6 +173,7 @@ export function RunView({ id }: { id: string }) {
         <Transcript run={run} step={current ? data.current.steps.get(current) : undefined} events={current ? data.current.events.get(current) ?? [] : []} />
       </div>
 
+      <ConversationBar run={run} steps={steps} />
       <details class="activity">
         <summary>Activity log ({data.current.logs.length})</summary>
         <div class="log">
@@ -525,6 +534,160 @@ function ArchiveDialog({ run, onClose }: { run: RunSummary; onClose: () => void 
         </div>
       </div>
     </dialog>
+  );
+}
+
+// ---------------------------------------------------------------- talking to the team
+function AwaitingCard({ run }: { run: RunSummary }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const answer = async (decision: "approve" | "revise" | "reject") => {
+    if (decision === "reject" && !confirm("Reject and end the run? Nothing will be built.")) return;
+    setBusy(true);
+    try {
+      await post(`/api/runs/${run.id}/answer`, { decision, note });
+      setNote("");
+    } catch (err) {
+      showToast((err as Error).message, 4000);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const awaiting = run.awaiting!;
+  return (
+    <div class="awaiting-card">
+      <div class="aw-head">
+        <span class="status-pill awaiting">Waiting for you</span>
+        <b>{awaiting.title}</b>
+        <span class="help">The run is paused, and so is its time budget.</span>
+      </div>
+      <div class="aw-body">
+        <Markdown text={awaiting.content} />
+      </div>
+      <div class="aw-actions">
+        <textarea class="field" rows={2} placeholder="What should change? (needed for “Ask for changes”, optional otherwise)" value={note} onInput={(e) => setNote(e.currentTarget.value)} />
+        <div class="row">
+          <button class="btn primary" disabled={busy} onClick={() => answer("approve")}>
+            ✓ Approve
+          </button>
+          <button class="btn" disabled={busy || !note.trim()} onClick={() => answer("revise")} title={note.trim() ? "" : "Write what should change first"}>
+            Ask for changes
+          </button>
+          <button class="btn danger" disabled={busy} onClick={() => answer("reject")}>
+            Reject
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** While running: message the team. After it finishes: reply to an agent, or the whole team. */
+function ConversationBar({ run, steps }: { run: RunSummary; steps: Step[] }) {
+  const [text, setText] = useState("");
+  const [target, setTarget] = useState("");
+  const [busy, setBusy] = useState(false);
+  const running = run.status === "running";
+  // Who you can talk to after the run: each agent that wrote code, in its worktree.
+  const writers = [
+    ...new Map(
+      steps.filter((s) => (s.kind ?? "agent") === "agent" && s.mode === "write" && s.agent && s.worktree).map((s) => [`${s.agent}@${s.worktree}`, s]),
+    ).values(),
+  ];
+  const teamAgents = [...new Set(Object.values(run.roles).flat())];
+  const defaultTarget = running ? "" : writers.at(-1) ? `${writers.at(-1)!.agent}@${writers.at(-1)!.worktree}` : "team";
+  const chosen = target || defaultTarget;
+  if (!running && run.status !== "done") return null;
+
+  const send = async () => {
+    if (!text.trim()) return;
+    setBusy(true);
+    try {
+      if (running) {
+        await post(`/api/runs/${run.id}/notes`, { text, agent: chosen || undefined });
+        showToast(chosen ? `Queued for ${chosen}'s next turn` : "Queued for the next agent's turn");
+      } else if (chosen === "team") {
+        const base = run.artifacts[0]?.branch ?? run.baseLabel;
+        const { id } = await post<{ id: string }>("/api/runs", {
+          repo: run.repo,
+          task: `${run.task}\n\n## Feedback on the previous attempt\n${text.trim()}`,
+          pattern: run.pattern,
+          roles: run.roles,
+          options: run.options,
+          baseRef: base === "HEAD" ? "" : base,
+          context: { paths: (run.context?.paths ?? []).map((c) => ({ path: c.path })) },
+          agentSettings: run.agentSettings,
+          loop: run.loop,
+          approvals: run.approvals,
+          parentRunId: run.id,
+        });
+        route.value = { view: "run", id };
+      } else {
+        const [agent, worktree] = chosen.split("@");
+        await post(`/api/runs/${run.id}/followups`, { kind: "reply", agent, worktree, message: text });
+        showToast("Sent — the agent is on it");
+      }
+      setText("");
+    } catch (err) {
+      showToast((err as Error).message, 5000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div class="convo">
+      {running && run.notes?.length ? (
+        <div class="notes">
+          {run.notes.map((n) => (
+            <span key={n.id} class={`chip-ctx note-chip ${n.status}`} title={n.text}>
+              <span class="n">
+                {n.status === "delivered" ? `✓ delivered to ${n.deliveredTo?.agent}` : `⏳ queued for ${n.agent ?? "next agent"}`}: {n.text}
+              </span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div class="convo-row">
+        <span class="lbl">{running ? "Message the team" : "Reply"}</span>
+        <select class="field inline" value={chosen} onChange={(e) => setTarget(e.currentTarget.value)}>
+          {running ? (
+            <>
+              <option value="">next agent to take a turn</option>
+              {teamAgents.map((a) => (
+                <option key={a} value={a}>
+                  {a}'s next turn
+                </option>
+              ))}
+            </>
+          ) : (
+            <>
+              {writers.map((s) => (
+                <option key={`${s.agent}@${s.worktree}`} value={`${s.agent}@${s.worktree}`}>
+                  {s.agent} in {s.worktree} (continues its session)
+                </option>
+              ))}
+              <option value="team">the whole team again (new run from this result)</option>
+            </>
+          )}
+        </select>
+        <input
+          class="field"
+          placeholder={running ? "e.g. Use the existing logger instead of console.log" : "e.g. Also handle the empty-input case"}
+          value={text}
+          onInput={(e) => setText(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void send();
+            }
+          }}
+        />
+        <button class="btn primary" disabled={busy || !text.trim()} onClick={send}>
+          Send
+        </button>
+      </div>
+    </div>
   );
 }
 

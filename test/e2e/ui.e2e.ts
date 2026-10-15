@@ -93,3 +93,20 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   assert.match(log, /^Merge codeflow\/.+\/build into main/);
   assert.ok(execFileSync("git", ["ls-files"], { cwd: repo }).toString().includes("claude-"), "Claude's fix is on main");
 });
+
+test("approve the plan from the UI: ask for changes, then approve", async () => {
+  await page.goto(BASE);
+  await page.getByRole("button", { name: /Plan → Build → Review/ }).click();
+  await page.getByText("Let me approve the plan").click();
+  await page.getByLabel("Task", { exact: true }).fill("E2E: checkpoint");
+  await page.getByRole("button", { name: /^Start run/ }).click();
+
+  await page.locator(".awaiting-card").getByText("Approve the plan").waitFor({ timeout: 30_000 });
+  assert.ok(await page.locator(".rail").getByText("Waiting for you").count(), "the sidebar shows it needs you");
+  await page.getByPlaceholder(/What should change/).fill("Mention the logger");
+  await page.getByRole("button", { name: "Ask for changes" }).click();
+  await page.locator(".awaiting-card").getByText("Approve the revised plan (2)").waitFor({ timeout: 30_000 });
+  await page.getByRole("button", { name: "✓ Approve" }).click();
+  await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
+  assert.equal(await page.locator(".tl-step", { hasText: "Revise the plan (1)" }).count(), 1);
+});
