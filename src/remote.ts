@@ -1,0 +1,151 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { networkInterfaces } from "node:os";
+import { dirname, join } from "node:path";
+import { CODEFLOW_HOME } from "./config.js";
+import type { Run, RunManager, RunSummary } from "./engine.js";
+
+/**
+ * A read-only view for your phone: what's running, what needs you, and each run's result.
+ * Plain server-rendered HTML that refreshes itself, behind a secret link. It has no buttons —
+ * nothing can be started, approved or merged from it.
+ */
+
+export interface RemoteSettings {
+  enabled: boolean;
+  token: string;
+  /** Also listen on your local network (so a phone on the same Wi-Fi can open it). */
+  lan: boolean;
+}
+
+const FILE = join(CODEFLOW_HOME, "remote.json");
+
+export async function loadRemote(): Promise<RemoteSettings> {
+  if (existsSync(FILE)) {
+    try {
+      const raw = JSON.parse(await readFile(FILE, "utf8"));
+      if (typeof raw.token === "string" && raw.token.length >= 32) return { enabled: !!raw.enabled, token: raw.token, lan: !!raw.lan };
+    } catch {
+      // fall through to fresh settings
+    }
+  }
+  return { enabled: false, token: randomBytes(24).toString("hex"), lan: false };
+}
+
+export async function saveRemote(settings: RemoteSettings) {
+  await mkdir(dirname(FILE), { recursive: true });
+  await writeFile(FILE, JSON.stringify(settings, null, 2), { mode: 0o600 });
+}
+
+export function newToken(): string {
+  return randomBytes(24).toString("hex");
+}
+
+export function tokenMatches(given: string, token: string): boolean {
+  const a = Buffer.from(given);
+  const b = Buffer.from(token);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** This machine's addresses on the local network (for the phone link). */
+export function lanAddresses(): string[] {
+  return Object.values(networkInterfaces())
+    .flat()
+    .filter((i) => i && i.family === "IPv4" && !i.internal)
+    .map((i) => i!.address);
+}
+
+const esc = (s: unknown) =>
+  String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+const STATUS: Record<string, string> = {
+  running: "Running",
+  done: "Done",
+  failed: "Failed",
+  cancelled: "Cancelled",
+  stopped: "Stopped at limit",
+  interrupted: "Interrupted",
+};
+
+function badge(run: RunSummary): string {
+  if (run.awaiting) return `<span class="b warn">Waiting for you</span>`;
+  if (run.triage?.state === "pending") return `<span class="b warn">In your inbox</span>`;
+  const watch = Object.values(run.watches ?? {}).find((w) => w.state === "needs-you");
+  if (watch) return `<span class="b warn">PR needs you</span>`;
+  const failing = run.status === "done" && run.verdict === "failing";
+  const cls = run.status === "running" ? "run" : run.status === "done" && !failing ? "ok" : "bad";
+  return `<span class="b ${cls}">${esc(failing ? "Done · check failing" : STATUS[run.status] ?? run.status)}</span>`;
+}
+
+const ago = (ts: number) => {
+  const s = Math.round((Date.now() - ts) / 1000);
+  return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`;
+};
+
+function page(title: string, body: string, refresh = true): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+${refresh ? '<meta http-equiv="refresh" content="15">' : ""}<meta name="referrer" content="no-referrer"><meta name="robots" content="noindex">
+<title>${esc(title)}</title><style>
+:root{--bg:#f7f7f5;--panel:#fff;--text:#1c1c1a;--muted:#6d6c67;--border:#e4e3de;--ok:#1e8a4c;--warn:#b26b00;--bad:#c2382b;--accent:#3557d4}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--panel:#1b1b1a;--text:#ecebe6;--muted:#9b9a94;--border:#2e2e2b;--ok:#55c483;--warn:#e2a64b;--bad:#f07466;--accent:#7d9bf7}}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:720px;margin:0 auto;padding:16px}
+h1{font-size:18px;margin:4px 0 12px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:20px 0 6px}
+a{color:var(--accent);text-decoration:none}
+.card{display:block;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin:6px 0;color:var(--text)}
+.t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.m{font-size:12px;color:var(--muted)}
+.b{display:inline-block;font-size:11px;font-weight:700;padding:1px 8px;border-radius:999px;border:1px solid currentColor}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}.run{color:var(--accent)}
+pre{white-space:pre-wrap;word-break:break-word;font:12px/1.4 ui-monospace,Menlo,monospace;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px}
+li{margin:4px 0}.foot{font-size:12px;color:var(--muted);margin-top:24px}
+</style></head><body><main>${body}<p class="foot">Read-only view of code-flow · refreshes every 15 s</p></main></body></html>`;
+}
+
+/** Render `/r/<token>/…`; `path` is what follows the token. Returns null for unknown pages. */
+export function renderRemote(manager: RunManager, base: string, path: string): string | null {
+  if (path === "" || path === "/") {
+    const runs = manager.list().filter((r) => !r.archived);
+    const needs = runs.filter((r) => r.awaiting || r.triage?.state === "pending" || Object.values(r.watches ?? {}).some((w) => w.state === "needs-you") || (r.status !== "running" && !r.seen));
+    const running = runs.filter((r) => r.status === "running" && !needs.includes(r));
+    const recent = runs.filter((r) => !needs.includes(r) && !running.includes(r)).slice(0, 15);
+    const card = (r: RunSummary) =>
+      `<a class="card" href="${base}/run/${esc(r.id)}"><div class="t">${esc(r.task.split("\n")[0])}</div><div class="m">${badge(r)} · ${esc(r.pattern)} · ${esc(r.repo.split("/").pop())}${r.trigger ? ` · ⏱ ${esc(r.trigger.name)}` : ""} · ${ago(r.createdAt)}</div></a>`;
+    const group = (title: string, list: RunSummary[]) => (list.length ? `<h2>${title} (${list.length})</h2>${list.map(card).join("")}` : "");
+    return page(
+      "code-flow",
+      `<h1>code-flow</h1>${group("Needs you", needs)}${group("Running", running)}${group("Recent", recent)}${runs.length ? "" : '<p class="m">No runs yet.</p>'}`,
+    );
+  }
+  const match = path.match(/^\/run\/([\w-]+)$/);
+  const run = match ? manager.get(match[1]!) : undefined;
+  if (!run) return null;
+  return page(run.task.split("\n")[0]!.slice(0, 60), renderRun(run, base), run.status === "running");
+}
+
+function renderRun(run: Run, base: string): string {
+  const steps = run.steps
+    .map((s) => `<li>${s.status === "done" ? "✓" : s.status === "running" ? "…" : s.status === "failed" ? "✕" : "■"} ${esc(s.title)} <span class="m">${esc(s.agent ?? s.kind)}${s.endedAt ? ` · ${Math.round((s.endedAt - s.startedAt) / 1000)}s` : ""}</span></li>`)
+    .join("");
+  const review = run.review
+    ? `<h2>Review</h2><p>${esc(run.review.verdict === "approve" ? "Approve" : "Changes requested")}${run.review.summary ? ` — ${esc(run.review.summary)}` : ""}</p><ol>${run.review.findings
+        .map((f) => `<li><b>${esc(f.severity)}</b> ${esc(f.file)} — ${esc(f.problem)} <span class="m">(${esc(f.raisedBy.join(", "))})</span></li>`)
+        .join("")}</ol>`
+    : "";
+  const watches = Object.values(run.watches ?? {})
+    .map((w) => `<li>${esc(w.pr)} — <b>${esc(w.state)}</b>: ${esc(w.detail)}</li>`)
+    .join("");
+  const artifacts = run.artifacts.map((a) => `<li><b>${esc(a.label)}</b> <span class="m">${esc(a.branch)}</span>${a.stat ? `<pre>${esc(a.stat)}</pre>` : ""}</li>`).join("");
+  return [
+    `<p><a href="${base}/">← All runs</a></p>`,
+    `<h1>${esc(run.task.split("\n")[0])}</h1>`,
+    `<p class="m">${badge(run)} · ${esc(run.pattern)} · ${esc(run.repo.split("/").pop())} · started ${ago(run.createdAt)}${run.trigger ? ` · by automation “${esc(run.trigger.name)}”` : ""}</p>`,
+    run.awaiting ? `<h2>Waiting for you</h2><p>${esc(run.awaiting.title)} — open code-flow on your computer to answer.</p><pre>${esc(run.awaiting.content.slice(0, 4_000))}</pre>` : "",
+    run.triage?.state === "pending" ? "<h2>In your inbox</h2><p>Approve, revise or reject it in code-flow on your computer.</p>" : "",
+    run.error ? `<h2>Error</h2><pre>${esc(run.error)}</pre>` : "",
+    review || (run.summary ? `<h2>Summary</h2><pre>${esc(run.summary.slice(0, 8_000))}</pre>` : ""),
+    artifacts ? `<h2>Results</h2><ul>${artifacts}</ul>` : "",
+    watches ? `<h2>Pull requests</h2><ul>${watches}</ul>` : "",
+    steps ? `<h2>Steps</h2><ul>${steps}</ul>` : "",
+  ].join("");
+}

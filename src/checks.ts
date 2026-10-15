@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -46,15 +47,60 @@ export async function detectCheckCommand(repo: string): Promise<{ command: strin
   return null;
 }
 
+/**
+ * Run commands in a throwaway Docker container instead of on your machine (unattended runs).
+ * Only the worktree is mounted read-write (plus the repo's .git read-only, so git works);
+ * none of your environment variables or home directory are visible inside.
+ */
+export interface Container {
+  image: string;
+  /** false = no network inside the container. */
+  network?: boolean;
+  /** Extra host paths mounted read-only at the same path. */
+  readOnly?: string[];
+}
+
+export function dockerArgs(cwd: string, command: string, container: Container, name: string): string[] {
+  const user = typeof process.getuid === "function" ? ["--user", `${process.getuid()}:${process.getgid!()}`] : [];
+  return [
+    "run",
+    "--rm",
+    "--init",
+    "--name",
+    name,
+    "-v",
+    `${cwd}:${cwd}`,
+    ...(container.readOnly ?? []).flatMap((p) => ["-v", `${p}:${p}:ro`]),
+    "-w",
+    cwd,
+    "-e",
+    "CI=1",
+    "-e",
+    "FORCE_COLOR=0",
+    "-e",
+    "NO_COLOR=1",
+    "-e",
+    "HOME=/tmp",
+    ...user,
+    ...(container.network === false ? ["--network", "none"] : []),
+    container.image,
+    "/bin/sh",
+    "-c",
+    command,
+  ];
+}
+
 /** Run a shell command in `cwd` with a timeout; the whole process group is killed on timeout/abort. */
-export function runCheck(cwd: string, command: string, opts: { timeoutMs: number; signal?: AbortSignal }): Promise<CheckResult> {
+export function runCheck(cwd: string, command: string, opts: { timeoutMs: number; signal?: AbortSignal; container?: Container }): Promise<CheckResult> {
   const started = Date.now();
   const env: NodeJS.ProcessEnv = { ...process.env, CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" };
   // Inherited from whatever runs code-flow; a nested `node --test` would silently skip every
   // test and exit 0 — a false pass.
   delete env.NODE_TEST_CONTEXT;
+  const containerName = `codeflow-${randomBytes(5).toString("hex")}`;
+  const [bin, args] = opts.container ? ["docker", dockerArgs(cwd, command, opts.container, containerName)] : ["/bin/sh", ["-c", command]];
   return new Promise((resolve) => {
-    const child = spawn("/bin/sh", ["-c", command], {
+    const child = spawn(bin, args, {
       cwd,
       detached: true, // own process group, so test runners' children die with it
       stdio: ["ignore", "pipe", "pipe"],
@@ -75,6 +121,8 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
       } catch {
         // already gone
       }
+      // Stopping the docker client doesn't always stop the container.
+      if (opts.container) spawn("docker", ["rm", "-f", containerName], { stdio: "ignore" }).on("error", () => {});
     };
     const timer = setTimeout(() => {
       timedOut = true;
@@ -97,7 +145,7 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
       });
     };
     child.on("error", (err) => {
-      output += `\n${err.message}`;
+      output += opts.container && /ENOENT/.test(err.message) ? "\nDocker isn't installed or not on PATH" : `\n${err.message}`;
       finish(null);
     });
     child.on("close", (code) => finish(code));

@@ -48,6 +48,7 @@ import {
   type RoleValue,
 } from "./state.js";
 import { SourceChip, Templates } from "./github.js";
+import { SaveAutomationDialog } from "./automations.js";
 import type { AgentId, AgentInfo, ContextItem, ModelCatalog, PatternInfo, TreeEntry } from "./types.js";
 
 const DRAG_TYPE = "application/x-codeflow-path";
@@ -63,36 +64,38 @@ export function Composer() {
   const roles = rolesFor(p);
   const problem = startProblem(p, roles);
 
+  const [saving, setSaving] = useState(false);
+  const runBody = (p: PatternInfo) => ({
+    repo: repo.value,
+    task: task.value,
+    pattern: p.id,
+    roles,
+    options: optionsFor(p),
+    baseRef: baseRef.value,
+    source: source.value ? { kind: source.value.kind, number: source.value.number, ciLogs: !!source.value.ciLogs } : undefined,
+    branchPrefix: branchPrefix.value.trim(),
+    context: {
+      paths: [...contextPaths.value.values()].map((c) => ({ path: c.path })),
+      attachments: attachments.value.map((a) => ({ name: a.name, data: a.data })),
+    },
+    agentSettings: agentSettings.value,
+    approvals: { plan: !!CHECKPOINTS[p.id] && approvePlan.value },
+    trust: trust.value,
+    roleSettings: roleModels.value[p.id] ?? {},
+    loop: {
+      check: checkCmd.value.trim(),
+      setup: setupCmd.value.trim(),
+      maxMinutes: limits.value.maxMinutes,
+      maxSteps: limits.value.maxSteps,
+      copy: repoConfig.value?.config.copy,
+    },
+  });
   const start = async () => {
     if (problem || !p || starting) return;
     setStarting(true);
     setError("");
     try {
-      const { id } = await post<{ id: string }>("/api/runs", {
-        repo: repo.value,
-        task: task.value,
-        pattern: p.id,
-        roles,
-        options: optionsFor(p),
-        baseRef: baseRef.value,
-        source: source.value ? { kind: source.value.kind, number: source.value.number, ciLogs: !!source.value.ciLogs } : undefined,
-        branchPrefix: branchPrefix.value.trim(),
-        context: {
-          paths: [...contextPaths.value.values()].map((c) => ({ path: c.path })),
-          attachments: attachments.value.map((a) => ({ name: a.name, data: a.data })),
-        },
-        agentSettings: agentSettings.value,
-        approvals: { plan: !!CHECKPOINTS[p.id] && approvePlan.value },
-        trust: trust.value,
-        roleSettings: roleModels.value[p.id] ?? {},
-        loop: {
-          check: checkCmd.value.trim(),
-          setup: setupCmd.value.trim(),
-          maxMinutes: limits.value.maxMinutes,
-          maxSteps: limits.value.maxSteps,
-          copy: repoConfig.value?.config.copy,
-        },
-      });
+      const { id } = await post<{ id: string }>("/api/runs", runBody(p));
       store.set("baseRef", baseRef.value);
       // Fresh composer for the next run; "Edit & run again" brings these back.
       setTask("");
@@ -178,9 +181,13 @@ export function Composer() {
         <button class="btn primary" disabled={!!problem || starting} onClick={start}>
           {starting ? "Starting…" : "Start run"} <span class="kbd">⌘↵</span>
         </button>
+        <button class="btn" disabled={!!problem} title="Run this task with this team on a schedule or from a webhook" onClick={() => setSaving(true)}>
+          ⏱ Save as automation…
+        </button>
         <span class="why">{problem}</span>
       </div>
       {error ? <div class="msg err">{error}</div> : null}
+      {saving && p ? <SaveAutomationDialog body={runBody(p)} onClose={() => setSaving(false)} /> : null}
     </div>
   );
 }

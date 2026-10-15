@@ -23,9 +23,15 @@ import { listIssues, listPullRequests } from "./github.js";
 import { resolveAuto } from "./routing.js";
 import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
+import { Automations, describeSchedule, readWebhook, validateSchedule } from "./automation.js";
+import { lanAddresses, loadRemote, newToken, renderRemote, saveRemote, tokenMatches, type RemoteSettings } from "./remote.js";
+import type { Run, StartRunInput } from "./engine.js";
 
 const manager = new RunManager(findPattern);
 const watcher = new PrWatcher(manager);
+const automations = new Automations(manager, (body, extra) => startFromBody(body, extra));
+let remote: RemoteSettings;
+const REMOTE_PORT = Number(process.env.CODEFLOW_REMOTE_PORT ?? PORT + 1);
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
 const HOST = "127.0.0.1";
 const allowedHosts = new Set([`${HOST}:${PORT}`, `localhost:${PORT}`]);
@@ -186,6 +192,142 @@ function validateOptions(pattern: Pattern, input: unknown): Record<string, numbe
   return options;
 }
 
+/** Validate a run request (from the composer or an automation) into what the engine starts. */
+async function buildStartInput(body: Record<string, any>): Promise<StartRunInput> {
+  const pattern = findPattern(String(body.pattern ?? ""));
+  if (!pattern) throw new HttpError(400, "Unknown pattern");
+  const task = String(body.task ?? "").trim();
+  const repo = String(body.repo ?? "").trim();
+  if (!task) throw new HttpError(400, "Describe the task");
+  if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
+  const { roles, notes } = await validateRoles(pattern, body.roles);
+  const loop = validateLoop(body.loop);
+  const container = body.loop?.container;
+  if (container && typeof container.image === "string" && /^[\w./:@-]{1,200}$/.test(container.image)) {
+    loop.container = { image: container.image, network: container.network !== false };
+  }
+  return {
+    pattern,
+    task,
+    repo,
+    baseRef: body.baseRef ? String(body.baseRef) : undefined,
+    branchPrefix: body.branchPrefix ? String(body.branchPrefix) : undefined,
+    context: body.context && typeof body.context === "object" ? body.context : undefined,
+    loop,
+    approvals: { plan: body.approvals?.plan === true },
+    parentRunId: typeof body.parentRunId === "string" && manager.get(body.parentRunId) ? body.parentRunId : undefined,
+    trust: ["safe", "standard", "trusted"].includes(body.trust) ? body.trust : undefined,
+    roleSettings: validateRoleSettings(body.roleSettings),
+    agentSettings: (() => {
+      try {
+        return validateAgentSettings(body.agentSettings);
+      } catch (err) {
+        throw new HttpError(400, (err as Error).message);
+      }
+    })(),
+    source: validateSource(body.source),
+    routing: notes,
+    roles,
+    options: validateOptions(pattern, body.options),
+  };
+}
+
+async function startFromBody(body: Record<string, any>, extra: { trigger?: Run["trigger"] } = {}): Promise<Run> {
+  const input = await buildStartInput(body);
+  return manager.start({ ...input, ...extra }).catch((err: Error) => {
+    throw err instanceof HttpError ? err : new HttpError(400, err.message);
+  });
+}
+
+/** The parts of a run request an automation keeps (no attachments: they'd go stale). */
+function automationRun(body: Record<string, any>) {
+  const keep = ["repo", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
+  const run: Record<string, any> = Object.fromEntries(keep.filter((k) => body[k] !== undefined).map((k) => [k, body[k]]));
+  if (Array.isArray(body.context?.paths)) run.context = { paths: body.context.paths.map((p: any) => ({ path: String(p.path ?? "") })) };
+  return run as { repo: string; pattern: string; task: string };
+}
+
+function describeAutomation(t: ReturnType<typeof automations.list>[number]) {
+  return { ...t, scheduleText: describeSchedule(t.schedule), hookPath: `/hooks/${t.id}` };
+}
+
+/** Unauthenticated-origin routes with their own tokens: webhooks and the read-only phone view. */
+async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL, parts: string[]): Promise<boolean> {
+  if (parts[0] === "hooks" && parts[1] && req.method === "POST") {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req as AsyncIterable<Buffer>) {
+      size += chunk.length;
+      if (size > 1024 * 1024) throw new HttpError(413, "Payload too large");
+      chunks.push(chunk);
+    }
+    const raw = Buffer.concat(chunks);
+    let trigger;
+    try {
+      trigger = automations.authorize(parts[1], req.headers, raw);
+    } catch (err) {
+      throw new HttpError((err as { status?: number }).status ?? 401, (err as Error).message);
+    }
+    if (req.headers["x-github-event"] === "ping") return send(res, 200, { ok: true, pong: true }), true;
+    let payload: unknown = {};
+    try {
+      payload = raw.length ? JSON.parse(raw.toString("utf8")) : {};
+    } catch {
+      throw new HttpError(400, "Expected a JSON body");
+    }
+    const wanted = readWebhook(req.headers, payload);
+    if (!wanted) return send(res, 200, { ignored: "This event doesn't start a run" }), true;
+    const fired = await automations.fire(trigger.id, { via: "webhook", ...wanted }).catch((err: Error) => {
+      throw err instanceof HttpError ? err : new HttpError(400, err.message);
+    });
+    if (fired.skipped) return send(res, 409, { skipped: fired.skipped }), true;
+    send(res, 202, { run: fired.run!.id });
+    return true;
+  }
+  if (parts[0] === "r" && req.method === "GET") {
+    const token = parts[1] ?? "";
+    if (!remote.enabled || !tokenMatches(token, remote.token)) throw new HttpError(404, "Not found");
+    const base = `/r/${token}`;
+    const html = renderRemote(manager, base, url.pathname.slice(base.length));
+    if (!html) throw new HttpError(404, "Not found");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
+    res.end(html);
+    return true;
+  }
+  return false;
+}
+
+function remoteInfo() {
+  return {
+    enabled: remote.enabled,
+    lan: remote.lan,
+    path: `/r/${remote.token}`,
+    local: `http://localhost:${PORT}/r/${remote.token}`,
+    lanUrls: remote.lan ? lanAddresses().map((ip) => `http://${ip}:${REMOTE_PORT}/r/${remote.token}`) : [],
+  };
+}
+
+/** A second listener on your network that serves only the phone view and webhooks. */
+let lanServer: ReturnType<typeof createServer> | undefined;
+function syncLanServer() {
+  if (remote.enabled && remote.lan && !lanServer) {
+    lanServer = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://lan");
+      handlePublic(req, res, url, url.pathname.split("/").filter(Boolean))
+        .then((handled) => {
+          if (!handled) send(res, 404, { error: "Not found" });
+        })
+        .catch((err: Error) => {
+          if (!res.headersSent) send(res, err instanceof HttpError ? err.status : 500, { error: err.message });
+        });
+    }).listen(REMOTE_PORT, "0.0.0.0");
+    lanServer.on("error", (err) => console.error(`Phone view on port ${REMOTE_PORT}: ${err.message}`));
+  } else if ((!remote.enabled || !remote.lan) && lanServer) {
+    lanServer.close();
+    lanServer = undefined;
+  }
+}
+
 function openStream(req: IncomingMessage, res: ServerResponse): (event: unknown) => void {
   res.writeHead(200, {
     "content-type": "text/event-stream",
@@ -213,9 +355,10 @@ function streamAllRuns(req: IncomingMessage, res: ServerResponse) {
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse) {
-  checkOrigin(req);
-  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  const url = new URL(req.url ?? "/", "http://localhost");
   const parts = url.pathname.split("/").filter(Boolean);
+  if (await handlePublic(req, res, url, parts)) return;
+  checkOrigin(req);
 
   if (req.method === "GET" && url.pathname === "/") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -249,6 +392,54 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   }
   if (req.method === "GET" && parts[1] === "doctor") return send(res, 200, await doctor(manager.quota));
   if (req.method === "GET" && parts[1] === "templates") return send(res, 200, templates);
+  if (parts[1] === "remote") {
+    if (req.method === "POST") {
+      const body = await readJson(req);
+      if (typeof body.enabled === "boolean") remote.enabled = body.enabled;
+      if (typeof body.lan === "boolean") remote.lan = body.lan;
+      if (body.rotate) remote.token = newToken();
+      await saveRemote(remote);
+      syncLanServer();
+    }
+    return send(res, 200, remoteInfo());
+  }
+  if (parts[1] === "automations") {
+    const id = parts[2];
+    if (!id && req.method === "GET") return send(res, 200, automations.list().map(describeAutomation));
+    if (!id && req.method === "POST") {
+      const body = await readJson(req);
+      const name = String(body.name ?? "").trim().slice(0, 80);
+      if (!name) throw new HttpError(400, "Name the automation");
+      const run = automationRun(body.run ?? {});
+      await buildStartInput(run); // same checks as starting it now
+      const schedule = await attempt(async () => validateSchedule(body.schedule));
+      if (!schedule && !body.webhook) throw new HttpError(400, "Give it a schedule, a webhook, or both");
+      const trigger = await automations.create({ name, enabled: body.enabled !== false, run, schedule, webhook: !!body.webhook, isolate: !!body.isolate, image: typeof body.image === "string" ? body.image.trim() || undefined : undefined });
+      return send(res, 201, describeAutomation(trigger));
+    }
+    if (id && !automations.get(id)) throw new HttpError(404, "Automation not found");
+    if (id && req.method === "DELETE") {
+      await automations.remove(id);
+      return send(res, 200, { deleted: true });
+    }
+    if (id && req.method === "POST" && parts[3] === "run") {
+      const fired = await attempt(() => automations.fire(id, { via: "manual" }));
+      if (fired.skipped) throw new HttpError(409, `Skipped: ${fired.skipped}`);
+      return send(res, 201, { id: fired.run!.id });
+    }
+    if (id && req.method === "POST" && !parts[3]) {
+      const body = await readJson(req);
+      const patch: Parameters<typeof automations.update>[1] = {};
+      if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim().slice(0, 80);
+      if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+      if (typeof body.webhook === "boolean") patch.webhook = body.webhook;
+      if (typeof body.isolate === "boolean") patch.isolate = body.isolate;
+      if (typeof body.image === "string") patch.image = body.image.trim() || undefined;
+      if ("schedule" in body) patch.schedule = await attempt(async () => validateSchedule(body.schedule));
+      if (body.rotateToken) patch.rotateToken = true;
+      return send(res, 200, describeAutomation(await automations.update(id, patch)));
+    }
+  }
   if (req.method === "GET" && parts[1] === "github" && (parts[2] === "issues" || parts[2] === "prs")) {
     const repo = await requestedRepo(url);
     return send(res, 200, await attempt<unknown[]>(() => (parts[2] === "issues" ? listIssues(repo) : listPullRequests(repo))));
@@ -281,42 +472,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!runId) {
       if (req.method === "GET") return send(res, 200, manager.list());
       if (req.method === "POST") {
-        const body = await readJson(req);
-        const pattern = findPattern(String(body.pattern ?? ""));
-        if (!pattern) throw new HttpError(400, "Unknown pattern");
-        const task = String(body.task ?? "").trim();
-        const repo = String(body.repo ?? "").trim();
-        if (!task) throw new HttpError(400, "Describe the task");
-        if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
-        const { roles, notes } = await validateRoles(pattern, body.roles);
-        const run = await manager
-          .start({
-            pattern,
-            task,
-            repo,
-            baseRef: body.baseRef ? String(body.baseRef) : undefined,
-            branchPrefix: body.branchPrefix ? String(body.branchPrefix) : undefined,
-            context: body.context && typeof body.context === "object" ? body.context : undefined,
-            loop: validateLoop(body.loop),
-            approvals: { plan: body.approvals?.plan === true },
-            parentRunId: typeof body.parentRunId === "string" && manager.get(body.parentRunId) ? body.parentRunId : undefined,
-            trust: ["safe", "standard", "trusted"].includes(body.trust) ? body.trust : undefined,
-            roleSettings: validateRoleSettings(body.roleSettings),
-            agentSettings: (() => {
-              try {
-                return validateAgentSettings(body.agentSettings);
-              } catch (err) {
-                throw new HttpError(400, (err as Error).message);
-              }
-            })(),
-            source: validateSource(body.source),
-            routing: notes,
-            roles,
-            options: validateOptions(pattern, body.options),
-          })
-          .catch((err: Error) => {
-            throw err instanceof HttpError ? err : new HttpError(400, err.message);
-          });
+        const run = await startFromBody(await readJson(req));
         return send(res, 201, { id: run.id });
       }
     }
@@ -408,6 +564,12 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       const prUrl = await attempt(() => manager.pullRequest(run.id, { branch: String(body.branch ?? ""), into: String(body.into ?? "") }));
       return send(res, 200, { url: prUrl });
     }
+    if (req.method === "POST" && parts[3] === "triage") {
+      const body = await readJson(req);
+      if (!["approve", "revise", "reject"].includes(body.decision)) throw new HttpError(400, "Unknown decision");
+      await attempt(() => manager.triage(run.id, { decision: body.decision, note: typeof body.note === "string" ? body.note : undefined, openPr: !!body.openPr }));
+      return send(res, 200, { ok: true });
+    }
     if (req.method === "POST" && parts[3] === "push-pr") {
       const body = await readJson(req);
       return send(res, 200, await attempt(() => manager.pushToPr(run.id, { branch: String(body.branch ?? "") })));
@@ -433,7 +595,11 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 }
 
 await manager.load();
+await automations.load();
+remote = await loadRemote();
 watcher.start();
+automations.start(Number(process.env.CODEFLOW_SCHEDULER_TICK_MS) || 30_000);
+syncLanServer();
 
 const server = createServer((req, res) => {
   handle(req, res).catch((err: Error) => {
@@ -470,7 +636,9 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     stopping = true;
     console.log("\nStopping code-flow: interrupting running runs so they can be resumed…");
     server.close();
+    lanServer?.close();
     watcher.stop();
+    automations.stop();
     await manager.shutdown();
     process.exit(0);
   });

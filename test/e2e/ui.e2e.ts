@@ -151,3 +151,37 @@ test("start from a PR with a template: the council's findings are ranked, and po
   await page.getByText("Posted to PR #1").waitFor();
   assert.match(JSON.parse(readFileSync(ghState, "utf8")).prs[1].comments.at(-1).body, /Off-by-one in the loop/);
 });
+
+test("automations: a webhook starts a run, it waits in the inbox, you approve it; the phone view is opt-in", async () => {
+  const api = (path: string, body?: unknown) =>
+    fetch(`${BASE}${path}`, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+  const automation = await api("/api/automations", {
+    name: "E2E hook",
+    webhook: true,
+    run: { repo, pattern: "pipeline", task: "E2E: automated chore", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["codex"] }, loop: { check: "" } },
+  });
+  assert.ok(automation.token, automation.error);
+
+  const hook = (token: string) =>
+    fetch(`${BASE}/hooks/${automation.id}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", host: "tunnel.example" }, body: "{}" });
+  assert.equal((await hook("wrong")).status, 401);
+  const fired = await hook(automation.token);
+  assert.equal(fired.status, 202);
+  const { run } = await fired.json();
+
+  await page.goto(`${BASE}/#/automations`);
+  const item = page.locator(".inbox-item", { hasText: "E2E: automated chore" });
+  await item.waitFor({ timeout: 30_000 });
+  assert.match(await page.locator(".auto-btn .count").innerText(), /^\d+$/, "the inbox count shows in the top bar");
+  await item.getByRole("button", { name: "✓ Approve" }).click();
+  await item.waitFor({ state: "detached" });
+  assert.equal((await api(`/api/runs/${run}`)).triage.state, "approved");
+
+  const remote = await api("/api/remote");
+  assert.equal((await fetch(`${BASE}${remote.path}`)).status, 404, "off until you turn it on");
+  await api("/api/remote", { enabled: true });
+  const html = await (await fetch(`${BASE}${remote.path}`)).text();
+  assert.match(html, /E2E: automated chore/);
+  assert.doesNotMatch(html, /<button|<form/);
+  assert.equal((await fetch(`${BASE}/r/not-the-token`)).status, 404);
+});

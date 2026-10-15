@@ -170,6 +170,43 @@ Runs can start from GitHub instead of a blank task box, using GitHub CLI (`gh`) 
   - It **never merges**.
 - **Auto** in a role picks an installed agent when the run starts. It skips plans that are at 90% or more of a usage window or recently hit a rate limit (Claude reports its windows; the others report only when they're limited). The pick is written to the run's activity log.
 
+## Automations and away mode
+
+Set up a run in the composer (task, team, check, settings), then choose **Save as automation…** next to *Start run*. It runs unattended:
+
+- **When it runs:**
+  - at a time on chosen weekdays (e.g. weekdays at 07:00), or every *N* minutes (at least 5);
+  - from a webhook;
+  - or when you press **Run now** on the ⏱ Automations page.
+
+  Times missed while code-flow was closed are skipped, not caught up. If the previous run is still going, the next one is skipped, so automations never pile up.
+- **Webhooks:** `POST /hooks/<id>` with `Authorization: Bearer <secret>` and a JSON body. Both fields are optional:
+  - `details` is added to the task;
+  - `source` (e.g. `{"kind": "pr", "number": 12}`) starts from that issue or PR.
+
+  GitHub webhooks work directly through a tunnel. Use the secret as the webhook secret; code-flow checks `X-Hub-Signature-256`. These events start a run, and all others are ignored:
+  - an opened issue starts from that issue;
+  - an opened or updated pull request starts from that PR;
+  - a failed workflow run starts from its PR, with the failure logs.
+- **The inbox:** automation results wait on the Automations page (with a count in the top bar) and under *Needs you*:
+  - **Approve:** keeps the result. **Approve & open PR** also pushes the branch and opens a pull request.
+  - **Revise:** your note goes to the agent that wrote the code, in its own session. The result comes back to the inbox.
+  - **Reject:** deletes the run's worktrees and branches.
+  - Runs that changed nothing are archived on their own, and their branches deleted.
+  - Automations never pause for plan approval, and **nothing is ever merged automatically**.
+- **Isolation:** tick *Run checks and setup in a Docker container* and code-flow runs those commands with `docker run`:
+  - only the worktree is mounted read-write, plus the repo's `.git` read-only, so git works;
+  - none of your environment variables or your home folder are visible inside;
+  - the files it creates belong to you.
+
+  Agents still run as their own CLIs (they need your subscription logins) inside their own sandboxes. The repo's own scripts are what run in the container.
+- **Phone view:** turn on the *read-only view behind a secret link* on the Automations page.
+  - It lists what's running and what needs you, and each run's summary, review, results and steps. It refreshes itself.
+  - It has no buttons: nothing can be started, approved or merged from it.
+  - *Reachable from my Wi-Fi* also serves it, and webhooks, on your network at port `PORT+1`. It's plain HTTP, so use it only on networks you trust, or over a VPN like Tailscale. **New link** revokes the old one.
+
+Automations live in `~/.codeflow/triggers.json` and the phone view's settings in `~/.codeflow/remote.json`. Both files are readable only by you.
+
 ## Talking to a run
 
 Runs are conversations, not fire-and-forget jobs:
@@ -236,6 +273,8 @@ src/github.ts            gh: issues, PRs, checks, failed-job logs, comments, pus
 src/watch.ts             PR follow-through: polls watched PRs and sends CI failures and comments back
 src/routing.ts           "Auto" roles: pick an agent whose plan has room
 src/templates.ts         starting points (fix an issue, fix failing CI, council review…)
+src/automation.ts        automations: schedules, webhooks (Bearer or GitHub signature), firing runs
+src/remote.ts            the read-only phone view (server-rendered, secret link)
 src/engine.ts            RunManager, TeamContext (ask / worktree / commit / diff), event log
 src/patterns/*.ts        the team patterns, written against TeamContext
 src/adapters/*.ts        AgentAdapter per CLI → normalized AgentEvent stream
@@ -266,6 +305,8 @@ Implement `AgentAdapter` in `src/adapters/`, then register it in `src/adapters/i
 | `CODEFLOW_STEP_TIMEOUT_MIN` | `30` | Timeout per agent step |
 | `CODEFLOW_MAX_DIFF_CHARS` | `60000` | Diffs longer than this are truncated before being passed to another agent |
 | `CODEFLOW_CLAUDE_WRITE_TOOLS` | build/test allow-list | Comma-separated Claude tool rules for write mode, e.g. `Edit,Bash` |
+| `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view and webhooks on your network, when *Reachable from my Wi-Fi* is on |
+| `CODEFLOW_SCHEDULER_TICK_MS` | `30000` | How often due automations are checked |
 | `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments |
 | `CODEFLOW_AGY_SKIP_PERMISSIONS` | `1` | Set to `0` to stop passing `--dangerously-skip-permissions` to agy; then configure `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` |
 
@@ -276,7 +317,7 @@ npm test           # unit + workflow tests against fake CLIs
 npm run test:e2e   # the real UI in Chrome (headless) against a server with fake agents
 ```
 
-The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota. A fake `gh` keeps issues, PRs, checks and comments in a JSON file and pushes to a local bare repository, so the GitHub flows (fix CI → push → watch → fix again) are tested without touching GitHub. The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, test tampering detection, and the guarantee that your checkout is untouched.
+The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota. A fake `gh` keeps issues, PRs, checks and comments in a JSON file and pushes to a local bare repository, so the GitHub flows (fix CI → push → watch → fix again) are tested without touching GitHub. A fake `docker` records its arguments and runs the command in place, so isolation is tested without Docker. The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, test tampering detection, and the guarantee that your checkout is untouched.
 
 ## Caveats and next steps
 
@@ -285,6 +326,6 @@ The suite runs every pattern end to end against fake `claude` / `codex` / `agy` 
 - Claude's write mode can run allow-listed commands such as `npm`, `node` and `make`, and those can run arbitrary project scripts. Only run it on repos you trust. Codex is additionally confined by its own sandbox.
 - Next steps worth doing:
   - Use `codex app-server` instead of `exec` for mid-turn steering and real approvals.
-  - Add triggers: scheduled loops, and CI or GitHub events that start runs.
+  - A container option for the agents themselves (today only checks and setup run in Docker).
   - Read PR line comments (review threads), not just conversation comments and review summaries.
   - Linear as a source, next to GitHub issues.

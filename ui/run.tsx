@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { AgentTag, Markdown } from "./bits.js";
+import { TriageActions } from "./automations.js";
 import { api, baseName, copy, duration, fmtSize, post, showToast, STATUS_TEXT } from "./lib.js";
 import {
   agents,
@@ -143,6 +144,18 @@ export function RunView({ id }: { id: string }) {
       </div>
 
       {run.awaiting ? <AwaitingCard run={run} /> : null}
+      {run.triage?.state === "pending" && run.status !== "running" ? (
+        <div class="awaiting-card">
+          <div class="aw-head">
+            <span class="status-pill awaiting">In your inbox</span>
+            <b>From your automation “{run.trigger?.name}”</b>
+            <span class="help">Approving never merges (it can open a pull request); rejecting deletes the worktrees and branches.</span>
+          </div>
+          <div class="aw-actions">
+            <TriageActions run={run} />
+          </div>
+        </div>
+      ) : null}
       {finished ? <ResultCard run={run} steps={steps} /> : null}
 
       <div class="run-body">
@@ -225,6 +238,12 @@ function RunMeta({ run }: { run: RunSummary }) {
   return (
     <div class="run-meta">
       <span title={run.repo}>📁 {baseName(run.repo)}</span>
+      {run.trigger ? (
+        <a class="src-link" href="#/automations" title={`Started by ${run.trigger.via === "schedule" ? "its schedule" : run.trigger.via === "webhook" ? "a webhook" : "Run now"}`}>
+          ⏱ {run.trigger.name}
+        </a>
+      ) : null}
+      {run.triage && run.triage.state !== "pending" ? <span class="badge">{run.triage.state === "empty" ? "no changes · archived" : run.triage.state}</span> : null}
       {run.source ? (
         <a class="src-link" href={run.source.url} target="_blank" rel="noreferrer" title={run.source.title}>
           {run.source.kind === "issue" ? "◎ issue" : "⇄ PR"} #{run.source.number} ↗

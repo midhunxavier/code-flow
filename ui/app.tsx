@@ -3,6 +3,7 @@ import { Composer, FilesPanel } from "./composer.js";
 import { RunView } from "./run.js";
 import { Review } from "./review.js";
 import { GitHubPicker } from "./github.js";
+import { AutomationsView, inbox } from "./automations.js";
 import { ago, api, baseName, showToast, STATUS_TEXT, store, toast } from "./lib.js";
 import {
   agents,
@@ -45,6 +46,8 @@ export function App() {
             <RunView key={route.value.id} id={route.value.id} />
           ) : route.value.view === "review" ? (
             <Review key={`${route.value.id}:${route.value.branch}`} id={route.value.id} branch={route.value.branch} />
+          ) : route.value.view === "automations" ? (
+            <AutomationsView />
           ) : (
             <Composer />
           )}
@@ -83,6 +86,15 @@ function TopBar() {
         <span style="color:var(--faint)">▾</span>
       </button>
       <span class="spacer" />
+      <button
+        class="btn ghost auto-btn"
+        aria-pressed={route.value.view === "automations"}
+        title="Scheduled and webhook runs, their inbox, and the phone view"
+        onClick={() => (route.value = { view: "automations" })}
+      >
+        ⏱ <span class="label">Automations</span>
+        {inbox().length ? <span class="count">{inbox().length}</span> : null}
+      </button>
       <button class="agent-status" title="Health: install, sign-in and quota for each CLI" onClick={() => (healthOpen.value = true)}>
         {agents.value.map((a) => {
           const h = health.value?.find((x) => x.id === a.id);
@@ -129,7 +141,7 @@ function Bell() {
 }
 
 export function notifyFinished(run: RunSummary) {
-  const viewing = route.value.view !== "composer" && route.value.id === run.id;
+  const viewing = "id" in route.value && route.value.id === run.id;
   if (!canNotify() || (viewing && !document.hidden)) return;
   const verbs: Record<string, string> = {
     done: run.verdict === "failing" ? "finished, but its check fails" : "finished",
@@ -155,7 +167,7 @@ export function notifyFinished(run: RunSummary) {
 function Rail() {
   const [showArchived, setShowArchived] = useState(false);
   const list = [...runs.value.values()].sort((a, b) => b.createdAt - a.createdAt);
-  const current = route.value.view !== "composer" ? route.value.id : undefined;
+  const current = "id" in route.value ? route.value.id : undefined;
   const groups: [string, RunSummary[], boolean][] = [
     ["Needs you", list.filter(needsYou), true],
     ["Running", list.filter((r) => r.status === "running"), false],
@@ -175,9 +187,12 @@ function Rail() {
       onClick={() => open(r.id)}
     >
       <span class={`dot ${runState(r)}`} />
-      <span class="t">{r.task.split("\n")[0] || "(no task)"}</span>
+      <span class="t">
+        {r.trigger ? "⏱ " : ""}
+        {r.task.split("\n")[0] || "(no task)"}
+      </span>
       <span class="s">
-        {r.awaiting ? "Waiting for you" : STATUS_TEXT[r.status] ?? r.status} · {patterns.value.find((p) => p.id === r.pattern)?.name ?? r.pattern} · {baseName(r.repo)} · {ago(r.createdAt)}
+        {r.awaiting ? "Waiting for you" : r.triage?.state === "pending" ? "In your inbox" : STATUS_TEXT[r.status] ?? r.status} · {patterns.value.find((p) => p.id === r.pattern)?.name ?? r.pattern} · {baseName(r.repo)} · {ago(r.createdAt)}
       </span>
     </button>
   );

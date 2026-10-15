@@ -18,7 +18,7 @@ export const patterns = signal<PatternInfo[]>([]);
 export const catalogs = signal<Record<string, CatalogOrError>>({});
 export const runs = signal<Map<string, RunSummary>>(new Map());
 
-export type Route = { view: "composer" } | { view: "run"; id: string } | { view: "review"; id: string; branch: string };
+export type Route = { view: "composer" } | { view: "automations" } | { view: "run"; id: string } | { view: "review"; id: string; branch: string };
 export const route = signal<Route>({ view: "composer" });
 export const railOpen = signal(false);
 export const pickerOpen = signal(false);

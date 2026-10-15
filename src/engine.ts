@@ -12,7 +12,8 @@ import {
   type RunResult,
 } from "./adapters/index.js";
 import { MAX_DIFF_CHARS, STEP_TIMEOUT_MS } from "./config.js";
-import { runCheck, type CheckResult } from "./checks.js";
+import { runCheck, type CheckResult, type Container } from "./checks.js";
+import { commandExists } from "./adapters/process.js";
 import { contextPrompt, hasStagedFiles, prepareContext, type ContextInput, type RunContext } from "./context.js";
 import { extractJson, shapeProblem } from "./json.js";
 import {
@@ -22,6 +23,7 @@ import {
   diffStat,
   discardChanges,
   ensureCodeflowExcludes,
+  git,
   isClean,
   mergeBranch,
   openWorktree,
@@ -139,6 +141,10 @@ export interface Run {
   watches: Record<string, PrWatch>;
   /** How "Auto" roles were filled when the run started. */
   routing?: string[];
+  /** Started by an automation (schedule, webhook, or "Run now") rather than by you. */
+  trigger?: { id: string; name: string; via: "schedule" | "webhook" | "manual" };
+  /** Your decision on an automation's result: it waits in the inbox until you make one. */
+  triage?: { state: "pending" | "approved" | "rejected" | "empty"; at: number; note?: string };
   status: Status;
   createdAt: number;
   endedAt?: number;
@@ -243,6 +249,8 @@ export interface LoopSettings {
   maxSteps: number;
   /** Per check/setup command. */
   checkTimeoutMin: number;
+  /** Run check and setup commands in this Docker container instead of on your machine. */
+  container?: Container;
 }
 
 export const DEFAULT_LOOP: LoopSettings = { maxMinutes: 60, maxSteps: 40, checkTimeoutMin: 10 };
@@ -529,7 +537,8 @@ export class TeamContext {
     this.manager.emit(this.run, { type: "step", step: { ...step } });
     this.manager.emit(this.run, { type: "agent", stepId: step.id, event: { kind: "tool_call", callId: step.id, name: "$", input: command } });
 
-    const result = await runCheck(wt.path, command, { timeoutMs: this.run.loop.checkTimeoutMin * 60_000, signal: this.signal });
+    const container = this.run.loop.container ? { ...this.run.loop.container, readOnly: [join(this.run.repo, ".git")] } : undefined;
+    const result = await runCheck(wt.path, command, { timeoutMs: this.run.loop.checkTimeoutMin * 60_000, signal: this.signal, container });
 
     this.manager.emit(this.run, {
       type: "agent",
@@ -756,6 +765,8 @@ export interface StartRunInput {
   source?: { kind: "issue" | "pr"; number: number; ciLogs?: boolean };
   /** How "Auto" roles were resolved, for the log. */
   routing?: string[];
+  /** Set when an automation starts the run. */
+  trigger?: Run["trigger"];
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
 }
@@ -1101,6 +1112,9 @@ export class RunManager {
     if (input.pattern.requiresCheck && !loop.check) {
       throw new Error(`${input.pattern.name} needs a check command (Settings → Done when), e.g. "npm test"`);
     }
+    if (loop.container && !(await commandExists("docker"))) {
+      throw new Error("Isolation runs checks in a Docker container, but Docker isn't installed or not on PATH");
+    }
     const repo = await repoRoot(input.repo);
     // A PR's own branch is the base; its changes are reviewed against the PR's target.
     const fromGitHub = input.source ? await loadSource(repo, input.source) : undefined;
@@ -1142,7 +1156,9 @@ export class RunManager {
       worktrees: [],
       followUps: [],
       notes: [],
-      approvals: input.approvals ?? {},
+      // Nobody is watching an automation: it doesn't pause; you triage the result instead.
+      approvals: input.trigger ? {} : input.approvals ?? {},
+      trigger: input.trigger,
       parentRunId: input.parentRunId,
       merges: [],
       prs: {},
@@ -1230,16 +1246,76 @@ export class RunManager {
       })
       .then(() => (run.status === "done" || run.status === "interrupted" ? undefined : collectUnfinishedWork(run)))
       .catch(() => undefined)
+      .then(() => (run.trigger ? this.toInbox(run) : undefined))
+      .catch(() => undefined)
       .finally(() => {
         ctx.stopClock();
         run.awaiting = undefined;
         run.endedAt = Date.now();
-        run.seen = run.status === "cancelled"; // you stopped it yourself; nothing to review
+        run.seen = run.status === "cancelled" || run.triage?.state === "empty"; // nothing to review
         this.controllers.delete(run.id);
         this.active.delete(run.id);
         this.emitRun(run);
       });
     this.active.set(run.id, done);
+  }
+
+  /**
+   * An automation finished: results wait in the inbox for you to approve, revise or reject. A
+   * run that changed nothing is archived (worktrees and branches removed) so the inbox stays
+   * about real work. Nothing is ever merged automatically.
+   */
+  private async toInbox(run: Run) {
+    if (run.status === "cancelled" || run.status === "interrupted") return;
+    if (run.triage && run.triage.state !== "pending") return; // you already decided
+    const empty = run.status === "done" && !run.review && run.artifacts.every((a) => !a.stat?.trim());
+    if (empty) {
+      run.triage = { state: "empty", at: Date.now() };
+      run.archived = true;
+      const removed = await removeWorktrees(run.repo, run.worktrees, true).catch(() => undefined);
+      this.emit(run, { type: "log", level: "info", text: `No changes, so the run was archived${removed ? " and its worktrees and branches removed" : ""}` });
+      return;
+    }
+    run.triage = { state: "pending", at: Date.now(), note: run.triage?.note };
+  }
+
+  /** Your decision on an automation's result. Approving never merges; it can open a PR. */
+  async triage(id: string, input: { decision: "approve" | "revise" | "reject"; note?: string; openPr?: boolean }) {
+    const run = this.require(id);
+    if (!run.trigger) throw new Error("Only automation runs go through the inbox");
+    if (run.status === "running") throw new Error("Wait for the run to finish");
+    if (input.decision === "revise") {
+      const note = input.note?.trim();
+      if (!note) throw new Error("Say what should change");
+      const artifact = run.artifacts.find((a) => a.stat?.trim()) ?? run.artifacts[0];
+      const wt = run.worktrees.find((w) => w.branch === artifact?.branch) ?? run.worktrees[0];
+      if (!wt) throw new Error("This run has no worktree to revise");
+      const writer = [...run.steps].reverse().find((s) => s.kind === "agent" && s.worktree === wt.name && s.mode === "write")?.agent;
+      const agent = writer ?? Object.values(run.roles).flat()[0]!;
+      run.triage = { state: "pending", at: Date.now(), note };
+      if (run.status !== "done") {
+        // A failed or stopped run continues first; the reply is queued behind it.
+        run.followUps.push({ id: `f${run.followUps.length + 1}`, kind: "reply", worktree: wt.name, agent, message: note, status: "pending", at: Date.now() });
+        return this.resume(id);
+      }
+      return this.followUp(id, { kind: "reply", worktree: wt.name, agent, message: note });
+    }
+    if (input.decision === "reject") {
+      run.triage = { state: "rejected", at: Date.now(), note: input.note?.trim() || undefined };
+      await this.archive(id, { cleanup: true, deleteBranches: true });
+      return run;
+    }
+    let pr: string | undefined;
+    if (input.openPr) {
+      const artifact = run.artifacts.find((a) => a.stat?.trim());
+      if (!artifact) throw new Error("There's no change to open a pull request for");
+      pr = await this.pullRequest(id, { branch: artifact.branch, into: run.baseLabel === "HEAD" ? await currentBranch(run.repo) : run.baseLabel });
+    }
+    run.triage = { state: "approved", at: Date.now(), note: input.note?.trim() || undefined };
+    run.seen = true;
+    this.emit(run, { type: "log", level: "info", text: `You approved the result${pr ? ` and opened ${pr}` : ""}` });
+    this.emitRun(run);
+    return run;
   }
 
   /** Stop every running run as "interrupted" (resumable) and make sure the logs are on disk. */
@@ -1435,6 +1511,12 @@ function strip(run: Run): RunSummary {
     watches: Object.fromEntries(Object.entries(rest.watches).map(([k, w]) => [k, { ...w }])),
     review: rest.review ? { ...rest.review } : undefined,
   };
+}
+
+async function currentBranch(repo: string): Promise<string> {
+  const res = await git(["symbolic-ref", "--short", "HEAD"], repo);
+  if (res.code !== 0) throw new Error("Pick a branch to open the pull request into");
+  return res.stdout.trim();
 }
 
 function newRunId(): string {

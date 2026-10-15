@@ -30,6 +30,7 @@
 
   .btn { border: 1px solid var(--border); background: var(--raised); padding: 6px 12px; border-radius: 8px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
   .btn:hover:not(:disabled) { border-color: var(--border-strong); }
+  a.btn { color: var(--text); text-decoration: none; }
   .btn.ghost { border-color: transparent; background: transparent; color: var(--muted); }
   .btn.ghost:hover:not(:disabled) { background: var(--sunken); color: var(--text); }
   .btn.ghost[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
@@ -316,6 +317,31 @@
   .watch .lbl { margin: 0; }
   .watch .detail { font-weight: 500; }
   .field.inline.num { width: 56px; }
+
+  /* ---------- automations ---------- */
+  .auto-btn { position: relative; }
+  .brand { white-space: nowrap; }
+  .automations a:not(.btn) { color: var(--accent); }
+  @media (max-width: 900px) { .auto-btn .label { display: none; } }
+  .auto-btn .count, .section-title .count { font-size: 11px; font-weight: 700; background: var(--warn); color: var(--bg); border-radius: 999px; padding: 0 6px; margin-left: 4px; }
+  .inbox-item, .auto-row { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin: 8px 0; display: grid; gap: 8px; }
+  .inbox-item .ih { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .inbox-item .ih .t { font-weight: 600; color: var(--text); text-decoration: none; }
+  .inbox-item .ih .t:hover { color: var(--accent); }
+  .inbox-item .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; align-self: center; }
+  pre.stat { margin: 0; max-height: 140px; }
+  .triage { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .triage .field { flex: 1; min-width: 200px; width: auto; }
+  .auto-row.off { opacity: .65; }
+  .ar-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .ar-head .spacer { flex: 1; }
+  .ar-meta { display: flex; gap: 2px; align-items: center; flex-wrap: wrap; }
+  .switch input { width: 16px; height: 16px; accent-color: var(--accent); }
+  .hook { display: grid; gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--sunken); font-size: 13px; }
+  .hook .lbl { display: inline; margin: 0 6px 0 0; }
+  .hook pre { margin: 0; background: var(--panel); }
+  .row-inline { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+  .msg.err.inline { display: inline; padding: 0; background: none; border: 0; }
 
   /* ---------- small screens ---------- */
   @media (max-width: 1180px) {
