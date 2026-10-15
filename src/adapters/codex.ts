@@ -46,6 +46,8 @@ export const codexAdapter: AgentAdapter = {
     // `-c sandbox_mode=` works for both `exec` and `exec resume` (resume has no -s flag).
     const common = ["--json", "--skip-git-repo-check", "-c", `sandbox_mode="${sandbox}"`];
     if (opts.model) common.push("-m", opts.model);
+    // Codex always sandboxes writes to the worktree; "trusted" additionally allows network access.
+    if (opts.mode === "write" && opts.trust === "trusted") common.push("-c", "sandbox_workspace_write.network_access=true");
     if (opts.effort) common.push("-c", `model_reasoning_effort="${opts.effort}"`);
     const schemaFile = opts.jsonSchema ? await writeSchemaFile(opts.jsonSchema) : undefined;
     if (schemaFile) common.push("--output-schema", schemaFile);

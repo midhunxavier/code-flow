@@ -73,6 +73,44 @@ export const checkCmd = signal("");
 export const checkHint = signal("");
 export const setupCmd = signal("");
 export const limits = signal(store.json("limits", { maxMinutes: 60, maxSteps: 40 }));
+export type Trust = "safe" | "standard" | "trusted";
+export const trust = signal<Trust>((store.get("trust") as Trust) || "standard");
+export function setTrust(value: Trust) {
+  trust.value = value;
+  store.set("trust", value);
+}
+/** Per-role model/effort overrides, per pattern: { pattern: { role: { agent: { model, effort } } } }. */
+export const roleModels = signal<Record<string, Record<string, AgentSettings>>>(store.json("roleModels", {}));
+export function setRoleModel(patternId: string, roleId: string, agent: AgentId, patch: { model?: string; effort?: string }) {
+  const forPattern = roleModels.value[patternId] ?? {};
+  const forRole = forPattern[roleId] ?? {};
+  roleModels.value = { ...roleModels.value, [patternId]: { ...forPattern, [roleId]: { ...forRole, [agent]: { ...(forRole[agent] ?? {}), ...patch } } } };
+  store.set("roleModels", JSON.stringify(roleModels.value));
+}
+/** .codeflow/config.json of the selected repo, if it has one. */
+export const repoConfig = signal<{ config: Record<string, any>; found: boolean; error?: string } | null>(null);
+
+export interface Health {
+  id: AgentId;
+  name: string;
+  installed: boolean;
+  path?: string;
+  version?: string;
+  signedIn: boolean | null;
+  account?: string;
+  quota?: { status: string; windows: Record<string, { utilization?: number; resetsAt?: number }>; at: number };
+  fix?: string;
+}
+export const health = signal<Health[] | null>(null);
+export const healthOpen = signal(false);
+export async function loadHealth() {
+  try {
+    health.value = await api<Health[]>("/api/doctor");
+  } catch {
+    health.value = null;
+  }
+}
+
 /** "Let me approve the plan before agents build" (patterns that have a plan step). */
 export const approvePlan = signal(store.get("approvePlan") === "1");
 export function setApprovePlan(on: boolean) {
@@ -149,10 +187,23 @@ export async function loadCheck() {
     checkHint.value = "";
     return;
   }
+  try {
+    repoConfig.value = await api(`/api/repo-config?repo=${encodeURIComponent(r)}`);
+  } catch {
+    repoConfig.value = null;
+  }
+  const config = repoConfig.value?.config ?? {};
+  if (!store.get(`setup:${r}`) && config.setup) setupCmd.value = config.setup;
+  if (config.trust && !store.get("trust")) trust.value = config.trust;
   const saved = store.get(`check:${r}`);
   if (saved !== null) {
     checkCmd.value = saved;
     checkHint.value = "";
+    return;
+  }
+  if (config.check) {
+    checkCmd.value = config.check;
+    checkHint.value = "From .codeflow/config.json.";
     return;
   }
   checkCmd.value = "";

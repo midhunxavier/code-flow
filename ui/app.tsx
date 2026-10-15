@@ -6,6 +6,9 @@ import { ago, api, baseName, showToast, STATUS_TEXT, store, toast } from "./lib.
 import {
   agents,
   filesOpen,
+  health,
+  healthOpen,
+  loadHealth,
   needsYou,
   patterns,
   pickerOpen,
@@ -47,6 +50,7 @@ export function App() {
         {view === "composer" ? <FilesPanel open={showFiles} /> : null}
       </div>
       <FolderPicker />
+      {healthOpen.value ? <HealthDialog /> : null}
       {toast.value ? (
         <div class="toast" role="status" key={toast.value.id}>
           {toast.value.text}
@@ -76,17 +80,18 @@ function TopBar() {
         <span style="color:var(--faint)">▾</span>
       </button>
       <span class="spacer" />
-      <div class="agent-status">
-        {agents.value.map((a) => (
-          <span
-            key={a.id}
-            class={`agent ${a.id} ${a.available ? "" : "off"}`}
-            title={a.available ? `${a.displayName} is installed` : `${a.displayName} (${a.binary}) isn't installed`}
-          >
-            {a.displayName}
-          </span>
-        ))}
-      </div>
+      <button class="agent-status" title="Health: install, sign-in and quota for each CLI" onClick={() => (healthOpen.value = true)}>
+        {agents.value.map((a) => {
+          const h = health.value?.find((x) => x.id === a.id);
+          const problem = !a.available || h?.signedIn === false;
+          return (
+            <span key={a.id} class={`agent ${a.id} ${a.available ? "" : "off"} ${problem ? "problem" : ""}`}>
+              {a.displayName}
+              {h?.signedIn === false ? " ⚠" : ""}
+            </span>
+          );
+        })}
+      </button>
       <Bell />
     </header>
   );
@@ -204,6 +209,69 @@ function Rail() {
       ) : null}
       {empty ? <div class="rail-empty">No runs yet — start one on the right</div> : null}
     </nav>
+  );
+}
+
+// ---------------------------------------------------------------- health
+function HealthDialog() {
+  const ref = useDialog(true, () => (healthOpen.value = false));
+  useEffect(() => {
+    void loadHealth();
+  }, []);
+  const pct = (u?: number) => (u === undefined ? "?" : `${Math.round(u * 100)}%`);
+  const when = (t?: number) => (t ? new Date(t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "");
+  return (
+    <dialog class="picker small-dialog health" ref={ref}>
+      <div class="picker-inner">
+        <div class="picker-head">
+          <h3>Health</h3>
+          <div class="help">What code-flow can see about each CLI — it uses the CLIs' own commands and never reads their credentials.</div>
+        </div>
+        <div class="dialog-body">
+          {!health.value ? <div class="help">Checking…</div> : null}
+          {health.value?.map((h) => (
+            <div key={h.id} class="health-row">
+              <div class="hr-title">
+                <span class={`agent ${h.id}`}>{h.name}</span>
+                <span class={`badge ${h.installed && h.signedIn !== false ? "ok" : ""}`}>
+                  {!h.installed ? "not installed" : h.signedIn === false ? "signed out" : h.signedIn ? `signed in · ${h.account ?? ""}` : "installed"}
+                </span>
+                <span class="help">{h.version}</span>
+              </div>
+              {h.quota && Object.keys(h.quota.windows).length ? (
+                <div class="quota">
+                  {Object.entries(h.quota.windows).map(([name, w]) => (
+                    <div key={name} class="q">
+                      <span>{name.replace("_", "-")} window</span>
+                      <span class="bar">
+                        <span style={`width:${Math.min(100, Math.round((w.utilization ?? 0) * 100))}%`} />
+                      </span>
+                      <span>
+                        {pct(w.utilization)} used{w.resetsAt ? ` · resets ${when(w.resetsAt)}` : ""}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : h.quota?.status === "limited" ? (
+                <div class="msg warn">Hit a usage limit recently.</div>
+              ) : h.installed ? (
+                <div class="help">{h.id === "claude" ? "Quota shows after the next Claude step." : "This CLI doesn't report remaining quota."}</div>
+              ) : null}
+              {h.fix ? <div class="msg warn">{h.fix}</div> : null}
+            </div>
+          ))}
+        </div>
+        <div class="picker-foot">
+          <span class="ps" />
+          <button class="btn" onClick={() => loadHealth()}>
+            Check again
+          </button>
+          <button class="btn primary" onClick={() => (healthOpen.value = false)}>
+            Done
+          </button>
+        </div>
+      </div>
+    </dialog>
   );
 }
 

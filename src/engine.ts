@@ -34,6 +34,8 @@ import {
 } from "./git.js";
 import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines } from "./store.js";
 import { branchDiff, mergeInto, openPullRequest, removeWorktrees, type DiffFile } from "./ship.js";
+import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
+import { DevServers } from "./serve.js";
 
 /** Per-run staging folder (inside the run's worktree folder) for context files. */
 const STAGE_DIR = ".context";
@@ -89,6 +91,12 @@ export interface Run {
   context: RunContext;
   /** Model and effort per provider; unset means the CLI's own default. */
   agentSettings: AgentSettings;
+  /** Per-role overrides of model/effort (e.g. Opus to plan, Sonnet to review). */
+  roleSettings: Record<string, AgentSettings>;
+  /** How much agents may do in write mode. */
+  trust: Trust;
+  /** How to run the app for "Run app" (from .codeflow/config.json). */
+  app?: { command: string; port?: number };
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
   /** The "done when" check and the run's budgets. */
@@ -165,6 +173,8 @@ export interface LoopSettings {
   check?: string;
   /** Runs once in every new worktree before agents start (e.g. `npm ci`). */
   setup?: string;
+  /** Gitignored files (like `.env`) copied from your checkout into every new worktree. */
+  copy?: string[];
   /** Stop the run after this many minutes. */
   maxMinutes: number;
   /** Stop the run after this many agent turns. */
@@ -506,6 +516,10 @@ export class TeamContext {
       // Git-excluded, so it is never committed and doesn't count as a change.
       await cp(join(this.run.worktreeDir, STAGE_DIR), join(wt.path, CONTEXT_DIR), { recursive: true });
     }
+    if (this.run.loop.copy?.length) {
+      const copied = await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
+      if (copied.length) this.log(`Copied ${copied.join(", ")} from your checkout into ${name}`);
+    }
     if (this.run.loop.setup) {
       const setup = await this.command("setup", `Setup ${name}`, wt, this.run.loop.setup);
       if (!setup.ok) throw new Error(`Setup command \`${this.run.loop.setup}\` failed in worktree ${name}`);
@@ -613,18 +627,23 @@ export class TeamContext {
         cwd: params.cwd.path,
         mode: params.mode,
         resumeSessionId: params.resume?.sessionId,
-        model: this.run.agentSettings[params.agent]?.model,
-        effort: this.run.agentSettings[params.agent]?.effort,
+        model: this.run.roleSettings?.[params.role]?.[params.agent]?.model || this.run.agentSettings[params.agent]?.model,
+        effort: this.run.roleSettings?.[params.role]?.[params.agent]?.effort || this.run.agentSettings[params.agent]?.effort,
         jsonSchema: params.schema,
+        trust: this.run.trust,
         signal: this.signal,
         timeoutMs: STEP_TIMEOUT_MS,
       },
       (event) => {
         if (event.kind === "session") step.sessionId = event.sessionId;
+        if (event.kind === "quota") this.manager.recordQuota(params.agent, event.status, event.windows);
         this.manager.emit(this.run, { type: "agent", stepId: step.id, event });
       },
     );
 
+    if (!result.ok && /rate.?limit|usage limit|quota|too many requests/i.test(result.error ?? "")) {
+      this.manager.recordQuota(params.agent, "limited", {});
+    }
     if (guardReadOnly && !(await isClean(params.cwd.path))) {
       await discardChanges(params.cwd.path);
       this.log(`${params.title} (${params.agent}) modified files in read-only mode; changes were reverted`, "warn");
@@ -662,6 +681,8 @@ export interface StartRunInput {
   loop?: Partial<LoopSettings>;
   approvals?: { plan?: boolean };
   parentRunId?: string;
+  roleSettings?: Record<string, AgentSettings>;
+  trust?: Trust;
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
 }
@@ -764,6 +785,7 @@ export class RunManager {
   async archive(id: string, opts: { cleanup?: boolean; deleteBranches?: boolean } = {}) {
     const run = this.require(id);
     this.setArchived(id, true);
+    this.devServers.stopMatching(`${id}/`);
     if (!opts.cleanup) return { removed: [], deletedBranches: [] };
     const result = await removeWorktrees(run.repo, run.worktrees, !!opts.deleteBranches);
     this.emit(run, {
@@ -842,6 +864,14 @@ export class RunManager {
   }
 
   private readonly waiters = new Map<string, (answer: ApprovalAnswer) => void>();
+  /** Latest plan-usage signal per vendor (Claude reports windows; others only "limited"). */
+  readonly quota: Partial<Record<AgentId, { status: string; windows: Record<string, { utilization?: number; resetsAt?: number }>; at: number }>> = {};
+  /** "Run app" dev servers, keyed `${runId}/${worktree}`. */
+  readonly devServers = new DevServers();
+
+  recordQuota(agent: AgentId, status: string, windows: Record<string, { utilization?: number; resetsAt?: number }>) {
+    this.quota[agent] = { status, windows, at: Date.now() };
+  }
 
   /** Resolves when the user answers the run's checkpoint; rejects if the run is stopped. */
   waitForAnswer(id: string, signal: AbortSignal): Promise<ApprovalAnswer> {
@@ -888,10 +918,18 @@ export class RunManager {
   }
 
   async start(input: StartRunInput): Promise<Run> {
+    // .codeflow/config.json supplies defaults; anything the request sets explicitly wins.
+    const { config } = await readRepoConfig(await repoRoot(input.repo).catch(() => input.repo));
+    const given = input.loop ?? {};
     const loop: LoopSettings = {
       ...DEFAULT_LOOP,
-      ...Object.fromEntries(Object.entries(input.loop ?? {}).filter(([, v]) => v !== undefined && v !== "")),
+      ...Object.fromEntries(
+        Object.entries({ maxMinutes: config.limits?.maxMinutes, maxSteps: config.limits?.maxSteps, copy: config.copy }).filter(([, v]) => v !== undefined),
+      ),
+      ...Object.fromEntries(Object.entries(given).filter(([, v]) => v !== undefined && v !== "")),
     };
+    if (given.check === undefined) loop.check = config.check;
+    if (given.setup === undefined) loop.setup = config.setup;
     loop.check = loop.check?.trim() || undefined;
     loop.setup = loop.setup?.trim() || undefined;
     if (input.pattern.requiresCheck && !loop.check) {
@@ -923,7 +961,10 @@ export class RunManager {
       branchPrefix,
       worktreeDir,
       context,
-      agentSettings: input.agentSettings ?? {},
+      agentSettings: { ...(config.models ?? {}), ...(input.agentSettings ?? {}) },
+      roleSettings: input.roleSettings ?? {},
+      trust: input.trust ?? config.trust ?? "standard",
+      app: config.run,
       roles: input.roles,
       options: input.options,
       loop,
@@ -1029,6 +1070,7 @@ export class RunManager {
   /** Stop every running run as "interrupted" (resumable) and make sure the logs are on disk. */
   async shutdown(timeoutMs = 10_000): Promise<void> {
     this.shuttingDown = true;
+    this.devServers.stopAll();
     for (const controller of this.controllers.values()) controller.abort();
     await Promise.race([
       Promise.allSettled([...this.active.values()]),
@@ -1147,6 +1189,8 @@ function rebuildRun(events: RunEvent[]): Run | undefined {
     worktreeDir: legacy.worktreeDir ?? join(worktreeRoot(legacy.repo), legacy.id),
     followUps: legacy.followUps ?? [],
     notes: legacy.notes ?? [],
+    roleSettings: legacy.roleSettings ?? {},
+    trust: legacy.trust ?? "standard",
     approvals: legacy.approvals ?? {},
     merges: legacy.merges ?? [],
     prs: legacy.prs ?? {},

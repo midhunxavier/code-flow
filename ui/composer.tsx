@@ -5,6 +5,12 @@ import {
   agents,
   agentSettings,
   approvePlan,
+  health,
+  repoConfig,
+  roleModels,
+  setRoleModel,
+  setTrust,
+  trust,
   CHECKPOINTS,
   setApprovePlan,
   attachments,
@@ -72,7 +78,15 @@ export function Composer() {
         },
         agentSettings: agentSettings.value,
         approvals: { plan: !!CHECKPOINTS[p.id] && approvePlan.value },
-        loop: { check: checkCmd.value.trim(), setup: setupCmd.value.trim(), maxMinutes: limits.value.maxMinutes, maxSteps: limits.value.maxSteps },
+        trust: trust.value,
+        roleSettings: roleModels.value[p.id] ?? {},
+        loop: {
+          check: checkCmd.value.trim(),
+          setup: setupCmd.value.trim(),
+          maxMinutes: limits.value.maxMinutes,
+          maxSteps: limits.value.maxSteps,
+          copy: repoConfig.value?.config.copy,
+        },
       });
       store.set("baseRef", baseRef.value);
       // Fresh composer for the next run; "Edit & run again" brings these back.
@@ -102,6 +116,18 @@ export function Composer() {
         </div>
       ) : null}
 
+      {repoConfig.value?.found ? (
+        <div class={`config-note ${repoConfig.value.error ? "bad" : ""}`}>
+          {repoConfig.value.error ? (
+            <>⚠ {repoConfig.value.error}</>
+          ) : (
+            <>
+              ⚙ Using <code>.codeflow/config.json</code>
+              {configSummary(repoConfig.value.config)}
+            </>
+          )}
+        </div>
+      ) : null}
       <TaskBox onStart={start} />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
 
@@ -160,6 +186,9 @@ function startProblem(p: PatternInfo | undefined, roles: Record<string, AgentId[
   if (p.id === "race" && (roles.contestants?.length ?? 0) < 2) return "A race needs at least two contestants";
   if (p.id === "debate" && (roles.debaters?.length ?? 0) < 2) return "A debate needs at least two debaters";
   if (p.requiresCheck && !checkCmd.value.trim()) return `${p.name} needs a “Done when” command, e.g. npm test`;
+  const used = new Set(Object.values(roles).flat());
+  const signedOut = health.value?.find((h) => used.has(h.id) && h.installed && h.signedIn === false);
+  if (signedOut) return `${signedOut.name} isn't signed in — open Health in the top bar`;
   return "";
 }
 
@@ -355,6 +384,7 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, AgentId[]> }
                 {role.multiple ? <span class="rd"> · pick several</span> : null}
               </div>
               <div class="rd">{role.description}</div>
+              {selected.length ? <RoleModels p={p} roleId={role.id} agents={selected} /> : null}
             </div>
             <div class="pills">
               {agents.value.map((a) => {
@@ -418,6 +448,65 @@ function teamSentence(p: PatternInfo, roles: Record<string, AgentId[]>): string 
     default:
       return p.summary;
   }
+}
+
+function configSummary(config: Record<string, any>): string {
+  const parts = [
+    config.check && `check “${config.check}”`,
+    config.setup && `setup “${config.setup}”`,
+    config.copy?.length && `copies ${config.copy.join(", ")}`,
+    config.run?.command && `runs the app with “${config.run.command}”`,
+    config.trust && `${config.trust} permissions`,
+  ].filter(Boolean);
+  return parts.length ? `: ${parts.join(" · ")}` : "";
+}
+
+/** Override model/effort for one role (e.g. Opus to plan, Sonnet to review). */
+function RoleModels({ p, roleId, agents: ids }: { p: PatternInfo; roleId: string; agents: AgentId[] }) {
+  const [open, setOpen] = useState(false);
+  const current = roleModels.value[p.id]?.[roleId] ?? {};
+  const summary = ids
+    .map((id) => [current[id]?.model, current[id]?.effort].filter(Boolean).join(" "))
+    .filter(Boolean)
+    .join(", ");
+  return (
+    <div class="role-models">
+      <button type="button" class="linkish" onClick={() => setOpen(!open)}>
+        ⚙ {summary ? `model: ${summary}` : "model for this role"}
+      </button>
+      {open
+        ? ids.map((id) => {
+            const cat = catalogs.value[id];
+            if (!cat || "error" in cat) return null;
+            const c = cat as ModelCatalog;
+            const s = current[id] ?? {};
+            const model = c.models.find((m) => m.id === s.model);
+            const efforts = model?.efforts?.length ? model.efforts : c.efforts;
+            return (
+              <div key={id} class="model-row compact">
+                <AgentTag id={id} />
+                <select class="field" value={s.model ?? ""} onChange={(e) => setRoleModel(p.id, roleId, id, { model: e.currentTarget.value })}>
+                  <option value="">Provider default</option>
+                  {c.models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+                <select class="field" value={s.effort ?? ""} onChange={(e) => setRoleModel(p.id, roleId, id, { effort: e.currentTarget.value })}>
+                  <option value="">Default effort</option>
+                  {efforts.map((x) => (
+                    <option key={x} value={x}>
+                      {x}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            );
+          })
+        : null}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------- settings
@@ -513,6 +602,26 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, AgentId[
             </div>
           </div>
           <div class="help">Work done before a limit is kept on its branch. Setup runs once in every new worktree before the agents start.</div>
+        </div>
+        <div>
+          <span class="lbl">What agents may do while building</span>
+          <div class="segmented" role="radiogroup" aria-label="Agent permissions">
+            {(
+              [
+                ["safe", "Safe", "Edit files only. Claude can't run commands; Codex stays sandboxed."],
+                ["standard", "Standard", "Edit files and run common build/test commands (npm, node, pytest, cargo, go, make…)."],
+                ["trusted", "Trusted", "Any command for Claude; network access inside Codex's sandbox. Use on repos you trust."],
+              ] as const
+            ).map(([value, label, help]) => (
+              <button key={value} type="button" role="radio" aria-checked={trust.value === value} class={trust.value === value ? "on" : ""} title={help} onClick={() => setTrust(value)}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div class="help">
+            {{ safe: "Edit files only. Claude can't run commands; Codex stays sandboxed.", standard: "Edit files and run common build/test commands (npm, node, pytest, cargo, go, make…).", trusted: "Any command for Claude; network access inside Codex's sandbox. Use on repos you trust." }[trust.value]}{" "}
+            Antigravity always runs with its sandbox (writes stay in the worktree). code-flow never merges or pushes on its own.
+          </div>
         </div>
         <div>
           <span class="lbl">Models &amp; effort</span>

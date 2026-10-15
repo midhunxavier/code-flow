@@ -30,6 +30,11 @@ export interface RunOptions {
   timeoutMs?: number;
   /** Constrain the final answer to this JSON Schema (all three CLIs support it). */
   jsonSchema?: object;
+  /**
+   * How much an agent may do in write mode: "safe" = edit files only, "standard" = also run
+   * common build/test commands, "trusted" = any command (and network, where the CLI sandboxes).
+   */
+  trust?: "safe" | "standard" | "trusted";
 }
 
 /** Normalized event stream — the UI and workflow engine only ever see these. */
@@ -41,7 +46,9 @@ export type AgentEvent =
   | { kind: "tool_result"; callId: string; output: string; isError: boolean }
   | { kind: "usage"; inputTokens?: number; outputTokens?: number; costUsd?: number }
   | { kind: "status"; text: string }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  /** Plan usage reported by the CLI (Claude reports its 5-hour and 7-day windows). */
+  | { kind: "quota"; status: string; windows: Record<string, { utilization?: number; resetsAt?: number }> };
 
 export interface RunResult {
   ok: boolean;

@@ -10,6 +10,9 @@ import {
   type AgentId,
 } from "./adapters/index.js";
 import { listTree, searchFiles } from "./repo-tree.js";
+import { doctor } from "./doctor.js";
+import { readRepoConfig } from "./repo-config.js";
+import { openFolder } from "./serve.js";
 import { CODEFLOW_HOME, PORT } from "./config.js";
 import { RunManager, type LoopSettings, type Pattern } from "./engine.js";
 import { detectCheckCommand } from "./checks.js";
@@ -104,6 +107,22 @@ async function validateRoles(pattern: Pattern, input: unknown): Promise<Record<s
   return roles;
 }
 
+/** Per-role model/effort overrides: { role: { agent: { model, effort } } }, each validated like agentSettings. */
+function validateRoleSettings(input: unknown): Record<string, ReturnType<typeof validateAgentSettings>> {
+  const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const out: Record<string, ReturnType<typeof validateAgentSettings>> = {};
+  for (const [role, settings] of Object.entries(raw)) {
+    if (!/^[\w-]{1,40}$/.test(role)) continue;
+    try {
+      const valid = validateAgentSettings(settings);
+      if (Object.keys(valid).length) out[role] = valid;
+    } catch (err) {
+      throw new HttpError(400, `${role}: ${(err as Error).message}`);
+    }
+  }
+  return out;
+}
+
 /** "Done when" check and budgets from the client; commands are the user's own shell commands. */
 function validateLoop(input: unknown): Partial<LoopSettings> {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
@@ -120,6 +139,7 @@ function validateLoop(input: unknown): Partial<LoopSettings> {
   return {
     check: text("check"),
     setup: text("setup"),
+    copy: Array.isArray(raw.copy) ? raw.copy.filter((p): p is string => typeof p === "string" && !!p.trim()).slice(0, 50) : undefined,
     maxMinutes: number("maxMinutes", 1, 720),
     maxSteps: number("maxSteps", 1, 200),
     checkTimeoutMin: number("checkTimeoutMin", 1, 120),
@@ -204,6 +224,11 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     });
     return send(res, 200, listing);
   }
+  if (req.method === "GET" && parts[1] === "doctor") return send(res, 200, await doctor(manager.quota));
+  if (req.method === "GET" && parts[1] === "repo-config") {
+    const repo = await requestedRepo(url);
+    return send(res, 200, await readRepoConfig(repo));
+  }
   if (req.method === "GET" && parts[1] === "check") {
     const repo = await requestedRepo(url);
     return send(res, 200, (await detectCheckCommand(repo)) ?? { command: null });
@@ -246,6 +271,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
             loop: validateLoop(body.loop),
             approvals: { plan: body.approvals?.plan === true },
             parentRunId: typeof body.parentRunId === "string" && manager.get(body.parentRunId) ? body.parentRunId : undefined,
+            trust: ["safe", "standard", "trusted"].includes(body.trust) ? body.trust : undefined,
+            roleSettings: validateRoleSettings(body.roleSettings),
             agentSettings: (() => {
               try {
                 return validateAgentSettings(body.agentSettings);
@@ -304,6 +331,28 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       );
       return send(res, 200, { ok: true });
     }
+    // /api/runs/:id/worktrees/:name/(open|serve)
+    if (parts[3] === "worktrees" && parts[4]) {
+      const wt = run.worktrees.find((w) => w.name === parts[4]);
+      if (!wt) throw new HttpError(404, "Unknown worktree");
+      const key = `${run.id}/${wt.name}`;
+      if (req.method === "POST" && parts[5] === "open") {
+        const body = await readJson(req);
+        const target = body.target === "editor" || body.target === "finder" ? body.target : "terminal";
+        return send(res, 200, { openedWith: await attempt(() => openFolder(wt.path, target)) });
+      }
+      if (parts[5] === "serve") {
+        if (req.method === "GET") return send(res, 200, manager.devServers.get(key) ?? null);
+        if (req.method === "DELETE") return send(res, 200, { stopped: manager.devServers.stop(key) });
+        if (req.method === "POST") {
+          const body = await readJson(req);
+          const command = (typeof body.command === "string" && body.command.trim()) || run.app?.command;
+          if (!command) throw new HttpError(400, 'Say how to run the app (e.g. "npm run dev"), or add "run" to .codeflow/config.json');
+          if (/[\r\n]/.test(command)) throw new HttpError(400, "The command must be a single line");
+          return send(res, 200, await manager.devServers.start(key, wt.path, command, run.app?.port));
+        }
+      }
+    }
     if (req.method === "POST" && parts[3] === "notes") {
       const body = await readJson(req);
       const note = await attempt(async () => manager.addNote(run.id, String(body.text ?? ""), isAgentId(body.agent) ? body.agent : undefined));
@@ -347,6 +396,19 @@ const server = createServer((req, res) => {
   for (const a of agents) console.log(`  ${a.available ? "✓" : "✗"} ${a.displayName} (${a.binary})`);
   const interrupted = runs.filter((r) => r.status === "interrupted").length;
   if (interrupted) console.log(`  ${interrupted} interrupted run(s) can be resumed from the UI`);
+});
+
+// A previous instance may still be shutting down (e.g. a dev restart): wait for the port
+// instead of crashing.
+let listenAttempts = 0;
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE" && ++listenAttempts <= 40) {
+    if (listenAttempts === 1) console.log(`Port ${PORT} is busy; waiting for it to be released…`);
+    setTimeout(() => server.listen(PORT, HOST), 500);
+    return;
+  }
+  console.error(err.code === "EADDRINUSE" ? `Port ${PORT} is still in use. Is code-flow already running?` : err);
+  process.exit(1);
 });
 
 // Stop cleanly: running agents are stopped and their runs marked "interrupted" (resumable).

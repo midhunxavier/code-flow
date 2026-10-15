@@ -290,7 +290,8 @@
     .menu-btn { display: inline-flex; }
     .rail { display: none; position: fixed; left: 0; top: 52px; bottom: 0; width: 260px; z-index: 6; box-shadow: var(--shadow); }
     .rail.open { display: flex; }
-    .agent-status { display: none; }
+    .agent-status { gap: 6px; }
+    .agent-status .agent { font-size: 0; gap: 0; } /* just the colored dots on phones; still opens Health */
     .composer { padding: 18px 16px 48px; }
     .role { grid-template-columns: 1fr; gap: 6px; }
     .run-body { grid-template-columns: 1fr; }
@@ -376,3 +377,29 @@
   .convo-row input.field { flex: 1; min-width: 220px; }
   .notes { display: flex; gap: 6px; flex-wrap: wrap; }
   .note-chip.delivered { opacity: .7; }
+
+  /* ---------- M4: workspaces ---------- */
+  .config-note { font-size: 12px; color: var(--muted); margin: 0 0 10px; padding: 6px 10px; border-radius: 8px; background: var(--sunken); }
+  .config-note.bad { color: var(--err); background: var(--err-soft); }
+  .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .segmented button { border: 0; border-right: 1px solid var(--border); background: var(--raised); padding: 5px 14px; font-size: 13px; }
+  .segmented button:last-child { border-right: 0; }
+  .segmented button.on { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  .role-models { margin-top: 4px; display: grid; gap: 4px; }
+  .linkish { border: 0; background: none; padding: 0; font-size: 11px; color: var(--accent); text-align: left; }
+  .model-row.compact { grid-template-columns: 90px minmax(0, 1fr) 110px; font-size: 12px; }
+  .model-row.compact .field { padding: 3px 6px; font-size: 12px; }
+  .ws-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .ws-tools .lbl { margin: 0 4px 0 0; }
+  .ws-tools .field.inline { width: 150px; }
+  .serve-logs { width: 100%; max-height: 180px; }
+  button.agent-status { border: 0; background: none; padding: 4px 6px; border-radius: 8px; }
+  button.agent-status:hover { background: var(--sunken); }
+  .agent.problem { color: var(--warn) !important; }
+  .health-row { display: grid; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .health-row:last-child { border-bottom: 0; }
+  .hr-title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .quota { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+  .quota .q { display: grid; grid-template-columns: 110px 120px 1fr; gap: 8px; align-items: center; }
+  .quota .bar { height: 6px; border-radius: 3px; background: var(--sunken); overflow: hidden; }
+  .quota .bar span { display: block; height: 100%; background: var(--accent); }

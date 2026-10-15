@@ -346,6 +346,7 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
         </span>
       </div>
       {artifact.stat ? <pre>{artifact.stat}</pre> : <div class="help">No changes</div>}
+      {worktree && existsHint(run) ? <WorkspaceTools run={run} worktree={worktree.name} /> : null}
       {panel === "merge" && worktree ? <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : null}
       {panel === "pr" ? <PrPanel run={run} branch={artifact.branch} /> : null}
     </div>
@@ -473,6 +474,68 @@ function PrPanel({ run, branch }: { run: RunSummary; branch: string }) {
       <div class="help">
         This pushes <code>{branch}</code> to <code>origin</code> and opens a pull request with GitHub CLI (<code>gh</code>), using the run's task and summary as the description.
       </div>
+    </div>
+  );
+}
+
+const existsHint = (run: RunSummary) => !run.archived; // archived runs may have had their worktrees removed
+
+/** Try a result: open its worktree in your tools, or run the app from it. */
+function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }) {
+  const base = `/api/runs/${run.id}/worktrees/${encodeURIComponent(worktree)}`;
+  const [server, setServer] = useState<{ url: string; status: string; logs: string[]; command: string; exitCode?: number | null } | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
+  const [command, setCommand] = useState(run.app?.command ?? "");
+  useEffect(() => {
+    let alive = true;
+    const poll = () => api(base + "/serve").then((s) => alive && setServer(s), () => {});
+    poll();
+    const timer = setInterval(poll, 2000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [base]);
+  const open = (target: string) =>
+    post<{ openedWith: string }>(`${base}/open`, { target }).then((r) => showToast(`Opened in ${r.openedWith}`), (e) => showToast(e.message, 5000));
+  return (
+    <div class="ws-tools">
+      <span class="lbl">Try it</span>
+      <button class="btn small" onClick={() => open("terminal")}>
+        Terminal
+      </button>
+      <button class="btn small" onClick={() => open("editor")}>
+        Editor
+      </button>
+      <button class="btn small" onClick={() => open("finder")}>
+        Folder
+      </button>
+      {server?.status === "running" ? (
+        <>
+          <a class="btn small primary" href={server.url} target="_blank" rel="noreferrer">
+            Open {server.url.replace("http://", "")} ↗
+          </a>
+          <button class="btn small" onClick={() => setShowLogs(!showLogs)}>
+            {showLogs ? "Hide logs" : "Logs"}
+          </button>
+          <button class="btn small danger" onClick={() => api(base + "/serve", { method: "DELETE" }).then(() => setServer(null))}>
+            Stop app
+          </button>
+        </>
+      ) : (
+        <>
+          <input class="field inline mono" placeholder="npm run dev" value={command} onInput={(e) => setCommand(e.currentTarget.value)} title="How to start the app; it gets a free port in $PORT" />
+          <button
+            class="btn small"
+            disabled={!command.trim()}
+            onClick={() => post(base + "/serve", { command }).then(setServer, (e) => showToast(e.message, 5000))}
+          >
+            ▶ Run app
+          </button>
+          {server?.status === "exited" ? <span class="msg warn">exited ({server.exitCode})</span> : null}
+        </>
+      )}
+      {showLogs && server ? <pre class="serve-logs">{server.logs.slice(-80).join("\n") || "(no output yet)"}</pre> : null}
     </div>
   );
 }

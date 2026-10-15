@@ -36,7 +36,9 @@ const DEFAULT_WRITE_TOOLS = [
   "Bash(mkdir *)",
 ];
 
-function writeTools(): string[] {
+function writeTools(trust: RunOptions["trust"] = "standard"): string[] {
+  if (trust === "safe") return READ_TOOLS; // edits come from acceptEdits; no shell beyond read-only git
+  if (trust === "trusted") return [...READ_TOOLS, "Bash"];
   const env = process.env.CODEFLOW_CLAUDE_WRITE_TOOLS;
   return env ? env.split(",").map((t) => t.trim()).filter(Boolean) : DEFAULT_WRITE_TOOLS;
 }
@@ -70,7 +72,7 @@ export const claudeAdapter: AgentAdapter = {
     if (opts.effort) args.push("--effort", opts.effort);
     if (opts.jsonSchema) args.push("--json-schema", JSON.stringify(opts.jsonSchema));
     if (opts.mode === "write") {
-      args.push("--permission-mode", "acceptEdits", "--allowedTools", writeTools().join(","));
+      args.push("--permission-mode", "acceptEdits", "--allowedTools", writeTools(opts.trust).join(","));
     } else {
       args.push(
         "--permission-mode", "default",
@@ -136,11 +138,16 @@ export const claudeAdapter: AgentAdapter = {
             }
             break;
 
-          case "rate_limit_event":
-            if (msg.rate_limit_info?.status && msg.rate_limit_info.status !== "allowed") {
-              onEvent({ kind: "status", text: `Claude rate limit: ${msg.rate_limit_info.status}` });
+          case "rate_limit_event": {
+            const info = msg.rate_limit_info ?? {};
+            const windows: Record<string, { utilization?: number; resetsAt?: number }> = {};
+            for (const [name, w] of Object.entries((info.unifiedWindows ?? {}) as Record<string, any>)) {
+              windows[name] = { utilization: w?.utilization, resetsAt: w?.resetsAt ? w.resetsAt * 1000 : undefined };
             }
+            onEvent({ kind: "quota", status: info.status ?? "unknown", windows });
+            if (info.status && info.status !== "allowed") onEvent({ kind: "status", text: `Claude rate limit: ${info.status}` });
             break;
+          }
 
           case "result":
             sawResult = true;

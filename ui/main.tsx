@@ -2,7 +2,7 @@ import { effect } from "@preact/signals";
 import { render } from "preact";
 import { App, notifyFinished } from "./app.js";
 import { api, store } from "./lib.js";
-import { agents, loadModels, patterns, refreshRuns, route, setRepo, watchAllRuns, type Route } from "./state.js";
+import { agents, loadHealth, loadModels, patterns, refreshRuns, route, setRepo, watchAllRuns, type Route } from "./state.js";
 
 /** The current view lives in the URL hash, so reload, back/forward and links work. */
 function routeFromHash(): Route {
@@ -30,6 +30,7 @@ async function boot() {
   window.addEventListener("hashchange", () => (route.value = routeFromHash()));
   render(<App />, document.getElementById("root")!);
   void loadModels();
+  void loadHealth();
   const saved = store.get("repo");
   if (saved) void setRepo(saved, false);
   await refreshRuns();

@@ -89,6 +89,40 @@ Agents may suggest their own test command (the tester in Test-first does). code-
 
 > **Security:** a check runs the agents' code (tests, scripts) on your machine, outside Codex's and agy's sandboxes, as your CI would. Use code-flow on repos and tasks you trust, or run it inside a container or VM.
 
+## Workspaces that just work
+
+**Per-repo config.** Commit `.codeflow/config.json` and every run in that repo (and every teammate) gets the same defaults. Anything you set in the UI wins.
+
+```json
+{
+  "check": "npm test",
+  "setup": "npm ci",
+  "copy": [".env", ".env.local", "config/*.local.json"],
+  "run": { "command": "npm run dev", "port": 3000 },
+  "models": { "claude": { "model": "opus", "effort": "high" } },
+  "limits": { "maxMinutes": 90, "maxSteps": 60 },
+  "trust": "standard"
+}
+```
+
+- `copy` brings files git doesn't carry (like `.env`) from your checkout into every new worktree. They're never committed, and patterns can't reach outside the repo.
+- **Try it:** each result has **Terminal**, **Editor** (Cursor, VS Code, Zed or Sublime, whichever is installed) and **Folder** buttons that open its worktree, plus **▶ Run app**.
+  - Run app starts your dev server in the worktree on a free port (passed as `$PORT`), with logs and **Stop app**. Servers stop when the run is archived or code-flow shuts down.
+
+**What agents may do while building** (Settings → permissions):
+
+| Mode | Claude Code | Codex | Antigravity |
+|---|---|---|---|
+| Safe | edits files; no shell beyond read-only git | edits inside its sandbox | sandboxed to the worktree |
+| Standard (default) | edits + common build/test commands (npm, node, pytest, cargo, go, make…) | sandboxed, no network | sandboxed to the worktree |
+| Trusted | any command | sandboxed, with network | sandboxed to the worktree |
+
+Whatever the mode, code-flow never merges or pushes on its own.
+
+**Per-role models:** under each role, *⚙ model for this role* overrides the provider default, for example Opus to plan and Sonnet to review.
+
+**Health:** click the agent names in the top bar to see, for each CLI, whether it's installed, its version, and whether it's signed in. It uses `claude auth status`, `codex login status`, and for agy whether it can list models; credentials are never read. Claude's 5-hour and 7-day usage windows are shown from its own reports, with how to fix anything that's wrong. A run won't start with an agent that's signed out.
+
 ## Review & ship
 
 When a run finishes, each result branch has **Review changes**, **Merge…** and **Open PR…** buttons.

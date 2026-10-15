@@ -8,6 +8,24 @@ import { createHash, randomUUID } from "node:crypto";
 
 const [vendor, ...args] = process.argv.slice(2);
 
+// Version and sign-in status, in each CLI's real output format.
+if (args[0] === "--version") {
+  process.stdout.write({ claude: "2.1.300 (Claude Code)\n", codex: "codex-cli 0.162.1\n", agy: "1.3.6\n" }[vendor]);
+  process.exit(0);
+}
+if (vendor === "claude" && args[0] === "auth" && args[1] === "status") {
+  process.stdout.write(JSON.stringify({ loggedIn: process.env.FAKE_SIGNED_OUT !== "claude", authMethod: "claude.ai" }));
+  process.exit(0);
+}
+if (vendor === "codex" && args[0] === "login" && args[1] === "status") {
+  if (process.env.FAKE_SIGNED_OUT === "codex") {
+    process.stderr.write("Not logged in\n");
+    process.exit(1);
+  }
+  process.stdout.write("Logged in using ChatGPT\n");
+  process.exit(0);
+}
+
 // Model listings, in each CLI's real output format.
 if (vendor === "codex" && args[0] === "debug" && args[1] === "models") {
   const levels = (...efforts) => efforts.map((effort) => ({ effort, description: effort }));
@@ -115,6 +133,7 @@ const session = randomUUID();
 
 if (vendor === "claude") {
   out({ type: "system", subtype: "init", session_id: session });
+  out({ type: "rate_limit_event", rate_limit_info: { status: "allowed", unifiedWindows: { five_hour: { utilization: 0.42, resetsAt: 1792092600 }, seven_day: { utilization: 0.1, resetsAt: 1792350000 } } } });
   out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "x" } }] } });
   out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } });
   out({ type: "assistant", message: { content: [{ type: "text", text: answer }] } });
