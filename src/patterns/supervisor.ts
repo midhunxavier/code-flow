@@ -2,7 +2,7 @@ import { adapters, isAgentId, type AgentId } from "../adapters/index.js";
 import type { Pattern } from "../engine.js";
 import { hasConflictMarkers, mergeBranch } from "../git.js";
 import { extractJson } from "../json.js";
-import { fence, jsonInstruction, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { checkSection, fence, fixUntilGreen, jsonInstruction, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface Subtask {
   id: string;
@@ -144,6 +144,9 @@ export const supervisorPattern: Pattern = {
       await ctx.commit(integration, `Merge ${r.wt.branch} (conflicts resolved by ${supervisor})`);
     }
 
+    // The merged result is where parts break each other: check it before reviewing.
+    let { check } = await fixUntilGreen(ctx, { agent: supervisor, role: "supervisor", wt: integration, attempts: 2 });
+
     const diff = await ctx.diff(integration);
     const review = await ctx.ask({
       title: "Integration review",
@@ -156,6 +159,7 @@ export const supervisorPattern: Pattern = {
         "All subtasks have been merged into the integration branch. Review the combined result against the overall task: " +
         "missing pieces, inconsistencies between parts, broken integration, failing tests." +
         section("Combined diff", fence(diff, "diff")) +
+        (check ? checkSection(check, 3_000) : "") +
         jsonInstruction('{"verdict": "approve" | "changes_requested", "issues": [{"problem": "...", "fix": "..."}]}'),
     });
 
@@ -174,11 +178,13 @@ export const supervisorPattern: Pattern = {
           section("Deliverable", "Fix these issues, run the tests, and summarize."),
       });
       await ctx.commit(integration, `${supervisor}: fix integration issues`);
+      check = (await fixUntilGreen(ctx, { agent: supervisor, role: "supervisor", wt: integration, attempts: 2 })).check;
     }
 
     await ctx.artifact("Integrated result", integration);
+    if (check) ctx.setVerdict(check.ok ? "passed" : "failing");
     return [
-      `**Integrated** on branch \`${integration.branch}\``,
+      `**Integrated**${check ? (check.ok ? `, and \`${check.command}\` passes` : `, but \`${check.command}\` still fails`) : ""} — branch \`${integration.branch}\``,
       section(
         "Subtasks",
         results

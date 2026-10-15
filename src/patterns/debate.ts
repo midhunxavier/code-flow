@@ -1,6 +1,6 @@
 import { adapters } from "../adapters/index.js";
 import type { Pattern, StepOutcome } from "../engine.js";
-import { preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { fixUntilGreen, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
 /**
  * Debate → Synthesize → Build.
@@ -125,10 +125,12 @@ export const debatePattern: Pattern = {
         section("Deliverable", "Implement the plan, run the relevant tests, then summarize the changes."),
     });
     await ctx.commit(buildWt, `${builder}: implement synthesized plan`);
+    const { check } = await fixUntilGreen(ctx, { agent: builder, role: "builder", wt: buildWt, session: build, attempts: 2 });
     await ctx.artifact("Result", buildWt);
+    if (check) ctx.setVerdict(check.ok ? "passed" : "failing");
 
     return [
-      `**Built** on branch \`${buildWt.branch}\``,
+      `**Built**${check ? (check.ok ? `, and \`${check.command}\` passes` : `, but \`${check.command}\` still fails`) : ""} on branch \`${buildWt.branch}\``,
       section("Synthesized plan", plan.finalText),
       section("Builder summary", build.finalText),
     ].join("\n");

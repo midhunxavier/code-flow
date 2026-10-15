@@ -1,7 +1,8 @@
 import type { Pattern, StepOutcome } from "../engine.js";
+import { isPlainTestCommand, type CheckResult } from "../checks.js";
 import { changedFiles, resolveCommit } from "../git.js";
 import { extractJson } from "../json.js";
-import { fence, jsonInstruction, preamble, section, WRITE } from "./prompts.js";
+import { checkSection, fence, jsonInstruction, preamble, section, WRITE } from "./prompts.js";
 
 interface TestSpec {
   test_command: string;
@@ -54,14 +55,45 @@ export const tddPattern: Pattern = {
         jsonInstruction('{"test_command": "command that runs these tests", "test_files": ["path/to/test"]}'),
     });
     const spec = extractJson<TestSpec>(testerStep.finalText);
-    if (!spec?.test_command) throw new Error("Tester did not report a test command");
     const testsCommit = await ctx.commit(wt, `${tester}: failing tests`);
-    const testFiles = testsCommit ? await changedFiles(wt.path, wt.base, testsCommit) : spec.test_files ?? [];
-    ctx.log(`Test command: ${spec.test_command}; test files: ${testFiles.join(", ") || "(none detected)"}`);
+    const testFiles = testsCommit ? await changedFiles(wt.path, wt.base, testsCommit) : spec?.test_files ?? [];
+
+    // Evidence comes from code-flow running the tests itself. An agent-chosen command is only run
+    // when it looks like a plain test invocation; the user's configured check always runs.
+    const reported = spec?.test_command?.trim();
+    const targeted = reported && isPlainTestCommand(reported) ? reported : undefined;
+    if (reported && !targeted) ctx.log(`Not running the tester's command \`${reported}\`: it isn't a plain test command`, "warn");
+    const evidence = !!targeted || ctx.hasCheck;
+    if (!evidence) {
+      if (!reported) throw new Error("Tester did not report a test command, and no check command is set");
+      ctx.log("No test command code-flow can run; relying on the tester's verdict. Set a check in Settings → Done when.", "warn");
+    }
+    ctx.log(`Test command: ${reported ?? "(none)"}; test files: ${testFiles.join(", ") || "(none detected)"}`);
+    const testCommand = targeted ?? ctx.run.loop.check ?? reported!;
+
+    /** Run the new tests and the full check; returns the first failure, or null when all pass. */
+    const runTests = async (title: string): Promise<CheckResult | null> => {
+      if (targeted) {
+        const result = (await ctx.check(wt, title, targeted))!;
+        if (!result.ok) return result;
+      }
+      if (ctx.hasCheck && ctx.run.loop.check !== targeted) {
+        const result = (await ctx.check(wt, `${title}: full check`))!;
+        if (!result.ok) return result;
+      }
+      return null;
+    };
+
+    // Red first: new tests that already pass don't specify anything new.
+    if (targeted) {
+      const red = (await ctx.check(wt, "New tests (should fail)", targeted))!;
+      if (red.ok) ctx.log("The new tests already pass before any implementation; they may not test the new behaviour", "warn");
+    }
 
     let builderStep: StepOutcome | undefined;
     let verdict: TestVerdict | undefined;
     let feedback = "";
+    let green = false;
 
     for (let round = 1; round <= maxRounds; round++) {
       // Only the builder's own changes count when checking for edited tests.
@@ -77,13 +109,13 @@ export const tddPattern: Pattern = {
           round === 1
             ? preamble("builder", builder, WRITE) +
               section("Task", ctx.task) +
-              section("Tests to satisfy", `Run with: \`${spec.test_command}\`\nTest files:\n${testFiles.map((f) => `- ${f}`).join("\n")}`) +
+              section("Tests to satisfy", `Run with: \`${testCommand}\`\nTest files:\n${testFiles.map((f) => `- ${f}`).join("\n")}`) +
               section(
                 "Rules",
                 "Make the tests pass by implementing the feature properly. Do NOT modify, skip or delete the tests. " +
                   "If a test looks wrong, explain why in your summary instead of changing it.",
               )
-            : `The tester found these problems:\n${feedback}\n\nFix the implementation (not the tests), re-run \`${spec.test_command}\`, and summarize.`,
+            : `Not done yet:\n${feedback}\n\nFix the implementation (not the tests), re-run \`${testCommand}\`, and summarize.`,
       });
       await ctx.commit(wt, `${builder}: implementation round ${round}`);
 
@@ -93,8 +125,16 @@ export const tddPattern: Pattern = {
         : "";
       if (touched.length) ctx.log(`Builder modified test files: ${touched.join(", ")}`, "warn");
 
+      if (evidence) {
+        const failing = await runTests(`Tests after round ${round}`);
+        if (failing) {
+          feedback = checkSection(failing);
+          continue; // straight back to the builder; no point probing red code
+        }
+      }
+
       testerStep = await ctx.ask({
-        title: `Verify (round ${round})`,
+        title: `Try to break it (round ${round})`,
         role: "tester",
         agent: tester,
         mode: "write",
@@ -102,25 +142,42 @@ export const tddPattern: Pattern = {
         resume: testerStep,
         prompt:
           `The builder has implemented the feature.${tamperNote}\n` +
-          `Run \`${spec.test_command}\`. Then try to break the implementation: add tests for edge cases you missed ` +
-          "(add them to the test files; do not change the implementation). Report pass only if everything passes and you found no real gaps." +
+          (evidence ? "code-flow ran the tests and they pass. " : `Run \`${testCommand}\`. `) +
+          "Now try to break the implementation: add tests for edge cases you missed (add them to the test files; do not change the implementation). " +
+          "Report pass only if you found no real gaps." +
           section("Diff since your tests", fence(await ctx.diff(wt, testsCommit ?? wt.base), "diff")) +
           jsonInstruction('{"verdict": "pass" | "fail", "failures": ["what failed and why"]}'),
       });
-      await ctx.commit(wt, `${tester}: verification round ${round}`);
-
+      await ctx.commit(wt, `${tester}: edge-case tests round ${round}`);
       verdict = extractJson<TestVerdict>(testerStep.finalText);
-      ctx.log(`Round ${round}: ${verdict?.verdict ?? "no verdict"}`);
-      if (!verdict || verdict.verdict === "pass") break;
-      feedback = (verdict.failures ?? []).map((f) => `- ${f}`).join("\n") || testerStep.finalText;
+      const gaps = (verdict?.failures ?? []).map((f) => `- ${f}`).join("\n");
+
+      if (evidence) {
+        const failing = await runTests(`Tests incl. new edge cases (round ${round})`);
+        if (!failing && (!verdict || verdict.verdict === "pass")) {
+          green = true;
+          break;
+        }
+        feedback = failing ? checkSection(failing) : gaps || testerStep.finalText;
+      } else {
+        if (!verdict || verdict.verdict === "pass") {
+          green = true;
+          break;
+        }
+        feedback = gaps || testerStep.finalText;
+      }
+      ctx.log(`Round ${round}: not done yet`);
     }
 
     await ctx.artifact("Result", wt);
-    const passed = verdict?.verdict === "pass";
+    if (evidence) ctx.setVerdict(green ? "passed" : "failing");
+    const headline = green
+      ? evidence ? "All tests pass (run by code-flow)" : "The tester reports all tests pass"
+      : "Tests still failing after the last round";
     return [
-      `**${passed ? "All tests pass" : "Tests still failing after the last round"}** — branch \`${wt.branch}\``,
-      `Test command: \`${spec.test_command}\``,
-      !passed && verdict?.failures?.length ? section("Remaining failures", verdict.failures.map((f) => `- ${f}`).join("\n")) : "",
+      `**${headline}** — branch \`${wt.branch}\``,
+      `Test command: \`${testCommand}\``,
+      !green && feedback ? section("Still open", feedback) : "",
       builderStep ? section("Builder summary", builderStep.finalText) : "",
     ].join("\n");
   },

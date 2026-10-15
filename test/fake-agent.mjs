@@ -60,8 +60,14 @@ if (prompt.includes('"subtasks"')) {
   writeFileSync("shared.txt", "resolved by fake agent\n");
   answer = "Resolved the conflicts.";
 } else if (prompt.includes('"test_command"')) {
-  writeFileSync("spec.test.txt", "expect feature\n");
-  answer = json({ test_command: "true", test_files: ["spec.test.txt"] });
+  // A real test: passes once any agent has written its "<vendor>-<id>.txt" implementation file.
+  writeFileSync("spec.test.mjs", [
+    'import { test } from "node:test";',
+    'import assert from "node:assert";',
+    'import { readdirSync } from "node:fs";',
+    'test("feature is implemented", () => assert.ok(readdirSync(".").some((f) => /^(claude|codex|agy)-.*\\.txt$/.test(f))));',
+  ].join("\n") + "\n");
+  answer = json({ test_command: "node --test spec.test.mjs", test_files: ["spec.test.mjs"] });
 } else if (prompt.includes('"verdict": "pass" | "fail"')) {
   answer = json({ verdict: "pass", failures: [] });
 } else if (prompt.includes('"verdict": "approve" | "changes_requested"')) {
@@ -72,11 +78,15 @@ if (prompt.includes('"subtasks"')) {
   answer = json(fail ? { verdict: "changes_requested", issues: [{ problem: "missing edge case" }] } : { verdict: "approve", issues: [] });
 } else if (prompt.includes('"winner"')) {
   answer = json({ winner: "B", ranking: ["B", "A"], reasons: "B is simpler" });
+} else if (write && process.env.FAKE_NOOP_VENDOR === vendor) {
+  answer = `${vendor} looked around but changed nothing.`;
 } else if (write) {
   if (prompt.includes("CONFLICT")) writeFileSync("shared.txt", `written by ${vendor} ${id}\n`);
   else writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
   answer = `Implemented changes as ${vendor}.`;
 }
+
+if (process.env.FAKE_SLEEP_MS) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_SLEEP_MS));
 
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 const session = randomUUID();

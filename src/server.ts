@@ -11,7 +11,8 @@ import {
 } from "./adapters/index.js";
 import { listTree, searchFiles } from "./repo-tree.js";
 import { PORT } from "./config.js";
-import { RunManager, type Pattern } from "./engine.js";
+import { RunManager, type LoopSettings, type Pattern } from "./engine.js";
+import { detectCheckCommand } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
 import { listBranches, repoRoot, worktreeRoot } from "./git.js";
@@ -94,6 +95,28 @@ async function validateRoles(pattern: Pattern, input: unknown): Promise<Record<s
   return roles;
 }
 
+/** "Done when" check and budgets from the client; commands are the user's own shell commands. */
+function validateLoop(input: unknown): Partial<LoopSettings> {
+  const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const text = (key: string) => {
+    const value = typeof raw[key] === "string" ? (raw[key] as string).trim() : "";
+    if (value.length > 1_000) throw new HttpError(400, `${key} command is too long`);
+    if (/[\r\n]/.test(value)) throw new HttpError(400, `${key} command must be a single line`);
+    return value || undefined;
+  };
+  const number = (key: string, min: number, max: number) => {
+    const n = Number(raw[key]);
+    return raw[key] === undefined || raw[key] === "" || !Number.isFinite(n) ? undefined : Math.min(max, Math.max(min, n));
+  };
+  return {
+    check: text("check"),
+    setup: text("setup"),
+    maxMinutes: number("maxMinutes", 1, 720),
+    maxSteps: number("maxSteps", 1, 200),
+    checkTimeoutMin: number("checkTimeoutMin", 1, 120),
+  };
+}
+
 function validateOptions(pattern: Pattern, input: unknown): Record<string, number | boolean> {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const options: Record<string, number | boolean> = {};
@@ -162,6 +185,10 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     });
     return send(res, 200, listing);
   }
+  if (req.method === "GET" && parts[1] === "check") {
+    const repo = await requestedRepo(url);
+    return send(res, 200, (await detectCheckCommand(repo)) ?? { command: null });
+  }
   if (req.method === "GET" && parts[1] === "search") {
     const repo = await requestedRepo(url);
     return send(res, 200, await searchFiles(repo, url.searchParams.get("q") ?? ""));
@@ -197,6 +224,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
             baseRef: body.baseRef ? String(body.baseRef) : undefined,
             branchPrefix: body.branchPrefix ? String(body.branchPrefix) : undefined,
             context: body.context && typeof body.context === "object" ? body.context : undefined,
+            loop: validateLoop(body.loop),
             agentSettings: (() => {
               try {
                 return validateAgentSettings(body.agentSettings);

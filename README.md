@@ -69,6 +69,26 @@ Every agent's first prompt gets a *Context from the user* section listing these 
 
 Model lists are cached for 10 minutes. Your choices are remembered in the browser.
 
+## Checks, loops and limits
+
+code-flow treats each pattern as a loop, and what it engineers is the loop around the agents:
+
+- **Done when:** a check command such as `npm test`, `pytest` or `cargo test`. It's auto-detected from the repo and editable per repo.
+  - **code-flow runs it itself** after each change, in that worktree, and feeds the failing output back to the agent.
+  - Loops end on that evidence, not on an agent saying it's done. Every check shows in the run timeline with its output.
+  - Pipeline: reviewers only see code that passes.
+  - Race: a candidate that fails can't win if another one passes.
+  - Supervisor and Debate: the integrated or built result is checked, and the agent fixes failures.
+  - Test-first: the new tests must fail first, then pass.
+  - When a run finishes but the check still fails, the run is shown as a warning, not a success.
+- **No progress means hand off:** in *Loop until green*, a round with no new commit, or with the same failure as before, counts as stuck. After *K* stuck rounds, the next vendor takes over.
+- **Limits:** every run stops at a maximum number of minutes or agent steps (60 and 40 by default). A stopped run keeps its work: each worktree with changes is listed as "Work so far".
+- **Setup:** an optional command, such as `npm ci`, that runs once in every new worktree before the agents start.
+
+Agents may suggest their own test command (the tester in Test-first does). code-flow only runs it if it's a plain invocation of a known test runner, with no shell operators. Otherwise it falls back to your check.
+
+> **Security:** a check runs the agents' code (tests, scripts) on your machine, outside Codex's and agy's sandboxes, as your CI would. Use code-flow on repos and tasks you trust, or run it inside a container or VM.
+
 ## Worktrees and branches
 
 Every worktree a pattern needs (`build`, `candidate-a`, `integration`, …) is created with:
@@ -86,7 +106,8 @@ git worktree add -b <prefix>/<name> <repo>/.worktrees/<run-id>/<name> <base>
 
 | Pattern | Roles | Flow | Reach for it when |
 |---|---|---|---|
-| **Plan → Build → Review** | planner, builder, reviewer | Plan (read-only) → implement → independent review → builder fixes (resuming its own session) → re-review, up to *N* rounds | Most features and bug fixes. Cross-vendor review catches what a model misses in its own work |
+| **Plan → Build → Review** | planner, builder, reviewer | Plan (read-only) → implement → **check** (the builder fixes it first if it fails) → independent review → builder fixes → re-check and re-review, up to *N* rounds | Most features and bug fixes. Cross-vendor review catches what a model misses in its own work |
+| **Loop until green** | workers (1+, in hand-off order) | Baseline check → the agent works → code-flow runs the check → the failure goes back to the agent → repeat until it passes. After *K* rounds without progress, the next vendor takes over with a handover note | "Done" is a command: failing tests, type errors, a broken build. Needs a check |
 | **Best-of-N race** | contestants (2+), judge | All contestants solve the task in parallel, each in its own worktree → judge compares **anonymized** diffs (Candidate A/B…) and picks one | The solution space is wide, or the task is risky enough to want several independent attempts |
 | **Debate → Synthesize → Build** | debaters (2+), synthesizer, builder (optional) | Independent proposals → critique rounds where each debater sees the others' proposals and revises → synthesizer merges and records each decision → builder implements | Architecture, API design, big refactors. Leave the builder empty for design only |
 | **Supervisor → Workers** | supervisor, workers (1+) | Supervisor splits the task into parallel subtasks and assigns workers → workers build on separate branches → branches merge into an integration branch; the supervisor resolves conflicts, reviews and fixes | Larger tasks that split cleanly (backend / frontend / tests) |
@@ -148,6 +169,8 @@ The suite runs every pattern end to end against fake `claude` / `codex` / `agy` 
 - Next steps worth doing:
   - Use `codex app-server` instead of `exec` for mid-turn steering and real approvals.
   - Add human approval gates between steps.
+  - Save runs to disk so they survive a restart and can resume.
+  - Add triggers: scheduled loops, and CI or GitHub events that start runs. Only after runs are saved to disk.
   - Track quota per vendor and route work to whichever plan has headroom.
   - Add a "council review" pattern for existing PRs.
   - Add a button to clean up worktrees (`git worktree remove`).

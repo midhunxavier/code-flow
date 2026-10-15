@@ -187,6 +187,11 @@ export async function isClean(cwd: string): Promise<boolean> {
   return (await gitOk(["status", "--porcelain"], cwd)) === "";
 }
 
+export async function uncommittedCount(cwd: string): Promise<number> {
+  const out = await gitOk(["status", "--porcelain"], cwd);
+  return out ? out.split("\n").length : 0;
+}
+
 /** Drop uncommitted changes and untracked (non-ignored) files in a disposable worktree. */
 export async function discardChanges(cwd: string): Promise<void> {
   await gitOk(["reset", "--hard", "-q", "HEAD"], cwd);

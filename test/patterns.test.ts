@@ -16,6 +16,7 @@ const { findPattern } = await import("../src/patterns/index.js");
 type Run = import("../src/engine.js").Run;
 
 let repo: string;
+let lastManager: InstanceType<typeof RunManager> | undefined;
 
 before(() => {
   repo = mkdtempSync(join(tmpdir(), "codeflow-repo-"));
@@ -34,7 +35,7 @@ async function runPattern(
   options = {},
   extra: { baseRef?: string; branchPrefix?: string } = {},
 ): Promise<Run> {
-  const manager = new RunManager();
+  const manager = (lastManager = new RunManager());
   const run = await manager.start({ pattern: findPattern(id)!, task, repo, roles, options, ...extra });
   await new Promise<void>((resolve) => {
     const check = () => run.status !== "running" && resolve();
@@ -107,8 +108,12 @@ test("supervisor: merge conflict is resolved by the supervisor", async () => {
 test("tdd: tester writes tests, builder implements, tester verifies", async () => {
   const run = await runPattern("tdd", { tester: ["codex"], builder: ["claude"] });
   assert.equal(run.status, "done", run.error);
-  assert.match(run.summary!, /All tests pass/);
-  assert.ok(branchFiles(run.artifacts[0]!.branch).includes("spec.test.txt"));
+  assert.match(run.summary!, /All tests pass \(run by code-flow\)/);
+  assert.equal(run.verdict, "passed");
+  assert.ok(branchFiles(run.artifacts[0]!.branch).includes("spec.test.mjs"));
+  const checks = run.steps.filter((s) => s.kind === "check").map((s) => [s.title, s.status]);
+  assert.deepEqual(checks[0], ["New tests (should fail)", "failed"], "red first");
+  assert.ok(checks.slice(1).every(([, status]) => status === "done"));
 });
 
 test("a failing agent fails the pipeline but not a race", async () => {
@@ -130,8 +135,8 @@ test("changes made by a read-only step are reverted", async () => {
   const run = await runPattern("pipeline", { planner: ["agy"], builder: ["codex"], reviewer: ["claude"] }, "SNEAKY task");
   assert.equal(run.status, "done", run.error);
   // The read-only planner wrote sneaky.txt and had it reverted (the write-mode builder may write it legitimately later).
-  const log = readFileSync(join(process.env.CODEFLOW_HOME!, "runs", `${run.id}.jsonl`), "utf8");
-  assert.match(log, /Plan \(agy\) modified files in read-only mode; changes were reverted/);
+  const logs = lastManager!.events(run.id).map((e) => (e.type === "log" ? e.text : "")).join("\n");
+  assert.match(logs, /Plan \(agy\) modified files in read-only mode; changes were reverted/);
 });
 
 test("agy: a denied tool with no answer is reported as a failure", async () => {

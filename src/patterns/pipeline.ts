@@ -1,6 +1,7 @@
+import type { CheckResult } from "../checks.js";
 import type { Pattern, StepOutcome } from "../engine.js";
 import { extractJson } from "../json.js";
-import { fence, jsonInstruction, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { checkSection, fence, fixUntilGreen, jsonInstruction, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface ReviewVerdict {
   verdict: "approve" | "changes_requested";
@@ -24,7 +25,10 @@ export const pipelinePattern: Pattern = {
     { id: "builder", label: "Builder", description: "Implements the plan and applies review fixes", default: ["codex"] },
     { id: "reviewer", label: "Reviewer", description: "Reviews the diff with fresh eyes", default: ["claude"] },
   ],
-  options: [{ id: "maxRounds", label: "Max review rounds", type: "number", default: 2, min: 1, max: 5 }],
+  options: [
+    { id: "maxRounds", label: "Max review rounds", type: "number", default: 2, min: 1, max: 5 },
+    { id: "checkFixes", label: "Check fix attempts per round", type: "number", default: 2, min: 0, max: 5 },
+  ],
 
   async run(ctx) {
     const planner = ctx.agent("planner");
@@ -62,12 +66,23 @@ export const pipelinePattern: Pattern = {
         section("Deliverable", "Implement the plan, run the relevant tests, then summarize what you changed."),
     });
     await ctx.commit(wt, `${builder}: implement plan`);
+    const checkFixes = ctx.option("checkFixes", 2);
 
     let verdict: ReviewVerdict | undefined;
     let review: StepOutcome | undefined;
     let fixer = build;
+    let check: CheckResult | null = null;
 
     for (let round = 1; round <= maxRounds; round++) {
+      // Every round starts with code-flow running the check; a reviewer never sees red code.
+      const fixed = await fixUntilGreen(ctx, { agent: builder, role: "builder", wt, session: fixer, attempts: checkFixes });
+      check = fixed.check;
+      fixer = fixed.session ?? fixer;
+      if (check && !check.ok) {
+        ctx.log(`The check still fails after ${checkFixes} fix attempts; stopping before review`, "warn");
+        break;
+      }
+
       const diff = await ctx.diff(wt);
       review = await ctx.ask({
         title: `Review (round ${round})`,
@@ -82,6 +97,7 @@ export const pipelinePattern: Pattern = {
           section("Task", ctx.task) +
           (round === 1 ? section("Plan", plan.finalText) : "") +
           section("Diff against base", fence(diff, "diff")) +
+          (check ? checkSection(check) : "") +
           section(
             "Deliverable",
             "Check correctness, missed requirements, edge cases, tests and security. Only request changes for real problems, not style preferences.",
@@ -114,13 +130,21 @@ export const pipelinePattern: Pattern = {
     }
 
     await ctx.artifact("Result", wt);
-    const approved = !verdict || verdict.verdict === "approve";
+    const green = !check || check.ok;
+    const approved = green && !!review && (!verdict || verdict.verdict === "approve");
+    if (ctx.hasCheck) ctx.setVerdict(green ? "passed" : "failing");
+    const headline = !green
+      ? `Check \`${check!.command}\` still fails after ${checkFixes} fix attempts`
+      : approved
+        ? ctx.hasCheck ? `Approved, and \`${check!.command}\` passes` : "Approved"
+        : "Not approved after the last review round";
     return [
-      `**${approved ? "Approved" : "Not approved after the last review round"}** — branch \`${wt.branch}\``,
+      `**${headline}** — branch \`${wt.branch}\``,
       section("Builder summary", fixer.finalText),
       verdict?.issues?.length && !approved
         ? section("Open review issues", verdict.issues.map((i) => `- ${i.problem}`).join("\n"))
         : "",
+      !green ? section("Last failure", "```\n" + check!.output.slice(-1_500).trim() + "\n```") : "",
     ].join("\n");
   },
 };

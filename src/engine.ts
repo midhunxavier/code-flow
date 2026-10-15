@@ -11,6 +11,7 @@ import {
   type RunResult,
 } from "./adapters/index.js";
 import { CODEFLOW_HOME, MAX_DIFF_CHARS, STEP_TIMEOUT_MS } from "./config.js";
+import { runCheck, type CheckResult } from "./checks.js";
 import { contextPrompt, hasStagedFiles, prepareContext, type ContextInput, type RunContext } from "./context.js";
 import {
   CONTEXT_DIR,
@@ -23,6 +24,7 @@ import {
   isClean,
   repoRoot,
   resolveCommit,
+  uncommittedCount,
   validateBranchPrefix,
   worktreeRoot,
   type Worktree,
@@ -35,13 +37,16 @@ const STAGE_DIR = ".context";
 // Data model
 // ---------------------------------------------------------------------------
 
-export type Status = "running" | "done" | "failed" | "cancelled";
+/** "stopped" = ended by a budget (time or step limit), not by the user or an error. */
+export type Status = "running" | "done" | "failed" | "cancelled" | "stopped";
 
 export interface Step {
   id: string;
+  /** An agent turn, or a command code-flow ran itself (the check, or worktree setup). */
+  kind: "agent" | "check" | "setup";
   title: string;
   role: string;
-  agent: AgentId;
+  agent?: AgentId;
   mode: AccessMode;
   worktree?: string;
   status: Status;
@@ -78,6 +83,16 @@ export interface Run {
   agentSettings: AgentSettings;
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
+  /** The "done when" check and the run's budgets. */
+  loop: LoopSettings;
+  usage: { agentSteps: number; checks: number };
+  /** Result of the most recent check, if a check is configured. */
+  lastCheck?: { ok: boolean; command: string; worktree: string; at: number };
+  /** Set by patterns: did the result pass its check? */
+  verdict?: "passed" | "failing";
+  /** Why a "stopped" run stopped. */
+  stopReason?: string;
+  worktrees: { name: string; branch: string; path: string }[];
   status: Status;
   createdAt: number;
   endedAt?: number;
@@ -86,6 +101,21 @@ export interface Run {
   steps: Step[];
   artifacts: Artifact[];
 }
+
+export interface LoopSettings {
+  /** Shell command code-flow runs itself to decide "done" (e.g. `npm test`). Empty = agents' judgment only. */
+  check?: string;
+  /** Runs once in every new worktree before agents start (e.g. `npm ci`). */
+  setup?: string;
+  /** Stop the run after this many minutes. */
+  maxMinutes: number;
+  /** Stop the run after this many agent turns. */
+  maxSteps: number;
+  /** Per check/setup command. */
+  checkTimeoutMin: number;
+}
+
+export const DEFAULT_LOOP: LoopSettings = { maxMinutes: 60, maxSteps: 40, checkTimeoutMin: 10 };
 
 export type RunEvent = { seq: number; ts: number; runId: string } & (
   | { type: "run"; run: Omit<Run, "steps"> }
@@ -129,6 +159,8 @@ export interface Pattern {
   description: string;
   roles: RoleSpec[];
   options: OptionSpec[];
+  /** The pattern can't run without a "done when" check command. */
+  requiresCheck?: boolean;
   /** Runs the team; returns a markdown summary. */
   run(ctx: TeamContext): Promise<string>;
 }
@@ -159,11 +191,83 @@ export class CancelledError extends Error {
 
 /** What a pattern sees: the task, its team, and primitives to coordinate them. */
 export class TeamContext {
+  readonly signal: AbortSignal;
+
   constructor(
     readonly run: Run,
-    readonly signal: AbortSignal,
+    private readonly controller: AbortController,
     private readonly manager: RunManager,
-  ) {}
+  ) {
+    this.signal = controller.signal;
+  }
+
+  /** End the run because a budget ran out; in-flight agents and checks are stopped. */
+  stop(reason: string) {
+    if (this.run.stopReason) return;
+    this.run.stopReason = reason;
+    this.log(`Stopping: reached the ${reason}`, "warn");
+    this.controller.abort();
+  }
+
+  /** True when the user configured a "done when" check command. */
+  get hasCheck(): boolean {
+    return !!this.run.loop.check;
+  }
+
+  /** Record whether the final result passes its check (shown in the result header). */
+  setVerdict(verdict: "passed" | "failing") {
+    this.run.verdict = verdict;
+  }
+
+  /**
+   * Run the "done when" check in a worktree — code-flow runs it, not an agent, so the result
+   * can be trusted. Returns null when no check is configured.
+   */
+  async check(wt: Worktree, title = "Check", command = this.run.loop.check): Promise<CheckResult | null> {
+    if (!command) return null;
+    const result = await this.command("check", title, wt, command);
+    this.run.usage.checks++;
+    this.run.lastCheck = { ok: result.ok, command, worktree: wt.name, at: Date.now() };
+    this.manager.emitRun(this.run);
+    return result;
+  }
+
+  /** Run a shell command in a worktree as a visible step (used for checks and setup). */
+  private async command(kind: "check" | "setup", title: string, wt: Worktree, command: string): Promise<CheckResult> {
+    this.checkCancelled();
+    const step: Step = {
+      id: `s${this.run.steps.length + 1}`,
+      kind,
+      title,
+      role: kind,
+      mode: "write",
+      worktree: wt.name,
+      status: "running",
+      startedAt: Date.now(),
+    };
+    this.run.steps.push(step);
+    this.manager.emit(this.run, { type: "step", step: { ...step } });
+    this.manager.emit(this.run, { type: "agent", stepId: step.id, event: { kind: "tool_call", callId: step.id, name: "$", input: command } });
+
+    const result = await runCheck(wt.path, command, { timeoutMs: this.run.loop.checkTimeoutMin * 60_000, signal: this.signal });
+
+    this.manager.emit(this.run, {
+      type: "agent",
+      stepId: step.id,
+      event: { kind: "tool_result", callId: step.id, output: result.output.slice(-8_000) || "(no output)", isError: !result.ok },
+    });
+    step.endedAt = Date.now();
+    step.status = this.signal.aborted ? "cancelled" : result.ok ? "done" : "failed";
+    step.finalText = result.ok
+      ? `Passed in ${Math.round(result.durationMs / 1000)}s`
+      : result.timedOut
+        ? `Timed out after ${this.run.loop.checkTimeoutMin} min`
+        : `Failed (exit code ${result.exitCode})`;
+    this.manager.emit(this.run, { type: "agent", stepId: step.id, event: { kind: "status", text: step.finalText } });
+    this.manager.emit(this.run, { type: "step", step: { ...step } });
+    this.checkCancelled();
+    return result;
+  }
 
   /** The user's task plus the context they attached — what every agent should be given. */
   get task() {
@@ -203,9 +307,16 @@ export class TeamContext {
       fromRef,
     );
     this.log(`Created worktree ${wt.path} on branch ${wt.branch}`);
+    this.run.worktrees.push({ name: wt.name, branch: wt.branch, path: wt.path });
     if (hasStagedFiles(this.run.context)) {
       // Git-excluded, so it is never committed and doesn't count as a change.
       await cp(join(this.run.worktreeDir, STAGE_DIR), join(wt.path, CONTEXT_DIR), { recursive: true });
+    }
+    if (this.run.loop.setup) {
+      const setup = await this.command("setup", `Setup ${name}`, wt, this.run.loop.setup);
+      if (!setup.ok) throw new Error(`Setup command \`${this.run.loop.setup}\` failed in worktree ${name}`);
+      // Setup output (e.g. node_modules) should be ignored; anything else it changed is not the agents' work.
+      if (!(await isClean(wt.path))) this.log(`Setup left changes in ${name}; they'll appear in its diff`, "warn");
     }
     return wt;
   }
@@ -237,8 +348,14 @@ export class TeamContext {
     if (params.resume && params.resume.agent !== params.agent) {
       throw new Error(`Cannot resume a ${params.resume.agent} session with ${params.agent}`);
     }
+    if (this.run.usage.agentSteps >= this.run.loop.maxSteps) {
+      this.stop(`step limit (${this.run.loop.maxSteps} agent steps)`);
+      this.checkCancelled();
+    }
+    this.run.usage.agentSteps++;
     const step: Step = {
       id: `s${this.run.steps.length + 1}`,
+      kind: "agent",
       title: params.title,
       role: params.role,
       agent: params.agent,
@@ -301,6 +418,7 @@ export interface StartRunInput {
   branchPrefix?: string;
   context?: ContextInput;
   agentSettings?: AgentSettings;
+  loop?: Partial<LoopSettings>;
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
 }
@@ -341,6 +459,15 @@ export class RunManager {
   }
 
   async start(input: StartRunInput): Promise<Run> {
+    const loop: LoopSettings = {
+      ...DEFAULT_LOOP,
+      ...Object.fromEntries(Object.entries(input.loop ?? {}).filter(([, v]) => v !== undefined && v !== "")),
+    };
+    loop.check = loop.check?.trim() || undefined;
+    loop.setup = loop.setup?.trim() || undefined;
+    if (input.pattern.requiresCheck && !loop.check) {
+      throw new Error(`${input.pattern.name} needs a check command (Settings → Done when), e.g. "npm test"`);
+    }
     const repo = await repoRoot(input.repo);
     const baseLabel = input.baseRef?.trim() || "HEAD";
     const baseRef = await resolveCommit(repo, baseLabel).catch(() => {
@@ -370,6 +497,9 @@ export class RunManager {
       agentSettings: input.agentSettings ?? {},
       roles: input.roles,
       options: input.options,
+      loop,
+      usage: { agentSteps: 0, checks: 0 },
+      worktrees: [],
       status: "running",
       createdAt: Date.now(),
       steps: [],
@@ -381,7 +511,10 @@ export class RunManager {
     this.controllers.set(run.id, controller);
     this.emitRun(run);
 
-    const ctx = new TeamContext(run, controller.signal, this);
+    const ctx = new TeamContext(run, controller, this);
+    const timeBudget = setTimeout(() => ctx.stop(`time limit (${loop.maxMinutes} min)`), loop.maxMinutes * 60_000);
+    timeBudget.unref?.();
+
     void input.pattern
       .run(ctx)
       .then((summary) => {
@@ -389,10 +522,14 @@ export class RunManager {
         run.status = "done";
       })
       .catch((err: Error) => {
-        run.status = controller.signal.aborted || err instanceof CancelledError ? "cancelled" : "failed";
-        run.error = err.message;
+        const aborted = controller.signal.aborted || err instanceof CancelledError;
+        run.status = run.stopReason ? "stopped" : aborted ? "cancelled" : "failed";
+        run.error = run.stopReason ? `Stopped at the ${run.stopReason}.` : err.message;
       })
+      .then(() => (run.status === "done" ? undefined : collectUnfinishedWork(run)))
+      .catch(() => undefined)
       .finally(() => {
+        clearTimeout(timeBudget);
         run.endedAt = Date.now();
         this.controllers.delete(run.id);
         this.emitRun(run);
@@ -413,6 +550,19 @@ export class RunManager {
   }
 }
 
+/** When a run doesn't finish, list each worktree that holds work so you can still use it. */
+async function collectUnfinishedWork(run: Run) {
+  const listed = new Set(run.artifacts.map((a) => a.branch));
+  for (const wt of run.worktrees) {
+    if (listed.has(wt.branch)) continue;
+    const stat = await diffStat({ ...wt, base: run.baseRef }, run.baseRef).catch(() => "");
+    const pending = await uncommittedCount(wt.path).catch(() => 0);
+    if (!stat && !pending) continue;
+    const note = pending ? `${pending} uncommitted change${pending === 1 ? "" : "s"} left in the worktree` : "";
+    run.artifacts.push({ label: `Work so far: ${wt.name}`, branch: wt.branch, path: wt.path, stat: [stat, note].filter(Boolean).join("\n") });
+  }
+}
+
 function strip(run: Run): Omit<Run, "steps"> {
   const { steps: _steps, ...rest } = run;
   return { ...rest, artifacts: [...rest.artifacts] };
@@ -424,15 +574,12 @@ function newRunId(): string {
 }
 
 const runsDir = join(CODEFLOW_HOME, "runs");
-let runsDirReady: Promise<unknown> | undefined;
+let writeQueue: Promise<unknown> = mkdir(runsDir, { recursive: true }).catch(() => undefined);
 
-/** Append-only JSONL log per run, for auditing what each agent did. */
-async function persist(event: RunEvent) {
-  try {
-    runsDirReady ??= mkdir(runsDir, { recursive: true });
-    await runsDirReady;
-    await appendFile(join(runsDir, `${event.runId}.jsonl`), `${JSON.stringify(event)}\n`);
-  } catch {
-    // Logging must never break a run.
-  }
+/** Append-only JSONL log per run, for auditing what each agent did. Writes are queued so lines stay in order. */
+function persist(event: RunEvent) {
+  const line = `${JSON.stringify(event)}\n`;
+  writeQueue = writeQueue
+    .then(() => appendFile(join(runsDir, `${event.runId}.jsonl`), line))
+    .catch(() => undefined); // logging must never break a run
 }

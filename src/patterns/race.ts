@@ -1,6 +1,6 @@
 import type { Pattern } from "../engine.js";
 import { extractJson } from "../json.js";
-import { fence, jsonInstruction, LETTERS, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { checkSection, fence, jsonInstruction, LETTERS, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface JudgeVerdict {
   winner: string;
@@ -55,13 +55,23 @@ export const racePattern: Pattern = {
             section("Deliverable", "Implement the task completely, run the relevant tests, then summarize your approach and test results."),
         });
         await ctx.commit(wt, `${agent}: candidate ${label}`);
-        return { label, agent, wt, result, diff: result.ok ? await ctx.diff(wt) : "(attempt failed)" };
+        const check = result.ok ? await ctx.check(wt, `Check candidate ${label}`) : null;
+        return { label, agent, wt, result, check, diff: result.ok ? await ctx.diff(wt) : "(attempt failed)" };
       }),
     );
 
-    const viable = entries.filter((e) => e.result.ok && e.diff !== "(no changes)");
-    if (viable.length === 0) throw new Error("No contestant produced a usable change");
+    const changed = entries.filter((e) => e.result.ok && e.diff !== "(no changes)");
+    if (changed.length === 0) throw new Error("No contestant produced a usable change");
     for (const e of entries) await ctx.artifact(`Candidate ${e.label} (${e.agent})`, e.wt);
+
+    // With a check configured, a candidate that fails it can't win if any candidate passes.
+    const passing = changed.filter((e) => e.check?.ok);
+    const viable = ctx.hasCheck && passing.length ? passing : changed;
+    if (ctx.hasCheck) {
+      ctx.log(passing.length
+        ? `Passing the check: ${passing.map((e) => e.label).join(", ")}${passing.length < changed.length ? " (only these can win)" : ""}`
+        : "No candidate passes the check; the judge picks the closest one", passing.length ? "info" : "warn");
+    }
 
     let winner = viable[0]!;
     let verdict: JudgeVerdict | undefined;
@@ -77,7 +87,12 @@ export const racePattern: Pattern = {
           preamble("judge", judge, `${READ_ONLY} You are looking at the original, unmodified code; the candidates' changes are shown as diffs.`) +
           section("Task", ctx.task) +
           viable
-            .map((e) => section(`Candidate ${e.label}`, `Author's summary:\n${e.result.finalText}\n\n${fence(e.diff, "diff")}`))
+            .map((e) =>
+              section(
+                `Candidate ${e.label}`,
+                `Author's summary:\n${e.result.finalText}\n\n${fence(e.diff, "diff")}` + (e.check ? checkSection(e.check, 2_000) : ""),
+              ),
+            )
             .join("") +
           section(
             "Deliverable",
@@ -86,19 +101,27 @@ export const racePattern: Pattern = {
           jsonInstruction('{"winner": "A", "ranking": ["A", "B"], "reasons": "..."}'),
       });
       verdict = extractJson<JudgeVerdict>(judged.finalText);
-      const picked = viable.find((e) => e.label === verdict?.winner?.trim().toUpperCase());
+      const choice = verdict?.winner?.trim().toUpperCase();
+      const picked = viable.find((e) => e.label === choice);
       if (picked) winner = picked;
-      else ctx.log(`Judge verdict unreadable; defaulting to candidate ${winner.label}`, "warn");
+      else if (choice && changed.some((e) => e.label === choice)) {
+        ctx.log(`Judge picked candidate ${choice}, but it fails the check; using passing candidate ${winner.label}`, "warn");
+      } else ctx.log(`Judge verdict unreadable; defaulting to candidate ${winner.label}`, "warn");
     }
 
     ctx.log(`Winner: candidate ${winner.label} (${winner.agent})`);
+    if (ctx.hasCheck) ctx.setVerdict(winner.check?.ok ? "passed" : "failing");
     return [
       `**Winner: Candidate ${winner.label} — ${winner.agent}** on branch \`${winner.wt.branch}\``,
       verdict?.reasons ? section("Judge's reasoning", verdict.reasons) : "",
       section(
         "All candidates",
         entries
-          .map((e) => `- ${e.label}: ${e.agent} — ${e.result.ok ? "completed" : `failed (${e.result.error})`} — \`${e.wt.branch}\``)
+          .map((e) => {
+            const status = e.result.ok ? "completed" : `failed (${e.result.error})`;
+            const check = e.check ? (e.check.ok ? ", check passes" : ", check fails") : "";
+            return `- ${e.label}: ${e.agent} — ${status}${check} — \`${e.wt.branch}\``;
+          })
           .join("\n"),
       ),
     ].join("\n");

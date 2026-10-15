@@ -77,7 +77,7 @@
   .run-item:hover { background: var(--sunken); }
   .run-item.active { background: var(--accent-soft); }
   .run-item .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; background: var(--faint); }
-  .dot.running { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; } .dot.done { background: var(--ok); } .dot.failed { background: var(--err); } .dot.cancelled { background: var(--warn); }
+  .dot.running { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; } .dot.done { background: var(--ok); } .dot.failed { background: var(--err); } .dot.cancelled, .dot.stopped, .dot.failing { background: var(--warn); }
   @keyframes pulse { 50% { opacity: .35; } }
   .run-item .t { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .run-item .s { grid-column: 2; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -152,6 +152,13 @@
   .model-row .custom { grid-column: 2 / 4; font-family: var(--mono); font-size: 12px; }
   .model-row .err { grid-column: 2 / 4; font-size: 12px; color: var(--muted); }
 
+  .donewhen { margin-top: 12px; }
+  .dw-row { display: flex; align-items: center; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); }
+  .dw-row:focus-within { border-color: var(--accent); }
+  .dw-prompt { padding: 0 2px 0 12px; color: var(--faint); font-family: var(--mono); }
+  .dw-row .field { border: 0; background: transparent; font-family: var(--mono); font-size: 13px; }
+  .donewhen.required .dw-row { border-color: var(--warn); }
+  .field.mono { font-family: var(--mono); font-size: 12px; }
   .start-row { display: flex; align-items: center; gap: 12px; margin-top: 22px; }
   .start-row .btn.primary { padding: 10px 20px; font-size: 15px; border-radius: 10px; }
   .start-row .why { color: var(--muted); font-size: 13px; }
@@ -191,7 +198,8 @@
   .status-pill.running { background: var(--accent-soft); color: var(--accent); }
   .status-pill.done { background: var(--ok-soft); color: var(--ok); }
   .status-pill.failed { background: var(--err-soft); color: var(--err); }
-  .status-pill.cancelled { background: var(--warn-soft); color: var(--warn); }
+  .status-pill.cancelled, .status-pill.stopped, .status-pill.failing { background: var(--warn-soft); color: var(--warn); }
+  .usage { color: var(--faint); }
   .run-task { margin: 10px 0 0; white-space: pre-wrap; max-height: 7.5em; overflow: auto; }
   .run-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 12px; color: var(--muted); align-items: center; }
   .run-meta .team-line { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -203,7 +211,10 @@
   .result .rh { padding: 10px 14px; font-weight: 600; display: flex; gap: 8px; align-items: center; }
   .result.done .rh { background: var(--ok-soft); color: var(--ok); }
   .result.failed .rh { background: var(--err-soft); color: var(--err); }
-  .result.cancelled .rh { background: var(--warn-soft); color: var(--warn); }
+  .result.cancelled .rh, .result.stopped .rh, .result.failing .rh { background: var(--warn-soft); color: var(--warn); }
+  .result.stopped, .result.failing { border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+  .tag-cf { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .tag-cf::before { content: "⚙"; font-size: 11px; }
   .result .rb { padding: 10px 14px; max-height: 260px; overflow: auto; }
   .result .rb h2 { font-size: 13px; margin: 10px 0 4px; }
   .artifacts { display: grid; gap: 8px; padding: 0 14px 14px; }
@@ -335,6 +346,11 @@
         <div class="patterns" id="patterns"></div>
         <p class="pattern-why" id="patternWhy"></p>
         <div class="team" id="team"></div>
+        <div class="donewhen">
+          <label class="lbl" for="checkCmd">Done when this passes</label>
+          <div class="dw-row"><span class="dw-prompt">$</span><input class="field" id="checkCmd" placeholder="e.g. npm test" spellcheck="false" autocomplete="off" /></div>
+          <div class="help" id="checkHint">code-flow runs this itself after every change, so loops end on evidence. Leave empty to rely on the agents' judgment.</div>
+        </div>
       </div>
 
       <details class="settings" id="settings">
@@ -351,6 +367,18 @@
               <div class="help">Results land on <code>name/build</code>, <code>name/candidate-a</code>…</div>
             </div>
             <div id="options"></div>
+          </div>
+          <div>
+            <span class="lbl">Limits — the run stops when it reaches either</span>
+            <div class="settings-grid">
+              <div><label class="lbl" for="maxMinutes">Minutes</label><input class="field" type="number" id="maxMinutes" min="1" max="720" value="60" /></div>
+              <div><label class="lbl" for="maxSteps">Agent steps</label><input class="field" type="number" id="maxSteps" min="1" max="200" value="40" /></div>
+              <div>
+                <label class="lbl" for="setupCmd">Setup each worktree</label>
+                <input class="field mono" id="setupCmd" placeholder="optional, e.g. npm ci" spellcheck="false" autocomplete="off" />
+              </div>
+            </div>
+            <div class="help">Work done before a limit is kept on its branch. Setup runs once in every new worktree before the agents start.</div>
           </div>
           <div>
             <span class="lbl">Models &amp; effort</span>
@@ -466,6 +494,7 @@ async function copy(text, label = "Copied") {
 const SHORT = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
 const FLOWS = {
   pipeline: "One plans, one builds, another reviews",
+  loop: "Fix → run check → repeat until green",
   race: "Everyone solves it → Judge picks",
   debate: "Propose → Debate → Synthesize",
   supervisor: "Split → Build in parallel → Integrate",
@@ -515,7 +544,49 @@ function afterRepoChange(previous) {
   }
   renderBaseBranches();
   loadTree();
+  loadCheck();
   updateStart();
+}
+
+// ----- "done when" check, setup and limits
+/** The check command is remembered per repo; until edited, it's auto-detected from the repo. */
+async function loadCheck() {
+  const input = $("#checkCmd");
+  const hint = $("#checkHint");
+  const defaultHint = "code-flow runs this itself after every change, so loops end on evidence. Leave empty to rely on the agents' judgment.";
+  $("#setupCmd").value = state.repo ? store.get(`setup:${state.repo}`) ?? "" : "";
+  if (!state.repo) { input.value = ""; hint.textContent = defaultHint; return afterCheckChange(); }
+  const saved = store.get(`check:${state.repo}`);
+  if (saved !== null) { input.value = saved; hint.textContent = defaultHint; return afterCheckChange(); }
+  input.value = "";
+  try {
+    const d = await api(`/api/check?repo=${enc(state.repo)}`);
+    input.value = d.command || "";
+    hint.textContent = d.command ? `Detected from ${d.source}. ${defaultHint}` : `No test command found in this repo. ${defaultHint}`;
+  } catch {
+    hint.textContent = defaultHint;
+  }
+  afterCheckChange();
+}
+function afterCheckChange() {
+  $(".donewhen").classList.toggle("required", !!state.pattern?.requiresCheck && !$("#checkCmd").value.trim());
+  renderTeam();
+  renderSettingsSummary();
+}
+$("#checkCmd").addEventListener("input", (e) => {
+  if (state.repo) store.set(`check:${state.repo}`, e.target.value);
+  afterCheckChange();
+});
+$("#setupCmd").addEventListener("input", (e) => { if (state.repo) store.set(`setup:${state.repo}`, e.target.value); });
+const limits = store.json("limits", { maxMinutes: 60, maxSteps: 40 });
+$("#maxMinutes").value = limits.maxMinutes;
+$("#maxSteps").value = limits.maxSteps;
+for (const id of ["maxMinutes", "maxSteps"]) {
+  $(`#${id}`).addEventListener("input", (e) => {
+    limits[id] = Number(e.target.value) || undefined;
+    store.set("limits", JSON.stringify(limits));
+    renderSettingsSummary();
+  });
 }
 
 function renderRepo(message, bad = false) {
@@ -819,7 +890,7 @@ function setRole(roleId, ids) {
 function renderPatterns() {
   $("#patterns").replaceChildren(...state.patterns.map((p) =>
     el("button", { type: "button", class: `pattern ${p.id === state.pattern.id ? "selected" : ""}`, "aria-pressed": String(p.id === state.pattern.id),
-      onclick: () => { state.pattern = p; store.set("pattern", p.id); renderPatterns(); renderOptions(); renderTeam(); } },
+      onclick: () => { state.pattern = p; store.set("pattern", p.id); renderPatterns(); renderOptions(); afterCheckChange(); } },
       el("span", { class: "pn" }, p.name), el("span", { class: "pf" }, FLOWS[p.id] || p.summary))));
   $("#patternWhy").textContent = state.pattern.description;
 }
@@ -859,14 +930,21 @@ function teamSentence(p, roles) {
   };
   const opt = (id, d) => optionValue(id) ?? d;
   switch (p.id) {
-    case "pipeline": return `${one("planner")} plans → ${one("builder")} builds → ${one("reviewer")} reviews (up to ${opt("maxRounds", 2)} rounds of fixes)`;
-    case "race": return `${many("contestants")} each solve it separately → ${one("judge")} compares the results blind and picks the best`;
-    case "debate": return `${many("debaters")} propose and debate → ${one("synthesizer")} writes the final plan${roles.builder?.length ? ` → ${one("builder")} builds it` : " (design only)"}`;
-    case "supervisor": return `${one("supervisor")} splits the work → ${many("workers")} build the parts in parallel → ${one("supervisor")} merges and reviews`;
-    case "tdd": return `${one("tester")} writes tests → ${one("builder")} makes them pass → ${one("tester")} tries to break it`;
+    case "pipeline": return `${one("planner")} plans → ${one("builder")} builds → ${one("reviewer")} reviews (up to ${opt("maxRounds", 2)} rounds of fixes)` + doneWhen();
+    case "race": return `${many("contestants")} each solve it separately → ${one("judge")} compares the results blind and picks the best` + doneWhen();
+    case "debate": return `${many("debaters")} propose and debate → ${one("synthesizer")} writes the final plan${roles.builder?.length ? ` → ${one("builder")} builds it` : " (design only)"}` + doneWhen();
+    case "supervisor": return `${one("supervisor")} splits the work → ${many("workers")} build the parts in parallel → ${one("supervisor")} merges and reviews` + doneWhen();
+    case "tdd": return `${one("tester")} writes tests → ${one("builder")} makes them pass → ${one("tester")} tries to break it` + doneWhen();
+    case "loop": {
+      const w = roles.workers || [];
+      const handoff = w.length > 1 ? `, handing over to ${w.slice(1).map((id) => SHORT[id]).join(", then ")} if stuck` : "";
+      return `${w.length ? SHORT[w[0]] : "—"} fixes and code-flow re-runs “${check() || "your check"}” until it passes${handoff} (max ${opt("maxRounds", 6)} rounds)`;
+    }
     default: return p.summary;
   }
 }
+const check = () => $("#checkCmd")?.value.trim() || "";
+const doneWhen = () => (check() ? ` · done when “${check()}” passes` : "");
 
 function renderOptions() {
   $("#options").replaceChildren(...state.pattern.options.map((o) =>
@@ -937,7 +1015,8 @@ function renderSettingsSummary() {
     const s = state.agentSettings[id] || {};
     return s.model || s.effort ? `${SHORT[id]}: ${[s.model, s.effort].filter(Boolean).join(" ")}` : null;
   }).filter(Boolean);
-  $("#settingsSummary").textContent = `from ${base} · ${models.length ? models.join(", ") : "default models"}`;
+  const lim = `stops after ${$("#maxMinutes").value || 60} min or ${$("#maxSteps").value || 40} steps`;
+  $("#settingsSummary").textContent = `from ${base} · ${models.length ? models.join(", ") : "default models"} · ${lim}`;
 }
 $("#baseRef").addEventListener("change", renderSettingsSummary);
 
@@ -952,6 +1031,7 @@ function startProblem() {
   }
   if (state.pattern.id === "race" && roles.contestants.length < 2) return "A race needs at least two contestants";
   if (state.pattern.id === "debate" && roles.debaters.length < 2) return "A debate needs at least two debaters";
+  if (state.pattern.requiresCheck && !check()) return `${state.pattern.name} needs a “Done when” command, e.g. npm test`;
   return "";
 }
 function updateStart() {
@@ -986,6 +1066,12 @@ async function startRun() {
           attachments: state.attachments.map((a) => ({ name: a.name, data: a.data })),
         },
         agentSettings: state.agentSettings,
+        loop: {
+          check: check(),
+          setup: $("#setupCmd").value.trim(),
+          maxMinutes: Number($("#maxMinutes").value) || undefined,
+          maxSteps: Number($("#maxSteps").value) || undefined,
+        },
       }),
     });
     store.set("baseRef", $("#baseRef").value);
@@ -1014,7 +1100,7 @@ async function refreshRuns() {
   try { runs = await api("/api/runs"); } catch { return; }
   $("#runList").replaceChildren(...(runs.length ? runs.map((r) =>
     el("button", { type: "button", class: `run-item ${state.run?.id === r.id ? "active" : ""}`, title: r.task, onclick: () => { openRun(r.id); $("#rail").classList.remove("open"); } },
-      el("span", { class: `dot ${r.status}` }),
+      el("span", { class: `dot ${runState(r)}` }),
       el("span", { class: "t" }, r.task.split("\n")[0] || "(no task)"),
       el("span", { class: "s" }, `${state.patterns.find((p) => p.id === r.pattern)?.name ?? r.pattern} · ${baseName(r.repo)} · ${ago(r.createdAt)}`)))
     : [el("div", { class: "rail-empty" }, "No runs yet — start one on the right")]));
@@ -1032,7 +1118,9 @@ function showComposer() {
 }
 
 // ===================================================================== run view
-const STATUS_TEXT = { running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled" };
+const STATUS_TEXT = { running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled", stopped: "Stopped at limit" };
+/** Visual state: a finished run whose result fails its check is a warning, not a success. */
+const runState = (run) => (run.status === "done" && run.verdict === "failing" ? "failing" : run.status);
 const STEP_ICON = { done: "✓", failed: "✕", cancelled: "■" };
 
 function openRun(id) {
@@ -1089,7 +1177,10 @@ function handleEvent(ev) {
   }
 }
 
-const modelNote = (run, id) => [run.agentSettings?.[id]?.model, run.agentSettings?.[id]?.effort].filter(Boolean).join(" · ");
+const modelNote = (run, id) => (id ? [run.agentSettings?.[id]?.model, run.agentSettings?.[id]?.effort].filter(Boolean).join(" · ") : "");
+/** Steps from servers older than checks have no kind: they're agent turns. */
+const isAgentStep = (step) => (step.kind ?? "agent") === "agent";
+const stepTag = (step, model) => (isAgentStep(step) ? agentTag(step.agent, model) : el("span", { class: "tag-cf" }, step.kind === "check" ? "check" : "setup"));
 
 function renderRunHeader(run) {
   const prev = state.run.run;
@@ -1097,8 +1188,8 @@ function renderRunHeader(run) {
   const p = state.patterns.find((x) => x.id === run.pattern);
   $("#runTitle").textContent = p?.name ?? run.pattern;
   const status = $("#runStatus");
-  status.className = `status-pill ${run.status}`;
-  status.textContent = STATUS_TEXT[run.status] ?? run.status;
+  status.className = `status-pill ${runState(run)}`;
+  status.textContent = runState(run) === "failing" ? "Done · check failing" : STATUS_TEXT[run.status] ?? run.status;
   $("#cancelBtn").hidden = run.status !== "running";
   $("#rerunBtn").hidden = run.status === "running";
   $("#runTask").textContent = run.task;
@@ -1114,14 +1205,25 @@ function renderRunHeader(run) {
   $("#runMeta").replaceChildren(
     el("span", { title: run.repo }, `📁 ${baseName(run.repo)}`),
     el("span", {}, `from ${run.baseLabel} @ ${run.baseRef.slice(0, 7)}`),
-    el("span", { class: "team-line" }, team));
+    run.loop?.check
+      ? el("span", { title: "code-flow runs this after every change" }, `done when “${run.loop.check}” passes`,
+          run.lastCheck ? (run.lastCheck.ok ? " · last check ✓" : " · last check ✕") : "")
+      : null,
+    el("span", { class: "team-line" }, team),
+    run.usage ? el("span", { class: "usage" }, `${run.usage.agentSteps}/${run.loop.maxSteps} agent steps · ${duration((run.endedAt ?? Date.now()) - run.createdAt)} of ${run.loop.maxMinutes} min`) : null);
 
   if (run.status !== "running") renderResult(run);
   if (!prev || prev.status !== run.status) refreshRuns();
 }
 
 function renderResult(run) {
-  const titles = { done: "✓ Finished", failed: "✕ Failed", cancelled: "■ Stopped" };
+  const titles = {
+    done: run.verdict === "passed" ? "✓ Finished — the check passes" : "✓ Finished",
+    failing: "⚠ Finished — but the check still fails",
+    failed: "✕ Failed",
+    cancelled: "■ Stopped by you",
+    stopped: `■ Stopped at the ${run.stopReason ?? "limit"} — work so far is kept below`,
+  };
   const artifacts = run.artifacts.map((a) => el("div", { class: "artifact" },
     el("div", { class: "ah" }, el("b", {}, a.label), el("code", {}, a.branch),
       el("span", { class: "acts" },
@@ -1129,8 +1231,8 @@ function renderResult(run) {
         el("button", { class: "btn small", onclick: () => copy(`git merge ${a.branch}`, "Merge command copied") }, "Copy merge command"),
         el("button", { class: "btn small", onclick: () => copy(a.path, "Path copied") }, "Copy path"))),
     a.stat ? el("pre", {}, a.stat) : el("div", { class: "help" }, "No changes")));
-  $("#runResult").replaceChildren(el("div", { class: `result ${run.status}` },
-    el("div", { class: "rh" }, titles[run.status] ?? run.status),
+  $("#runResult").replaceChildren(el("div", { class: `result ${runState(run)}` },
+    el("div", { class: "rh" }, titles[runState(run)] ?? run.status),
     run.error ? el("div", { class: "rb" }, el("div", { class: "ev error" }, run.error)) : run.summary ? el("div", { class: "rb" }, renderMarkdown(run.summary)) : null,
     artifacts.length ? el("div", { class: "artifacts" }, artifacts) : null));
 }
@@ -1150,7 +1252,7 @@ function renderStep(step) {
   entry.button.replaceChildren(
     el("span", { class: `ic ${step.status}` }, STEP_ICON[step.status] ?? ""),
     el("span", { class: "tt" }, step.title),
-    el("span", { class: "tm" }, agentTag(step.agent), el("span", {}, step.role), secs ? el("span", {}, secs) : null));
+    el("span", { class: "tm" }, stepTag(step), el("span", {}, isAgentStep(step) ? step.role : step.finalText || "running…"), secs ? el("span", {}, secs) : null));
   if (r.follow && step.status === "running") selectStep(step.id);
   else if (!r.selected) selectStep(step.id);
   else if (r.selected === step.id) renderTranscriptHead();
@@ -1172,8 +1274,8 @@ function renderTranscriptHead() {
   if (!step) return;
   const model = r.run ? modelNote(r.run, step.agent) : "";
   $("#trHead").replaceChildren(
-    el("span", { class: "tt" }, step.title), agentTag(step.agent, model),
-    el("span", {}, step.mode === "write" ? "can edit files" : "read-only"),
+    el("span", { class: "tt" }, step.title), stepTag(step, model),
+    el("span", {}, isAgentStep(step) ? (step.mode === "write" ? "can edit files" : "read-only") : "run by code-flow"),
     el("span", {}, `worktree ${step.worktree}`),
     el("span", { class: `status-pill ${step.status}` }, STATUS_TEXT[step.status] ?? step.status));
 }
@@ -1233,8 +1335,16 @@ function editAndRerun() {
     const input = $(`#opt-${id}`);
     if (input) input.type === "checkbox" ? (input.checked = !!value) : (input.value = value);
   }
+  const restoreLoop = () => {
+    $("#checkCmd").value = run.loop?.check ?? "";
+    $("#setupCmd").value = run.loop?.setup ?? "";
+    if (run.loop?.maxMinutes) $("#maxMinutes").value = run.loop.maxMinutes;
+    if (run.loop?.maxSteps) $("#maxSteps").value = run.loop.maxSteps;
+    afterCheckChange();
+  };
   renderTeam();
-  if (run.repo !== state.repo) setRepo(run.repo).then(restoreContext); else restoreContext();
+  if (run.repo !== state.repo) setRepo(run.repo).then(() => { restoreContext(); restoreLoop(); });
+  else { restoreContext(); restoreLoop(); }
   taskInput.focus();
 }
 
