@@ -82,6 +82,30 @@
   pre, code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
   pre { background: var(--code); padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
   code { background: var(--code); padding: 0 4px; border-radius: 4px; }
+  .repo-row { display: flex; gap: 6px; }
+  .repo-row input { flex: 1; min-width: 0; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; min-height: 0; }
+  .hint.warn { color: var(--warn); }
+  .repo-badge { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: var(--ok); color: #fff; letter-spacing: .03em; }
+  dialog.picker { width: min(640px, calc(100vw - 32px)); max-height: min(640px, calc(100vh - 32px)); padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--text); }
+  dialog.picker::backdrop { background: rgba(0, 0, 0, .45); }
+  .picker-inner { display: flex; flex-direction: column; max-height: min(640px, calc(100vh - 32px)); }
+  .picker-head { padding: 12px 14px; border-bottom: 1px solid var(--border); display: grid; gap: 8px; }
+  .picker-head .row { display: flex; gap: 6px; align-items: center; }
+  .picker-head .row input[type=text] { flex: 1; min-width: 0; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .picker-head .crumbs { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 2px; }
+  .picker-head .crumbs a { color: var(--accent); cursor: pointer; text-decoration: none; }
+  .picker-head .crumbs a:hover { text-decoration: underline; }
+  .picker-list { overflow-y: auto; flex: 1; min-height: 160px; padding: 4px 6px; }
+  .picker-section { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: 8px 8px 2px; }
+  .dir { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .dir:hover, .dir:focus { background: var(--bg); outline: none; }
+  .dir .icon { width: 16px; text-align: center; color: var(--muted); }
+  .dir .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker-foot { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+  .picker-foot .status { flex: 1; font-size: 12px; color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .picker-foot button.select { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .picker-foot label { display: flex; gap: 4px; align-items: center; margin: 0; text-transform: none; font-weight: 400; letter-spacing: 0; font-size: 12px; }
   @media (max-width: 860px) { main { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid var(--border); } .steps { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -94,7 +118,12 @@
   <aside>
     <form id="form">
       <label for="repo">Repository (absolute path)</label>
-      <input type="text" id="repo" placeholder="/Users/me/code/my-project" required />
+      <div class="repo-row">
+        <input type="text" id="repo" placeholder="/Users/me/code/my-project" list="recentRepos" autocomplete="off" required />
+        <button type="button" id="browseBtn">Browse…</button>
+      </div>
+      <datalist id="recentRepos"></datalist>
+      <div class="hint" id="repoHint"></div>
       <label for="task">Task</label>
       <textarea id="task" placeholder="Add rate limiting to the /login endpoint…" required></textarea>
       <label>Team pattern</label>
@@ -112,6 +141,27 @@
   </aside>
   <section class="run" id="runView"><div class="empty">Pick a pattern, assign agents to roles, and start a run.</div></section>
 </main>
+
+<dialog class="picker" id="picker">
+  <div class="picker-inner">
+    <div class="picker-head">
+      <div class="row">
+        <button type="button" id="pickerUp" title="Parent folder">↑</button>
+        <button type="button" id="pickerHome" title="Home folder">~</button>
+        <input type="text" id="pickerPath" spellcheck="false" aria-label="Folder path" />
+        <button type="button" id="pickerGo">Go</button>
+      </div>
+      <div class="crumbs" id="pickerCrumbs"></div>
+    </div>
+    <div class="picker-list" id="pickerList"></div>
+    <div class="picker-foot">
+      <span class="status" id="pickerStatus"></span>
+      <label><input type="checkbox" id="pickerHidden" /> hidden</label>
+      <button type="button" id="pickerCancel">Cancel</button>
+      <button type="button" class="select" id="pickerSelect">Select folder</button>
+    </div>
+  </div>
+</dialog>
 
 <script>
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -202,6 +252,7 @@ $("#form").addEventListener("submit", async (e) => {
   $("#formError").textContent = "";
   try {
     const { id } = await api("/api/runs", { method: "POST", body: JSON.stringify({ repo, task: $("#task").value, pattern: p.id, roles, options }) });
+    rememberRepo(repo);
     await refreshRuns();
     openRun(id);
   } catch (err) {
@@ -210,6 +261,118 @@ $("#form").addEventListener("submit", async (e) => {
     $("#start").disabled = false;
   }
 });
+
+// ---------- folder picker ----------
+// Browsers never expose a folder's absolute path, so the local server lists directories.
+let pickerDir = null;
+
+const recentRepos = () => {
+  try { return JSON.parse(store.get("recentRepos") || "[]"); } catch { return []; }
+};
+function rememberRepo(path) {
+  store.set("recentRepos", JSON.stringify([path, ...recentRepos().filter((p) => p !== path)].slice(0, 8)));
+  renderRecent();
+}
+function renderRecent() {
+  $("#recentRepos").replaceChildren(...recentRepos().map((p) => el("option", { value: p })));
+}
+
+const fsQuery = (path) => {
+  const q = new URLSearchParams();
+  if (path) q.set("path", path);
+  if ($("#pickerHidden").checked) q.set("hidden", "1");
+  return api(`/api/fs?${q}`);
+};
+
+async function openPicker() {
+  $("#picker").showModal();
+  $("#pickerStatus").textContent = "Loading…";
+  const start = $("#repo").value.trim();
+  try {
+    showPicker(await fsQuery(start || undefined));
+  } catch {
+    showPicker(await fsQuery());
+  }
+}
+
+async function browse(path) {
+  $("#pickerStatus").textContent = "Loading…";
+  try {
+    showPicker(await fsQuery(path));
+  } catch (err) {
+    $("#pickerStatus").textContent = err.message;
+  }
+}
+
+function dirRow(icon, name, path, isRepo, onSelect) {
+  const row = el("div", { class: "dir", tabindex: "0", title: path, onclick: () => browse(path),
+    onkeydown: (e) => { if (e.key === "Enter") browse(path); } },
+    el("span", { class: "icon" }, icon), el("span", { class: "name" }, name),
+    isRepo ? el("span", { class: "repo-badge" }, "GIT") : null,
+    isRepo ? el("button", { type: "button", onclick: (e) => { e.stopPropagation(); onSelect(path); } }, "Use") : null);
+  return row;
+}
+
+function showPicker(d) {
+  pickerDir = d;
+  $("#pickerPath").value = d.path;
+  $("#pickerUp").disabled = !d.parent;
+
+  const parts = d.path.split("/").filter(Boolean);
+  const crumbs = [el("a", { onclick: () => browse("/") }, "/")];
+  parts.forEach((part, i) => {
+    crumbs.push(el("a", { onclick: () => browse("/" + parts.slice(0, i + 1).join("/")) }, part));
+    if (i < parts.length - 1) crumbs.push(el("span", {}, "/"));
+  });
+  $("#pickerCrumbs").replaceChildren(...crumbs);
+
+  const rows = [];
+  const recent = recentRepos();
+  if (d.path === d.home && recent.length) {
+    rows.push(el("div", { class: "picker-section" }, "Recent repositories"));
+    rows.push(...recent.map((p) => dirRow("★", p.replace(d.home, "~"), p, true, choose)));
+    rows.push(el("div", { class: "picker-section" }, "Folders"));
+  }
+  rows.push(...d.entries.map((e) => dirRow(e.isRepo ? "" : "▸", e.name, e.path, e.isRepo, choose)));
+  if (!d.entries.length) rows.push(el("div", { class: "picker-section" }, "No subfolders"));
+  if (d.truncated) rows.push(el("div", { class: "picker-section" }, "Showing the first 500 folders — type a path above"));
+  $("#pickerList").replaceChildren(...rows);
+  $("#pickerList").scrollTop = 0;
+
+  $("#pickerStatus").textContent = d.isRepo ? "✓ Git repository" : "Not a repository root";
+}
+
+function choose(path) {
+  $("#repo").value = path;
+  $("#picker").close();
+  checkRepo();
+}
+
+async function checkRepo() {
+  const hint = $("#repoHint");
+  const path = $("#repo").value.trim();
+  hint.className = "hint";
+  hint.textContent = "";
+  if (!path) return;
+  try {
+    const d = await fsQuery(path);
+    if (d.isRepo) hint.textContent = "✓ Git repository";
+    else { hint.className = "hint warn"; hint.textContent = "Not a repository root — runs use the enclosing git repo, if any."; }
+  } catch (err) {
+    hint.className = "hint warn";
+    hint.textContent = err.message;
+  }
+}
+
+$("#browseBtn").addEventListener("click", openPicker);
+$("#pickerUp").addEventListener("click", () => pickerDir?.parent && browse(pickerDir.parent));
+$("#pickerHome").addEventListener("click", () => browse(pickerDir?.home));
+$("#pickerGo").addEventListener("click", () => browse($("#pickerPath").value.trim()));
+$("#pickerPath").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); browse(e.target.value.trim()); } });
+$("#pickerHidden").addEventListener("change", () => browse(pickerDir?.path));
+$("#pickerCancel").addEventListener("click", () => $("#picker").close());
+$("#pickerSelect").addEventListener("click", () => pickerDir && choose(pickerDir.path));
+$("#repo").addEventListener("change", checkRepo);
 
 // ---------- run list ----------
 async function refreshRuns() {
@@ -356,6 +519,8 @@ function inline(node, text) {
   $("#agentChips").replaceChildren(...agents.map((a) => el("span", { class: `chip ${a.available ? "on" : ""}`, title: a.binary }, `${a.available ? "●" : "○"} ${a.displayName}`)));
   selectedPattern = patterns.find((p) => p.id === store.get("pattern")) ?? patterns[0];
   $("#repo").value = store.get("repo") ?? "";
+  renderRecent();
+  checkRepo();
   renderPatterns();
   renderRoles();
   await refreshRuns();

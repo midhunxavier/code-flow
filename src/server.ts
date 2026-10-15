@@ -5,6 +5,7 @@ import { agentAvailability, adapters, isAgentId, type AgentId } from "./adapters
 import { PORT } from "./config.js";
 import { RunManager, type Pattern } from "./engine.js";
 import { findPattern, patterns } from "./patterns/index.js";
+import { listDirectories } from "./fs.js";
 
 const manager = new RunManager();
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
@@ -120,6 +121,14 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
   if (req.method === "GET" && parts[1] === "agents") return send(res, 200, await agentAvailability());
   if (req.method === "GET" && parts[1] === "patterns") return send(res, 200, patterns.map(describePattern));
+  if (req.method === "GET" && parts[1] === "fs") {
+    const listing = await listDirectories(url.searchParams.get("path") ?? undefined, url.searchParams.get("hidden") === "1")
+      .catch((err: NodeJS.ErrnoException) => {
+        const status = err.code === "ENOENT" ? 404 : err.code === "EACCES" || err.code === "EPERM" ? 403 : 400;
+        throw new HttpError(status, err.code === "ENOENT" ? "Folder not found" : err.message);
+      });
+    return send(res, 200, listing);
+  }
 
   if (parts[1] === "runs") {
     const runId = parts[2];

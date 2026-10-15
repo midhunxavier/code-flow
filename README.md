@@ -27,7 +27,7 @@ npm start            # http://localhost:4317
 
 Prerequisites: Node 20+, git, and at least one of `claude`, `codex`, `agy` installed and logged in. Run each CLI once interactively first. The header shows which agents were found.
 
-In the UI, enter a repo path (absolute) and a task, pick a pattern, assign agents to roles, and press **Start run**. When the run finishes, each result is a branch such as `codeflow/<run>/build`. Review it and merge it yourself:
+In the UI, pick a repo with **Browse…**, or type an absolute path. The folder browser is served by the local server, because browsers don't expose absolute paths. It marks git repos and lists your recent ones. Then enter a task, pick a pattern, assign agents to roles, and press **Start run**. When the run finishes, each result is a branch such as `codeflow/<run>/build`. Review it and merge it yourself:
 
 ```bash
 git diff main...codeflow/<run>/build
