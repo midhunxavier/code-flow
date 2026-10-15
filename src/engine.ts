@@ -10,9 +10,12 @@ import {
   diffSince,
   diffStat,
   discardChanges,
+  ensureWorktreeDirExcluded,
   isClean,
   repoRoot,
   resolveCommit,
+  validateBranchPrefix,
+  worktreeRoot,
   type Worktree,
 } from "./git.js";
 
@@ -49,7 +52,14 @@ export interface Run {
   pattern: string;
   task: string;
   repo: string;
+  /** Commit every worktree starts from. */
   baseRef: string;
+  /** What the user picked as the base (branch name, or HEAD). */
+  baseLabel: string;
+  /** Result branches are `<branchPrefix>/<worktree name>`. */
+  branchPrefix: string;
+  /** Folder holding this run's worktrees. */
+  worktreeDir: string;
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
   status: Status;
@@ -168,8 +178,14 @@ export class TeamContext {
 
   async worktree(name: string, fromRef = this.run.baseRef): Promise<Worktree> {
     this.checkCancelled();
-    const wt = await createWorktree(this.run.repo, this.run.id, name, fromRef);
-    this.log(`Created worktree ${wt.name} on branch ${wt.branch}`);
+    const wt = await createWorktree(
+      this.run.repo,
+      name,
+      join(this.run.worktreeDir, name),
+      `${this.run.branchPrefix}/${name}`,
+      fromRef,
+    );
+    this.log(`Created worktree ${wt.path} on branch ${wt.branch}`);
     return wt;
   }
 
@@ -256,7 +272,10 @@ export interface StartRunInput {
   pattern: Pattern;
   task: string;
   repo: string;
+  /** Branch, tag or commit to start from; defaults to the repo's current HEAD. */
   baseRef?: string;
+  /** Defaults to `codeflow/<run id>`. */
+  branchPrefix?: string;
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
 }
@@ -298,13 +317,24 @@ export class RunManager {
 
   async start(input: StartRunInput): Promise<Run> {
     const repo = await repoRoot(input.repo);
-    const baseRef = await resolveCommit(repo, input.baseRef || "HEAD");
+    const baseLabel = input.baseRef?.trim() || "HEAD";
+    const baseRef = await resolveCommit(repo, baseLabel).catch(() => {
+      throw new Error(`Base branch "${baseLabel}" not found in ${repo}`);
+    });
+    const id = newRunId();
+    const branchPrefix = input.branchPrefix?.trim().replace(/^\/+|\/+$/g, "") || `codeflow/${id}`;
+    await validateBranchPrefix(repo, branchPrefix);
+    await ensureWorktreeDirExcluded(repo);
+
     const run: Run = {
-      id: newRunId(),
+      id,
       pattern: input.pattern.id,
       task: input.task,
       repo,
       baseRef,
+      baseLabel,
+      branchPrefix,
+      worktreeDir: join(worktreeRoot(repo), id),
       roles: input.roles,
       options: input.options,
       status: "running",

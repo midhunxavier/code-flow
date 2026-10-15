@@ -82,6 +82,7 @@
   pre, code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
   pre { background: var(--code); padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
   code { background: var(--code); padding: 0 4px; border-radius: 4px; }
+  .branch-row > div { min-width: 0; }
   .repo-row { display: flex; gap: 6px; }
   .repo-row input { flex: 1; min-width: 0; }
   .hint { font-size: 12px; color: var(--muted); margin-top: 4px; min-height: 0; }
@@ -124,6 +125,17 @@
       </div>
       <datalist id="recentRepos"></datalist>
       <div class="hint" id="repoHint"></div>
+      <div class="branch-row">
+        <div>
+          <label for="baseRef">Base branch</label>
+          <select id="baseRef"><option value="">Current HEAD</option></select>
+        </div>
+        <div>
+          <label for="branchPrefix">Result branch prefix</label>
+          <input type="text" id="branchPrefix" placeholder="codeflow/&lt;run-id&gt;" spellcheck="false" autocomplete="off" />
+        </div>
+      </div>
+      <div class="hint" id="worktreeHint"></div>
       <label for="task">Task</label>
       <textarea id="task" placeholder="Add rate limiting to the /login endpoint…" required></textarea>
       <label>Team pattern</label>
@@ -251,8 +263,16 @@ $("#form").addEventListener("submit", async (e) => {
   $("#start").disabled = true;
   $("#formError").textContent = "";
   try {
-    const { id } = await api("/api/runs", { method: "POST", body: JSON.stringify({ repo, task: $("#task").value, pattern: p.id, roles, options }) });
+    const baseRef = $("#baseRef").value;
+    const branchPrefix = $("#branchPrefix").value.trim();
+    const { id } = await api("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({ repo, task: $("#task").value, pattern: p.id, roles, options, baseRef, branchPrefix }),
+    });
     rememberRepo(repo);
+    store.set("baseRef", baseRef);
+    $("#branchPrefix").value = ""; // a prefix can only be used once
+    loadBranches(repo);
     await refreshRuns();
     openRun(id);
   } catch (err) {
@@ -348,11 +368,34 @@ function choose(path) {
   checkRepo();
 }
 
+async function loadBranches(path) {
+  const select = $("#baseRef");
+  const previous = select.value || store.get("baseRef") || "";
+  const head = el("option", { value: "" }, "Current HEAD");
+  select.replaceChildren(head);
+  $("#worktreeHint").textContent = "";
+  if (!path) return;
+  try {
+    const d = await api(`/api/branches?repo=${encodeURIComponent(path)}`);
+    head.textContent = d.current ? `Current HEAD (${d.current})` : "Current HEAD (detached)";
+    const groups = [["local", "Branches"], ["run", "Results of earlier runs"], ["remote", "Remote branches"]];
+    for (const [kind, label] of groups) {
+      const items = d.branches.filter((b) => b.kind === kind);
+      if (items.length) select.append(el("optgroup", { label }, items.map((b) => el("option", { value: b.name }, `${b.name} · ${b.updated}`))));
+    }
+    if ([...select.options].some((o) => o.value === previous)) select.value = previous;
+    $("#worktreeHint").textContent = `Worktrees go in ${d.worktreeRoot}/<run-id>/`;
+  } catch {
+    // Not a repo: checkRepo already explains why.
+  }
+}
+
 async function checkRepo() {
   const hint = $("#repoHint");
   const path = $("#repo").value.trim();
   hint.className = "hint";
   hint.textContent = "";
+  loadBranches(path);
   if (!path) return;
   try {
     const d = await fsQuery(path);
@@ -429,7 +472,7 @@ function renderRunHeader(run) {
   $("#runTask").replaceChildren(
     el("div", {}, run.task),
     el("div", { class: "meta", style: "margin-top:6px;font-size:12px;color:var(--muted)" },
-      `${run.repo} @ ${run.baseRef.slice(0, 8)} — `,
+      `${run.repo} · base ${run.baseLabel} @ ${run.baseRef.slice(0, 8)} · branches ${run.branchPrefix}/… — `,
       Object.entries(run.roles).filter(([, a]) => a.length).map(([role, ids]) => el("span", {}, `${role}: `, ids.map(agentBadge), "  "))));
   if (run.summary || run.error) {
     $("#runSummary").replaceChildren(el("div", { class: `summary ${run.error ? "failed" : ""}` },

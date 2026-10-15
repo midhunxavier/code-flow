@@ -27,12 +27,25 @@ npm start            # http://localhost:4317
 
 Prerequisites: Node 20+, git, and at least one of `claude`, `codex`, `agy` installed and logged in. Run each CLI once interactively first. The header shows which agents were found.
 
-In the UI, pick a repo with **Browse…**, or type an absolute path. The folder browser is served by the local server, because browsers don't expose absolute paths. It marks git repos and lists your recent ones. Then enter a task, pick a pattern, assign agents to roles, and press **Start run**. When the run finishes, each result is a branch such as `codeflow/<run>/build`. Review it and merge it yourself:
+In the UI, pick a repo with **Browse…**, or type an absolute path. The folder browser is served by the local server, because browsers don't expose absolute paths. It marks git repos and lists your recent ones. Optionally choose a **base branch** and a **result branch prefix**. Then enter a task, pick a pattern, assign agents to roles, and press **Start run**. When the run finishes, each result is a branch such as `codeflow/<run>/build`. Review it and merge it yourself:
 
 ```bash
 git diff main...codeflow/<run>/build
 git merge codeflow/<run>/build
 ```
+
+## Worktrees and branches
+
+Every worktree a pattern needs (`build`, `candidate-a`, `integration`, …) is created with:
+
+```bash
+git worktree add -b <prefix>/<name> <repo>/.worktrees/<run-id>/<name> <base>
+```
+
+- **Base branch:** the starting point for every worktree in the run. By default this is the repo's current `HEAD`. The dropdown also lists local branches, remote branches, and the result branches of earlier runs, so you can build on a previous result. Uncommitted changes in your checkout aren't included.
+- **Result branch prefix:** defaults to `codeflow/<run-id>`. If you set it to, say, `feat/rate-limit`, results land on `feat/rate-limit/build`. A prefix can only be used once, because git can't have both a `feat/rate-limit` branch and `feat/rate-limit/…` branches.
+- **Location:** worktrees go in `<repo>/.worktrees/`. code-flow adds `/.worktrees/` to `.git/info/exclude`, which keeps them out of `git status` without editing your `.gitignore`. Tools that don't read git's ignore files (some test runners, linters, `tsc` globs) may still scan `.worktrees/`. Exclude it in their config, or set `CODEFLOW_WORKTREE_DIR` to an absolute path to keep worktrees outside the repo.
+- **Cleanup:** remove a run's worktrees with `git worktree remove .worktrees/<run-id>/<name>`, or delete the folder and run `git worktree prune`. The branches stay until you delete them.
 
 ## Team patterns
 
@@ -59,7 +72,7 @@ src/git.ts               worktrees, commits, diffs, merges
 
 - **AgentAdapter** (`src/adapters/types.ts`): `run({prompt, cwd, mode, resumeSessionId}, onEvent) → {ok, finalText, sessionId}`. Adapters convert each CLI's JSONL into `text | thinking | tool_call | tool_result | usage | status | error` events.
 - **TeamContext** gives patterns a few primitives. `ask()` runs one agent turn as a visible step, and `resume` continues that agent's own conversation. `worktree()`, `commit()`, `diff()` and `artifact()` handle git. Structured hand-offs (review verdicts, judge picks, subtask lists) use a fenced ```` ```json ```` block that `extractJson` parses.
-- Every event is appended to `~/.codeflow/runs/<run>.jsonl`. Worktrees live in `~/.codeflow/worktrees/` (override with `CODEFLOW_HOME`).
+- Every event is appended to `~/.codeflow/runs/<run>.jsonl`. Worktrees live in `<repo>/.worktrees/<run-id>/` (see above).
 
 ### Adding a pattern
 
@@ -74,7 +87,8 @@ Implement `AgentAdapter` in `src/adapters/`, then register it in `src/adapters/i
 | Env var | Default | Purpose |
 |---|---|---|
 | `PORT` | `4317` | Server port |
-| `CODEFLOW_HOME` | `~/.codeflow` | Worktrees and run logs |
+| `CODEFLOW_HOME` | `~/.codeflow` | Run logs |
+| `CODEFLOW_WORKTREE_DIR` | `.worktrees` | Worktree folder; relative paths are inside each repo, absolute paths are used as-is |
 | `CODEFLOW_STEP_TIMEOUT_MIN` | `30` | Timeout per agent step |
 | `CODEFLOW_MAX_DIFF_CHARS` | `60000` | Diffs longer than this are truncated before being passed to another agent |
 | `CODEFLOW_CLAUDE_WRITE_TOOLS` | build/test allow-list | Comma-separated Claude tool rules for write mode, e.g. `Edit,Bash` |

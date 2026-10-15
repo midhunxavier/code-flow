@@ -6,6 +6,7 @@ import { PORT } from "./config.js";
 import { RunManager, type Pattern } from "./engine.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
+import { listBranches, repoRoot, worktreeRoot } from "./git.js";
 
 const manager = new RunManager();
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
@@ -129,6 +130,14 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       });
     return send(res, 200, listing);
   }
+  if (req.method === "GET" && parts[1] === "branches") {
+    const requested = url.searchParams.get("repo") ?? "";
+    if (!requested.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
+    const repo = await repoRoot(requested).catch(() => {
+      throw new HttpError(400, "Not a git repository");
+    });
+    return send(res, 200, { repo, worktreeRoot: worktreeRoot(repo), ...(await listBranches(repo)) });
+  }
 
   if (parts[1] === "runs") {
     const runId = parts[2];
@@ -148,6 +157,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
             task,
             repo,
             baseRef: body.baseRef ? String(body.baseRef) : undefined,
+            branchPrefix: body.branchPrefix ? String(body.branchPrefix) : undefined,
             roles: await validateRoles(pattern, body.roles),
             options: validateOptions(pattern, body.options),
           })

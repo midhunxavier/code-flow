@@ -1,7 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,9 +27,15 @@ before(() => {
   git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
 });
 
-async function runPattern(id: string, roles: Record<string, any>, task = "Do the thing", options = {}): Promise<Run> {
+async function runPattern(
+  id: string,
+  roles: Record<string, any>,
+  task = "Do the thing",
+  options = {},
+  extra: { baseRef?: string; branchPrefix?: string } = {},
+): Promise<Run> {
   const manager = new RunManager();
-  const run = await manager.start({ pattern: findPattern(id)!, task, repo, roles, options });
+  const run = await manager.start({ pattern: findPattern(id)!, task, repo, roles, options, ...extra });
   await new Promise<void>((resolve) => {
     const check = () => run.status !== "running" && resolve();
     manager.subscribe(run.id, check);
@@ -142,6 +148,55 @@ test("agy: a denied tool with no answer is reported as a failure", async () => {
   } finally {
     delete process.env.FAKE_AGY_DENY;
   }
+});
+
+test("worktrees live in <repo>/.worktrees and are excluded from git status", async () => {
+  const run = await runPattern("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] });
+  assert.equal(run.status, "done", run.error);
+  assert.equal(run.worktreeDir, join(realpathSync(repo), ".worktrees", run.id));
+  assert.ok(run.artifacts[0]!.path.startsWith(run.worktreeDir));
+  assert.ok(existsSync(join(run.worktreeDir, "build")));
+  const exclude = readFileSync(join(repo, ".git", "info", "exclude"), "utf8");
+  assert.equal(exclude.split("\n").filter((l) => l === "/.worktrees/").length, 1, "added exactly once");
+});
+
+test("runs can start from a chosen base branch", async () => {
+  execFileSync("git", ["switch", "-q", "-c", "feature"], { cwd: repo });
+  writeFileSync(join(repo, "feature.txt"), "only on feature\n");
+  execFileSync("git", ["add", "."], { cwd: repo });
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "feature"], { cwd: repo });
+  execFileSync("git", ["switch", "-q", "-"], { cwd: repo });
+
+  const run = await runPattern("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, "x", {}, { baseRef: "feature" });
+  assert.equal(run.status, "done", run.error);
+  assert.equal(run.baseLabel, "feature");
+  assert.ok(branchFiles(run.artifacts[0]!.branch).includes("feature.txt"));
+
+  await assert.rejects(
+    runPattern("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, "x", {}, { baseRef: "no-such-branch" }),
+    /Base branch "no-such-branch" not found/,
+  );
+});
+
+test("result branches use the chosen prefix, which can't be reused", async () => {
+  const roles = { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] };
+  const run = await runPattern("pipeline", roles, "x", {}, { branchPrefix: "/feat/clamp/" });
+  assert.equal(run.status, "done", run.error);
+  assert.equal(run.artifacts[0]!.branch, "feat/clamp/build");
+
+  await assert.rejects(runPattern("pipeline", roles, "x", {}, { branchPrefix: "feat/clamp" }), /already exist/);
+  await assert.rejects(runPattern("pipeline", roles, "x", {}, { branchPrefix: "feat/clamp/build" }), /already exists/);
+  await assert.rejects(runPattern("pipeline", roles, "x", {}, { branchPrefix: "bad..name" }), /not a valid/);
+});
+
+test("listBranches groups local, run and current branches", async () => {
+  const { listBranches } = await import("../src/git.js");
+  const { current, branches } = await listBranches(repo);
+  assert.ok(current === "master" || current === "main");
+  const kind = (name: string) => branches.find((b) => b.name === name)?.kind;
+  assert.equal(kind("feature"), "local");
+  assert.equal(kind("feat/clamp/build"), "local");
+  assert.ok(branches.some((b) => b.kind === "run" && b.name.startsWith("codeflow/")));
 });
 
 test("runs never touch the user's own checkout", () => {
