@@ -86,7 +86,16 @@ export function checkEvidence(ctx: TeamContext, check: CheckResult | null, maxOu
  */
 export async function fixUntilGreen(
   ctx: TeamContext,
-  opts: { agent: AgentId; role: string; wt: Worktree; session?: StepOutcome; attempts: number; initial?: CheckResult | null },
+  opts: {
+    agent: AgentId;
+    role: string;
+    wt: Worktree;
+    session?: StepOutcome;
+    attempts: number;
+    initial?: CheckResult | null;
+    /** More for a fresh session to know (prompt sections), e.g. which parts are missing. */
+    context?: string;
+  },
 ): Promise<{ check: CheckResult | null; session?: StepOutcome }> {
   let check = opts.initial !== undefined ? opts.initial : await ctx.check(opts.wt);
   let session = opts.session?.agent === opts.agent ? opts.session : undefined;
@@ -99,7 +108,7 @@ export async function fixUntilGreen(
       cwd: opts.wt,
       resume: session,
       prompt:
-        (session ? "" : preamble(opts.role, opts.agent, WRITE) + section("Task", ctx.task)) +
+        (session ? "" : preamble(opts.role, opts.agent, WRITE) + section("Task", ctx.task) + (opts.context ?? "")) +
         "code-flow ran the project's check on the current code and it fails. Fix the cause in the code — don't weaken or skip tests — then summarize." +
         checkSection(check),
     });

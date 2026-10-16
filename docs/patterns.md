@@ -41,7 +41,7 @@ code-flow treats each pattern as a loop, and what it engineers is the loop aroun
   - If the check runs on the base commit, the change broke it, and it's a failing check like any other.
 - **A pass only counts if the tests are still the tests.** After every change, code-flow looks for edits that make a check pass without fixing anything:
   - deleted test files;
-  - added `.skip`, `.only`, `xit`, `@pytest.mark.skip`, `t.Skip()`…;
+  - added `.skip`, `.only`, `xit`, `@pytest.mark.skip`, `t.Skip()`…; in Python and JS/TS, not inside a string or comment (a test of a guard against skips may write one into a fixture);
   - test files that lost assertions;
   - a changed test config or CI workflow;
   - a changed `scripts.test` (or whichever script the check runs);
@@ -55,7 +55,8 @@ code-flow treats each pattern as a loop, and what it engineers is the loop aroun
   - PR follow-through: a fix that changes tests that way isn't pushed.
 
   Every flagged result shows **⚠ Changes to tests to check before merging**.
-- **Independent review:** Supervisor has a *Reviewer* role (default Codex) that checks the integrated result instead of the supervisor checking its own work. It also writes the *contracts* (interfaces, names, data shapes) that every worker gets. Debate can have a reviewer check the build against the agreed plan.
+- **Independent review:** Supervisor has a *Reviewer* role (the composer picks a different vendor than the supervisor) that checks the integrated result instead of the supervisor checking its own work. The supervisor also writes the *contracts* (interfaces, names, data shapes) that every worker gets. If you skip the reviewer, the supervisor reviews its own integration and fixes what it finds, but nobody reviews those fixes; the result says "fixed by the supervisor, not re-reviewed". Debate can have a reviewer check the build against the agreed plan.
+- **Missing parts are reported:** in Supervisor, a worker that finishes without changing anything is listed as *no changes* with the first line of its answer, not as done. Its branch isn't merged, the supervisor and reviewer are told which parts are missing, and Insights counts it as a failed step.
 - **What agents see:** long diffs keep whole source files first, put lockfiles and generated files last, and list any file that didn't fit with the command to read it. A long check log keeps the lines around each failure plus the runner's summary, not just the tail. Agents also get the repo's own conventions files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, …), since each CLI otherwise reads only its own. They're also told about problems reviewers raised in more than one earlier run in that repo (turn this off with `"learn": false`).
 - **No progress means hand off:** in *Loop until green*, a round with no new commit, or with the same failure as before, counts as stuck. After *K* stuck rounds, the next vendor takes over.
 - **Limits:** every run stops at a maximum number of minutes or agent steps (60 and 40 by default). A stopped run keeps its work: each worktree with changes is listed as "Work so far".

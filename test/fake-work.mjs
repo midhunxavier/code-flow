@@ -101,7 +101,7 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
     answer = "Simplified the test and implemented it.";
   } else if (write && process.env.FAKE_NOOP_VENDOR === vendor) {
-    answer = `${vendor} looked around but changed nothing.`;
+    answer = `${vendor} looked around but changed nothing.\nIt would need network access to go further.`;
   } else if (write) {
     if (prompt.includes("CONFLICT")) writeFileSync("shared.txt", `written by ${vendor} ${id}\n`);
     else writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);

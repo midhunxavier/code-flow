@@ -365,3 +365,18 @@ test("insights and run search", async () => {
   await page.getByText(/1 of \d+ runs/).waitFor();
   assert.equal(await page.locator(".rail .run-item").count(), 1);
 });
+
+test("supervisor: the reviewer defaults to a different vendor than the supervisor", async () => {
+  await page.goto(BASE);
+  await page.getByRole("button", { name: /Supervisor → Workers/ }).click();
+  const role = (label: string) => page.locator(".role").filter({ has: page.locator(".rl", { hasText: new RegExp(`^${label}`) }) });
+  const pressed = async (label: string) =>
+    (await role(label).locator(".pill[aria-pressed=true]").allInnerTexts()).map((t) => t.trim());
+  assert.deepEqual(await pressed("Reviewer"), ["Codex"], "the pattern's default when it isn't the supervisor");
+  await role("Supervisor").getByRole("button", { name: "Codex", exact: true }).click();
+  assert.deepEqual(await pressed("Supervisor"), ["Codex"]);
+  assert.deepEqual(await pressed("Reviewer"), ["Claude Code"], "moves off the supervisor's vendor");
+  // Your own choice stands, even to let the supervisor review itself.
+  await role("Reviewer").getByRole("button", { name: "Skip" }).click();
+  assert.deepEqual(await pressed("Reviewer"), ["Skip"]);
+});

@@ -176,6 +176,12 @@ export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]
     const outsider = agents.value.find((a) => a.available && !roles.contestants?.includes(a.id) && !roles.contestants?.includes("auto"));
     if (outsider) roles.judge = [outsider.id];
   }
+  // Nobody re-reviews the supervisor's fixes to its own review: default the reviewer to another vendor.
+  if (p.id === "supervisor" && !saved.reviewer) {
+    const [supervisor] = roles.supervisor ?? [];
+    const other = agents.value.find((a) => a.available && a.id !== supervisor);
+    if (supervisor && supervisor !== "auto" && (roles.reviewer?.[0] ?? supervisor) === supervisor && other) roles.reviewer = [other.id];
+  }
   return roles;
 }
 

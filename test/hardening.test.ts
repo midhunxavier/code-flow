@@ -4,7 +4,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -193,6 +193,54 @@ test("supervisor: every worker gets the contracts, and a separate reviewer check
   assert.deepEqual([review.agent, review.role], ["agy", "reviewer"]);
 });
 
+test("supervisor: a worker that changes nothing is reported as no changes, isn't merged, counts as a failed step, and the reviewer is told", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codeflow-m7-record-"));
+  process.env.FAKE_RECORD_DIR = dir;
+  process.env.FAKE_NOOP_VENDOR = "codex";
+  let result: { run: Run; manager: Manager };
+  try {
+    result = await runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["agy"] });
+  } finally {
+    delete process.env.FAKE_RECORD_DIR;
+    delete process.env.FAKE_NOOP_VENDOR;
+  }
+  const { run, manager } = result;
+  assert.equal(run.status, "done", run.error);
+  assert.match(run.summary!, /- Alpha part → claude: done/);
+  assert.match(run.summary!, /- Beta part → codex: no changes \(codex looked around but changed nothing\.\)/);
+  assert.doesNotMatch(run.summary!, /network access/, "only the first line of the answer");
+  assert.doesNotMatch(run.summary!, /not re-reviewed/, "a separate reviewer reviewed the fixes");
+  const beta = run.steps.find((s) => s.title === "Subtask: Beta part")!;
+  assert.equal(beta.status, "failed");
+  assert.equal(beta.error, "Made no changes: codex looked around but changed nothing.");
+  assert.equal(computeStats([run]).agents.find((a) => a.agent === "codex")!.failures, 1);
+  assert.match(await logs(manager, run), /Nothing to merge from "Beta part": codex made no changes/);
+  const review = readdirSync(dir)
+    .map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as { vendor: string; prompt: string })
+    .find((p) => p.vendor === "agy" && p.prompt.includes('"verdict": "approve" | "changes_requested"'))!;
+  assert.match(review.prompt, /The subtasks that produced work have been merged/);
+  assert.match(review.prompt, /## Subtasks missing from the integration\n[^#]*- Beta part → codex: no changes/);
+});
+
+test("supervisor reviewing its own integration: its fixes aren't re-reviewed, and the result says so", async () => {
+  rmSync(join(process.env.CODEFLOW_HOME!, ".reviewed-once"), { force: true });
+  process.env.FAKE_REVIEW_FAIL_ONCE = "1";
+  let result: { run: Run; manager: Manager };
+  try {
+    result = await runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: [] });
+  } finally {
+    delete process.env.FAKE_REVIEW_FAIL_ONCE;
+  }
+  const { run, manager } = result;
+  assert.equal(run.status, "done", run.error);
+  assert.deepEqual(
+    run.steps.filter((s) => /^(Integration review|Fix integration issues)/.test(s.title)).map((s) => s.title),
+    ["Integration review", "Fix integration issues"],
+  );
+  assert.match(run.summary!, /claude: changes_requested — 1 issues, fixed by the supervisor, not re-reviewed/);
+  assert.match(await logs(manager, run), /No separate reviewer: the supervisor reviews its own integration/);
+});
+
 // ---------------------------------------------------------------- follow-ups
 test("follow-ups: a second reply runs as its own turn; after archiving, the worktree comes back set up; a deleted branch fails just that follow-up", async () => {
   const manager = new RunManager(findPattern);
@@ -306,6 +354,62 @@ test("integrity: deleted, skipped and weakened tests and a changed test script a
   writeFileSync(join(dir, "d.test.mjs"), 'test("d", () => assert.ok(1));\n');
   commitAllIn(dir, "add a test");
   assert.deepEqual(await inspectChanges(dir, clean), []);
+});
+
+test("integrity: a skip marker inside a string or comment isn't a skipped test; a real one still is", async () => {
+  const dir = newRepo({
+    "tests/unit/test_guard.py": "def test_ok():\n    assert True\n",
+    "src/guard.test.ts": 'test("ok", () => expect(1).toBe(1));\n',
+  });
+  const base = sh(dir, "rev-parse", "HEAD");
+  // A test of the repo's guard against skips writes skipping tests into fixtures, as strings.
+  writeFileSync(
+    join(dir, "tests/unit/test_guard.py"),
+    [
+      "import textwrap",
+      "",
+      "def test_ok():",
+      "    assert True",
+      "",
+      "def test_guard_rejects_skips(tmp_path):",
+      "    (tmp_path / 'test_example.py').write_text(",
+      `        "import pytest\\ndef test_example(): pytest.skip('missing runtime')\\n", encoding="utf-8"`,
+      "    )",
+      "    (tmp_path / 'test_other.py').write_text(textwrap.dedent('''",
+      "        import pytest",
+      '        @pytest.mark.skip(reason="later")',
+      "        def test_other(): pass",
+      "    '''))",
+      "    # pytest.skip() here would hide the failure",
+      "    assert guard(tmp_path) == 2",
+      "",
+      "def test_needs_network():",
+      '    pytest.skip("no network")',
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(dir, "src/guard.test.ts"),
+    [
+      'test("ok", () => expect(1).toBe(1));',
+      "const fixture = `",
+      '  it.skip("later", () => {});',
+      "  ${header}",
+      '  describe.only("focus", () => {});',
+      "`;",
+      'const inline = \'test.skip("x", () => {})\'; // it.skip( in a comment',
+      'const nested = `${cond ? `xit("a")` : ""} test.only("b")`;',
+      "const tick = /`/; /* a backtick in a regex doesn't open a template */",
+      'it.skip("real", () => {});',
+      "",
+    ].join("\n"),
+  );
+  commitAllIn(dir, "test the skip guard");
+  const issues = await inspectChanges(dir, base);
+  assert.deepEqual(
+    issues.map((i) => `${i.kind}:${i.file}:${i.detail}`),
+    ['skipped-test:src/guard.test.ts:adds `it.skip("real", () => {});`', 'skipped-test:tests/unit/test_guard.py:adds `pytest.skip("no network")`'],
+  );
 });
 
 // ---------------------------------------------------------------- pure helpers

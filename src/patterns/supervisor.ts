@@ -1,6 +1,6 @@
 import { adapters, isAgentId, type AgentId } from "../adapters/index.js";
 import { RejectedError, type Pattern, type StepOutcome } from "../engine.js";
-import { hasConflictMarkers } from "../git.js";
+import { changedFiles, hasConflictMarkers } from "../git.js";
 import { describeIssues } from "../integrity.js";
 import { REVIEW_SCHEMA, SUBTASKS_SCHEMA } from "./schemas.js";
 import { checkEvidence, fence, fixUntilGreen, jsonInstruction, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
@@ -153,14 +153,34 @@ export const supervisorPattern: Pattern = {
             section("Deliverable", "Implement your subtask, run relevant tests, and summarize what you changed."),
         });
         await ctx.commit(wt, `${agent}: ${sub.title}`);
-        return { sub, agent, wt, result };
+        // A turn can end fine without changing anything (blocked, or nothing seemed needed):
+        // that part is missing, not done.
+        const changed = (await changedFiles(wt.path, wt.base)).length > 0;
+        if (result.ok && !changed) ctx.failStep(result, `Made no changes: ${firstLine(result.finalText)}`);
+        return { sub, agent, wt, result, changed };
       }),
     );
+    const outcome = (r: (typeof results)[number]) =>
+      !r.result.ok ? `failed (${firstLine(r.result.error)})` : r.changed ? "done" : `no changes (${firstLine(r.result.finalText)})`;
+
+    // Whoever integrates and reviews must know which parts never arrived.
+    const missing = results.filter((r) => !r.result.ok || !r.changed);
+    const gaps = missing.length
+      ? section(
+          "Subtasks missing from the integration",
+          "These parts weren't merged, so their work is missing from the integration branch:\n" +
+            missing.map((r) => `- ${r.sub.title} → ${r.agent}: ${outcome(r)}`).join("\n"),
+        )
+      : "";
 
     // Integrate branches one by one; the supervisor resolves any conflicts.
     for (const r of results) {
       if (!r.result.ok) {
         ctx.log(`Skipping failed subtask "${r.sub.title}"`, "warn");
+        continue;
+      }
+      if (!r.changed) {
+        ctx.log(`Nothing to merge from "${r.sub.title}": ${r.agent} made no changes`, "warn");
         continue;
       }
       const merge = await ctx.merge(integration, r.wt.branch);
@@ -183,6 +203,7 @@ export const supervisorPattern: Pattern = {
             `A git merge of branch ${r.wt.branch} ("${r.sub.title}") is in progress and has conflicts in:\n` +
               merge.conflicts.map((f) => `- ${f}`).join("\n"),
           ) +
+          gaps +
           section(
             "Deliverable",
             "Resolve every conflict so both sides' intent is preserved, remove all conflict markers, and make sure it builds. " +
@@ -194,7 +215,7 @@ export const supervisorPattern: Pattern = {
     }
 
     // The merged result is where parts break each other: check it before reviewing.
-    let { check } = await fixUntilGreen(ctx, { agent: supervisor, role: "supervisor", wt: integration, attempts: 2 });
+    let { check } = await fixUntilGreen(ctx, { agent: supervisor, role: "supervisor", wt: integration, attempts: 2, context: gaps });
 
     // The supervisor split the work and integrated it; someone else should judge the result.
     const [reviewer = supervisor] = ctx.agents("reviewer");
@@ -218,8 +239,9 @@ export const supervisorPattern: Pattern = {
             : preamble("reviewer", reviewer, `${READ_ONLY} Other agents built this in parallel parts that were then merged; review it critically.`) +
               section("Task", ctx.task) +
               (contracts ? section("Contracts the parts were meant to follow", contracts) : "")) +
-          "All subtasks have been merged into the integration branch. Review the combined result against the overall task: " +
-          "missing pieces, inconsistencies between parts, broken integration, failing tests." +
+          (missing.length ? "The subtasks that produced work have been merged into the integration branch. " : "All subtasks have been merged into the integration branch. ") +
+          "Review the combined result against the overall task: missing pieces, inconsistencies between parts, broken integration, failing tests." +
+          gaps +
           section("Combined diff", fence(diff, "diff")) +
           checkEvidence(ctx, check, 3_000) +
           (testChanges.length ? section("Changes to tests (found by code-flow)", `Request changes unless the task requires them:\n${describeIssues(testChanges)}`) : "") +
@@ -229,6 +251,7 @@ export const supervisorPattern: Pattern = {
 
     let reviewed = await review(1);
     let verdict = reviewed.value;
+    let unreviewedFix = false;
     if (verdict?.verdict === "changes_requested" && verdict.issues?.length) {
       ctx.learn(verdict.issues);
       await ctx.ask({
@@ -240,16 +263,17 @@ export const supervisorPattern: Pattern = {
         prompt:
           preamble("integrator", supervisor, WRITE) +
           section("Overall goal", ctx.task) +
+          gaps +
           section("Issues found in review", fence(JSON.stringify(verdict.issues, null, 2), "json")) +
           section("Deliverable", "Fix these issues, run the tests, and summarize."),
       });
       await ctx.commit(integration, `${supervisor}: fix integration issues`);
-      check = (await fixUntilGreen(ctx, { agent: supervisor, role: "supervisor", wt: integration, attempts: 2 })).check;
+      check = (await fixUntilGreen(ctx, { agent: supervisor, role: "supervisor", wt: integration, attempts: 2, context: gaps })).check;
       // The fix is reviewed too, unless the supervisor would only be checking itself again.
       if (reviewer !== supervisor) {
         reviewed = await review(2, reviewed.outcome);
         verdict = reviewed.value;
-      }
+      } else unreviewedFix = true;
     }
 
     await ctx.artifact("Integrated result", integration);
@@ -259,15 +283,23 @@ export const supervisorPattern: Pattern = {
       `**Integrated**${check ? (check.ok ? `, and \`${check.command}\` passes` : `, but \`${check.command}\` still fails`) : ""} — branch \`${integration.branch}\``,
       section(
         "Subtasks",
-        results
-          .map((r) => `- ${r.sub.title} → ${r.agent}: ${r.result.ok ? "done" : `failed (${r.result.error})`}`)
-          .join("\n"),
+        results.map((r) => `- ${r.sub.title} → ${r.agent}: ${outcome(r)}`).join("\n"),
       ),
       contracts ? section("Contracts", contracts) : "",
-      section("Integration review", `${reviewer}: ${verdict.verdict} — ${verdict.issues.length} issues`),
+      section(
+        "Integration review",
+        `${reviewer}: ${verdict.verdict} — ${verdict.issues.length} issues${unreviewedFix ? ", fixed by the supervisor, not re-reviewed" : ""}`,
+      ),
     ].join("\n");
   },
 };
+
+/** The first line of an agent's answer or error, as a one-line reason. */
+function firstLine(text?: string): string {
+  const line = (text ?? "").split("\n").map((l) => l.replace(/^#+\s*/, "").trim()).find(Boolean);
+  if (!line) return "no reason given";
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+}
 
 function slug(raw: string, i: number): string {
   const s = raw.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);

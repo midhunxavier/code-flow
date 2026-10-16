@@ -1029,6 +1029,19 @@ export class TeamContext {
   }
 
   /**
+   * A turn that ended normally but produced nothing usable (a worker that changed nothing):
+   * show it as failed, saying why, so the run and Insights don't count it as a success.
+   */
+  failStep(outcome: StepOutcome, error: string) {
+    const step = this.run.steps.find((s) => s.id === outcome.stepId);
+    if (step?.status !== "done") return; // already marked on an earlier pass, or not a success
+    step.status = "failed";
+    step.error = error;
+    this.agentUsage(outcome.agent).failures++;
+    this.manager.emit(this.run, { type: "step", step: { ...step } });
+  }
+
+  /**
    * The agent turn itself: read-only enforced by snapshot and restore (for every agent, not
    * just trusted to each CLI's flags), and passing failures (overloaded, network) retried.
    */
