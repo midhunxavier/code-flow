@@ -141,6 +141,6 @@ export class PrWatcher {
 }
 
 /** Nobody is watching a PR follow-up as it runs, so it never gets more than "standard" permissions. */
-function unattendedTrust(run: Run): Run["trust"] {
-  return run.trust === "trusted" ? "standard" : run.trust;
+export function unattendedTrust(run: Pick<Run, "trust">): Run["trust"] {
+  return run.trust === "trusted" || run.trust === "full" ? "standard" : run.trust;
 }

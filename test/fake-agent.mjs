@@ -58,8 +58,8 @@ if (process.env.FAKE_RECORD_DIR) {
     JSON.stringify({ vendor, args, prompt, cwd: process.cwd() }));
 }
 const write =
-  (vendor === "claude" && args.includes("acceptEdits")) ||
-  (vendor === "codex" && args.includes('sandbox_mode="workspace-write"')) ||
+  (vendor === "claude" && (args.includes("acceptEdits") || args.includes("bypassPermissions"))) ||
+  (vendor === "codex" && (args.includes('sandbox_mode="workspace-write"') || args.includes('sandbox_mode="danger-full-access"'))) ||
   // agy has no read-only flag; code-flow enforces read-only by reverting changes.
   (vendor === "agy" && args.includes("--dangerously-skip-permissions"));
 const schemaRequested = args.includes("--json-schema") || args.includes("--output-schema");

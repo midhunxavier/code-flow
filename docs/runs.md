@@ -34,6 +34,15 @@ Runs are conversations, not fire-and-forget jobs:
 
 <kbd>↵</kbd> sends and <kbd>⇧</kbd><kbd>↵</kbd> adds a line.
 
+### A single agent
+
+A **Single agent** run is one conversation with one agent, as in that agent's own app:
+
+- The run reads as a chat: your messages, and each turn the agent takes. A turn streams live while the agent works. Once it's done, it folds into the agent's answer, with **Show work** for its tool calls and thinking.
+- There's no **To**: every message goes to that agent. A message you send while it works goes into its running turn if the turn takes input (Codex). Otherwise it's sent as your next message as soon as the turn ends, so nothing waits for a reply you'd have to send again.
+- A turn that fails ends that turn, not the conversation: reply to try again or to change course. Whatever it changed is kept on its branch.
+- code-flow commits after every turn and runs your check if you set one. The branch, and merging it or opening a pull request, are at the bottom of the thread.
+
 Prompts are passed on **stdin**, not as command-line arguments (`claude -p` reading stdin, Codex's JSON-RPC or `codex exec -`, and agy's stream-json input), so long tasks and diffs aren't limited by the operating system's argument size.
 
 ## Runs survive restarts

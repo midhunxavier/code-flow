@@ -13,6 +13,7 @@ import { captureOutput, commandExists, describeFailure, runJsonlProcess, stringi
  *    cwd (a disposable worktree). Read-only steps are enforced by the engine, which reverts
  *    anything a read step changes. Set CODEFLOW_AGY_SKIP_PERMISSIONS=0 to rely on
  *    permissions.allow in ~/.gemini/antigravity-cli/settings.json instead.
+ *    Full access (write steps only) drops --sandbox, so writes aren't confined either.
  *  - Older versions printed nothing when stdout is a pipe; that surfaces as a clear error.
  *  - There is no --cwd flag, so the process is started inside the target directory.
  */
@@ -57,8 +58,9 @@ export const agyAdapter: AgentAdapter = {
       "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--print-timeout", `${Math.ceil(timeoutMs / 60_000)}m`,
-      "--sandbox",
     ];
+    const sandboxed = !(opts.mode === "write" && opts.trust === "full");
+    if (sandboxed) args.push("--sandbox");
     if (opts.resumeSessionId) args.push("--conversation", opts.resumeSessionId);
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push("--effort", opts.effort);
@@ -78,7 +80,7 @@ export const agyAdapter: AgentAdapter = {
       args,
       input: `${JSON.stringify({ event: "user", message: { content: opts.prompt } })}\n`,
       cwd: opts.cwd,
-      env: sandboxGitEnv(),
+      env: sandboxed ? sandboxGitEnv() : process.env,
       signal: opts.signal,
       timeoutMs: timeoutMs + 30_000,
       onText: (line) => onEvent({ kind: "status", text: line }),

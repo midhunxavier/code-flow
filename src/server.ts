@@ -364,7 +364,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
     loop,
     approvals: { plan: body.approvals?.plan === true },
     parentRunId: typeof body.parentRunId === "string" && manager.get(body.parentRunId) ? body.parentRunId : undefined,
-    trust: ["safe", "standard", "trusted"].includes(body.trust) ? body.trust : undefined,
+    trust: ["safe", "standard", "trusted", "full"].includes(body.trust) ? body.trust : undefined,
     roleSettings: validateRoleSettings(body.roleSettings),
     agentSettings: (() => {
       try {

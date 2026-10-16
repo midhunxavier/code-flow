@@ -32,9 +32,10 @@ export interface RunOptions {
   jsonSchema?: object;
   /**
    * How much an agent may do in write mode: "safe" = edit files only, "standard" = also run
-   * common build/test commands, "trusted" = any command (and network, where the CLI sandboxes).
+   * common build/test commands, "trusted" = any command (and network, where the CLI sandboxes),
+   * "full" = any command with no sandbox at all.
    */
-  trust?: "safe" | "standard" | "trusted";
+  trust?: "safe" | "standard" | "trusted" | "full";
   /**
    * Adapters whose CLI takes more input while a turn runs (Codex app-server) call this once the
    * turn can be steered, with a function that adds a user message to it (resolving false when

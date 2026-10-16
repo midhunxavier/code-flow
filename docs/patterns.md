@@ -11,6 +11,7 @@
 | **Supervisor → Workers** | supervisor, workers (1+) | Supervisor splits the task into parallel subtasks and assigns workers → workers build on separate branches → branches merge into an integration branch; the supervisor resolves conflicts, reviews and fixes | Larger tasks that split cleanly (backend / frontend / tests) |
 | **Test-first (adversarial tester)** | tester, builder | Tester writes failing tests → builder makes them pass without editing them (code-flow flags it if it does) → tester runs them, adds edge-case tests, and sends failures back | Behavior you can specify with tests. Stops an agent from grading its own homework |
 | **Review council** | reviewers (1+), chair | Reviewers review the PR's or branch's changes independently, read-only → the chair merges the findings without knowing who wrote what, and agreement ranks first | Reviewing a PR before merging. Nothing is changed or posted without you |
+| **Single agent** | agent | One agent works on the task in its own worktree → code-flow commits and runs the check if you set one → you reply, and each reply continues the same session on the same branch | Quick changes, questions and exploring, where a team is more than the task needs. Start a team from its result when you want a second opinion |
 
 Every pattern works with any mix of agents. A good default is to have a **different vendor review or judge** than the one that wrote the code.
 

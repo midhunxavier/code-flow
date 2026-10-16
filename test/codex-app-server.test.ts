@@ -100,6 +100,26 @@ test("sandbox, model, effort and the output schema go to the thread and the turn
   assert.deepEqual([call.turn.effort, call.turn.outputSchema], ["high", schema]);
 });
 
+test("full access: a write turn has no sandbox (both transports); a read turn stays read-only", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codeflow-appserver-record-"));
+  process.env.FAKE_RECORD_DIR = dir;
+  try {
+    assert.ok((await turn("Write it", { mode: "write", trust: "full" })).result.ok);
+    assert.ok((await turn("Look around", { mode: "read", trust: "full" })).result.ok);
+    process.env.CODEFLOW_CODEX_TRANSPORT = "exec";
+    assert.ok((await turn("Write it with exec", { mode: "write", trust: "full" })).result.ok);
+  } finally {
+    delete process.env.FAKE_RECORD_DIR;
+    delete process.env.CODEFLOW_CODEX_TRANSPORT;
+  }
+  const calls = recorded(dir);
+  const call = (prompt: string) => calls.find((c) => c.prompt.includes(prompt))!;
+  assert.equal(call("Write it").thread.sandbox, "danger-full-access");
+  assert.deepEqual(call("Write it").args, ["app-server"], "no network override: there's no sandbox to open");
+  assert.equal(call("Look around").thread.sandbox, "read-only");
+  assert.ok(call("Write it with exec").args.includes('sandbox_mode="danger-full-access"'));
+});
+
 test("a message steered into a running turn reaches it; once the turn is over it can't", async () => {
   let steer: ((text: string) => Promise<boolean>) | undefined;
   const changes: boolean[] = [];

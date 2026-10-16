@@ -164,6 +164,69 @@ test("permission modes and per-role models reach each CLI", async () => {
   }
 });
 
+test("full access: every tool and no sandbox in write steps; read steps stay read-only", async () => {
+  // Each agent builds once (write) and plans or reviews once (read).
+  const teams = [
+    { planner: ["codex"], builder: ["claude"], reviewer: ["agy"] },
+    { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] },
+    { planner: ["codex"], builder: ["agy"], reviewer: ["claude"] },
+  ];
+  const calls: (ReturnType<typeof recorded>[number] & { thread?: { sandbox: string } })[] = [];
+  for (const roles of teams) {
+    const dir = mkdtempSync(join(tmpdir(), "codeflow-record-"));
+    process.env.FAKE_RECORD_DIR = dir;
+    try {
+      const run = await runPattern(roles, { trust: "full", loop: { check: "" } });
+      assert.equal(run.status, "done", run.error);
+      assert.equal(run.trust, "full");
+      assert.match((await manager.events(run.id)).map((e) => (e.type === "log" ? e.text : "")).join("\n"), /Full access: agents can run any command, with no sandbox/);
+    } finally {
+      delete process.env.FAKE_RECORD_DIR;
+    }
+    calls.push(...recorded(dir));
+  }
+  const write = (c: (typeof calls)[number]) => c.prompt.includes("You are the builder");
+  const claudeWrite = calls.find((c) => c.vendor === "claude" && write(c))!;
+  assert.match(claudeWrite.args.join(" "), /--permission-mode bypassPermissions/);
+  assert.ok(!claudeWrite.args.includes("--allowedTools"), "no tool list: every tool is allowed");
+  const claudeRead = calls.find((c) => c.vendor === "claude" && !write(c))!;
+  assert.match(claudeRead.args.join(" "), /--disallowedTools Edit,Write,NotebookEdit/);
+  assert.equal(calls.find((c) => c.vendor === "codex" && write(c))!.thread?.sandbox, "danger-full-access");
+  assert.equal(calls.find((c) => c.vendor === "codex" && !write(c))!.thread?.sandbox, "read-only");
+  assert.ok(!calls.find((c) => c.vendor === "agy" && write(c))!.args.includes("--sandbox"));
+  assert.ok(calls.find((c) => c.vendor === "agy" && !write(c))!.args.includes("--sandbox"), "a read step keeps agy's sandbox");
+});
+
+test("full access is never taken from a repo's config file", async () => {
+  const other = mkdtempSync(join(tmpdir(), "codeflow-ws-full-"));
+  mkdirSync(join(other, ".codeflow"));
+  writeFileSync(join(other, ".codeflow", "config.json"), JSON.stringify({ trust: "full" }));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: other });
+  execFileSync("git", ["add", "."], { cwd: other });
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], { cwd: other });
+  const { config } = await readRepoConfig(other);
+  assert.equal(config.trust, undefined);
+  const run = await manager.start({ pattern: findPattern("solo")!, task: "Config", repo: other, roles: { agent: ["claude"] }, options: {} });
+  assert.equal(run.trust, "standard");
+  manager.cancel(run.id);
+});
+
+test("full access is capped for runs nobody watches", async () => {
+  const run = await manager.start({
+    pattern: findPattern("solo")!,
+    task: "Nightly",
+    repo,
+    roles: { agent: ["claude"] },
+    options: {},
+    trust: "full",
+    trigger: { id: "t1", name: "Nightly", via: "schedule" },
+  });
+  assert.equal(run.trust, "trusted", "automations and sweeps get Trusted at most");
+  manager.cancel(run.id);
+  const { unattendedTrust } = await import("../src/watch.js");
+  assert.equal(unattendedTrust({ trust: "full" }), "standard", "PR-watch fixes get Standard at most");
+});
+
 test("quota windows reported by Claude are kept per vendor", async () => {
   await runPattern(pipelineRoles, { loop: { check: "" } });
   assert.equal(manager.quota.claude?.windows.five_hour?.utilization, 0.42);

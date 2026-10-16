@@ -88,6 +88,7 @@ export const FLOWS: Record<string, string> = {
   supervisor: "Split → Build in parallel → Integrate",
   tdd: "Tests first → Implement → Verify",
   council: "Review independently → Chair merges",
+  solo: "One agent, and you keep talking to it",
 };
 export const STATUS_TEXT: Record<string, string> = {
   running: "Running",

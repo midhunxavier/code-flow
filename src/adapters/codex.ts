@@ -12,7 +12,8 @@ import { captureOutput, commandExists, describeFailure, runJsonlProcess, stringi
  * process per turn (CODEFLOW_CODEX_TRANSPORT picks one explicitly). Both report the same
  * thread/turn/item events, handled once below.
  * Uses whatever login the local `codex` binary already has (ChatGPT plan or API key).
- * Codex's own sandbox enforces the access mode: read-only or workspace-write.
+ * Codex's own sandbox enforces the access mode: read-only or workspace-write (or no sandbox
+ * at all, danger-full-access, when the run has full access).
  */
 
 /** Set once "auto" found that this Codex can't serve app-server turns: later turns use exec. */
@@ -47,8 +48,8 @@ export const codexAdapter: AgentAdapter = {
   },
 
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
-    const sandbox = opts.mode === "write" ? "workspace-write" : "read-only";
-    // Codex always sandboxes writes to the worktree; "trusted" additionally allows network access.
+    const sandbox = opts.mode === "read" ? "read-only" : opts.trust === "full" ? "danger-full-access" : "workspace-write";
+    // Codex sandboxes writes to the worktree unless the run has full access; "trusted" adds network access.
     const network = opts.mode === "write" && opts.trust === "trusted" ? ["-c", "sandbox_workspace_write.network_access=true"] : [];
     const transport = codexTransport();
 
