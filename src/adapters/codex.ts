@@ -2,9 +2,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { codexTransport } from "../config.js";
-import type { AgentAdapter, AgentEvent, ModelCatalog, ModelInfo, RunOptions, RunResult } from "./types.js";
+import { logWarn } from "../log.js";
+import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, ModelInfo, RunOptions, RunResult } from "./types.js";
 import { runAppServerTurn } from "./codex-app-server.js";
-import { captureOutput, commandExists, describeFailure, runJsonlProcess, stringify, truncate, type ProcessOutcome } from "./process.js";
+import { classifyError, resetFromText } from "./errors.js";
+import { captureOutput, commandExists, describeFailure, processErrorKind, startJsonlProcess, stderrTail, stringify, truncate, type ProcessOutcome } from "./process.js";
 
 /**
  * Codex, through `codex app-server` (JSON-RPC over stdio) when the installed Codex has it, so a
@@ -15,8 +17,13 @@ import { captureOutput, commandExists, describeFailure, runJsonlProcess, stringi
  * Codex's own sandbox enforces the access mode: read-only or workspace-write.
  */
 
-/** Set once "auto" found that this Codex can't serve app-server turns: later turns use exec. */
-let appServerMissing: string | undefined;
+/**
+ * Set when "auto" found that this Codex can't serve app-server turns (no such subcommand, or a
+ * protocol this client doesn't speak): turns use exec until it's checked again, RECHECK_MS later,
+ * so upgrading Codex doesn't need a restart. A slow or failed start doesn't count.
+ */
+export const appServerCheck: { missing?: { reason: string; at: number } } = {};
+const RECHECK_MS = 10 * 60_000;
 
 export const codexAdapter: AgentAdapter = {
   id: "codex",
@@ -52,16 +59,23 @@ export const codexAdapter: AgentAdapter = {
     const network = opts.mode === "write" && opts.trust === "trusted" ? ["-c", "sandbox_workspace_write.network_access=true"] : [];
     const transport = codexTransport();
 
-    let sessionId = opts.resumeSessionId;
+    // Only a thread Codex confirms in this turn: a resume that failed must not hand back its id.
+    let sessionId: string | undefined;
     let finalText = "";
     let turnError: string | undefined;
+    /** The kind app-server gave a failure (from Codex's codexErrorInfo), when it gave one. */
+    let turnErrorKind: ErrorKind | undefined;
     /** An `error` event isn't fatal by itself (Codex reports retries this way); it explains a failure. */
     let lastError: string | undefined;
+    let lastErrorKind: ErrorKind | undefined;
     let completed = false;
+    /** Called when the turn's outcome is known, so a CLI that then hangs is stopped (exec only). */
+    let resultSeen = () => {};
 
     const handle = (msg: any) => {
       switch (msg.type) {
         case "thread.started":
+          if (!msg.thread_id) break;
           sessionId = msg.thread_id;
           onEvent({ kind: "session", sessionId: msg.thread_id });
           break;
@@ -74,6 +88,7 @@ export const codexAdapter: AgentAdapter = {
 
         case "turn.completed": {
           completed = true;
+          resultSeen();
           const cached = msg.usage?.cached_input_tokens ?? 0;
           onEvent({
             kind: "usage",
@@ -86,11 +101,14 @@ export const codexAdapter: AgentAdapter = {
         }
 
         case "turn.failed":
+          resultSeen();
           turnError = msg.error?.message ?? lastError ?? "Codex turn failed";
+          turnErrorKind = msg.error?.kind ?? (msg.error?.message ? undefined : lastErrorKind);
           break;
 
         case "error":
           lastError = msg.message ?? stringify(msg);
+          lastErrorKind = msg.kind;
           onEvent({ kind: "status", text: `Codex: ${lastError}` });
           break;
       }
@@ -99,7 +117,8 @@ export const codexAdapter: AgentAdapter = {
 
     let outcome: ProcessOutcome | undefined;
     let schemaFile: string | undefined;
-    if (transport === "app-server" || (transport === "auto" && !appServerMissing)) {
+    const missing = appServerCheck.missing && Date.now() - appServerCheck.missing.at < RECHECK_MS ? appServerCheck.missing : undefined;
+    if (transport === "app-server" || (transport === "auto" && !missing)) {
       const served = await runAppServerTurn({
         prompt: opts.prompt,
         cwd: opts.cwd,
@@ -111,17 +130,22 @@ export const codexAdapter: AgentAdapter = {
         config: network,
         signal: opts.signal,
         timeoutMs: opts.timeoutMs,
+        idleTimeoutMs: opts.idleTimeoutMs,
         onMessage: handle,
         onText,
         onSteerable: opts.onSteerable,
       });
-      if (!("unavailable" in served)) outcome = served;
-      else if (transport === "app-server") {
+      if (!("unavailable" in served)) {
+        outcome = served;
+        appServerCheck.missing = undefined;
+      } else if (transport === "app-server") {
         const error = `codex app-server isn't available (${served.unavailable}); unset CODEFLOW_CODEX_TRANSPORT to fall back to codex exec`;
         onEvent({ kind: "error", message: error });
-        return { ok: false, finalText, sessionId, error };
+        return { ok: false, finalText, error, errorKind: "cli_incompatible" };
       } else {
-        appServerMissing = served.unavailable;
+        if (!appServerCheck.missing) logWarn("codex app-server isn't available; using codex exec", { reason: served.unavailable });
+        appServerCheck.missing = { reason: served.unavailable, at: Date.now() };
+        sessionId = undefined;
         onEvent({ kind: "status", text: `codex app-server isn't available (${served.unavailable.split("\n")[0]}); using codex exec — your messages wait for the next turn` });
       }
     }
@@ -137,23 +161,38 @@ export const codexAdapter: AgentAdapter = {
       const args = opts.resumeSessionId
         ? ["exec", "resume", ...common, opts.resumeSessionId, "-"]
         : ["exec", ...common, "-C", opts.cwd, "-"];
-      outcome = await runJsonlProcess({
+      const proc = startJsonlProcess({
         command: "codex",
         args,
         input: opts.prompt,
         cwd: opts.cwd,
         signal: opts.signal,
         timeoutMs: opts.timeoutMs,
+        idleTimeoutMs: opts.idleTimeoutMs,
         onText,
         onJson: handle,
       });
+      resultSeen = () => proc.resultSeen();
+      outcome = await proc.outcome;
     }
 
     if (schemaFile) await rm(dirname(schemaFile), { recursive: true, force: true }).catch(() => undefined);
-    if (!completed || turnError || outcome.exitCode !== 0) {
-      const error = turnError ?? (outcome.aborted || outcome.timedOut ? undefined : lastError) ?? describeFailure("codex", outcome);
+    // After turn.completed, how the process ended (a hang on shutdown, a non-zero exit) doesn't matter.
+    if (!completed || turnError || outcome.aborted) {
+      const stopped = processErrorKind(outcome);
+      const error = turnError ?? (stopped ? undefined : lastError) ?? describeFailure("codex", outcome);
+      // stderr says why a run that never got going failed (a resume of a thread that's gone, an unknown flag).
+      const errorKind: ErrorKind = stopped ?? (turnError ? turnErrorKind : lastErrorKind) ?? classifyError(turnError ? error : `${error}\n${stderrTail(outcome)}`);
+      const resetsAt = errorKind === "usage_limit" ? resetFromText(error) : undefined;
       onEvent({ kind: "error", message: error });
-      return { ok: false, finalText, sessionId, error };
+      return {
+        ok: false,
+        finalText,
+        sessionId: errorKind === "session_not_found" ? undefined : sessionId,
+        error,
+        errorKind,
+        ...(resetsAt && { resetsAt }),
+      };
     }
     let structured: unknown;
     if (opts.jsonSchema) {

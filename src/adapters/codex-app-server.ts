@@ -1,4 +1,6 @@
-import { startJsonlProcess, stringify, type ProcessOutcome } from "./process.js";
+import { classifyError } from "./errors.js";
+import { startJsonlProcess, stderrTail, stringify, truncate, type ProcessOutcome } from "./process.js";
+import type { ErrorKind } from "./types.js";
 
 /**
  * One Codex turn through `codex app-server`: JSON-RPC over stdio (one JSON object per line, no
@@ -22,7 +24,14 @@ export interface AppServerTurn {
   config: string[];
   signal?: AbortSignal;
   timeoutMs?: number;
-  /** Events in `codex exec --json` form. */
+  idleTimeoutMs?: number;
+  /** How long the server may take to answer `initialize`, and any other request. */
+  initTimeoutMs?: number;
+  requestTimeoutMs?: number;
+  /**
+   * Events in `codex exec --json` form. A `turn.failed` or `error` may carry `kind`, the
+   * ErrorKind Codex's own error info gives it.
+   */
   onMessage: (msg: any) => void;
   onText: (line: string) => void;
   onSteerable?: (steer: ((text: string) => Promise<boolean>) | undefined) => void;
@@ -47,6 +56,10 @@ const QUIET = [
   "turn/diff/updated",
 ];
 const INIT_TIMEOUT_MS = 20_000;
+/** Every other request (thread/start, thread/resume, turn/start, turn/steer): no answer is a failure. */
+const REQUEST_TIMEOUT_MS = 2 * 60_000;
+/** On cancel: how long an interrupted turn gets to end (and Codex to record it) before the server is stopped. */
+const INTERRUPT_MS = 3_000;
 /** After the turn: how long the server gets to close the thread and exit before it's stopped. */
 const SHUTDOWN_MS = 5_000;
 
@@ -65,10 +78,28 @@ class RpcError extends Error {
   }
 }
 
+/** The server didn't answer a request in time. */
+class RpcTimeout extends Error {
+  constructor(method: string, ms: number) {
+    super(`${method} got no answer within ${seconds(ms)}`);
+  }
+}
+
+/** A failure whose kind is already known (it doesn't need to be read from its text). */
+class TurnError extends Error {
+  constructor(
+    message: string,
+    readonly kind: ErrorKind,
+  ) {
+    super(message);
+  }
+}
+
 export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutcome | Unavailable> {
   let threadId: string | undefined;
   let turnId: string | undefined;
   let turnStarted = false;
+  let turnEnded = false;
   let completed: ((turn: any) => void) | undefined;
   const turnDone = new Promise<any>((resolve) => (completed = resolve));
   /** Thread token totals before this turn's first model call, and the latest. */
@@ -79,12 +110,16 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
   const pending = new Map<number, { resolve: (result: any) => void; reject: (err: Error) => void }>();
   let exit: ProcessOutcome | undefined;
 
+  // Cancelling interrupts the turn first (so Codex records it, and a resume picks up from there),
+  // then stops the server: the process gets its own signal, aborted only after that.
+  const stop = new AbortController();
   const proc = startJsonlProcess({
     command: "codex",
     args: ["app-server", ...turn.config],
     cwd: turn.cwd,
-    signal: turn.signal,
+    signal: stop.signal,
     timeoutMs: turn.timeoutMs,
+    idleTimeoutMs: turn.idleTimeoutMs,
     interactive: true,
     onText: turn.onText,
     onJson: (msg) => {
@@ -107,13 +142,28 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     return outcome;
   });
 
-  const request = (method: string, params: unknown): Promise<any> =>
+  /** One JSON-RPC request; no answer within `timeoutMs` rejects it (a late answer is ignored). */
+  const request = (method: string, params: unknown, timeoutMs = turn.requestTimeoutMs ?? REQUEST_TIMEOUT_MS): Promise<any> =>
     new Promise((resolve, reject) => {
       if (exit) return reject(new Error("codex app-server exited"));
       const id = nextId++;
-      pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new RpcTimeout(method, timeoutMs));
+      }, timeoutMs);
+      pending.set(id, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
       if (!proc.send({ id, method, params })) {
         pending.delete(id);
+        clearTimeout(timer);
         reject(new Error("codex app-server isn't accepting input"));
       }
     });
@@ -151,30 +201,51 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
       case "error":
         // Reported before Codex retries (willRetry) and before a turn fails; the failure itself
         // arrives with turn/completed.
-        turn.onMessage({ type: "error", message: errorText(params.error) });
+        turn.onMessage({ type: "error", message: errorText(params.error), kind: errorKind(params.error) });
         break;
 
       case "turn/completed":
-        if (!turnId || !params.turn?.id || params.turn.id === turnId) completed?.(params.turn ?? {});
+        if (!turnId || !params.turn?.id || params.turn.id === turnId) {
+          turnEnded = true;
+          proc.resultSeen(); // the server gets a grace period to exit, not the whole step timeout
+          completed?.(params.turn ?? {});
+        }
         break;
     }
   }
 
-  /** Runs are headless (approvals are off), so anything that asks for a person gets "no". */
+  /**
+   * Runs are headless (approvals are off), so anything that asks for a person gets "no", and the
+   * run shows what was asked: a request code-flow doesn't know is answered too, never left hanging.
+   */
   function answerServerRequest(msg: any) {
+    const method = String(msg.method);
     const reply = (result: unknown) => proc.send({ id: msg.id, result });
-    switch (msg.method) {
+    const declined = "declined — code-flow runs Codex without approval prompts";
+    switch (method) {
       case "item/commandExecution/requestApproval":
       case "item/fileChange/requestApproval":
-        turn.onText(`Codex asked for approval (${msg.method.split("/")[1]}); declined — code-flow runs Codex without approval prompts`);
+        turn.onText(`Codex asked for approval (${method.split("/")[1]}); ${declined}`);
         reply({ decision: "decline" });
         break;
       case "execCommandApproval":
       case "applyPatchApproval":
+        turn.onText(`Codex asked for approval (${method}); ${declined}`);
         reply({ decision: { denied: { rejection: "code-flow runs Codex without approval prompts" } } });
         break;
-      default:
-        proc.send({ id: msg.id, error: { code: -32601, message: `code-flow doesn't handle ${msg.method}` } });
+      default: {
+        const detail = requestDetail(msg.params);
+        if (/approval|permission/i.test(method)) {
+          turn.onText(`Codex asked for ${method}${detail}; ${declined}`);
+          reply({ decision: "decline" });
+        } else if (/elicitation/i.test(method)) {
+          turn.onText(`Codex asked for input (${method})${detail}; declined — nobody can answer in a headless run`);
+          reply({ action: "decline", content: null });
+        } else {
+          turn.onText(`Codex asked code-flow for ${method}${detail}, which a headless run can't answer; told Codex it isn't supported`);
+          proc.send({ id: msg.id, error: { code: -32601, message: `code-flow doesn't handle ${method} (it runs Codex headless)` } });
+        }
+      }
     }
   }
 
@@ -188,19 +259,45 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     }
   };
 
+  let cancelling = false;
+  const cancel = () => {
+    if (cancelling) return;
+    cancelling = true;
+    void (async () => {
+      if (threadId && turnId && turnStarted && !turnEnded && !exit) {
+        request("turn/interrupt", { threadId, turnId }, INTERRUPT_MS).catch(() => undefined);
+        await Promise.race([turnDone, exited, delay(INTERRUPT_MS)]);
+      }
+      stop.abort();
+    })();
+  };
+  turn.signal?.addEventListener("abort", cancel, { once: true });
+  if (turn.signal?.aborted) cancel();
+
   let steerable = false;
   try {
     try {
-      await withTimeout(
-        request("initialize", { clientInfo: CLIENT_INFO, capabilities: { experimentalApi: false, requestAttestation: false, optOutNotificationMethods: QUIET } }),
-        INIT_TIMEOUT_MS,
+      await request(
+        "initialize",
+        { clientInfo: CLIENT_INFO, capabilities: { experimentalApi: false, requestAttestation: false, optOutNotificationMethods: QUIET } },
+        turn.initTimeoutMs ?? INIT_TIMEOUT_MS,
       );
     } catch (err) {
       proc.kill();
       const outcome = await exited;
-      const tail = outcome.stderr.trim().split("\n").slice(-3).join("\n");
-      if (outcome.aborted || outcome.timedOut) return outcome;
-      return { unavailable: tail || (err as Error).message };
+      if (outcome.aborted || outcome.timedOut || outcome.stalled) return outcome;
+      const tail = stderrTail(outcome, 3);
+      // Only a Codex that can't serve this falls back to exec: no app-server subcommand, or an
+      // initialize it rejects. A slow or failed start (signed out, a crash) fails this turn only.
+      if (noAppServer(tail) || err instanceof RpcError) return { unavailable: tail || (err as Error).message };
+      const message =
+        err instanceof RpcTimeout
+          ? `codex app-server didn't answer within ${seconds(turn.initTimeoutMs ?? INIT_TIMEOUT_MS)} of starting`
+          : `codex app-server stopped before it was ready${tail ? `: ${tail}` : ""}`;
+      // A start that failed for no stated reason is worth another try; a missing binary isn't.
+      const kind = err instanceof RpcTimeout ? "transient" : classifyError(tail);
+      turn.onMessage({ type: "turn.failed", error: { message, kind: kind === "other" && !/ENOENT|EACCES/.test(tail) ? "transient" : kind } });
+      return outcome;
     }
     proc.send({ method: "initialized" });
 
@@ -215,6 +312,10 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
         proc.kill();
         await exited;
         return { unavailable: (err as Error).message };
+      }
+      // The thread is gone (Codex: "no rollout found for thread id …"): resuming it again won't help.
+      if (turn.resumeThreadId && err instanceof RpcError && (err.code === -32600 || /no rollout found|not found/i.test(err.message))) {
+        throw new TurnError(err.message, "session_not_found");
       }
       throw err;
     }
@@ -233,7 +334,8 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     steerable = true;
 
     const result = await Promise.race([turnDone, exited.then(() => undefined)]);
-    if (!result) return exit!; // exited, was cancelled or timed out mid-turn
+    // Exited, timed out or stalled mid-turn, or cancelled (the turn interrupted first): the outcome says which.
+    if (!result || turn.signal?.aborted) return await exited;
     if (steerable) turn.onSteerable?.(undefined);
     steerable = false;
 
@@ -246,12 +348,15 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     } else {
       turn.onMessage({
         type: "turn.failed",
-        error: { message: result.error ? errorText(result.error) : result.status === "interrupted" ? "Codex turn was interrupted" : undefined },
+        error: {
+          message: result.error ? errorText(result.error) : result.status === "interrupted" ? "Codex turn was interrupted" : undefined,
+          kind: errorKind(result.error),
+        },
       });
     }
 
     // Close the thread so its history is written out (resume reads it), then let the server exit.
-    await withTimeout(request("thread/unsubscribe", { threadId }), SHUTDOWN_MS).catch(() => undefined);
+    await request("thread/unsubscribe", { threadId }, SHUTDOWN_MS).catch(() => undefined);
     proc.endInput();
     const timer = setTimeout(() => proc.kill(), SHUTDOWN_MS);
     const outcome = await exited;
@@ -259,11 +364,16 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     // The turn finished; how the server went away afterwards doesn't change that.
     return { ...outcome, exitCode: 0 };
   } catch (err) {
-    if (!exit) turn.onMessage({ type: "turn.failed", error: { message: `Codex: ${(err as Error).message}` } });
+    if (!exit) {
+      // No answer is worth another try; a thread that's gone isn't.
+      const kind = err instanceof TurnError ? err.kind : err instanceof RpcTimeout ? "transient" : undefined;
+      turn.onMessage({ type: "turn.failed", error: { message: `Codex: ${(err as Error).message}`, kind } });
+    }
     proc.kill();
     return await exited;
   } finally {
     if (steerable) turn.onSteerable?.(undefined);
+    turn.signal?.removeEventListener("abort", cancel);
   }
 }
 
@@ -306,8 +416,7 @@ function textInput(text: string) {
 /** A turn error, worded so code-flow's usage-limit and retry checks recognise its kind. */
 function errorText(error: any): string {
   const message = [error?.message || "Codex turn failed", error?.additionalDetails].filter(Boolean).join(": ");
-  const info = error?.codexErrorInfo;
-  const kind = typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : undefined;
+  const kind = errorInfoKind(error);
   const hint =
     kind === "usageLimitExceeded" ? "usage limit" :
     kind === "serverOverloaded" ? "overloaded" :
@@ -317,9 +426,54 @@ function errorText(error: any): string {
   return hint && !message.toLowerCase().includes(hint) ? `${message} (${hint})` : message;
 }
 
-/** The server doesn't speak this protocol version (an older or newer Codex). */
+/** The variant of Codex's `codexErrorInfo` (a string, or an object keyed by the variant). */
+function errorInfoKind(error: any): string | undefined {
+  const info = error?.codexErrorInfo;
+  return typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : undefined;
+}
+
+/** The ErrorKind Codex's own error info gives a failure; undefined when it names none (the text decides). */
+function errorKind(error: any): ErrorKind | undefined {
+  const kind = errorInfoKind(error);
+  const status = kind && typeof error.codexErrorInfo === "object" ? error.codexErrorInfo[kind]?.httpStatusCode : undefined;
+  if (status === 401) return "auth";
+  if (status === 429) return "rate_limit";
+  switch (kind) {
+    case "usageLimitExceeded":
+      return "usage_limit";
+    case "unauthorized":
+      return "auth";
+    case "rateLimitExceeded":
+      return "rate_limit";
+    case "serverOverloaded":
+    case "internalServerError":
+    case "httpConnectionFailed":
+    case "responseStreamConnectionFailed":
+    case "responseStreamDisconnected":
+    case "responseTooManyFailedAttempts":
+      return "transient";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The server doesn't speak this protocol version (an older or newer Codex): it has no such
+ * method. A parameter value it doesn't know ("unknown variant `xhigh`") isn't that.
+ */
 function unsupported(err: unknown): boolean {
-  return err instanceof RpcError && (err.code === -32601 || /unknown variant|method not found|unknown method/i.test(err.message));
+  return err instanceof RpcError && (err.code === -32601 || /method not found|unknown method|unknown variant `[\w-]+\/[\w/-]+`/i.test(err.message));
+}
+
+/** stderr of a Codex whose CLI has no app-server subcommand (or doesn't take its arguments). */
+function noAppServer(stderr: string): boolean {
+  return /unrecognized subcommand|unexpected argument|wasn't expected|(?:unknown|invalid|no such) (?:sub)?command/i.test(stderr);
+}
+
+/** What a server request asked, briefly, for the status line. */
+function requestDetail(params: any): string {
+  const text = [params?.reason, params?.message, params?.command, params?.prompt].find((v) => typeof v === "string" && v.trim());
+  return text ? `: "${truncate(text.trim().replace(/\s+/g, " "), 160)}"` : "";
 }
 
 function tokens(t: any): Tokens {
@@ -336,18 +490,10 @@ function zero(): Tokens {
   return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`no answer within ${ms / 1000}s`)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
+function seconds(ms: number): string {
+  return ms < 1_000 ? `${ms} ms` : `${Math.round(ms / 1000)}s`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms).unref());
 }
