@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { killGroup, trackGroup, untrackGroup } from "./adapters/process.js";
+import { timerMs } from "./config.js";
 import { childEnv } from "./env.js";
 
 /**
@@ -169,7 +170,7 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
     const timer = setTimeout(() => {
       timedOut = true;
       stop();
-    }, opts.timeoutMs);
+    }, timerMs(opts.timeoutMs, 1));
     const onAbort = () => stop();
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 
