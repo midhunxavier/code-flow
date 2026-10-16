@@ -330,8 +330,8 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   const { phonePath } = await api("/api/remote", { control: true });
   assert.notEqual(phonePath, remote.path);
   const signIn = await fetch(`${PHONE}${phonePath}`, { redirect: "manual" });
-  assert.equal(signIn.status, 302);
-  assert.equal(signIn.headers.get("location"), "/");
+  assert.equal(signIn.status, 200);
+  assert.match(await signIn.text(), /location\.replace\("\/"\)/);
   const cookie = signIn.headers.get("set-cookie")!.split(";")[0]!;
   assert.match(cookie, new RegExp(`^codeflow_phone_${REMOTE_PORT}=`));
   assert.equal((await fetch(`${PHONE}/api/runs`, { headers: { cookie } })).status, 200, "the phone's cookie opens the API");
@@ -349,6 +349,18 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   assert.equal(new URL(tab.url()).pathname, "/");
   await tab.getByRole("button", { name: "Show runs" }).click();
   await tab.locator(".rail.open").waitFor();
+
+  // A QR scanner hands the link over from another app, which the browser counts as cross-site:
+  // a SameSite=Strict cookie set on a redirect wouldn't go along, and the phone would land on
+  // "Scan the QR code again". Played here by a link on another site, in a phone not yet signed in.
+  const scanner = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const scanned = await scanner.newPage();
+  await scanned.route("http://qr-scanner.example/", (route) => route.fulfill({ contentType: "text/html", body: `<a href="${PHONE}${phonePath}">Open link</a>` }));
+  await scanned.goto("http://qr-scanner.example/");
+  await scanned.getByRole("link", { name: "Open link" }).click();
+  await scanned.getByRole("heading", { name: "What should the team build?" }).waitFor();
+  assert.equal(new URL(scanned.url()).pathname, "/");
+  await scanner.close();
 
   // A new link signs phones out.
   await api("/api/remote", { rotate: true });

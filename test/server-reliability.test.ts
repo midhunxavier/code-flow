@@ -247,7 +247,8 @@ test("phone: the read-only link never signs in, the sign-in link has its own sec
   assert.doesNotMatch(await readOnly.text(), /<button|<form/);
 
   const signIn = await fetch(`${PHONE}${info.phonePath}`, { redirect: "manual" });
-  assert.equal(signIn.status, 302);
+  assert.equal(signIn.status, 200, "a page that moves on by itself, not a redirect (see signingInPage)");
+  assert.match(await signIn.text(), /location\.replace\("\/"\)/);
   const setCookie = signIn.headers.get("set-cookie")!;
   assert.match(setCookie, /Max-Age=2592000/);
   const cookie = setCookie.split(";")[0]!;
