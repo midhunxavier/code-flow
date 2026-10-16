@@ -2,9 +2,9 @@ import { execFile, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { uptime } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
-import { CODEFLOW_HOME } from "../config.js";
+import { CODEFLOW_HOME, timerMs } from "../config.js";
 import { childEnv } from "../env.js";
+import type { ErrorKind } from "./types.js";
 
 export interface JsonlProcessOptions {
   command: string;
@@ -12,6 +12,10 @@ export interface JsonlProcessOptions {
   cwd: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Stop the CLI (`stalled`) when it prints nothing, on stdout or stderr, for this long. */
+  idleTimeoutMs?: number;
+  /** After `resultSeen()`: how long the CLI gets to exit before it's stopped. Default 10 s. */
+  resultGraceMs?: number;
   env?: NodeJS.ProcessEnv;
   /** Written to stdin, which is then closed. Prompts go here, not argv (Linux caps one arg at 128 KB). */
   input?: string;
@@ -28,11 +32,25 @@ export interface ProcessOutcome {
   stderr: string;
   aborted: boolean;
   timedOut: boolean;
+  /** Stopped for printing nothing for `idleMs`. */
+  stalled: boolean;
+  idleMs?: number;
+  /** The adapter saw the CLI's final result (`resultSeen`); how the process ended after that doesn't matter. */
+  resultSeen: boolean;
+  /** It was still running `resultGraceMs` after its result, and was stopped. */
+  killedAfterResult: boolean;
 }
 
 const DEFAULT_TIMEOUT = 30 * 60_000;
 /** After the CLI exits, how long its output pipes may stay open (held by leftover children). */
 const DRAIN_MS = 3_000;
+/**
+ * After its final result, how long a CLI gets to exit. A hook or MCP server that hangs on
+ * shutdown mustn't turn a finished turn into a timeout.
+ */
+const RESULT_GRACE_MS = 10_000;
+/** A longer stdout line is dropped, not buffered: one runaway tool output can't exhaust memory. */
+export const MAX_LINE_BYTES = 16 * 1024 * 1024;
 
 interface GroupRecord {
   pid: number;
@@ -167,6 +185,11 @@ export interface JsonlProcess {
   endInput(): void;
   /** Stop the CLI and everything it started. */
   kill(): void;
+  /**
+   * The CLI reported its final result: the timeout and stall timers stop, and if it hasn't
+   * exited within `resultGraceMs`, it's stopped and the outcome resolves anyway.
+   */
+  resultSeen(): void;
   readonly outcome: Promise<ProcessOutcome>;
 }
 
@@ -193,10 +216,15 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
   child.stdin?.on("error", () => {}); // the CLI may exit before reading everything
   if (opts.input !== undefined && !opts.interactive) child.stdin?.end(opts.input);
 
+  let markResult = () => {};
+
   const outcome = new Promise<ProcessOutcome>((resolve) => {
     let stderr = "";
     let aborted = false;
     let timedOut = false;
+    let stalled = false;
+    let resultSeen = false;
+    let killedAfterResult = false;
     let settled = false;
 
     const kill = () => killGroup(child.pid);
@@ -211,11 +239,41 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
     const timer = setTimeout(() => {
       timedOut = true;
       kill();
-    }, opts.timeoutMs ?? DEFAULT_TIMEOUT);
+    }, timerMs(validMs(opts.timeoutMs) ?? DEFAULT_TIMEOUT));
     timer.unref();
 
-    const lines = createInterface({ input: child.stdout! });
-    lines.on("line", (line) => {
+    // Any output at all, a partial line or stderr included, is a sign of life.
+    const idleMs = validMs(opts.idleTimeoutMs);
+    let idle: NodeJS.Timeout | undefined;
+    const alive = () => {
+      if (idleMs === undefined || resultSeen || settled) return;
+      clearTimeout(idle);
+      idle = setTimeout(() => {
+        stalled = true;
+        kill();
+      }, timerMs(idleMs));
+      idle.unref();
+    };
+    alive();
+
+    let grace: NodeJS.Timeout | undefined;
+    markResult = () => {
+      if (resultSeen || settled) return;
+      resultSeen = true;
+      clearTimeout(timer);
+      clearTimeout(idle);
+      grace = setTimeout(() => {
+        // Still running after its result: stop it, and don't wait for it to go.
+        killedAfterResult = true;
+        killGroup(child.pid, 1_000);
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish(null);
+      }, timerMs(validMs(opts.resultGraceMs) ?? RESULT_GRACE_MS));
+      grace.unref();
+    };
+
+    const handleLine = (line: string) => {
       const trimmed = line.trim();
       if (!trimmed) return;
       let parsed: unknown;
@@ -230,20 +288,36 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
       } catch (err) {
         opts.onText?.(`[adapter error] ${(err as Error).message}`);
       }
+    };
+    const lines = lineSplitter(MAX_LINE_BYTES, handleLine, (bytes) =>
+      opts.onText?.(`[code-flow skipped a ${Math.round(bytes / 1024 / 1024)} MB line of ${opts.command} output: lines over ${MAX_LINE_BYTES / 1024 / 1024} MB aren't read]`),
+    );
+    child.stdout!.on("data", (chunk: Buffer) => {
+      alive();
+      if (!settled) lines.push(chunk);
+    });
+    child.stdout!.on("end", () => {
+      if (!settled) lines.end();
     });
 
-    child.stderr!.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
+    // Decoded as a stream, so a UTF-8 character split across two chunks isn't garbled.
+    child.stderr!.setEncoding("utf8");
+    child.stderr!.on("data", (chunk: string) => {
+      alive();
+      stderr += chunk;
       if (stderr.length > 64_000) stderr = stderr.slice(-64_000);
     });
 
     const finish = (exitCode: number | null) => {
       if (settled) return;
+      lines.end();
       settled = true;
       clearTimeout(timer);
+      clearTimeout(idle);
+      clearTimeout(grace);
       untrackGroup(child.pid);
       opts.signal?.removeEventListener("abort", onAbort);
-      resolve({ exitCode, stderr, aborted, timedOut });
+      resolve({ exitCode, stderr, aborted, timedOut, stalled, idleMs: stalled ? idleMs : undefined, resultSeen, killedAfterResult });
     };
 
     child.on("error", (err) => {
@@ -272,7 +346,60 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
     },
     endInput: () => child.stdin?.end(),
     kill: () => killGroup(child.pid),
+    resultSeen: () => markResult(),
     outcome,
+  };
+}
+
+/** A positive, finite number of milliseconds, else undefined (a NaN delay would fire at once). */
+function validMs(ms: number | undefined): number | undefined {
+  return typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? ms : undefined;
+}
+
+/**
+ * Splits a byte stream into lines at "\n" (a byte that never occurs inside a UTF-8 character),
+ * holding at most `maxBytes` of one line: a longer line is dropped and reported, never buffered.
+ */
+export function lineSplitter(maxBytes: number, onLine: (line: string) => void, onDropped: (bytes: number) => void) {
+  let parts: Buffer[] = [];
+  let size = 0;
+  /** Bytes of the current line thrown away so far; 0 while it still fits. */
+  let dropped = 0;
+  let ended = false;
+  const emit = () => {
+    if (dropped) onDropped(dropped);
+    else if (size) onLine(Buffer.concat(parts, size).toString("utf8"));
+    parts = [];
+    size = 0;
+    dropped = 0;
+  };
+  return {
+    push(chunk: Buffer) {
+      if (ended) return;
+      let start = 0;
+      for (;;) {
+        const nl = chunk.indexOf(10, start);
+        const piece = chunk.subarray(start, nl === -1 ? chunk.length : nl);
+        if (dropped) dropped += piece.length;
+        else if (size + piece.length > maxBytes) {
+          dropped = size + piece.length;
+          parts = [];
+          size = 0;
+        } else if (piece.length) {
+          parts.push(piece);
+          size += piece.length;
+        }
+        if (nl === -1) return;
+        emit();
+        start = nl + 1;
+      }
+    },
+    /** The stream ended: a last line without a newline still counts. */
+    end() {
+      if (ended) return;
+      ended = true;
+      emit();
+    },
   };
 }
 
@@ -297,8 +424,26 @@ export async function commandExists(binary: string): Promise<boolean> {
 export function describeFailure(name: string, outcome: ProcessOutcome): string {
   if (outcome.aborted) return `${name} was cancelled`;
   if (outcome.timedOut) return `${name} timed out`;
-  const tail = outcome.stderr.trim().split("\n").slice(-5).join("\n");
+  if (outcome.stalled) return `${name} printed nothing for ${duration(outcome.idleMs ?? 0)} and was stopped (stalled)`;
+  const tail = stderrTail(outcome);
   return `${name} exited with code ${outcome.exitCode}${tail ? `: ${tail}` : ""}`;
+}
+
+/** What ended the process when code-flow ended it: that says more than anything it printed. */
+export function processErrorKind(outcome: ProcessOutcome): ErrorKind | undefined {
+  if (outcome.aborted) return "cancelled";
+  if (outcome.timedOut) return "timeout";
+  if (outcome.stalled) return "stalled";
+  return undefined;
+}
+
+/** The last `lines` lines of what the CLI wrote to stderr. */
+export function stderrTail(outcome: ProcessOutcome, lines = 5): string {
+  return outcome.stderr.trim().split("\n").slice(-lines).join("\n");
+}
+
+function duration(ms: number): string {
+  return ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.max(1, Math.round(ms / 1000))} s`;
 }
 
 export function truncate(text: string, max = 4_000): string {
