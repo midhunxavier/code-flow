@@ -46,29 +46,29 @@ export const racePattern: Pattern = {
     const judges = ctx.agents("judge");
     if (!judges.length) throw new Error("Pick at least one judge");
 
-    const entries = await Promise.all(
-      contestants.map(async (agent, i) => {
-        const label = LETTERS[i]!;
-        // Worktree and branch names are neutral so the judge sees no vendor names.
-        const wt = await ctx.worktree(`candidate-${label.toLowerCase()}`);
-        const result = await ctx.ask({
-          title: `Candidate ${label}`,
-          role: "contestants",
-          agent,
-          mode: "write",
-          cwd: wt,
-          allowFailure: true,
-          prompt:
-            preamble("contestant", agent, `${WRITE} Other agents are solving the same task independently; the best solution is kept.`) +
-            section("Task", ctx.task) +
-            section("Deliverable", "Implement the task completely, run the relevant tests, then summarize your approach and test results."),
-        });
-        await ctx.commit(wt, `candidate ${label}`);
-        const check = result.ok ? await ctx.check(wt, `Check candidate ${label}`) : null;
-        const tests = result.ok ? (await ctx.testChanges(wt)).filter((i) => i.severity === "high") : [];
-        return { label, agent, wt, result, check, tests, diff: result.ok ? await ctx.diff(wt) : "(attempt failed)" };
-      }),
-    );
+    // A contestant's failed turn is part of the race; anything else failing (its worktree, a
+    // commit) stops the other contestants too.
+    const entries = await ctx.parallel(contestants, async (agent, i) => {
+      const label = LETTERS[i]!;
+      // Worktree and branch names are neutral so the judge sees no vendor names.
+      const wt = await ctx.worktree(`candidate-${label.toLowerCase()}`);
+      const result = await ctx.ask({
+        title: `Candidate ${label}`,
+        role: "contestants",
+        agent,
+        mode: "write",
+        cwd: wt,
+        allowFailure: true,
+        prompt:
+          preamble("contestant", agent, `${WRITE} Other agents are solving the same task independently; the best solution is kept.`) +
+          section("Task", ctx.task) +
+          section("Deliverable", "Implement the task completely, run the relevant tests, then summarize your approach and test results."),
+      });
+      await ctx.commit(wt, `candidate ${label}`);
+      const check = result.ok ? await ctx.check(wt, `Check candidate ${label}`) : null;
+      const tests = result.ok ? (await ctx.testChanges(wt)).filter((i) => i.severity === "high") : [];
+      return { label, agent, wt, result, check, tests, diff: result.ok ? await ctx.diff(wt) : "(attempt failed)" };
+    });
 
     const changed = entries.filter((e) => e.result.ok && e.diff !== "(no changes)");
     if (changed.length === 0) throw new Error("No contestant produced a usable change");
@@ -98,38 +98,36 @@ export const racePattern: Pattern = {
       // order is shuffled — deterministically per run, so a resumed run replays the same way.
       const order = seededShuffle(viable, ctx.run.id);
       const labels = viable.map((e) => e.label);
-      const votes = await Promise.all(
-        judges.map((judge, i) =>
-          ctx.decide<JudgeVerdict>({
-            title: judges.length > 1 ? `Judge ${i + 1}` : "Judge candidates",
-            role: "judge",
-            agent: judge,
-            mode: "read",
-            cwd: judgeWt,
-            schema: JUDGE_SCHEMA,
-            what: "pick",
-            validate: (v: JudgeVerdict) =>
-              changed.some((e) => e.label === v.winner.trim().toUpperCase()) ? undefined : `winner must be one of ${changed.map((e) => e.label).join(", ")}`,
-            prompt:
-              preamble("judge", judge, `${READ_ONLY} You are looking at the original, unmodified code; each candidate's changes are shown as a diff.`) +
-              section("Task", ctx.task) +
-              order
-                .map((e) =>
-                  section(
-                    `Candidate ${e.label}`,
-                    fence(e.diff, "diff") +
-                      (e.check ? checkSection(e.check, 2_000) : "") +
-                      (e.tests.length ? `\n**Changes to tests found by code-flow:**\n${describeIssues(e.tests)}\n` : ""),
-                  ),
-                )
-                .join("") +
-              section(
-                "Deliverable",
-                `Compare the candidates on correctness, completeness, test coverage, simplicity and risk. Pick one winner from: ${labels.join(", ")}.`,
-              ) +
-              jsonInstruction('{"winner": "A", "ranking": ["A", "B"], "reasons": "..."}'),
-          }),
-        ),
+      const votes = await ctx.parallel(judges, (judge, i) =>
+        ctx.decide<JudgeVerdict>({
+          title: judges.length > 1 ? `Judge ${i + 1}` : "Judge candidates",
+          role: "judge",
+          agent: judge,
+          mode: "read",
+          cwd: judgeWt,
+          schema: JUDGE_SCHEMA,
+          what: "pick",
+          validate: (v: JudgeVerdict) =>
+            changed.some((e) => e.label === v.winner.trim().toUpperCase()) ? undefined : `winner must be one of ${changed.map((e) => e.label).join(", ")}`,
+          prompt:
+            preamble("judge", judge, `${READ_ONLY} You are looking at the original, unmodified code; each candidate's changes are shown as a diff.`) +
+            section("Task", ctx.task) +
+            order
+              .map((e) =>
+                section(
+                  `Candidate ${e.label}`,
+                  fence(e.diff, "diff") +
+                    (e.check ? checkSection(e.check, 2_000) : "") +
+                    (e.tests.length ? `\n**Changes to tests found by code-flow:**\n${describeIssues(e.tests)}\n` : ""),
+                ),
+              )
+              .join("") +
+            section(
+              "Deliverable",
+              `Compare the candidates on correctness, completeness, test coverage, simplicity and risk. Pick one winner from: ${labels.join(", ")}.`,
+            ) +
+            jsonInstruction('{"winner": "A", "ranking": ["A", "B"], "reasons": "..."}'),
+        }),
       );
       // Majority vote among candidates that can win; ties go to the earlier label.
       const tally = new Map<string, number>();

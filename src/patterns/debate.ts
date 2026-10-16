@@ -54,53 +54,60 @@ export const debatePattern: Pattern = {
     const rounds = ctx.option("rounds", 1);
     const designWt = await ctx.worktree("design");
 
-    // Round 0: independent proposals, in parallel.
-    let positions: StepOutcome[] = await Promise.all(
-      debaters.map((agent) =>
-        ctx.ask({
-          title: `Proposal — ${adapters[agent].displayName}`,
-          role: "debaters",
-          agent,
-          mode: "read",
-          cwd: designWt,
-          prompt:
-            preamble("debater", agent, `${READ_ONLY} Other agents are proposing designs independently.`) +
-            section("Task", ctx.task) +
-            section(
-              "Deliverable",
-              "Study the codebase and propose a design: approach, key changes, trade-offs, and the risks you see. Under 500 words.",
-            ),
-        }),
-      ),
+    // Round 0: independent proposals, in parallel (one failing stops the others).
+    let positions: StepOutcome[] = await ctx.parallel(debaters, (agent) =>
+      ctx.ask({
+        title: `Proposal — ${adapters[agent].displayName}`,
+        role: "debaters",
+        agent,
+        mode: "read",
+        cwd: designWt,
+        prompt:
+          preamble("debater", agent, `${READ_ONLY} Other agents are proposing designs independently.`) +
+          section("Task", ctx.task) +
+          section(
+            "Deliverable",
+            "Study the codebase and propose a design: approach, key changes, trade-offs, and the risks you see. Under 500 words.",
+          ),
+      }),
     );
 
     // Critique rounds: each debater sees the others' latest positions and revises its own.
     for (let round = 1; round <= rounds; round++) {
       const snapshot = positions;
-      positions = await Promise.all(
-        snapshot.map((own) => {
-          const others = snapshot
-            .filter((p) => p !== own)
-            .map((p) => section(`Proposal from ${adapters[p.agent].displayName}`, p.finalText))
-            .join("");
-          return ctx.ask({
-            title: `Critique round ${round} — ${adapters[own.agent].displayName}`,
-            role: "debaters",
-            agent: own.agent,
-            mode: "read",
-            cwd: designWt,
-            resume: own,
-            prompt:
-              "Here are the other agents' current proposals." +
-              others +
-              section(
-                "Deliverable",
-                "Critique them honestly: what is better than yours, what is wrong or risky. Then give your revised proposal. " +
-                  "Concede points where they are right; hold your ground where you have evidence.",
-              ),
-          });
-        }),
-      );
+      positions = await ctx.parallel(snapshot, (own) => {
+        const others = snapshot
+          .filter((p) => p !== own)
+          .map((p) => section(`Proposal from ${adapters[p.agent].displayName}`, p.finalText))
+          .join("");
+        return ctx.ask({
+          title: `Critique round ${round} — ${adapters[own.agent].displayName}`,
+          role: "debaters",
+          agent: own.agent,
+          mode: "read",
+          cwd: designWt,
+          resume: own,
+          prompt:
+            "Here are the other agents' current proposals." +
+            others +
+            section(
+              "Deliverable",
+              "Critique them honestly: what is better than yours, what is wrong or risky. Then give your revised proposal. " +
+                "Concede points where they are right; hold your ground where you have evidence.",
+            ),
+          // Its own conversation gone, a new one needs its earlier proposal too.
+          fresh:
+            preamble("debater", own.agent, `${READ_ONLY} Other agents are proposing designs too.`) +
+            section("Task", ctx.task) +
+            section("Your proposal so far", own.finalText) +
+            section("The other agents' current proposals", others) +
+            section(
+              "Deliverable",
+              "Critique them honestly: what is better than yours, what is wrong or risky. Then give your revised proposal. " +
+                "Concede points where they are right; hold your ground where you have evidence.",
+            ),
+        });
+      });
     }
 
     const synthesizer = ctx.agent("synthesizer");

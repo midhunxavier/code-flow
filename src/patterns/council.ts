@@ -55,37 +55,36 @@ export const councilPattern: Pattern = {
     if (diff === "(no changes)") ctx.log("No diff against the default branch; reviewing the code the task points at");
 
     const shape = '{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}';
-    const reviews = await Promise.all(
-      reviewers.map(async (agent, i) => {
-        const label = LETTERS[i]!;
-        const outcome = await ctx
-          .decide<Review>({
-            title: `Review ${label}`,
-            schema: REVIEW_SCHEMA,
-            what: "review",
-            role: "reviewers",
-            agent,
-            mode: "read",
-            cwd: wt,
-            prompt:
-              preamble("reviewer", agent, `${READ_ONLY} Other reviewers are reviewing the same changes independently.`) +
-              section("Task", ctx.task) +
-              scope +
-              section(
-                "Deliverable",
-                "Look for bugs, security problems, missing or weak tests, and anything that doesn't do what the task or description says. " +
-                  "Read the surrounding code where you need to. Report real problems only — not style preferences — with the file and a concrete fix.",
-              ) +
-              jsonInstruction(shape),
-          })
-          .catch((err: Error) => {
-            if (ctx.signal.aborted) throw err;
-            ctx.log(`Reviewer ${label} (${agent}) didn't finish: ${err.message}`, "warn");
-            return undefined;
-          });
-        return outcome ? { label, agent, review: outcome.value } : undefined;
-      }),
-    );
+    // A reviewer that doesn't finish is left out; the others carry on.
+    const reviews = await ctx.parallel(reviewers, async (agent, i) => {
+      const label = LETTERS[i]!;
+      const outcome = await ctx
+        .decide<Review>({
+          title: `Review ${label}`,
+          schema: REVIEW_SCHEMA,
+          what: "review",
+          role: "reviewers",
+          agent,
+          mode: "read",
+          cwd: wt,
+          prompt:
+            preamble("reviewer", agent, `${READ_ONLY} Other reviewers are reviewing the same changes independently.`) +
+            section("Task", ctx.task) +
+            scope +
+            section(
+              "Deliverable",
+              "Look for bugs, security problems, missing or weak tests, and anything that doesn't do what the task or description says. " +
+                "Read the surrounding code where you need to. Report real problems only — not style preferences — with the file and a concrete fix.",
+            ) +
+            jsonInstruction(shape),
+        })
+        .catch((err: Error) => {
+          if (ctx.signal.aborted) throw err;
+          ctx.log(`Reviewer ${label} (${agent}) didn't finish: ${err.message}`, "warn");
+          return undefined;
+        });
+      return outcome ? { label, agent, review: outcome.value } : undefined;
+    });
     const done = reviews.filter((r): r is { label: string; agent: AgentId; review: Review } => !!r);
     if (!done.length) throw new Error("No reviewer finished");
 
