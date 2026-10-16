@@ -123,6 +123,23 @@ test("read-only steps side by side in one worktree: snapshots don't collide on i
   assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "changed\n", "the change from before the step is kept");
 });
 
+test("restoring a snapshot puts back untracked files that were there before, edited or deleted since", async () => {
+  const repo = newRepo("codeflow-git-untracked-", { "a.txt": "a\n" });
+  writeFileSync(join(repo, "notes.md"), "my notes\n");
+  const binary = Buffer.from([0, 255, 1, 254, 10, 13, 0]);
+  writeFileSync(join(repo, "data.bin"), binary);
+  const snap = await snapshot(repo);
+  // The step edits one, deletes the other, and adds a third.
+  writeFileSync(join(repo, "notes.md"), "half-done edit\n");
+  rmSync(join(repo, "data.bin"));
+  writeFileSync(join(repo, "new.txt"), "new\n");
+  assert.deepEqual(await restoreSnapshot(repo, snap), ["1 new file", "2 untracked files put back"]);
+  assert.equal(readFileSync(join(repo, "notes.md"), "utf8"), "my notes\n");
+  assert.deepEqual(readFileSync(join(repo, "data.bin")), binary);
+  assert.ok(!existsSync(join(repo, "new.txt")));
+  assert.deepEqual(await restoreSnapshot(repo, snap), [], "nothing to undo the second time");
+});
+
 test("a file touched but not changed doesn't make a snapshot fail", async () => {
   const repo = newRepo("codeflow-git-touch-", { "a.txt": "a\n", "b.txt": "b\n" });
   // Its stat no longer matches the index, its content does: `git stash create` on a stale index

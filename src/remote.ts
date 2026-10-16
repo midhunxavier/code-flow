@@ -38,11 +38,17 @@ const fresh = (): RemoteSettings => ({ enabled: false, token: newToken(), contro
  * and logged, and code-flow starts with phone access off rather than with a new link.
  */
 export async function loadRemote(file = FILE): Promise<RemoteSettings> {
+  unreadable.delete(file);
   let text: string;
   try {
     text = await readFile(file, "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") logError(`Couldn't read ${file}; phone access is off`, err);
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      // There but unreadable (permissions, an I/O error): kept as it is, and never written over
+      // until code-flow can read it, or its links and settings would be lost for good.
+      logError(`Couldn't read ${file}; phone access is off until it can be read`, err);
+      unreadable.set(file, (err as Error).message);
+    }
     return fresh();
   }
   let raw: any;
@@ -74,8 +80,13 @@ export async function loadRemote(file = FILE): Promise<RemoteSettings> {
   return settings;
 }
 
+/** remote.json files that exist but couldn't be read at load, and why. */
+const unreadable = new Map<string, string>();
+
 /** Saved through a temporary file, so a crash mid-write can't leave half a file. */
 export async function saveRemote(settings: RemoteSettings, file = FILE) {
+  const why = unreadable.get(file);
+  if (why) throw new Error(`Phone settings can't be changed: ${file} couldn't be read when code-flow started (${why}). Fix its permissions, then restart code-flow.`);
   await mkdir(dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
   await writeFile(tmp, JSON.stringify(settings, null, 2), { mode: 0o600 });

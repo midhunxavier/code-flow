@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { appendFile, copyFile, mkdir, readFile, rm } from "node:fs/promises";
+import { appendFile, copyFile, lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { envNumber, timerMs, WORKTREE_DIR } from "./config.js";
 import { childEnv } from "./env.js";
@@ -468,6 +468,50 @@ export interface Snapshot {
   /** `git stash create` of the uncommitted changes ("" when there are none); nothing is stashed. */
   changes: string;
   untracked: string[];
+  /**
+   * What the untracked files held (path → blob, written to the object store): `stash create`
+   * leaves them out, so an edit to one would otherwise survive a restore. Very large files and
+   * very many are left out (see SNAPSHOT_FILE_LIMIT).
+   */
+  untrackedBlobs?: Record<string, string>;
+}
+
+/** Untracked files bigger than this, or past this many, aren't saved in a snapshot. */
+const SNAPSHOT_FILE_LIMIT = { bytes: 8 * 1024 * 1024, files: 2_000 };
+
+/** Save untracked files' contents as blobs; returns path → blob for those it saved. */
+async function saveUntracked(cwd: string, paths: string[]): Promise<Record<string, string>> {
+  const files: string[] = [];
+  for (const path of paths) {
+    if (files.length >= SNAPSHOT_FILE_LIMIT.files) break;
+    if (path.includes("\n")) continue; // can't go through --stdin-paths
+    const info = await lstat(join(cwd, path)).catch(() => undefined);
+    if (info?.isFile() && info.size <= SNAPSHOT_FILE_LIMIT.bytes) files.push(path);
+  }
+  if (!files.length) return {};
+  const ids = (await gitOk(["hash-object", "-w", "--stdin-paths"], cwd, { input: `${files.join("\n")}\n` })).split("\n");
+  return Object.fromEntries(files.map((f, i) => [f, ids[i]!]).filter(([, id]) => /^[0-9a-f]{40,64}$/.test(id!)));
+}
+
+/** Write blob `id` to `path` in `cwd`, byte for byte (binary files too). */
+function writeBlob(cwd: string, id: string, path: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const target = join(cwd, path);
+    mkdirSync(dirname(target), { recursive: true });
+    const fd = openSync(target, "w");
+    const child = spawn("git", ["cat-file", "blob", id], { cwd, env: gitEnv(), stdio: ["ignore", fd, "pipe"] });
+    let stderr = "";
+    child.stderr?.on("data", (c: Buffer) => (stderr += c.toString()));
+    child.on("error", (err) => {
+      closeSync(fd);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      closeSync(fd);
+      if (code === 0) resolve();
+      else reject(new Error(`git cat-file blob ${id} failed: ${stderr.trim()}`));
+    });
+  });
 }
 
 /**
@@ -509,11 +553,15 @@ async function uncommittedTree(cwd: string): Promise<string> {
 const untrackedFiles = async (cwd: string) => (await gitOk(["ls-files", "--others", "--exclude-standard", "-z"], cwd)).split("\0").filter(Boolean);
 
 export async function snapshot(cwd: string): Promise<Snapshot> {
-  return withWorktreeLock(cwd, async () => ({
-    head: await resolveCommit(cwd),
-    changes: await stashCreate(cwd),
-    untracked: await untrackedFiles(cwd),
-  }));
+  return withWorktreeLock(cwd, async () => {
+    const untracked = await untrackedFiles(cwd);
+    return {
+      head: await resolveCommit(cwd),
+      changes: await stashCreate(cwd),
+      untracked,
+      untrackedBlobs: await saveUntracked(cwd, untracked),
+    };
+  });
 }
 
 /**
@@ -537,6 +585,21 @@ export async function restoreSnapshot(cwd: string, snap: Snapshot): Promise<stri
     if (added.length) {
       undone.push(`${added.length} new file${added.length === 1 ? "" : "s"}`);
       for (let i = 0; i < added.length; i += 100) await gitOkWhenFree(["clean", "-fq", "--", ...added.slice(i, i + 100)], cwd);
+    }
+    // Untracked files that were there before: edited or deleted since, they get their contents back.
+    const saved = Object.entries(snap.untrackedBlobs ?? {});
+    if (saved.length) {
+      const present = (await Promise.all(saved.map(async ([path]) => ((await lstat(join(cwd, path)).catch(() => undefined))?.isFile() ? path : undefined)))).filter(
+        (p): p is string => !!p,
+      );
+      const now = present.length ? (await gitOk(["hash-object", "--stdin-paths"], cwd, { input: `${present.join("\n")}\n` })).split("\n") : [];
+      const current = new Map(present.map((p, i) => [p, now[i]]));
+      const changed = saved.filter(([path, id]) => current.get(path) !== id);
+      for (const [path, id] of changed) {
+        await rm(join(cwd, path), { recursive: true, force: true });
+        await writeBlob(cwd, id, path);
+      }
+      if (changed.length) undone.push(`${changed.length} untracked file${changed.length === 1 ? "" : "s"} put back`);
     }
     return undone;
   });

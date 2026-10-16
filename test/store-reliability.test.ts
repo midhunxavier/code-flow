@@ -163,3 +163,12 @@ try {
   await new Promise((r) => winner.once("exit", r));
   assert.deepEqual(readdirSync(raceHome).filter((f) => f.startsWith("server.lock")), [], "no lock, temp file or takeover link left behind");
 });
+
+test("a journal entry is on disk by the time writing it resolves", async () => {
+  const { journalEntry } = await import("../src/store.js");
+  const file = join(RUNS_DIR, "durable-1.journal.jsonl");
+  // Plenty queued ahead of it, as during a busy run.
+  for (let i = 0; i < 200; i++) appendLine("durable-1.jsonl", { seq: i, type: "agent" });
+  await journalEntry("durable-1", "agent:Plan#1", { ok: true });
+  assert.match(readFileSync(file, "utf8"), /"agent:Plan#1"/);
+});

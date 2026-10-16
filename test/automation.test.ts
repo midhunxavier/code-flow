@@ -382,6 +382,19 @@ test("remote.json: written whole, and one that can't be read is moved aside with
   const old = await loadRemote(file);
   assert.equal(old.token, "c".repeat(48));
   assert.notEqual(old.controlToken, old.token);
+
+  // There but unreadable (permissions): phone access is off, and it's never written over.
+  const kept = readFileSync(file, "utf8");
+  chmodSync(file, 0o000);
+  try {
+    const locked = await loadRemote(file);
+    assert.equal(locked.enabled, false);
+    await assert.rejects(saveRemote({ ...locked, enabled: true }, file), /Phone settings can't be changed/);
+  } finally {
+    chmodSync(file, 0o600);
+  }
+  assert.equal(readFileSync(file, "utf8"), kept);
+  assert.equal((await loadRemote(file)).enabled, true, "readable again: loads as it was");
 });
 
 test("this machine's own addresses count as local, whichever one a program connects to", () => {

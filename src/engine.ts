@@ -698,7 +698,9 @@ export class TeamContext {
     this.replaying = false;
     const value = await fn();
     this.journal.set(key, value);
-    journalEntry(this.run.id, key, value ?? null);
+    // On disk before the pattern goes on: killed right after, a resume replays this step
+    // instead of running (and paying for) it again.
+    await journalEntry(this.run.id, key, value ?? null);
     return value;
   }
 

@@ -64,9 +64,9 @@ async function appendSynced(path: string, text: string) {
  * the line to reach the disk (fsync) before the next write: for lines that must survive a
  * power loss, not for every event (`flushWrites` syncs those at shutdown).
  */
-export function appendLine(file: string, value: unknown, opts: { sync?: boolean } = {}) {
+export function appendLine(file: string, value: unknown, opts: { sync?: boolean } = {}): Promise<void> {
   const line = `${JSON.stringify(value)}\n`;
-  writeQueue = writeQueue
+  const written = writeQueue
     .then(async () => {
       const path = join(RUNS_DIR, file);
       // Close a torn last line first, or this line would be glued to it and both lost.
@@ -91,6 +91,9 @@ export function appendLine(file: string, value: unknown, opts: { sync?: boolean 
         logError(`couldn't save run data (${writeHealth.failures} failed writes)`, err, { file });
       }
     });
+  writeQueue = written;
+  // Resolves once this line is written (synced, with `sync`), or its write failed; never rejects.
+  return written;
 }
 
 async function syncFile(file: string) {
@@ -157,9 +160,12 @@ export async function loadJournal(runId: string): Promise<Map<string, unknown>> 
   return new Map(entries.filter((e) => (e.v ?? 1) <= JOURNAL_VERSION).map((e) => [e.key, e.value]));
 }
 
-/** Synced: a resumed run replays these instead of redoing (and re-paying for) the steps. */
-export function journalEntry(runId: string, key: string, value: unknown) {
-  appendLine(`${runId}.journal.jsonl`, { key, value, v: JOURNAL_VERSION }, { sync: true });
+/**
+ * Synced, and awaited before the run moves on: a resumed run replays these instead of redoing
+ * (and re-paying for) the steps, so a step counts as done only once its entry is on disk.
+ */
+export function journalEntry(runId: string, key: string, value: unknown): Promise<void> {
+  return appendLine(`${runId}.journal.jsonl`, { key, value, v: JOURNAL_VERSION }, { sync: true });
 }
 
 // ---------------------------------------------------------------- the one-server lock
