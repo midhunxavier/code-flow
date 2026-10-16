@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,7 +14,7 @@ process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-auto-home-"));
 const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
 const { Automations, nextFire, describeSchedule, readWebhook, resumeSchedule, stillDue, validateSchedule } = await import("../src/automation.js");
-const { renderRemote } = await import("../src/remote.js");
+const { changeRemote, isOwnAddress, loadRemote, renderRemote, saveRemote } = await import("../src/remote.js");
 type Run = import("../src/engine.js").Run;
 type AgentId = import("../src/adapters/index.js").AgentId;
 
@@ -334,3 +334,51 @@ test("phone view: read-only HTML with everything escaped", async () => {
   assert.equal(renderRemote(manager, "/r/tok", "/run/nope"), null);
 });
 
+test("phone settings: turning anything off makes new secrets; the read-only link never doubles as the sign-in link", () => {
+  const on = { enabled: true, lan: true, control: true, token: "a".repeat(48), controlToken: "b".repeat(48) };
+  const offControl = changeRemote(on, { control: false });
+  assert.equal(offControl.token, on.token, "the read-only link still works");
+  assert.notEqual(offControl.controlToken, on.controlToken, "phones are signed out");
+  const backOn = changeRemote(offControl, { control: true });
+  assert.equal(backOn.controlToken, offControl.controlToken, "turning it back on doesn't revive the old cookies");
+  for (const patch of [{ lan: false }, { enabled: false }, { rotate: true }]) {
+    const next = changeRemote(on, patch);
+    assert.notEqual(next.token, on.token, JSON.stringify(patch));
+    assert.notEqual(next.controlToken, on.controlToken, JSON.stringify(patch));
+    assert.notEqual(next.token, next.controlToken);
+  }
+  assert.deepEqual(changeRemote(on, { control: true }), on, "nothing turned off, nothing rotated");
+});
+
+test("remote.json: written whole, and one that can't be read is moved aside with phone access off", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codeflow-remote-"));
+  const file = join(dir, "remote.json");
+  const fresh = await loadRemote(file);
+  assert.deepEqual([fresh.enabled, fresh.lan, fresh.control], [false, false, false]);
+  assert.notEqual(fresh.token, fresh.controlToken);
+  await saveRemote({ ...fresh, enabled: true }, file);
+  assert.equal((await loadRemote(file)).enabled, true);
+  assert.deepEqual(readdirSync(dir), ["remote.json"], "no temporary file left behind");
+
+  writeFileSync(file, '{"enabled": true, "token": "');
+  const reset = await loadRemote(file);
+  assert.equal(reset.enabled, false, "starts with phone access off");
+  const aside = readdirSync(dir).filter((f) => f.startsWith("remote.json.corrupt-"));
+  assert.equal(aside.length, 1);
+  assert.equal(readFileSync(join(dir, aside[0]!), "utf8"), '{"enabled": true, "token": "');
+
+  // Saved before full control had its own secret: phones sign in again rather than reuse the read-only one.
+  writeFileSync(file, JSON.stringify({ enabled: true, lan: true, control: true, token: "c".repeat(48) }));
+  const old = await loadRemote(file);
+  assert.equal(old.token, "c".repeat(48));
+  assert.notEqual(old.controlToken, old.token);
+});
+
+test("this machine's own addresses count as local, whichever one a program connects to", () => {
+  assert.equal(isOwnAddress("127.0.0.1"), true);
+  assert.equal(isOwnAddress("::ffff:127.0.0.1"), true);
+  assert.equal(isOwnAddress("::1"), true);
+  assert.equal(isOwnAddress(undefined), true);
+  for (const ip of Object.values(networkInterfaces()).flat()) if (ip) assert.equal(isOwnAddress(ip.address), true, ip.address);
+  assert.equal(isOwnAddress("203.0.113.7"), false);
+});

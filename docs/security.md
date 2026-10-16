@@ -19,14 +19,17 @@ This is the boundary each vendor draws for personal use. Don't extend code-flow 
 ## The server
 
 - It listens on `127.0.0.1` only, checks the Host and Origin headers, and wants a session cookie or Bearer token on every API call (see [signing in](getting-started.md#signing-in)).
+- The first browser to open code-flow signs in without the link only when it connects directly from this machine. A tunnel (ngrok, cloudflared) forwarding to the port can rewrite the Host header to `localhost`, so a request carrying forwarding headers (`X-Forwarded-For`, `Forwarded`…) never signs in that way.
 - The phone view and webhooks are only on your network when you turn on *Reachable from my Wi-Fi*, over plain HTTP. See [Automations](automations.md#phone-view).
-- *Full control from my phone* serves the whole app on that network listener, to a phone signed in with the phone link (a cookie bound to that address, revoked by **New link** or by turning it off). Cross-origin requests are refused there too. Whoever has the link can do everything you can, so treat it like a password. See [Full control from your phone](automations.md#full-control-from-your-phone).
+- That network listener refuses connections from this computer itself, from loopback or any of its own addresses. Programs here, the agents code-flow runs among them, can read `~/.codeflow`, phone secrets included; through the network listener they could otherwise sign in with full control and run commands outside their sandboxes. (Binding it to the Wi-Fi addresses alone wouldn't stop that: a program here can connect to those too.)
+- *Full control from my phone* serves the whole app on that network listener, to a phone signed in with the phone link. That link has a secret of its own, apart from the read-only link's, so a read-only link someone saw never becomes a full-control one. The phone's cookie is bound to that address and lasts 30 days; **New link**, or turning off full control, *Reachable from my Wi-Fi* or the phone link, makes new secrets and signs every phone out, and turning it back on doesn't sign them back in. Cross-origin requests are refused there too. Whoever has the link can do everything you can, so treat it like a password. See [Full control from your phone](automations.md#full-control-from-your-phone).
+- Webhooks: each automation has its own secret (a Bearer token, or GitHub's signature). A GitHub delivery sent again is ignored, and webhooks start a limited number of runs an hour. See [Webhooks](automations.md#webhooks).
 
 ## Running the agents' code
 
 A check runs the agents' code (tests, scripts) on your machine, outside Codex's and agy's sandboxes, as your CI would. Use code-flow on repos and tasks you trust, or run checks in Docker ([isolation](automations.md#isolation)), or code-flow itself inside a container or VM.
 
-Text from issues, PRs, comments and CI logs is treated as untrusted, and runs started from people outside the repo are locked down. See [Untrusted text](github.md#untrusted-text).
+Text from issues, PRs, comments and CI logs is treated as untrusted, and runs started from people outside the repo, or from Dependabot's PRs, are locked down. **▶ Run app** on a locked-down run asks before it starts that code on your machine. See [Untrusted text](github.md#untrusted-text).
 
 ## Caveats
 
