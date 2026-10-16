@@ -10,16 +10,19 @@ import {
   validateAgentSettings,
   type AgentId,
 } from "./adapters/index.js";
-import { listTree, searchFiles } from "./repo-tree.js";
+import { listTree, readRepoFile, searchFiles } from "./repo-tree.js";
 import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig } from "./repo-config.js";
 import { openFolder } from "./serve.js";
+import { Shells, type ShellEvent } from "./shell.js";
+import { Notes } from "./notes.js";
 import { CODEFLOW_HOME, envNumber, PORT } from "./config.js";
 import { RunManager, UntrustedSourceError, type LoopSettings, type Pattern } from "./engine.js";
 import { detectCheckCommand } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
 import { listBranches, repoRoot, worktreeRoot } from "./git.js";
+import { stat } from "node:fs/promises";
 import { folderSizes, remoteBranches, removeWorktrees } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
 import { acquireLock, writeHealth } from "./store.js";
@@ -62,6 +65,9 @@ if (reaped) logInfo(`Stopped ${reaped} process group(s) a previous code-flow lef
 
 const projects = new Projects();
 const manager = new RunManager(findPattern, projects);
+/** The side panel's terminals and notes. */
+const shells = new Shells();
+const notes = new Notes();
 const watcher = new PrWatcher(manager);
 const automations = new Automations(manager, (body, extra) => startFromBody(body, extra), (repo, kind) => listSweep(repo, kind, manager.list()));
 let remote: RemoteSettings;
@@ -864,6 +870,58 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     const repo = await requestedRepo(url);
     return send(res, 200, await searchFiles(repo, url.searchParams.get("q") ?? ""));
   }
+  if (req.method === "GET" && parts[1] === "file") {
+    const repo = await requestedRepo(url);
+    const content = await readRepoFile(repo, url.searchParams.get("path") ?? "").catch((err: NodeJS.ErrnoException) => {
+      throw new HttpError(err.code === "ENOENT" ? 404 : 400, err.code === "ENOENT" ? "File not found" : err.message);
+    });
+    return send(res, 200, content);
+  }
+  // The side panel's Notes: one per repository, and a general one.
+  if (parts[1] === "notes") {
+    if (req.method === "GET" && parts[2] === "all") return send(res, 200, await notes.keys());
+    if (req.method === "GET") return send(res, 200, await notes.get(url.searchParams.get("key") ?? ""));
+    if (req.method === "POST") {
+      const body = await readJson(req);
+      if (typeof body.text !== "string") throw new HttpError(400, "Send the note's text");
+      return send(res, 200, await attempt(() => notes.set(String(body.key ?? ""), body.text)));
+    }
+  }
+  // Every app started with "Run app", for the side panel's Browser.
+  if (req.method === "GET" && parts[1] === "serve") return send(res, 200, manager.devServers.list());
+  // The side panel's Terminal: shells that stay open, fed over POST, streamed over SSE.
+  if (parts[1] === "shell") {
+    const id = parts[2];
+    if (!id && req.method === "GET") return send(res, 200, shells.list());
+    if (!id && req.method === "POST") {
+      const body = await readJson(req);
+      const cwd = String(body.cwd ?? "").trim();
+      if (!cwd.startsWith("/")) throw new HttpError(400, "The folder must be an absolute path");
+      if (!(await stat(cwd).then((s) => s.isDirectory(), () => false))) throw new HttpError(404, "Folder not found");
+      // A repository or one of its worktrees: not just any folder a request names.
+      await repoRoot(cwd).catch(() => {
+        throw new HttpError(400, "The terminal opens in a git repository or one of its worktrees");
+      });
+      manager.noteActivity(); // commands run on this machine, like Run app
+      return send(res, 201, shells.open(cwd));
+    }
+    if (id && !shells.get(id)) throw new HttpError(404, "That terminal is gone (code-flow restarted?)");
+    if (id && req.method === "GET" && parts[3] === "events") {
+      const stream = openStream(res);
+      stream.send({ type: "hello", shell: shells.get(id), history: shells.history(id) });
+      const unsubscribe = shells.subscribe(id, (e: ShellEvent) => stream.send(e));
+      res.on("close", () => unsubscribe?.());
+      return;
+    }
+    if (id && req.method === "GET") return send(res, 200, shells.get(id));
+    if (id && req.method === "POST" && parts[3] === "input") {
+      const body = await readJson(req);
+      if (typeof body.text !== "string" || body.text.length > 20_000) throw new HttpError(400, "Send a command");
+      if (!shells.write(id, body.text)) throw new HttpError(409, "That shell has exited; open a new one");
+      return send(res, 200, shells.get(id));
+    }
+    if (id && req.method === "DELETE") return send(res, 200, { closed: shells.close(id) });
+  }
   if (req.method === "GET" && parts[1] === "models") {
     const agents = await agentAvailability();
     const entries = await Promise.all(
@@ -882,8 +940,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (req.method === "POST") {
         const body = await readJson(req);
         const run = await startFromBody(body);
-        // The composer starts from this team next time you're in the project. A reply reuses the old run's team, so it isn't a choice.
-        if (run.project && !body.parentRunId) {
+        // The composer asks for its team to be remembered: next time you're in the project it starts
+        // from it. A side-panel chat, or a reply (the old run's team), isn't that choice.
+        if (run.project && body.remember === true && !body.parentRunId) {
           void projects.remember(run.project, { pattern: run.pattern, roles: requestedRoles(findPattern(run.pattern)!, body.roles), roleSettings: run.roleSettings, agentSettings: validateAgentSettings(body.agentSettings) });
         }
         return send(res, 201, { id: run.id, project: run.project });
@@ -1164,6 +1223,7 @@ async function stop(reason: string, code = 0) {
     server.close();
     lanServer?.close();
     watcher.stop();
+    shells.closeAll();
     automationsSaved = automations.stop();
   } catch {
     // still starting up: nothing is listening yet

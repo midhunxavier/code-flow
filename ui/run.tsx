@@ -34,7 +34,7 @@ const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelle
 const modelNote = (run: RunSummary | null, id?: AgentId) =>
   run && id ? [run.agentSettings?.[id]?.model, run.agentSettings?.[id]?.effort].filter(Boolean).join(" · ") : "";
 
-interface RunData {
+export interface RunData {
   steps: Map<string, Step>;
   events: Map<string, AgentEvent[]>;
   /** Transcript items per step, built incrementally as events arrive (see itemsFor). */
@@ -50,18 +50,19 @@ interface RunData {
 
 const emptyData = (): RunData => ({ steps: new Map(), events: new Map(), built: new Map(), logs: [], seen: new Set(), runSeq: 0, stepSeq: new Map(), epoch: "" });
 
-export function RunView({ id }: { id: string }) {
+/**
+ * A run's event stream: its snapshot, every step and agent event, kept in `data` (mutated in
+ * place; `version` changes as events arrive so components re-render). The run view and the side
+ * panel's chat both read a run this way. `onStep` sees each step update as it lands.
+ */
+export function useRunStream(id: string, onStep?: (step: Step) => void) {
   const [run, setRun] = useState<RunSummary | null>(null);
   /** Why the run can't be shown (it doesn't exist, or the server said no). */
   const [problem, setProblem] = useState("");
   const data = useRef<RunData>(emptyData());
-  const [, bump] = useReducer((x: number) => x + 1, 0);
-  /** The step whose transcript is open; "" when you closed it. */
-  const [selected, setSelected] = useState<string | null>(null);
-  /** The work section: open while running and closed once there's a result, unless you toggled it. */
-  const [workOpen, setWorkOpen] = useState<boolean | null>(null);
-  const follow = useRef(true);
-  const [archiving, setArchiving] = useState(false);
+  const [version, bump] = useReducer((x: number) => x + 1, 0);
+  const stepHandler = useRef(onStep);
+  stepHandler.current = onStep;
 
   useEffect(() => {
     let source: EventSource | undefined;
@@ -69,6 +70,8 @@ export function RunView({ id }: { id: string }) {
     let closed = false;
     let scheduled = false;
     setProblem("");
+    setRun(null);
+    data.current = emptyData();
     const connect = () => {
       source = new EventSource(`/api/runs/${id}/events`);
       source.onmessage = onMessage;
@@ -105,7 +108,7 @@ export function RunView({ id }: { id: string }) {
         if (ev.seq < (d.stepSeq.get(ev.step.id) ?? 0)) return;
         d.stepSeq.set(ev.step.id, ev.seq);
         d.steps.set(ev.step.id, ev.step);
-        if (follow.current && ev.step.status === "running") setSelected(ev.step.id);
+        stepHandler.current?.(ev.step);
       } else if (ev.type === "agent") {
         if (!d.events.has(ev.stepId)) d.events.set(ev.stepId, []);
         d.events.get(ev.stepId)!.push(ev.event);
@@ -132,6 +135,20 @@ export function RunView({ id }: { id: string }) {
       source?.close();
     };
   }, [id]);
+
+  return { run, problem, data, version };
+}
+
+export function RunView({ id }: { id: string }) {
+  /** The step whose transcript is open; "" when you closed it. */
+  const [selected, setSelected] = useState<string | null>(null);
+  /** The work section: open while running and closed once there's a result, unless you toggled it. */
+  const [workOpen, setWorkOpen] = useState<boolean | null>(null);
+  const follow = useRef(true);
+  const [archiving, setArchiving] = useState(false);
+  const { run, problem, data } = useRunStream(id, (step) => {
+    if (follow.current && step.status === "running") setSelected(step.id);
+  });
 
   useEffect(() => {
     if (run && run.status !== "running" && !run.seen && !document.hidden) void markSeen(run.id);
@@ -620,7 +637,7 @@ function TurnBody({ run, step, data, answer }: { run: RunSummary; step: Step; da
  * right before the turn that answered it. A message that never got a turn (still waiting, or it
  * failed before the agent started) keeps its place, with what happened to it.
  */
-function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[]; data: RunData }) {
+export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[]; data: RunData }) {
   const byStep = new Map(run.followUps.filter((f) => f.stepId).map((f) => [f.stepId!, f]));
   const turns = steps.filter((s) => (s.kind ?? "agent") === "agent");
   const stepless = run.followUps.filter((f) => !f.stepId || !data.steps.has(f.stepId));
@@ -1276,7 +1293,7 @@ function noteStep(note: Note, steps: Step[]): string {
 }
 
 /** While running: message the team. After it finishes: reply to an agent, or the whole team. */
-function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: Step[]; chat: boolean }) {
+export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: Step[]; chat: boolean }) {
   const [text, setText] = useState("");
   const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
