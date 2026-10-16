@@ -8,8 +8,11 @@ ui/*.tsx                 UI: Preact + TypeScript, compiled against the server's 
 ui/bits.tsx              small shared pieces: agent tags, the Markdown renderer, QR codes
 ui/styles.css, ui/fonts  the stylesheet and its fonts (Manrope, Roboto Mono; licences included)
 scripts/build-ui.mjs     bundles the UI, fonts and images into one self-contained public/index.html (npm start builds it)
+scripts/check-node.mjs   stops npm start and npm run dev on a Node older than 20, saying why
 src/server.ts            HTTP API + SSE on 127.0.0.1 (Host/Origin checked, session cookie or Bearer token)
 src/store.ts             run logs and the replay journal on disk, the one-server lock
+src/log.ts               code-flow's own log, ~/.codeflow/server.log (rotated at 5 MB)
+src/env.ts               the environment of everything code-flow starts: yours, minus its token, npm_* and its own node_modules/.bin
 src/integrity.ts         finds changes to tests that could make a check pass without a fix
 src/diff.ts              fits a long diff into a prompt (whole files first)
 src/learnings.ts         the repo's conventions files, and problems reviewers keep raising
@@ -26,7 +29,7 @@ src/remote.ts            the phone link: read-only view (server-rendered), setti
 src/engine.ts            RunManager, TeamContext (ask / worktree / commit / diff), event log
 src/patterns/*.ts        the team patterns, written against TeamContext
 src/adapters/*.ts        AgentAdapter per CLI → normalized AgentEvent stream
-src/git.ts               worktrees, branches, commits, diffs, merges
+src/git.ts               every git call (bounded, never prompts), worktrees with their submodules, branches, commits, diffs, merges
 src/repo-tree.ts         file tree + search for the Files panel
 src/context.ts           validates and stages task context for agents
 ```
@@ -59,6 +62,8 @@ npm test           # unit + workflow tests against fake CLIs
 npm run test:e2e   # the real UI in Chrome (headless) against a server with fake agents
 ```
 
+CI (`.github/workflows/ci.yml`) runs the typecheck and `npm test` on every push and pull request: Ubuntu with Node 20 and 22, macOS with Node 22. The e2e test runs there too, in its own job that doesn't fail the build.
+
 The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota.
 
 - The fake `codex` also serves the app-server protocol (`test/fake-codex-app-server.mjs`). Its threads persist across processes, so resume and per-turn token counts are tested. A prompt containing `WAIT-FOR-STEER` keeps a turn open until a note is steered in. `test/codex-app-server.test.ts` covers mid-turn notes, declined approvals, cancellation, and the `exec` fallback.
@@ -75,6 +80,12 @@ The suite runs every pattern end to end against fake `claude` / `codex` / `agy` 
 - race commits name no vendor;
 - the builder's test edits are undone;
 - retries, usage-limit stops and token accounting work.
+
+Reliability has tests of its own:
+
+- `test/foundation.test.ts`: the child environment, numeric settings, bounded git, the repo lock, and orphaned processes reaped at the next start;
+- `test/store-reliability.test.ts`: a failed write can't corrupt the next line of a run log; the server lock is taken over from a reused pid or a previous boot, and of several servers starting at once exactly one gets it;
+- `test/git-reliability.test.ts`: worktrees get their submodules (nested, in parallel, or a warning when one can't be cloned), and the Files panel's git calls.
 
 The GitHub tests cover untrusted issues (lockdown, fenced text, Docker or your confirmation) and PR watches that act only on comments from you and the people you allow. The e2e test also covers sign-in, Insights and run search.
 

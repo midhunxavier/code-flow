@@ -56,9 +56,11 @@ Click the agent names in the top bar to see, for each CLI, whether it's installe
 | Env var | Default | Purpose |
 |---|---|---|
 | `PORT` | `4317` | Server port |
-| `CODEFLOW_HOME` | `~/.codeflow` | Run logs |
+| `CODEFLOW_HOME` | `~/.codeflow` | Run logs and code-flow's own files (see [below](#files-in-codeflow)) |
 | `CODEFLOW_WORKTREE_DIR` | `.worktrees` | Worktree folder; relative paths are inside each repo, absolute paths are used as-is |
 | `CODEFLOW_STEP_TIMEOUT_MIN` | `30` | Timeout per agent step |
+| `CODEFLOW_STEP_IDLE_MIN` | `15` | An agent CLI that prints nothing for this long is stuck (a login prompt, a stalled network, a hook that never returns) and is stopped. Keep it above your longest silent test run |
+| `CODEFLOW_GIT_TIMEOUT_SEC` | `300` | Longest a git command may run, hooks included; cloning a new worktree's submodules gets 10 minutes |
 | `CODEFLOW_MAX_AGENTS` | `6` | Agent CLIs running at once, across all runs |
 | `CODEFLOW_MAX_CHECKS` | `3` | Check and setup commands running at once, across all runs |
 | `CODEFLOW_RETRY_DELAYS_MS` | `20000,60000` | Waits before retrying an agent turn that failed for a passing reason |
@@ -70,3 +72,17 @@ Click the agent names in the top bar to see, for each CLI, whether it's installe
 | `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments |
 | `CODEFLOW_CODEX_TRANSPORT` | `auto` | `auto`: `codex app-server` when the installed Codex has it, else `codex exec` (decided once per server start). `app-server`: require it. `exec`: always `codex exec` (your notes then wait for Codex's next turn) |
 | `CODEFLOW_AGY_SKIP_PERMISSIONS` | `1` | Set to `0` to stop passing `--dangerously-skip-permissions` to agy; then configure `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` |
+
+A numeric setting that isn't a valid number (`30m`, say) or is out of range falls back to its default, with a warning in the terminal.
+
+The processes code-flow starts (agent CLIs, checks, setup, **Run app**, `gh`, `git`) get your environment minus what belongs to code-flow itself: `CODEFLOW_TOKEN`, the `npm_*` variables `npm start` sets, and code-flow's own `node_modules/.bin` on `PATH`. A check's `tsc` or `vitest` comes from your repo, never from code-flow's install.
+
+## Files in `~/.codeflow`
+
+| File | What it is |
+|---|---|
+| `runs/<run>.jsonl` | Each run's event log, appended as it happens; runs are rebuilt from it at startup. Unreadable lines (a crash mid-write) are skipped and noted in `server.log` |
+| `runs/<run>.journal.jsonl` | The result of each completed step, written to disk at once, so **Resume** replays them instead of running them again |
+| `server.log` | code-flow's own log, one JSON line per entry: failed requests, unhandled errors, failed writes, processes it cleaned up. Past 5 MB it moves to `server.log.1` (one old file is kept) |
+| `processes.json` | The process groups code-flow has started and not seen finish. If code-flow dies without a clean exit (a crash, `kill -9`, a closed terminal), the next start stops what's left before resuming anything, so an orphaned agent can't keep editing a worktree. Pids from before a reboot, or reused by another program, are left alone |
+| `server.lock` | One server per `CODEFLOW_HOME`. It records the server's pid, start time and the boot, so a lock left by a crash is taken over even when another program now has that pid, or after a reboot |
