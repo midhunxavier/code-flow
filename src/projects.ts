@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { AgentSettings } from "./adapters/types.js";
 import { CODEFLOW_HOME } from "./config.js";
 import { repoRoot } from "./git.js";
+import { logError } from "./log.js";
 
 /**
  * Projects group runs: a name and the repositories its runs work in. A run records its project
@@ -52,28 +52,73 @@ export class Projects {
    * and a change counts only once it's saved (see `change`).
    */
   private queue: Promise<unknown> = Promise.resolve();
+  /** False while projects.json can't be read (or set aside): it's never written over then. */
+  private writable = true;
 
   constructor(private readonly file = join(CODEFLOW_HOME, "projects.json")) {}
+
+  /** Projects can change, and runs record theirs (see `writable`). */
+  get available(): boolean {
+    return this.writable;
+  }
 
   /**
    * Read the projects. The first time (no file yet), every repo that already has runs gets a
    * project named after it, so the runs you have are grouped from the start.
+   *
+   * A file that isn't valid JSON, or isn't a list, is moved aside to
+   * `projects.json.corrupt-<time>` (and logged), and code-flow starts with no projects; so is one
+   * with entries it can't use, keeping the usable ones. A file that can't be read at all, or
+   * moved aside, is left alone: projects are off until it's fixed, and runs record none.
    */
   async load(runs: { repo: string; createdAt: number }[] = []) {
-    if (existsSync(this.file)) {
-      try {
-        const saved = JSON.parse(await readFile(this.file, "utf8"));
-        this.projects = Array.isArray(saved) ? saved.filter((p) => p && typeof p.id === "string" && typeof p.name === "string" && Array.isArray(p.repos)) : [];
-      } catch {
-        this.projects = [];
+    this.projects = [];
+    this.writable = false;
+    let text: string | undefined;
+    try {
+      text = await readFile(this.file, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        logError(`Couldn't read ${this.file}; projects are off and it won't be written over until it can be read`, err);
+        return;
       }
+    }
+    if (text === undefined) {
+      this.writable = true;
+      const firstRun = new Map<string, number>();
+      for (const r of [...runs].sort((a, b) => a.createdAt - b.createdAt)) if (!firstRun.has(r.repo)) firstRun.set(r.repo, r.createdAt);
+      for (const [repo, at] of firstRun) this.add(repo, at);
+      // Still usable if this fails: the next change saves them again.
+      await this.write().catch((err) => logError(`Couldn't save ${this.file}`, err));
       return;
     }
-    const firstRun = new Map<string, number>();
-    for (const r of [...runs].sort((a, b) => a.createdAt - b.createdAt)) if (!firstRun.has(r.repo)) firstRun.set(r.repo, r.createdAt);
-    for (const [repo, at] of firstRun) this.add(repo, at);
-    // Still usable if this fails: the next change saves them again.
-    await this.write().catch((err: Error) => console.error(`code-flow couldn't save projects: ${err.message}`));
+    let parsed: unknown;
+    let why = "isn't a list of projects";
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      why = `isn't valid JSON (${(err as Error).message})`;
+    }
+    const entries = Array.isArray(parsed) ? parsed : [];
+    const usable = entries.filter(isProject);
+    const rejected = entries.length - usable.length;
+    if ((!Array.isArray(parsed) || rejected) && !(await this.setAside(Array.isArray(parsed) ? `has ${rejected} project(s) code-flow can't read` : why))) return;
+    this.projects = usable;
+    this.writable = true;
+    if (rejected) await this.write().catch((err) => logError(`Couldn't save ${this.file}`, err));
+  }
+
+  /** Move projects.json aside so it isn't lost when the usable projects are saved. */
+  private async setAside(why: string): Promise<boolean> {
+    const aside = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    try {
+      await rename(this.file, aside);
+      logError(`${this.file} ${why}: moved it to ${aside}`);
+      return true;
+    } catch (err) {
+      logError(`${this.file} ${why}, and it couldn't be moved aside; projects are off until it's fixed`, err);
+      return false;
+    }
   }
 
   list(): Project[] {
@@ -169,7 +214,7 @@ export class Projects {
         teams: { ...(p.defaults?.teams ?? {}), [run.pattern]: team },
         agentSettings: run.agentSettings && Object.keys(run.agentSettings).length ? run.agentSettings : undefined,
       };
-    }).catch((err: Error) => console.error(err.message));
+    }).catch((err) => logError("Couldn't remember the team for the project", err));
   }
 
   /**
@@ -179,6 +224,7 @@ export class Projects {
    */
   private change<T>(fn: () => T | Promise<T>): Promise<T> {
     const next = this.queue.then(async () => {
+      if (!this.writable) throw new Error(`Projects are off: ${this.file} couldn't be read (see server.log)`);
       const before = JSON.stringify(this.projects);
       const result = await fn();
       if (JSON.stringify(this.projects) === before) return result;
@@ -259,4 +305,9 @@ async function checkRepos(input: unknown[], current: string[] = []): Promise<str
 
 function copy(p: Project): Project {
   return structuredClone(p);
+}
+
+function isProject(p: unknown): p is Project {
+  const x = p as Partial<Project> | null;
+  return !!x && typeof x.id === "string" && typeof x.name === "string" && typeof x.createdAt === "number" && Array.isArray(x.repos) && x.repos.every((r) => typeof r === "string");
 }

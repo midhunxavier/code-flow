@@ -1,9 +1,9 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const fakeBin = fileURLToPath(new URL("./fake-bin", import.meta.url));
@@ -267,18 +267,58 @@ test("generated names stay unique within the length limit", async () => {
 });
 
 test("a change that can't be saved fails and is undone, so nothing reports done that a restart would lose", async () => {
-  const notAFolder = join(mkdtempSync(join(tmpdir(), "codeflow-projects-ro-")), "file");
-  writeFileSync(notAFolder, "");
-  const projects = new Projects(join(notAFolder, "projects.json"));
-  await projects.load([{ repo: api, createdAt: 1 }]); // seeding still works in memory
-  assert.equal(projects.list().length, 1);
-  await assert.rejects(projects.create({ name: "Lost" }), /couldn't save projects/);
-  await assert.rejects(projects.place(web), /couldn't save projects/);
-  await assert.rejects(projects.update(projects.forRepo(api)!.id, { name: "Renamed" }), /couldn't save projects/);
-  assert.deepEqual(projects.list().map((p) => [p.name, p.repos]), [["api", [api]]], "every failed change was undone");
-  assert.equal((await projects.place(api)).project.name, "api", "placing in an existing project needs no save");
-  await projects.remember(projects.forRepo(api)!.id, { pattern: "pipeline", roles }); // logged, never thrown
+  const dir = mkdtempSync(join(tmpdir(), "codeflow-projects-ro-"));
+  const projects = new Projects(join(dir, "projects.json"));
+  await projects.load([{ repo: api, createdAt: 1 }]);
+  chmodSync(dir, 0o500); // the folder can't be written any more (a full disk, lost permissions)
+  try {
+    await assert.rejects(projects.create({ name: "Lost" }), /couldn't save projects/);
+    await assert.rejects(projects.place(web), /couldn't save projects/);
+    await assert.rejects(projects.update(projects.forRepo(api)!.id, { name: "Renamed" }), /couldn't save projects/);
+    assert.deepEqual(projects.list().map((p) => [p.name, p.repos]), [["api", [api]]], "every failed change was undone");
+    assert.equal((await projects.place(api)).project.name, "api", "placing in an existing project needs no save");
+    await projects.remember(projects.forRepo(api)!.id, { pattern: "pipeline", roles }); // logged, never thrown
 
-  const manager = new RunManager(findPattern, projects);
-  await assert.rejects(start(manager, web), /couldn't save projects/, "the run doesn't start in a project that wouldn't survive a restart");
+    const manager = new RunManager(findPattern, projects);
+    await assert.rejects(start(manager, web), /couldn't save projects/, "the run doesn't start in a project that wouldn't survive a restart");
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+});
+
+test("a projects.json that can't be read is set aside, never written over", async () => {
+  const fileIn = (text: string) => {
+    const file = join(mkdtempSync(join(tmpdir(), "codeflow-projects-bad-")), "projects.json");
+    writeFileSync(file, text);
+    return file;
+  };
+  const asides = (file: string) => readdirSync(dirname(file)).filter((f) => f.startsWith("projects.json.corrupt-"));
+
+  // Not JSON: moved aside; code-flow starts with no projects (and doesn't seed over it).
+  const broken = fileIn("{ not json");
+  const a = new Projects(broken);
+  await a.load([{ repo: api, createdAt: 1 }]);
+  assert.deepEqual(a.list(), []);
+  assert.equal(asides(broken).length, 1);
+  assert.equal(readFileSync(join(dirname(broken), asides(broken)[0]!), "utf8"), "{ not json", "the original is kept");
+  assert.equal((await a.create({ name: "Fresh" })).name, "Fresh", "and projects work again");
+
+  // One entry it can't use: the usable ones are kept and saved, the original set aside.
+  const mixed = fileIn(JSON.stringify([{ id: "p-1", name: "Kept", repos: [api], createdAt: 1 }, { id: 2, name: "Bad" }]));
+  const b = new Projects(mixed);
+  await b.load();
+  assert.deepEqual(b.list().map((p) => p.name), ["Kept"]);
+  assert.equal(asides(mixed).length, 1);
+  assert.equal(JSON.parse(readFileSync(mixed, "utf8")).length, 1);
+
+  // Can't be read at all: left alone, projects are off, and runs still start (recording none).
+  const unreadable = join(mkdtempSync(join(tmpdir(), "codeflow-projects-dir-")), "projects.json");
+  mkdirSync(unreadable);
+  const c = new Projects(unreadable);
+  await c.load([{ repo: api, createdAt: 1 }]);
+  assert.equal(c.available, false);
+  await assert.rejects(c.create({ name: "Nope" }), /Projects are off/);
+  const run = await start(new RunManager(findPattern, c), api);
+  assert.equal(run.status, "done");
+  assert.equal(run.project, undefined);
 });

@@ -4,7 +4,7 @@ import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote, Markdown } from "./bits.js";
 import { TriageActions } from "./automations.js";
 import { Icon } from "./icons.js";
-import { api, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, onPhone, post, SHORT, showToast, STATUS_TEXT } from "./lib.js";
+import { api, ApiError, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, onPhone, post, SHORT, showToast, STATUS_TEXT } from "./lib.js";
 import {
   agents,
   attachments,
@@ -23,7 +23,7 @@ import {
   setTask,
   setupCmd,
   source,
-  upsertRun,
+  upsertRunFrom,
   projectFor,
   selectProject,
 } from "./state.js";
@@ -41,11 +41,20 @@ interface RunData {
   built: Map<string, Built>;
   logs: { ts: number; level: string; text: string }[];
   seen: Set<number>;
+  /** The event the shown run snapshot, and each step's, came with: an older one never replaces it. */
+  runSeq: number;
+  stepSeq: Map<string, number>;
+  /** The server start the events are from; another one numbers its events afresh. */
+  epoch: string;
 }
+
+const emptyData = (): RunData => ({ steps: new Map(), events: new Map(), built: new Map(), logs: [], seen: new Set(), runSeq: 0, stepSeq: new Map(), epoch: "" });
 
 export function RunView({ id }: { id: string }) {
   const [run, setRun] = useState<RunSummary | null>(null);
-  const data = useRef<RunData>({ steps: new Map(), events: new Map(), built: new Map(), logs: [], seen: new Set() });
+  /** Why the run can't be shown (it doesn't exist, or the server said no). */
+  const [problem, setProblem] = useState("");
+  const data = useRef<RunData>(emptyData());
   const [, bump] = useReducer((x: number) => x + 1, 0);
   /** The step whose transcript is open; "" when you closed it. */
   const [selected, setSelected] = useState<string | null>(null);
@@ -55,17 +64,46 @@ export function RunView({ id }: { id: string }) {
   const [archiving, setArchiving] = useState(false);
 
   useEffect(() => {
-    const source = new EventSource(`/api/runs/${id}/events`);
+    let source: EventSource | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let closed = false;
     let scheduled = false;
-    source.onmessage = (msg) => {
-      const ev = JSON.parse(msg.data) as RunEvent;
+    setProblem("");
+    const connect = () => {
+      source = new EventSource(`/api/runs/${id}/events`);
+      source.onmessage = onMessage;
+      // The browser reconnects by itself after a drop; a refused stream (an unknown run, the
+      // server restarted and this session ended) closes for good: find out why.
+      source.onerror = () => {
+        if (source?.readyState !== EventSource.CLOSED || closed) return;
+        api<RunSummary>(`/api/runs/${id}`).then(
+          () => (retry = setTimeout(connect, 2_000)),
+          (err: ApiError | Error) => {
+            if (err instanceof ApiError && err.status === 404) setProblem("This run doesn't exist. It may have been started by another code-flow, or its files were removed.");
+            else if (err instanceof ApiError) setProblem(`Couldn't load this run: ${err.message}`);
+            else retry = setTimeout(connect, 5_000); // code-flow isn't reachable right now
+          },
+        );
+      };
+    };
+    const onMessage = (msg: MessageEvent<string>) => {
+      const ev = JSON.parse(msg.data) as RunEvent | { type: "hello"; epoch: string; resumed?: boolean };
+      if (ev.type === "hello") {
+        // Not resumed means the whole history follows: start over rather than mix two of them.
+        if (ev.epoch !== data.current.epoch || !ev.resumed) data.current = { ...emptyData(), epoch: ev.epoch };
+        return;
+      }
       const d = data.current;
       if (d.seen.has(ev.seq)) return;
       d.seen.add(ev.seq);
       if (ev.type === "run") {
+        if (ev.seq < d.runSeq) return;
+        d.runSeq = ev.seq;
         setRun(ev.run);
-        upsertRun(ev.run);
+        upsertRunFrom(ev.run, ev.seq);
       } else if (ev.type === "step") {
+        if (ev.seq < (d.stepSeq.get(ev.step.id) ?? 0)) return;
+        d.stepSeq.set(ev.step.id, ev.seq);
         d.steps.set(ev.step.id, ev.step);
         if (follow.current && ev.step.status === "running") setSelected(ev.step.id);
       } else if (ev.type === "agent") {
@@ -87,7 +125,12 @@ export function RunView({ id }: { id: string }) {
         setTimeout(flush, 250);
       }
     };
-    return () => source.close();
+    connect();
+    return () => {
+      closed = true;
+      clearTimeout(retry);
+      source?.close();
+    };
   }, [id]);
 
   useEffect(() => {
@@ -121,7 +164,16 @@ export function RunView({ id }: { id: string }) {
     return (
       <div class="runview">
         <div class="run-scroll">
-          <div class="thread help">Loading…</div>
+          {problem ? (
+            <div class="thread">
+              <p class="msg err">{problem}</p>
+              <p>
+                <a href="#/">← Back to a new run</a>
+              </p>
+            </div>
+          ) : (
+            <div class="thread help">Loading…</div>
+          )}
         </div>
       </div>
     );
@@ -921,6 +973,16 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
   }, [base]);
   const open = (target: string) =>
     post<{ openedWith: string }>(`${base}/open`, { target }).then((r) => showToast(`Opened in ${r.openedWith}${onPhone ? " on your computer" : ""}`), (e) => showToast(e.message, 5000));
+  /** Start the app; for a locked-down run, only once you've said to run that code here. */
+  const runApp = async () => {
+    try {
+      setServer(await post(base + "/serve", { command }));
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.confirm !== "allowUntrusted") return showToast((e as Error).message, 5000);
+      if (!confirm(`${e.message}\n\nRun it on this computer anyway?`)) return;
+      await post(base + "/serve", { command, allowUntrusted: true }).then(setServer, (err) => showToast(err.message, 5000));
+    }
+  };
   // From the phone, the app is on the computer's Wi-Fi address — reachable if it listens there.
   const appUrl = server && onPhone ? server.url.replace("//localhost:", `//${location.hostname}:`) : server?.url;
   return (
@@ -959,7 +1021,7 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
           <button
             class="btn small"
             disabled={!command.trim()}
-            onClick={() => post(base + "/serve", { command }).then(setServer, (e) => showToast(e.message, 5000))}
+            onClick={() => void runApp()}
           >
             ▶ Run app
           </button>

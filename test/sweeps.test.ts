@@ -14,7 +14,7 @@ process.env.FAKE_GH_STATE = stateFile;
 
 const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
-const { listSweep, runSweep, nextSweepItems, coveringRun } = await import("../src/sweeps.js");
+const { listSweep, runSweep, nextSweepItems, coveringRun, sourceKeys } = await import("../src/sweeps.js");
 const { ciState, loadSource, sourcePrompt } = await import("../src/github.js");
 const { Automations, readWebhook } = await import("../src/automation.js");
 const { repoRoot } = await import("../src/git.js");
@@ -149,8 +149,29 @@ test("issues sweep: every open issue is listed; questions and the like start unp
     ],
   );
   assert.match(list.items[1]!.note!, /question/);
-  assert.equal(list.items[0]!.task, "Fix issue #11: Login fails with an empty password. Add a test that fails without the fix.");
+  // The title is the issue author's: it reaches the agents with the issue's text, not in the task.
+  assert.equal(list.items[0]!.task, "Fix issue #11. Add a test that fails without the fix.");
+  assert.equal(list.items[0]!.title, "Login fails with an empty password");
   assert.deepEqual(list.items[0]!.source, { kind: "issue", number: 11 });
+  assert.deepEqual(list.notices, []);
+});
+
+test("sweeps read past GitHub's first page, and say when there were more than they list", async () => {
+  const saved = state();
+  setState((s) => {
+    s.issues = Array.from({ length: 1_005 }, (_, i) => ({ number: 1_000 + i, title: `Issue ${i}`, body: "", url: `https://github.com/o/r/issues/${1_000 + i}`, labels: [] }));
+    s.codeScanningAlerts = Array.from({ length: 150 }, (_, i) => ({ number: 500 + i, state: "open", html_url: "", rule: { id: "x", severity: "note" }, most_recent_instance: { location: {} } }));
+  });
+  try {
+    const issues = await listSweep(repo, "issues", []);
+    assert.equal(issues.items.length, 1_000);
+    assert.match(issues.notices[0]!, /Only the first 1000 open issues are listed/);
+    const alerts = await listSweep(repo, "alerts", []);
+    assert.equal(alerts.items.filter((i) => i.key.startsWith("code-scanning#")).length, 150, "every page of alerts, not just the first 100");
+    assert.deepEqual(alerts.notices, []);
+  } finally {
+    writeFileSync(stateFile, JSON.stringify(saved));
+  }
 });
 
 test("Dependabot sweep: only Dependabot's PRs; only failing ones are picked, green ones wait for you", async () => {
@@ -170,18 +191,20 @@ test("alerts sweep: Dependabot alerts per package, code scanning per alert, secr
   const list = await listSweep(repo, "alerts", []);
   assert.deepEqual(list.notices, []);
   const by = Object.fromEntries(list.items.map((i) => [i.key, i]));
-  // Two lodash alerts become one item that upgrades past both.
-  const lodash = by["dependabot:npm/lodash"]!;
+  // Two lodash alerts become one item that upgrades past both; it's keyed by alert number.
+  const lodash = by["dependabot#3"]!;
+  assert.equal(lodash.title, "lodash (npm)");
   assert.equal(lodash.ref, "2 alerts");
   assert.equal(lodash.severity, "high");
   assert.deepEqual(lodash.source, { kind: "alert", tool: "dependabot", number: 3, numbers: [3, 4] });
+  assert.equal(lodash.legacyKey, "dependabot:npm/lodash");
   assert.equal(lodash.selected, true);
   assert.match(lodash.task!, /Fix 2 Dependabot alerts in lodash \(npm\): upgrade it to 4\.17\.21 or later in package\.json/);
   // Dependabot's open PR already upgrades axios; left-pad has no fix yet.
-  assert.equal(by["dependabot:npm/axios"]!.selected, false);
-  assert.match(by["dependabot:npm/axios"]!.note!, /Dependabot PR #7 already upgrades it/);
-  assert.equal(by["dependabot:npm/left-pad"]!.selected, false);
-  assert.match(by["dependabot:npm/left-pad"]!.task!, /Mitigate Dependabot alert #6/);
+  assert.equal(by["dependabot#5"]!.selected, false);
+  assert.match(by["dependabot#5"]!.note!, /Dependabot PR #7 already upgrades it/);
+  assert.equal(by["dependabot#6"]!.selected, false);
+  assert.match(by["dependabot#6"]!.task!, /Mitigate Dependabot alert #6/);
   // Code scanning: the injection is picked, the style note isn't.
   assert.equal(by["code-scanning#21"]!.selected, true);
   assert.match(by["code-scanning#21"]!.task!, /Fix code scanning alert #21: Database query built from user-controlled sources in src\/db\.js:42/);
@@ -199,7 +222,7 @@ test("alerts sweep: a part GitHub won't list says why, and the rest still lists"
   setState((s) => (s.alertErrors = ["code-scanning", "secret-scanning"]));
   try {
     const list = await listSweep(repo, "alerts", []);
-    assert.ok(list.items.some((i) => i.key === "dependabot:npm/lodash"));
+    assert.ok(list.items.some((i) => i.key === "dependabot#3"));
     assert.ok(!list.items.some((i) => i.key.startsWith("code-scanning") || i.key.startsWith("secret")));
     assert.equal(list.notices.length, 2);
     assert.match(list.notices[0]!, /Code scanning alerts aren't turned on/);
@@ -258,24 +281,42 @@ test("runSweep: one run per item, in your order; covered items are skipped and f
   assert.equal(coveringRun([{ ...covering, status: "failed" } as Run], root, { kind: "pr", number: 7 }), undefined);
 });
 
-test("a sweep's runs wait in the inbox; approving a Dependabot fix pushes it to the PR", async () => {
+test("a sweep's runs wait in the inbox; a Dependabot PR's text is fenced, and approving its fix pushes it to the PR", async () => {
   const trigger = { id: "s-test", name: "Fix Dependabot PRs", via: "sweep" as const };
   const runs: Run[] = [];
-  const outcome = await runSweep({
-    repo,
-    items: [{ key: "pr#7", task: "Make CI pass on Dependabot's pull request #7", source: { kind: "pr", number: 7, ciLogs: true } }],
-    runs: manager.list(),
-    start: async (item) => {
-      const run = await manager.start({ pattern: findPattern("pipeline")!, task: item.task, repo, source: item.source, roles: team, options: {}, approvals: { plan: true }, trigger });
-      runs.push(run);
-      return run;
-    },
-  });
-  assert.equal(outcome.started.length, 1);
-  const run = await finished(runs[0]!);
+  const dir = mkdtempSync(join(tmpdir(), "codeflow-record-"));
+  process.env.FAKE_RECORD_DIR = dir;
+  let run: Run;
+  try {
+    const outcome = await runSweep({
+      repo,
+      items: [{ key: "pr#7", task: "Make CI pass on Dependabot's pull request #7", source: { kind: "pr", number: 7, ciLogs: true } }],
+      runs: manager.list(),
+      start: async (item) => {
+        const started = await manager.start({ pattern: findPattern("pipeline")!, task: item.task, repo, source: item.source, roles: team, options: {}, approvals: { plan: true }, trigger, loop: { check: "true", copy: [".env"] } });
+        runs.push(started);
+        return started;
+      },
+    });
+    assert.equal(outcome.started.length, 1);
+    run = await finished(runs[0]!);
+  } finally {
+    delete process.env.FAKE_RECORD_DIR;
+  }
   assert.equal(run.status, "done", run.error);
-  // Dependabot's PR is GitHub's own: not locked down, and nobody approves a plan for a sweep.
+  // Its branch is this repository's, so the run isn't locked down: setup can install the new
+  // version and the check can verify it. But its description quotes upstream release notes and
+  // its CI logs print the new package's output, so that text is fenced as untrusted.
   assert.equal(run.lockdown, undefined);
+  assert.equal(run.source?.trusted, true);
+  assert.equal(run.source?.untrustedText, true);
+  const recorded = readdirSync(dir).map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as { vendor: string; args: string[]; prompt?: string });
+  const prompt = recorded.find((p) => p.prompt?.includes("Pull request #7"))!.prompt!;
+  assert.match(prompt, /outside this repository's maintainers/);
+  assert.match(prompt, /```text\nTitle: Bump axios from 0\.21\.0 to 1\.7\.4\nBranch: dependabot\/npm_and_yarn\/axios-1\.7\.4 into main/, "the title is in the fence, not a heading");
+  assert.doesNotMatch(prompt, /## Pull request #7: Bump/);
+  assert.match(prompt, /### Logs of the failed jobs\n.*outside this repository's maintainers/);
+  // Nobody approves a plan for a sweep.
   assert.deepEqual(run.approvals, {});
   assert.equal(run.source?.ci?.failing.length, 1);
   assert.equal(run.triage?.state, "pending");
@@ -315,7 +356,7 @@ test("a recurring sweep starts runs only for new items, up to its limit", async 
   });
   const first = await automations.fire(t.id, { via: "manual" });
   assert.equal(first.runs?.length, 1);
-  assert.deepEqual(startedTasks, ["Fix issue #11: Login fails with an empty password. Add a test that fails without the fix."]);
+  assert.deepEqual(startedTasks, ["Fix issue #11. Add a test that fails without the fix."]);
   await finished(first.runs![0]!);
   assert.equal(first.runs![0]!.triage?.state, "pending");
 
@@ -327,15 +368,93 @@ test("a recurring sweep starts runs only for new items, up to its limit", async 
   const third = await automations.fire(t.id, { via: "schedule" });
   assert.equal(third.skipped, "nothing new to sweep");
   assert.deepEqual(automations.get(t.id)!.handled, ["issue#11", "issue#13"]);
-
-  // A webhook names one item: it starts with the sweep's own task, once.
-  const hooked = await automations.fire(t.id, { via: "webhook", source: { kind: "alert", tool: "code-scanning", number: 21 } });
-  assert.equal(hooked.runs?.length, 1);
-  assert.equal(hooked.runs![0]!.source?.alert?.rule, "js/sql-injection");
-  await finished(hooked.runs![0]!);
-  assert.equal((await automations.fire(t.id, { via: "webhook", source: { kind: "alert", tool: "code-scanning", number: 21 } })).skipped, "nothing new to sweep");
   // Nothing piles up as text files: every run here was the sweep's.
-  assert.ok(readdirSync(join(process.env.CODEFLOW_HOME!, "runs")).length >= 4);
+  assert.ok(readdirSync(join(process.env.CODEFLOW_HOME!, "runs")).length >= 2);
+});
+
+test("a webhook-fired sweep follows the sweep's own rules: its kind, its picks, one run per item, at most max an hour", async () => {
+  const startedTasks: string[] = [];
+  const automations = new Automations(
+    manager,
+    async (body, extra) => {
+      startedTasks.push(body.task);
+      await new Promise((r) => setTimeout(r, 50)); // starting a run takes a while: long enough for a second delivery
+      return manager.start({ pattern: findPattern("pipeline")!, task: body.task, repo: body.repo, source: body.source, roles: team, options: {}, trigger: extra.trigger });
+    },
+    (r, kind) => listSweep(r, kind, manager.list()),
+  );
+  await automations.load();
+  const t = await automations.create({
+    name: "Hooked issues",
+    enabled: true,
+    run: { repo, pattern: "pipeline", task: "Fix the GitHub issue below.", roles: team },
+    webhook: true,
+    isolate: false,
+    sweep: { kind: "issues", max: 2 },
+  });
+  setState((s) =>
+    s.issues.push(
+      { number: 14, title: "Crash on save", body: "It crashes.", url: "https://github.com/o/r/issues/14", labels: [] },
+      { number: 15, title: "Typo in footer", body: "", url: "https://github.com/o/r/issues/15", labels: [] },
+      { number: 16, title: "Slow start", body: "", url: "https://github.com/o/r/issues/16", labels: [] },
+    ),
+  );
+  const hook = (source: object) => automations.fire(t.id, { via: "webhook", source: source as never, details: "GitHub: issue opened by @someone" });
+
+  // Not this sweep's kind, or not one its list would pick: nothing starts.
+  assert.match((await hook({ kind: "alert", tool: "code-scanning", number: 21 })).skipped!, /issues sweep doesn't start from an alert/);
+  assert.match((await hook({ kind: "pr", number: 7 })).skipped!, /doesn't start from a pull request/);
+  assert.match((await hook({ kind: "issue", number: 12 })).skipped!, /wouldn't pick it: Labelled “question”/);
+  assert.match((await hook({ kind: "issue", number: 99 })).skipped!, /isn't in the sweep's list/);
+  // The same issue twice at once (GitHub sends "opened" and "labeled"): one run.
+  const [a, b] = await Promise.all([hook({ kind: "issue", number: 14 }), hook({ kind: "issue", number: 14 })]);
+  assert.equal([a, b].filter((r) => r.runs?.length).length, 1);
+  assert.equal([a, b].find((r) => !r.runs?.length)!.skipped, "nothing new to sweep");
+  assert.deepEqual(startedTasks, ["Fix issue #14. Add a test that fails without the fix.\n\n## Details from the webhook\nGitHub: issue opened by @someone"]);
+  await finished(a.runs?.[0] ?? b.runs![0]!);
+  assert.equal((await hook({ kind: "issue", number: 14 })).skipped, "nothing new to sweep");
+  // At most `max` (2) runs from webhooks an hour: an outsider opening many issues can't start many runs.
+  const second = await hook({ kind: "issue", number: 15 });
+  assert.equal(second.runs?.length, 1);
+  await finished(second.runs![0]!);
+  const capped = await hook({ kind: "issue", number: 16 });
+  assert.match(capped.skipped!, /already started 2 runs from webhooks in the last hour \(at most 2\)/);
+  assert.match(automations.get(t.id)!.lastError!, /at most 2/);
+  assert.deepEqual(automations.get(t.id)!.handled, ["issue#14", "issue#15"]);
+});
+
+test("alerts are remembered by number: a new alert on a swept package is swept, and old package keys don't block it", async () => {
+  const automations = new Automations(
+    manager,
+    (body, extra) => manager.start({ pattern: findPattern("pipeline")!, task: body.task, repo: body.repo, source: body.source, roles: team, options: {}, trigger: extra.trigger }),
+    (r, kind) => listSweep(r, kind, manager.list()),
+  );
+  await automations.load();
+  const t = await automations.create({
+    name: "Nightly alerts",
+    enabled: true,
+    run: { repo, pattern: "pipeline", task: "Fix the security alert below.", roles: team },
+    webhook: true,
+    isolate: false,
+    sweep: { kind: "alerts", max: 1 },
+    // Saved by an older code-flow, which remembered lodash's alerts by package.
+    handled: ["dependabot:npm/lodash", "code-scanning#21"],
+  });
+  assert.equal((await automations.fire(t.id, { via: "manual" })).skipped, "nothing new to sweep");
+  assert.deepEqual(automations.get(t.id)!.handled!.sort(), ["code-scanning#21", "dependabot#3", "dependabot#4"], "the old key became the alerts open then");
+
+  setState((s) => s.dependabotAlerts.push(advisory(9, "lodash", "critical", "< 4.17.22", "4.17.22", "Another lodash hole")));
+  try {
+    const fired = await automations.fire(t.id, { via: "schedule" });
+    assert.equal(fired.runs?.length, 1, fired.skipped);
+    const run = await finished(fired.runs![0]!);
+    assert.deepEqual(run.source?.alert?.numbers, [3, 4, 9], "one run upgrades past every lodash alert");
+    assert.deepEqual(automations.get(t.id)!.handled!.filter((k) => k.startsWith("dependabot")).sort(), ["dependabot#3", "dependabot#4", "dependabot#9"]);
+    // The webhook path uses the same keys: alert #9 isn't swept twice.
+    assert.equal((await automations.fire(t.id, { via: "webhook", source: { kind: "alert", tool: "dependabot", number: 9 } })).skipped, "nothing new to sweep");
+  } finally {
+    setState((s) => (s.dependabotAlerts = s.dependabotAlerts.filter((a: { number: number }) => a.number !== 9)));
+  }
 });
 
 test("webhooks: new Dependabot and code scanning alerts start a run; leaked secrets don't", () => {
@@ -361,6 +480,19 @@ test("nextSweepItems: picked, not manual, not handled, at most max", () => {
       { key: "e", ref: "", title: "", detail: "", url: "", selected: true, task: "t", source: { kind: "issue" as const, number: 5 } },
     ],
   };
-  assert.deepEqual(nextSweepItems(list, new Set(["a"]), 1).map((i) => i.key), ["d"]);
+  assert.deepEqual(nextSweepItems(list, new Set(["issue#1"]), 1).map((i) => i.key), ["d"]);
   assert.deepEqual(nextSweepItems(list, new Set(), 5).map((i) => i.key), ["a", "d", "e"]);
+  // An item of several alerts is new while any of them is.
+  const alerts = { kind: "alerts" as const, notices: [], items: [{ key: "dependabot#3", ref: "", title: "", detail: "", url: "", selected: true, task: "t", source: { kind: "alert" as const, tool: "dependabot" as const, number: 3, numbers: [3, 4] } }] };
+  assert.deepEqual(nextSweepItems(alerts, new Set(["dependabot#3"]), 5).length, 1);
+  assert.deepEqual(nextSweepItems(alerts, new Set(["dependabot#3", "dependabot#4"]), 5).length, 0);
+  assert.deepEqual(sourceKeys({ kind: "alert", tool: "dependabot", number: 3, numbers: [3, 4] }), ["dependabot#3", "dependabot#4"]);
+});
+
+test("coveringRun: an alert is covered only when a standing run covers every alert in it", async () => {
+  const root = await repoRoot(repo);
+  const run = { id: "r-lodash", repo: root, archived: false, status: "done", source: { kind: "alert", number: 3, alert: { tool: "dependabot", numbers: [3, 4] } } } as unknown as Run;
+  assert.equal(coveringRun([run], root, { kind: "alert", tool: "dependabot", number: 3, numbers: [3, 4] }), run);
+  assert.equal(coveringRun([run], root, { kind: "alert", tool: "dependabot", number: 3, numbers: [3, 4, 9] }), undefined, "alert #9 is new work");
+  assert.equal(coveringRun([run], root, { kind: "alert", tool: "code-scanning", number: 3 }), undefined);
 });

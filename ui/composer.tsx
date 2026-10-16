@@ -130,7 +130,13 @@ export function Composer() {
       <p class="lede">Describe the task, add the files that matter, and pick how your agents work together.</p>
       {!repoInfo.value ? (
         <div class={`banner ${repoError.value ? "bad" : ""}`}>
-          <p>{repoError.value ? `${repoError.value}. Pick the folder that contains your project's .git.` : "Choose the repository the agents should work in."}</p>
+          <p>
+            {!repoError.value
+              ? "Choose the repository the agents should work in."
+              : /isn't a git repository$/.test(repoError.value)
+                ? `${repoError.value}. Pick the folder that contains your project's .git.`
+                : repoError.value}
+          </p>
           <button class="btn primary" onClick={() => (pickerOpen.value = true)}>
             Choose repository
           </button>

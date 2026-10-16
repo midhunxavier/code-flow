@@ -1,23 +1,29 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { cantRunMessage } from "./checks.js";
 import { CODEFLOW_HOME } from "./config.js";
 import type { Run, RunManager, RunSummary } from "./engine.js";
+import { logError } from "./log.js";
 import { projectOf, type Project } from "./projects.js";
 
 /**
  * code-flow on your phone, behind a secret link. By default it's a read-only view: what's
  * running, what needs you, and each run's result, as plain server-rendered HTML that refreshes
- * itself and has no buttons. With `control` on (and the Wi-Fi listener), the link signs the
- * phone in to the full app instead — see server.ts.
+ * itself and has no buttons. With `control` on (and the Wi-Fi listener), a link with a secret
+ * of its own signs the phone in to the full app instead — see server.ts.
  */
 
 export interface RemoteSettings {
   enabled: boolean;
+  /** The read-only view's secret (`/r/<token>`). That link never signs a phone in. */
   token: string;
+  /**
+   * Full control's own secret: its link signs a phone in, and the phone's cookie carries it. Kept
+   * apart from `token`, so a read-only link someone saw can't become a full-control one.
+   */
+  controlToken: string;
   /** Also listen on your local network (so a phone on the same Wi-Fi can open it). */
   lan: boolean;
   /** The link opens the whole app on the network listener: start, answer, merge — everything. */
@@ -25,22 +31,87 @@ export interface RemoteSettings {
 }
 
 const FILE = join(CODEFLOW_HOME, "remote.json");
+const validToken = (t: unknown): t is string => typeof t === "string" && /^[0-9a-f]{32,}$/.test(t);
+const fresh = (): RemoteSettings => ({ enabled: false, token: newToken(), controlToken: newToken(), lan: false, control: false });
 
-export async function loadRemote(): Promise<RemoteSettings> {
-  if (existsSync(FILE)) {
-    try {
-      const raw = JSON.parse(await readFile(FILE, "utf8"));
-      if (typeof raw.token === "string" && raw.token.length >= 32) return { enabled: !!raw.enabled, token: raw.token, lan: !!raw.lan, control: !!raw.control };
-    } catch {
-      // fall through to fresh settings
+/**
+ * The phone settings. A remote.json that can't be read is moved aside (`remote.json.corrupt-<time>`)
+ * and logged, and code-flow starts with phone access off rather than with a new link.
+ */
+export async function loadRemote(file = FILE): Promise<RemoteSettings> {
+  unreadable.delete(file);
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      // There but unreadable (permissions, an I/O error): kept as it is, and never written over
+      // until code-flow can read it, or its links and settings would be lost for good.
+      logError(`Couldn't read ${file}; phone access is off until it can be read`, err);
+      unreadable.set(file, (err as Error).message);
     }
+    return fresh();
   }
-  return { enabled: false, token: randomBytes(24).toString("hex"), lan: false, control: false };
+  let raw: any;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    raw = undefined;
+  }
+  if (!raw || typeof raw !== "object" || !validToken(raw.token)) {
+    const aside = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    await rename(file, aside).then(
+      () => logError(`${file} couldn't be read: moved it to ${aside}; phone access is off`),
+      (err) => logError(`${file} couldn't be read, nor moved aside; phone access is off`, err),
+    );
+    return fresh();
+  }
+  const settings: RemoteSettings = {
+    enabled: raw.enabled === true,
+    token: raw.token,
+    // Saved before full control had a secret of its own: phones sign in again, once.
+    controlToken: validToken(raw.controlToken) && raw.controlToken !== raw.token ? raw.controlToken : newToken(),
+    lan: raw.lan === true,
+    control: raw.control === true,
+  };
+  // Saved right away, or every restart would make a new one and sign the phone out again.
+  if (settings.controlToken !== raw.controlToken) {
+    await saveRemote(settings, file).catch((err) => logError(`Couldn't save ${file}; the full-control link changes at the next start`, err));
+  }
+  return settings;
 }
 
-export async function saveRemote(settings: RemoteSettings) {
-  await mkdir(dirname(FILE), { recursive: true });
-  await writeFile(FILE, JSON.stringify(settings, null, 2), { mode: 0o600 });
+/** remote.json files that exist but couldn't be read at load, and why. */
+const unreadable = new Map<string, string>();
+
+/** Saved through a temporary file, so a crash mid-write can't leave half a file. */
+export async function saveRemote(settings: RemoteSettings, file = FILE) {
+  const why = unreadable.get(file);
+  if (why) throw new Error(`Phone settings can't be changed: ${file} couldn't be read when code-flow started (${why}). Fix its permissions, then restart code-flow.`);
+  await mkdir(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  await writeFile(tmp, JSON.stringify(settings, null, 2), { mode: 0o600 });
+  await rename(tmp, file);
+}
+
+/**
+ * Settings after a change from the Phone section. Turning something off signs out whatever it
+ * let in: the phone link, the Wi-Fi listener or full control off makes new secrets, so turning
+ * it back on later doesn't revive old links or phones' cookies. `rotate` (New link) makes both.
+ */
+export function changeRemote(before: RemoteSettings, patch: { enabled?: boolean; lan?: boolean; control?: boolean; rotate?: boolean }): RemoteSettings {
+  const next = { ...before };
+  if (typeof patch.enabled === "boolean") next.enabled = patch.enabled;
+  if (typeof patch.lan === "boolean") next.lan = patch.lan;
+  if (typeof patch.control === "boolean") next.control = patch.control;
+  const turnedOff = (key: "enabled" | "lan" | "control") => before[key] && !next[key];
+  if (patch.rotate || turnedOff("enabled") || turnedOff("lan")) {
+    next.token = newToken();
+    next.controlToken = newToken();
+  } else if (turnedOff("control")) {
+    next.controlToken = newToken();
+  }
+  return next;
 }
 
 export function newToken(): string {
@@ -59,6 +130,20 @@ export function lanAddresses(): string[] {
     .flat()
     .filter((i) => i && i.family === "IPv4" && !i.internal)
     .map((i) => i!.address);
+}
+
+/**
+ * A connection from this machine: loopback, or any of its own addresses (a program here that
+ * connects to the Wi-Fi address arrives from that address, not from 127.0.0.1). An address
+ * that can't be told counts as local.
+ */
+export function isOwnAddress(address: string | undefined): boolean {
+  if (!address) return true;
+  const plain = address.replace(/^::ffff:/i, "").replace(/%.*$/, "").toLowerCase();
+  if (plain === "::1" || plain === "::" || plain === "0.0.0.0" || plain.startsWith("127.")) return true;
+  return Object.values(networkInterfaces())
+    .flat()
+    .some((i) => !!i && i.address.replace(/%.*$/, "").toLowerCase() === plain);
 }
 
 const esc = (s: unknown) =>

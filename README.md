@@ -29,7 +29,7 @@ You pick how the agents work together (plan → build → review, a race, a deba
 
 ## Quickstart
 
-You need Node 20+, git, and at least one of [`claude`](https://docs.anthropic.com/en/docs/claude-code), [`codex`](https://github.com/openai/codex) or `agy` installed and signed in.
+You need Node 20+, git 2.38+ (for **Merge**), and at least one of [`claude`](https://docs.anthropic.com/en/docs/claude-code), [`codex`](https://github.com/openai/codex) or `agy` installed and signed in.
 
 ```bash
 git clone https://github.com/midhunxavier/code-flow.git

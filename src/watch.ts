@@ -1,8 +1,21 @@
 import type { PrWatch, Run, RunManager } from "./engine.js";
 import { git } from "./git.js";
-import { CODEFLOW_MARKER, failedLogs, githubUser, prChecks, prStatus, safeFence } from "./github.js";
+import { CODEFLOW_MARKER, failedLogs, GH_AUTH_ERROR, ghAuthStatus, githubUser, prChecks, prStatus, safeFence } from "./github.js";
+import { logWarn } from "./log.js";
 
 const ACTIVE = new Set<PrWatch["state"]>(["watching", "fixing", "green"]);
+/** Polls in a row that fail before a watch hands the PR back to you. */
+export const FAILURES_BEFORE_NEEDS_YOU = 3;
+/** The longest a failing watch waits between polls. */
+const MAX_BACKOFF_MS = 30 * 60_000;
+
+/** A watch whose polls keep failing (gh signed out, rate-limited, offline). */
+interface Failing {
+  count: number;
+  /** Don't poll again before this. */
+  nextAt: number;
+  error: string;
+}
 
 /**
  * PR follow-through. Every interval, for each watched PR whose run is idle:
@@ -13,10 +26,16 @@ const ACTIVE = new Set<PrWatch["state"]>(["watching", "fixing", "green"]);
  * - otherwise, failing CI on the PR's head → a "fix failing CI" follow-up with the failed jobs'
  *   logs, up to the watch's fix limit.
  * Each fix is committed and pushed to the PR by the follow-up. Nothing here ever merges.
+ *
+ * A poll that fails (gh signed out, rate-limited, no network) is retried with a growing wait.
+ * After three in a row the watch needs you, with the reason; it keeps retrying at that pace
+ * and goes back to watching once gh answers again.
  */
 export class PrWatcher {
   private timer?: ReturnType<typeof setInterval>;
   private polling?: Promise<void>;
+  /** Watches whose polls are failing, by `<run id>/<branch>`; forgotten on restart. */
+  private readonly failing = new Map<string, Failing>();
 
   constructor(
     private readonly manager: RunManager,
@@ -32,22 +51,51 @@ export class PrWatcher {
     if (this.timer) clearInterval(this.timer);
   }
 
-  /** One pass over every active watch; concurrent calls share the pass in progress. */
-  poll(): Promise<void> {
-    this.polling ??= this.pollAll().finally(() => (this.polling = undefined));
+  /** One pass over every active watch; concurrent calls share the pass in progress. `now` is for tests. */
+  poll(now?: number): Promise<void> {
+    this.polling ??= this.pollAll(now).finally(() => (this.polling = undefined));
     return this.polling;
   }
 
-  private async pollAll() {
+  private async pollAll(now = Date.now()) {
     for (const run of this.manager.watchedRuns()) {
       for (const watch of Object.values(run.watches)) {
-        if (!ACTIVE.has(watch.state) || run.status === "running" || run.archived) continue;
+        const key = `${run.id}/${watch.branch}`;
+        const failing = this.failing.get(key);
+        // A watch handed back to you for failing polls is still retried, so it recovers on its own.
+        const retrying = watch.state === "needs-you" && !!failing;
+        if ((!ACTIVE.has(watch.state) && !retrying) || run.status === "running" || run.archived) {
+          if (!retrying) this.failing.delete(key);
+          continue;
+        }
+        if (failing && failing.nextAt > now) continue;
         try {
           await this.pollOne(run, watch);
+          this.failing.delete(key);
         } catch (err) {
-          this.manager.updateWatch(run.id, watch.branch, { detail: `Couldn't check the PR: ${(err as Error).message}`, lastPolled: Date.now() });
+          await this.pollFailed(run, watch, key, err as Error, now);
         }
       }
+    }
+  }
+
+  /** Count a failed poll and wait longer before the next; the third in a row hands the PR to you. */
+  private async pollFailed(run: Run, watch: PrWatch, key: string, err: Error, now: number) {
+    const count = (this.failing.get(key)?.count ?? 0) + 1;
+    let error = err.message;
+    // Name the likely cause once: an expired gh login looks like any other failure from here.
+    if (count === 1 || GH_AUTH_ERROR.test(error)) {
+      const auth = await ghAuthStatus(run.repo).catch(() => undefined);
+      if (auth && !auth.ok) error = `gh isn't signed in — run \`gh auth login\`${auth.message ? ` (gh auth status: ${auth.message.slice(0, 200)})` : ""}`;
+    }
+    const wait = Math.min(MAX_BACKOFF_MS, this.intervalMs * 2 ** (count - 1));
+    this.failing.set(key, { count, nextAt: now + wait, error });
+    const detail = `Couldn't check the PR ${count} time${count === 1 ? "" : "s"} in a row: ${error}`;
+    if (count >= FAILURES_BEFORE_NEEDS_YOU) {
+      if (count === FAILURES_BEFORE_NEEDS_YOU) logWarn(`PR watch on ${watch.pr} keeps failing`, { run: run.id, error });
+      this.manager.updateWatch(run.id, watch.branch, { state: "needs-you", detail, lastPolled: now });
+    } else {
+      this.manager.updateWatch(run.id, watch.branch, { detail, lastPolled: now });
     }
   }
 

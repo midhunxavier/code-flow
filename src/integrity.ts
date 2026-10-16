@@ -1,4 +1,4 @@
-import { git } from "./git.js";
+import { git, gitError } from "./git.js";
 
 /**
  * Test integrity: the check only proves something if the tests it runs are still the tests.
@@ -8,7 +8,8 @@ import { git } from "./git.js";
  */
 
 export interface IntegrityIssue {
-  kind: "deleted-test" | "skipped-test" | "weakened-test" | "test-config" | "test-script" | "fewer-tests";
+  /** unverified: git couldn't show the change, so nothing could be checked. */
+  kind: "deleted-test" | "skipped-test" | "weakened-test" | "test-config" | "test-script" | "fewer-tests" | "unverified";
   file: string;
   detail: string;
   /** high: very likely to make a failing check pass without fixing anything. */
@@ -25,6 +26,25 @@ const ASSERTION =
   /\b(assert\w*|expect|should|t\.(?:Error|Fatal|Fail)\w*|require\.\w+|deepEqual|strictEqual|notEqual|toBe\w*|toEqual|toMatch\w*|toThrow\w*|toHave\w*|toContain\w*)\b/;
 
 export const isTestFile = (path: string) => TEST_FILE.test(path);
+
+const SOURCE = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|kts|scala|rb|cs|swift|php|c|cc|cpp|h|hpp|m|mm|ex|exs|dart|lua|vue|svelte)$/i;
+/** Fixtures and expected outputs a test compares against: changing them makes a test pass too. */
+const FIXTURE = /(^|\/)(__snapshots__|__fixtures__|fixtures?|testdata|test-data|golden|snapshots?)\/|\.snap$/i;
+
+/**
+ * Code that isn't a test, a test's config, or a fixture: a stub a tester added so its tests can
+ * import something is this kind, and the builder's to fill in. Anything else the tester wrote
+ * (snapshots, golden files, conftest.py) is part of the tests.
+ */
+export const isPlainSource = (path: string) => SOURCE.test(path) && !TEST_FILE.test(path) && !TEST_CONFIG.test(path) && !FIXTURE.test(path);
+
+/**
+ * The check found nothing only means something if it could look: when git fails, that is the
+ * issue (fail closed), so a pass isn't accepted as clean on no evidence.
+ */
+export function unverifiedIssue(reason: string): IntegrityIssue {
+  return { kind: "unverified", file: "", detail: `couldn't verify test integrity: ${reason.split("\n")[0]!.slice(0, 300)}`, severity: "high" };
+}
 
 /** npm/pnpm/yarn script names a check command runs, e.g. `npm test` → test, `npm run test:unit` → test:unit. */
 function scriptsRun(check?: string): string[] {
@@ -50,14 +70,20 @@ export async function inspectChanges(
 ): Promise<IntegrityIssue[]> {
   const issues: IntegrityIssue[] = [];
   const range = `${from}..${to}`;
-  const status = await git(["diff", "--name-status", "-M", "-z", range], cwd);
-  if (status.code !== 0) return issues;
+  const statusArgs = ["diff", "--name-status", "-M", "-z", range];
+  const status = await git(statusArgs, cwd);
+  if (status.code !== 0) return [unverifiedIssue(gitError(statusArgs, status))];
   const tokens = status.stdout.split("\0").filter(Boolean);
   const changes: { code: string; path: string }[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const code = tokens[i]![0]!;
     if (code === "R" || code === "C") {
-      changes.push({ code: "R", path: tokens[i + 2]! });
+      const [from, to] = [tokens[i + 1]!, tokens[i + 2]!];
+      // Renamed out of the test runner's sight (foo.test.ts → foo.ts): the test is gone.
+      if (code === "R" && isTestFile(from) && !isTestFile(to)) {
+        issues.push({ kind: "deleted-test", file: from, detail: `test file renamed to \`${to}\`, so it no longer runs as a test`, severity: "high" });
+      }
+      changes.push({ code: "R", path: to });
       i += 2;
     } else {
       changes.push({ code, path: tokens[i + 1]! });
@@ -74,7 +100,9 @@ export async function inspectChanges(
 
   // Added lines that skip tests, and test files that lost assertions.
   const added = new Set(changes.filter((c) => c.code === "A").map((c) => c.path));
-  const patch = await git(["diff", "-U0", "--no-color", "-M", range], cwd);
+  const patchArgs = ["diff", "-U0", "--no-color", "-M", range];
+  const patch = await git(patchArgs, cwd);
+  if (patch.code !== 0) return [...issues, unverifiedIssue(gitError(patchArgs, patch))];
   let file = "";
   let header = false;
   let lineNo = 0;
