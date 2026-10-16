@@ -499,7 +499,7 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
     }
     // The read-only link only ever shows the read-only view, whatever is turned on.
     if (!tokenMatches(token, remote.token)) throw new HttpError(404, "Not found");
-    const html = renderRemote(manager, base, url.pathname.slice(base.length));
+    const html = renderRemote(manager, projects.list(), base, url.pathname.slice(base.length));
     if (!html) throw new HttpError(404, "Not found");
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
     res.end(html);

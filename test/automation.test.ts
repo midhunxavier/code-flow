@@ -176,6 +176,29 @@ test("webhooks: bearer token or GitHub signature; GitHub events map to issues an
   assert.equal(readWebhook({ "x-github-event": "push" }, {}), null);
 });
 
+test("editing an automation keeps the project it was saved in, through a restart and into its runs", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "codeflow-triggers-")), "triggers.json");
+  let started: Record<string, any> | undefined;
+  const make = () =>
+    new Automations(manager, async (body) => {
+      started = body;
+      return { id: "r-stub" } as Run;
+    }, undefined, file);
+  const first = make();
+  await first.load();
+  const t = await first.create({ name: "In a project", enabled: true, webhook: true, isolate: false, schedule: { every: 60 }, run: { repo, project: "p-saved", pattern: "pipeline", task: "Scoped", roles: team } });
+  await first.update(t.id, { name: "Renamed", enabled: false, webhook: false, isolate: true, image: "node:22-slim", schedule: { at: "07:00" }, rotateToken: true });
+  await first.update(t.id, { enabled: true, schedule: undefined });
+  assert.equal(first.get(t.id)!.run.project, "p-saved");
+
+  const reloaded = make();
+  await reloaded.load();
+  assert.equal(reloaded.get(t.id)!.name, "Renamed");
+  assert.equal(reloaded.get(t.id)!.run.project, "p-saved", "saved in triggers.json");
+  await reloaded.fire(t.id, { via: "manual" });
+  assert.equal(started?.project, "p-saved", "its run is asked to start in that project");
+});
+
 test("schedules survive restarts: a missed time fires once within an hour, else it's skipped, and never on a day left out", () => {
   const at = (day: number, h: number, m = 0) => new Date(2026, 9, 12 + day, h, m).getTime(); // day 0 = Mon 12 Oct 2026
   const weekdays = { at: "07:00", days: [1, 2, 3, 4, 5] };
@@ -334,14 +357,15 @@ test("phone view: read-only HTML with everything escaped", async () => {
   const run = await idle(
     await manager.start({ pattern: findPattern("pipeline")!, task: "<script>alert(1)</script> escape me", repo, roles: team, options: {} }),
   );
-  const home = renderRemote(manager, "/r/tok", "/")!;
+  const home = renderRemote(manager, [], "/r/tok", "/")!;
   assert.match(home, /&lt;script&gt;alert\(1\)&lt;\/script&gt; escape me/);
   assert.doesNotMatch(home, /<script>/);
-  assert.match(home, /Needs you|Recent/);
-  const detail = renderRemote(manager, "/r/tok", `/run/${run.id}`)!;
+  assert.match(home, /<h2>(Needs you|Recent)/);
+  assert.doesNotMatch(home, /class="project"/, "no projects: nothing to group by");
+  const detail = renderRemote(manager, [], "/r/tok", `/run/${run.id}`)!;
   assert.match(detail, /Steps/);
   assert.doesNotMatch(detail, /<form|<button|method="post"/i, "no actions");
-  assert.equal(renderRemote(manager, "/r/tok", "/run/nope"), null);
+  assert.equal(renderRemote(manager, [], "/r/tok", "/run/nope"), null);
 });
 
 test("phone settings: turning anything off makes new secrets; the read-only link never doubles as the sign-in link", () => {

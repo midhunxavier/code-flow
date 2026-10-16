@@ -14,6 +14,7 @@ const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
 const { Projects, projectOf } = await import("../src/projects.js");
 const { Automations } = await import("../src/automation.js");
+const { renderRemote } = await import("../src/remote.js");
 const { flushWrites } = await import("../src/store.js");
 type Run = import("../src/engine.js").Run;
 type Manager = InstanceType<typeof RunManager>;
@@ -225,6 +226,31 @@ test("runs from before projects stay put when their project gives up the repo, o
   const again = new RunManager(findPattern, projects);
   await again.load();
   assert.equal(again.get(oldApi.id)!.project, seededApi.id, "recorded in the run's log");
+});
+
+test("phone view: runs under their project's name, projects that need you first, runs in none last", async () => {
+  const projects = fresh();
+  await projects.load();
+  const manager = new RunManager(findPattern, projects);
+  const side = await projects.create({ name: "<Side>", repos: [] });
+  const sideRun = await start(manager, web, { project: side.id, task: "Side work" });
+  const apiRun = await start(manager, api, { task: "Api work" }); // newer, but seen: it needs nobody
+  manager.setSeen(apiRun.id);
+  const lonely = makeRepo("lonely");
+  const loneRun = await start(manager, lonely, { task: "Lone work" });
+  await manager.removeProject(projects.forRepo(lonely)!.id);
+
+  const html = renderRemote(manager, projects.list(), "/r/tok", "/")!;
+  const sections = html.split("<section>").slice(1);
+  const heading = (s: string) => s.match(/<h2 class="project">(.*?)<\/h2>/)?.[1];
+  assert.deepEqual(sections.map(heading), ["&lt;Side&gt;", "api", "No project"], "escaped, needing you first, no project last");
+  const [inSide, inApi, inNone] = sections;
+  assert.ok(inSide!.includes(`/run/${sideRun.id}`) && inSide!.includes("<h3>Needs you (1)</h3>"));
+  assert.ok(inApi!.includes(`/run/${apiRun.id}`) && inApi!.includes("<h3>Recent (1)</h3>"));
+  assert.ok(inNone!.includes(`/run/${loneRun.id}`));
+  assert.ok(!inSide!.includes(apiRun.id) && !inApi!.includes(sideRun.id), "each run under its own project only");
+
+  assert.match(renderRemote(manager, projects.list(), "/r/tok", `/run/${sideRun.id}`)!, /&lt;Side&gt; · web · started/, "a run's page names its project");
 });
 
 test("generated names stay unique within the length limit", async () => {
