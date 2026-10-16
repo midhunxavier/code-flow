@@ -14,7 +14,7 @@ import type { ErrorKind } from "./types.js";
 export interface AppServerTurn {
   prompt: string;
   cwd: string;
-  sandbox: "read-only" | "workspace-write";
+  sandbox: "read-only" | "workspace-write" | "danger-full-access";
   /** Continue this thread (a `codex exec` session id works too: both share Codex's rollouts). */
   resumeThreadId?: string;
   model?: string;

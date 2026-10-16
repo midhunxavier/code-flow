@@ -186,3 +186,94 @@ test("supervisor and test-first have their own checkpoints", async () => {
   assert.equal(tdd.status, "cancelled");
   assert.match(tdd.error!, /You rejected the tests/);
 });
+
+test("single agent: one turn, then each reply continues its session on its branch", async () => {
+  const record = mkdtempSync(join(tmpdir(), "codeflow-record-"));
+  process.env.FAKE_RECORD_DIR = record;
+  try {
+    const m = new RunManager(findPattern);
+    const run = await start(m, "solo", { agent: ["claude"] });
+    await finished(m, run);
+    assert.equal(run.status, "done", run.error);
+    assert.deepEqual(agentTitles(run), ["Your task"]);
+    assert.equal(run.artifacts.length, 1);
+    assert.match(run.summary!, /Changes on `.*solo`/);
+
+    await m.followUp(run.id, { kind: "reply", worktree: "solo", agent: "claude", message: "Now add a test" });
+    await finished(m, run);
+    assert.equal(run.status, "done", run.error);
+    const reply = run.steps.find((s) => s.title === "Your reply")!;
+    assert.equal(run.followUps[0]!.stepId, reply.id, "the reply's turn is linked, so the thread can stream it");
+    const calls = readdirSync(record).map((f) => JSON.parse(readFileSync(join(record, f), "utf8")) as { args: string[]; prompt: string });
+    const replyCall = calls.find((c) => c.prompt.includes("Now add a test"))!;
+    assert.ok(replyCall.args.includes("--resume"), "the reply continues the first turn's session");
+  } finally {
+    delete process.env.FAKE_RECORD_DIR;
+  }
+});
+
+test("single agent: a turn that fails ends the turn, not the conversation", async () => {
+  process.env.FAKE_FAIL_VENDOR = "claude";
+  const m = new RunManager(findPattern);
+  const run = await start(m, "solo", { agent: ["claude"] });
+  try {
+    await finished(m, run);
+  } finally {
+    delete process.env.FAKE_FAIL_VENDOR;
+  }
+  assert.equal(run.status, "done", run.error);
+  assert.equal(run.steps.find((s) => s.title === "Your task")!.status, "failed");
+  assert.match(run.summary!, /Claude Code didn't finish/);
+
+  await m.followUp(run.id, { kind: "reply", worktree: "solo", agent: "claude", message: "Try again" });
+  await finished(m, run);
+  assert.equal(run.status, "done", run.error);
+  assert.equal(run.followUps[0]!.status, "done");
+});
+
+test("single agent: messages its turn couldn't take become its next turn", async () => {
+  process.env.FAKE_SLEEP_VENDOR = "claude";
+  process.env.FAKE_SLEEP_MS = "1500";
+  try {
+    const m = new RunManager(findPattern);
+    const run = await start(m, "solo", { agent: ["claude"] });
+    await until(() => run.steps.some((s) => s.title === "Your task" && s.status === "running"));
+    m.addNote(run.id, "Also update the README");
+    m.addNote(run.id, "And keep it short");
+    await finished(m, run);
+    assert.equal(run.status, "done", run.error);
+    assert.deepEqual(agentTitles(run), ["Your task", "Your reply"]);
+    const [f] = run.followUps;
+    assert.equal(f!.kind, "reply");
+    assert.equal(f!.message, "Also update the README\n\nAnd keep it short");
+    assert.equal(f!.status, "done");
+    assert.deepEqual(
+      run.notes.map((n) => [n.status, n.followUp]),
+      [
+        ["delivered", f!.id],
+        ["delivered", f!.id],
+      ],
+    );
+  } finally {
+    delete process.env.FAKE_SLEEP_VENDOR;
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});
+
+test("a team run doesn't turn leftover notes into a turn", async () => {
+  process.env.FAKE_SLEEP_VENDOR = "claude";
+  process.env.FAKE_SLEEP_MS = "1200";
+  try {
+    const m = new RunManager(findPattern);
+    const run = await start(m, "pipeline", pipelineRoles);
+    await until(() => run.steps.some((s) => s.title === "Review (round 1)" && s.status === "running"));
+    m.addNote(run.id, "For the reviewer's next turn", "codex");
+    await finished(m, run);
+    assert.equal(run.status, "done", run.error);
+    assert.equal(run.followUps.length, 0);
+    assert.equal(run.notes[0]!.status, "queued");
+  } finally {
+    delete process.env.FAKE_SLEEP_VENDOR;
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});

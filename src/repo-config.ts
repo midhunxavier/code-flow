@@ -20,7 +20,8 @@ import { gitWithInput } from "./git.js";
  *     "learn": true                                // pass on problems reviewers keep raising
  *   }
  */
-export type Trust = "safe" | "standard" | "trusted";
+/** "full": any command, no sandbox, for every agent. Picked per run, never from a repo's config file. */
+export type Trust = "safe" | "standard" | "trusted" | "full";
 
 export interface RepoConfig {
   check?: string;
@@ -56,6 +57,7 @@ export async function readRepoConfig(repo: string): Promise<{ config: RepoConfig
       const steps = positive(raw.limits.maxSteps);
       config.limits = { maxMinutes: positive(raw.limits.maxMinutes), maxSteps: steps === undefined ? undefined : Math.max(1, Math.round(steps)) };
     }
+    // Not "full": a repo's own file mustn't be able to turn off the agents' sandboxes.
     if (["safe", "standard", "trusted"].includes(raw.trust)) config.trust = raw.trust;
     if (typeof raw.image === "string" && /^[\w./:@-]{1,200}$/.test(raw.image.trim())) config.image = raw.image.trim();
     if (typeof raw.learn === "boolean") config.learn = raw.learn;

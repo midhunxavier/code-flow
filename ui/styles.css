@@ -553,6 +553,13 @@
   .fu-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
   .fu-head .note { color: var(--warn); } .fu-head .ok { color: var(--ok); } .fu-head .err { color: var(--err); }
   .fu-live { color: var(--accent-text); animation: pulse 1.4s var(--ease) infinite; }
+  /* An agent's turn in the thread: its work folds away under its answer. */
+  .fu-answer > .transcript, .turn-body > .transcript { margin: 0 0 10px; }
+  .show-work { border: 0; background: none; padding: 0; margin-bottom: 6px; font-size: 12px; color: var(--faint); }
+  .show-work:hover { color: var(--accent-ink); text-decoration: underline; }
+  .show-work::before { content: "▸ "; }
+  .show-work[aria-expanded="true"]::before { content: "▾ "; }
+  .result.chat .artifacts:first-child { padding-top: 18px; }
   .small-dialog { width: min(480px, calc(100vw - 32px)); }
   .dialog-body { padding: 16px 20px; display: grid; gap: 12px; }
 
@@ -620,6 +627,9 @@
   .segmented button { border: 0; background: transparent; color: var(--muted); padding: 5px 13px; border-radius: 999px; font-size: 10px; font-weight: 500; letter-spacing: .12em; transition: background-color .15s, color .15s, box-shadow .15s; }
   .segmented button:hover:not(:disabled):not(.on) { color: var(--text); }
   .segmented button.on { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
+  .segmented button.full.on { background: var(--warn-soft); color: var(--warn); }
+  .full-access { color: var(--warn); font-weight: 600; }
+  .full-warn { margin-top: 8px; padding: 10px 14px; border-radius: 14px; background: var(--warn-soft); color: var(--text); font-size: 12.5px; border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border)); }
   .role-pick { display: grid; gap: 8px; min-width: 0; }
   .role-models { display: flex; flex-wrap: wrap; gap: 6px; }
   .mpick { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px 2px 11px; background: var(--bg); transition: border-color .15s, box-shadow .15s; }

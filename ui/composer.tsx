@@ -583,6 +583,17 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
   );
 }
 
+/** What agents may do while building, from least to most. */
+const TRUST = {
+  safe: { label: "Safe", help: "Edit files only. Claude can't run commands; Codex stays sandboxed." },
+  standard: { label: "Standard", help: "Edit files and run common build/test commands (npm, node, pytest, uv, poetry, cargo, go, make…)." },
+  trusted: { label: "Trusted", help: "Any command for Claude; network access inside Codex's sandbox. Use on repos you trust." },
+  full: {
+    label: "Full access",
+    help: "Every agent can run any command, use the network and change files outside its worktree, with your credentials. Only for repos and tasks you trust completely.",
+  },
+} as const;
+
 /** What the team will do, in one sentence; `checkpoints: false` leaves out plan approval (sweeps don't pause). */
 export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>, checkpoints = true): string {
   const one = (r: string) => (roles[r]?.[0] ? SHORT[roles[r]![0]!] : "—");
@@ -606,6 +617,8 @@ export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>,
       return `${one("tester")} writes tests → ${one("builder")} makes them pass → ${one("tester")} tries to break it${doneWhen}`;
     case "council":
       return `${many("reviewers")} review on their own, read-only → ${one("chair")} merges what they found · nothing is changed or posted without you`;
+    case "solo":
+      return `${one("agent")} works on it in its own branch; reply to keep going, like a chat${check ? ` · code-flow runs “${check}” after every turn` : ""}`;
     case "loop": {
       const w = roles.workers ?? [];
       const handoff = w.length > 1 ? `, handing over to ${w.slice(1).map((id) => SHORT[id]).join(", then ")} if stuck` : "";
@@ -709,6 +722,7 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
         <span class="st">Settings</span>
         <span class="ss">
           from {baseLabel} · {models.length ? models.join(", ") : "default models"} · stops after {limits.value.maxMinutes} min or {limits.value.maxSteps} steps
+          {trust.value === "full" ? <span class="full-access"> · ⚠ full access</span> : null}
         </span>
       </summary>
       <div class="settings-body">
@@ -788,22 +802,29 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
         <div>
           <span class="lbl">What agents may do while building</span>
           <div class="segmented" role="radiogroup" aria-label="Agent permissions">
-            {(
-              [
-                ["safe", "Safe", "Edit files only. Claude can't run commands; Codex stays sandboxed."],
-                ["standard", "Standard", "Edit files and run common build/test commands (npm, node, pytest, uv, poetry, cargo, go, make…)."],
-                ["trusted", "Trusted", "Any command for Claude; network access inside Codex's sandbox. Use on repos you trust."],
-              ] as const
-            ).map(([value, label, help]) => (
-              <button key={value} type="button" role="radio" aria-checked={trust.value === value} class={trust.value === value ? "on" : ""} title={help} onClick={() => setTrust(value)}>
-                {label}
+            {(Object.keys(TRUST) as (keyof typeof TRUST)[]).map((value) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={trust.value === value}
+                class={`${trust.value === value ? "on" : ""} ${value === "full" ? "full" : ""}`}
+                title={TRUST[value].help}
+                onClick={() => setTrust(value)}
+              >
+                {TRUST[value].label}
               </button>
             ))}
           </div>
-          <div class="help">
-            {{ safe: "Edit files only. Claude can't run commands; Codex stays sandboxed.", standard: "Edit files and run common build/test commands (npm, node, pytest, uv, poetry, cargo, go, make…).", trusted: "Any command for Claude; network access inside Codex's sandbox. Use on repos you trust." }[trust.value]}{" "}
-            Antigravity always runs with its sandbox (writes stay in the worktree). code-flow never merges or pushes on its own.
-          </div>
+          {trust.value === "full" ? (
+            <div class="full-warn" role="alert">
+              <b>⚠ Full access: no sandbox.</b> {TRUST.full.help} Automations and sweeps run with Trusted instead, and fixes for watched pull requests with Standard.
+            </div>
+          ) : (
+            <div class="help">
+              {TRUST[trust.value].help} Antigravity always runs with its sandbox (writes stay in the worktree). code-flow never merges or pushes on its own.
+            </div>
+          )}
         </div>
         <div>
           <span class="lbl">Models &amp; effort</span>
