@@ -189,7 +189,7 @@ export const checkCmd = signal("");
 export const checkHint = signal("");
 export const setupCmd = signal("");
 export const limits = signal(store.json("limits", { maxMinutes: 60, maxSteps: 40 }));
-export type Trust = "safe" | "standard" | "trusted";
+export type Trust = "safe" | "standard" | "trusted" | "full";
 export const trust = signal<Trust>((store.get("trust") as Trust) || "standard");
 export function setTrust(value: Trust) {
   trust.value = value;

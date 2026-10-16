@@ -261,6 +261,8 @@ export interface Note {
   status: "queued" | "delivered";
   /** midTurn: it went into that step's turn while it ran, not into the turn's opening prompt. */
   deliveredTo?: { stepId: string; agent: AgentId; midTurn?: boolean };
+  /** No turn took it before the chat's turn ended, so it became this follow-up (your next message). */
+  followUp?: string;
   at: number;
 }
 
@@ -288,6 +290,8 @@ export interface FollowUp {
   /** Test changes code-flow found in this follow-up's commit. */
   integrity?: IntegrityIssue[];
   status: "pending" | "done" | "failed";
+  /** The agent step that answers it, set as soon as that step starts (so its transcript streams). */
+  stepId?: string;
   result?: string;
   checkPassed?: boolean;
   pushed?: string;
@@ -404,6 +408,12 @@ export interface Pattern {
   /** The pattern can't run without a "done when" check command. */
   requiresCheck?: boolean;
   /**
+   * A conversation with one agent rather than a team: messages you send while it works that no
+   * turn took become its next turn, and its own turns fail without failing the run, so you can
+   * always reply.
+   */
+  chat?: boolean;
+  /**
    * Runs the team; returns a markdown summary. Must be deterministic given the results of
    * ctx calls (ask/check/commit/worktree/remember) so an interrupted run can be replayed.
    */
@@ -432,6 +442,8 @@ export interface AskParams {
   trust?: Trust;
   /** Constrain the answer to this JSON Schema. Prefer `ctx.decide()`, which also validates. */
   schema?: object;
+  /** Called with the step's id once it starts (not when it's replayed from the journal). */
+  onStart?: (stepId: string) => void;
 }
 
 export interface DecideParams extends AskParams {
@@ -1084,6 +1096,7 @@ export class TeamContext {
     // goes into the turn itself if the turn takes input (Codex app-server), else to the next turn.
     this.takeNotes(params.agent, step.id);
     this.run.steps.push(step);
+    params.onStart?.(step.id);
     this.manager.emit(this.run, { type: "step", step: { ...step } });
 
     const onEvent = (event: AgentEvent) => {
@@ -2101,6 +2114,9 @@ export class RunManager {
         throw new UntrustedSourceError(lockdown);
       }
     }
+    // Full access turns off the agents' sandboxes, and nobody watches an automation or a sweep as it runs.
+    const fullCapped = trust === "full" && !!input.trigger;
+    if (fullCapped) trust = "trusted";
     // An untrusted PR's branch can rewrite AGENTS.md too: read conventions from where it started.
     const conventions = await readConventions(repo, lockdown && reviewBase ? reviewBase : baseRef).catch(() => "");
     const learn = config.learn !== false;
@@ -2174,6 +2190,8 @@ export class RunManager {
     for (const note of input.routing ?? []) this.emit(run, { type: "log", level: "info", text: note });
     if (placed?.created) this.emit(run, { type: "log", level: "info", text: `No project held ${basename(repo)} yet, so it has one of its own now: “${placed.project.name}”` });
     if (placed?.added) this.emit(run, { type: "log", level: "info", text: `${basename(repo)} is now part of the project “${placed.project.name}”` });
+    if (fullCapped) this.emit(run, { type: "log", level: "warn", text: "Full access isn't used for automations and sweeps: agents run with Trusted permissions." });
+    else if (trust === "full") this.emit(run, { type: "log", level: "warn", text: "Full access: agents can run any command, with no sandbox." });
     if (lockdown) {
       const checks = loop.container
         ? `checks run in Docker ${loop.container.network === false ? "without" : "with"} network`
@@ -2265,7 +2283,8 @@ export class RunManager {
     const done = patternDone
       .then(async (summary) => {
         run.summary = summary;
-        await runFollowUps(ctx, run);
+        await runFollowUps(ctx, run, !!pattern.chat);
+        // Nothing awaits between the last look at the notes and this, so none can slip in unseen.
         run.status = "done";
       })
       .catch((err: Error) => {
@@ -2396,10 +2415,15 @@ export class RunManager {
   }
 }
 
-/** Work the user sent back after the run: each follow-up is one agent turn, then the check. */
-async function runFollowUps(ctx: TeamContext, run: Run) {
-  for (const f of run.followUps) {
-    if (f.status !== "pending") continue;
+/**
+ * Work the user sent back after the run: each follow-up is one agent turn, then the check. In a
+ * chat, messages that arrived while a turn ran and that it couldn't take become the next turn.
+ */
+async function runFollowUps(ctx: TeamContext, run: Run, chat = false) {
+  for (;;) {
+    if (chat) notesToReply(run);
+    const f = run.followUps.find((x) => x.status === "pending");
+    if (!f) break;
     try {
       await runFollowUp(ctx, run, f);
     } catch (err) {
@@ -2473,6 +2497,10 @@ async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
     cwd: wt,
     allowFailure: true,
     trust: f.trust,
+    onStart: (stepId) => {
+      f.stepId = stepId;
+      ctx.publish();
+    },
     resume: previous ? { ok: true, finalText: previous.finalText ?? "", sessionId: previous.sessionId, stepId: previous.id, agent: f.agent } : undefined,
     prompt:
       (previous ? "" : `You are working in a git worktree for this task:\n${ctx.task}\n\n`) +
@@ -2487,6 +2515,7 @@ async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
             : `${f.from ? `${f.from} left these comments` : "The user reviewed your changes and left these comments"}:\n\n${f.message}\n\n` +
               "Address each one, run the relevant tests, and summarize what you changed. Don't commit; code-flow does."),
   });
+  f.stepId = outcome.stepId; // also when the turn was replayed
   const sha = await ctx.commit(
     wt,
     f.kind === "resolve-conflicts"
@@ -2615,6 +2644,22 @@ function strip(run: Run): RunSummary {
 /** The summary as the pattern wrote it, without the follow-ups section added after it. */
 function withoutFollowUps(summary: string): string {
   return summary.split("\n\n## Follow-ups\n")[0]!;
+}
+
+/**
+ * A chat has no team turn coming to pick up a queued note, so the notes left when a turn ends
+ * become one reply to the agent that wrote last, in its worktree.
+ */
+function notesToReply(run: Run) {
+  const left = run.notes.filter((n) => n.status === "queued");
+  const last = [...run.steps].reverse().find((s) => s.kind === "agent" && s.mode === "write" && s.agent && s.worktree);
+  if (!left.length || !last) return;
+  const id = `f${run.followUps.length + 1}`;
+  for (const n of left) {
+    n.status = "delivered";
+    n.followUp = id;
+  }
+  run.followUps.push({ id, kind: "reply", worktree: last.worktree!, agent: last.agent!, message: left.map((n) => n.text).join("\n\n"), status: "pending", at: Date.now() });
 }
 
 /**

@@ -60,7 +60,7 @@ export async function serve(args) {
     thread = { id: existing?.id ?? randomUUID(), params, totals: existing?.totals ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }, fresh: !existing };
     writeFileSync(threadFile(thread.id), JSON.stringify({ id: thread.id, totals: thread.totals }));
     setImmediate(() => notify("thread/started", { thread: threadInfo() }));
-    return { thread: threadInfo(), model: thread.params.model ?? "gpt-a", modelProvider: "openai", cwd: thread.params.cwd, approvalPolicy: params.approvalPolicy ?? "on-request", sandbox: { type: params.sandbox === "workspace-write" ? "workspaceWrite" : "readOnly" } };
+    return { thread: threadInfo(), model: thread.params.model ?? "gpt-a", modelProvider: "openai", cwd: thread.params.cwd, approvalPolicy: params.approvalPolicy ?? "on-request", sandbox: { type: params.sandbox === "workspace-write" ? "workspaceWrite" : params.sandbox === "danger-full-access" ? "dangerFullAccess" : "readOnly" } };
   };
   const writeRecord = () => {
     if (record) writeFileSync(record.file, JSON.stringify(record.body));
@@ -91,7 +91,7 @@ export async function serve(args) {
     notify("turn/started", { threadId: thread.id, turn: { ...turn, status: "inProgress" } });
     item({ type: "userMessage", id: randomUUID(), clientId: null, content: params.input });
     try {
-      const write = thread.params.sandbox === "workspace-write";
+      const write = thread.params.sandbox === "workspace-write" || thread.params.sandbox === "danger-full-access";
       const { answer } = work({ vendor: "codex", prompt, write, schemaRequested: !!params.outputSchema, fail });
       const ls = { type: "commandExecution", id: "i1", command: "ls", cwd: process.cwd(), processId: null, source: "agent", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null, status: "inProgress" };
       notify("item/started", { ...base, item: ls, startedAtMs: Date.now() });

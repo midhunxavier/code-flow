@@ -40,6 +40,14 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
 | Safe | edits files; no shell beyond read-only git | edits inside its sandbox | sandboxed to the worktree |
 | Standard (default) | edits + common build/test commands (npm, node, pytest, uv, poetry, cargo, go, make…) | sandboxed, no network | sandboxed to the worktree |
 | Trusted | any command | sandboxed, with network | sandboxed to the worktree |
+| Full access | any tool, no permission checks (`bypassPermissions`) | no sandbox (`danger-full-access`) | no sandbox (no `--sandbox`) |
+
+**Full access** turns every agent's sandbox off in steps that build: an agent can run anything, use the network, and change files outside its worktree with your credentials. Use it only on repos and tasks you trust completely. To keep it a choice you make:
+
+- It's picked per run in the composer, which warns while it's on, and the run shows ⚠ full access. A repo's `.codeflow/config.json` can't turn it on: `"trust": "full"` there is ignored.
+- Planning, reviewing and judging steps stay read-only, as in every mode.
+- Runs nobody watches get less: automations and sweeps run with Trusted, and fixes for watched pull requests with Standard.
+- A run started from someone outside the repo is locked down to Safe whatever you picked (see [Untrusted text](github.md#untrusted-text)).
 
 Whatever the mode, code-flow never merges or pushes on its own.
 

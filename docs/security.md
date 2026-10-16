@@ -6,9 +6,9 @@ code-flow never handles credentials. Each adapter launches the vendor's **offici
 
 | Agent | Command used | Login | Sandbox / permissions |
 |---|---|---|---|
-| Claude Code | `claude -p --output-format stream-json` | Pro/Max (or API key) via `claude` | read: edit tools disabled, git read-only commands allowed · write: `acceptEdits` + an allow-list of build/test commands |
-| Codex | `codex app-server` (JSON-RPC over stdio: `thread/start` or `thread/resume`, `turn/start`, `turn/steer`); `codex exec --json` / `codex exec resume` when app-server isn't available | ChatGPT plan (or API key) via `codex login` | Codex sandbox: `read-only` / `workspace-write`, approvals off |
-| Antigravity | `agy -p --output-format stream-json` | Google AI Pro/Ultra via an interactive `agy` login | `--sandbox` (verified: blocks writes outside the worktree) + `--dangerously-skip-permissions` (see [caveats](#caveats)) |
+| Claude Code | `claude -p --output-format stream-json` | Pro/Max (or API key) via `claude` | read: edit tools disabled, git read-only commands allowed · write: `acceptEdits` + an allow-list of build/test commands (`bypassPermissions` with Full access) |
+| Codex | `codex app-server` (JSON-RPC over stdio: `thread/start` or `thread/resume`, `turn/start`, `turn/steer`); `codex exec --json` / `codex exec resume` when app-server isn't available | ChatGPT plan (or API key) via `codex login` | Codex sandbox: `read-only` / `workspace-write` (`danger-full-access` with Full access), approvals off |
+| Antigravity | `agy -p --output-format stream-json` | Google AI Pro/Ultra via an interactive `agy` login | `--sandbox` (verified: blocks writes outside the worktree; dropped in write steps with Full access) + `--dangerously-skip-permissions` (see [caveats](#caveats)) |
 
 **Read-only is enforced by code-flow itself, for every agent.** Before a read-only step (plan, review, judge, debate) code-flow snapshots its worktree: the commit, uncommitted changes and untracked files. Afterwards it puts back anything the step changed, including commits, and logs a warning.
 
@@ -27,7 +27,7 @@ This is the boundary each vendor draws for personal use. Don't extend code-flow 
 
 ## Running the agents' code
 
-A check runs the agents' code (tests, scripts) on your machine, outside Codex's and agy's sandboxes, as your CI would. Use code-flow on repos and tasks you trust, or run checks in Docker ([isolation](automations.md#isolation)), or code-flow itself inside a container or VM.
+A check runs the agents' code (tests, scripts) on your machine, outside Codex's and agy's sandboxes, as your CI would. With **Full access** the agents themselves run without a sandbox too (see [What agents may do](configuration.md#what-agents-may-do-while-building)). Use code-flow on repos and tasks you trust, or run checks in Docker ([isolation](automations.md#isolation)), or code-flow itself inside a container or VM.
 
 Text from issues, PRs, comments and CI logs is treated as untrusted, and runs started from people outside the repo are locked down. Dependabot's PR descriptions and CI logs are fenced as untrusted text too. **▶ Run app** on a locked-down run asks before it starts that code on your machine. See [Untrusted text](github.md#untrusted-text).
 
