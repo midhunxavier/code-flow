@@ -294,9 +294,9 @@ test("the network listener refuses this machine's own programs; a port that's ta
   }
   await api(b, "/api/remote", { lan: false });
 
-  // Another program has the port now.
-  const squatter: Server = createServer((s) => s.end("not code-flow")).listen(b.remotePort, "0.0.0.0");
-  await new Promise((r) => squatter.once("listening", r));
+  // Another program has the port now. code-flow lets go of it just after replying (the phone may
+  // be the one turning itself off), so take it once it's free rather than racing the close.
+  const squatter = await listenWhenFree(b.remotePort);
   try {
     const taken = (await api(b, "/api/remote", { lan: true })).body;
     assert.match(taken.lanError, new RegExp(`Port ${b.remotePort} is already in use`));
@@ -308,6 +308,21 @@ test("the network listener refuses this machine's own programs; a port that's ta
   const off = (await api(b, "/api/remote", { lan: false, enabled: false })).body;
   assert.equal(off.lanError, undefined);
 });
+
+/** Listen on a port as soon as whoever has it lets go (up to about two seconds). */
+async function listenWhenFree(port: number): Promise<Server> {
+  for (let attempt = 0; ; attempt++) {
+    const server = createServer((s) => s.end("not code-flow"));
+    const error = await new Promise<NodeJS.ErrnoException | undefined>((resolve) => {
+      server.once("listening", () => resolve(undefined));
+      server.once("error", resolve);
+      server.listen(port, "0.0.0.0");
+    });
+    if (!error) return server;
+    if (error.code !== "EADDRINUSE" || attempt >= 40) throw error;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
 
 test("the health check tells Auto when an agent is signed out", async () => {
   const first = (await api(b, "/api/doctor")).body;
