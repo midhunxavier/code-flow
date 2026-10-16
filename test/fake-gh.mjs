@@ -102,8 +102,9 @@ else if (group === "issue" && command === "view") {
 } else if (group === "pr" && command === "list") {
   const app = flag("--app");
   const head = flag("--head");
+  const base = flag("--base");
   const open = Object.values(state.prs)
-    .filter((p) => p.state === "OPEN" && (!app || new RegExp(app).test(p.author?.login ?? "")) && (!head || p.headRefName === head))
+    .filter((p) => p.state === "OPEN" && (!app || new RegExp(app).test(p.author?.login ?? "")) && (!head || p.headRefName === head) && (!base || p.baseRefName === base))
     .slice(0, Number(flag("--limit") ?? 30));
   print(flag("--json")?.includes("statusCheckRollup") ? open.map((p) => ({ ...p, statusCheckRollup: rollup(p) })) : open);
 }

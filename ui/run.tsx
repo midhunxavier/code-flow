@@ -23,7 +23,7 @@ import {
   setTask,
   setupCmd,
   source,
-  upsertRun,
+  upsertRunFrom,
 } from "./state.js";
 import type { AgentEvent, AgentId, Artifact, FollowUp, IntegrityIssue, MergeOutcome, Note, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
 
@@ -97,7 +97,7 @@ export function RunView({ id }: { id: string }) {
         if (ev.seq < d.runSeq) return;
         d.runSeq = ev.seq;
         setRun(ev.run);
-        upsertRun(ev.run);
+        upsertRunFrom(ev.run, ev.seq);
       } else if (ev.type === "step") {
         if (ev.seq < (d.stepSeq.get(ev.step.id) ?? 0)) return;
         d.stepSeq.set(ev.step.id, ev.seq);

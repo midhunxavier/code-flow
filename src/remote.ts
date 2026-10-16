@@ -59,7 +59,7 @@ export async function loadRemote(file = FILE): Promise<RemoteSettings> {
     );
     return fresh();
   }
-  return {
+  const settings: RemoteSettings = {
     enabled: raw.enabled === true,
     token: raw.token,
     // Saved before full control had a secret of its own: phones sign in again, once.
@@ -67,6 +67,11 @@ export async function loadRemote(file = FILE): Promise<RemoteSettings> {
     lan: raw.lan === true,
     control: raw.control === true,
   };
+  // Saved right away, or every restart would make a new one and sign the phone out again.
+  if (settings.controlToken !== raw.controlToken) {
+    await saveRemote(settings, file).catch((err) => logError(`Couldn't save ${file}; the full-control link changes at the next start`, err));
+  }
+  return settings;
 }
 
 /** Saved through a temporary file, so a crash mid-write can't leave half a file. */

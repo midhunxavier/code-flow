@@ -42,7 +42,7 @@ The task names the issue or PR by number. Its title isn't put in the task (whoev
 | Sweep | Lists | Picked by default | Each run |
 |---|---|---|---|
 | **Fix open issues** | open issues | all, except ones labelled *question*, *wontfix*, *duplicate*, *invalid*… | fixes the issue and adds a test; **Approve & open PR** says `Closes #N` |
-| **Fix Dependabot PRs** | Dependabot's open PRs (`gh pr list --app dependabot`), with their CI | only the ones whose CI fails; green ones say *ready for you to merge* | gets the failing checks and their logs, adapts the code to the new version, [locked down](#untrusted-text); **Approve & push to PR #N** pushes the fix to Dependabot's branch (never forced) |
+| **Fix Dependabot PRs** | Dependabot's open PRs (`gh pr list --app dependabot`), with their CI | only the ones whose CI fails; green ones say *ready for you to merge* | gets the failing checks and their logs, adapts the code to the new version, with the PR's text and logs [fenced as untrusted](#untrusted-text); **Approve & push to PR #N** pushes the fix to Dependabot's branch (never forced) |
 | **Fix security alerts** | Dependabot alerts, code scanning alerts and leaked secrets | high and medium alerts that have a fix | Dependabot alerts: one run per package, upgrading past every alert on it. Code scanning: one run per alert, fixing the cause rather than suppressing it |
 
 - An item that already has a run (running, or finished and not rejected) starts unpicked and links to that run, so sweeping again doesn't redo work. For a package's Dependabot alerts that means a run covering every one of them: a new alert on the package is new work.
@@ -87,7 +87,7 @@ Text from outside the repo is untrusted. Issue and PR titles and descriptions, c
 - files like `.env` aren't copied in;
 - checks run in Docker without network.
 
-**Dependabot's PRs are locked down too.** GitHub opens them, but their descriptions quote the new version's release notes and commit messages word for word, and their CI runs, and prints the output of, the new package's code. Pushing a fix to Dependabot's branch still works.
+**Dependabot's PR text is untrusted too.** GitHub opens the PRs, but their descriptions quote the new version's release notes and commit messages word for word, and their CI logs print the new package's output. That text is fenced as data. The run itself isn't locked down: the branch is this repository's and installs what merging it would, so setup can install the new version (with network) and the check can verify it. Pushing a fix to Dependabot's branch still works.
 
 Without Docker, code-flow asks before running that person's tests on your machine; automations never do. **▶ Run app** on a locked-down run asks first too: the app is that code, running on your machine outside any container. The text itself — title, branch name and description — is quoted in a fence it can't break out of, marked as information rather than instructions. Conventions files are read from where the PR started, not from the PR.
 

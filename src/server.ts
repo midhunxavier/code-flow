@@ -1112,15 +1112,17 @@ async function stop(reason: string, code = 0) {
   stopping = true;
   console.log(`\nStopping code-flow (${reason}): interrupting running runs so they can be resumed…`);
   logInfo(`Stopping: ${reason}`);
+  let automationsSaved: Promise<unknown> = Promise.resolve();
   try {
     server.close();
     lanServer?.close();
     watcher.stop();
-    automations.stop();
+    automationsSaved = automations.stop();
   } catch {
     // still starting up: nothing is listening yet
   }
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));
+  await automationsSaved;
   process.exit(code);
 }
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {

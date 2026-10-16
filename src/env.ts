@@ -17,6 +17,9 @@ export function childEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of SECRET_VARS) delete env[key];
   for (const key of Object.keys(env)) {
+    // npm's settings (a registry or proxy you exported) are yours and kept; what npm sets about
+    // code-flow's own script (its package, its lifecycle, its folder) isn't.
+    if (key.startsWith("npm_config_") && key !== "npm_config_local_prefix") continue;
     if (key.startsWith("npm_") || key === "INIT_CWD") delete env[key];
   }
   if (env.PATH) env.PATH = cleanPath(env.PATH);

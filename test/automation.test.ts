@@ -185,10 +185,16 @@ test("schedules survive restarts: a missed time fires once within an hour, else 
   assert.equal(resumeSchedule(weekdays, at(0, 7), at(0, 9)), at(1, 7));
   // Friday's 07:00 missed by a weekend asleep: next is Monday, not "now, on a Sunday".
   assert.equal(new Date(resumeSchedule(weekdays, at(4, 7), at(6, 12))).getDay(), 1);
-  // Within the hour, but the day changed to one it leaves out: skipped.
+  // Monday's 23:30, fired 40 minutes late: it's past midnight, but the time was due on a Monday.
   const mondayNights = { at: "23:30", days: [1] };
-  assert.equal(stillDue(mondayNights, at(0, 23, 30), at(1, 0, 10)), false);
+  assert.equal(stillDue(mondayNights, at(0, 23, 30), at(1, 0, 10)), true);
   assert.equal(stillDue(mondayNights, at(0, 23, 30), at(0, 23, 50)), true);
+  assert.equal(stillDue(mondayNights, at(0, 23, 30), at(1, 1, 0)), false, "more than an hour late");
+  // The day clocks spring forward shifts 02:30 to 03:30; the next day is 02:30 again.
+  const nightly = { at: "02:30" };
+  const fired = [nextFire(nightly, at(0, 12))];
+  for (let i = 0; i < 200; i++) fired.push(nextFire(nightly, fired.at(-1)!));
+  assert.ok(fired.filter((t) => new Date(t).getHours() !== 2).length <= 1, "at most the one day 02:30 doesn't exist");
   // An hourly automation keeps its next time across restarts instead of starting the hour again.
   assert.equal(resumeSchedule({ every: 60 }, at(0, 10), at(0, 9, 40)), at(0, 10));
   assert.equal(resumeSchedule({ every: 60 }, undefined, at(0, 9)), at(0, 10));
@@ -268,7 +274,11 @@ test("triggers.json that can't be read is moved aside and never written over", a
     const locked = make();
     await locked.load();
     assert.deepEqual(locked.list(), []);
-    await locked.create({ name: "New", enabled: true, webhook: true, isolate: false, run: { repo, pattern: "pipeline", task: "x", roles: team } });
+    // A new automation couldn't be saved, so it isn't made: its webhook secret would be gone after a restart.
+    await assert.rejects(
+      locked.create({ name: "New", enabled: true, webhook: true, isolate: false, run: { repo, pattern: "pipeline", task: "x", roles: team } }),
+      /Automations can't be changed/,
+    );
   } finally {
     chmodSync(file, 0o600);
   }

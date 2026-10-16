@@ -79,7 +79,7 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 
 A numeric setting that isn't a valid number (`30m`, say) or is out of range falls back to its default, with a warning in the terminal.
 
-The processes code-flow starts (agent CLIs, checks, setup, **Run app**, `gh`, `git`) get your environment minus what belongs to code-flow itself: `CODEFLOW_TOKEN`, the `npm_*` variables `npm start` sets, and code-flow's own `node_modules/.bin` on `PATH`. A check's `tsc` or `vitest` comes from your repo, never from code-flow's install.
+The processes code-flow starts (agent CLIs, checks, setup, **Run app**, `gh`, `git`) get your environment minus what belongs to code-flow itself: `CODEFLOW_TOKEN`, the `npm_*` variables `npm start` sets about code-flow's own script (your `npm_config_*` settings, like a registry or proxy, are kept), and code-flow's own `node_modules/.bin` on `PATH`. A check's `tsc` or `vitest` comes from your repo, never from code-flow's install.
 
 ## Files in `~/.codeflow`
 

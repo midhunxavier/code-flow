@@ -111,13 +111,22 @@ function probe(command: string, args: string[]): Promise<{ code: number; stdout:
   });
 }
 
+/** Signal 0 to a pid (or, negative, a process group): true when it exists and is ours to signal. */
+function exists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Whether the group recorded as `g` is still the one code-flow started. */
 async function isOurGroup(g: GroupRecord): Promise<boolean> {
-  const members = (await probe("pgrep", ["-g", String(g.pid)])).stdout.split(/\s+/).filter(Boolean).map(Number);
-  if (!members.length) return false;
+  if (!exists(-g.pid)) return false;
   // The leader is gone but its group lives on: a group id isn't reused while the group has
   // members, so these are what code-flow's process left behind.
-  if (!members.includes(g.pid)) return true;
+  if (!exists(g.pid)) return true;
   // The leader is alive: make sure it's the process code-flow started, not one that got its pid.
   const lstart = (await probe("ps", ["-o", "lstart=", "-p", String(g.pid)])).stdout.trim();
   const started = lstart ? Date.parse(lstart) : NaN;
@@ -415,7 +424,8 @@ export function captureOutput(command: string, args: string[], timeoutMs = 30_00
 
 export async function commandExists(binary: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = spawn("which", [binary], { stdio: "ignore" });
+    // On the PATH the CLI will actually get (childEnv), so "installed" means it can be started.
+    const child = spawn("which", [binary], { stdio: "ignore", env: childEnv() });
     child.on("error", () => resolve(false));
     child.on("close", (code) => resolve(code === 0));
   });

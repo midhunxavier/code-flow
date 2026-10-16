@@ -31,9 +31,9 @@ import {
   diffStat,
   ensureCodeflowExcludes,
   git,
-  gitError,
   isAncestor,
   isClean,
+  isMerging,
   mergeBranch,
   openDetachedWorktree,
   openWorktree,
@@ -45,7 +45,6 @@ import {
   uncommittedCount,
   validateBranchPrefix,
   validRef,
-  withRepoLock,
   worktreeRoot,
   type MergeResult,
   type Snapshot,
@@ -232,6 +231,8 @@ export interface Run {
   lessons?: string[];
   /** Why the run is locked down (untrusted input): Safe mode, nothing copied in, checks isolated. */
   lockdown?: string;
+  /** Locked down without Docker, and you chose to run its commands on this machine anyway. */
+  lockdownOnHost?: boolean;
   /** Record review findings for later runs (`learn` in .codeflow/config.json; default on). */
   learn?: boolean;
   /** The pattern itself finished; resuming only runs pending follow-ups. */
@@ -819,6 +820,11 @@ export class TeamContext {
     const container = this.run.loop.container ? { ...this.run.loop.container, readOnly: [join(this.run.repo, ".git")] } : undefined;
     let result: CheckResult;
     try {
+      // A locked-down run's commands run in Docker, or on this machine only if you said so. A
+      // command the pattern picked itself (a tester's test command) isn't an exception.
+      if (this.run.lockdown && !container && !this.run.lockdownOnHost) {
+        throw new Error(`${this.run.lockdown}, and Docker isn't available, so code-flow won't run \`${command}\` on this machine`);
+      }
       release = await checkSlots.acquire(this.signal).catch(() => undefined);
       result = release
         ? await runCheck(wt.path, command, { timeoutMs: timerMs(this.run.loop.checkTimeoutMin * 60_000, 1_000), signal: this.signal, container })
@@ -1233,6 +1239,11 @@ export class TeamContext {
       if (result.ok || this.signal.aborted) return result;
       const kind = failureKind(result, !!resume);
       if (kind === "session_not_found" && resume && !freshSession) {
+        // An earlier attempt of this write step may have edited files before failing: the whole
+        // task again starts from the worktree as the step found it, or not at all.
+        if (params.mode === "write" && retries > 0) {
+          if (!start || (await isMerging(params.cwd.path)) || !(await restoreSnapshot(params.cwd.path, start).then(() => true, () => false))) return result;
+        }
         freshSession = true;
         onEvent({ kind: "status", text: `The ${name} conversation to continue no longer exists; starting a new one with the whole task` });
         resume = undefined;
@@ -1245,10 +1256,14 @@ export class TeamContext {
       if (params.mode === "write") {
         if (result.sessionId) {
           resume = result.sessionId;
+          // The request again, for reference: the conversation may hold none of it (a Codex
+          // thread can start and its first turn then fail).
           prompt =
             `Your previous attempt at this stopped with an error (${firstLine(result.error)}). ` +
-            "Continue from the current state of the worktree: finish what was asked, then reply as asked.";
-        } else if (start) {
+            "Continue from the current state of the worktree: finish what was asked, then reply as asked.\n\n" +
+            `For reference, the request was:\n${initial.prompt}`;
+        } else if (start && !(await isMerging(params.cwd.path))) {
+          // (Not mid-merge: resetting would drop the merge, and its commit would lose a parent.)
           startOver = true;
           ({ resume, prompt } = initial);
         } else {
@@ -1426,6 +1441,8 @@ export class RunManager {
   private readonly active = new Map<string, Promise<void>>();
   /** Runs between "resume requested" and "running": a second request must not start them twice. */
   private readonly starting = new Set<string>();
+  /** Stop was pressed while a resume was starting: it doesn't start. */
+  private readonly stoppedWhileStarting = new Set<string>();
   private readonly bus = new EventEmitter();
   private seq = 0;
   private shuttingDown = false;
@@ -1503,16 +1520,12 @@ export class RunManager {
   }
 
   /**
-   * Startup housekeeping: git forgets worktrees whose folders are gone (`git worktree prune`),
-   * and folders in a worktree root that no known run owns are logged. Nothing is deleted.
+   * Startup housekeeping: folders in a worktree root that no known run owns are logged. Nothing
+   * is deleted, and git's worktree list isn't pruned here: that would also drop your own
+   * worktrees on a drive that isn't mounted right now.
    */
   private async tidyWorktrees() {
     const runs = [...this.runs.values()];
-    const repos = [...new Set(runs.map((r) => r.repo))].filter((repo) => existsSync(repo));
-    await mapLimit(repos, 4, async (repo) => {
-      const res = await withRepoLock(repo, () => git(["worktree", "prune"], repo));
-      if (res.code !== 0) logWarn(`Couldn't prune worktrees in ${repo}`, { error: gitError(["worktree", "prune"], res) });
-    });
     const roots = new Set(runs.filter((r) => existsSync(r.repo)).map((r) => dirname(r.worktreeDir)));
     for (const root of roots) {
       const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
@@ -1549,8 +1562,10 @@ export class RunManager {
   }
 
   cancel(id: string): boolean {
+    // A resume still waiting for the last attempt to wrap up: that controller is the old one.
+    if (this.starting.has(id)) this.stoppedWhileStarting.add(id);
     const controller = this.controllers.get(id);
-    if (!controller) return false;
+    if (!controller) return this.starting.has(id);
     controller.abort();
     return true;
   }
@@ -2008,6 +2023,7 @@ export class RunManager {
     // you said so.
     let trust: Trust = input.trust ?? config.trust ?? "standard";
     let lockdown: string | undefined;
+    let lockdownOnHost: boolean | undefined;
     if (source && source.trusted === false) {
       const who = source.author ? `@${source.author}` : "someone the repository doesn't know";
       const relation = source.isCrossRepository ? "from a fork" : `who isn't one of its maintainers (${(source.association ?? "unknown").toLowerCase()})`;
@@ -2018,9 +2034,14 @@ export class RunManager {
         // Whoever configured the container (an automation, the composer) may have allowed network;
         // a locked-down run's checks never get it.
         loop.container = { ...loop.container, network: false };
+      } else if (await commandExists("docker")) {
+        // Even without a check: a pattern can run commands of its own (test-first runs the
+        // tester's test command), and every command code-flow runs for this run goes in it.
+        loop.container = { image: config.image ?? "node:22", network: false };
+      } else if (input.allowUntrusted) {
+        lockdownOnHost = true;
       } else if (loop.check || loop.setup) {
-        if (await commandExists("docker")) loop.container = { image: config.image ?? "node:22", network: false };
-        else if (!input.allowUntrusted) throw new UntrustedSourceError(lockdown);
+        throw new UntrustedSourceError(lockdown);
       }
     }
     // An untrusted PR's branch can rewrite AGENTS.md too: read conventions from where it started.
@@ -2052,6 +2073,7 @@ export class RunManager {
       roleSettings: input.roleSettings ?? {},
       trust,
       lockdown,
+      lockdownOnHost,
       conventions: conventions || undefined,
       lessons: lessons.length ? lessons : undefined,
       learn,
@@ -2114,12 +2136,15 @@ export class RunManager {
 
     // Claimed before the first await, so a double click (or a PR watch and you) can't start it twice.
     this.starting.add(id);
+    this.stoppedWhileStarting.delete(id);
     try {
       // The last attempt may still be wrapping up (listing its work, the inbox): let it finish.
       await this.active.get(id)?.catch(() => undefined);
+      if (this.stoppedWhileStarting.has(id)) return run; // you pressed Stop meanwhile
       return await this.resumeClaimed(run, pattern);
     } finally {
       this.starting.delete(id);
+      this.stoppedWhileStarting.delete(id);
     }
   }
 

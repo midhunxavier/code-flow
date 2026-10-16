@@ -1,4 +1,8 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { adapters, agentCatalog, AGENT_IDS, type AgentId } from "./adapters/index.js";
 import { childEnv } from "./env.js";
 import { gitAtLeast, gitVersion } from "./git.js";
@@ -195,8 +199,7 @@ async function check(id: AgentId, quota: HealthEntry["quota"]): Promise<HealthEn
 async function probeFlags(id: AgentId, entry: HealthEntry): Promise<void> {
   const missing: Need[] = [];
   for (const probe of NEEDS[id]) {
-    const res = await capture(adapters[id].binary, probe.args);
-    const help = `${res.stdout}\n${res.stderr}`;
+    const help = await helpText(adapters[id].binary, probe.args);
     if (help.trim().length < 40) return; // no usable help: unknown, not incompatible
     for (const need of probe.needs) if (!listed(help, need.name)) missing.push(need);
   }
@@ -219,6 +222,36 @@ function listed(help: string, name: string): boolean {
   return name.startsWith("-")
     ? new RegExp(`(?:^|[\\s,\\[(])${escaped}(?=$|[\\s,=<\\[\\])])`, "m").test(help)
     : new RegExp(`^\\s+${escaped}(?=$|\\s)`, "m").test(help);
+}
+
+/**
+ * A CLI's `--help`, written to a file rather than a pipe: Claude Code exits before a piped
+ * help is fully written (8 or 16 KB of 22), and the flags past the cut would read as missing.
+ */
+async function helpText(cmd: string, args: string[]): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "codeflow-help-"));
+  const file = join(dir, "help.txt");
+  try {
+    const fd = openSync(file, "w");
+    try {
+      await new Promise<void>((resolve) => {
+        const child = spawn(cmd, args, { stdio: ["ignore", fd, fd], env: childEnv() });
+        const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
+        child.on("error", () => resolve());
+        child.on("close", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    } finally {
+      closeSync(fd);
+    }
+    return await readFile(file, "utf8");
+  } catch {
+    return "";
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 function capture(cmd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {

@@ -27,10 +27,14 @@ test("childEnv drops code-flow's token, npm variables and its own node_modules/.
   try {
     process.env.CODEFLOW_TOKEN = "secret";
     process.env.npm_package_name = "code-flow";
+    process.env.npm_config_local_prefix = "/opt/tools/code-flow";
+    process.env.npm_config_registry = "https://npm.example.com/";
     process.env.CODEFLOW_HOME = home;
     const env = childEnv({ EXTRA: "1" });
     assert.equal(env.CODEFLOW_TOKEN, undefined);
     assert.equal(env.npm_package_name, undefined);
+    assert.equal(env.npm_config_local_prefix, undefined, "code-flow's own folder isn't the repo's");
+    assert.equal(env.npm_config_registry, "https://npm.example.com/", "your npm settings are kept");
     assert.equal(env.CODEFLOW_HOME, home, "settings the fakes and checks read are kept");
     assert.equal(env.EXTRA, "1");
   } finally {

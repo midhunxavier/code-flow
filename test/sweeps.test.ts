@@ -281,7 +281,7 @@ test("runSweep: one run per item, in your order; covered items are skipped and f
   assert.equal(coveringRun([{ ...covering, status: "failed" } as Run], root, { kind: "pr", number: 7 }), undefined);
 });
 
-test("a sweep's runs wait in the inbox; a Dependabot PR is locked down, and approving its fix pushes it to the PR", async () => {
+test("a sweep's runs wait in the inbox; a Dependabot PR's text is fenced, and approving its fix pushes it to the PR", async () => {
   const trigger = { id: "s-test", name: "Fix Dependabot PRs", via: "sweep" as const };
   const runs: Run[] = [];
   const dir = mkdtempSync(join(tmpdir(), "codeflow-record-"));
@@ -304,15 +304,13 @@ test("a sweep's runs wait in the inbox; a Dependabot PR is locked down, and appr
     delete process.env.FAKE_RECORD_DIR;
   }
   assert.equal(run.status, "done", run.error);
-  // Its description quotes upstream release notes and its CI runs the new package's code, so it's
-  // treated like an outsider's PR: Safe mode, nothing copied in, checks in Docker without network.
-  assert.match(run.lockdown!, /Pull request #7 comes from @app\/dependabot/);
-  assert.equal(run.source?.trusted, false);
-  assert.equal(run.trust, "safe");
-  assert.equal(run.loop.copy, undefined);
-  assert.deepEqual(run.loop.container, { image: "node:22", network: false });
+  // Its branch is this repository's, so the run isn't locked down: setup can install the new
+  // version and the check can verify it. But its description quotes upstream release notes and
+  // its CI logs print the new package's output, so that text is fenced as untrusted.
+  assert.equal(run.lockdown, undefined);
+  assert.equal(run.source?.trusted, true);
+  assert.equal(run.source?.untrustedText, true);
   const recorded = readdirSync(dir).map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as { vendor: string; args: string[]; prompt?: string });
-  assert.ok(recorded.some((p) => p.vendor === "docker" && p.args.join(" ").includes("--network none")), "the check ran in a container without network");
   const prompt = recorded.find((p) => p.prompt?.includes("Pull request #7"))!.prompt!;
   assert.match(prompt, /outside this repository's maintainers/);
   assert.match(prompt, /```text\nTitle: Bump axios from 0\.21\.0 to 1\.7\.4\nBranch: dependabot\/npm_and_yarn\/axios-1\.7\.4 into main/, "the title is in the fence, not a heading");

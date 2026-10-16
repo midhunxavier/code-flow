@@ -1,7 +1,7 @@
 import { RejectedError, type Pattern, type StepOutcome } from "../engine.js";
 import { isPlainTestCommand, type CheckResult } from "../checks.js";
 import { changedFiles, resolveCommit, restorePaths } from "../git.js";
-import { isTestFile } from "../integrity.js";
+import { isPlainSource, isTestFile } from "../integrity.js";
 import { TEST_SPEC_SCHEMA, TEST_VERDICT_SCHEMA } from "./schemas.js";
 import { checkSection, fence, jsonInstruction, preamble, section, WRITE } from "./prompts.js";
 
@@ -85,11 +85,11 @@ export const tddPattern: Pattern = {
     let testerStep = written.outcome;
     const spec: TestSpec | undefined = written.value;
     const testsCommit = await ctx.commit(wt, `${tester}: failing tests`);
-    // Grows as the tester adds edge-case tests; the builder may not touch any of them. Only test
-    // files (and the ones the tester named): a stub the tester added for the tests to import is
-    // the builder's to fill in, not tampering.
+    // Grows as the tester adds edge-case tests; the builder may not touch any of them: tests,
+    // fixtures, snapshots, test config (and whatever the tester named). Only a plain source file
+    // the tester added, a stub for the tests to import, is the builder's to fill in.
     const named = (spec?.test_files ?? []).map((f) => f.replace(/^\.\//, ""));
-    const testFiles = testsCommit ? (await changedFiles(wt.path, wt.base, testsCommit)).filter((f) => isTestFile(f) || named.includes(f)) : named;
+    const testFiles = testsCommit ? (await changedFiles(wt.path, wt.base, testsCommit)).filter((f) => !isPlainSource(f) || named.includes(f)) : named;
 
     // Evidence comes from code-flow running the tests itself. An agent-chosen command is only run
     // when it looks like a plain test invocation; the user's configured check always runs.

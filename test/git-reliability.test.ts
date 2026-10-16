@@ -13,7 +13,7 @@ process.env.GIT_CONFIG_COUNT = "1";
 process.env.GIT_CONFIG_KEY_0 = "protocol.file.allow";
 process.env.GIT_CONFIG_VALUE_0 = "always";
 
-const { openWorktree, openDetachedWorktree, removeDetachedWorktree } = await import("../src/git.js");
+const { openWorktree, openDetachedWorktree, removeDetachedWorktree, snapshot, restoreSnapshot } = await import("../src/git.js");
 const { listTree, searchFiles } = await import("../src/repo-tree.js");
 
 const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
@@ -104,4 +104,21 @@ test("a repo without submodules is unaffected, and the Files panel lists it", as
     ],
   );
   assert.deepEqual((await searchFiles(repo, "new")).map((e) => e.path), ["new.txt"]);
+});
+
+test("read-only steps side by side in one worktree: snapshots don't collide on index.lock, and a held lock is waited out", async () => {
+  // Uncommitted changes to tracked files: `git stash create` refreshes the index, which takes its lock.
+  const repo = newRepo("codeflow-git-snap-", { "a.txt": "a\n", "b.txt": "b\n" });
+  writeFileSync(join(repo, "a.txt"), "changed\n");
+  const snaps = await Promise.all(Array.from({ length: 6 }, () => snapshot(repo)));
+  assert.ok(snaps.every((s) => s.changes), "every snapshot recorded the uncommitted change");
+
+  // Your own git (or an agent's) holds the lock while a step's edits are undone.
+  writeFileSync(join(repo, "b.txt"), "edited in a read-only step\n");
+  const lock = join(repo, ".git", "index.lock");
+  writeFileSync(lock, "");
+  setTimeout(() => rmSync(lock, { force: true }), 400);
+  assert.deepEqual(await restoreSnapshot(repo, snaps[0]!), ["edits"]);
+  assert.equal(readFileSync(join(repo, "b.txt"), "utf8"), "b\n");
+  assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "changed\n", "the change from before the step is kept");
 });

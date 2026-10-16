@@ -284,6 +284,17 @@ const feed = { epoch: "", seq: 0, runSeq: new Map<string, number>() };
 /** Called when a run finishes, pauses for you, or a PR watch hands it back (see watchAllRuns). */
 let onFinished: ((run: RunSummary) => void) | undefined;
 
+/**
+ * A run snapshot from a run's own stream (the run view): it updates the list only when it's newer
+ * than what the list shows. That stream replays a run's history first, and an old "running"
+ * snapshot in the list would make the next refresh announce a finish that happened long ago.
+ */
+export function upsertRunFrom(run: RunSummary, seq: number) {
+  if (seq <= (feed.runSeq.get(run.id) ?? 0)) return;
+  feed.runSeq.set(run.id, seq);
+  upsertRun(run);
+}
+
 /** Tell `onFinished` about what changed between two snapshots of a run. */
 function noticeChange(before: RunSummary | undefined, run: RunSummary) {
   if (!onFinished) return;

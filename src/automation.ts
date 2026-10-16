@@ -102,20 +102,27 @@ export function nextFire(schedule: Schedule, after: number): number {
   if ("every" in schedule) return after + schedule.every * 60_000;
   const [h, m] = schedule.at.split(":").map(Number) as [number, number];
   const d = new Date(after);
+  // Set again after every day moved: on the day clocks spring forward, 02:30 becomes 03:30, and
+  // the next day must still be 02:30.
+  const nextDay = () => {
+    d.setDate(d.getDate() + 1);
+    d.setHours(h, m, 0, 0);
+  };
   d.setHours(h, m, 0, 0);
-  if (d.getTime() <= after) d.setDate(d.getDate() + 1);
-  for (let i = 0; i < 7 && schedule.days?.length && !schedule.days.includes(d.getDay()); i++) d.setDate(d.getDate() + 1);
+  if (d.getTime() <= after) nextDay();
+  for (let i = 0; i < 7 && schedule.days?.length && !schedule.days.includes(d.getDay()); i++) nextDay();
   return d.getTime();
 }
 
 /**
  * Whether a time the schedule was due at (`due`) should still fire at `now`: code-flow was
- * closed or the computer asleep, and it's at most an hour late, and today is one of the
- * schedule's days. Otherwise that time is skipped.
+ * closed or the computer asleep, and it's at most an hour late, and the day it was due on is
+ * one of the schedule's days (Monday's 23:30, fired at 00:10 on Tuesday, still counts).
+ * Otherwise that time is skipped.
  */
 export function stillDue(schedule: Schedule, due: number, now: number): boolean {
   if (now - due > MISSED_GRACE_MS) return false;
-  return "every" in schedule || !schedule.days?.length || schedule.days.includes(new Date(now).getDay());
+  return "every" in schedule || !schedule.days?.length || schedule.days.includes(new Date(due).getDay());
 }
 
 /**
@@ -233,6 +240,7 @@ export class Automations {
   async create(
     input: Omit<Trigger, "id" | "token" | "createdAt" | "nextAt" | "handled" | "deliveries" | "queued" | "webhookStarts"> & { handled?: string[] },
   ): Promise<Trigger> {
+    this.requireWritable();
     const trigger: Trigger = { ...input, id: `t-${randomBytes(4).toString("hex")}`, token: randomBytes(24).toString("hex"), createdAt: Date.now() };
     trigger.nextAt = trigger.enabled && trigger.schedule ? nextFire(trigger.schedule, Date.now()) : undefined;
     this.triggers.push(trigger);
@@ -241,6 +249,7 @@ export class Automations {
   }
 
   async update(id: string, patch: Partial<Pick<Trigger, "name" | "enabled" | "schedule" | "webhook" | "isolate" | "image" | "run">> & { rotateToken?: boolean }) {
+    this.requireWritable();
     const t = this.require(id);
     const { rotateToken, ...rest } = patch;
     const timing = JSON.stringify([t.enabled, t.schedule]);
@@ -264,6 +273,7 @@ export class Automations {
   }
 
   async remove(id: string) {
+    this.requireWritable();
     this.require(id);
     this.triggers = this.triggers.filter((t) => t.id !== id);
     await this.save();
@@ -276,9 +286,11 @@ export class Automations {
     this.unsubscribe = this.manager.subscribeAll((run) => this.runChanged(run));
   }
 
-  stop() {
+  /** Stop firing; resolves once the last save is on disk. */
+  stop(): Promise<unknown> {
     if (this.timer) clearInterval(this.timer);
     this.unsubscribe?.();
+    return this.saving;
   }
 
   /**
@@ -304,6 +316,9 @@ export class Automations {
         logInfo(`Automation "${t.name}" skipped its ${new Date(due).toLocaleString()} run: code-flow was closed or asleep then`);
         continue;
       }
+      // The next time is on disk before the run starts (which takes seconds): stopping code-flow
+      // meanwhile mustn't leave the old time saved, to fire again at the next start.
+      await this.save();
       await this.fire(t.id, { via: "schedule" }).catch((err) => logWarn(`Automation "${t.name}" couldn't start its scheduled run`, { error: (err as Error).message }));
     }
     if (changed) await this.save();
@@ -547,6 +562,14 @@ export class Automations {
       throw Object.assign(new Error("Bad token or signature"), { status: 401 });
     }
     return t;
+  }
+
+  /**
+   * Changes you make must be saved, or a webhook secret you copied would be gone after a restart:
+   * refuse them while triggers.json couldn't be read (and so isn't written).
+   */
+  private requireWritable() {
+    if (!this.writable) throw new Error(`Automations can't be changed: ${this.file} couldn't be read when code-flow started (see server.log). Fix or remove it, then restart code-flow.`);
   }
 
   private require(id: string): Trigger {

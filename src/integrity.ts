@@ -27,6 +27,17 @@ const ASSERTION =
 
 export const isTestFile = (path: string) => TEST_FILE.test(path);
 
+const SOURCE = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|kts|scala|rb|cs|swift|php|c|cc|cpp|h|hpp|m|mm|ex|exs|dart|lua|vue|svelte)$/i;
+/** Fixtures and expected outputs a test compares against: changing them makes a test pass too. */
+const FIXTURE = /(^|\/)(__snapshots__|__fixtures__|fixtures?|testdata|test-data|golden|snapshots?)\/|\.snap$/i;
+
+/**
+ * Code that isn't a test, a test's config, or a fixture: a stub a tester added so its tests can
+ * import something is this kind, and the builder's to fill in. Anything else the tester wrote
+ * (snapshots, golden files, conftest.py) is part of the tests.
+ */
+export const isPlainSource = (path: string) => SOURCE.test(path) && !TEST_FILE.test(path) && !TEST_CONFIG.test(path) && !FIXTURE.test(path);
+
 /**
  * The check found nothing only means something if it could look: when git fails, that is the
  * issue (fail closed), so a pass isn't accepted as clean on no evidence.

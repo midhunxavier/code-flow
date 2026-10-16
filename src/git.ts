@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { appendFile, copyFile, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { envNumber, WORKTREE_DIR } from "./config.js";
+import { envNumber, timerMs, WORKTREE_DIR } from "./config.js";
 import { childEnv } from "./env.js";
 
 export interface GitResult {
@@ -25,7 +26,7 @@ export interface GitOptions {
   input?: string;
 }
 
-const GIT_TIMEOUT_MS = envNumber("CODEFLOW_GIT_TIMEOUT_SEC", 300, { min: 1 }) * 1000;
+const GIT_TIMEOUT_MS = timerMs(envNumber("CODEFLOW_GIT_TIMEOUT_SEC", 300, { min: 1 }) * 1000);
 const GIT_MAX_OUTPUT = 64 * 1024 * 1024;
 
 /**
@@ -175,17 +176,33 @@ let versionPromise: Promise<[number, number, number] | undefined> | undefined;
 
 /** The installed git's version, e.g. [2, 39, 3]; undefined if it can't be read. */
 export function gitVersion(): Promise<[number, number, number] | undefined> {
-  versionPromise ??= git(["--version"], process.cwd(), { timeoutMs: 10_000 }).then((res) => {
+  const pending = (versionPromise ??= git(["--version"], process.cwd(), { timeoutMs: 10_000 }).then((res) => {
     const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(res.stdout);
     return m ? ([Number(m[1]), Number(m[2]), Number(m[3] ?? 0)] as [number, number, number]) : undefined;
+  }));
+  // Only a version that was read is kept: one slow `git --version` mustn't block merges until a restart.
+  void pending.then((v) => {
+    if (!v && versionPromise === pending) versionPromise = undefined;
   });
-  return versionPromise;
+  return pending;
 }
 
 /** True when the installed git is at least `major.minor`. */
 export async function gitAtLeast(major: number, minor: number): Promise<boolean> {
   const v = await gitVersion();
   return !!v && (v[0] > major || (v[0] === major && v[1] >= minor));
+}
+
+/** Run `fn` after everything queued under `key` in `locks`, one at a time. */
+function serialize<T>(locks: Map<string, Promise<unknown>>, key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = locks.get(key) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(fn);
+  const tail = next.catch(() => undefined);
+  locks.set(key, tail);
+  void tail.then(() => {
+    if (locks.get(key) === tail) locks.delete(key);
+  });
+  return next;
 }
 
 const repoLocks = new Map<string, Promise<unknown>>();
@@ -196,15 +213,14 @@ const repoLocks = new Map<string, Promise<unknown>>();
  * one repo otherwise trip over each other's `.git` lock files.
  */
 export function withRepoLock<T>(repo: string, fn: () => Promise<T>): Promise<T> {
-  const key = resolve(repo);
-  const prev = repoLocks.get(key) ?? Promise.resolve();
-  const next = prev.catch(() => undefined).then(fn);
-  const tail = next.catch(() => undefined);
-  repoLocks.set(key, tail);
-  void tail.then(() => {
-    if (repoLocks.get(key) === tail) repoLocks.delete(key);
-  });
-  return next;
+  return serialize(repoLocks, resolve(repo), fn);
+}
+
+const worktreeLocks = new Map<string, Promise<unknown>>();
+
+/** Snapshots and restores of one worktree, one at a time (read-only steps can share a worktree). */
+function withWorktreeLock<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
+  return serialize(worktreeLocks, resolve(cwd), fn);
 }
 
 export async function repoRoot(path: string): Promise<string> {
@@ -454,19 +470,45 @@ export interface Snapshot {
   untracked: string[];
 }
 
+/**
+ * `git stash create` against a copy of the worktree's index: it refreshes the index, which
+ * takes `index.lock` and fails (silently, exit 1) when the lock is held. On a copy, read-only
+ * steps side by side in one worktree, an agent's own git, or yours never collide with it.
+ */
+async function stashCreate(cwd: string): Promise<string> {
+  const index = resolve(cwd, await gitOk(["rev-parse", "--git-path", "index"], cwd));
+  const copy = `${index}.codeflow-${process.pid}-${randomBytes(4).toString("hex")}`;
+  const copied = await copyFile(index, copy).then(() => true, () => false);
+  try {
+    return (await gitOk(["stash", "create"], cwd, copied ? { env: { GIT_INDEX_FILE: copy } } : undefined)).trim();
+  } finally {
+    if (copied) await Promise.all([rm(copy, { force: true }), rm(`${copy}.lock`, { force: true })]);
+  }
+}
+
+/** gitOk, tried again for a few seconds while another git process holds a lock (an agent's, yours). */
+async function gitOkWhenFree(args: string[], cwd: string): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await git(args, cwd);
+    if (res.code === 0) return res.stdout.trim();
+    if (attempt >= 5 || classifyGitFailure(res) !== "locked") throw new Error(gitError(args, res));
+    await new Promise((r) => setTimeout(r, 100 * 2 ** attempt));
+  }
+}
+
 async function uncommittedTree(cwd: string): Promise<string> {
-  const sha = (await gitOk(["stash", "create"], cwd)).trim();
+  const sha = await stashCreate(cwd);
   return sha ? (await gitOk(["rev-parse", `${sha}^{tree}`], cwd)).trim() : "";
 }
 
 const untrackedFiles = async (cwd: string) => (await gitOk(["ls-files", "--others", "--exclude-standard", "-z"], cwd)).split("\0").filter(Boolean);
 
 export async function snapshot(cwd: string): Promise<Snapshot> {
-  return {
+  return withWorktreeLock(cwd, async () => ({
     head: await resolveCommit(cwd),
-    changes: (await gitOk(["stash", "create"], cwd)).trim(),
+    changes: await stashCreate(cwd),
     untracked: await untrackedFiles(cwd),
-  };
+  }));
 }
 
 /**
@@ -474,23 +516,30 @@ export async function snapshot(cwd: string): Promise<Snapshot> {
  * commits, edits, new files. Returns what was undone (empty when nothing changed).
  */
 export async function restoreSnapshot(cwd: string, snap: Snapshot): Promise<string[]> {
-  const undone: string[] = [];
-  const head = await resolveCommit(cwd);
-  const changesNow = await uncommittedTree(cwd);
-  const changesBefore = snap.changes ? (await gitOk(["rev-parse", `${snap.changes}^{tree}`], cwd)).trim() : "";
-  if (head !== snap.head) undone.push("commits");
-  if (head !== snap.head || changesNow !== changesBefore) {
-    if (head === snap.head) undone.push("edits");
-    await gitOk(["reset", "--hard", "-q", snap.head], cwd);
-    if (snap.changes) await gitOk(["stash", "apply", "-q", snap.changes], cwd);
-  }
-  const before = new Set(snap.untracked);
-  const added = (await untrackedFiles(cwd)).filter((f) => !before.has(f));
-  if (added.length) {
-    undone.push(`${added.length} new file${added.length === 1 ? "" : "s"}`);
-    for (let i = 0; i < added.length; i += 100) await gitOk(["clean", "-fq", "--", ...added.slice(i, i + 100)], cwd);
-  }
-  return undone;
+  return withWorktreeLock(cwd, async () => {
+    const undone: string[] = [];
+    const head = await resolveCommit(cwd);
+    const changesNow = await uncommittedTree(cwd);
+    const changesBefore = snap.changes ? (await gitOk(["rev-parse", `${snap.changes}^{tree}`], cwd)).trim() : "";
+    if (head !== snap.head) undone.push("commits");
+    if (head !== snap.head || changesNow !== changesBefore) {
+      if (head === snap.head) undone.push("edits");
+      await gitOkWhenFree(["reset", "--hard", "-q", snap.head], cwd);
+      if (snap.changes) await gitOkWhenFree(["stash", "apply", "-q", snap.changes], cwd);
+    }
+    const before = new Set(snap.untracked);
+    const added = (await untrackedFiles(cwd)).filter((f) => !before.has(f));
+    if (added.length) {
+      undone.push(`${added.length} new file${added.length === 1 ? "" : "s"}`);
+      for (let i = 0; i < added.length; i += 100) await gitOkWhenFree(["clean", "-fq", "--", ...added.slice(i, i + 100)], cwd);
+    }
+    return undone;
+  });
+}
+
+/** A merge is in progress (conflicts being resolved): starting over would lose it. */
+export async function isMerging(cwd: string): Promise<boolean> {
+  return (await git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd)).code === 0;
 }
 
 export async function branchExists(repo: string, branch: string): Promise<boolean> {

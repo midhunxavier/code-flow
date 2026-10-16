@@ -163,7 +163,7 @@ test("a step whose adapter throws still ends as failed, and a read-only step's c
   assert.ok(!existsSync(join(run.worktrees[0]!.path, "stray.txt")), "restored in finally");
 });
 
-test("loading runs: a step left running in a run that isn't is closed; a log without a snapshot and stray worktree folders are logged; git forgets deleted worktrees", async () => {
+test("loading runs: a step left running in a run that isn't is closed; a log without a snapshot and stray worktree folders are logged; your worktrees are left alone", async () => {
   mkdirSync(RUNS_DIR, { recursive: true });
   const id = "synthetic-1";
   const lines = [
@@ -189,7 +189,9 @@ test("loading runs: a step left running in a run that isn't is closed; a log wit
   const log = readFileSync(LOG_FILE, "utf8");
   assert.match(log, /The log of run no-snapshot has no run snapshot/);
   assert.match(log, /orphan-folder/);
-  await until(() => !sh(repo, "worktree", "list", "--porcelain").includes(gone));
+  // A worktree of yours whose folder is missing (a drive that isn't mounted) keeps its entry.
+  assert.ok(sh(repo, "worktree", "list", "--porcelain").includes(gone));
+  sh(repo, "worktree", "prune");
 });
 
 // ---------------------------------------------------------------- reused worktrees

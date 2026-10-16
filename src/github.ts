@@ -104,6 +104,13 @@ export interface RunSource {
    * down (see engine).
    */
   trusted?: boolean;
+  /**
+   * Trusted code, untrusted words: a Dependabot PR is this repository's branch and installs what
+   * you'd install by merging it, but its description quotes the upstream package's release notes
+   * and its CI logs print that package's output. The text is fenced as data; the run isn't locked
+   * down, so setup can still install the new version and the check can verify it.
+   */
+  untrustedText?: boolean;
 }
 
 /** Associations whose issues and pull requests count as trusted input. */
@@ -291,15 +298,16 @@ export async function createPullRequest(repo: string, pr: { base: string; head: 
   const res = await ghRaw(repo, args, fitPrBody(pr.body));
   const url = res.stdout.trim().split("\n").filter((l) => /^https?:\/\//.test(l)).pop();
   if (res.code === 0 && url) return url;
-  const existing = await openPullRequestFor(repo, pr.head).catch(() => undefined);
+  const existing = await openPullRequestFor(repo, pr.head, pr.base).catch(() => undefined);
   if (existing) return existing;
   if (res.code === 0) throw new Error(`gh didn't return a pull request URL: ${res.stdout.trim().slice(0, 300)}`);
   throw ghFailure(args, res);
 }
 
-/** The open pull request whose head is `branch`, if there is one. */
-export async function openPullRequestFor(repo: string, branch: string): Promise<string | undefined> {
-  const list = JSON.parse(await gh(repo, ["pr", "list", "--head", branch, "--state", "open", "--limit", "1", "--json", "url"]));
+/** The open pull request from `branch` (into `base`, when given), if there is one. */
+export async function openPullRequestFor(repo: string, branch: string, base?: string): Promise<string | undefined> {
+  // With the base: a PR from the same branch into another branch isn't the one asked for.
+  const list = JSON.parse(await gh(repo, ["pr", "list", "--head", branch, ...(base ? ["--base", base] : []), "--state", "open", "--limit", "1", "--json", "url"]));
   return list[0]?.url || undefined;
 }
 
@@ -364,7 +372,7 @@ export function sourcePrompt(source: RunSource | undefined): string {
   if (source.kind === "alert") return alertPrompt(source);
   const what = source.kind === "issue" ? `GitHub issue #${source.number}` : `Pull request #${source.number}`;
   // Runs saved before trust was recorded predate this check; treat their sources as trusted.
-  const trusted = source.trusted !== false;
+  const trusted = source.trusted !== false && !source.untrustedText;
   const by = source.author ? ` (opened by @${source.author}${source.association ? `, ${source.association.toLowerCase()}` : ""})` : "";
   const body = source.body.trim().slice(0, 8_000);
   const parts: string[] = [];
@@ -491,9 +499,9 @@ export function githubUser(repo: string): Promise<string> {
 }
 
 /**
- * Dependabot's GitHub App. Its PRs are opened by GitHub, but what they carry isn't GitHub's:
- * the description quotes the new version's release notes and commit messages verbatim, and its
- * CI runs (and prints the output of) the new package's code. So they count as untrusted.
+ * Dependabot's GitHub App. Its PRs are opened by GitHub, but their words aren't GitHub's: the
+ * description quotes the new version's release notes and commit messages verbatim, and its CI
+ * logs print the new package's output. So their text is untrusted (`untrustedText`).
  */
 const DEPENDABOT = /^(app\/)?dependabot(\[bot\])?$/;
 
@@ -519,10 +527,10 @@ export async function loadSource(repo: string, input: SourceInput): Promise<{ so
     isCrossRepository: pr.isCrossRepository,
     ...who,
     author: who.author || pr.author,
-    // A fork's code (and so its CI output) is written by whoever opened it, and a Dependabot PR's
-    // text and CI output come from the upstream package. Pushing to Dependabot's branch still
-    // works: it's in this repository.
-    trusted: TRUSTED_ASSOCIATIONS.has(who.association) && !pr.isCrossRepository && !DEPENDABOT.test(who.author || pr.author),
+    // A fork's code (and so its CI output) is written by whoever opened it. Dependabot's branch is
+    // this repository's, but its text and CI output come from the upstream package.
+    trusted: (TRUSTED_ASSOCIATIONS.has(who.association) || DEPENDABOT.test(who.author || pr.author)) && !pr.isCrossRepository,
+    ...(DEPENDABOT.test(who.author || pr.author) && { untrustedText: true }),
   };
   if (input.ciLogs) {
     const checks = await prChecks(repo, String(pr.number));

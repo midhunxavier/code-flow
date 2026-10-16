@@ -314,7 +314,7 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
         return { unavailable: (err as Error).message };
       }
       // The thread is gone (Codex: "no rollout found for thread id …"): resuming it again won't help.
-      if (turn.resumeThreadId && err instanceof RpcError && (err.code === -32600 || /no rollout found|not found/i.test(err.message))) {
+      if (turn.resumeThreadId && err instanceof RpcError && /no rollout found|thread[^\n]{0,20}not found|invalid thread id/i.test(err.message)) {
         throw new TurnError(err.message, "session_not_found");
       }
       throw err;
