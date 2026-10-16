@@ -30,6 +30,8 @@ const DEFAULT_WRITE_TOOLS = [
   "Bash(yarn *)",
   "Bash(python3 *)",
   "Bash(pytest *)",
+  "Bash(uv *)",
+  "Bash(poetry *)",
   "Bash(cargo *)",
   "Bash(go *)",
   "Bash(make *)",

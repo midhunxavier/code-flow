@@ -3,7 +3,7 @@ import { RejectedError, type Pattern, type StepOutcome } from "../engine.js";
 import { hasConflictMarkers } from "../git.js";
 import { describeIssues } from "../integrity.js";
 import { REVIEW_SCHEMA, SUBTASKS_SCHEMA } from "./schemas.js";
-import { checkSection, fence, fixUntilGreen, jsonInstruction, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { checkEvidence, fence, fixUntilGreen, jsonInstruction, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface Subtask {
   id: string;
@@ -221,7 +221,7 @@ export const supervisorPattern: Pattern = {
           "All subtasks have been merged into the integration branch. Review the combined result against the overall task: " +
           "missing pieces, inconsistencies between parts, broken integration, failing tests." +
           section("Combined diff", fence(diff, "diff")) +
-          (check ? checkSection(check, 3_000) : "") +
+          checkEvidence(ctx, check, 3_000) +
           (testChanges.length ? section("Changes to tests (found by code-flow)", `Request changes unless the task requires them:\n${describeIssues(testChanges)}`) : "") +
           jsonInstruction('{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}'),
       });

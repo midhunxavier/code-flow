@@ -2,7 +2,7 @@ import type { CheckResult } from "../checks.js";
 import type { Pattern, StepOutcome } from "../engine.js";
 import { describeIssues } from "../integrity.js";
 import { REVIEW_SCHEMA } from "./schemas.js";
-import { checkSection, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { checkEvidence, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface ReviewVerdict {
   verdict: "approve" | "changes_requested";
@@ -106,7 +106,7 @@ export const pipelinePattern: Pattern = {
           // A reviewer without its earlier session hasn't seen the plan.
           (round === 1 || !review?.sessionId ? section("Plan", plan.finalText) : "") +
           section("Diff against base", fence(diff, "diff")) +
-          (check ? checkSection(check) : "") +
+          checkEvidence(ctx, check) +
           (testChanges.length
             ? section(
                 "Changes to tests (found by code-flow)",

@@ -43,7 +43,12 @@ export const loopPattern: Pattern = {
     const name = (id: AgentId) => adapters[id].displayName;
 
     const wt = await ctx.worktree("loop");
-    const baseline = (await ctx.check(wt, "Baseline check"))!;
+    const baseline = await ctx.check(wt, "Baseline check");
+    if (!baseline) {
+      // Every round would end on a check that can't run: no agent turn could change that.
+      const reason = ctx.run.checkCantRun?.reason ?? "it can't run in this environment";
+      return `**No rounds run: the check can't run here** — ${reason}. Set \`setup\` and \`check\` in .codeflow/config.json, then start the run again.`;
+    }
     ctx.log(baseline.ok ? "Baseline: the check already passes; the task must keep it passing" : "Baseline: the check fails before any change");
 
     const sessions = new Map<AgentId, StepOutcome>();

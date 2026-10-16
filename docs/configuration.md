@@ -18,6 +18,13 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
 }
 ```
 
+- `check` and `setup`: the composer suggests both from the repo (see [Checks](patterns.md#checks-loops-and-limits)), but set them here when the guess is wrong. A uv workspace whose tests live in their own member might use:
+
+  ```json
+  { "setup": "uv sync --all-packages", "check": "cd tests && uv run --no-sync pytest -q" }
+  ```
+
+  Setup runs once per worktree outside the agents' sandboxes, so the check can run without network (`--no-sync`). When a run's check can't run at all (not installed, nothing collected, `conftest.py` can't import the project), the run says so and asks you to set these.
 - `copy` brings files git doesn't carry (like `.env`) from your checkout into every new worktree. Only regular files that git ignores are copied. Symlinks are refused, since a cloned repo's `.env` could point at your credentials, and so are files git would commit. Patterns can't reach outside the repo.
 - `image` is the Docker image for running checks in isolation (automations, untrusted sources). `learn` passes recurring review problems on to later runs.
 - A result's worktree that was removed (archived) is set up again when you follow up on it: files copied, setup run, context restored. If its branch was deleted, that follow-up fails with a clear message; the run itself stays finished.
@@ -31,7 +38,7 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
 | Mode | Claude Code | Codex | Antigravity |
 |---|---|---|---|
 | Safe | edits files; no shell beyond read-only git | edits inside its sandbox | sandboxed to the worktree |
-| Standard (default) | edits + common build/test commands (npm, node, pytest, cargo, go, make…) | sandboxed, no network | sandboxed to the worktree |
+| Standard (default) | edits + common build/test commands (npm, node, pytest, uv, poetry, cargo, go, make…) | sandboxed, no network | sandboxed to the worktree |
 | Trusted | any command | sandboxed, with network | sandboxed to the worktree |
 
 Whatever the mode, code-flow never merges or pushes on its own.

@@ -25,6 +25,7 @@ Judging in a race is blind: no author summaries, a shuffled order (seeded per ru
 code-flow treats each pattern as a loop, and what it engineers is the loop around the agents:
 
 - **Done when:** a check command such as `npm test`, `pytest` or `cargo test`. It's auto-detected from the repo and editable per repo.
+  - Python projects locked with uv or Poetry get their own environment, since system Python doesn't have their packages: with `uv.lock`, setup `uv sync` (`uv sync --all-packages` in a uv workspace) and check `uv run --no-sync pytest -q`; with `poetry.lock`, setup `poetry install` and check `poetry run pytest -q`. When the pytest config lives only in `tests/` (a workspace member of its own), the check runs from there. The composer says what it detected from.
   - **code-flow runs it itself** after each change, in that worktree, and feeds the failing output back to the agent.
   - Loops end on that evidence, not on an agent saying it's done. Every check shows in the run's steps with its output.
   - Pipeline: reviewers only see code that passes.
@@ -32,6 +33,12 @@ code-flow treats each pattern as a loop, and what it engineers is the loop aroun
   - Supervisor and Debate: the integrated or built result is checked, and the agent fixes failures.
   - Test-first: the new tests must fail first, then pass.
   - When a run finishes but the check still fails, the run is shown as a warning, not a success.
+- **A check that can't run isn't a failing check.** Some failures say the environment is wrong, not the code: the command isn't installed (exit 127), Python has neither pytest nor the project's package, pytest can't load `conftest.py` or collects nothing (exit 4 or 5).
+  - When the run's first check fails like that, code-flow runs it once more on the base commit, in a throwaway checkout (with your setup). If it fails the same way there, the change isn't to blame.
+  - The check is then set aside for the rest of the run: no "Fix failing check" rounds (agents would only rewrite the test setup to get around it), and later checks are skipped.
+  - The review still runs, and the reviewer is told nothing was tested. The verdict stays unknown instead of failing.
+  - The log, the result card, the inbox and the phone view say *The check can't run here: \<first error line\>. Set `setup` and `check` in .codeflow/config.json*. *Loop until green* stops before its first round, since no round could pass.
+  - If the check runs on the base commit, the change broke it, and it's a failing check like any other.
 - **A pass only counts if the tests are still the tests.** After every change, code-flow looks for edits that make a check pass without fixing anything:
   - deleted test files;
   - added `.skip`, `.only`, `xit`, `@pytest.mark.skip`, `t.Skip()`…;
@@ -55,7 +62,7 @@ code-flow treats each pattern as a loop, and what it engineers is the loop aroun
 - **Plan usage:** if a CLI says its plan is out of usage, the run stops instead of failing, so you can resume it once the plan resets. A turn that fails for a passing reason (overloaded, a network error) is retried after 20 s, then 60 s.
 - **One machine, many runs:** at most 6 agent CLIs and 3 checks run at once across all runs (`CODEFLOW_MAX_AGENTS`, `CODEFLOW_MAX_CHECKS`). Others wait their turn, and the step says so.
 - **Stopping really stops:** each agent CLI and each check runs in its own process group. Cancelling, a time limit or the CLI exiting stops everything it started, such as a dev server it left in the background, and escalates to SIGKILL if needed.
-- **Setup:** an optional command, such as `npm ci`, that runs once in every new worktree before the agents start.
+- **Setup:** an optional command, such as `npm ci` or `uv sync`, that runs once in every new worktree before the agents start. code-flow runs it itself, outside the agents' sandboxes, so dependencies are installed even though Codex has no network in Standard mode.
 
 Agents may suggest their own test command (the tester in Test-first does). code-flow only runs it if it's a plain invocation of a known test runner, with no shell operators. Otherwise it falls back to your check.
 

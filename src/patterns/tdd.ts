@@ -93,8 +93,9 @@ export const tddPattern: Pattern = {
     const reported = spec?.test_command?.trim();
     const targeted = reported && isPlainTestCommand(reported) ? reported : undefined;
     if (reported && !targeted) ctx.log(`Not running the tester's command \`${reported}\`: it isn't a plain test command`, "warn");
-    const evidence = !!targeted || ctx.hasCheck;
-    if (!evidence) {
+    // A check that turns out not to run here stops counting as evidence.
+    const evidence = () => !!targeted || ctx.hasCheck;
+    if (!evidence()) {
       if (!reported) throw new Error("Tester did not report a test command, and no check command is set");
       ctx.log("No test command code-flow can run; relying on the tester's verdict. Set a check in Settings → Done when.", "warn");
     }
@@ -108,8 +109,8 @@ export const tddPattern: Pattern = {
         if (!result.ok) return result;
       }
       if (ctx.hasCheck && ctx.run.loop.check !== targeted) {
-        const result = (await ctx.check(wt, `${title}: full check`))!;
-        if (!result.ok) return result;
+        const result = await ctx.check(wt, `${title}: full check`);
+        if (result && !result.ok) return result;
       }
       return null;
     };
@@ -162,7 +163,7 @@ export const tddPattern: Pattern = {
         feedback = "";
       }
 
-      if (evidence) {
+      if (evidence()) {
         const failing = await runTests(`Tests after round ${round}`);
         if (failing) {
           feedback += checkSection(failing);
@@ -182,7 +183,7 @@ export const tddPattern: Pattern = {
         resume: testerStep,
         prompt:
           `The builder has implemented the feature.${tamperNote}\n` +
-          (evidence ? "code-flow ran the tests and they pass. " : `Run \`${testCommand}\`. `) +
+          (evidence() ? "code-flow ran the tests and they pass. " : `Run \`${testCommand}\`. `) +
           "Now try to break the implementation: add tests for edge cases you missed (add them to the test files; do not change the implementation). " +
           "Report pass only if you found no real gaps." +
           section("Diff since your tests", fence(await ctx.diff(wt, testsCommit ?? wt.base), "diff")) +
@@ -202,7 +203,7 @@ export const tddPattern: Pattern = {
       verdict = probed.value;
       const gaps = (verdict?.failures ?? []).map((f) => `- ${f}`).join("\n");
 
-      if (evidence) {
+      if (evidence()) {
         const failing = await runTests(`Tests incl. new edge cases (round ${round})`);
         if (!failing && (!verdict || verdict.verdict === "pass")) {
           green = true;
@@ -220,9 +221,9 @@ export const tddPattern: Pattern = {
     }
 
     await ctx.artifact("Result", wt);
-    if (evidence) ctx.setVerdict(green ? "passed" : "failing");
+    if (evidence()) ctx.setVerdict(green ? "passed" : "failing");
     const headline = green
-      ? evidence ? "All tests pass (run by code-flow)" : "The tester reports all tests pass"
+      ? evidence() ? "All tests pass (run by code-flow)" : "The tester reports all tests pass"
       : "Tests still failing after the last round";
     return [
       `**${headline}** — branch \`${wt.branch}\``,

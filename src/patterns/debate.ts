@@ -2,7 +2,7 @@ import { adapters } from "../adapters/index.js";
 import type { Pattern, StepOutcome } from "../engine.js";
 import { describeIssues } from "../integrity.js";
 import { REVIEW_SCHEMA } from "./schemas.js";
-import { checkSection, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { checkEvidence, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface ReviewVerdict {
   verdict: "approve" | "changes_requested";
@@ -163,7 +163,7 @@ export const debatePattern: Pattern = {
             section("Task", ctx.task) +
             section("Agreed plan", plan.finalText) +
             section("Diff against base", fence(await ctx.diff(buildWt), "diff")) +
-            (check ? checkSection(check) : "") +
+            checkEvidence(ctx, check) +
             (testChanges.length ? section("Changes to tests (found by code-flow)", `Request changes unless the task requires them:\n${describeIssues(testChanges)}`) : "") +
             section("Deliverable", "Check that the build does what the plan and task say, and look for bugs, missed edge cases and missing tests. Only request changes for real problems.") +
             jsonInstruction('{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}'),

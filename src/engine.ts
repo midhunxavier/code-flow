@@ -12,7 +12,7 @@ import {
   type RunResult,
 } from "./adapters/index.js";
 import { CODEFLOW_HOME, MAX_DIFF_CHARS, STEP_TIMEOUT_MS } from "./config.js";
-import { runCheck, type CheckResult, type Container } from "./checks.js";
+import { cantRunMessage, cantRunReason, runCheck, type CheckResult, type Container } from "./checks.js";
 import { commandExists } from "./adapters/process.js";
 import { contextPrompt, hasStagedFiles, prepareContext, type ContextInput, type RunContext } from "./context.js";
 import { fitDiff } from "./diff.js";
@@ -31,7 +31,9 @@ import {
   isAncestor,
   isClean,
   mergeBranch,
+  openDetachedWorktree,
   openWorktree,
+  removeDetachedWorktree,
   repoRoot,
   resolveCommit,
   restoreSnapshot,
@@ -164,6 +166,12 @@ export interface Run {
   lastCheck?: { ok: boolean; command: string; worktree: string; at: number };
   /** Set by patterns: did the result pass its check? */
   verdict?: "passed" | "failing";
+  /**
+   * The check can't run in this environment: its first run failed in a way that says the
+   * environment is wrong, not the code (see `cantRunReason`), and it fails the same way on the
+   * base commit. It's set aside for the rest of the run: no fix rounds, and no verdict.
+   */
+  checkCantRun?: { command: string; reason: string };
   /** Why a "stopped" run stopped. */
   stopReason?: string;
   worktrees: { name: string; branch: string; path: string }[];
@@ -449,6 +457,8 @@ export class TeamContext {
   private readonly heads = new Map<string, string>();
   /** How many tests the run's check ran in each worktree: the first time, and the latest. */
   private readonly testCounts = new Map<string, { first?: number; last?: number }>();
+  /** Why the run's check can't run here (null: it can), settled by its first result. */
+  private checkRunsHere?: Promise<string | null>;
 
   constructor(
     readonly run: Run,
@@ -540,9 +550,9 @@ export class TeamContext {
     this.controller.abort();
   }
 
-  /** True when the user configured a "done when" check command. */
+  /** True when the user configured a "done when" check command and it can run here. */
   get hasCheck(): boolean {
-    return !!this.run.loop.check;
+    return !!this.run.loop.check && !this.run.checkCantRun;
   }
 
   /** Publish the run's current state (for engine helpers outside the class). */
@@ -552,6 +562,7 @@ export class TeamContext {
 
   /** Record whether the final result passes its check (shown in the result header). */
   setVerdict(verdict: "passed" | "failing") {
+    if (this.run.checkCantRun) return; // unknown: the check never ran on this change
     this.run.verdict = verdict;
   }
 
@@ -632,11 +643,13 @@ export class TeamContext {
 
   /**
    * Run the "done when" check in a worktree — code-flow runs it, not an agent, so the result
-   * can be trusted. Returns null when no check is configured.
+   * can be trusted. Returns null when no check is configured, or when it can't run here.
    */
   async check(wt: Worktree, title = "Check", command = this.run.loop.check): Promise<CheckResult | null> {
     if (!command) return null;
     this.checkCancelled();
+    const doneWhen = command === this.run.loop.check; // not an agent-suggested command
+    if (doneWhen && this.run.checkCantRun) return null;
     const head = this.heads.get(wt.name);
     const result = await this.remember(
       "check",
@@ -650,13 +663,67 @@ export class TeamContext {
       },
       (recorded) => !recorded.head || !head || recorded.head === head,
     );
-    if (command === this.run.loop.check && result.tests !== undefined) {
+    if (doneWhen && !(await this.checkCanRun(wt, result))) return null;
+    if (doneWhen && result.tests !== undefined) {
       const counts = this.testCounts.get(wt.name) ?? {};
       counts.first ??= result.tests;
       counts.last = result.tests;
       this.testCounts.set(wt.name, counts);
     }
     return result;
+  }
+
+  /**
+   * The first result of the run's check settles whether it can run here at all. A failure that
+   * says the environment is wrong (see `cantRunReason`) is tried once more on the base commit:
+   * failing the same way there, the change isn't to blame, so the check is set aside for the
+   * rest of the run — agents would otherwise spend fix rounds rewriting the test setup to get
+   * around it. Returns false when it's set aside.
+   */
+  private async checkCanRun(wt: Worktree, result: CheckResult & { head?: string }): Promise<boolean> {
+    this.checkRunsHere ??= cantRunReason(result)
+      ? this.remember("check-env", result.command, () => this.compareWithBase(wt, result))
+      : Promise.resolve(null);
+    const reason = await this.checkRunsHere;
+    if (!reason || result.ok) return true;
+    if (!this.run.checkCantRun) {
+      this.run.checkCantRun = { command: result.command, reason };
+      this.log(`${cantRunMessage(reason)}. Not spending fix rounds on it; the verdict stays unknown.`, "warn");
+      this.manager.emitRun(this.run);
+    }
+    return false;
+  }
+
+  /** Why the check can't run, when it fails the same way on the commit `wt` started from; else null. */
+  private async compareWithBase(wt: Worktree, result: CheckResult & { head?: string }): Promise<string | null> {
+    const reason = cantRunReason(result)!;
+    if (result.head === wt.base) return reason; // nothing changed yet: this is the base commit
+    this.log(`The check couldn't run (${reason}); running it on the base commit to see whether the change is to blame`);
+    const base = await this.checkOnBase(wt.base, result.command);
+    if (base && !base.ok && cantRunReason(base)) return reason;
+    this.log(
+      base?.ok
+        ? "It runs on the base commit, so the change broke it: treating it as a failing check"
+        : base
+          ? "It runs on the base commit (with failing tests), so the change broke it: treating it as a failing check"
+          : "Setup failed on the base commit, so it can't tell: treating it as a failing check",
+    );
+    return null;
+  }
+
+  /** Set up a throwaway checkout of `commit` and run the check there; undefined when setup fails. */
+  private async checkOnBase(commit: string, command: string): Promise<CheckResult | undefined> {
+    const wt: Worktree = { name: "base", path: join(this.run.worktreeDir, ".base-check"), branch: "", base: commit };
+    await openDetachedWorktree(this.run.repo, wt.path, commit);
+    try {
+      if (this.run.loop.copy?.length) await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
+      if (this.run.loop.setup && !(await this.command("setup", "Setup base commit", wt, this.run.loop.setup)).ok) return undefined;
+      const result = await this.command("check", "Check on base commit", wt, command);
+      this.run.usage.checks++;
+      return result;
+    } finally {
+      await removeDetachedWorktree(this.run.repo, wt.path).catch(() => undefined);
+    }
   }
 
   /** Run a shell command in a worktree as a visible step (used for checks and setup). */
@@ -1308,7 +1375,7 @@ export class RunManager {
       "",
       "---",
       `Made by a code-flow team (${this.findPattern(run.pattern)?.name ?? run.pattern}; agents: ${agents}).`,
-      run.loop.check ? `Check: \`${run.loop.check}\` — ${run.verdict === "passed" ? "passing" : run.verdict === "failing" ? "failing" : "not run"}.` : "",
+      run.loop.check ? `Check: \`${run.loop.check}\` — ${run.verdict === "passed" ? "passing" : run.verdict === "failing" ? "failing" : run.checkCantRun ? `can't run here (${run.checkCantRun.reason})` : "not run"}.` : "",
       "",
       run.summary ?? "",
     ].join("\n");
@@ -1716,6 +1783,8 @@ export class RunManager {
     run.stopReason = undefined;
     run.summary = undefined;
     run.verdict = undefined;
+    // Replaying the pattern settles it again; follow-ups alone keep what the run found.
+    if (!followUpsOnly) run.checkCantRun = undefined;
     run.endedAt = undefined;
     run.seen = false;
     run.archived = false;
@@ -1793,7 +1862,8 @@ export class RunManager {
   private async toInbox(run: Run) {
     if (run.status === "cancelled" || run.status === "interrupted") return;
     if (run.triage && run.triage.state !== "pending") return; // you already decided
-    const empty = run.status === "done" && !run.review && run.artifacts.every((a) => !a.stat?.trim());
+    // A check that can't run is news even when nothing changed: you need to set it up.
+    const empty = run.status === "done" && !run.review && !run.checkCantRun && run.artifacts.every((a) => !a.stat?.trim());
     if (empty) {
       run.triage = { state: "empty", at: Date.now() };
       run.archived = true;

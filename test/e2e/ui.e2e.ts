@@ -236,6 +236,37 @@ test("automations: a webhook starts a run, it waits in the inbox, you approve it
   assert.equal((await fetch(`${BASE}/r/not-the-token`)).status, 404);
 });
 
+test("a check that can't run here: the result is still reviewed, and the inbox and the run say why", async () => {
+  const api = (path: string, body?: unknown) =>
+    fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+  const automation = await api("/api/automations", {
+    name: "E2E no env",
+    webhook: true,
+    run: { repo, pattern: "pipeline", task: "E2E: check can't run", roles: { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, loop: { check: "nosuchtool-e2e --run" } },
+  });
+  assert.ok(automation.token, automation.error);
+  const fired = await fetch(`${BASE}/hooks/${automation.id}`, { method: "POST", headers: { authorization: `Bearer ${automation.token}`, "content-type": "application/json" }, body: "{}" });
+  assert.equal(fired.status, 202);
+  const { run: id } = await fired.json();
+
+  await page.goto(`${BASE}/#/automations`);
+  const item = page.locator(".inbox-item", { hasText: "E2E: check can't run" });
+  await item.waitFor({ timeout: 30_000 });
+  await item.locator(".cant-run", { hasText: "nosuchtool-e2e" }).waitFor();
+  assert.match(await item.locator(".ih .help").innerText(), /check couldn't run/);
+
+  await item.locator("a.t").click();
+  await page.getByText("⚠ Finished — but the check couldn't run, so nothing was tested").waitFor();
+  await page.locator(".result .cant-run", { hasText: ".codeflow/config.json" }).waitFor();
+  assert.equal(await page.locator(".run-head .status-pill").textContent(), "Done · check can't run");
+
+  const run = await api(`/api/runs/${id}`);
+  assert.equal(run.verdict, undefined, "unknown, not failing");
+  const titles: string[] = run.steps.map((s: { title: string }) => s.title);
+  assert.ok(titles.includes("Review (round 1)"), "the change is reviewed");
+  assert.ok(!titles.some((t) => t.startsWith("Fix failing check")), "no fix rounds spent");
+});
+
 test("sweep: pick open issues, start one run each, and approve the results in the inbox", async () => {
   const s = JSON.parse(readFileSync(ghState, "utf8"));
   s.issues = [

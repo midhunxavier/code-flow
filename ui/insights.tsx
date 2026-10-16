@@ -110,7 +110,7 @@ export function InsightsView({ group }: { group?: string }) {
                                 </div>
                               </td>
                               <td>
-                                <span class={`status-pill ${state}`}>{state === "failing" ? "Check failing" : r.verdict === "passed" ? "Passed" : STATUS_TEXT[r.status] ?? r.status}</span>
+                                <span class={`status-pill ${state}`}>{state === "failing" ? "Check failing" : state === "unchecked" ? "Check can't run" : r.verdict === "passed" ? "Passed" : STATUS_TEXT[r.status] ?? r.status}</span>
                               </td>
                               <td class={`num ${best("ms") ? "best" : ""}`}>{r.ms !== undefined ? duration(r.ms) : "…"}</td>
                               <td class={`num ${best("steps") ? "best" : ""}`}>{r.steps}</td>

@@ -182,7 +182,7 @@ function Bell() {
 export function notifyFinished(run: RunSummary) {
   const viewing = "id" in route.value && route.value.id === run.id;
   const verbs: Record<string, string> = {
-    done: run.verdict === "failing" ? "finished, but its check fails" : "finished",
+    done: run.verdict === "failing" ? "finished, but its check fails" : run.checkCantRun ? "finished, but its check couldn't run" : "finished",
     failed: "failed",
     stopped: "stopped at a limit",
     interrupted: "was interrupted",
@@ -249,7 +249,7 @@ function Rail() {
           {r.task.split("\n")[0] || "(no task)"}
         </span>
         <span class="s">
-          {r.awaiting ? "Waiting for you" : r.triage?.state === "pending" ? "In your inbox" : runState(r) === "failing" ? "Check failing" : STATUS_TEXT[r.status] ?? r.status}
+          {r.awaiting ? "Waiting for you" : r.triage?.state === "pending" ? "In your inbox" : runState(r) === "failing" ? "Check failing" : runState(r) === "unchecked" ? "Check can't run" : STATUS_TEXT[r.status] ?? r.status}
           {isFlagged(r) ? <span class="flag" title="Tests were changed in ways that could hide failures"> · ⚠ tests</span> : null} ·{" "}
           {patterns.value.find((p) => p.id === r.pattern)?.name ?? r.pattern} · {baseName(r.repo)} · {ago(r.createdAt)}
           {tokens ? ` · ${fmtTokens(tokens)} tok` : ""}

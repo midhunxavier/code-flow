@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { WORKTREE_DIR } from "./config.js";
 
@@ -117,6 +117,19 @@ export async function openWorktree(
   }
   await gitOk(["worktree", "add", "-b", branch, path, fromRef], repo);
   return { wt, created: true };
+}
+
+/** A throwaway checkout of `ref` on no branch (e.g. to run the check on the base commit). */
+export async function openDetachedWorktree(repo: string, path: string, ref: string): Promise<void> {
+  await removeDetachedWorktree(repo, path);
+  await mkdir(dirname(path), { recursive: true });
+  await gitOk(["worktree", "add", "--detach", path, ref], repo);
+}
+
+export async function removeDetachedWorktree(repo: string, path: string): Promise<void> {
+  if (existsSync(path)) await git(["worktree", "remove", "--force", path], repo);
+  await rm(path, { recursive: true, force: true });
+  await git(["worktree", "prune"], repo);
 }
 
 export interface BranchInfo {

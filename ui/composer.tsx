@@ -785,7 +785,7 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
             {(
               [
                 ["safe", "Safe", "Edit files only. Claude can't run commands; Codex stays sandboxed."],
-                ["standard", "Standard", "Edit files and run common build/test commands (npm, node, pytest, cargo, go, make…)."],
+                ["standard", "Standard", "Edit files and run common build/test commands (npm, node, pytest, uv, poetry, cargo, go, make…)."],
                 ["trusted", "Trusted", "Any command for Claude; network access inside Codex's sandbox. Use on repos you trust."],
               ] as const
             ).map(([value, label, help]) => (
@@ -795,7 +795,7 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
             ))}
           </div>
           <div class="help">
-            {{ safe: "Edit files only. Claude can't run commands; Codex stays sandboxed.", standard: "Edit files and run common build/test commands (npm, node, pytest, cargo, go, make…).", trusted: "Any command for Claude; network access inside Codex's sandbox. Use on repos you trust." }[trust.value]}{" "}
+            {{ safe: "Edit files only. Claude can't run commands; Codex stays sandboxed.", standard: "Edit files and run common build/test commands (npm, node, pytest, uv, poetry, cargo, go, make…).", trusted: "Any command for Claude; network access inside Codex's sandbox. Use on repos you trust." }[trust.value]}{" "}
             Antigravity always runs with its sandbox (writes stay in the worktree). code-flow never merges or pushes on its own.
           </div>
         </div>

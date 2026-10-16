@@ -24,9 +24,18 @@ export interface CheckResult {
 
 const KEEP_OUTPUT = 20_000;
 
-/** Best guess at the repo's test command; the user can always edit it. */
-export async function detectCheckCommand(repo: string): Promise<{ command: string; source: string } | null> {
+export interface DetectedCheck {
+  command: string;
+  /** Why it was picked, for "Detected from …". */
+  source: string;
+  /** Installs the project's dependencies in each new worktree, before agents start. */
+  setup?: string;
+}
+
+/** Best guess at the repo's test command (and setup); the user can always edit it. */
+export async function detectCheckCommand(repo: string): Promise<DetectedCheck | null> {
   const has = (file: string) => existsSync(join(repo, file));
+  const read = (file: string) => readFile(join(repo, file), "utf8").catch(() => "");
 
   if (has("package.json")) {
     const pkg = JSON.parse(await readFile(join(repo, "package.json"), "utf8").catch(() => "{}"));
@@ -38,16 +47,47 @@ export async function detectCheckCommand(repo: string): Promise<{ command: strin
   }
   if (has("Cargo.toml")) return { command: "cargo test", source: "Cargo.toml" };
   if (has("go.mod")) return { command: "go test ./...", source: "go.mod" };
-  if (has("pytest.ini") || has("conftest.py") || has("tox.ini")) return { command: "python3 -m pytest -q", source: "pytest config" };
-  if (has("pyproject.toml")) {
-    const pyproject = await readFile(join(repo, "pyproject.toml"), "utf8").catch(() => "");
-    if (/pytest/.test(pyproject) || has("tests")) return { command: "python3 -m pytest -q", source: "pyproject.toml" };
-  }
+  const pytest = await detectPytest(has, read);
+  if (pytest) return pytest;
   if (has("Makefile")) {
-    const makefile = await readFile(join(repo, "Makefile"), "utf8").catch(() => "");
+    const makefile = await read("Makefile");
     if (/^test\s*:/m.test(makefile)) return { command: "make test", source: "Makefile" };
   }
   return null;
+}
+
+/**
+ * pytest, run the way the project installs its dependencies: system Python doesn't have a uv or
+ * Poetry project's packages, so its tests can't even be collected there. Setup installs them
+ * once per worktree, outside the agents' sandboxes (Codex has no network in Standard mode); the
+ * check then runs without syncing. When the pytest config lives only in tests/ (a workspace
+ * member of its own), the check runs from there.
+ */
+async function detectPytest(has: (file: string) => boolean, read: (file: string) => Promise<string>): Promise<DetectedCheck | null> {
+  const pyproject = has("pyproject.toml") ? await read("pyproject.toml") : "";
+  const configured = /^\[tool\.pytest\b/m;
+  const rootConfig = has("pytest.ini") || has("conftest.py") || has("tox.ini") || configured.test(pyproject);
+  const testsConfig = has("tests/pytest.ini") ? "tests/pytest.ini" : has("tests/pyproject.toml") && configured.test(await read("tests/pyproject.toml")) ? "tests/pyproject.toml" : "";
+  const source =
+    has("pytest.ini") || has("conftest.py") || has("tox.ini")
+      ? "pytest config"
+      : !rootConfig && testsConfig
+        ? testsConfig
+        : pyproject && (/pytest/.test(pyproject) || has("tests"))
+          ? "pyproject.toml"
+          : "";
+  if (!source) return null;
+  const cd = !rootConfig && testsConfig ? "cd tests && " : "";
+  if (has("uv.lock")) {
+    const workspace = /^\[tool\.uv\.workspace\]/m.test(pyproject);
+    return {
+      command: `${cd}uv run --no-sync pytest -q`,
+      setup: workspace ? "uv sync --all-packages" : "uv sync",
+      source: `${source} and uv.lock${workspace ? " (a uv workspace)" : ""}`,
+    };
+  }
+  if (has("poetry.lock")) return { command: `${cd}poetry run pytest -q`, setup: "poetry install", source: `${source} and poetry.lock` };
+  return { command: `${cd}python3 -m pytest -q`, source };
 }
 
 /**
@@ -203,7 +243,7 @@ export function countTests(output: string): number | undefined {
 }
 
 const TEST_RUNNER =
-  /^(npm (run )?test|npm run test:[\w:-]+|pnpm (run )?test|yarn (run )?test|bun (run )?test|npx (jest|vitest|mocha|ava|playwright test)|node --test|deno test|python3? -m (pytest|unittest)|pytest|cargo test|go test|make test|mvn test|gradle test|\.\/gradlew test|dotnet test|bundle exec rspec|rspec|mix test|swift test)(\s|$)/;
+  /^(npm (run )?test|npm run test:[\w:-]+|pnpm (run )?test|yarn (run )?test|bun (run )?test|npx (jest|vitest|mocha|ava|playwright test)|node --test|deno test|python3? -m (pytest|unittest)|pytest|(uv run (--no-sync )?|poetry run )(python3? -m )?pytest|cargo test|go test|make test|mvn test|gradle test|\.\/gradlew test|dotnet test|bundle exec rspec|rspec|mix test|swift test)(\s|$)/;
 
 /**
  * Agents can suggest a test command (e.g. the tester in Test-first). code-flow runs that outside
@@ -259,4 +299,47 @@ export function failureFingerprint(result: CheckResult): string {
     .replace(/0x[0-9a-f]+/gi, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * Why a failed check couldn't run at all — the environment is wrong, not the code: the command
+ * isn't installed, Python has neither pytest nor the project's own package, pytest couldn't load
+ * conftest.py or collected nothing. Returns the line that says so (the first error line), or
+ * undefined when the check ran: passing, failing tests, or a timeout.
+ */
+export function cantRunReason(result: CheckResult): string | undefined {
+  if (result.ok || result.timedOut) return undefined;
+  const output = result.output;
+  const lines = output
+    .split("\n")
+    .map((l) => l.replace(/^E\s+/, "").trim())
+    .filter(Boolean);
+  const first = (...res: RegExp[]) => {
+    for (const re of res) {
+      const line = lines.find((l) => re.test(l));
+      if (line) return line.length > 200 ? `${line.slice(0, 200)}…` : line;
+    }
+    return undefined;
+  };
+  const missingModule = /ModuleNotFoundError|No module named/;
+  const code = result.exitCode;
+
+  // The shell couldn't find (126: couldn't execute) the command: `uv`, `poetry`, `pytest`…
+  if (code === 127 || code === 126) return first(/not found/i, /cannot execute|permission denied|no such file/i) ?? `command not found (exit code ${code})`;
+  // `python3 -m pytest` without pytest; uv or Poetry with nothing installed in the environment.
+  const noRunner = first(/No module named '?pytest'?$/, /^error: Failed to spawn: /, /^Command not found: /);
+  if (noRunner) return noRunner;
+
+  if (!/\bpytest\b/.test(result.command) && !/^=+ .*(test session starts|no tests ran)|^rootdir: |while loading conftest/m.test(output)) return undefined;
+  // 4: conftest.py failed to import, or a usage error; 5: nothing collected.
+  if (code === 4) return first(missingModule, /ImportError/, /^ERROR\b/) ?? "pytest couldn't start (exit code 4)";
+  if (code === 5) return first(/no tests ran/i, /collected 0 items/) ?? "pytest collected no tests (exit code 5)";
+  // Test modules that can't import the project's own package: it isn't installed here.
+  if (/errors? during collection/.test(output) && missingModule.test(output)) return first(missingModule);
+  return undefined;
+}
+
+/** What to tell you when the check can't run; the fix is setting it up for this repo. */
+export function cantRunMessage(reason: string): string {
+  return `The check can't run here: ${reason}. Set \`setup\` and \`check\` in .codeflow/config.json`;
 }

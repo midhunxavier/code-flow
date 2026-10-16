@@ -152,6 +152,16 @@ test("permission modes and per-role models reach each CLI", async () => {
   } finally {
     delete process.env.FAKE_RECORD_DIR;
   }
+  const dir3 = mkdtempSync(join(tmpdir(), "codeflow-record-"));
+  process.env.FAKE_RECORD_DIR = dir3;
+  try {
+    await runPattern({ planner: ["codex"], builder: ["claude"], reviewer: ["codex"] }, { trust: "standard", loop: { check: "" } });
+    const builder = recorded(dir3).find((c) => c.vendor === "claude")!;
+    const tools = builder.args[builder.args.indexOf("--allowedTools") + 1]!.split(",");
+    for (const tool of ["Bash(npm *)", "Bash(pytest *)", "Bash(uv *)", "Bash(poetry *)"]) assert.ok(tools.includes(tool), `standard mode allows ${tool}`);
+  } finally {
+    delete process.env.FAKE_RECORD_DIR;
+  }
 });
 
 test("quota windows reported by Claude are kept per vendor", async () => {

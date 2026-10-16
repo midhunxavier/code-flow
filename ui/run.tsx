@@ -1,7 +1,7 @@
 import { Component } from "preact";
 import { useEffect, useReducer, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
-import { AgentTag, Markdown } from "./bits.js";
+import { AgentTag, CantRunNote, Markdown } from "./bits.js";
 import { TriageActions } from "./automations.js";
 import { Icon } from "./icons.js";
 import { api, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, onPhone, post, SHORT, showToast, STATUS_TEXT } from "./lib.js";
@@ -145,7 +145,7 @@ export function RunView({ id }: { id: string }) {
         <header class="run-head">
           <div class="run-title">
             <span class={`status-pill ${run.awaiting ? "awaiting" : state}`}>
-              {run.awaiting ? "Waiting for you" : state === "failing" ? "Done · check failing" : STATUS_TEXT[run.status] ?? run.status}
+              {run.awaiting ? "Waiting for you" : state === "failing" ? "Done · check failing" : state === "unchecked" ? "Done · check can't run" : STATUS_TEXT[run.status] ?? run.status}
             </span>
             <h2 title={run.task}>{run.task.split("\n")[0] || "(no task)"}</h2>
             <span class="run-pattern">{p?.name ?? run.pattern}</span>
@@ -366,7 +366,7 @@ function RunMeta({ run }: { run: RunSummary }) {
       </span>
       {run.loop?.check ? (
         <span title="code-flow runs this after every change">
-          done when “{run.loop.check}” passes{run.lastCheck ? (run.lastCheck.ok ? " · last check ✓" : " · last check ✕") : ""}
+          done when “{run.loop.check}” passes{run.checkCantRun ? " · can't run here" : run.lastCheck ? (run.lastCheck.ok ? " · last check ✓" : " · last check ✕") : ""}
         </span>
       ) : null}
       <span class="team-line">
@@ -422,6 +422,7 @@ function ResultCard({ run, steps, onSelectStep }: { run: RunSummary; steps: Step
   const titles: Record<string, string> = {
     done: run.verdict === "passed" ? "✓ Finished — the check passes" : "✓ Finished",
     failing: "⚠ Finished — but the check still fails",
+    unchecked: "⚠ Finished — but the check couldn't run, so nothing was tested",
     failed: "✕ Failed",
     cancelled: "■ Stopped by you",
     stopped: `■ Stopped at the ${run.stopReason ?? "limit"} — work so far is kept below`,
@@ -430,6 +431,7 @@ function ResultCard({ run, steps, onSelectStep }: { run: RunSummary; steps: Step
   return (
     <div class={`result ${state}`}>
       <div class="rh">{titles[state] ?? run.status}</div>
+      {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
       {failedSteps.length && run.status !== "done" ? (
         <div class="failures">
           <div class="lbl">What went wrong</div>

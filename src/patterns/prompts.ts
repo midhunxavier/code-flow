@@ -66,8 +66,23 @@ export function checkSection(result: CheckResult, maxOutput = 6_000): string {
 }
 
 /**
+ * The check as evidence for a reviewer: its result, or that code-flow couldn't run it here, so
+ * nobody has tested the change. Empty without a check.
+ */
+export function checkEvidence(ctx: TeamContext, check: CheckResult | null, maxOutput?: number): string {
+  if (check) return checkSection(check, maxOutput);
+  const cantRun = ctx.run.checkCantRun;
+  if (!cantRun) return "";
+  return section(
+    `Check \`${cantRun.command}\` couldn't run (run by code-flow)`,
+    `It can't run in this environment (${cantRun.reason}) — on the base commit either, so not because of this change. Nobody has run the tests on this change; review it with that in mind.`,
+  );
+}
+
+/**
  * If the check fails, let `agent` fix it — up to `attempts` times, re-running the check after
- * each try. Returns the last check (null when no check is configured) and the agent's session.
+ * each try. Returns the last check (null when no check is configured, or it can't run here — no
+ * point fixing code for that) and the agent's session.
  */
 export async function fixUntilGreen(
   ctx: TeamContext,

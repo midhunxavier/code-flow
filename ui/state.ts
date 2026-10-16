@@ -206,23 +206,24 @@ export async function loadCheck() {
   if (!store.get(`setup:${r}`) && config.setup) setupCmd.value = config.setup;
   if (config.trust && !store.get("trust")) trust.value = config.trust;
   const saved = store.get(`check:${r}`);
-  if (saved !== null) {
-    checkCmd.value = saved;
-    checkHint.value = "";
-    return;
+  // A detected setup (`uv sync`, `poetry install`) fills an empty setup you haven't edited.
+  const detectSetup = !setupCmd.value && store.get(`setup:${r}`) === null;
+  if (saved !== null || config.check) {
+    checkCmd.value = saved ?? config.check!;
+    checkHint.value = saved !== null ? "" : "From .codeflow/config.json.";
+    if (!detectSetup) return;
+  } else {
+    checkCmd.value = "";
   }
-  if (config.check) {
-    checkCmd.value = config.check;
-    checkHint.value = "From .codeflow/config.json.";
-    return;
-  }
-  checkCmd.value = "";
   try {
-    const d = await api<{ command: string | null; source?: string }>(`/api/check?repo=${encodeURIComponent(r)}`);
+    const d = await api<{ command: string | null; source?: string; setup?: string }>(`/api/check?repo=${encodeURIComponent(r)}`);
+    if (repo.value !== r) return;
+    if (detectSetup && d.setup) setupCmd.value = d.setup;
+    if (saved !== null || config.check) return;
     checkCmd.value = d.command ?? "";
-    checkHint.value = d.command ? `Detected from ${d.source}.` : "No test command found in this repo.";
+    checkHint.value = d.command ? `Detected from ${d.source}${d.setup ? `; each worktree is set up with “${d.setup}” (Settings)` : ""}.` : "No test command found in this repo.";
   } catch {
-    checkHint.value = "";
+    if (saved === null && !config.check) checkHint.value = "";
   }
 }
 
@@ -237,8 +238,12 @@ export async function loadModels() {
 // ---------------------------------------------------------------- runs
 /** A run needs you when it finished and you haven't looked, or it was interrupted. */
 export const needsYou = (r: RunSummary) => !r.archived && (!!r.awaiting || (r.status !== "running" && (r.status === "interrupted" || !r.seen)));
-/** A finished run whose result fails its check is a warning, not a success. */
-export const runState = (r: { status: string; verdict?: string }) => (r.status === "done" && r.verdict === "failing" ? "failing" : r.status);
+/**
+ * A finished run whose result fails its check is a warning, not a success; so is one whose check
+ * couldn't run here at all ("unchecked": nobody knows whether it works).
+ */
+export const runState = (r: { status: string; verdict?: string; checkCantRun?: unknown }) =>
+  r.status === "done" && r.verdict === "failing" ? "failing" : r.status === "done" && r.checkCantRun ? "unchecked" : r.status;
 
 export function upsertRun(run: RunSummary) {
   const next = new Map(runs.value);
@@ -291,7 +296,7 @@ export function matchesFilter(r: RunSummary, f = runFilter.value): boolean {
       if (r.status !== "running") return false;
       break;
     case "passed":
-      if (!(r.status === "done" && r.verdict !== "failing")) return false;
+      if (!(r.status === "done" && r.verdict !== "failing" && !r.checkCantRun)) return false;
       break;
     case "failing":
       if (!(r.verdict === "failing" || ["failed", "stopped", "interrupted"].includes(r.status))) return false;

@@ -1,7 +1,7 @@
 import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
-import { AgentTag, QrCode } from "./bits.js";
+import { AgentTag, CantRunNote, QrCode } from "./bits.js";
 import { Icon } from "./icons.js";
 import { ago, api, baseName, copy, post, showToast, STATUS_TEXT } from "./lib.js";
 import { patterns, route, runs, runState } from "./state.js";
@@ -99,9 +99,10 @@ function InboxItem({ run }: { run: RunSummary }) {
         </a>
         <span class="help">
           {run.trigger?.via === "sweep" ? "▤" : "⏱"} {run.trigger?.name} · {STATUS_TEXT[run.status] ?? run.status}
-          {run.verdict ? ` · check ${run.verdict}` : ""} · {baseName(run.repo)} · {ago(run.createdAt)}
+          {run.verdict ? ` · check ${run.verdict}` : run.checkCantRun ? " · check couldn't run" : ""} · {baseName(run.repo)} · {ago(run.createdAt)}
         </span>
       </div>
+      {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
       {run.review ? <div class="help">Review: {run.review.verdict === "approve" ? "approve" : `${run.review.findings.length} findings`}</div> : null}
       {changed.map((a) => (
         <pre key={a.branch} class="stat">

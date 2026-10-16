@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
+import { cantRunMessage } from "./checks.js";
 import { CODEFLOW_HOME } from "./config.js";
 import type { Run, RunManager, RunSummary } from "./engine.js";
 
@@ -77,6 +78,7 @@ function badge(run: RunSummary): string {
   const watch = Object.values(run.watches ?? {}).find((w) => w.state === "needs-you");
   if (watch) return `<span class="b warn">PR needs you</span>`;
   const failing = run.status === "done" && run.verdict === "failing";
+  if (run.status === "done" && !failing && run.checkCantRun) return `<span class="b warn">Done · check can't run</span>`;
   const cls = run.status === "running" ? "run" : run.status === "done" && !failing ? "ok" : "bad";
   return `<span class="b ${cls}">${esc(failing ? "Done · check failing" : STATUS[run.status] ?? run.status)}</span>`;
 }
@@ -146,6 +148,7 @@ function renderRun(run: Run, base: string): string {
     run.awaiting ? `<h2>Waiting for you</h2><p>${esc(run.awaiting.title)} — open code-flow on your computer to answer.</p><pre>${esc(run.awaiting.content.slice(0, 4_000))}</pre>` : "",
     run.triage?.state === "pending" ? "<h2>In your inbox</h2><p>Approve, revise or reject it in code-flow on your computer.</p>" : "",
     run.error ? `<h2>Error</h2><pre>${esc(run.error)}</pre>` : "",
+    run.checkCantRun ? `<h2>Check</h2><p>${esc(cantRunMessage(run.checkCantRun.reason))}.</p>` : "",
     review || (run.summary ? `<h2>Summary</h2><pre>${esc(run.summary.slice(0, 8_000))}</pre>` : ""),
     artifacts ? `<h2>Results</h2><ul>${artifacts}</ul>` : "",
     watches ? `<h2>Pull requests</h2><ul>${watches}</ul>` : "",

@@ -1,7 +1,17 @@
 import type { ComponentChildren } from "preact";
 import { encode } from "uqr";
 import { SHORT } from "./lib.js";
-import type { AgentId } from "./types.js";
+import type { AgentId, RunSummary } from "./types.js";
+
+/** The check couldn't run in this environment: why, and where to fix it. */
+export function CantRunNote({ cantRun }: { cantRun: NonNullable<RunSummary["checkCantRun"]> }) {
+  return (
+    <div class="cant-run">
+      The check can't run here: <code>{cantRun.reason}</code>. Set <code>setup</code> and <code>check</code> in <code>.codeflow/config.json</code>.
+      <div class="cr-why">That's the environment, not the change: it fails on the base commit too. So no fix rounds were spent on it, and whether the change works is unknown.</div>
+    </div>
+  );
+}
 
 export function AgentTag({ id, note }: { id?: AgentId; note?: string }) {
   if (!id) return null;

@@ -58,16 +58,44 @@ test("detects the repo's test command", async () => {
   assert.equal(await detectCheckCommand(dir({ "package.json": '{"scripts":{"test":"echo \\"Error: no test specified\\" && exit 1"}}' })), null);
   assert.equal((await detectCheckCommand(dir({ "Cargo.toml": "" })))?.command, "cargo test");
   assert.equal((await detectCheckCommand(dir({ "go.mod": "" })))?.command, "go test ./...");
-  assert.equal((await detectCheckCommand(dir({ "pyproject.toml": "[tool.pytest.ini_options]" })))?.command, "python3 -m pytest -q");
+  assert.deepEqual(await detectCheckCommand(dir({ "pyproject.toml": "[tool.pytest.ini_options]" })), { command: "python3 -m pytest -q", source: "pyproject.toml" });
+  assert.equal((await detectCheckCommand(dir({ "pytest.ini": "", "requirements.txt": "" })))?.command, "python3 -m pytest -q");
+  // uv and Poetry projects: system Python doesn't have their packages, so set them up and run inside.
+  assert.deepEqual(await detectCheckCommand(dir({ "pyproject.toml": "[project]\nname = 'x'\n", "tests/test_x.py": "", "uv.lock": "" })), {
+    command: "uv run --no-sync pytest -q",
+    setup: "uv sync",
+    source: "pyproject.toml and uv.lock",
+  });
+  assert.deepEqual(
+    await detectCheckCommand(
+      dir({
+        "pyproject.toml": '[tool.uv.workspace]\nmembers = ["packages/server", "tests"]\n',
+        "tests/pyproject.toml": '[project]\nname = "x-tests"\n\n[tool.pytest.ini_options]\naddopts = "-ra"\n',
+        "tests/conftest.py": "",
+        "uv.lock": "",
+      }),
+    ),
+    { command: "cd tests && uv run --no-sync pytest -q", setup: "uv sync --all-packages", source: "tests/pyproject.toml and uv.lock (a uv workspace)" },
+  );
+  assert.deepEqual(await detectCheckCommand(dir({ "pyproject.toml": "[tool.poetry]\n[tool.pytest.ini_options]\n", "poetry.lock": "" })), {
+    command: "poetry run pytest -q",
+    setup: "poetry install",
+    source: "pyproject.toml and poetry.lock",
+  });
+  assert.deepEqual(await detectCheckCommand(dir({ "conftest.py": "", "pyproject.toml": "", "poetry.lock": "" })), {
+    command: "poetry run pytest -q",
+    setup: "poetry install",
+    source: "pytest config and poetry.lock",
+  });
   assert.equal((await detectCheckCommand(dir({ Makefile: "build:\n\ttrue\ntest:\n\ttrue\n" })))?.command, "make test");
   assert.equal(await detectCheckCommand(dir({ "notes.txt": "" })), null);
 });
 
 test("only plain test-runner commands from agents are runnable", () => {
-  for (const ok of ["npm test", "npm run test:unit", "pytest -q tests/test_x.py", "node --test spec.test.mjs", "cargo test parser", "go test ./..."]) {
+  for (const ok of ["npm test", "npm run test:unit", "pytest -q tests/test_x.py", "uv run --no-sync pytest tests/test_x.py", "poetry run pytest -q", "node --test spec.test.mjs", "cargo test parser", "go test ./..."]) {
     assert.ok(isPlainTestCommand(ok), ok);
   }
-  for (const bad of ["npm test; rm -rf ~", "pytest && curl evil.sh", "bash -c 'pytest'", "pytest $(whoami)", "npm test > /etc/x", "true", "rm -rf /"]) {
+  for (const bad of ["npm test; rm -rf ~", "pytest && curl evil.sh", "uv run python evil.py", "poetry run sh -c x", "bash -c 'pytest'", "pytest $(whoami)", "npm test > /etc/x", "true", "rm -rf /"]) {
     assert.ok(!isPlainTestCommand(bad), bad);
   }
 });
