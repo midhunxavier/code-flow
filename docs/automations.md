@@ -2,6 +2,12 @@
 
 Set up a run in the composer (task, team, check, settings), then choose **Save as automation…** next to *Start run*. It runs unattended.
 
+## Projects
+
+An automation's runs start in the [project](runs.md#projects) you were in when you saved it (from *All projects*, in its repository's project). If that project is deleted later, they start in the repository's project. Turning it off and on, or making a new webhook secret, keeps its project.
+
+The **Automations** page follows the project you're in, like the sidebar does. It lists that project's automations and the results waiting for you there. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The count on the **Automations** button in the top bar always counts every project's results, so nothing waiting for you is out of sight.
+
 ## When it runs
 
 - at a time on chosen weekdays (e.g. weekdays at 07:00), or every *N* minutes (at least 5);
@@ -32,7 +38,7 @@ Leaked-secret alerts never start a run.
 
 ## The inbox
 
-Automation and sweep results wait on the Automations page (with a count in the top bar) and under *Needs you*:
+Automation and sweep results wait on the Automations page (with a count in the top bar) and under *Needs you*, in their run's project:
 
 - **Approve:** keeps the result. **Approve & open PR** also pushes the branch and opens a pull request. For a run that started from a pull request (a Dependabot PR, say), **Approve & push to PR #N** pushes the fix to that PR instead.
 - **Revise:** your note goes to the agent that wrote the code, in its own session. The result comes back to the inbox.
@@ -55,6 +61,7 @@ Agents still run as their own CLIs (they need your subscription logins) inside t
 Turn on the *Phone link* under **Phone** on the Automations page.
 
 - On its own it's a read-only view: what's running and what needs you, and each run's summary, review, results and steps. It refreshes itself and has no buttons.
+- Runs are listed under their project's name. Projects with runs that need you come first, then those with runs going; runs in no project come last.
 - *Reachable from my Wi-Fi* also serves it, and webhooks, on your network at port `PORT+1`. It's plain HTTP, so use it only on networks you trust, or over a VPN like Tailscale.
 - With *Reachable from my Wi-Fi* on, the page shows a **QR code** for the Wi-Fi link: scan it with your phone's camera. (The `localhost` link only opens on the computer running code-flow, so there's no QR code until the Wi-Fi link exists.)
 - **New link** revokes the old one.

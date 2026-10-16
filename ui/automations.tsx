@@ -4,12 +4,19 @@ import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote, QrCode } from "./bits.js";
 import { Icon } from "./icons.js";
 import { ago, api, baseName, copy, post, showToast, STATUS_TEXT } from "./lib.js";
-import { patterns, projects, route, runs, runState } from "./state.js";
-import type { RunSummary } from "./types.js";
+import { activeProject, ALL, currentProject, inScope, NONE, patterns, projectFor, projects, route, runs, runState, selectProject } from "./state.js";
+import type { Project, RunSummary } from "./types.js";
 
 /** The project an automation's runs go in: the one it was saved with, or (deleted since) its repo's. */
 const automationProject = (run: { project?: string; repo: string }) =>
   projects.value.find((p) => p.id === run.project) ?? projects.value.find((p) => p.repos.includes(run.repo));
+
+/** Is the automation in what the app is showing? (inScope, for where its runs go.) */
+const automationInScope = (a: Automation, scope = currentProject.value) => {
+  if (scope === ALL) return true;
+  const p = automationProject(a.run);
+  return scope === NONE ? !p : p?.id === scope;
+};
 
 export interface Automation {
   id: string;
@@ -61,7 +68,12 @@ export function AutomationsView() {
     const timer = setInterval(loadAutomations, 15_000);
     return () => clearInterval(timer);
   }, []);
-  const pending = inbox();
+  // The project you're in, as in the sidebar; what's in other projects is a count and a link away.
+  const scoped = currentProject.value !== ALL;
+  const allPending = inbox();
+  const pending = allPending.filter((r) => inScope(r));
+  const list = automations.value.filter((a) => automationInScope(a));
+  const here = activeProject.value ? ` in ${activeProject.value.name}` : scoped ? " without a project" : "";
   return (
     <div class="composer automations">
       <h1>Automations</h1>
@@ -73,16 +85,22 @@ export function AutomationsView() {
         <div class="section-title">
           Inbox {pending.length ? <span class="count">{pending.length}</span> : null}
         </div>
-        {pending.length ? pending.map((r) => <InboxItem key={r.id} run={r} />) : <p class="help">Nothing to review. Runs that changed nothing are archived on their own.</p>}
+        <Elsewhere count={allPending.length - pending.length} what={(n) => `${n} in other projects need${n === 1 ? "s" : ""} you`} />
+        {pending.length ? (
+          pending.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} />)
+        ) : (
+          <p class="help">Nothing to review{here}. Runs that changed nothing are archived on their own.</p>
+        )}
       </div>
 
       <div class="section">
         <div class="section-title">Your automations</div>
-        {automations.value.length ? (
-          automations.value.map((a) => <AutomationRow key={a.id} a={a} />)
+        <Elsewhere count={automations.value.length - list.length} what={(n) => `${n} more in other projects`} />
+        {list.length ? (
+          list.map((a) => <AutomationRow key={a.id} a={a} scoped={scoped} />)
         ) : (
           <p class="help">
-            None yet. Set up a run in the composer — task, team, check — and choose <b>Save as automation…</b> next to Start run.
+            None{here} yet. Set up a run in the composer — task, team, check — and choose <b>Save as automation…</b> next to Start run.
           </p>
         )}
       </div>
@@ -92,8 +110,28 @@ export function AutomationsView() {
   );
 }
 
-function InboxItem({ run }: { run: RunSummary }) {
+/**
+ * The project to name next to a repo: only when every project is listed (in one, everything is in
+ * it), and not when it's just named after the repo.
+ */
+const projectLabel = (p: Project | undefined, repo: string, scoped: boolean) => (!scoped && p && p.name !== baseName(repo) ? p : undefined);
+
+/** Part of a list is in other projects: how much, and a link that shows every project (as the sidebar's does). */
+function Elsewhere({ count, what }: { count: number; what: (n: number) => string }) {
+  if (count <= 0) return null;
+  return (
+    <div class="rail-hint elsewhere">
+      {what(count)}
+      <button type="button" onClick={() => selectProject(ALL)}>
+        show all
+      </button>
+    </div>
+  );
+}
+
+function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
   const changed = run.artifacts.filter((a) => a.stat?.trim());
+  const project = projectLabel(projectFor(run), run.repo, scoped);
   return (
     <div class="inbox-item">
       <div class="ih">
@@ -103,7 +141,8 @@ function InboxItem({ run }: { run: RunSummary }) {
         </a>
         <span class="help">
           {run.trigger?.via === "sweep" ? "▤" : "⏱"} {run.trigger?.name} · {STATUS_TEXT[run.status] ?? run.status}
-          {run.verdict ? ` · check ${run.verdict}` : run.checkCantRun ? " · check couldn't run" : ""} · {baseName(run.repo)} · {ago(run.createdAt)}
+          {run.verdict ? ` · check ${run.verdict}` : run.checkCantRun ? " · check couldn't run" : ""} · {baseName(run.repo)}
+          {project ? <> · <Icon name="project" class="inline-icon" /> {project.name}</> : null} · {ago(run.createdAt)}
         </span>
       </div>
       {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
@@ -177,9 +216,10 @@ export function TriageActions({ run }: { run: RunSummary }) {
   );
 }
 
-function AutomationRow({ a }: { a: Automation }) {
+function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
   const [showHook, setShowHook] = useState(false);
   const last = a.lastRunId ? runs.value.get(a.lastRunId) : undefined;
+  const project = projectLabel(automationProject(a.run), a.run.repo, scoped);
   const update = (patch: object) => post<Automation>(`/api/automations/${a.id}`, patch).then(loadAutomations, (e) => showToast(e.message, 5000));
   const hookUrl = `${location.origin}${a.hookPath}`;
   return (
@@ -226,7 +266,7 @@ function AutomationRow({ a }: { a: Automation }) {
       </div>
       <div class="ar-meta help">
         {patterns.value.find((p) => p.id === a.run.pattern)?.name ?? a.run.pattern} in {baseName(a.run.repo)}
-        {automationProject(a.run) ? <> · <Icon name="project" class="inline-icon" /> {automationProject(a.run)!.name}</> : null}: “{a.run.task.split("\n")[0]}”
+        {project ? <> · <Icon name="project" class="inline-icon" /> {project.name}</> : null}: “{a.run.task.split("\n")[0]}”
         {a.sweep && a.handled?.length ? ` · ${a.handled.length} handled so far` : ""}
         {Object.values(a.run.roles)
           .flat()
@@ -366,7 +406,7 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
     try {
       const { attachments: _a, approvals: _p, branchPrefix: _b, ...run } = body;
       run.context = { paths: body.context?.paths ?? [] };
-      await post("/api/automations", {
+      const saved = await post<Automation>("/api/automations", {
         name,
         run,
         schedule: kind === "every" ? { every } : kind === "daily" ? { at, days } : undefined,
@@ -377,6 +417,9 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
       await loadAutomations();
       showToast("Automation saved");
       onClose();
+      // Show the project it went in (from "No project", its repo's), as starting a run does.
+      const p = automationProject(saved.run);
+      if (currentProject.value !== ALL && p && p.id !== currentProject.value) selectProject(p.id, { defaults: false, repo: false });
       route.value = { view: "automations" };
     } catch (err) {
       setError((err as Error).message);

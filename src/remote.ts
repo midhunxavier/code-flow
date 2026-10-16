@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { cantRunMessage } from "./checks.js";
 import { CODEFLOW_HOME } from "./config.js";
 import type { Run, RunManager, RunSummary } from "./engine.js";
+import { projectOf, type Project } from "./projects.js";
 
 /**
  * code-flow on your phone, behind a secret link. By default it's a read-only view: what's
@@ -96,7 +97,9 @@ ${refresh ? '<meta http-equiv="refresh" content="15">' : ""}<meta name="referrer
 @media (prefers-color-scheme:dark){:root{--bg:#111918;--panel:#192425;--text:#f5f8f7;--muted:#c9cbbe;--border:#2b3a3c;--ok:#6fd39a;--warn:#e2a64b;--bad:#f2786a;--accent:#b9ea8a}}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 Manrope,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
 main{max-width:720px;margin:0 auto;padding:16px}
-h1{font-size:22px;letter-spacing:-.03em;margin:4px 0 12px}h2{font:500 11px "Roboto Mono",ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:.14em;color:var(--muted);margin:22px 0 8px}
+h1{font-size:22px;letter-spacing:-.03em;margin:4px 0 12px}h2,h3{font:500 11px "Roboto Mono",ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:.14em;color:var(--muted);margin:22px 0 8px}
+h2.project{font:700 18px/1.3 Manrope,system-ui,-apple-system,"Segoe UI",sans-serif;text-transform:none;letter-spacing:-.02em;color:var(--text);margin:26px 0 0;padding-top:16px;border-top:1px solid var(--border)}
+section:first-of-type h2.project{margin-top:8px;padding-top:0;border-top:0}h2.project+h3{margin-top:10px}
 a{color:var(--accent);text-decoration:none}
 .card{display:block;background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:12px 14px;margin:8px 0;color:var(--text);box-shadow:0 12px 30px rgba(34,47,48,.06),0 2px 10px rgba(34,47,48,.04)}
 .t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.m{font-size:12px;color:var(--muted)}
@@ -107,8 +110,11 @@ li{margin:4px 0}.foot{font-size:12px;color:var(--muted);margin-top:24px}
 </style></head><body><main>${body}<p class="foot">Read-only view of code-flow · refreshes every 15 s</p></main></body></html>`;
 }
 
-/** Render `/r/<token>/…`; `path` is what follows the token. Returns null for unknown pages. */
-export function renderRemote(manager: RunManager, base: string, path: string): string | null {
+/**
+ * Render `/r/<token>/…`; `path` is what follows the token. Returns null for unknown pages.
+ * `projects` are the server's: runs are listed under their project (projectOf), as in the app.
+ */
+export function renderRemote(manager: RunManager, projects: Project[], base: string, path: string): string | null {
   if (path === "" || path === "/") {
     const runs = manager.list().filter((r) => !r.archived);
     const needs = runs.filter((r) => r.awaiting || r.triage?.state === "pending" || Object.values(r.watches ?? {}).some((w) => w.state === "needs-you") || (r.status !== "running" && !r.seen));
@@ -116,19 +122,26 @@ export function renderRemote(manager: RunManager, base: string, path: string): s
     const recent = runs.filter((r) => !needs.includes(r) && !running.includes(r)).slice(0, 15);
     const card = (r: RunSummary) =>
       `<a class="card" href="${base}/run/${esc(r.id)}"><div class="t">${esc(r.task.split("\n")[0])}</div><div class="m">${badge(r)} · ${esc(r.pattern)} · ${esc(r.repo.split("/").pop())}${r.trigger ? ` · ⏱ ${esc(r.trigger.name)}` : ""} · ${ago(r.createdAt)}</div></a>`;
-    const group = (title: string, list: RunSummary[]) => (list.length ? `<h2>${title} (${list.length})</h2>${list.map(card).join("")}` : "");
-    return page(
-      "code-flow",
-      `<h1>code-flow</h1>${group("Needs you", needs)}${group("Running", running)}${group("Recent", recent)}${runs.length ? "" : '<p class="m">No runs yet.</p>'}`,
-    );
+    const group = (tag: "h2" | "h3", title: string, list: RunSummary[]) => (list.length ? `<${tag}>${title} (${list.length})</${tag}>${list.map(card).join("")}` : "");
+    const groups = (tag: "h2" | "h3", keep: (r: RunSummary) => boolean = () => true) =>
+      group(tag, "Needs you", needs.filter(keep)) + group(tag, "Running", running.filter(keep)) + group(tag, "Recent", recent.filter(keep));
+    // A project for each run shown: the ones that need you come first, then running, then recent; no project last.
+    const ids = [...new Set([...needs, ...running, ...recent].map((r) => projectOf(r, projects)))].sort((a, b) => Number(a === undefined) - Number(b === undefined));
+    const name = (id?: string) => projects.find((p) => p.id === id)?.name ?? "No project";
+    const body =
+      ids.length === 1 && ids[0] === undefined
+        ? groups("h2") // every run in no project (or no projects at all): nothing to group by
+        : ids.map((id) => `<section><h2 class="project">${esc(name(id))}</h2>${groups("h3", (r) => projectOf(r, projects) === id)}</section>`).join("");
+    return page("code-flow", `<h1>code-flow</h1>${body}${runs.length ? "" : '<p class="m">No runs yet.</p>'}`);
   }
   const match = path.match(/^\/run\/([\w-]+)$/);
   const run = match ? manager.get(match[1]!) : undefined;
   if (!run) return null;
-  return page(run.task.split("\n")[0]!.slice(0, 60), renderRun(run, base), run.status === "running");
+  return page(run.task.split("\n")[0]!.slice(0, 60), renderRun(run, base, projects.find((p) => p.id === projectOf(run, projects))), run.status === "running");
 }
 
-function renderRun(run: Run, base: string): string {
+/** A run's page; it names the run's project, unless that's just named after the repo. */
+function renderRun(run: Run, base: string, project?: Project): string {
   const steps = run.steps
     .map((s) => `<li>${s.status === "done" ? "✓" : s.status === "running" ? "…" : s.status === "failed" ? "✕" : "■"} ${esc(s.title)} <span class="m">${esc(s.agent ?? s.kind)}${s.endedAt ? ` · ${Math.round((s.endedAt - s.startedAt) / 1000)}s` : ""}</span></li>`)
     .join("");
@@ -144,7 +157,7 @@ function renderRun(run: Run, base: string): string {
   return [
     `<p><a href="${base}/">← All runs</a></p>`,
     `<h1>${esc(run.task.split("\n")[0])}</h1>`,
-    `<p class="m">${badge(run)} · ${esc(run.pattern)} · ${esc(run.repo.split("/").pop())} · started ${ago(run.createdAt)}${run.trigger ? ` · by ${run.trigger.via === "sweep" ? "sweep" : "automation"} “${esc(run.trigger.name)}”` : ""}</p>`,
+    `<p class="m">${badge(run)} · ${esc(run.pattern)} · ${project && project.name !== run.repo.split("/").pop() ? `${esc(project.name)} · ` : ""}${esc(run.repo.split("/").pop())} · started ${ago(run.createdAt)}${run.trigger ? ` · by ${run.trigger.via === "sweep" ? "sweep" : "automation"} “${esc(run.trigger.name)}”` : ""}</p>`,
     run.awaiting ? `<h2>Waiting for you</h2><p>${esc(run.awaiting.title)} — open code-flow on your computer to answer.</p><pre>${esc(run.awaiting.content.slice(0, 4_000))}</pre>` : "",
     run.triage?.state === "pending" ? "<h2>In your inbox</h2><p>Approve, revise or reject it in code-flow on your computer.</p>" : "",
     run.error ? `<h2>Error</h2><pre>${esc(run.error)}</pre>` : "",

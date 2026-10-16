@@ -41,8 +41,9 @@ Prompts are passed on **stdin**, not as command-line arguments (`claude -p` read
 Runs are grouped into projects. A project has a name and the repositories its runs work in.
 
 - **No setup:** the first time you start a run in a repository that no project holds, code-flow makes a project named after it. The first time you start a code-flow that has projects, every repository that already has runs gets one, so your runs are grouped from the start.
-- **The switcher** (the project button in the top bar, or <kbd>p</kbd>) picks the project you're in. The sidebar lists its runs, new runs start in it, and Insights shows it. *All projects* lists every run.
-  - When a run in another project needs you, the sidebar says so, with a link to show all.
+- **The switcher** (the project button in the top bar, or <kbd>p</kbd>) picks the project you're in. The sidebar lists its runs, new runs start in it, and Insights and the [Automations page](automations.md#projects) show it. *All projects* lists every run.
+  - When a run in another project needs you, the sidebar says so, with a link to show all. So does the Automations page, for its inbox and automations.
+  - The read-only [phone view](automations.md#phone-view) lists every project's runs, each under its project's name.
   - Search always looks in every project.
 - **Switching projects** moves the composer to the project's repository you used last, and to the pattern and team you last started a run with there. Each project remembers its own.
 - **Several repositories:** a project can hold several, and a repository can be in several projects. Each run still works in one repository. **New project** and **Edit** in the switcher name a project and add or remove its repositories.

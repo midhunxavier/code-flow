@@ -524,6 +524,8 @@
   .inbox-item .ih .t { font-weight: 650; color: var(--text); text-decoration: none; }
   .inbox-item .ih .t:hover { color: var(--accent-ink); }
   .inbox-item .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; align-self: center; }
+  .automations .rail-hint.elsewhere { margin: 0 0 4px; padding: 8px 14px; border-radius: 14px; font-size: 13px; }
+  .automations .rail-hint.elsewhere button { font-size: 13px; }
   pre.stat { margin: 0; max-height: 140px; }
   .triage { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .triage .field { flex: 1; min-width: 200px; width: auto; }
