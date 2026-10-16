@@ -44,7 +44,7 @@ import {
   type Worktree,
 } from "./git.js";
 import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines } from "./store.js";
-import { branchDiff, mergeInto, openPullRequest, removeWorktrees, type DiffFile } from "./ship.js";
+import { branchDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
 import { commentOnPr, loadSource, mergeBase, pushBranch, sourcePrompt, type RunSource, type SourceInput } from "./github.js";
@@ -1312,11 +1312,25 @@ export class RunManager {
       "",
       run.summary ?? "",
     ].join("\n");
-    const url = await openPullRequest(run.repo, input.branch, input.into, title, body);
+    const { url, caughtUp } = await openPullRequest(run.repo, input.branch, input.into, title, body, run.baseRef);
+    if (caughtUp) {
+      this.emit(run, {
+        type: "log",
+        level: "info",
+        text: `Merged origin/${input.into} into ${input.branch} (${caughtUp.slice(0, 8)}): the run started from ${run.baseRef.slice(0, 7)}, which ${input.into} already has as a squash merge, so the pull request shows only this run's changes`,
+      });
+    }
     run.prs[input.branch] = url;
     this.emit(run, { type: "log", level: "info", text: `Opened pull request ${url}` });
     this.emitRun(run);
     return url;
+  }
+
+  /** The branch a result's pull request should go into (see `pullRequestTarget`). */
+  async pullRequestTarget(id: string): Promise<string> {
+    const run = this.require(id);
+    const startedFrom = run.baseLabel === "HEAD" ? await currentBranch(run.repo) : run.baseLabel;
+    return pullRequestTarget(run.repo, startedFrom);
   }
 
   /** Push a result branch to the pull request the run started from (fast-forward only). */
@@ -1827,7 +1841,7 @@ export class RunManager {
     } else if (input.openPr) {
       const artifact = run.artifacts.find((a) => a.stat?.trim());
       if (!artifact) throw new Error("There's no change to open a pull request for");
-      pr = await this.pullRequest(id, { branch: artifact.branch, into: run.baseLabel === "HEAD" ? await currentBranch(run.repo) : run.baseLabel });
+      pr = await this.pullRequest(id, { branch: artifact.branch, into: await this.pullRequestTarget(id) });
     }
     run.triage = { state: "approved", at: Date.now(), note: input.note?.trim() || undefined };
     run.seen = true;
@@ -2088,10 +2102,10 @@ export class UntrustedSourceError extends Error {
   }
 }
 
-async function currentBranch(repo: string): Promise<string> {
+/** The branch checked out in `repo`, if any (not a detached HEAD). */
+async function currentBranch(repo: string): Promise<string | undefined> {
   const res = await git(["symbolic-ref", "--short", "HEAD"], repo);
-  if (res.code !== 0) throw new Error("Pick a branch to open the pull request into");
-  return res.stdout.trim();
+  return res.code === 0 ? res.stdout.trim() : undefined;
 }
 
 function newRunId(): string {
