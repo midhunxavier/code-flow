@@ -12,7 +12,7 @@ code-flow never handles credentials. Each adapter launches the vendor's **offici
 | Codex | `codex exec --json` / `codex exec resume` | ChatGPT plan (or API key) via `codex login` | Codex sandbox: `read-only` / `workspace-write` |
 | Antigravity | `agy -p --output-format stream-json` | Google AI Pro/Ultra via an interactive `agy` login | `--sandbox` (verified: blocks writes outside the worktree) + `--dangerously-skip-permissions` (see caveats) |
 
-**Read-only is enforced by code-flow itself, for every agent.** If a read-only step (plan, review, judge, debate) leaves its worktree modified, the changes are reverted and a warning is logged.
+**Read-only is enforced by code-flow itself, for every agent.** Before a read-only step (plan, review, judge, debate) code-flow snapshots its worktree: the commit, uncommitted changes and untracked files. Afterwards it puts back anything the step changed, including commits, and logs a warning.
 
 This is the boundary each vendor draws for personal use. Don't extend code-flow to read or reuse the CLIs' OAuth tokens; Anthropic and Google both prohibit that, and Google has suspended accounts for it. If you ever turn this into a product for other people, each user must sign in with their own account, and Anthropic's terms then require API keys for products.
 
@@ -26,6 +26,8 @@ npm start            # http://localhost:4317
 ```
 
 Prerequisites: Node 20+, git, and at least one of `claude`, `codex`, `agy` installed and logged in. Run each CLI once interactively first. The header shows which agents were found.
+
+**Signing in.** The first browser that opens code-flow is signed in automatically. That stays possible until code-flow first starts an agent, a check or an app. After that, other browsers need the link code-flow prints when it starts (`Open http://localhost:4317/?token=…`). The session token exists only in the server's memory, so the agents code-flow runs can't use its API, even sandboxed ones with network access. A restart starts a new session, and reloading the page signs you in again.
 
 Using it:
 
@@ -81,8 +83,29 @@ code-flow treats each pattern as a loop, and what it engineers is the loop aroun
   - Supervisor and Debate: the integrated or built result is checked, and the agent fixes failures.
   - Test-first: the new tests must fail first, then pass.
   - When a run finishes but the check still fails, the run is shown as a warning, not a success.
+- **A pass only counts if the tests are still the tests.** After every change, code-flow looks for edits that make a check pass without fixing anything:
+  - deleted test files;
+  - added `.skip`, `.only`, `xit`, `@pytest.mark.skip`, `t.Skip()`…;
+  - test files that lost assertions;
+  - a changed test config or CI workflow;
+  - a changed `scripts.test` (or whichever script the check runs);
+  - fewer tests running than before, read from the runner's summary.
+
+  What happens next depends on the pattern:
+  - Loop until green: a pass that relies on such changes doesn't end the loop. The agent is told to undo them and fix the code. If it keeps them (the task may need it), the result is flagged.
+  - Pipeline, Supervisor and Debate: the changes go to the reviewer, who requests changes unless the task needs them.
+  - Race: a candidate that passes only that way can't beat one that passes honestly.
+  - Test-first: the builder's edits to the tests are undone, and so are the tester's edits outside them.
+  - PR follow-through: a fix that changes tests that way isn't pushed.
+
+  Every flagged result shows **⚠ Changes to tests to check before merging**.
+- **Independent review:** Supervisor has a *Reviewer* role (default Codex) that checks the integrated result instead of the supervisor checking its own work. It also writes the *contracts* (interfaces, names, data shapes) that every worker gets. Debate can have a reviewer check the build against the agreed plan.
+- **What agents see:** long diffs keep whole source files first, put lockfiles and generated files last, and list any file that didn't fit with the command to read it. A long check log keeps the lines around each failure plus the runner's summary, not just the tail. Agents also get the repo's own conventions files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, …), since each CLI otherwise reads only its own. They're also told about problems reviewers raised in more than one earlier run in that repo (turn this off with `"learn": false`).
 - **No progress means hand off:** in *Loop until green*, a round with no new commit, or with the same failure as before, counts as stuck. After *K* stuck rounds, the next vendor takes over.
 - **Limits:** every run stops at a maximum number of minutes or agent steps (60 and 40 by default). A stopped run keeps its work: each worktree with changes is listed as "Work so far".
+- **Plan usage:** if a CLI says its plan is out of usage, the run stops instead of failing, so you can resume it once the plan resets. A turn that fails for a passing reason (overloaded, a network error) is retried after 20 s, then 60 s.
+- **One machine, many runs:** at most 6 agent CLIs and 3 checks run at once across all runs (`CODEFLOW_MAX_AGENTS`, `CODEFLOW_MAX_CHECKS`). Others wait their turn, and the step says so.
+- **Stopping really stops:** each agent CLI and each check runs in its own process group. Cancelling, a time limit or the CLI exiting stops everything it started, such as a dev server it left in the background, and escalates to SIGKILL if needed.
 - **Setup:** an optional command, such as `npm ci`, that runs once in every new worktree before the agents start.
 
 Agents may suggest their own test command (the tester in Test-first does). code-flow only runs it if it's a plain invocation of a known test runner, with no shell operators. Otherwise it falls back to your check.
@@ -101,11 +124,15 @@ Agents may suggest their own test command (the tester in Test-first does). code-
   "run": { "command": "npm run dev", "port": 3000 },
   "models": { "claude": { "model": "opus", "effort": "high" } },
   "limits": { "maxMinutes": 90, "maxSteps": 60 },
-  "trust": "standard"
+  "trust": "standard",
+  "image": "node:22",
+  "learn": true
 }
 ```
 
-- `copy` brings files git doesn't carry (like `.env`) from your checkout into every new worktree. They're never committed, and patterns can't reach outside the repo.
+- `copy` brings files git doesn't carry (like `.env`) from your checkout into every new worktree. Only regular files that git ignores are copied. Symlinks are refused, since a cloned repo's `.env` could point at your credentials, and so are files git would commit. Patterns can't reach outside the repo.
+- `image` is the Docker image for running checks in isolation (automations, untrusted sources). `learn` passes recurring review problems on to later runs.
+- A result's worktree that was removed (archived) is set up again when you follow up on it: files copied, setup run, context restored. If its branch was deleted, that follow-up fails with a clear message; the run itself stays finished.
 - **Try it:** each result has **Terminal**, **Editor** (Cursor, VS Code, Zed or Sublime, whichever is installed) and **Folder** buttons that open its worktree, plus **▶ Run app**.
   - Run app starts your dev server in the worktree on a free port (passed as `$PORT`), with logs and **Stop app**. Servers stop when the run is archived or code-flow shuts down.
 
@@ -165,10 +192,17 @@ Runs can start from GitHub instead of a blank task box, using GitHub CLI (`gh`) 
   - Nothing is changed. **Post to PR #N** posts the review as a comment, and only when you click it.
 - **Follow-through** (**Watch PR**) works on a result that has a PR. code-flow checks it every minute:
   - **Failing CI:** the failed jobs' logs go to the agent you picked, which fixes the cause. code-flow commits and pushes to the PR.
-  - **New comments** from the repo's owners, members or collaborators go to the agent in the same way. Anyone else's comments are logged and ignored, and comments that were there before you started watching are never acted on.
+  - **New comments** from you (the account `gh` is signed in as), or from people you list under *Also act on comments from*, go to the agent in the same way. Nobody reviews these fixes before they're pushed, so anyone else's comments are logged and ignored, even an org member's. Comments that were there before you started watching are never acted on.
+  - These unattended fixes never run with more than *standard* permissions, and a fix that changes tests in ways that could hide the failure isn't pushed. It's handed back to you instead.
   - **Stops:** after the number of fixes you allow, if someone else pushed to the PR, or when the PR is merged or closed. It then shows under *Needs you* with a notification.
   - It **never merges**.
-- **Auto** in a role picks an installed agent when the run starts. It skips plans that are at 90% or more of a usage window or recently hit a rate limit (Claude reports its windows; the others report only when they're limited). The pick is written to the run's activity log.
+- **Auto** in a role picks an installed agent when the run starts. It skips plans that are at 90% or more of a usage window or recently hit a limit, until the limit resets (Claude reports its windows; the others report only when they're limited). Once agents have a few finished runs in a repo, it prefers the one whose code passed the check most often there. The pick and the reason are written to the run's activity log. Quota is saved, so a restart remembers which plans are out.
+- **Text from outside the repo is untrusted.** Issue and PR descriptions, comments and CI logs can carry instructions aimed at the agents. code-flow asks GitHub who wrote an issue or PR. Unless it's the repo's owner, a member or a collaborator, and not a fork, the run is locked down (🔒 in the run view):
+  - agents run in Safe mode;
+  - files like `.env` aren't copied in;
+  - checks run in Docker without network.
+
+  Without Docker, code-flow asks before running that person's tests on your machine; automations never do. The text itself is quoted in a fence it can't break out of, marked as information rather than instructions. Conventions files are read from where the PR started, not from the PR.
 
 ## Automations and away mode
 
@@ -207,6 +241,18 @@ Set up a run in the composer (task, team, check, settings), then choose **Save a
 
 Automations live in `~/.codeflow/triggers.json` and the phone view's settings in `~/.codeflow/remote.json`. Both files are readable only by you.
 
+## Insights, comparisons and finding runs
+
+- **Insights** (◔ in the top bar, or <kbd>i</kbd>) shows, per agent and per pattern, for one repo or all, over 7 days, 30 days or all time:
+  - runs, and how often the result passed its check;
+  - race wins, loops each agent got green, and review findings other reviewers agreed with;
+  - failed steps, tokens (input, output, cached) and time per step;
+  - Claude's API-equivalent cost. Your plan isn't billed per token; it's a measure of size.
+- **Compare setups…** (next to *Start run*) starts the same task with several patterns at once, each with the team you last picked for it, optionally 2–3 times each. Insights shows them side by side: result, time, steps, tokens, cost, and whether tests were touched. The best value in each column is highlighted.
+- **Tokens and cost** also show on each step, in the run header (with a per-agent breakdown on hover) and in the sidebar.
+- **Disk:** every worktree is a full checkout, often with its own `node_modules`. Insights measures them and **Clean up** removes the worktrees, not the branches, of runs that finished more than *N* days ago and need nothing from you.
+- **Finding runs:** the sidebar has search (<kbd>/</kbd>), filters (needs you, running, passed, failing, tests changed; pattern; agent; this repo), and <kbd>j</kbd>/<kbd>k</kbd> to move between runs. In a run, <kbd>[</kbd>/<kbd>]</kbd> move between steps. <kbd>?</kbd> lists every shortcut. Run status changes are announced to screen readers.
+
 ## Talking to a run
 
 Runs are conversations, not fire-and-forget jobs:
@@ -230,9 +276,13 @@ Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and t
 - **Interrupted runs:** if code-flow stops while a run is going (Ctrl-C, a restart, a crash), the run comes back as **Interrupted**.
   - **Resume** re-runs the pattern from the top. Each step that already finished (agent turns, checks, commits, worktrees) is replayed instantly from a journal (`<run>.journal.jsonl`), and real work continues at the first unfinished step. Nothing finished is redone.
   - Runs that hit a time or step limit, failed, or were stopped by you can be resumed the same way, with a fresh budget.
+  - A recorded check is replayed only if the code it checked is still the code at that point. A recorded commit is replayed only if it's still in the branch's history. Anything else runs again.
+  - Follow-ups on a finished run don't replay the pattern at all; only the follow-ups run. A follow-up that fails doesn't undo the finished run.
+  - Resume is claimed at once, so a double click or a PR watch can't start the same run twice. Notes delivered to a turn that never finished go to the next turn.
 - **Clean shutdown:** Ctrl-C or SIGTERM stops running agents and marks their runs interrupted. A second Ctrl-C exits at once.
+- **One server per data folder:** a second server on the same `CODEFLOW_HOME` waits for the first to stop (as in a restart), then refuses to start. A crash mid-write can leave a line half-written; it's closed off before the next write, so it never corrupts the next line. Failed writes, such as a full disk, are counted and reported at `/api/health`.
 - **Needs you:** the sidebar groups runs into *Needs you* (finished runs you haven't opened, and interrupted runs), *Running*, *Recent* and *Archived*. The browser tab shows the count, and 🔔 turns on desktop notifications for when a run finishes or needs you.
-- **Two servers:** `npm start` is your server (port 4317, `~/.codeflow`). `npm run dev` is a development server (port 4318, `.codeflow-dev/`) with **fake agents**, so working on code-flow never touches your real runs or quota. `npm run dev:real` is the same dev server with the real CLIs.
+- **Two servers:** `npm start` is your server (port 4317, `~/.codeflow`). `npm run dev` is a development server (port 4318, `.codeflow-dev/`) with **fake agents**, so working on code-flow never touches your real runs or quota. It puts `test/fake-bin` on `PATH` by absolute path and refuses to start if `claude`, `codex` or `agy` would still resolve to a real CLI. `npm run dev:real` is the same dev server with the real CLIs.
 
 ## Worktrees and branches
 
@@ -264,14 +314,19 @@ Every pattern works with any mix of agents. A good default is to have a **differ
 ## Architecture
 
 ```
-ui/*.tsx                 UI: Preact + TypeScript, compiled against the server's own types
+ui/*.tsx                 UI: Preact + TypeScript, compiled against the server's own types (ui/insights.tsx: Insights)
 scripts/build-ui.mjs     bundles the UI into one self-contained public/index.html (npm start builds it)
-src/server.ts            HTTP API + SSE on 127.0.0.1 (Host/Origin checked)
-src/store.ts             run logs and the replay journal on disk
+src/server.ts            HTTP API + SSE on 127.0.0.1 (Host/Origin checked, session cookie or Bearer token)
+src/store.ts             run logs and the replay journal on disk, the one-server lock
+src/integrity.ts         finds changes to tests that could make a check pass without a fix
+src/diff.ts              fits a long diff into a prompt (whole files first)
+src/learnings.ts         the repo's conventions files, and problems reviewers keep raising
+src/slots.ts             caps how many agents and checks run at once
+src/stats.ts             Insights: per agent, per pattern, comparisons; ranking for Auto
 src/ship.ts              per-file diffs, safe merges, pull requests, worktree cleanup
 src/github.ts            gh: issues, PRs, checks, failed-job logs, comments, pushes
 src/watch.ts             PR follow-through: polls watched PRs and sends CI failures and comments back
-src/routing.ts           "Auto" roles: pick an agent whose plan has room
+src/routing.ts           "Auto" roles: pick an agent whose plan has room (and that passes most in this repo)
 src/templates.ts         starting points (fix an issue, fix failing CI, council review…)
 src/automation.ts        automations: schedules, webhooks (Bearer or GitHub signature), firing runs
 src/remote.ts            the read-only phone view (server-rendered, secret link)
@@ -303,7 +358,11 @@ Implement `AgentAdapter` in `src/adapters/`, then register it in `src/adapters/i
 | `CODEFLOW_HOME` | `~/.codeflow` | Run logs |
 | `CODEFLOW_WORKTREE_DIR` | `.worktrees` | Worktree folder; relative paths are inside each repo, absolute paths are used as-is |
 | `CODEFLOW_STEP_TIMEOUT_MIN` | `30` | Timeout per agent step |
-| `CODEFLOW_MAX_DIFF_CHARS` | `60000` | Diffs longer than this are truncated before being passed to another agent |
+| `CODEFLOW_MAX_AGENTS` | `6` | Agent CLIs running at once, across all runs |
+| `CODEFLOW_MAX_CHECKS` | `3` | Check and setup commands running at once, across all runs |
+| `CODEFLOW_RETRY_DELAYS_MS` | `20000,60000` | Waits before retrying an agent turn that failed for a passing reason |
+| `CODEFLOW_TOKEN` | random per start | The session token (set it to keep browsers signed in across restarts; anything that can read it can use the API) |
+| `CODEFLOW_MAX_DIFF_CHARS` | `60000` | Diffs longer than this are fitted (whole files first) before being passed to another agent |
 | `CODEFLOW_CLAUDE_WRITE_TOOLS` | build/test allow-list | Comma-separated Claude tool rules for write mode, e.g. `Edit,Bash` |
 | `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view and webhooks on your network, when *Reachable from my Wi-Fi* is on |
 | `CODEFLOW_SCHEDULER_TICK_MS` | `30000` | How often due automations are checked |
@@ -317,15 +376,27 @@ npm test           # unit + workflow tests against fake CLIs
 npm run test:e2e   # the real UI in Chrome (headless) against a server with fake agents
 ```
 
-The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota. A fake `gh` keeps issues, PRs, checks and comments in a JSON file and pushes to a local bare repository, so the GitHub flows (fix CI → push → watch → fix again) are tested without touching GitHub. A fake `docker` records its arguments and runs the command in place, so isolation is tested without Docker. The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, test tampering detection, and the guarantee that your checkout is untouched.
+The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota. A fake `gh` keeps issues, PRs, checks and comments in a JSON file and pushes to a local bare repository, so the GitHub flows (fix CI → push → watch → fix again) are tested without touching GitHub. A fake `docker` records its arguments and runs the command in place, so isolation is tested without Docker. The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, and the guarantee that your checkout is untouched. `test/hardening.test.ts` covers the guarantees about processes, runs and tests:
+- a background process an agent leaves behind neither hangs a step nor survives it;
+- a run can't be resumed twice at once;
+- a commit made in a read-only step is undone;
+- a loop doesn't accept a pass made by deleting the failing test;
+- race commits name no vendor;
+- the builder's test edits are undone;
+- retries, usage-limit stops and token accounting work.
+
+The GitHub tests cover untrusted issues (lockdown, fenced text, Docker or your confirmation) and PR watches that act only on comments from you and the people you allow. The e2e test also covers sign-in, Insights and run search.
 
 ## Caveats and next steps
 
 - **agy permissions** (tested with agy 1.3.5): when headless agy hits a tool it isn't allowed to use, it doesn't work around it. The turn ends with an empty answer, which code-flow reports as a failed step that names the denied action. That's why code-flow passes `--dangerously-skip-permissions` together with `--sandbox` by default. The sandbox confines writes to the worktree, and code-flow reverts any changes made during read-only steps. Older agy versions printed nothing when piped; code-flow reports that as an error too.
 - Headless agents can't ask you anything. Tools that are not pre-allowed are denied, and the agent works around it or reports it.
 - Claude's write mode can run allow-listed commands such as `npm`, `node` and `make`, and those can run arbitrary project scripts. Only run it on repos you trust. Codex is additionally confined by its own sandbox.
+- agy needs `--dangerously-skip-permissions` for read-only steps too, so for agy the snapshot-and-restore is what enforces read-only. Changes to gitignored files during a read-only step aren't detected.
+- The test-integrity checks catch the common ways to game a check, not every one. A flagged result is a prompt to look, and an unflagged one isn't proof.
 - Next steps worth doing:
   - Use `codex app-server` instead of `exec` for mid-turn steering and real approvals.
   - A container option for the agents themselves (today only checks and setup run in Docker).
+  - Write run snapshots as deltas and compact old logs (today every state change appends a full snapshot).
   - Read PR line comments (review threads), not just conversation comments and review summaries.
   - Linear as a source, next to GitHub issues.

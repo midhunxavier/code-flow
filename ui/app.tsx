@@ -4,9 +4,18 @@ import { RunView } from "./run.js";
 import { Review } from "./review.js";
 import { GitHubPicker } from "./github.js";
 import { AutomationsView, inbox } from "./automations.js";
-import { ago, api, baseName, showToast, STATUS_TEXT, store, toast } from "./lib.js";
+import { InsightsView } from "./insights.js";
+import { ago, api, baseName, fmtCost, fmtTokens, showToast, STATUS_TEXT, store, toast } from "./lib.js";
 import {
   agents,
+  announcement,
+  filterActive,
+  isFlagged,
+  matchesFilter,
+  runFilter,
+  setRunFilter,
+  shortcutsOpen,
+  type RunFilter,
   filesOpen,
   health,
   healthOpen,
@@ -35,6 +44,10 @@ export function App() {
   useEffect(() => {
     document.title = waitingCount.value ? `(${waitingCount.value}) code-flow` : "code-flow";
   }, [waitingCount.value]);
+  useEffect(() => {
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
+  }, []);
 
   return (
     <>
@@ -48,6 +61,8 @@ export function App() {
             <Review key={`${route.value.id}:${route.value.branch}`} id={route.value.id} branch={route.value.branch} />
           ) : route.value.view === "automations" ? (
             <AutomationsView />
+          ) : route.value.view === "insights" ? (
+            <InsightsView group={route.value.group} />
           ) : (
             <Composer />
           )}
@@ -57,6 +72,10 @@ export function App() {
       <FolderPicker />
       <GitHubPicker />
       {healthOpen.value ? <HealthDialog /> : null}
+      {shortcutsOpen.value ? <ShortcutsDialog /> : null}
+      <div class="sr-only" role="status" aria-live="polite">
+        {announcement.value}
+      </div>
       {toast.value ? (
         <div class="toast" role="status" key={toast.value.id}>
           {toast.value.text}
@@ -86,6 +105,14 @@ function TopBar() {
         <span style="color:var(--faint)">▾</span>
       </button>
       <span class="spacer" />
+      <button
+        class="btn ghost auto-btn"
+        aria-pressed={route.value.view === "insights"}
+        title="What runs cost and how they went, per agent and pattern; comparisons; disk use (i)"
+        onClick={() => (route.value = { view: "insights" })}
+      >
+        ◔ <span class="label">Insights</span>
+      </button>
       <button
         class="btn ghost auto-btn"
         aria-pressed={route.value.view === "automations"}
@@ -142,7 +169,6 @@ function Bell() {
 
 export function notifyFinished(run: RunSummary) {
   const viewing = "id" in route.value && route.value.id === run.id;
-  if (!canNotify() || (viewing && !document.hidden)) return;
   const verbs: Record<string, string> = {
     done: run.verdict === "failing" ? "finished, but its check fails" : "finished",
     failed: "failed",
@@ -155,6 +181,8 @@ export function notifyFinished(run: RunSummary) {
     : watch
       ? `code-flow: PR needs you — ${watch.detail}`
       : `code-flow: run ${verbs[run.status] ?? run.status}`;
+  announcement.value = `${title.replace(/^code-flow: /, "")}: ${run.task.split("\n")[0]!.slice(0, 120)}`;
+  if (!canNotify() || (viewing && !document.hidden)) return;
   const n = new Notification(title, { body: run.task.split("\n")[0], tag: run.id });
   n.onclick = () => {
     window.focus();
@@ -164,9 +192,22 @@ export function notifyFinished(run: RunSummary) {
 }
 
 // ---------------------------------------------------------------- sidebar
+const STATUS_FILTERS: [RunFilter["status"], string][] = [
+  ["all", "All"],
+  ["attention", "Needs you"],
+  ["running", "Running"],
+  ["passed", "Passed"],
+  ["failing", "Failing"],
+  ["flagged", "Tests changed"],
+];
+
 function Rail() {
   const [showArchived, setShowArchived] = useState(false);
-  const list = [...runs.value.values()].sort((a, b) => b.createdAt - a.createdAt);
+  const [showFilters, setShowFilters] = useState(false);
+  const all = [...runs.value.values()].sort((a, b) => b.createdAt - a.createdAt);
+  const filtering = filterActive.value;
+  const list = all.filter((r) => matchesFilter(r));
+  const f = runFilter.value;
   const current = "id" in route.value ? route.value.id : undefined;
   const groups: [string, RunSummary[], boolean][] = [
     ["Needs you", list.filter(needsYou), true],
@@ -178,29 +219,39 @@ function Rail() {
     route.value = { view: "run", id };
     railOpen.value = false;
   };
-  const item = (r: RunSummary) => (
-    <button
-      key={r.id}
-      type="button"
-      class={`run-item ${current === r.id ? "active" : ""} ${needsYou(r) ? "unseen" : ""} ${r.archived ? "archived" : ""}`}
-      title={r.task}
-      onClick={() => open(r.id)}
-    >
-      <span class={`dot ${runState(r)}`} />
-      <span class="t">
-        {r.trigger ? "⏱ " : ""}
-        {r.task.split("\n")[0] || "(no task)"}
-      </span>
-      <span class="s">
-        {r.awaiting ? "Waiting for you" : r.triage?.state === "pending" ? "In your inbox" : STATUS_TEXT[r.status] ?? r.status} · {patterns.value.find((p) => p.id === r.pattern)?.name ?? r.pattern} · {baseName(r.repo)} · {ago(r.createdAt)}
-      </span>
-    </button>
-  );
+  const item = (r: RunSummary) => {
+    const tokens = (r.usage?.inputTokens ?? 0) + (r.usage?.outputTokens ?? 0);
+    return (
+      <button
+        key={r.id}
+        type="button"
+        class={`run-item ${current === r.id ? "active" : ""} ${needsYou(r) ? "unseen" : ""} ${r.archived ? "archived" : ""}`}
+        title={r.task}
+        aria-current={current === r.id ? "page" : undefined}
+        onClick={() => open(r.id)}
+      >
+        <span class={`dot ${runState(r)}`} aria-hidden="true" />
+        <span class="t">
+          {r.trigger ? "⏱ " : ""}
+          {r.group ? "⚖ " : ""}
+          {r.task.split("\n")[0] || "(no task)"}
+        </span>
+        <span class="s">
+          {r.awaiting ? "Waiting for you" : r.triage?.state === "pending" ? "In your inbox" : runState(r) === "failing" ? "Check failing" : STATUS_TEXT[r.status] ?? r.status}
+          {isFlagged(r) ? <span class="flag" title="Tests were changed in ways that could hide failures"> · ⚠ tests</span> : null} ·{" "}
+          {patterns.value.find((p) => p.id === r.pattern)?.name ?? r.pattern} · {baseName(r.repo)} · {ago(r.createdAt)}
+          {tokens ? ` · ${fmtTokens(tokens)} tok` : ""}
+          {r.usage?.costUsd ? ` · ${fmtCost(r.usage.costUsd)}` : ""}
+        </span>
+      </button>
+    );
+  };
   const empty = !groups.some(([, l]) => l.length) && !archived.length;
   return (
-    <nav class={`rail ${railOpen.value ? "open" : ""}`}>
+    <nav class={`rail ${railOpen.value ? "open" : ""}`} aria-label="Runs">
       <button
         class="btn primary new-run"
+        title="New run (n)"
         onClick={() => {
           route.value = { view: "composer" };
           railOpen.value = false;
@@ -208,30 +259,188 @@ function Rail() {
       >
         ＋ New run
       </button>
+      <div class="rail-search">
+        <input
+          id="run-search"
+          class="field"
+          type="search"
+          placeholder="Search runs"
+          aria-label="Search runs (press / to focus)"
+          value={f.q}
+          onInput={(e) => setRunFilter({ q: e.currentTarget.value })}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setRunFilter({ q: "" });
+              e.currentTarget.blur();
+            } else if (e.key === "ArrowDown" || e.key === "Enter") {
+              e.preventDefault();
+              (document.querySelector(".rail .run-item") as HTMLButtonElement | null)?.[e.key === "Enter" ? "click" : "focus"]();
+            }
+          }}
+        />
+        <button
+          type="button"
+          class={`btn ghost small ${filtering && !f.q ? "on" : ""}`}
+          aria-expanded={showFilters}
+          aria-controls="rail-filters"
+          title="Filter runs"
+          onClick={() => setShowFilters(!showFilters)}
+        >
+          ⚲ Filter
+        </button>
+      </div>
+      {showFilters ? (
+        <div class="rail-filters" id="rail-filters">
+          <div class="chips" role="group" aria-label="Status">
+            {STATUS_FILTERS.map(([id, label]) => (
+              <button key={id} type="button" class="chip-tpl" aria-pressed={f.status === id} onClick={() => setRunFilter({ status: id })}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <select class="field" aria-label="Pattern" value={f.pattern} onChange={(e) => setRunFilter({ pattern: e.currentTarget.value })}>
+            <option value="">Any pattern</option>
+            {patterns.value.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <select class="field" aria-label="Agent" value={f.agent} onChange={(e) => setRunFilter({ agent: e.currentTarget.value })}>
+            <option value="">Any agent</option>
+            {agents.value.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.displayName}
+              </option>
+            ))}
+          </select>
+          <label class="check">
+            <input type="checkbox" checked={f.thisRepo} onChange={(e) => setRunFilter({ thisRepo: e.currentTarget.checked })} /> only {repo.value ? baseName(repo.value) : "the selected repository"}
+          </label>
+        </div>
+      ) : null}
+      {filtering ? (
+        <div class="rail-hint">
+          {list.length} of {all.length} runs
+          <button type="button" onClick={() => setRunFilter({ q: "", status: "all", pattern: "", agent: "", thisRepo: false })}>
+            clear
+          </button>
+        </div>
+      ) : null}
       {groups.map(([title, items, counted]) =>
         items.length ? (
-          <div key={title}>
+          <section key={title} aria-label={title}>
             <div class="rail-title rail-section">
               {title}
               {counted ? <span class="count">{items.length}</span> : null}
             </div>
             {items.map(item)}
-          </div>
+          </section>
         ) : null,
       )}
       {archived.length ? (
-        <div>
+        <section aria-label="Archived">
           <div class="rail-title rail-section">
             Archived ({archived.length})
-            <button type="button" onClick={() => setShowArchived(!showArchived)}>
-              {showArchived ? "hide" : "show"}
-            </button>
+            {filtering ? null : (
+              <button type="button" aria-expanded={showArchived} onClick={() => setShowArchived(!showArchived)}>
+                {showArchived ? "hide" : "show"}
+              </button>
+            )}
           </div>
-          {showArchived ? archived.map(item) : null}
-        </div>
+          {showArchived || filtering ? archived.map(item) : null}
+        </section>
       ) : null}
-      {empty ? <div class="rail-empty">No runs yet — start one on the right</div> : null}
+      {empty ? <div class="rail-empty">{filtering ? "No runs match" : "No runs yet — start one on the right"}</div> : null}
     </nav>
+  );
+}
+
+// ---------------------------------------------------------------- keyboard
+const SHORTCUTS: [string, string][] = [
+  ["/", "Search runs"],
+  ["j / k", "Next / previous run in the list"],
+  ["[ / ]", "Previous / next step of the open run"],
+  ["n", "New run"],
+  ["i", "Insights"],
+  ["a", "Automations"],
+  ["⌘↵", "Start the run, or send what you typed"],
+  ["Esc", "Close a dialog, or leave the search box"],
+  ["?", "This list"],
+];
+
+function onShortcut(e: KeyboardEvent) {
+  if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+  const target = e.target as HTMLElement | null;
+  if (target?.closest("input, textarea, select, [contenteditable=true], dialog")) return;
+  const go = (r: typeof route.value) => {
+    e.preventDefault();
+    route.value = r;
+  };
+  switch (e.key) {
+    case "/": {
+      e.preventDefault();
+      railOpen.value = true;
+      const search = () => document.getElementById("run-search") as HTMLInputElement | null;
+      search()?.focus();
+      // On phones the sidebar is hidden until it re-renders open.
+      if (document.activeElement !== search()) requestAnimationFrame(() => search()?.focus());
+      return;
+    }
+    case "n":
+      return go({ view: "composer" });
+    case "i":
+      return go({ view: "insights" });
+    case "a":
+      return go({ view: "automations" });
+    case "?":
+      e.preventDefault();
+      shortcutsOpen.value = true;
+      return;
+    case "j":
+    case "k": {
+      const items = [...document.querySelectorAll<HTMLButtonElement>(".rail .run-item")];
+      if (!items.length) return;
+      e.preventDefault();
+      const at = items.findIndex((b) => b.classList.contains("active"));
+      const next = items[at < 0 ? 0 : Math.min(items.length - 1, Math.max(0, at + (e.key === "j" ? 1 : -1)))]!;
+      next.click();
+      next.scrollIntoView({ block: "nearest" });
+      return;
+    }
+  }
+}
+
+function ShortcutsDialog() {
+  const ref = useDialog(true, () => (shortcutsOpen.value = false));
+  return (
+    <dialog class="picker small-dialog" ref={ref} aria-labelledby="shortcuts-title">
+      <div class="picker-inner">
+        <div class="picker-head">
+          <h3 id="shortcuts-title">Keyboard shortcuts</h3>
+        </div>
+        <div class="dialog-body">
+          <table class="shortcuts">
+            <tbody>
+              {SHORTCUTS.map(([keys, what]) => (
+                <tr key={keys}>
+                  <td>
+                    <kbd>{keys}</kbd>
+                  </td>
+                  <td>{what}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div class="picker-foot">
+          <span class="ps" />
+          <button class="btn primary" onClick={() => (shortcutsOpen.value = false)}>
+            Done
+          </button>
+        </div>
+      </div>
+    </dialog>
   );
 }
 

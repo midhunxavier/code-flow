@@ -60,6 +60,8 @@ export const codexAdapter: AgentAdapter = {
     let sessionId = opts.resumeSessionId;
     let finalText = "";
     let turnError: string | undefined;
+    /** An `error` event isn't fatal by itself (Codex reports retries this way); it explains a failure. */
+    let lastError: string | undefined;
     let completed = false;
 
     const outcome = await runJsonlProcess({
@@ -83,21 +85,26 @@ export const codexAdapter: AgentAdapter = {
             handleItem(msg.type, msg.item, onEvent, (text) => (finalText = text));
             break;
 
-          case "turn.completed":
+          case "turn.completed": {
             completed = true;
+            const cached = msg.usage?.cached_input_tokens ?? 0;
             onEvent({
               kind: "usage",
-              inputTokens: msg.usage?.input_tokens,
+              // Codex counts cached input inside input_tokens.
+              inputTokens: msg.usage?.input_tokens !== undefined ? Math.max(0, msg.usage.input_tokens - cached) : undefined,
               outputTokens: msg.usage?.output_tokens,
+              cacheReadTokens: cached || undefined,
             });
             break;
+          }
 
           case "turn.failed":
-            turnError = msg.error?.message ?? "Codex turn failed";
+            turnError = msg.error?.message ?? lastError ?? "Codex turn failed";
             break;
 
           case "error":
-            turnError = msg.message ?? stringify(msg);
+            lastError = msg.message ?? stringify(msg);
+            onEvent({ kind: "status", text: `Codex: ${lastError}` });
             break;
         }
       },
@@ -105,7 +112,7 @@ export const codexAdapter: AgentAdapter = {
 
     if (schemaFile) await rm(dirname(schemaFile), { recursive: true, force: true }).catch(() => undefined);
     if (!completed || turnError || outcome.exitCode !== 0) {
-      const error = turnError ?? describeFailure("codex", outcome);
+      const error = turnError ?? (outcome.aborted || outcome.timedOut ? undefined : lastError) ?? describeFailure("codex", outcome);
       onEvent({ kind: "error", message: error });
       return { ok: false, finalText, sessionId, error };
     }

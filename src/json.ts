@@ -32,14 +32,21 @@ function matchingBrace(text: string, end: number): number {
   for (let i = end; i >= 0; i--) {
     const ch = text[i];
     if (ch === '"') {
-      // skip back over a string literal
-      for (i--; i >= 0 && !(text[i] === '"' && text[i - 1] !== "\\"); i--);
+      // Skip back over a string literal. A quote is escaped only by an odd number of
+      // backslashes: `"a\\"` ends with an escaped backslash, not an escaped quote.
+      for (i--; i >= 0 && !(text[i] === '"' && !escaped(text, i)); i--);
       continue;
     }
     if (ch === "}") depth++;
     else if (ch === "{" && --depth === 0) return i;
   }
   return -1;
+}
+
+function escaped(text: string, i: number): boolean {
+  let n = 0;
+  for (let j = i - 1; j >= 0 && text[j] === "\\"; j--) n++;
+  return n % 2 === 1;
 }
 
 /**

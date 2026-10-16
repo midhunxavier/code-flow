@@ -1,7 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,7 +86,33 @@ test("config defaults apply: env files are copied (never committed), check and l
 
 test("copy patterns can't escape the repo", async () => {
   const target = mkdtempSync(join(tmpdir(), "codeflow-ws-target-"));
-  assert.deepEqual(await copyIntoWorktree(repo, target, ["../etc/passwd", "/etc/hosts", ".env"]), [".env"]);
+  const { copied } = await copyIntoWorktree(repo, target, ["../etc/passwd", "/etc/hosts", ".env"]);
+  assert.deepEqual(copied, [".env"]);
+});
+
+test("copy refuses symlinks (a cloned repo's .env → your credentials) and files git would commit", async () => {
+  const outside = mkdtempSync(join(tmpdir(), "codeflow-ws-secret-"));
+  writeFileSync(join(outside, "credentials"), "aws_secret=1\n");
+  symlinkSync(join(outside, "credentials"), join(repo, "linked.local.json"));
+  writeFileSync(join(repo, "notes.txt"), "untracked but not ignored\n");
+  writeFileSync(join(repo, ".gitignore"), ".env\nconfig/*.local.json\nlinked.local.json\n");
+  try {
+    const target = mkdtempSync(join(tmpdir(), "codeflow-ws-target-"));
+    const { copied, refused } = await copyIntoWorktree(repo, target, ["linked.local.json", "notes.txt", ".env"]);
+    assert.deepEqual(copied, [".env"]);
+    assert.deepEqual(
+      refused.map((r) => [r.path, r.why]),
+      [
+        ["linked.local.json", "it's a symbolic link"],
+        ["notes.txt", "git doesn't ignore it, so it would be committed with the agents' work"],
+      ],
+    );
+    assert.ok(!existsSync(join(target, "linked.local.json")));
+  } finally {
+    rmSync(join(repo, "linked.local.json"));
+    rmSync(join(repo, "notes.txt"));
+    writeFileSync(join(repo, ".gitignore"), ".env\nconfig/*.local.json\n");
+  }
 });
 
 test("explicit settings beat the config", async () => {

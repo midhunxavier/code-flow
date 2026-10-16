@@ -179,3 +179,21 @@ function run(command: string, args: string[], cwd: string): Promise<string> {
     });
   });
 }
+
+/** Disk space each folder takes, in bytes (folders that don't exist are left out). */
+export async function folderSizes(paths: string[], timeoutMs = 30_000): Promise<Record<string, number>> {
+  const existing = paths.filter((p) => existsSync(p));
+  const sizes: Record<string, number> = {};
+  for (let i = 0; i < existing.length; i += 50) {
+    const batch = existing.slice(i, i + 50);
+    const out = await new Promise<string>((resolve) => {
+      // du exits non-zero when one file can't be read; what it printed is still right.
+      execFile("du", ["-sk", ...batch], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (_err, stdout) => resolve(stdout?.toString() ?? ""));
+    });
+    for (const line of out.split("\n")) {
+      const tab = line.indexOf("\t");
+      if (tab > 0) sizes[line.slice(tab + 1)] = Number(line.slice(0, tab)) * 1024;
+    }
+  }
+  return sizes;
+}

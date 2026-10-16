@@ -132,6 +132,7 @@ export const councilPattern: Pattern = {
     const findings: CouncilFinding[] = merged.findings
       .map((f) => ({ severity: f.severity, file: f.file, problem: f.problem, fix: f.fix, raisedBy: [...new Set(f.raised_by.map((l) => agentOf[l]!).filter(Boolean))] }))
       .sort((a, b) => b.raisedBy.length - a.raisedBy.length || SEVERITY[a.severity] - SEVERITY[b.severity]);
+    ctx.learn(findings);
     const markdown = renderReview(merged.verdict, merged.summary, findings, done.map((r) => r.agent));
     ctx.setReview({ verdict: merged.verdict, summary: merged.summary, findings, reviewers: done.map((r) => ({ agent: r.agent, verdict: r.review.verdict, issues: r.review.issues.length })), markdown });
     ctx.log(`Council: ${merged.verdict === "approve" ? "approve" : "changes requested"} with ${findings.length} finding(s) from ${done.length} reviewer(s)`);

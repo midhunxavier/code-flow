@@ -1,4 +1,5 @@
 import type { Pattern } from "../engine.js";
+import { describeIssues } from "../integrity.js";
 import { JUDGE_SCHEMA } from "./schemas.js";
 import { checkSection, fence, jsonInstruction, LETTERS, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
@@ -12,7 +13,8 @@ interface JudgeVerdict {
  * Best-of-N race.
  * Every contestant solves the same task independently in its own worktree, in parallel.
  * A judge compares the anonymized diffs ("Candidate A/B/…") and picks a winner, so it
- * cannot favour its own vendor by name.
+ * cannot favour its own vendor by name. Nothing the judge can reach names the vendor: not the
+ * prompt, not the worktree or branch names, not the commit messages (`git log --all`).
  */
 export const racePattern: Pattern = {
   id: "race",
@@ -61,9 +63,10 @@ export const racePattern: Pattern = {
             section("Task", ctx.task) +
             section("Deliverable", "Implement the task completely, run the relevant tests, then summarize your approach and test results."),
         });
-        await ctx.commit(wt, `${agent}: candidate ${label}`);
+        await ctx.commit(wt, `candidate ${label}`);
         const check = result.ok ? await ctx.check(wt, `Check candidate ${label}`) : null;
-        return { label, agent, wt, result, check, diff: result.ok ? await ctx.diff(wt) : "(attempt failed)" };
+        const tests = result.ok ? (await ctx.testChanges(wt)).filter((i) => i.severity === "high") : [];
+        return { label, agent, wt, result, check, tests, diff: result.ok ? await ctx.diff(wt) : "(attempt failed)" };
       }),
     );
 
@@ -71,9 +74,14 @@ export const racePattern: Pattern = {
     if (changed.length === 0) throw new Error("No contestant produced a usable change");
     for (const e of entries) await ctx.artifact(`Candidate ${e.label} (${e.agent})`, e.wt);
 
-    // With a check configured, a candidate that fails it can't win if any candidate passes.
+    // With a check configured, a candidate that fails it can't win if any candidate passes —
+    // and one that passes only by weakening tests can't win over one that passes honestly.
     const passing = changed.filter((e) => e.check?.ok);
-    const viable = ctx.hasCheck && passing.length ? passing : changed;
+    const honest = passing.filter((e) => !e.tests.length);
+    const viable = ctx.hasCheck && passing.length ? (honest.length ? honest : passing) : changed;
+    for (const e of changed.filter((e) => e.tests.length)) {
+      ctx.log(`Candidate ${e.label} changed tests in ways that could hide failures${honest.length && e.check?.ok ? ", so it can't win" : ""}:\n${describeIssues(e.tests)}`, "warn");
+    }
     if (ctx.hasCheck) {
       ctx.log(passing.length
         ? `Passing the check: ${passing.map((e) => e.label).join(", ")}${passing.length < changed.length ? " (only these can win)" : ""}`
@@ -105,7 +113,16 @@ export const racePattern: Pattern = {
             prompt:
               preamble("judge", judge, `${READ_ONLY} You are looking at the original, unmodified code; each candidate's changes are shown as a diff.`) +
               section("Task", ctx.task) +
-              order.map((e) => section(`Candidate ${e.label}`, fence(e.diff, "diff") + (e.check ? checkSection(e.check, 2_000) : ""))).join("") +
+              order
+                .map((e) =>
+                  section(
+                    `Candidate ${e.label}`,
+                    fence(e.diff, "diff") +
+                      (e.check ? checkSection(e.check, 2_000) : "") +
+                      (e.tests.length ? `\n**Changes to tests found by code-flow:**\n${describeIssues(e.tests)}\n` : ""),
+                  ),
+                )
+                .join("") +
               section(
                 "Deliverable",
                 `Compare the candidates on correctness, completeness, test coverage, simplicity and risk. Pick one winner from: ${labels.join(", ")}.`,
@@ -129,6 +146,7 @@ export const racePattern: Pattern = {
 
     ctx.log(`Winner: candidate ${winner.label} (${winner.agent})`);
     if (ctx.hasCheck) ctx.setVerdict(winner.check?.ok ? "passed" : "failing");
+    ctx.setFacts({ winner: winner.agent, entrants: entries.map((e) => e.agent) });
     return [
       `**Winner: Candidate ${winner.label} — ${winner.agent}** on branch \`${winner.wt.branch}\``,
       reasons.length ? section(reasons.length > 1 ? "Judges' reasoning" : "Judge's reasoning", reasons.join("\n\n")) : "",

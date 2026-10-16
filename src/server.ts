@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
@@ -14,11 +15,14 @@ import { doctor } from "./doctor.js";
 import { readRepoConfig } from "./repo-config.js";
 import { openFolder } from "./serve.js";
 import { CODEFLOW_HOME, PORT } from "./config.js";
-import { RunManager, type LoopSettings, type Pattern } from "./engine.js";
+import { RunManager, UntrustedSourceError, type LoopSettings, type Pattern } from "./engine.js";
 import { detectCheckCommand } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
 import { listBranches, repoRoot, worktreeRoot } from "./git.js";
+import { folderSizes, removeWorktrees } from "./ship.js";
+import { computeStats, rankAgents } from "./stats.js";
+import { acquireLock, writeHealth } from "./store.js";
 import { listIssues, listPullRequests } from "./github.js";
 import { resolveAuto } from "./routing.js";
 import { templates } from "./templates.js";
@@ -26,6 +30,13 @@ import { PrWatcher } from "./watch.js";
 import { Automations, describeSchedule, readWebhook, validateSchedule } from "./automation.js";
 import { lanAddresses, loadRemote, newToken, renderRemote, saveRemote, tokenMatches, type RemoteSettings } from "./remote.js";
 import type { Run, StartRunInput } from "./engine.js";
+
+// One server per CODEFLOW_HOME (waits for one that is still shutting down).
+const releaseLock = await acquireLock().catch((err: Error) => {
+  console.error(err.message);
+  process.exit(1);
+});
+process.once("exit", releaseLock);
 
 const manager = new RunManager(findPattern);
 const watcher = new PrWatcher(manager);
@@ -76,6 +87,51 @@ function checkOrigin(req: IncomingMessage) {
   if (origin && !allowedHosts.has(origin.replace(/^https?:\/\//, ""))) throw new HttpError(403, "Cross-origin request refused");
 }
 
+/**
+ * Who may use the API. The Host/Origin checks stop web pages, but not programs on this machine
+ * — including the agents code-flow runs, some of which are sandboxed with network access and
+ * could otherwise ask this server to run a command outside their sandbox. So the API needs a
+ * session cookie that only a browser holds.
+ *
+ * The token lives only in this process's memory. The first browser to open code-flow gets the
+ * cookie ("claims" it) — until the moment code-flow first starts an agent, a check, or an app,
+ * after which nothing on this machine that isn't already signed in can claim it. Any other
+ * browser uses the link printed at startup (`/?token=…`). Scripts can send the token as a
+ * Bearer header.
+ */
+const auth = {
+  token: process.env.CODEFLOW_TOKEN || randomBytes(24).toString("hex"),
+  claimable: true,
+};
+manager.onActivity(() => (auth.claimable = false));
+const COOKIE = "codeflow_session";
+
+function sessionCookie(): string {
+  return `${COOKIE}=${auth.token}; HttpOnly; SameSite=Strict; Path=/`;
+}
+
+function signedIn(req: IncomingMessage): boolean {
+  const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+  if (bearer && tokenMatches(bearer, auth.token)) return true;
+  const cookie = String(req.headers.cookie ?? "")
+    .split(";")
+    .map((c) => c.trim())
+    .find((c) => c.startsWith(`${COOKIE}=`));
+  return !!cookie && tokenMatches(cookie.slice(COOKIE.length + 1), auth.token);
+}
+
+const LOCKED_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>code-flow — sign in</title><style>
+:root{--bg:#f7f7f5;--text:#1c1c1a;--muted:#6d6c67;--panel:#fff;--border:#e4e3de}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--text:#ecebe6;--muted:#9b9a94;--panel:#1b1b1a;--border:#2e2e2b}}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:520px;margin:12vh auto;padding:24px;background:var(--panel);border:1px solid var(--border);border-radius:14px}
+h1{font-size:18px;margin:0 0 8px}p{color:var(--muted);margin:8px 0}code{font:13px ui-monospace,Menlo,monospace}
+</style></head><body><main><h1>Open code-flow from its link</h1>
+<p>This code-flow server is already in use, so it only accepts browsers that open it with its link.</p>
+<p>Find the line <code>Open http://localhost:${PORT}/?token=…</code> where code-flow was started (the terminal, or the preview's server log) and open that link here.</p>
+<p>Restarting code-flow and reloading this page also works, as long as no run has started yet.</p></main></body></html>`;
+
 /** Run an action whose errors are the user's to fix (shown as 400 with the message). */
 async function attempt<T>(fn: () => Promise<T>): Promise<T> {
   try {
@@ -99,7 +155,7 @@ function describePattern(p: Pattern) {
 }
 
 /** Who fills each role; "auto" picks an installed agent whose plan has room (see routing.ts). */
-async function validateRoles(pattern: Pattern, input: unknown): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
+async function validateRoles(pattern: Pattern, input: unknown, repo?: string): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const requested: Record<string, string[]> = {};
   for (const spec of pattern.roles) {
@@ -108,7 +164,9 @@ async function validateRoles(pattern: Pattern, input: unknown): Promise<{ roles:
     requested[spec.id] = spec.multiple ? list.slice(0, 6) : list.slice(0, 1);
   }
   const installed = new Set((await agentAvailability()).filter((a) => a.available).map((a) => a.id));
-  const resolved = resolveAuto(requested, manager.quota, installed);
+  const wantsAuto = Object.values(requested).some((list) => list.includes("auto"));
+  const rank = wantsAuto && repo ? rankAgents(manager.list(), repo) : undefined;
+  const resolved = resolveAuto(requested, manager.quota, installed, rank);
   const roles: Record<string, AgentId[]> = {};
   const needed = new Set<AgentId>();
   for (const spec of pattern.roles) {
@@ -200,7 +258,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   const repo = String(body.repo ?? "").trim();
   if (!task) throw new HttpError(400, "Describe the task");
   if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
-  const { roles, notes } = await validateRoles(pattern, body.roles);
+  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo));
   const loop = validateLoop(body.loop);
   const container = body.loop?.container;
   if (container && typeof container.image === "string" && /^[\w./:@-]{1,200}$/.test(container.image)) {
@@ -226,15 +284,17 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
       }
     })(),
     source: validateSource(body.source),
+    allowUntrusted: body.allowUntrusted === true,
     routing: notes,
     roles,
     options: validateOptions(pattern, body.options),
   };
 }
 
-async function startFromBody(body: Record<string, any>, extra: { trigger?: Run["trigger"] } = {}): Promise<Run> {
+async function startFromBody(body: Record<string, any>, extra: { trigger?: Run["trigger"]; group?: Run["group"] } = {}): Promise<Run> {
   const input = await buildStartInput(body);
   return manager.start({ ...input, ...extra }).catch((err: Error) => {
+    if (err instanceof UntrustedSourceError) throw Object.assign(new HttpError(409, err.message), { confirm: "allowUntrusted" });
     throw err instanceof HttpError ? err : new HttpError(400, err.message);
   });
 }
@@ -361,12 +421,26 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   checkOrigin(req);
 
   if (req.method === "GET" && url.pathname === "/") {
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    const given = url.searchParams.get("token");
+    if (given) {
+      if (!tokenMatches(given, auth.token)) throw new HttpError(403, "That link is from an earlier code-flow session; use the one printed when it last started");
+      // Drop the token from the address bar (and history); the cookie carries it from here.
+      res.writeHead(302, { location: "/", "set-cookie": sessionCookie(), "cache-control": "no-store", "referrer-policy": "no-referrer" });
+      return res.end();
+    }
+    const claim = !signedIn(req) && auth.claimable;
+    if (!signedIn(req) && !claim) {
+      res.writeHead(401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      return res.end(LOCKED_PAGE);
+    }
+    if (claim) auth.claimable = false;
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...(claim ? { "set-cookie": sessionCookie() } : {}) });
     res.end(await readFile(indexHtml));
     return;
   }
 
   if (parts[0] !== "api") throw new HttpError(404, "Not found");
+  if (!signedIn(req)) throw Object.assign(new HttpError(401, "Not signed in: reload code-flow, or open it from the link printed at startup"), { signIn: true });
 
   if (req.method === "GET" && parts[1] === "agents") return send(res, 200, await agentAvailability());
   if (req.method === "GET" && parts[1] === "events") return streamAllRuns(req, res);
@@ -391,6 +465,20 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return send(res, 200, listing);
   }
   if (req.method === "GET" && parts[1] === "doctor") return send(res, 200, await doctor(manager.quota));
+  if (req.method === "GET" && parts[1] === "health") {
+    return send(res, 200, { busy: manager.busy, writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length });
+  }
+  if (req.method === "GET" && parts[1] === "stats") {
+    const since = Number(url.searchParams.get("since")) || undefined;
+    const repo = url.searchParams.get("repo") ? await requestedRepo(url) : undefined;
+    return send(res, 200, computeStats(manager.list(), { repo, since }));
+  }
+  if (req.method === "POST" && parts[1] === "compare") return send(res, 201, await startComparison(await readJson(req)));
+  if (req.method === "GET" && parts[1] === "disk") return send(res, 200, await diskUsage(url.searchParams.get("repo") ? await requestedRepo(url) : undefined));
+  if (req.method === "POST" && parts[1] === "cleanup") {
+    const body = await readJson(req);
+    return send(res, 200, await cleanUp(Math.max(0, Number(body.olderThanDays ?? 7)), typeof body.repo === "string" ? body.repo : undefined));
+  }
   if (req.method === "GET" && parts[1] === "templates") return send(res, 200, templates);
   if (parts[1] === "remote") {
     if (req.method === "POST") {
@@ -536,6 +624,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
           const command = (typeof body.command === "string" && body.command.trim()) || run.app?.command;
           if (!command) throw new HttpError(400, 'Say how to run the app (e.g. "npm run dev"), or add "run" to .codeflow/config.json');
           if (/[\r\n]/.test(command)) throw new HttpError(400, "The command must be a single line");
+          manager.noteActivity(); // the app is the repo's code running on this machine
           return send(res, 200, await manager.devServers.start(key, wt.path, command, run.app?.port));
         }
       }
@@ -585,7 +674,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
         return send(res, 200, { watching: false });
       }
       if (!isAgentId(body.agent)) throw new HttpError(400, "Pick the agent that fixes problems");
-      const watch = await attempt(async () => manager.watchPr(run.id, { branch, agent: body.agent, maxFixes: Number(body.maxFixes) || undefined }));
+      const allow = Array.isArray(body.allow) ? body.allow.filter((a: unknown): a is string => typeof a === "string").slice(0, 20) : [];
+      const watch = await attempt(async () => manager.watchPr(run.id, { branch, agent: body.agent, maxFixes: Number(body.maxFixes) || undefined, allow }));
       void watcher.poll();
       return send(res, 200, watch);
     }
@@ -602,14 +692,15 @@ automations.start(Number(process.env.CODEFLOW_SCHEDULER_TICK_MS) || 30_000);
 syncLanServer();
 
 const server = createServer((req, res) => {
-  handle(req, res).catch((err: Error) => {
+  handle(req, res).catch((err: Error & { confirm?: string; signIn?: boolean }) => {
     if (res.headersSent) return res.end();
-    send(res, err instanceof HttpError ? err.status : 500, { error: err.message });
+    send(res, err instanceof HttpError ? err.status : 500, { error: err.message, confirm: err.confirm, signIn: err.signIn });
   });
 }).listen(PORT, HOST, async () => {
   const agents = await agentAvailability();
   const runs = manager.list();
   console.log(`code-flow running at http://localhost:${PORT}  (${runs.length} runs loaded from ${CODEFLOW_HOME})`);
+  console.log(`  Open http://localhost:${PORT}/?token=${auth.token}  (the first browser to open code-flow signs in without it)`);
   for (const a of agents) console.log(`  ${a.available ? "✓" : "✗"} ${a.displayName} (${a.binary})`);
   const interrupted = runs.filter((r) => r.status === "interrupted").length;
   if (interrupted) console.log(`  ${interrupted} interrupted run(s) can be resumed from the UI`);
@@ -627,6 +718,74 @@ server.on("error", (err: NodeJS.ErrnoException) => {
   console.error(err.code === "EADDRINUSE" ? `Port ${PORT} is still in use. Is code-flow already running?` : err);
   process.exit(1);
 });
+
+/**
+ * Compare setups: start the same task with several patterns or teams at once (optionally a few
+ * times each), as one group. Insights shows them side by side: did it pass, how long, how many
+ * steps and tokens, did it touch the tests.
+ */
+async function startComparison(body: Record<string, any>) {
+  const variants = Array.isArray(body.variants) ? body.variants.slice(0, 6) : [];
+  if (variants.length < 2) throw new HttpError(400, "Add at least two setups to compare");
+  const repeat = Math.min(3, Math.max(1, Math.round(Number(body.repeat) || 1)));
+  if (variants.length * repeat > 9) throw new HttpError(400, "That's more than 9 runs; compare fewer setups or repeat less");
+  const base = body.run && typeof body.run === "object" ? body.run : {};
+  // Check every setup before starting any, so a typo doesn't leave half a comparison running.
+  const inputs = await Promise.all(
+    variants.map(async (v: Record<string, any>, i: number) => {
+      const label = String(v.label ?? "").trim().slice(0, 40) || `Setup ${i + 1}`;
+      return {
+        label,
+        input: await buildStartInput({ ...base, pattern: v.pattern ?? base.pattern, roles: v.roles ?? base.roles, options: v.options ?? base.options, roleSettings: v.roleSettings ?? base.roleSettings }),
+      };
+    }),
+  );
+  const group = { id: `g${Date.now().toString(36)}${randomBytes(2).toString("hex")}` };
+  const started: string[] = [];
+  for (let n = 1; n <= repeat; n++) {
+    for (const { label, input } of inputs) {
+      const run = await manager.start({ ...input, group: { id: group.id, label: repeat > 1 ? `${label} #${n}` : label } }).catch((err: Error) => {
+        throw new HttpError(400, `${label}: ${err.message}`);
+      });
+      started.push(run.id);
+    }
+  }
+  return { group: group.id, runs: started };
+}
+
+/** Disk space taken by each run's worktrees (every worktree holds its own node_modules…). */
+async function diskUsage(repo?: string) {
+  const runs = manager.list().filter((r) => !repo || r.repo === repo);
+  const sizes = await folderSizes(runs.map((r) => r.worktreeDir));
+  const list = runs
+    .filter((r) => sizes[r.worktreeDir] !== undefined)
+    .map((r) => ({ id: r.id, task: r.task.split("\n")[0]!.slice(0, 100), repo: r.repo, status: r.status, archived: r.archived, endedAt: r.endedAt, bytes: sizes[r.worktreeDir]! }))
+    .sort((a, b) => b.bytes - a.bytes);
+  return { total: list.reduce((n, r) => n + r.bytes, 0), runs: list };
+}
+
+/**
+ * Remove the worktrees (not the branches) of runs that finished more than `days` ago and need
+ * nothing from you: seen, not waiting in the inbox, not watching a PR. Committed work stays on
+ * its branch and comes back if you resume or follow up.
+ */
+async function cleanUp(days: number, repo?: string) {
+  const cutoff = Date.now() - days * 86_400_000;
+  const done: string[] = [];
+  let removed = 0;
+  for (const r of manager.list()) {
+    if (repo && r.repo !== repo) continue;
+    if (r.status === "running" || !r.endedAt || r.endedAt > cutoff || !r.seen) continue;
+    if (r.triage?.state === "pending" || Object.values(r.watches).some((w) => ["watching", "fixing", "green"].includes(w.state))) continue;
+    const result = await removeWorktrees(r.repo, r.worktrees, false).catch(() => undefined);
+    if (!result?.removed.length) continue;
+    removed += result.removed.length;
+    done.push(r.id);
+    if (!r.archived) manager.setArchived(r.id, true);
+    manager.log(r.id, `Cleaned up: removed ${result.removed.length} worktree(s); branches kept`);
+  }
+  return { runs: done.length, worktrees: removed };
+}
 
 // Stop cleanly: running agents are stopped and their runs marked "interrupted" (resumable).
 let stopping = false;

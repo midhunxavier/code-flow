@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { cp, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import {
@@ -11,27 +11,36 @@ import {
   type AgentSettings,
   type RunResult,
 } from "./adapters/index.js";
-import { MAX_DIFF_CHARS, STEP_TIMEOUT_MS } from "./config.js";
+import { CODEFLOW_HOME, MAX_DIFF_CHARS, STEP_TIMEOUT_MS } from "./config.js";
 import { runCheck, type CheckResult, type Container } from "./checks.js";
 import { commandExists } from "./adapters/process.js";
 import { contextPrompt, hasStagedFiles, prepareContext, type ContextInput, type RunContext } from "./context.js";
+import { fitDiff } from "./diff.js";
+import { describeIssues, inspectChanges, type IntegrityIssue } from "./integrity.js";
 import { extractJson, shapeProblem } from "./json.js";
+import { readConventions, recordFindings, recurringLessons } from "./learnings.js";
+import { Slots } from "./slots.js";
 import {
   CONTEXT_DIR,
+  branchExists,
   commitAll,
   diffSince,
   diffStat,
-  discardChanges,
   ensureCodeflowExcludes,
   git,
+  isAncestor,
   isClean,
   mergeBranch,
   openWorktree,
   repoRoot,
   resolveCommit,
+  restoreSnapshot,
+  snapshot,
   uncommittedCount,
   validateBranchPrefix,
+  validRef,
   worktreeRoot,
+  type MergeResult,
   type Worktree,
 } from "./git.js";
 import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines } from "./store.js";
@@ -39,6 +48,12 @@ import { branchDiff, mergeInto, openPullRequest, removeWorktrees, type DiffFile 
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
 import { commentOnPr, loadSource, mergeBase, pushBranch, sourcePrompt, type RunSource } from "./github.js";
+
+/** How many agent CLIs, and how many check/setup commands, may run at once across all runs. */
+const agentSlots = new Slots(Math.max(1, Number(process.env.CODEFLOW_MAX_AGENTS) || 6));
+const checkSlots = new Slots(Math.max(1, Number(process.env.CODEFLOW_MAX_CHECKS) || 3));
+/** Waits before retrying an agent turn that failed for a passing reason (overloaded, network). */
+const RETRY_DELAYS_MS = (process.env.CODEFLOW_RETRY_DELAYS_MS ?? "20000,60000").split(",").map(Number).filter((n) => n >= 0);
 
 /** Per-run staging folder (inside the run's worktree folder) for context files. */
 const STAGE_DIR = ".context";
@@ -68,6 +83,46 @@ export interface Step {
   sessionId?: string;
   finalText?: string;
   error?: string;
+  /** Tokens (and, when the CLI reports it, API-equivalent cost) this turn used. */
+  usage?: TokenUsage;
+  /** Times this turn was retried after a passing failure (overloaded, network). */
+  retries?: number;
+}
+
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  /** Claude Code reports what the turn would cost on the API; subscription use isn't billed. */
+  costUsd: number;
+}
+
+export interface AgentUsage extends TokenUsage {
+  steps: number;
+  /** Steps that ended in an error. */
+  failures: number;
+  /** Steps in write mode (building, fixing) rather than planning or reviewing. */
+  writeSteps: number;
+  ms: number;
+}
+
+export interface Usage extends Partial<TokenUsage> {
+  agentSteps: number;
+  checks: number;
+  byAgent?: Partial<Record<AgentId, AgentUsage>>;
+}
+
+/** What a pattern learned that's worth comparing across runs (who won, who got it green). */
+export interface RunFacts {
+  /** Race: the winning contestant and everyone who entered. */
+  winner?: AgentId;
+  entrants?: AgentId[];
+  /** Loop: the worker whose round made the check pass, and how often work was handed over. */
+  solvedBy?: AgentId;
+  handoffs?: number;
+  /** Review rounds before approval (pipeline), and whether the reviewer approved. */
+  reviewRounds?: number;
+  approved?: boolean;
 }
 
 export interface Artifact {
@@ -104,7 +159,7 @@ export interface Run {
   options: Record<string, number | boolean>;
   /** The "done when" check and the run's budgets. */
   loop: LoopSettings;
-  usage: { agentSteps: number; checks: number };
+  usage: Usage;
   /** Result of the most recent check, if a check is configured. */
   lastCheck?: { ok: boolean; command: string; worktree: string; at: number };
   /** Set by patterns: did the result pass its check? */
@@ -145,6 +200,24 @@ export interface Run {
   trigger?: { id: string; name: string; via: "schedule" | "webhook" | "manual" };
   /** Your decision on an automation's result: it waits in the inbox until you make one. */
   triage?: { state: "pending" | "approved" | "rejected" | "empty"; at: number; note?: string };
+  /** Changes to tests in each result branch that could make the check pass without a fix. */
+  integrity?: Record<string, IntegrityIssue[]>;
+  /** Comparable outcomes (see RunFacts). */
+  facts?: RunFacts;
+  /** Runs started together to compare setups on the same task. */
+  group?: { id: string; label: string };
+  /** The repo's AGENTS.md / CLAUDE.md…, read at the base commit and given to every agent. */
+  conventions?: string;
+  /** Problems reviewers raised in earlier runs in this repo, given to every agent. */
+  lessons?: string[];
+  /** Why the run is locked down (untrusted input): Safe mode, nothing copied in, checks isolated. */
+  lockdown?: string;
+  /** Record review findings for later runs (`learn` in .codeflow/config.json; default on). */
+  learn?: boolean;
+  /** The pattern itself finished; resuming only runs pending follow-ups. */
+  patternDone?: boolean;
+  /** The pattern's own summary (follow-ups are appended to `summary`). */
+  patternSummary?: string;
   status: Status;
   createdAt: number;
   endedAt?: number;
@@ -185,6 +258,10 @@ export interface FollowUp {
   push?: string;
   /** The result branch whose PR watch asked for this follow-up. */
   watch?: string;
+  /** Permissions for this turn when they differ from the run's (unattended follow-ups get less). */
+  trust?: Trust;
+  /** Test changes code-flow found in this follow-up's commit. */
+  integrity?: IntegrityIssue[];
   status: "pending" | "done" | "failed";
   result?: string;
   checkPassed?: boolean;
@@ -223,6 +300,8 @@ export interface PrWatch {
   /** Branch on origin that fixes are pushed to. */
   remoteBranch: string;
   agent: AgentId;
+  /** GitHub logins besides yours whose new comments the agent acts on. */
+  allow?: string[];
   maxFixes: number;
   fixes: number;
   state: "watching" | "fixing" | "green" | "needs-you" | "closed" | "stopped";
@@ -317,6 +396,10 @@ export interface AskParams {
   resume?: StepOutcome;
   /** Return a failed outcome instead of throwing (useful for races). */
   allowFailure?: boolean;
+  /** Identifies the step for resume when the title alone isn't unique (defaults to the title). */
+  identity?: string;
+  /** Permissions for this turn instead of the run's. */
+  trust?: Trust;
   /** Constrain the answer to this JSON Schema. Prefer `ctx.decide()`, which also validates. */
   schema?: object;
 }
@@ -351,12 +434,22 @@ export class TeamContext {
   private attemptSteps = 0;
   /** True while re-running already-journaled steps after a resume. */
   private replaying: boolean;
+  /**
+   * The commit each worktree is at *in this pass through the pattern*. On a replay the
+   * worktree on disk already has every later commit, so recorded checks are matched against
+   * this, not against HEAD: a check recorded for different code is run again.
+   */
+  private readonly heads = new Map<string, string>();
+  /** How many tests the run's check ran in each worktree: the first time, and the latest. */
+  private readonly testCounts = new Map<string, { first?: number; last?: number }>();
 
   constructor(
     readonly run: Run,
     private readonly controller: AbortController,
     private readonly manager: RunManager,
     private readonly journal: Map<string, unknown> = new Map(),
+    /** Only the run's pending follow-ups are run; the pattern finished in an earlier attempt. */
+    readonly followUpsOnly = false,
   ) {
     this.signal = controller.signal;
     this.replaying = journal.size > 0;
@@ -450,9 +543,17 @@ export class TeamContext {
     this.run.verdict = verdict;
   }
 
-  /** The user's task plus its source (issue, PR) and attached context — what every agent is given. */
+  /** Record comparable outcomes (race winner, who got the loop green…) for Insights. */
+  setFacts(facts: RunFacts) {
+    this.run.facts = { ...this.run.facts, ...facts };
+  }
+
+  /**
+   * The user's task plus everything every agent is given with it: its source (issue, PR),
+   * attached context, the repo's conventions and the problems reviewers keep raising here.
+   */
   get task() {
-    return this.run.task + sourcePrompt(this.run.source) + contextPrompt(this.run.context);
+    return this.run.task + sourcePrompt(this.run.source) + contextPrompt(this.run.context) + knowledgePrompt(this.run);
   }
 
   /** Record a review council's result (shown as the run's review, postable to the PR). */
@@ -460,6 +561,12 @@ export class TeamContext {
     const posted = this.run.review?.markdown === review.markdown ? this.run.review : undefined;
     this.run.review = { ...review, postedTo: posted?.postedTo, postedAt: posted?.postedAt };
     this.manager.emitRun(this.run);
+  }
+
+  /** Remember review findings, so problems that keep coming back are passed on to later runs. */
+  learn(findings: { severity?: string; file?: string; problem: string }[]) {
+    if (this.replaying || this.run.learn === false) return;
+    void recordFindings(this.run.repo, this.run.id, findings);
   }
 
   agents(role: string): AgentId[] {
@@ -489,14 +596,21 @@ export class TeamContext {
   /**
    * Run `fn` once and record its result; on a resumed run the recorded result is returned
    * instead. Keys are kind + identity + occurrence, which stay stable across parallel
-   * branches as long as identities differ (titles, worktree names).
+   * branches as long as identities differ (titles, worktree names). `valid` can reject a
+   * recorded result that no longer applies (e.g. a check recorded for different code); the
+   * step is then run again and its new result recorded.
    */
-  async remember<T>(kind: string, identity: string, fn: () => Promise<T>): Promise<T> {
+  async remember<T>(kind: string, identity: string, fn: () => Promise<T>, valid?: (recorded: T) => boolean | Promise<boolean>): Promise<T> {
     const base = `${kind}:${identity}`;
     const n = (this.counters.get(base) ?? 0) + 1;
     this.counters.set(base, n);
     const key = `${base}#${n}`;
-    if (this.journal.has(key)) return this.journal.get(key) as T;
+    if (this.journal.has(key)) {
+      const recorded = this.journal.get(key) as T;
+      if (!valid || (await valid(recorded))) return recorded;
+      this.replaying = false;
+      this.log(`Running "${identity.split("|").slice(-2).join(" ")}" again: the code changed since its result was recorded`);
+    }
     this.replaying = false;
     const value = await fn();
     this.journal.set(key, value);
@@ -511,13 +625,26 @@ export class TeamContext {
   async check(wt: Worktree, title = "Check", command = this.run.loop.check): Promise<CheckResult | null> {
     if (!command) return null;
     this.checkCancelled();
-    return this.remember("check", `${wt.name}|${title}|${command}`, async () => {
-      const result = await this.command("check", title, wt, command);
-      this.run.usage.checks++;
-      this.run.lastCheck = { ok: result.ok, command, worktree: wt.name, at: Date.now() };
-      this.manager.emitRun(this.run);
-      return result;
-    });
+    const head = this.heads.get(wt.name);
+    const result = await this.remember(
+      "check",
+      `${wt.name}|${title}|${command}`,
+      async (): Promise<CheckResult & { head?: string }> => {
+        const result = await this.command("check", title, wt, command);
+        this.run.usage.checks++;
+        this.run.lastCheck = { ok: result.ok, command, worktree: wt.name, at: Date.now() };
+        this.manager.emitRun(this.run);
+        return { ...result, head: await resolveCommit(wt.path).catch(() => undefined) };
+      },
+      (recorded) => !recorded.head || !head || recorded.head === head,
+    );
+    if (command === this.run.loop.check && result.tests !== undefined) {
+      const counts = this.testCounts.get(wt.name) ?? {};
+      counts.first ??= result.tests;
+      counts.last = result.tests;
+      this.testCounts.set(wt.name, counts);
+    }
+    return result;
   }
 
   /** Run a shell command in a worktree as a visible step (used for checks and setup). */
@@ -537,8 +664,21 @@ export class TeamContext {
     this.manager.emit(this.run, { type: "step", step: { ...step } });
     this.manager.emit(this.run, { type: "agent", stepId: step.id, event: { kind: "tool_call", callId: step.id, name: "$", input: command } });
 
+    this.manager.noteActivity();
+    let release: (() => void) | undefined;
+    if (checkSlots.busy >= checkSlots.size) {
+      this.manager.emit(this.run, { type: "agent", stepId: step.id, event: { kind: "status", text: `Waiting: ${checkSlots.size} checks are already running (CODEFLOW_MAX_CHECKS)` } });
+    }
     const container = this.run.loop.container ? { ...this.run.loop.container, readOnly: [join(this.run.repo, ".git")] } : undefined;
-    const result = await runCheck(wt.path, command, { timeoutMs: this.run.loop.checkTimeoutMin * 60_000, signal: this.signal, container });
+    let result: CheckResult;
+    try {
+      release = await checkSlots.acquire(this.signal).catch(() => undefined);
+      result = release
+        ? await runCheck(wt.path, command, { timeoutMs: this.run.loop.checkTimeoutMin * 60_000, signal: this.signal, container })
+        : { command, ok: false, exitCode: null, timedOut: false, durationMs: 0, output: "Cancelled before it started" };
+    } finally {
+      release?.();
+    }
 
     this.manager.emit(this.run, {
       type: "agent",
@@ -548,7 +688,7 @@ export class TeamContext {
     step.endedAt = Date.now();
     step.status = this.signal.aborted ? this.abortedStatus() : result.ok ? "done" : "failed";
     step.finalText = result.ok
-      ? `Passed in ${Math.round(result.durationMs / 1000)}s`
+      ? `Passed in ${Math.round(result.durationMs / 1000)}s${result.tests !== undefined ? ` (${result.tests} tests)` : ""}`
       : result.timedOut
         ? `Timed out after ${this.run.loop.checkTimeoutMin} min`
         : `Failed (exit code ${result.exitCode})`;
@@ -565,11 +705,23 @@ export class TeamContext {
   /** A worktree for this run; reused if it already exists (e.g. when resuming). */
   async worktree(name: string, fromRef = this.run.baseRef): Promise<Worktree> {
     this.checkCancelled();
-    const wt = await this.remember("worktree", name, () => this.openWorktreeLive(name, fromRef));
+    let live = false;
+    let wt = await this.remember("worktree", name, () => ((live = true), this.openWorktreeLive(name, fromRef)));
     if (!existsSync(wt.path)) {
-      // Removed since it was recorded: check the branch out again.
+      // Removed since it was recorded (e.g. archived): check the branch out again and set it up
+      // like a new one — setup, copied files and context aren't in the branch.
+      if (!(await branchExists(this.run.repo, wt.branch))) {
+        throw new Error(`Branch ${wt.branch} was deleted, so the work in ${name} is gone. Start a new run instead.`);
+      }
       const { wt: reopened } = await openWorktree(this.run.repo, name, wt.path, wt.branch, fromRef);
-      return reopened;
+      wt = { ...reopened, base: wt.base };
+      this.manager.emit(this.run, { type: "log", level: "info", text: `Re-attached ${name} at ${wt.path} (branch ${wt.branch})` });
+      await this.prepareWorktree(wt);
+    }
+    if (!this.heads.has(name)) {
+      // Replaying, the pattern starts from the base; otherwise from wherever the branch is.
+      const replayed = !live && !this.followUpsOnly;
+      this.heads.set(name, replayed ? wt.base : await resolveCommit(wt.path).catch(() => wt.base));
     }
     return wt;
   }
@@ -590,37 +742,83 @@ export class TeamContext {
       return wt;
     }
     this.log(`Created worktree ${wt.path} on branch ${wt.branch}`);
+    await this.prepareWorktree(wt);
+    return wt;
+  }
+
+  /** Make a new (or re-attached) worktree work like your checkout: context, copied files, setup. */
+  private async prepareWorktree(wt: Worktree) {
     if (hasStagedFiles(this.run.context)) {
       // Git-excluded, so it is never committed and doesn't count as a change.
       await cp(join(this.run.worktreeDir, STAGE_DIR), join(wt.path, CONTEXT_DIR), { recursive: true });
     }
     if (this.run.loop.copy?.length) {
-      const copied = await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
-      if (copied.length) this.log(`Copied ${copied.join(", ")} from your checkout into ${name}`);
+      const { copied, refused } = await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
+      if (copied.length) this.manager.log(this.run.id, `Copied ${copied.join(", ")} from your checkout into ${wt.name}`);
+      for (const r of refused) this.manager.log(this.run.id, `Didn't copy ${r.path}: ${r.why}`, "warn");
     }
     if (this.run.loop.setup) {
-      const setup = await this.command("setup", `Setup ${name}`, wt, this.run.loop.setup);
-      if (!setup.ok) throw new Error(`Setup command \`${this.run.loop.setup}\` failed in worktree ${name}`);
-      if (!(await isClean(wt.path))) this.log(`Setup left changes in ${name}; they'll appear in its diff`, "warn");
+      const setup = await this.command("setup", `Setup ${wt.name}`, wt, this.run.loop.setup);
+      if (!setup.ok) throw new Error(`Setup command \`${this.run.loop.setup}\` failed in worktree ${wt.name}`);
+      if (!(await isClean(wt.path))) this.manager.log(this.run.id, `Setup left changes in ${wt.name}; they'll appear in its diff`, "warn");
     }
-    return wt;
   }
 
   async commit(wt: Worktree, message: string): Promise<string | null> {
-    return this.remember("commit", `${wt.name}|${message}`, async () => {
-      const sha = await commitAll(wt, message);
-      if (sha) this.log(`Committed ${sha.slice(0, 8)} on ${wt.branch}: ${message}`);
-      return sha;
-    });
+    const sha = await this.remember(
+      "commit",
+      `${wt.name}|${message}`,
+      async () => {
+        const sha = (await commitAll(wt, message)) ?? (await this.recoverCommit(wt, message));
+        if (sha) this.log(`Committed ${sha.slice(0, 8)} on ${wt.branch}: ${message}`);
+        return sha;
+      },
+      // A recorded commit only stands if it's still in the branch's history.
+      async (recorded) => recorded === null || (await isAncestor(wt.path, recorded)),
+    );
+    if (sha) this.heads.set(wt.name, sha);
+    return sha;
   }
 
-  /** Diff of the worktree against its base, truncated to fit in a prompt. */
+  /**
+   * code-flow stopped between making a commit and recording it: the commit is there but the
+   * journal doesn't know it, so committing again finds nothing. Recognize it by its message.
+   */
+  private async recoverCommit(wt: Worktree, message: string): Promise<string | null> {
+    const known = this.heads.get(wt.name);
+    const head = await resolveCommit(wt.path).catch(() => "");
+    if (!head || !known || head === known) return null;
+    const subject = (await git(["log", "-1", "--format=%s", head], wt.path)).stdout.trim();
+    return subject === message && (await isAncestor(wt.path, known, head)) ? head : null;
+  }
+
+  /** Merge another branch into a worktree (the conflicts, if any, are left for an agent). */
+  async merge(wt: Worktree, branch: string): Promise<MergeResult> {
+    const result = await this.remember("merge", branch, async (): Promise<MergeResult & { head?: string }> => {
+      const merged = await mergeBranch(wt, branch);
+      return { ...merged, head: merged.ok ? await resolveCommit(wt.path) : undefined };
+    });
+    if (result.head) this.heads.set(wt.name, result.head);
+    return result;
+  }
+
+  /** Diff of the worktree against its base, fitted to a prompt (whole files first; see fitDiff). */
   async diff(wt: Worktree, base = wt.base): Promise<string> {
     const full = await diffSince(wt, base);
     if (!full.trim()) return "(no changes)";
-    return full.length > MAX_DIFF_CHARS
-      ? `${full.slice(0, MAX_DIFF_CHARS)}\n… diff truncated (${full.length} chars total); run \`git diff ${base}..HEAD\` to see all of it.`
-      : full;
+    return fitDiff(full, MAX_DIFF_CHARS, base);
+  }
+
+  /**
+   * Changes since `from` that could make the check pass without fixing anything: deleted or
+   * skipped tests, weakened assertions, a changed test script or config, fewer tests running.
+   */
+  async testChanges(wt: Worktree, from = wt.base): Promise<IntegrityIssue[]> {
+    const counts = this.testCounts.get(wt.name);
+    return inspectChanges(wt.path, from, "HEAD", {
+      check: this.run.loop.check,
+      tests: counts ? { before: counts.first, after: counts.last } : undefined,
+    }).catch(() => []);
   }
 
   /** Publish a result branch (replaces an earlier artifact with the same label). */
@@ -628,6 +826,12 @@ export class TeamContext {
     const stat = await diffStat(wt, this.run.baseRef).catch(() => "");
     this.run.artifacts = this.run.artifacts.filter((a) => a.label !== label);
     this.run.artifacts.push({ label, branch: wt.branch, path: wt.path, stat });
+    const issues = await this.testChanges(wt, this.run.baseRef);
+    const integrity = { ...this.run.integrity };
+    if (issues.length) integrity[wt.branch] = issues;
+    else delete integrity[wt.branch];
+    this.run.integrity = Object.keys(integrity).length ? integrity : undefined;
+    if (issues.length) this.log(`${label}: changes to tests to look at before merging:\n${describeIssues(issues)}`, "warn");
     this.manager.emitRun(this.run);
   }
 
@@ -650,6 +854,7 @@ export class TeamContext {
     const retry = await this.ask({
       ...params,
       title: `${params.title} (retry)`,
+      identity: params.identity ? `${params.identity} (retry)` : undefined,
       resume: first.sessionId ? first : params.resume,
       prompt:
         `Your previous answer did not contain a valid ${params.what}: ${firstRead.problem}.\n` +
@@ -669,7 +874,7 @@ export class TeamContext {
     if (params.resume && params.resume.agent !== params.agent) {
       throw new Error(`Cannot resume a ${params.resume.agent} session with ${params.agent}`);
     }
-    return this.remember("ask", `${params.role}|${params.agent}|${params.cwd.name}|${params.title}`, () => this.askLive(params));
+    return this.remember("ask", `${params.role}|${params.agent}|${params.cwd.name}|${params.identity ?? params.title}`, () => this.askLive(params));
   }
 
   private async askLive(params: AskParams): Promise<StepOutcome> {
@@ -696,50 +901,146 @@ export class TeamContext {
     this.run.steps.push(step);
     this.manager.emit(this.run, { type: "step", step: { ...step } });
 
-    // Read-only is enforced here for every agent, not just trusted to each CLI's flags.
-    const guardReadOnly = params.mode === "read" && (await isClean(params.cwd.path));
+    const onEvent = (event: AgentEvent) => {
+      if (event.kind === "session") step.sessionId = event.sessionId;
+      if (event.kind === "quota") this.manager.recordQuota(params.agent, event.status, event.windows);
+      if (event.kind === "usage") this.addTokens(step, params.agent, event);
+      this.manager.emit(this.run, { type: "agent", stepId: step.id, event });
+    };
 
-    const result = await adapters[params.agent].run(
-      {
-        prompt: notes + params.prompt,
-        cwd: params.cwd.path,
-        mode: params.mode,
-        resumeSessionId: params.resume?.sessionId,
-        model: this.run.roleSettings?.[params.role]?.[params.agent]?.model || this.run.agentSettings[params.agent]?.model,
-        effort: this.run.roleSettings?.[params.role]?.[params.agent]?.effort || this.run.agentSettings[params.agent]?.effort,
-        jsonSchema: params.schema,
-        trust: this.run.trust,
-        signal: this.signal,
-        timeoutMs: STEP_TIMEOUT_MS,
-      },
-      (event) => {
-        if (event.kind === "session") step.sessionId = event.sessionId;
-        if (event.kind === "quota") this.manager.recordQuota(params.agent, event.status, event.windows);
-        this.manager.emit(this.run, { type: "agent", stepId: step.id, event });
-      },
-    );
+    this.manager.noteActivity();
+    // At most CODEFLOW_MAX_AGENTS agent CLIs run at once, across every run.
+    if (agentSlots.busy >= agentSlots.size) onEvent({ kind: "status", text: `Waiting for a free agent slot (${agentSlots.size} agents run at once; CODEFLOW_MAX_AGENTS)` });
+    let release: (() => void) | undefined;
+    let result: RunResult;
+    try {
+      release = await agentSlots.acquire(this.signal).catch(() => undefined);
+      step.startedAt = Date.now();
+      result = release ? await this.runAgent(params, notes, step, onEvent) : { ok: false, finalText: "", error: "Cancelled before it started" };
+    } finally {
+      release?.();
+    }
 
-    if (!result.ok && /rate.?limit|usage limit|quota|too many requests/i.test(result.error ?? "")) {
-      this.manager.recordQuota(params.agent, "limited", {});
-    }
-    if (guardReadOnly && !(await isClean(params.cwd.path))) {
-      await discardChanges(params.cwd.path);
-      this.log(`${params.title} (${params.agent}) modified files in read-only mode; changes were reverted`, "warn");
-    }
+    // Out of plan usage steers "Auto" away from this agent; a per-minute 429 was just retried.
+    const usageLimit = !result.ok && USAGE_LIMIT.test(result.error ?? "");
+    if (usageLimit) this.manager.recordQuota(params.agent, "limited", {});
 
     step.endedAt = Date.now();
     step.sessionId = result.sessionId;
     step.finalText = result.finalText;
     step.error = result.error;
     step.status = this.signal.aborted ? this.abortedStatus() : result.ok ? "done" : "failed";
+    const agentUsage = this.agentUsage(params.agent);
+    agentUsage.steps++;
+    if (params.mode === "write") agentUsage.writeSteps++;
+    if (step.status === "failed") agentUsage.failures++;
+    agentUsage.ms += step.endedAt - step.startedAt;
     this.manager.emit(this.run, { type: "step", step: { ...step } });
 
+    // Out of plan usage: retrying won't help for hours. Stop (resumable) instead of failing.
+    if (usageLimit && !params.allowFailure && !this.signal.aborted) {
+      this.stop(`usage limit of ${adapters[params.agent].displayName}`);
+    }
     this.checkCancelled();
     if (!result.ok && !params.allowFailure) {
       throw new Error(`${params.title} (${params.agent}) failed: ${result.error ?? "unknown error"}`);
     }
     return { ...result, stepId: step.id, agent: params.agent };
   }
+
+  /**
+   * The agent turn itself: read-only enforced by snapshot and restore (for every agent, not
+   * just trusted to each CLI's flags), and passing failures (overloaded, network) retried.
+   */
+  private async runAgent(params: AskParams, notes: string, step: Step, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
+    const before = params.mode === "read" ? await snapshot(params.cwd.path).catch(() => undefined) : undefined;
+    let result: RunResult;
+    for (let attempt = 0; ; attempt++) {
+      result = await adapters[params.agent].run(
+        {
+          prompt: notes + params.prompt,
+          cwd: params.cwd.path,
+          mode: params.mode,
+          resumeSessionId: params.resume?.sessionId,
+          model: this.run.roleSettings?.[params.role]?.[params.agent]?.model || this.run.agentSettings[params.agent]?.model,
+          effort: this.run.roleSettings?.[params.role]?.[params.agent]?.effort || this.run.agentSettings[params.agent]?.effort,
+          jsonSchema: params.schema,
+          trust: params.trust ?? this.run.trust,
+          signal: this.signal,
+          timeoutMs: STEP_TIMEOUT_MS,
+        },
+        onEvent,
+      );
+      const error = result.error ?? "";
+      const passing = !result.ok && !this.signal.aborted && TRANSIENT.test(error) && !USAGE_LIMIT.test(error);
+      if (!passing || attempt >= RETRY_DELAYS_MS.length) break;
+      const wait = RETRY_DELAYS_MS[attempt]!;
+      step.retries = attempt + 1;
+      onEvent({ kind: "status", text: `${adapters[params.agent].displayName} failed (${error.split("\n")[0]!.slice(0, 160)}); trying again in ${Math.round(wait / 1000)}s` });
+      if (!(await sleep(wait, this.signal))) break;
+    }
+    if (before) {
+      const undone = await restoreSnapshot(params.cwd.path, before).catch(() => [] as string[]);
+      if (undone.length) {
+        this.log(`${params.title} (${params.agent}) modified files in read-only mode; changes were reverted (${undone.join(", ")})`, "warn");
+      }
+    }
+    return result;
+  }
+
+  private agentUsage(agent: AgentId): AgentUsage {
+    const byAgent = (this.run.usage.byAgent ??= {});
+    return (byAgent[agent] ??= { steps: 0, failures: 0, writeSteps: 0, ms: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 });
+  }
+
+  private addTokens(step: Step, agent: AgentId, event: Extract<AgentEvent, { kind: "usage" }>) {
+    const add = (u: Partial<TokenUsage>) => {
+      u.inputTokens = (u.inputTokens ?? 0) + (event.inputTokens ?? 0);
+      u.outputTokens = (u.outputTokens ?? 0) + (event.outputTokens ?? 0);
+      u.cacheReadTokens = (u.cacheReadTokens ?? 0) + (event.cacheReadTokens ?? 0);
+      u.costUsd = (u.costUsd ?? 0) + (event.costUsd ?? 0);
+    };
+    step.usage ??= { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 };
+    add(step.usage);
+    add(this.run.usage);
+    add(this.agentUsage(agent));
+  }
+}
+
+/** Plan usage used up: hours until it resets. */
+const USAGE_LIMIT = /usage limit|limit reached|quota (?:exceeded|reached|exhausted)|exceeded (?:your|the) [\w -]{0,30}quota|RESOURCE_EXHAUSTED|out of credits|credit balance is too low/i;
+/** Worth another try in a minute. */
+const TRANSIENT =
+  /overloaded|too many requests|rate.?limit|\b(?:429|500|502|503|504|529)\b|temporar(?:il)?y unavailable|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|fetch failed|network error|connection (?:reset|closed|error)/i;
+
+/** Wait `ms`; false if `signal` aborted first. */
+function sleep(ms: number, signal: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve(false);
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** The repo's conventions and recurring review problems, as prompt sections. */
+function knowledgePrompt(run: Run): string {
+  const parts: string[] = [];
+  if (run.conventions) {
+    parts.push(`\n\n## Project conventions\nThe repository's own instructions for contributors (its AGENTS.md, CLAUDE.md and similar files). Follow them.\n\n${run.conventions}`);
+  }
+  if (run.lessons?.length) {
+    parts.push(
+      `\n\n## Problems reviewers keep finding in this repo\nEarlier code-flow runs here were sent back for these more than once. Don't repeat them:\n${run.lessons.map((l) => `- ${l}`).join("\n")}`,
+    );
+  }
+  return parts.join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -767,15 +1068,27 @@ export interface StartRunInput {
   routing?: string[];
   /** Set when an automation starts the run. */
   trigger?: Run["trigger"];
+  /** Part of a comparison: runs of the same task with different setups. */
+  group?: Run["group"];
+  /**
+   * The source is untrusted but you chose to run its checks on this machine anyway (without
+   * Docker). Agents are still locked down to Safe mode.
+   */
+  allowUntrusted?: boolean;
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
 }
 
+const QUOTA_FILE = join(CODEFLOW_HOME, "quota.json");
+
 export class RunManager {
   private readonly runs = new Map<string, Run>();
+  /** Event history of running runs (finished runs are read back from disk when needed). */
   private readonly history = new Map<string, RunEvent[]>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly active = new Map<string, Promise<void>>();
+  /** Runs between "resume requested" and "running": a second request must not start them twice. */
+  private readonly starting = new Set<string>();
   private readonly bus = new EventEmitter();
   private seq = 0;
   private shuttingDown = false;
@@ -788,8 +1101,24 @@ export class RunManager {
     return this.shuttingDown;
   }
 
+  /** Called whenever code-flow is about to start an agent or run a command (see server auth). */
+  noteActivity() {
+    this.bus.emit("activity");
+  }
+
+  onActivity(listener: () => void): () => void {
+    this.bus.on("activity", listener);
+    return () => this.bus.off("activity", listener);
+  }
+
+  /** How busy code-flow is: processes running and waiting across all runs. */
+  get busy() {
+    return { agents: { running: agentSlots.busy, waiting: agentSlots.queued, max: agentSlots.size }, checks: { running: checkSlots.busy, waiting: checkSlots.queued, max: checkSlots.size } };
+  }
+
   /** Rebuild runs from their event logs; runs that were mid-flight become "interrupted". */
   async load(): Promise<void> {
+    await this.loadQuota();
     for (const id of await listRunIds()) {
       if (this.runs.has(id)) continue;
       const events = await readJsonLines<RunEvent>(`${id}.jsonl`);
@@ -802,12 +1131,15 @@ export class RunManager {
         run.error = "code-flow stopped while this run was in progress. Resume to continue.";
         run.endedAt = run.endedAt ?? Date.now();
         run.seen = false;
+        // Nobody can answer a checkpoint now; resuming asks again.
+        run.awaiting = undefined;
         for (const step of run.steps) {
           if (step.status === "running") {
             step.status = "interrupted";
             this.emit(run, { type: "step", step: { ...step } });
           }
         }
+        requeueNotes(run);
         this.emitRun(run);
       }
     }
@@ -892,14 +1224,26 @@ export class RunManager {
   /** Send work back to an agent after the run (review comments, or resolving merge conflicts). */
   async followUp(
     id: string,
-    input: { kind?: FollowUp["kind"]; worktree: string; agent: AgentId; message?: string; mergeFrom?: string; from?: string; push?: string; watch?: string },
+    input: {
+      kind?: FollowUp["kind"];
+      worktree: string;
+      agent: AgentId;
+      message?: string;
+      mergeFrom?: string;
+      from?: string;
+      push?: string;
+      watch?: string;
+      trust?: Trust;
+    },
   ) {
     const run = this.require(id);
-    if (run.status !== "done") throw new Error("Follow-ups can be sent once the run has finished");
+    if (run.status !== "done" || this.starting.has(id)) throw new Error("Follow-ups can be sent once the run has finished");
     if (!run.worktrees.some((w) => w.name === input.worktree)) throw new Error(`Unknown worktree "${input.worktree}"`);
     const kind = input.kind ?? "comments";
     if (kind !== "resolve-conflicts" && !input.message?.trim()) throw new Error(kind === "reply" ? "Write a reply" : "Write at least one comment");
     if (kind === "resolve-conflicts" && !input.mergeFrom) throw new Error("Say which branch to merge");
+    if (kind === "resolve-conflicts" && !(await validRef(run.repo, input.mergeFrom!))) throw new Error(`"${input.mergeFrom}" isn't a branch in this repository`);
+    if (run.status !== "done" || this.starting.has(id)) throw new Error("Follow-ups can be sent once the run has finished");
     run.followUps.push({
       id: `f${run.followUps.length + 1}`,
       kind,
@@ -910,6 +1254,7 @@ export class RunManager {
       from: input.from,
       push: input.push,
       watch: input.watch,
+      trust: input.trust,
       status: "pending",
       at: Date.now(),
     });
@@ -982,18 +1327,25 @@ export class RunManager {
     return run.source.url;
   }
 
-  /** Keep an eye on a branch's open PR: fix failing CI and collaborators' comments, push, never merge. */
-  watchPr(id: string, input: { branch: string; agent: AgentId; maxFixes?: number }): PrWatch {
+  /**
+   * Keep an eye on a branch's open PR: fix failing CI and act on new comments from you (or the
+   * people in `allow`), push the fixes, never merge.
+   */
+  watchPr(id: string, input: { branch: string; agent: AgentId; maxFixes?: number; allow?: string[] }): PrWatch {
     const run = this.require(id);
     const url = run.prs[input.branch];
     if (!url) throw new Error("Open a pull request for this branch first");
     if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
+    const allow = [...new Set((input.allow ?? []).map((a) => a.trim().replace(/^@/, "")).filter(Boolean))];
+    const bad = allow.find((a) => !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(a));
+    if (bad) throw new Error(`"${bad}" isn't a GitHub username`);
     const fromSource = run.source?.kind === "pr" && run.source.url === url;
     const watch: PrWatch = {
       branch: input.branch,
       pr: url,
       remoteBranch: fromSource ? run.source!.headRefName! : input.branch,
       agent: input.agent,
+      allow: allow.length ? allow : undefined,
       maxFixes: Math.min(10, Math.max(1, Math.round(input.maxFixes ?? 3))),
       fixes: 0,
       state: "watching",
@@ -1005,7 +1357,7 @@ export class RunManager {
     this.emit(run, {
       type: "log",
       level: "info",
-      text: `Watching ${url}: failing CI and new comments from collaborators go to ${input.agent} (up to ${watch.maxFixes} fixes), and fixes are pushed. code-flow never merges.`,
+      text: `Watching ${url}: failing CI and new comments from you${allow.length ? ` and ${allow.map((a) => `@${a}`).join(", ")}` : ""} go to ${input.agent} (up to ${watch.maxFixes} fixes), and fixes are pushed. code-flow never merges.`,
     });
     this.emitRun(run);
     return watch;
@@ -1028,12 +1380,14 @@ export class RunManager {
     const watch = run.watches[branch];
     if (!watch) return;
     const wasNeedsYou = watch.state === "needs-you";
+    const before = JSON.stringify({ ...watch, lastPolled: 0 });
     Object.assign(watch, patch);
     if (watch.state === "needs-you" && !wasNeedsYou) {
       run.seen = false;
       this.emit(run, { type: "log", level: "warn", text: `PR watch needs you: ${watch.detail}` });
     }
-    this.emitRun(run);
+    // A poll that found nothing new isn't worth a run snapshot (one a minute per open PR).
+    if (JSON.stringify({ ...watch, lastPolled: 0 }) !== before) this.emitRun(run);
   }
 
   log(id: string, text: string, level: "info" | "warn" = "info") {
@@ -1048,6 +1402,31 @@ export class RunManager {
 
   recordQuota(agent: AgentId, status: string, windows: Record<string, { utilization?: number; resetsAt?: number }>) {
     this.quota[agent] = { status, windows, at: Date.now() };
+    this.saveQuota();
+  }
+
+  private quotaSave?: ReturnType<typeof setTimeout>;
+  /** Kept on disk so a restart doesn't forget a plan that's out of usage. */
+  private saveQuota() {
+    if (this.quotaSave) return;
+    this.quotaSave = setTimeout(() => {
+      this.quotaSave = undefined;
+      void mkdir(CODEFLOW_HOME, { recursive: true })
+        .then(() => writeFile(QUOTA_FILE, JSON.stringify(this.quota)))
+        .catch(() => undefined);
+    }, 1_000);
+    this.quotaSave.unref?.();
+  }
+
+  private async loadQuota() {
+    try {
+      const saved = JSON.parse(await readFile(QUOTA_FILE, "utf8"));
+      for (const [agent, q] of Object.entries(saved ?? {})) {
+        if (agent in adapters && q && typeof q === "object" && !(agent in this.quota)) this.quota[agent as AgentId] = q as never;
+      }
+    } catch {
+      // nothing saved yet
+    }
   }
 
   /** Resolves when the user answers the run's checkpoint; rejects if the run is stopped. */
@@ -1124,6 +1503,28 @@ export class RunManager {
     });
     const source = fromGitHub?.source;
     const reviewBase = source?.kind === "pr" ? await mergeBase(repo, `origin/${source.baseRefName}`, baseRef) : undefined;
+
+    // Text from outside the repo's maintainers can carry instructions aimed at the agents, and
+    // its code (a fork's PR) runs when the check does. Lock the run down: Safe mode, no .env
+    // files copied in, and checks in a container without network — or on this machine only if
+    // you said so.
+    let trust: Trust = input.trust ?? config.trust ?? "standard";
+    let lockdown: string | undefined;
+    if (source && source.trusted === false) {
+      const who = source.author ? `@${source.author}` : "someone the repository doesn't know";
+      const relation = source.isCrossRepository ? "from a fork" : `who isn't one of its maintainers (${(source.association ?? "unknown").toLowerCase()})`;
+      lockdown = `${source.kind === "issue" ? "Issue" : "Pull request"} #${source.number} comes from ${who}, ${relation}`;
+      trust = "safe";
+      loop.copy = undefined;
+      if (!loop.container && (loop.check || loop.setup)) {
+        if (await commandExists("docker")) loop.container = { image: config.image ?? "node:22", network: false };
+        else if (!input.allowUntrusted) throw new UntrustedSourceError(lockdown);
+      }
+    }
+    // An untrusted PR's branch can rewrite AGENTS.md too: read conventions from where it started.
+    const conventions = await readConventions(repo, lockdown && reviewBase ? reviewBase : baseRef).catch(() => "");
+    const learn = config.learn !== false;
+    const lessons = learn ? (await recurringLessons(repo).catch(() => [])).map((l) => `${l.problem}${l.file ? ` (${l.file})` : ""}`) : [];
     const id = newRunId();
     const branchPrefix = input.branchPrefix?.trim().replace(/^\/+|\/+$/g, "") || `codeflow/${id}`;
     await validateBranchPrefix(repo, branchPrefix);
@@ -1147,7 +1548,12 @@ export class RunManager {
       context,
       agentSettings: { ...(config.models ?? {}), ...(input.agentSettings ?? {}) },
       roleSettings: input.roleSettings ?? {},
-      trust: input.trust ?? config.trust ?? "standard",
+      trust,
+      lockdown,
+      conventions: conventions || undefined,
+      lessons: lessons.length ? lessons : undefined,
+      learn,
+      group: input.group,
       app: config.run,
       roles: input.roles,
       options: input.options,
@@ -1177,6 +1583,12 @@ export class RunManager {
     this.history.set(run.id, []);
     this.emitRun(run);
     for (const note of input.routing ?? []) this.emit(run, { type: "log", level: "info", text: note });
+    if (lockdown) {
+      const checks = loop.container ? "checks run in Docker without network" : loop.check || loop.setup ? "checks run on this machine because you allowed it" : "";
+      this.emit(run, { type: "log", level: "warn", text: `${lockdown}: agents run in Safe mode and files like .env aren't copied in${checks ? `; ${checks}` : ""}.` });
+    }
+    if (conventions) this.emit(run, { type: "log", level: "info", text: "Agents get the repository's conventions (AGENTS.md, CLAUDE.md…)" });
+    if (lessons.length) this.emit(run, { type: "log", level: "info", text: `Agents are told about ${lessons.length} problem(s) reviewers keep finding in this repo` });
     this.execute(run, input.pattern, new Map());
     return run;
   }
@@ -1189,13 +1601,28 @@ export class RunManager {
   async resume(id: string): Promise<Run> {
     const run = this.runs.get(id);
     if (!run) throw new Error("Run not found");
-    if (run.status === "running") throw new Error("This run is already running");
+    if (run.status === "running" || this.starting.has(id)) throw new Error("This run is already running");
     const pattern = this.findPattern(run.pattern);
     if (!pattern) throw new Error(`Unknown pattern "${run.pattern}"`);
     if (!existsSync(run.repo)) throw new Error(`Repository ${run.repo} no longer exists`);
 
+    // Claimed before the first await, so a double click (or a PR watch and you) can't start it twice.
+    this.starting.add(id);
+    try {
+      return await this.resumeClaimed(run, pattern);
+    } finally {
+      this.starting.delete(id);
+    }
+  }
+
+  private async resumeClaimed(run: Run, pattern: Pattern): Promise<Run> {
+    const id = run.id;
     if (!this.history.has(id)) this.history.set(id, await this.events(id));
     const journal = await loadJournal(id);
+    requeueNotes(run);
+    // The pattern already finished: only the follow-ups run. Replaying the whole pattern would
+    // redo any step whose code changed since (a code-flow update) for nothing.
+    const followUpsOnly = !!run.patternDone;
     run.status = "running";
     run.error = undefined;
     run.stopReason = undefined;
@@ -1207,25 +1634,33 @@ export class RunManager {
     run.resumes = (run.resumes ?? 0) + 1;
     run.artifacts = run.artifacts.filter((a) => !a.label.startsWith("Work so far"));
     this.emitRun(run);
-    this.emit(run, {
-      type: "log",
-      level: "info",
-      text: journal.size
-        ? `Resuming: replaying ${journal.size} recorded results, then continuing with a fresh budget`
-        : "Resuming from the start: no completed steps were recorded (existing worktrees are reused)",
-    });
-    this.execute(run, pattern, journal);
+    if (!followUpsOnly) {
+      this.emit(run, {
+        type: "log",
+        level: "info",
+        text: journal.size
+          ? `Resuming: replaying ${journal.size} recorded results, then continuing with a fresh budget`
+          : "Resuming from the start: no completed steps were recorded (existing worktrees are reused)",
+      });
+    }
+    this.execute(run, pattern, journal, followUpsOnly);
     return run;
   }
 
-  private execute(run: Run, pattern: Pattern, journal: Map<string, unknown>) {
+  private execute(run: Run, pattern: Pattern, journal: Map<string, unknown>, followUpsOnly = false) {
     const controller = new AbortController();
     this.controllers.set(run.id, controller);
-    const ctx = new TeamContext(run, controller, this, journal);
+    const ctx = new TeamContext(run, controller, this, journal, followUpsOnly);
     ctx.startClock(run.loop.maxMinutes);
 
-    const done = pattern
-      .run(ctx)
+    const patternDone = followUpsOnly
+      ? Promise.resolve(run.patternSummary ?? withoutFollowUps(run.summary ?? ""))
+      : pattern.run(ctx).then((summary) => {
+          run.patternDone = true;
+          run.patternSummary = summary;
+          return summary;
+        });
+    const done = patternDone
       .then(async (summary) => {
         run.summary = summary;
         await runFollowUps(ctx, run);
@@ -1256,6 +1691,8 @@ export class RunManager {
         this.controllers.delete(run.id);
         this.active.delete(run.id);
         this.emitRun(run);
+        // Finished runs don't keep their event history in memory; it's read back from disk.
+        this.history.delete(run.id);
       });
     this.active.set(run.id, done);
   }
@@ -1347,87 +1784,25 @@ export class RunManager {
 async function runFollowUps(ctx: TeamContext, run: Run) {
   for (const f of run.followUps) {
     if (f.status !== "pending") continue;
-    const wt = await ctx.worktree(f.worktree);
-    if (f.kind === "resolve-conflicts" && f.mergeFrom) {
-      // code-flow starts the merge; the agent only resolves the conflict markers.
-      await ctx.remember("merge-start", `${f.id}|${f.mergeFrom}`, () => mergeBranch(wt, f.mergeFrom!));
-    }
-    // Continue the agent's own session in this worktree when it has one.
-    const previous = [...run.steps].reverse().find((s) => s.kind === "agent" && s.agent === f.agent && s.worktree === f.worktree && s.sessionId);
-    const outcome = await ctx.ask({
-      title:
-        f.kind === "resolve-conflicts"
-          ? `Resolve conflicts with ${f.mergeFrom}`
-          : f.kind === "reply"
-            ? "Your reply"
-            : f.kind === "ci-fix"
-              ? "Fix failing CI"
-              : f.from
-                ? "Address PR comments"
-                : "Address review comments",
-      role: "follow-up",
-      agent: f.agent,
-      mode: "write",
-      cwd: wt,
-      allowFailure: true,
-      resume: previous ? { ok: true, finalText: previous.finalText ?? "", sessionId: previous.sessionId, stepId: previous.id, agent: f.agent } : undefined,
-      prompt:
-        (previous ? "" : `You are working in a git worktree for this task:\n${ctx.task}\n\n`) +
-        (f.kind === "resolve-conflicts"
-          ? `code-flow merged \`${f.mergeFrom}\` into this branch and it has conflicts. Resolve every conflict so both sides' intent is kept, ` +
-            "remove all conflict markers, make sure it builds, and summarize. Don't run git merge --abort or commit."
-          : f.kind === "reply"
-            ? `The user replied to your work:\n\n${f.message}\n\nDo what they ask (or answer their question), run the relevant tests if you change code, and summarize. Don't commit; code-flow does.`
-            : f.kind === "ci-fix"
-              ? `CI fails on the pull request for this branch.\n\n${f.message}\n\nFind and fix the cause in the code — don't disable, skip or weaken tests or CI steps. ` +
-                "Run what you can locally to confirm, then summarize. Don't commit or push; code-flow does."
-              : `${f.from ? `${f.from} left these comments` : "The user reviewed your changes and left these comments"}:\n\n${f.message}\n\n` +
-                "Address each one, run the relevant tests, and summarize what you changed. Don't commit; code-flow does."),
-    });
-    const sha = await ctx.commit(
-      wt,
-      f.kind === "resolve-conflicts"
-        ? `Merge ${f.mergeFrom} (conflicts resolved by ${f.agent})`
-        : f.kind === "reply"
-          ? `${f.agent}: follow-up to your reply (${f.id})`
-          : f.kind === "ci-fix"
-            ? `${f.agent}: fix failing CI (${f.id})`
-            : `${f.agent}: address review comments (${f.id})`,
-    );
-    const check = await ctx.check(wt, `Check after follow-up ${f.id}`);
-    f.status = outcome.ok ? "done" : "failed";
-    f.result = outcome.ok ? outcome.finalText : outcome.error;
-    f.checkPassed = check ? check.ok : undefined;
-    if (f.push && outcome.ok && sha) {
-      try {
-        f.pushed = await ctx.remember("push", `${f.id}|${f.push}`, () => pushBranch(run.repo, wt.branch, f.push!));
-        ctx.log(`Pushed ${f.pushed.slice(0, 8)} to ${f.push}`);
-      } catch (err) {
-        f.pushError = (err as Error).message;
-        ctx.log(`Couldn't push: ${f.pushError}`, "warn");
+    try {
+      await runFollowUp(ctx, run, f);
+    } catch (err) {
+      // One follow-up going wrong (its worktree is gone, git failed) doesn't undo a finished run;
+      // stopping or cancelling still ends it.
+      if (ctx.signal.aborted || err instanceof CancelledError) throw err;
+      f.status = "failed";
+      f.result = (err as Error).message;
+      ctx.log(`Follow-up ${f.id} couldn't run: ${f.result}`, "warn");
+      const watch = f.watch ? run.watches[f.watch] : undefined;
+      if (watch?.state === "fixing") {
+        Object.assign(watch, { state: "needs-you", detail: `The fix couldn't run: ${f.result}` });
+        run.seen = false;
       }
+      ctx.publish();
     }
-    const watch = f.watch ? run.watches[f.watch] : undefined;
-    if (watch?.state === "fixing") {
-      const ok = outcome.ok && sha && f.pushed;
-      Object.assign(watch, {
-        state: ok ? "watching" : "needs-you",
-        detail: ok
-          ? `Pushed a fix (${sha!.slice(0, 8)}); waiting for CI`
-          : !outcome.ok
-            ? `${f.agent} couldn't finish the fix`
-            : !sha
-              ? `${f.agent} didn't change anything`
-              : `Couldn't push: ${f.pushError}`,
-      });
-      if (!ok) run.seen = false;
-    }
-    const artifact = run.artifacts.find((a) => a.branch === wt.branch);
-    if (artifact) await ctx.artifact(artifact.label, wt);
-    ctx.publish();
   }
   // The latest follow-up's check is the current truth about the result, and the summary
-  // (rebuilt by the pattern on every replay) should say what happened after the run.
+  // should say what happened after the run.
   const lastChecked = [...run.followUps].reverse().find((f) => f.status === "done" && f.checkPassed !== undefined);
   if (lastChecked) ctx.setVerdict(lastChecked.checkPassed ? "passed" : "failing");
   const finished = run.followUps.filter((f) => f.status !== "pending");
@@ -1444,12 +1819,107 @@ async function runFollowUps(ctx: TeamContext, run: Run) {
                 : f.from
                   ? `addressed comments from ${f.from}`
                   : "addressed your review comments";
-        const pushed = f.pushed ? `, pushed to ${f.push}` : f.pushError ? " (push failed)" : "";
+        const pushed = f.pushed ? `, pushed to ${f.push}` : f.pushError ? ` (not pushed: ${f.pushError})` : "";
         const check = f.checkPassed === undefined ? "" : f.checkPassed ? " — check passes" : " — check still fails";
-        return `- ${f.agent} ${f.status === "done" ? what : "couldn't finish"} in ${f.worktree}${pushed}${check}`;
+        const tests = f.integrity?.length ? ` — ⚠ changed tests (${f.integrity.map((i) => i.detail).join("; ")})` : "";
+        return `- ${f.agent} ${f.status === "done" ? what : "couldn't finish"} in ${f.worktree}${pushed}${check}${tests}`;
       })
       .join("\n")}`;
   }
+}
+
+async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
+  const wt = await ctx.worktree(f.worktree);
+  const before = await ctx.remember("head", `before ${f.id}`, () => resolveCommit(wt.path));
+  if (f.kind === "resolve-conflicts" && f.mergeFrom) {
+    // code-flow starts the merge; the agent only resolves the conflict markers.
+    await ctx.remember("merge-start", `${f.id}|${f.mergeFrom}`, () => mergeBranch(wt, f.mergeFrom!));
+  }
+  // Continue the agent's own session in this worktree when it has one.
+  const previous = [...run.steps].reverse().find((s) => s.kind === "agent" && s.agent === f.agent && s.worktree === f.worktree && s.sessionId);
+  const outcome = await ctx.ask({
+    title:
+      f.kind === "resolve-conflicts"
+        ? `Resolve conflicts with ${f.mergeFrom}`
+        : f.kind === "reply"
+          ? "Your reply"
+          : f.kind === "ci-fix"
+            ? "Fix failing CI"
+            : f.from
+              ? "Address PR comments"
+              : "Address review comments",
+    // Titles repeat (a second reply); the follow-up's id keeps each one its own step on resume.
+    identity: `follow-up ${f.id}`,
+    role: "follow-up",
+    agent: f.agent,
+    mode: "write",
+    cwd: wt,
+    allowFailure: true,
+    trust: f.trust,
+    resume: previous ? { ok: true, finalText: previous.finalText ?? "", sessionId: previous.sessionId, stepId: previous.id, agent: f.agent } : undefined,
+    prompt:
+      (previous ? "" : `You are working in a git worktree for this task:\n${ctx.task}\n\n`) +
+      (f.kind === "resolve-conflicts"
+        ? `code-flow merged \`${f.mergeFrom}\` into this branch and it has conflicts. Resolve every conflict so both sides' intent is kept, ` +
+          "remove all conflict markers, make sure it builds, and summarize. Don't run git merge --abort or commit."
+        : f.kind === "reply"
+          ? `The user replied to your work:\n\n${f.message}\n\nDo what they ask (or answer their question), run the relevant tests if you change code, and summarize. Don't commit; code-flow does.`
+          : f.kind === "ci-fix"
+            ? `CI fails on the pull request for this branch.\n\n${f.message}\n\nFind and fix the cause in the code — don't disable, skip or weaken tests or CI steps. ` +
+              "Run what you can locally to confirm, then summarize. Don't commit or push; code-flow does."
+            : `${f.from ? `${f.from} left these comments` : "The user reviewed your changes and left these comments"}:\n\n${f.message}\n\n` +
+              "Address each one, run the relevant tests, and summarize what you changed. Don't commit; code-flow does."),
+  });
+  const sha = await ctx.commit(
+    wt,
+    f.kind === "resolve-conflicts"
+      ? `Merge ${f.mergeFrom} (conflicts resolved by ${f.agent})`
+      : f.kind === "reply"
+        ? `${f.agent}: follow-up to your reply (${f.id})`
+        : f.kind === "ci-fix"
+          ? `${f.agent}: fix failing CI (${f.id})`
+          : `${f.agent}: address review comments (${f.id})`,
+  );
+  // A merge brings in someone else's test changes; anything else is this agent's.
+  const issues = sha && f.kind !== "resolve-conflicts" ? await ctx.testChanges(wt, before) : [];
+  f.integrity = issues.length ? issues : undefined;
+  if (issues.length) ctx.log(`Follow-up ${f.id} (${f.agent}) changed tests:\n${describeIssues(issues)}`, "warn");
+  const check = await ctx.check(wt, `Check after follow-up ${f.id}`);
+  f.status = outcome.ok ? "done" : "failed";
+  f.result = outcome.ok ? outcome.finalText : outcome.error;
+  f.checkPassed = check ? check.ok : undefined;
+  // Nobody reviews an unattended fix before it's pushed, so one that weakens tests isn't pushed.
+  const blocked = !!f.watch && issues.some((i) => i.severity === "high");
+  if (blocked) f.pushError = "it changes tests in ways that could hide the failure";
+  if (f.push && outcome.ok && sha && !blocked) {
+    try {
+      f.pushed = await ctx.remember("push", `${f.id}|${f.push}`, () => pushBranch(run.repo, wt.branch, f.push!));
+      ctx.log(`Pushed ${f.pushed.slice(0, 8)} to ${f.push}`);
+    } catch (err) {
+      f.pushError = (err as Error).message;
+      ctx.log(`Couldn't push: ${f.pushError}`, "warn");
+    }
+  }
+  const watch = f.watch ? run.watches[f.watch] : undefined;
+  if (watch?.state === "fixing") {
+    const ok = outcome.ok && sha && f.pushed;
+    Object.assign(watch, {
+      state: ok ? "watching" : "needs-you",
+      detail: ok
+        ? `Pushed a fix (${sha!.slice(0, 8)}); waiting for CI`
+        : !outcome.ok
+          ? `${f.agent} couldn't finish the fix`
+          : !sha
+            ? `${f.agent} didn't change anything`
+            : blocked
+              ? `${f.agent}'s fix changes tests (${issues.map((i) => i.detail).join("; ")}); not pushed — review it`
+              : `Couldn't push: ${f.pushError}`,
+    });
+    if (!ok) run.seen = false;
+  }
+  const artifact = run.artifacts.find((a) => a.branch === wt.branch);
+  if (artifact) await ctx.artifact(artifact.label, wt);
+  ctx.publish();
 }
 
 /** When a run doesn't finish, list each worktree that holds work so you can still use it. */
@@ -1482,6 +1952,9 @@ function rebuildRun(events: RunEvent[]): Run | undefined {
     agentSettings: legacy.agentSettings ?? {},
     loop: { ...DEFAULT_LOOP, ...(legacy.loop ?? {}) },
     usage: legacy.usage ?? { agentSteps: 0, checks: 0 },
+    // Runs saved before patternDone existed: a finished run's pattern finished.
+    patternDone: legacy.patternDone ?? (legacy.status === "done" ? true : undefined),
+    patternSummary: legacy.patternSummary ?? (legacy.status === "done" && legacy.summary ? withoutFollowUps(legacy.summary) : undefined),
     worktrees: legacy.worktrees ?? [],
     baseLabel: legacy.baseLabel ?? "HEAD",
     branchPrefix: legacy.branchPrefix ?? `codeflow/${legacy.id}`,
@@ -1503,14 +1976,35 @@ function rebuildRun(events: RunEvent[]): Run | undefined {
 
 function strip(run: Run): RunSummary {
   const { steps: _steps, ...rest } = run;
-  return {
-    ...rest,
-    artifacts: [...rest.artifacts],
-    worktrees: [...rest.worktrees],
-    followUps: rest.followUps.map((f) => ({ ...f })),
-    watches: Object.fromEntries(Object.entries(rest.watches).map(([k, w]) => [k, { ...w }])),
-    review: rest.review ? { ...rest.review } : undefined,
-  };
+  // A copy: the snapshot in the event history must not change as the run goes on.
+  return structuredClone(rest);
+}
+
+/** The summary as the pattern wrote it, without the follow-ups section added after it. */
+function withoutFollowUps(summary: string): string {
+  return summary.split("\n\n## Follow-ups\n")[0]!;
+}
+
+/** Notes handed to a turn that never finished (interrupted, cancelled) go to the next one instead. */
+function requeueNotes(run: Run) {
+  const unfinished = new Set(run.steps.filter((s) => s.status === "interrupted" || s.status === "cancelled" || s.status === "running").map((s) => s.id));
+  for (const note of run.notes) {
+    if (note.status === "delivered" && note.deliveredTo && unfinished.has(note.deliveredTo.stepId)) {
+      note.status = "queued";
+      note.deliveredTo = undefined;
+    }
+  }
+}
+
+/** The source of a run is untrusted and Docker isn't available to run its checks safely. */
+export class UntrustedSourceError extends Error {
+  readonly code = "untrusted-source";
+  constructor(readonly lockdown: string) {
+    super(
+      `${lockdown}. Its tests would run that person's code on this machine. Install Docker so code-flow can run checks in a container, ` +
+        "or confirm that you want to run them here anyway (agents are still limited to Safe mode).",
+    );
+  }
 }
 
 async function currentBranch(repo: string): Promise<string> {

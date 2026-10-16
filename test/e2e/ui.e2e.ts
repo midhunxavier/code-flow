@@ -5,13 +5,22 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "playwright-core";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const PORT = 4300 + Math.floor(Math.random() * 90);
+// A port the OS says is free — never one a real code-flow (4317) or dev server might be on.
+const PORT = await new Promise<number>((resolve) => {
+  const probe = createServer().listen(0, "127.0.0.1", () => {
+    const { port } = probe.address() as AddressInfo;
+    probe.close(() => resolve(port));
+  });
+});
 const BASE = `http://localhost:${PORT}`;
+const TOKEN = "e2e-session-token";
+const bearer = { authorization: `Bearer ${TOKEN}` };
 let server: ChildProcess;
 let browser: Browser;
 let page: Page;
@@ -57,11 +66,13 @@ before(async () => {
       CODEFLOW_HOME: mkdtempSync(join(tmpdir(), "codeflow-e2e-home-")),
       PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`,
       FAKE_GH_STATE: ghState,
+      CODEFLOW_TOKEN: TOKEN,
     },
     stdio: process.env.E2E_DEBUG ? "inherit" : "ignore",
   });
   for (let i = 0; i < 100; i++) {
-    if (await fetch(`${BASE}/api/agents`).then((r) => r.ok, () => false)) break;
+    // /api/health with this test's token only answers from the server this test started.
+    if (await fetch(`${BASE}/api/health`, { headers: bearer }).then((r) => r.ok, () => false)) break;
     await new Promise((r) => setTimeout(r, 200));
   }
   browser = await chromium.launch({ channel: "chrome", headless: true });
@@ -154,7 +165,7 @@ test("start from a PR with a template: the council's findings are ranked, and po
 
 test("automations: a webhook starts a run, it waits in the inbox, you approve it; the phone view is opt-in", async () => {
   const api = (path: string, body?: unknown) =>
-    fetch(`${BASE}${path}`, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+    fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
   const automation = await api("/api/automations", {
     name: "E2E hook",
     webhook: true,
@@ -184,4 +195,29 @@ test("automations: a webhook starts a run, it waits in the inbox, you approve it
   assert.match(html, /E2E: automated chore/);
   assert.doesNotMatch(html, /<button|<form/);
   assert.equal((await fetch(`${BASE}/r/not-the-token`)).status, 404);
+});
+
+test("sign-in: the first browser claims code-flow; once agents have run, others need the link", async () => {
+  // Agents have run by now (earlier tests), so nothing new can claim the session.
+  assert.equal((await fetch(`${BASE}/api/runs`)).status, 401, "the API needs the browser's session");
+  assert.equal((await fetch(`${BASE}/api/runs`, { headers: { cookie: "codeflow_session=guess" } })).status, 401);
+  const stranger = await browser.newContext();
+  const other = await stranger.newPage();
+  await other.goto(BASE);
+  await other.getByText("Open code-flow from its link").waitFor();
+  await other.goto(`${BASE}/?token=${TOKEN}`);
+  await other.waitForURL(`${BASE}/`);
+  await other.getByRole("button", { name: /New run/ }).waitFor();
+  await stranger.close();
+});
+
+test("insights and run search", async () => {
+  await page.goto(`${BASE}/#/insights`);
+  await page.getByRole("heading", { name: "Insights" }).waitFor();
+  await page.getByRole("heading", { name: "Agents" }).waitFor();
+  assert.ok(await page.getByRole("table").first().isVisible());
+  await page.keyboard.press("/");
+  await page.keyboard.type("automated chore");
+  await page.getByText(/1 of \d+ runs/).waitFor();
+  assert.equal(await page.locator(".rail .run-item").count(), 1);
 });

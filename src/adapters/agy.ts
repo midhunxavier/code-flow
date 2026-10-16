@@ -145,6 +145,7 @@ export const agyAdapter: AgentAdapter = {
               kind: "usage",
               inputTokens: result.usage?.input_tokens,
               outputTokens: result.usage?.output_tokens,
+              cacheReadTokens: result.usage?.cached_input_tokens ?? result.usage?.cache_read_input_tokens,
             });
             break;
           }

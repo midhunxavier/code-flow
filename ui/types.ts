@@ -34,3 +34,5 @@ export interface ContextItem {
   path: string;
   type: "file" | "dir";
 }
+export type { Stats, AgentStats, PatternStats, GroupRun } from "../src/stats.js";
+export type { IntegrityIssue } from "../src/integrity.js";

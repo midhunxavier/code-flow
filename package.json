@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node scripts/build-ui.mjs",
     "start": "node scripts/build-ui.mjs && tsx src/server.ts",
-    "dev": "PORT=4318 CODEFLOW_HOME=.codeflow-dev PATH=\"$PWD/test/fake-bin:$PATH\" node scripts/dev.mjs",
+    "dev": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs --fake-agents",
     "dev:real": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",

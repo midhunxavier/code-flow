@@ -44,7 +44,8 @@ export type AgentEvent =
   | { kind: "thinking"; text: string }
   | { kind: "tool_call"; callId: string; name: string; input: string }
   | { kind: "tool_result"; callId: string; output: string; isError: boolean }
-  | { kind: "usage"; inputTokens?: number; outputTokens?: number; costUsd?: number }
+  /** Tokens a turn used; cached input is counted separately (it's much cheaper). costUsd: Claude's API-equivalent figure. */
+  | { kind: "usage"; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; costUsd?: number }
   | { kind: "status"; text: string }
   | { kind: "error"; message: string }
   /** Plan usage reported by the CLI (Claude reports its 5-hour and 7-day windows). */

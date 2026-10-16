@@ -27,7 +27,17 @@ const prOf = (ref) => {
 const headOf = (pr) => execFileSync("git", ["ls-remote", "origin", `refs/heads/${pr.headRefName}`]).toString().split(/\s/)[0];
 
 const [group, command, target] = args;
-if (group === "issue" && command === "list") print(state.issues);
+if (group === "api" && command === "user") print({ login: process.env.FAKE_GH_USER ?? "me" });
+else if (group === "api" && /^repos\/\{owner\}\/\{repo\}\/issues\/\d+$/.test(command)) {
+  // Issues and PRs share GitHub's issues endpoint, which says who wrote them.
+  const number = Number(command.split("/").pop());
+  const item = state.issues.find((i) => i.number === number) ?? state.prs[number];
+  if (!item) {
+    process.stderr.write("HTTP 404: Not Found\n");
+    process.exit(1);
+  }
+  print({ number, user: { login: item.author?.login ?? "me" }, author_association: item.authorAssociation ?? "OWNER" });
+} else if (group === "issue" && command === "list") print(state.issues);
 else if (group === "issue" && command === "view") {
   const issue = state.issues.find((i) => i.number === Number(target));
   if (!issue) process.exit(1);

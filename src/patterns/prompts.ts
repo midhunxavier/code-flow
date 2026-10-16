@@ -1,5 +1,5 @@
 import { adapters, type AgentId } from "../adapters/index.js";
-import type { CheckResult } from "../checks.js";
+import { failureExcerpt, type CheckResult } from "../checks.js";
 import { RejectedError, type StepOutcome, type TeamContext } from "../engine.js";
 import type { Worktree } from "../git.js";
 
@@ -61,7 +61,7 @@ export async function planCheckpoint(
 /** What code-flow's own run of the check showed — the evidence agents should act on. */
 export function checkSection(result: CheckResult, maxOutput = 6_000): string {
   const status = result.ok ? "passed" : result.timedOut ? "timed out" : `failed (exit code ${result.exitCode})`;
-  const body = result.ok ? "All checks pass." : fence(result.output.slice(-maxOutput).trim() || "(no output)");
+  const body = result.ok ? "All checks pass." : fence(failureExcerpt(result.output, maxOutput) || "(no output)");
   return section(`Check \`${result.command}\` ${status} (run by code-flow)`, body);
 }
 

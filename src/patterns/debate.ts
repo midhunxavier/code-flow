@@ -1,12 +1,20 @@
 import { adapters } from "../adapters/index.js";
 import type { Pattern, StepOutcome } from "../engine.js";
-import { fixUntilGreen, planCheckpoint, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { describeIssues } from "../integrity.js";
+import { REVIEW_SCHEMA } from "./schemas.js";
+import { checkSection, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+
+interface ReviewVerdict {
+  verdict: "approve" | "changes_requested";
+  issues: { severity: string; file: string; problem: string; fix: string }[];
+}
 
 /**
  * Debate → Synthesize → Build.
  * Debaters propose designs independently, then read each other's proposals and revise
- * (critique rounds). A synthesizer merges the final positions into one plan, and an
- * optional builder implements it.
+ * (critique rounds). A synthesizer merges the final positions into one plan, an optional
+ * builder implements it, and an optional reviewer checks the build against the plan (one round
+ * of fixes).
  */
 export const debatePattern: Pattern = {
   id: "debate",
@@ -29,6 +37,13 @@ export const debatePattern: Pattern = {
       description: "Implements the final plan (leave empty for design only)",
       optional: true,
       default: ["codex"],
+    },
+    {
+      id: "reviewer",
+      label: "Reviewer",
+      description: "Reviews the build against the agreed plan (optional)",
+      optional: true,
+      default: ["claude"],
     },
   ],
   options: [{ id: "rounds", label: "Critique rounds", type: "number", default: 1, min: 0, max: 3 }],
@@ -126,12 +141,59 @@ export const debatePattern: Pattern = {
         section("Deliverable", "Implement the plan, run the relevant tests, then summarize the changes."),
     });
     await ctx.commit(buildWt, `${builder}: implement synthesized plan`);
-    const { check } = await fixUntilGreen(ctx, { agent: builder, role: "builder", wt: buildWt, session: build, attempts: 2 });
+    let fixed = await fixUntilGreen(ctx, { agent: builder, role: "builder", wt: buildWt, session: build, attempts: 2 });
+    let check = fixed.check;
+
+    // The debate settled the design, not the code: a reviewer checks the build against the plan.
+    const [reviewer] = ctx.agents("reviewer");
+    let verdict: ReviewVerdict | undefined;
+    if (reviewer && (!check || check.ok)) {
+      const testChanges = await ctx.testChanges(buildWt);
+      verdict = (
+        await ctx.decide<ReviewVerdict>({
+          title: "Review the build",
+          schema: REVIEW_SCHEMA,
+          what: "review verdict",
+          role: "reviewer",
+          agent: reviewer,
+          mode: "read",
+          cwd: buildWt,
+          prompt:
+            preamble("reviewer", reviewer, `${READ_ONLY} You did not write this code; review it critically.`) +
+            section("Task", ctx.task) +
+            section("Agreed plan", plan.finalText) +
+            section("Diff against base", fence(await ctx.diff(buildWt), "diff")) +
+            (check ? checkSection(check) : "") +
+            (testChanges.length ? section("Changes to tests (found by code-flow)", `Request changes unless the task requires them:\n${describeIssues(testChanges)}`) : "") +
+            section("Deliverable", "Check that the build does what the plan and task say, and look for bugs, missed edge cases and missing tests. Only request changes for real problems.") +
+            jsonInstruction('{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}'),
+        })
+      ).value;
+      ctx.log(`Review: ${verdict.verdict} (${verdict.issues.length} issues)`);
+      if (verdict.verdict === "changes_requested" && verdict.issues.length) {
+        ctx.learn(verdict.issues);
+        const session = await ctx.ask({
+          title: "Address review",
+          role: "builder",
+          agent: builder,
+          mode: "write",
+          cwd: buildWt,
+          resume: fixed.session ?? build,
+          prompt: `The ${reviewer} reviewer requested changes. Address each issue, re-run tests, and summarize the fixes.\n${fence(JSON.stringify(verdict.issues, null, 2), "json")}`,
+        });
+        await ctx.commit(buildWt, `${builder}: address review`);
+        fixed = await fixUntilGreen(ctx, { agent: builder, role: "builder", wt: buildWt, session, attempts: 2 });
+        check = fixed.check;
+      }
+    }
+
     await ctx.artifact("Result", buildWt);
     if (check) ctx.setVerdict(check.ok ? "passed" : "failing");
+    if (verdict) ctx.setFacts({ approved: verdict.verdict === "approve", reviewRounds: 1 });
 
     return [
       `**Built**${check ? (check.ok ? `, and \`${check.command}\` passes` : `, but \`${check.command}\` still fails`) : ""} on branch \`${buildWt.branch}\``,
+      verdict ? `Review by ${reviewer}: ${verdict.verdict === "approve" ? "approved" : `${verdict.issues.length} issue(s) sent back to the builder`}.` : "",
       section("Synthesized plan", plan.finalText),
       section("Builder summary", build.finalText),
     ].join("\n");

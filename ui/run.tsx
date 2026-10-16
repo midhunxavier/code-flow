@@ -1,8 +1,9 @@
+import { Component } from "preact";
 import { useEffect, useReducer, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { AgentTag, Markdown } from "./bits.js";
 import { TriageActions } from "./automations.js";
-import { api, baseName, copy, duration, fmtSize, post, showToast, STATUS_TEXT } from "./lib.js";
+import { api, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, post, showToast, STATUS_TEXT } from "./lib.js";
 import {
   agents,
   attachments,
@@ -23,7 +24,7 @@ import {
   source,
   upsertRun,
 } from "./state.js";
-import type { AgentEvent, AgentId, Artifact, FollowUp, MergeOutcome, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
+import type { AgentEvent, AgentId, Artifact, FollowUp, IntegrityIssue, MergeOutcome, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
 const modelNote = (run: RunSummary | null, id?: AgentId) =>
@@ -32,13 +33,15 @@ const modelNote = (run: RunSummary | null, id?: AgentId) =>
 interface RunData {
   steps: Map<string, Step>;
   events: Map<string, AgentEvent[]>;
+  /** Transcript items per step, built incrementally as events arrive (see itemsFor). */
+  built: Map<string, Built>;
   logs: { ts: number; level: string; text: string }[];
   seen: Set<number>;
 }
 
 export function RunView({ id }: { id: string }) {
   const [run, setRun] = useState<RunSummary | null>(null);
-  const data = useRef<RunData>({ steps: new Map(), events: new Map(), logs: [], seen: new Set() });
+  const data = useRef<RunData>({ steps: new Map(), events: new Map(), built: new Map(), logs: [], seen: new Set() });
   const [, bump] = useReducer((x: number) => x + 1, 0);
   const [selected, setSelected] = useState<string | null>(null);
   const follow = useRef(true);
@@ -64,13 +67,17 @@ export function RunView({ id }: { id: string }) {
       } else if (ev.type === "log") {
         d.logs.push(ev);
       }
-      // Batch bursts of events into one render per frame.
+      // Batch bursts of events into one render per frame. Browsers pause animation frames in
+      // background tabs and hidden panes, so a timer renders there too (throttled, but it renders).
       if (!scheduled) {
         scheduled = true;
-        requestAnimationFrame(() => {
+        const flush = () => {
+          if (!scheduled) return;
           scheduled = false;
           bump(0);
-        });
+        };
+        requestAnimationFrame(flush);
+        setTimeout(flush, 250);
       }
     };
     return () => source.close();
@@ -80,9 +87,34 @@ export function RunView({ id }: { id: string }) {
     if (run && run.status !== "running" && !run.seen && !document.hidden) void markSeen(run.id);
   }, [run?.status, run?.seen]);
 
+  // [ and ] step through the timeline.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.key !== "[" && e.key !== "]") || e.metaKey || e.ctrlKey || e.altKey) return;
+      if ((e.target as HTMLElement | null)?.closest("input, textarea, select, dialog")) return;
+      const ids = [...data.current.steps.keys()];
+      if (!ids.length) return;
+      e.preventDefault();
+      follow.current = false;
+      setSelected((cur) => {
+        const at = ids.indexOf(cur ?? ids.at(-1)!);
+        return ids[Math.min(ids.length - 1, Math.max(0, (at < 0 ? ids.length - 1 : at) + (e.key === "]" ? 1 : -1)))]!;
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => {
+    document.querySelector(".tl-step.selected")?.scrollIntoView({ block: "nearest" });
+  }, [selected]);
+
   if (!run) return <div class="runview"><div class="run-head">Loading…</div></div>;
   const steps = [...data.current.steps.values()];
   const current = selected && data.current.steps.has(selected) ? selected : steps.at(-1)?.id ?? null;
+  const selectStep = (stepId: string) => {
+    follow.current = false;
+    setSelected(stepId);
+  };
   const finished = run.status !== "running";
   const p = patterns.value.find((x) => x.id === run.pattern);
   const state = runState(run);
@@ -141,6 +173,12 @@ export function RunView({ id }: { id: string }) {
         ) : null}
         <RunChips run={run} />
         <RunMeta run={run} />
+        {run.lockdown ? (
+          <div class="lockdown" role="note">
+            🔒 <b>Locked down.</b> {run.lockdown}, so agents run in Safe mode, files like .env aren't copied in, and checks{" "}
+            {run.loop.container ? "run in Docker without network" : "run on this machine because you allowed it"}.
+          </div>
+        ) : null}
       </div>
 
       {run.awaiting ? <AwaitingCard run={run} /> : null}
@@ -156,27 +194,31 @@ export function RunView({ id }: { id: string }) {
           </div>
         </div>
       ) : null}
-      {finished ? <ResultCard run={run} steps={steps} /> : null}
+      {finished ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
 
       <div class="run-body">
-        <div class="timeline">
+        <div class="timeline" role="list" aria-label="Steps ([ and ] to move)">
           {steps.length ? (
             steps.map((s) => (
               <button
                 key={s.id}
                 type="button"
+                role="listitem"
                 class={`tl-step ${s.id === current ? "selected" : ""}`}
-                onClick={() => {
-                  follow.current = false;
-                  setSelected(s.id);
-                }}
+                aria-current={s.id === current ? "step" : undefined}
+                aria-label={`${s.title}: ${STATUS_TEXT[s.status] ?? s.status}`}
+                onClick={() => selectStep(s.id)}
               >
-                <span class={`ic ${s.status}`}>{STEP_ICON[s.status] ?? ""}</span>
+                <span class={`ic ${s.status}`} aria-hidden="true">
+                  {STEP_ICON[s.status] ?? ""}
+                </span>
                 <span class="tt">{s.title}</span>
                 <span class="tm">
                   <StepTag step={s} />
                   <span>{s.kind === "agent" ? s.role : s.finalText || "running…"}</span>
                   {s.endedAt ? <span>{duration(s.endedAt - s.startedAt)}</span> : null}
+                  {s.usage ? <span title={usageTitle(s.usage)}>{fmtTokens(s.usage.inputTokens + s.usage.outputTokens)} tok</span> : null}
+                  {s.retries ? <span title="Retried after a passing failure (overloaded, network)">↻{s.retries}</span> : null}
                 </span>
               </button>
             ))
@@ -184,20 +226,12 @@ export function RunView({ id }: { id: string }) {
             <div class="tl-empty">Starting…</div>
           )}
         </div>
-        <Transcript run={run} step={current ? data.current.steps.get(current) : undefined} events={current ? data.current.events.get(current) ?? [] : []} />
+        {/* The data is mutated in place; `version` changes as events arrive so the transcript re-renders. */}
+        <Transcript run={run} step={current ? data.current.steps.get(current) : undefined} data={data.current} version={current ? data.current.events.get(current)?.length ?? 0 : 0} />
       </div>
 
       <ConversationBar run={run} steps={steps} />
-      <details class="activity">
-        <summary>Activity log ({data.current.logs.length})</summary>
-        <div class="log">
-          {data.current.logs.map((l, i) => (
-            <div key={i} class={l.level}>
-              {new Date(l.ts).toLocaleTimeString()} {l.text}
-            </div>
-          ))}
-        </div>
-      </details>
+      <ActivityLog logs={data.current.logs} count={data.current.logs.length} />
       {archiving ? <ArchiveDialog run={run} onClose={() => setArchiving(false)} /> : null}
     </div>
   );
@@ -270,18 +304,43 @@ function RunMeta({ run }: { run: RunSummary }) {
           </span>
         ))}
       </span>
+      {run.group ? (
+        <a class="src-link" href={`#/insights/${encodeURIComponent(run.group.id)}`} title="Started together with other setups on the same task">
+          ⚖ comparison: {run.group.label}
+        </a>
+      ) : null}
+      {run.conventions ? <span title="The repo's AGENTS.md, CLAUDE.md… are given to every agent">📘 conventions</span> : null}
+      {run.lessons?.length ? (
+        <span title={`Problems reviewers raised in earlier runs here, given to every agent:\n${run.lessons.map((l) => `• ${l}`).join("\n")}`}>🧠 {run.lessons.length} lesson{run.lessons.length === 1 ? "" : "s"}</span>
+      ) : null}
       {run.usage ? (
         <span class="usage">
           {run.usage.agentSteps}/{run.loop.maxSteps} agent steps · {duration((run.endedAt ?? Date.now()) - run.createdAt)} of {run.loop.maxMinutes} min
+          {run.usage.inputTokens || run.usage.outputTokens ? (
+            <span title={agentUsageTitle(run)}>
+              {" "}
+              · {fmtTokens((run.usage.inputTokens ?? 0) + (run.usage.outputTokens ?? 0))} tokens
+              {run.usage.costUsd ? ` · ≈${fmtCost(run.usage.costUsd)} API-equivalent` : ""}
+            </span>
+          ) : null}
         </span>
       ) : null}
     </div>
   );
 }
 
+const usageTitle = (u: NonNullable<Step["usage"]>) =>
+  `${u.inputTokens.toLocaleString()} input · ${u.outputTokens.toLocaleString()} output · ${u.cacheReadTokens.toLocaleString()} cached${u.costUsd ? ` · ≈${fmtCost(u.costUsd)}` : ""}`;
+
+const agentUsageTitle = (run: RunSummary) =>
+  Object.entries(run.usage.byAgent ?? {})
+    .map(([agent, u]) => `${agent}: ${u!.steps} steps, ${fmtTokens(u!.inputTokens + u!.outputTokens)} tokens${u!.costUsd ? `, ≈${fmtCost(u!.costUsd)}` : ""}, ${duration(u!.ms)}`)
+    .join("\n");
+
 // ---------------------------------------------------------------- result & shipping
-function ResultCard({ run, steps }: { run: RunSummary; steps: Step[] }) {
+function ResultCard({ run, steps, onSelectStep }: { run: RunSummary; steps: Step[]; onSelectStep: (id: string) => void }) {
   const state = runState(run);
+  const failedSteps = steps.filter((s) => s.status === "failed");
   const titles: Record<string, string> = {
     done: run.verdict === "passed" ? "✓ Finished — the check passes" : "✓ Finished",
     failing: "⚠ Finished — but the check still fails",
@@ -293,6 +352,20 @@ function ResultCard({ run, steps }: { run: RunSummary; steps: Step[] }) {
   return (
     <div class={`result ${state}`}>
       <div class="rh">{titles[state] ?? run.status}</div>
+      {failedSteps.length && run.status !== "done" ? (
+        <div class="failures">
+          <div class="lbl">What went wrong</div>
+          {failedSteps.slice(-5).map((s) => (
+            <button key={s.id} type="button" class="failure" onClick={() => onSelectStep(s.id)}>
+              <span class="ic failed" aria-hidden="true">
+                ✕
+              </span>
+              <b>{s.title}</b> <StepTag step={s} />
+              <span class="fe">{(s.error ?? s.finalText ?? "").split("\n")[0]!.slice(0, 200)}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       {run.error ? (
         <div class="rb">
           <div class="ev error">{run.error}</div>
@@ -313,6 +386,12 @@ function ResultCard({ run, steps }: { run: RunSummary; steps: Step[] }) {
               <AgentTag id={f.agent} /> {followUpLabel(f)} in {f.worktree}
               {f.pushed ? <span class="ok"> · pushed {f.pushed.slice(0, 7)}</span> : f.pushError ? <span class="note"> · push failed: {f.pushError}</span> : null}
               {f.checkPassed === false ? <span class="note"> · check fails</span> : f.checkPassed ? <span class="ok"> · check passes</span> : null}
+              {f.integrity?.length ? (
+                <span class="note" title={f.integrity.map((i) => `${i.file}: ${i.detail}`).join("\n")}>
+                  {" "}
+                  · ⚠ changed tests
+                </span>
+              ) : null}
             </div>
           ))}
         </div>
@@ -480,11 +559,29 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
           </button>
         </span>
       </div>
+      {run.integrity?.[artifact.branch]?.length ? <IntegrityNote issues={run.integrity[artifact.branch]!} /> : null}
       {artifact.stat ? <pre>{artifact.stat}</pre> : <div class="help">No changes</div>}
       {worktree && existsHint(run) ? <WorkspaceTools run={run} worktree={worktree.name} /> : null}
       {panel === "merge" && worktree ? <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : null}
       {panel === "pr" ? <PrPanel run={run} branch={artifact.branch} /> : null}
       {pr && worktree ? <WatchPanel run={run} branch={artifact.branch} steps={steps} worktree={worktree.name} /> : null}
+    </div>
+  );
+}
+
+/** Test changes that could make the check pass without fixing anything: look before merging. */
+function IntegrityNote({ issues }: { issues: IntegrityIssue[] }) {
+  return (
+    <div class="integrity" role="note">
+      <b>⚠ Changes to tests to check before merging</b>
+      <span class="help"> — they can make the check pass without a real fix.</span>
+      <ul>
+        {issues.map((i, n) => (
+          <li key={n}>
+            <span class={`sev ${i.severity}`}>{i.severity}</span> {i.file ? <code>{i.file}</code> : null} {i.detail}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -498,12 +595,13 @@ const WATCH_TEXT: Record<string, string> = {
   stopped: "Not watching",
 };
 
-/** PR follow-through: fix failing CI and collaborators' comments, push; never merge. */
+/** PR follow-through: fix failing CI and comments from you (or people you name), push; never merge. */
 function WatchPanel({ run, branch, steps, worktree }: { run: RunSummary; branch: string; steps: Step[]; worktree: string }) {
   const watch = run.watches?.[branch];
   const active = watch && ["watching", "fixing", "green"].includes(watch.state);
   const [agent, setAgent] = useState<AgentId>(watch?.agent ?? lastAgentIn(steps, worktree) ?? "claude");
   const [maxFixes, setMaxFixes] = useState(watch?.maxFixes ?? 3);
+  const [allow, setAllow] = useState((watch?.allow ?? []).map((a) => `@${a}`).join(", "));
   const call = (body: object) => post(`/api/runs/${run.id}/watch`, { branch, ...body }).catch((e) => showToast(e.message, 5000));
   return (
     <div class={`watch ${watch?.state ?? "off"}`}>
@@ -518,6 +616,7 @@ function WatchPanel({ run, branch, steps, worktree }: { run: RunSummary; branch:
           ) : null}
           <span class="help">
             {watch.fixes}/{watch.maxFixes} fixes{watch.lastPolled ? ` · checked ${new Date(watch.lastPolled).toLocaleTimeString()}` : ""}
+            {` · acts on comments from you${watch.allow?.length ? `, ${watch.allow.map((a) => `@${a}`).join(", ")}` : ""}`}
           </span>
           <span class="spacer" />
           {active ? (
@@ -530,14 +629,33 @@ function WatchPanel({ run, branch, steps, worktree }: { run: RunSummary; branch:
       {!active && watch?.state !== "closed" ? (
         <div class="row">
           <span class="lbl">Follow through</span>
-          <span>When CI fails or a collaborator comments,</span>
+          <span>When CI fails or you comment,</span>
           <AgentPicker value={agent} onChange={setAgent} />
           <span>fixes it and pushes — up to</span>
-          <input class="field inline num" type="number" min={1} max={10} value={maxFixes} onInput={(e) => setMaxFixes(Number(e.currentTarget.value) || 3)} />
+          <input class="field inline num" type="number" min={1} max={10} value={maxFixes} aria-label="Most fixes" onInput={(e) => setMaxFixes(Number(e.currentTarget.value) || 3)} />
           <span>times. Never merges.</span>
-          <button class="btn small primary" onClick={() => call({ agent, maxFixes })}>
+          <button
+            class="btn small primary"
+            onClick={() =>
+              call({
+                agent,
+                maxFixes,
+                allow: allow
+                  .split(/[\s,]+/)
+                  .map((a) => a.replace(/^@/, ""))
+                  .filter(Boolean),
+              })
+            }
+          >
             {watch ? "Watch again" : "Watch PR"}
           </button>
+        </div>
+      ) : null}
+      {!active && watch?.state !== "closed" ? (
+        <div class="row">
+          <span class="help">Also act on comments from</span>
+          <input class="field inline" placeholder="@teammate, @reviewer" value={allow} aria-label="Other GitHub users whose comments the agent acts on" onInput={(e) => setAllow(e.currentTarget.value)} />
+          <span class="help">— nobody else's, since these fixes are pushed without anyone reviewing them first.</span>
         </div>
       ) : null}
     </div>
@@ -946,9 +1064,14 @@ function ConversationBar({ run, steps }: { run: RunSummary; steps: Step[] }) {
 }
 
 // ---------------------------------------------------------------- transcript
-function Transcript({ run, step, events }: { run: RunSummary; step?: Step; events: AgentEvent[] }) {
+/** Only the latest items are rendered at first: a long step can have thousands. */
+const PAGE = 200;
+
+function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: RunData; version: number }) {
   const body = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const [shown, setShown] = useState(PAGE);
+  useEffect(() => setShown(PAGE), [step?.id]);
   useEffect(() => {
     if (stick.current && body.current) body.current.scrollTop = body.current.scrollHeight;
   });
@@ -959,14 +1082,16 @@ function Transcript({ run, step, events }: { run: RunSummary; step?: Step; event
       </div>
     );
   }
-  const items = transcriptItems(events, step.agent === "agy");
+  const items = itemsFor(data, step);
+  const hidden = Math.max(0, items.length - shown);
   return (
-    <div class="transcript">
+    <div class="transcript" aria-label={`Transcript of ${step.title}`}>
       <div class="tr-head">
         <span class="tt">{step.title}</span>
         <StepTag step={step} model={modelNote(run, step.agent)} />
         <span>{(step.kind ?? "agent") === "agent" ? (step.mode === "write" ? "can edit files" : "read-only") : "run by code-flow"}</span>
         <span>worktree {step.worktree}</span>
+        {step.usage ? <span title={usageTitle(step.usage)}>{fmtTokens(step.usage.inputTokens + step.usage.outputTokens)} tokens{step.usage.costUsd ? ` · ≈${fmtCost(step.usage.costUsd)}` : ""}</span> : null}
         <span class={`status-pill ${step.status}`}>{STATUS_TEXT[step.status] ?? step.status}</span>
       </div>
       <div
@@ -977,95 +1102,170 @@ function Transcript({ run, step, events }: { run: RunSummary; step?: Step; event
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
         }}
       >
-        {items.map((item, i) => {
-          switch (item.kind) {
-            case "text":
-              return (
-                <div key={i} class="ev text">
-                  {item.text}
-                </div>
-              );
-            case "thinking":
-              return (
-                <div key={i} class="ev thinking">
-                  {item.text.slice(0, 800)}
-                </div>
-              );
-            case "tool":
-              return (
-                <details key={i} class={`ev tool ${item.isError ? "err" : ""}`}>
-                  <summary>
-                    <b>{item.name}</b> {item.input.replace(/\s+/g, " ").slice(0, 140)}
-                  </summary>
-                  <pre>{item.input}</pre>
-                  {item.output !== undefined ? <pre>{item.output || "(no output)"}</pre> : null}
-                </details>
-              );
-            case "status":
-              return (
-                <div key={i} class="ev status">
-                  {item.text}
-                </div>
-              );
-            case "error":
-              return (
-                <div key={i} class="ev error">
-                  {item.text}
-                </div>
-              );
-          }
-        })}
+        {hidden ? (
+          <button
+            type="button"
+            class="btn small show-earlier"
+            onClick={() => {
+              stick.current = false;
+              setShown(shown + PAGE * 5);
+            }}
+          >
+            Show earlier ({hidden.toLocaleString()} hidden)
+          </button>
+        ) : null}
+        {items.slice(hidden).map((item, i) => (
+          <TranscriptRow key={hidden + i} item={item} v={item.v} />
+        ))}
       </div>
     </div>
   );
 }
 
-type Item =
-  | { kind: "text" | "thinking" | "status" | "error"; text: string }
-  | { kind: "tool"; name: string; input: string; output?: string; isError?: boolean };
-
-function transcriptItems(events: AgentEvent[], streamsDeltas: boolean): Item[] {
-  const items: Item[] = [];
-  const tools = new Map<string, Extract<Item, { kind: "tool" }>>();
-  for (const e of events) {
-    const last = items.at(-1);
-    switch (e.kind) {
+/** One transcript entry; re-rendered only when it changes (text streamed in, a tool's output arrived). */
+class TranscriptRow extends Component<{ item: Item; v: number }> {
+  shouldComponentUpdate(next: { item: Item; v: number }) {
+    return next.item !== this.props.item || next.v !== this.props.v;
+  }
+  render() {
+    const { item } = this.props;
+    switch (item.kind) {
       case "text":
-        // agy streams small deltas; the other CLIs send whole blocks.
-        if (streamsDeltas && last?.kind === "text") last.text += e.text;
-        else items.push({ kind: "text", text: e.text });
-        break;
+        return <div class="ev text">{item.text}</div>;
       case "thinking":
-        items.push({ kind: "thinking", text: e.text });
-        break;
-      case "tool_call": {
-        const tool = { kind: "tool" as const, name: e.name, input: e.input };
-        tools.set(e.callId, tool);
-        items.push(tool);
-        break;
-      }
-      case "tool_result": {
-        const tool = tools.get(e.callId);
-        if (tool) {
-          tool.output = e.output;
-          tool.isError = e.isError;
-        }
-        break;
-      }
+        return <ThinkingRow text={item.text} />;
+      case "tool":
+        return (
+          <details class={`ev tool ${item.isError ? "err" : ""}`}>
+            <summary>
+              <b>{item.name}</b> {item.input.replace(/\s+/g, " ").slice(0, 140)}
+              {item.isError ? <span class="sr-only"> (failed)</span> : null}
+            </summary>
+            <pre>{item.input}</pre>
+            {item.output !== undefined ? <pre>{item.output || "(no output)"}</pre> : null}
+          </details>
+        );
       case "status":
-        items.push({ kind: "status", text: e.text });
-        break;
+        return <div class="ev status">{item.text}</div>;
       case "error":
-        items.push({ kind: "error", text: e.message });
-        break;
-      case "usage": {
-        const parts = [e.inputTokens && `${e.inputTokens.toLocaleString()} in`, e.outputTokens && `${e.outputTokens.toLocaleString()} out`].filter(Boolean);
-        if (parts.length) items.push({ kind: "status", text: `tokens: ${parts.join(" · ")}` });
-        break;
-      }
+        return (
+          <div class="ev error" role="alert">
+            {item.text}
+          </div>
+        );
     }
   }
-  return items;
+}
+
+function ThinkingRow({ text }: { text: string }) {
+  const [all, setAll] = useState(false);
+  if (text.length <= 800 || all) return <div class="ev thinking">{text}</div>;
+  return (
+    <div class="ev thinking">
+      {text.slice(0, 800)}…{" "}
+      <button type="button" class="linkish" onClick={() => setAll(true)}>
+        show all
+      </button>
+    </div>
+  );
+}
+
+type Item = (
+  | { kind: "text" | "thinking" | "status" | "error"; text: string }
+  | { kind: "tool"; name: string; input: string; output?: string; isError?: boolean }
+) & { /** bumped when the item changes in place */ v: number };
+
+interface Built {
+  items: Item[];
+  tools: Map<string, Extract<Item, { kind: "tool" }>>;
+  /** Events already turned into items. */
+  count: number;
+}
+
+/** The step's transcript, extended with only the events that arrived since the last render. */
+function itemsFor(data: RunData, step: Step): Item[] {
+  const events = data.events.get(step.id) ?? [];
+  let built = data.built.get(step.id);
+  if (!built) {
+    built = { items: [], tools: new Map(), count: 0 };
+    data.built.set(step.id, built);
+  }
+  for (; built.count < events.length; built.count++) addItem(built, events[built.count]!, step.agent === "agy");
+  return built.items;
+}
+
+function addItem(built: Built, e: AgentEvent, streamsDeltas: boolean) {
+  const { items, tools } = built;
+  const last = items.at(-1);
+  switch (e.kind) {
+    case "text":
+      // agy streams small deltas; the other CLIs send whole blocks.
+      if (streamsDeltas && last?.kind === "text") {
+        last.text += e.text;
+        last.v++;
+      } else items.push({ kind: "text", text: e.text, v: 0 });
+      break;
+    case "thinking":
+      items.push({ kind: "thinking", text: e.text, v: 0 });
+      break;
+    case "tool_call": {
+      const tool = { kind: "tool" as const, name: e.name, input: e.input, v: 0 };
+      tools.set(e.callId, tool);
+      items.push(tool);
+      break;
+    }
+    case "tool_result": {
+      const tool = tools.get(e.callId);
+      if (tool) {
+        tool.output = e.output;
+        tool.isError = e.isError;
+        tool.v++;
+      }
+      break;
+    }
+    case "status":
+      items.push({ kind: "status", text: e.text, v: 0 });
+      break;
+    case "error":
+      items.push({ kind: "error", text: e.message, v: 0 });
+      break;
+    case "usage": {
+      const parts = [
+        e.inputTokens && `${e.inputTokens.toLocaleString()} in`,
+        e.outputTokens && `${e.outputTokens.toLocaleString()} out`,
+        e.cacheReadTokens && `${e.cacheReadTokens.toLocaleString()} cached`,
+        e.costUsd && `≈${fmtCost(e.costUsd)}`,
+      ].filter(Boolean);
+      if (parts.length) items.push({ kind: "status", text: `tokens: ${parts.join(" · ")}`, v: 0 });
+      break;
+    }
+  }
+}
+
+/** The run's log; long ones show the latest lines until you ask for all. */
+function ActivityLog({ logs }: { logs: RunData["logs"]; count: number }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? logs : logs.slice(-300);
+  const warnings = logs.filter((l) => l.level === "warn").length;
+  return (
+    <details class="activity">
+      <summary>
+        Activity log ({logs.length}){warnings ? <span class="warn"> · {warnings} warning{warnings === 1 ? "" : "s"}</span> : null}
+      </summary>
+      <div class="log">
+        {shown.length < logs.length ? (
+          <button type="button" class="linkish" onClick={() => setAll(true)}>
+            Show all {logs.length.toLocaleString()} lines
+          </button>
+        ) : null}
+        {shown.map((l, i) => (
+          <div key={i} class={l.level}>
+            {new Date(l.ts).toLocaleTimeString()} {l.text}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 // ---------------------------------------------------------------- edit & run again

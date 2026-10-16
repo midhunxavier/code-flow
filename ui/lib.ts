@@ -1,11 +1,38 @@
 import { signal } from "@preact/signals";
 import type { AgentId } from "./types.js";
 
+/** An API error; `confirm` names a choice the server needs from you before it can go ahead. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly confirm?: string,
+  ) {
+    super(message);
+  }
+}
+
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((body as { error?: string }).error || res.statusText);
+  const body = (await res.json().catch(() => ({}))) as { error?: string; confirm?: string; signIn?: boolean };
+  if (res.status === 401 && body.signIn) signInAgain();
+  if (!res.ok) throw new ApiError(body.error || res.statusText, res.status, body.confirm);
   return body as T;
+}
+
+/**
+ * The server restarted (its session is new): reload, which signs this browser in again if it
+ * still can, or shows how to. Once per minute at most, so a locked server can't loop.
+ */
+export function signInAgain() {
+  try {
+    const last = Number(sessionStorage.getItem("signInReload") ?? 0);
+    if (Date.now() - last < 60_000) return;
+    sessionStorage.setItem("signInReload", String(Date.now()));
+  } catch {
+    // no storage: reload anyway
+  }
+  location.reload();
 }
 
 export const post = <T = any>(path: string, body: unknown = {}) => api<T>(path, { method: "POST", body: JSON.stringify(body) });
@@ -41,7 +68,13 @@ export const ago = (ts: number) => {
   const s = Math.round((Date.now() - ts) / 1000);
   return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`;
 };
-export const duration = (ms: number) => (ms < 60000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`);
+export const duration = (ms: number) =>
+  ms < 60000 ? `${Math.round(ms / 1000)}s` : ms < 3_600_000 ? `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s` : `${Math.floor(ms / 3_600_000)}h ${Math.round((ms % 3_600_000) / 60000)}m`;
+/** 1234 → "1.2k", 2_500_000 → "2.5M". */
+export const fmtTokens = (n: number) => (n < 1000 ? String(n) : n < 1_000_000 ? `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k` : `${(n / 1_000_000).toFixed(1)}M`);
+/** What Claude reports a turn would cost on the API (subscription use isn't billed per token). */
+export const fmtCost = (usd: number) => (usd >= 10 ? `$${usd.toFixed(0)}` : usd >= 0.01 ? `$${usd.toFixed(2)}` : usd > 0 ? "<$0.01" : "$0");
+export const pct = (part: number, whole: number) => (whole ? `${Math.round((part / whole) * 100)}%` : "–");
 
 export const SHORT: Record<AgentId | "auto", string> = { claude: "Claude", codex: "Codex", agy: "Antigravity", auto: "Auto" };
 export const FLOWS: Record<string, string> = {

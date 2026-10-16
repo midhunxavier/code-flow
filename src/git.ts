@@ -216,6 +216,75 @@ export async function discardChanges(cwd: string): Promise<void> {
   await gitOk(["clean", "-fdq"], cwd);
 }
 
+/** A worktree's state before a read-only step: its commit, uncommitted changes, untracked files. */
+export interface Snapshot {
+  head: string;
+  /** `git stash create` of the uncommitted changes ("" when there are none); nothing is stashed. */
+  changes: string;
+  untracked: string[];
+}
+
+async function uncommittedTree(cwd: string): Promise<string> {
+  const sha = (await gitOk(["stash", "create"], cwd)).trim();
+  return sha ? (await gitOk(["rev-parse", `${sha}^{tree}`], cwd)).trim() : "";
+}
+
+const untrackedFiles = async (cwd: string) => (await gitOk(["ls-files", "--others", "--exclude-standard", "-z"], cwd)).split("\0").filter(Boolean);
+
+export async function snapshot(cwd: string): Promise<Snapshot> {
+  return {
+    head: await resolveCommit(cwd),
+    changes: (await gitOk(["stash", "create"], cwd)).trim(),
+    untracked: await untrackedFiles(cwd),
+  };
+}
+
+/**
+ * Put a worktree back the way `snapshot` found it, undoing whatever a read-only step did:
+ * commits, edits, new files. Returns what was undone (empty when nothing changed).
+ */
+export async function restoreSnapshot(cwd: string, snap: Snapshot): Promise<string[]> {
+  const undone: string[] = [];
+  const head = await resolveCommit(cwd);
+  const changesNow = await uncommittedTree(cwd);
+  const changesBefore = snap.changes ? (await gitOk(["rev-parse", `${snap.changes}^{tree}`], cwd)).trim() : "";
+  if (head !== snap.head) undone.push("commits");
+  if (head !== snap.head || changesNow !== changesBefore) {
+    if (head === snap.head) undone.push("edits");
+    await gitOk(["reset", "--hard", "-q", snap.head], cwd);
+    if (snap.changes) await gitOk(["stash", "apply", "-q", snap.changes], cwd);
+  }
+  const before = new Set(snap.untracked);
+  const added = (await untrackedFiles(cwd)).filter((f) => !before.has(f));
+  if (added.length) {
+    undone.push(`${added.length} new file${added.length === 1 ? "" : "s"}`);
+    for (let i = 0; i < added.length; i += 100) await gitOk(["clean", "-fq", "--", ...added.slice(i, i + 100)], cwd);
+  }
+  return undone;
+}
+
+export async function branchExists(repo: string, branch: string): Promise<boolean> {
+  return (await git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repo)).code === 0;
+}
+
+/** True when commit `a` is `b` or one of its ancestors. */
+export async function isAncestor(cwd: string, a: string, b = "HEAD"): Promise<boolean> {
+  return (await git(["merge-base", "--is-ancestor", a, b], cwd)).code === 0;
+}
+
+/** Put `paths` back to how they are in `ref` (deleting the ones `ref` doesn't have). */
+export async function restorePaths(cwd: string, ref: string, paths: string[]): Promise<void> {
+  for (const path of paths) {
+    if (await objectTypeAt(cwd, ref, path)) await gitOk(["checkout", ref, "--", path], cwd);
+    else await git(["rm", "-q", "-f", "--ignore-unmatch", "--", path], cwd);
+  }
+}
+
+/** A ref the user named (e.g. a branch to merge): must exist and can't be read as an option. */
+export async function validRef(repo: string, ref: string): Promise<boolean> {
+  return !!ref && !ref.startsWith("-") && (await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repo)).code === 0;
+}
+
 export async function hasConflictMarkers(wt: Worktree): Promise<boolean> {
   const res = await git(["diff", "--check"], wt.path);
   return /conflict marker/i.test(res.stdout + res.stderr);

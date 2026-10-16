@@ -1,6 +1,7 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { platform } from "node:os";
+import { killGroup, trackGroup, untrackGroup } from "./adapters/process.js";
 
 /**
  * "Run app": start a worktree's dev server on a free port so you can try a result before
@@ -40,6 +41,7 @@ export class DevServers {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, PORT: String(port), BROWSER: "none", FORCE_COLOR: "0" },
     });
+    trackGroup(child.pid);
     const server = { key, command, cwd, port, url: `http://localhost:${port}`, status: "running" as const, startedAt: Date.now(), logs: [] as string[], child };
     const collect = (chunk: Buffer) => {
       for (const line of chunk.toString().split("\n")) {
@@ -51,6 +53,7 @@ export class DevServers {
     child.stdout!.on("data", collect);
     child.stderr!.on("data", collect);
     child.on("exit", (code) => {
+      untrackGroup(child.pid);
       (server as DevServer).status = "exited";
       (server as DevServer).exitCode = code;
     });
@@ -62,11 +65,9 @@ export class DevServers {
   stop(key: string) {
     const s = this.servers.get(key);
     if (!s) return false;
-    try {
-      if (s.child.pid && s.status === "running") process.kill(-s.child.pid, "SIGTERM");
-    } catch {
-      // already gone
-    }
+    // The whole group: whatever the command started (a bundler, a watcher) stops too.
+    killGroup(s.child.pid);
+    untrackGroup(s.child.pid);
     this.servers.delete(key);
     return true;
   }

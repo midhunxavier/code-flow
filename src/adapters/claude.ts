@@ -144,6 +144,10 @@ export const claudeAdapter: AgentAdapter = {
             for (const [name, w] of Object.entries((info.unifiedWindows ?? {}) as Record<string, any>)) {
               windows[name] = { utilization: w?.utilization, resetsAt: w?.resetsAt ? w.resetsAt * 1000 : undefined };
             }
+            // Older or newer CLIs may report a single window at the top level instead.
+            if (!Object.keys(windows).length && (info.utilization !== undefined || info.resetsAt)) {
+              windows[info.rateLimitType ?? "limit"] = { utilization: info.utilization, resetsAt: info.resetsAt ? info.resetsAt * 1000 : undefined };
+            }
             onEvent({ kind: "quota", status: info.status ?? "unknown", windows });
             if (info.status && info.status !== "allowed") onEvent({ kind: "status", text: `Claude rate limit: ${info.status}` });
             break;
@@ -157,8 +161,10 @@ export const claudeAdapter: AgentAdapter = {
             if (msg.is_error) resultError = finalText || msg.subtype || "Claude reported an error";
             onEvent({
               kind: "usage",
-              inputTokens: msg.usage?.input_tokens,
+              // Writing to the prompt cache is billed as input; reading from it is counted apart.
+              inputTokens: (msg.usage?.input_tokens ?? 0) + (msg.usage?.cache_creation_input_tokens ?? 0),
               outputTokens: msg.usage?.output_tokens,
+              cacheReadTokens: msg.usage?.cache_read_input_tokens,
               costUsd: msg.total_cost_usd,
             });
             if (Array.isArray(msg.permission_denials) && msg.permission_denials.length) {

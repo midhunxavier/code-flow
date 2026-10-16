@@ -24,6 +24,8 @@ export const REVIEW_SCHEMA = obj({
 export const JUDGE_SCHEMA = obj({ winner: str, ranking: strings, reasons: str });
 
 export const SUBTASKS_SCHEMA = obj({
+  /** What every part must agree on (interfaces, names, data shapes); each worker gets it. */
+  contracts: str,
   subtasks: { type: "array", items: obj({ id: str, title: str, instructions: str, agent: str }) },
 });
 

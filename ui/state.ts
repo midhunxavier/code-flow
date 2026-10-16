@@ -18,13 +18,21 @@ export const patterns = signal<PatternInfo[]>([]);
 export const catalogs = signal<Record<string, CatalogOrError>>({});
 export const runs = signal<Map<string, RunSummary>>(new Map());
 
-export type Route = { view: "composer" } | { view: "automations" } | { view: "run"; id: string } | { view: "review"; id: string; branch: string };
+export type Route =
+  | { view: "composer" }
+  | { view: "automations" }
+  | { view: "insights"; group?: string }
+  | { view: "run"; id: string }
+  | { view: "review"; id: string; branch: string };
 export const route = signal<Route>({ view: "composer" });
 export const railOpen = signal(false);
 export const pickerOpen = signal(false);
 export const filesOpen = signal(store.get("filesOpen") ? store.get("filesOpen") === "1" : window.innerWidth > 1180);
 
 export const available = (id: AgentId) => agents.value.find((a) => a.id === id)?.available ?? false;
+/** Read out by screen readers when a run finishes or needs you (an aria-live region). */
+export const announcement = signal("");
+export const shortcutsOpen = signal(false);
 
 // ---------------------------------------------------------------- repository
 export const repoInfo = signal<RepoInfo | null>(null);
@@ -249,16 +257,82 @@ export async function refreshRuns() {
 
 export const waitingCount = computed(() => [...runs.value.values()].filter(needsYou).length);
 
+// ---------------------------------------------------------------- finding runs
+export interface RunFilter {
+  q: string;
+  /** all | attention (needs you) | running | passed | failing (check fails, failed, stopped) | flagged (tests changed) */
+  status: "all" | "attention" | "running" | "passed" | "failing" | "flagged";
+  pattern: string;
+  agent: string;
+  /** Only runs in the selected repository. */
+  thisRepo: boolean;
+}
+// Filters are remembered; the search text isn't.
+export const runFilter = signal<RunFilter>({ status: "all", pattern: "", agent: "", thisRepo: false, ...store.json<Partial<RunFilter>>("runFilter", {}), q: "" });
+export function setRunFilter(patch: Partial<RunFilter>) {
+  runFilter.value = { ...runFilter.value, ...patch };
+  const { q: _q, ...kept } = runFilter.value;
+  store.set("runFilter", JSON.stringify(kept));
+}
+export const filterActive = computed(() => {
+  const f = runFilter.value;
+  return !!(f.q.trim() || f.status !== "all" || f.pattern || f.agent || f.thisRepo);
+});
+const flagged = (r: RunSummary) => Object.keys(r.integrity ?? {}).length > 0 || r.followUps.some((f) => f.integrity?.length);
+export function matchesFilter(r: RunSummary, f = runFilter.value): boolean {
+  if (f.thisRepo && repo.value && r.repo !== repo.value) return false;
+  if (f.pattern && r.pattern !== f.pattern) return false;
+  if (f.agent && !Object.values(r.roles).some((ids) => ids.includes(f.agent as AgentId))) return false;
+  switch (f.status) {
+    case "attention":
+      if (!needsYou(r)) return false;
+      break;
+    case "running":
+      if (r.status !== "running") return false;
+      break;
+    case "passed":
+      if (!(r.status === "done" && r.verdict !== "failing")) return false;
+      break;
+    case "failing":
+      if (!(r.verdict === "failing" || ["failed", "stopped", "interrupted"].includes(r.status))) return false;
+      break;
+    case "flagged":
+      if (!flagged(r)) return false;
+      break;
+  }
+  const q = f.q.trim().toLowerCase();
+  if (!q) return true;
+  const hay = [r.task, r.id, r.repo, r.pattern, r.branchPrefix, r.source ? `#${r.source.number} ${r.source.title}` : "", r.trigger?.name ?? "", r.group?.label ?? ""].join("\n").toLowerCase();
+  return q.split(/\s+/).every((word) => hay.includes(word));
+}
+export const isFlagged = flagged;
+
 export function watchAllRuns(onFinished: (run: RunSummary) => void) {
-  const source = new EventSource("/api/events");
-  source.onmessage = (msg) => {
-    const { run } = JSON.parse(msg.data) as { run: RunSummary };
-    const before = runs.value.get(run.id);
-    upsertRun(run);
-    if (before?.status === "running" && run.status !== "running") onFinished(run);
-    else if (run.awaiting && !before?.awaiting) onFinished(run); // paused for your decision
-    else if (watchNeedingYou(run) && !watchNeedingYou(before)) onFinished(run); // a PR watch handed back to you
+  const connect = () => {
+    const source = new EventSource("/api/events");
+    source.onmessage = (msg) => {
+      const { run } = JSON.parse(msg.data) as { run: RunSummary };
+      const before = runs.value.get(run.id);
+      upsertRun(run);
+      if (before?.status === "running" && run.status !== "running") onFinished(run);
+      else if (run.awaiting && !before?.awaiting) onFinished(run); // paused for your decision
+      else if (watchNeedingYou(run) && !watchNeedingYou(before)) onFinished(run); // a PR watch handed back to you
+    };
+    // A closed stream (the server restarted, or this session ended): find out which, then reconnect.
+    source.onerror = () => {
+      if (source.readyState !== EventSource.CLOSED) return;
+      setTimeout(() => {
+        api("/api/health").then(
+          () => {
+            void refreshRuns();
+            connect();
+          },
+          () => setTimeout(connect, 5_000),
+        );
+      }, 1_000);
+    };
   };
+  connect();
 }
 
 /** A PR watch that gave up and handed the PR back to you. */

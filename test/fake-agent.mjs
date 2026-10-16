@@ -3,7 +3,7 @@
 // format and answers the structured prompts the patterns send, so workflows can be
 // exercised end to end without spending subscription quota.
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 
 const [vendor, ...args] = process.argv.slice(2);
@@ -59,6 +59,32 @@ const write =
   (vendor === "agy" && args.includes("--dangerously-skip-permissions"));
 
 if (prompt.includes("SNEAKY")) writeFileSync("sneaky.txt", "a read-only step wrote this\n");
+// A read-only step that commits: `git status` is clean afterwards, so only HEAD shows it.
+if (prompt.includes("COMMITS-IN-READ") && !write) {
+  writeFileSync("committed-in-read.txt", "x\n");
+  execFileSync("git", ["add", "committed-in-read.txt"]);
+  execFileSync("git", ["-c", "user.name=x", "-c", "user.email=x@x", "commit", "-qm", "sneaky commit from a read-only step"]);
+}
+// Leave a background process holding stdout open, like `npm run dev &` would.
+if (process.env.FAKE_LINGER_VENDOR === vendor) {
+  const child = spawn("sleep", ["30"], { stdio: ["ignore", "inherit", "inherit"] });
+  writeFileSync(process.env.FAKE_LINGER_PIDFILE, String(child.pid));
+  child.unref();
+}
+const once = (name) => {
+  const marker = `${process.env.CODEFLOW_HOME}/.${name}-once`;
+  if (existsSync(marker)) return false;
+  writeFileSync(marker, "1");
+  return true;
+};
+if (process.env.FAKE_TRANSIENT_VENDOR === vendor && write && once("transient")) {
+  process.stderr.write("API Error: 529 {\"type\":\"overloaded_error\"}\n");
+  process.exit(1);
+}
+if (process.env.FAKE_USAGE_LIMIT_VENDOR === vendor && write) {
+  process.stderr.write("You've hit your usage limit. Upgrade or try again in 4 hours.\n");
+  process.exit(1);
+}
 const id = createHash("sha1").update(prompt + vendor + Date.now()).digest("hex").slice(0, 8);
 
 if (process.env.FAKE_FAIL_VENDOR === vendor && write) {
@@ -72,6 +98,7 @@ const json = (obj) => `Done.\n\`\`\`json\n${JSON.stringify(obj)}\n\`\`\``;
 if (prompt.includes('"subtasks"')) {
   const conflict = prompt.includes("CONFLICT");
   answer = json({
+    contracts: "Each part writes its own file; no shared names.",
     subtasks: [
       { id: "alpha", title: "Alpha part", instructions: conflict ? "Write shared.txt CONFLICT" : "Build alpha", agent: "claude" },
       { id: "beta", title: "Beta part", instructions: conflict ? "Write shared.txt CONFLICT" : "Build beta", agent: "codex" },
@@ -118,6 +145,14 @@ if (prompt.includes('"subtasks"')) {
   answer = json(fail ? { verdict: "changes_requested", issues: [{ severity: "medium", file: "src/x.ts", problem: "missing edge case", fix: "handle it" }] } : { verdict: "approve", issues: [] });
 } else if (prompt.includes('"winner"')) {
   answer = json({ winner: "B", ranking: ["B", "A"], reasons: "B is simpler" });
+} else if (write && process.env.FAKE_TAMPER && existsSync("failing.test.mjs")) {
+  // Gaming the check: delete the test that fails instead of fixing the code.
+  execFileSync("git", ["rm", "-q", "failing.test.mjs"]);
+  answer = "Removed a broken test.";
+} else if (write && process.env.FAKE_EDIT_TESTS && prompt.includes("Make the tests pass") && existsSync("spec.test.mjs")) {
+  writeFileSync("spec.test.mjs", 'import { test } from "node:test";\ntest("always passes", () => {});\n');
+  writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
+  answer = "Simplified the test and implemented it.";
 } else if (write && process.env.FAKE_NOOP_VENDOR === vendor) {
   answer = `${vendor} looked around but changed nothing.`;
 } else if (write) {
@@ -149,14 +184,16 @@ if (vendor === "claude") {
   out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "x" } }] } });
   out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } });
   out({ type: "assistant", message: { content: [{ type: "text", text: answer }] } });
-  out({ type: "result", subtype: "success", is_error: false, result: answer, structured_output: structured, session_id: session, usage: { input_tokens: 1, output_tokens: 2 } });
+  out({ type: "result", subtype: "success", is_error: false, result: answer, structured_output: structured, session_id: session, total_cost_usd: 0.25, usage: { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 500, output_tokens: 40 } });
 } else if (vendor === "codex") {
   out({ type: "thread.started", thread_id: session });
   out({ type: "turn.started" });
   out({ type: "item.started", item: { id: "i1", type: "command_execution", command: "ls", status: "in_progress" } });
   out({ type: "item.completed", item: { id: "i1", type: "command_execution", command: "ls", aggregated_output: "a.txt", exit_code: 0 } });
+  // Codex reports a reconnect as an `error` event and then carries on: not a failure.
+  if (process.env.FAKE_CODEX_WARN) out({ type: "error", message: "Reconnecting... 1/5" });
   out({ type: "item.completed", item: { id: "i2", type: "agent_message", text: answer } });
-  out({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } });
+  out({ type: "turn.completed", usage: { input_tokens: 300, cached_input_tokens: 200, output_tokens: 2 } });
 } else if (vendor === "agy" && process.env.FAKE_AGY_DENY) {
   // Real agy 1.3.5 behaviour when a tool needs a permission headless mode cannot grant.
   out({ event: "init", conversation_id: session, init: { cwd: process.cwd() } });

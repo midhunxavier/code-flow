@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { killGroup, trackGroup, untrackGroup } from "./adapters/process.js";
 
 /**
  * The "done when" check: a command code-flow runs itself (never an agent) in a worktree,
@@ -17,6 +18,8 @@ export interface CheckResult {
   durationMs: number;
   /** Combined stdout/stderr, trimmed to the end (where failures usually are). */
   output: string;
+  /** Tests that ran (passed + failed), when the runner's summary says. */
+  tests?: number;
 }
 
 const KEEP_OUTPUT = 20_000;
@@ -106,8 +109,10 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
       stdio: ["ignore", "pipe", "pipe"],
       env,
     });
+    trackGroup(child.pid);
     let output = "";
     let timedOut = false;
+    let settled = false;
     const collect = (chunk: Buffer) => {
       output += chunk.toString();
       if (output.length > KEEP_OUTPUT * 2) output = output.slice(-KEEP_OUTPUT);
@@ -115,24 +120,23 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
 
-    const killGroup = () => {
-      try {
-        if (child.pid) process.kill(-child.pid, "SIGTERM");
-      } catch {
-        // already gone
-      }
+    const stop = () => {
+      killGroup(child.pid);
       // Stopping the docker client doesn't always stop the container.
       if (opts.container) spawn("docker", ["rm", "-f", containerName], { stdio: "ignore" }).on("error", () => {});
     };
     const timer = setTimeout(() => {
       timedOut = true;
-      killGroup();
+      stop();
     }, opts.timeoutMs);
-    const onAbort = () => killGroup();
+    const onAbort = () => stop();
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 
     const finish = (exitCode: number | null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      untrackGroup(child.pid);
       opts.signal?.removeEventListener("abort", onAbort);
       const trimmed = output.length > KEEP_OUTPUT ? `…\n${output.slice(-KEEP_OUTPUT)}` : output;
       resolve({
@@ -142,14 +146,60 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
         timedOut,
         durationMs: Date.now() - started,
         output: timedOut ? `${trimmed}\n[timed out after ${Math.round(opts.timeoutMs / 1000)}s]` : trimmed,
+        tests: countTests(output),
       });
     };
     child.on("error", (err) => {
       output += opts.container && /ENOENT/.test(err.message) ? "\nDocker isn't installed or not on PATH" : `\n${err.message}`;
       finish(null);
     });
+    // Leftover background processes (a server a test started) would hold the pipes open.
+    child.on("exit", (code) => {
+      killGroup(child.pid, 2_000);
+      setTimeout(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish(code);
+      }, 3_000).unref();
+    });
     child.on("close", (code) => finish(code));
   });
+}
+
+/**
+ * How many tests ran, read from the runner's summary (node --test, Jest, Vitest, Mocha, pytest,
+ * cargo, Go). Skipped tests don't count: a drop between two runs means tests were removed or
+ * skipped. Undefined when the output has no summary code-flow recognizes.
+ */
+export function countTests(output: string): number | undefined {
+  const tail = output.slice(-20_000);
+  const last = (re: RegExp) => {
+    const all = [...tail.matchAll(re)];
+    return all.length ? all[all.length - 1]! : undefined;
+  };
+  const n = (s: string | undefined) => (s ? Number(s) : 0);
+  // node --test: "# pass 12" / "# fail 1" (TAP) or "ℹ pass 12" / "ℹ fail 1" (spec reporter)
+  const nodePass = last(/^(?:#|ℹ) pass (\d+)/gm);
+  if (nodePass) return n(nodePass[1]) + n(last(/^(?:#|ℹ) fail (\d+)/gm)?.[1]);
+  // Jest: "Tests:       1 failed, 2 skipped, 10 passed, 13 total"
+  const jest = last(/^Tests:\s+(.*\d+ total)/gm);
+  if (jest) return n(jest[1]!.match(/(\d+) passed/)?.[1]) + n(jest[1]!.match(/(\d+) failed/)?.[1]);
+  // Vitest: "Tests  2 failed | 10 passed (12)"
+  const vitest = last(/^\s*Tests\s+(.*\(\d+\))/gm);
+  if (vitest) return n(vitest[1]!.match(/(\d+) passed/)?.[1]) + n(vitest[1]!.match(/(\d+) failed/)?.[1]);
+  // cargo: "test result: ok. 10 passed; 0 failed; 1 ignored" (one line per test binary)
+  const cargo = [...tail.matchAll(/test result: \w+\. (\d+) passed; (\d+) failed/g)];
+  if (cargo.length) return cargo.reduce((sum, m) => sum + n(m[1]) + n(m[2]), 0);
+  // pytest: "===== 2 failed, 10 passed, 1 skipped in 0.12s ====="
+  const pytest = last(/^=+ (.*\d+ (?:passed|failed).*) in [\d.]+s/gm);
+  if (pytest) return n(pytest[1]!.match(/(\d+) passed/)?.[1]) + n(pytest[1]!.match(/(\d+) failed/)?.[1]);
+  // Mocha: "  10 passing" / "  2 failing"
+  const mocha = last(/^\s+(\d+) passing/gm);
+  if (mocha) return n(mocha[1]) + n(last(/^\s+(\d+) failing/gm)?.[1]);
+  // go test -v: one line per test
+  const go = tail.match(/^--- (?:PASS|FAIL): /gm);
+  if (go) return go.length;
+  return undefined;
 }
 
 const TEST_RUNNER =
@@ -163,6 +213,42 @@ const TEST_RUNNER =
 export function isPlainTestCommand(command: string): boolean {
   const c = command.trim();
   return c.length > 0 && c.length < 300 && !/[;&|`$<>\n\\]/.test(c) && TEST_RUNNER.test(c);
+}
+
+const FAILURE_LINE = /\b(fail(ed|ing|ure)?|errors?|exception|panic(ked)?|assert(ion)?|expected|traceback)\b|✗|✕|×|not ok\b/i;
+
+/**
+ * The part of a check's output an agent needs: when it's too long to pass whole, the lines
+ * around each failure (wherever they are in the output) plus the end, where runners print
+ * their summary. Cutting from the end alone loses the first failures of a long test run.
+ */
+export function failureExcerpt(output: string, max = 6_000): string {
+  const text = output.trim();
+  if (text.length <= max) return text;
+  const lines = text.split("\n");
+  const keep = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    if (!FAILURE_LINE.test(lines[i]!)) continue;
+    for (let j = Math.max(0, i - 2); j <= Math.min(lines.length - 1, i + 6); j++) keep.add(j);
+  }
+  // Always keep the summary at the end.
+  const tailBudget = Math.floor(max / 3);
+  let tailStart = lines.length;
+  for (let size = 0; tailStart > 0 && size + lines[tailStart - 1]!.length + 1 <= tailBudget; ) size += lines[--tailStart]!.length + 1;
+  const parts: string[] = [];
+  let size = 0;
+  let previous = -2;
+  for (const i of [...keep].sort((a, b) => a - b)) {
+    if (i >= tailStart) break;
+    const line = lines[i]!.length > 500 ? `${lines[i]!.slice(0, 500)}…` : lines[i]!;
+    if (size + line.length + 1 > max - tailBudget) break;
+    if (i !== previous + 1) parts.push("…");
+    parts.push(line);
+    size += line.length + 1;
+    previous = i;
+  }
+  parts.push("…", ...lines.slice(tailStart));
+  return parts.join("\n");
 }
 
 /** Comparable fingerprint of a failure, ignoring timings and other noise, to detect "no progress". */

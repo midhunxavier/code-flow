@@ -10,11 +10,13 @@ function routeFromHash(): Route {
   if (view === "run" && id) return { view: "run", id };
   if (view === "review" && id && rest.length) return { view: "review", id, branch: rest.join("/") };
   if (view === "automations") return { view: "automations" };
+  if (view === "insights") return { view: "insights", group: id || undefined };
   return { view: "composer" };
 }
 function hashFor(r: Route): string {
   if (r.view === "run") return `#/run/${encodeURIComponent(r.id)}`;
   if (r.view === "automations") return "#/automations";
+  if (r.view === "insights") return r.group ? `#/insights/${encodeURIComponent(r.group)}` : "#/insights";
   if (r.view === "review") return `#/review/${encodeURIComponent(r.id)}/${r.branch.split("/").map(encodeURIComponent).join("/")}`;
   return "#/";
 }

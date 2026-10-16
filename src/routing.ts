@@ -4,6 +4,8 @@ import { adapters, AGENT_IDS, type AgentId } from "./adapters/index.js";
  * "Auto" in a role: pick an agent for it when the run starts, steering away from plans that
  * are close to their usage limit. Claude reports how much of each window is used; any CLI
  * that hit a rate limit is "limited" until its window resets (or for an hour if unknown).
+ * Among agents with room, the one whose code has passed most often in this repo goes first
+ * once there's enough history (see rankAgents); otherwise a fixed preference order.
  */
 
 export type Quota = Partial<Record<AgentId, { status: string; windows: Record<string, { utilization?: number; resetsAt?: number }>; at: number }>>;
@@ -17,9 +19,11 @@ const LIMITED_FOR_MS = 60 * 60_000;
 export function exhausted(agent: AgentId, quota: Quota, now = Date.now()): string | undefined {
   const q = quota[agent];
   if (!q) return undefined;
-  const live = Object.entries(q.windows).filter(([, w]) => !w.resetsAt || w.resetsAt > now);
+  const windows = Object.entries(q.windows);
+  const live = windows.filter(([, w]) => !w.resetsAt || w.resetsAt > now);
   if (q.status === "limited" || q.status === "rejected") {
-    const resets = live.map(([, w]) => w.resetsAt).filter((t): t is number => !!t);
+    const resets = windows.map(([, w]) => w.resetsAt).filter((t): t is number => !!t);
+    // With reset times known, the limit lasts until the last one; without, an hour.
     if (resets.length ? Math.max(...resets) > now : now - q.at < LIMITED_FOR_MS) return "hit its usage limit";
   }
   for (const [name, w] of live) {
@@ -36,10 +40,12 @@ export function resolveAuto(
   roles: Record<string, string[]>,
   quota: Quota,
   installed: Set<AgentId>,
+  rank: { order: AgentId[]; why: Record<string, string> } = { order: [], why: {} },
 ): { roles: Record<string, AgentId[]>; notes: string[] } {
   const notes: string[] = [];
   const out: Record<string, AgentId[]> = {};
-  const candidates = PREFERENCE.filter((a) => installed.has(a));
+  const order = [...rank.order, ...PREFERENCE.filter((a) => !rank.order.includes(a))];
+  const candidates = order.filter((a) => installed.has(a));
   const roomy = candidates.filter((a) => !exhausted(a, quota));
   const skipped = candidates.filter((a) => exhausted(a, quota));
   for (const [role, list] of Object.entries(roles)) {
@@ -49,8 +55,13 @@ export function resolveAuto(
       const pick = roomy.find((a) => !chosen.includes(a)) ?? candidates.find((a) => !chosen.includes(a));
       if (!pick) continue; // nobody left; the role's own validation reports it
       chosen.push(pick);
-      const why = skipped.length && skipped[0] !== pick ? ` (${adapters[skipped[0]!].displayName} ${exhausted(skipped[0]!, quota)})` : "";
-      notes.push(`Auto picked ${adapters[pick].displayName} for ${role}${why}`);
+      const reasons: string[] = [];
+      const pickedFull = exhausted(pick, quota);
+      // Everyone is out of room: say so rather than implying the pick has some.
+      if (pickedFull) reasons.push(`every agent is out of room; ${adapters[pick].displayName} ${pickedFull}`);
+      else if (skipped.length) reasons.push(`${adapters[skipped[0]!].displayName} ${exhausted(skipped[0]!, quota)}`);
+      if (rank.why[pick] && rank.order[0] === pick) reasons.push(rank.why[pick]!);
+      notes.push(`Auto picked ${adapters[pick].displayName} for ${role}${reasons.length ? ` (${reasons.join("; ")})` : ""}`);
     }
     out[role] = [...new Set(chosen)];
   }

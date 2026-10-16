@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
-import { api, enc, fmtSize, FLOWS, post, readBase64, SHORT, store } from "./lib.js";
+import { api, ApiError, enc, fmtSize, FLOWS, post, readBase64, SHORT, store } from "./lib.js";
+import { useDialog } from "./app.js";
 import {
   agents,
   agentSettings,
@@ -90,19 +91,14 @@ export function Composer() {
       copy: repoConfig.value?.config.copy,
     },
   });
+  const [comparing, setComparing] = useState(false);
   const start = async () => {
     if (problem || !p || starting) return;
     setStarting(true);
     setError("");
     try {
-      const { id } = await post<{ id: string }>("/api/runs", runBody(p));
-      store.set("baseRef", baseRef.value);
-      // Fresh composer for the next run; "Edit & run again" brings these back.
-      setTask("");
-      branchPrefix.value = "";
-      source.value = null;
-      contextPaths.value = new Map();
-      attachments.value = [];
+      const { id } = await postConfirmed<{ id: string }>("/api/runs", runBody(p));
+      resetComposer();
       await refreshRuns();
       route.value = { view: "run", id };
     } catch (err) {
@@ -110,6 +106,15 @@ export function Composer() {
     } finally {
       setStarting(false);
     }
+  };
+  // Fresh composer for the next run; "Edit & run again" brings these back.
+  const resetComposer = () => {
+    store.set("baseRef", baseRef.value);
+    setTask("");
+    branchPrefix.value = "";
+    source.value = null;
+    contextPaths.value = new Map();
+    attachments.value = [];
   };
 
   return (
@@ -181,6 +186,9 @@ export function Composer() {
         <button class="btn primary" disabled={!!problem || starting} onClick={start}>
           {starting ? "Starting…" : "Start run"} <span class="kbd">⌘↵</span>
         </button>
+        <button class="btn" disabled={!!problem} title="Run this task with several patterns or teams at once and see them side by side" onClick={() => setComparing(true)}>
+          ⚖ Compare setups…
+        </button>
         <button class="btn" disabled={!!problem} title="Run this task with this team on a schedule or from a webhook" onClick={() => setSaving(true)}>
           ⏱ Save as automation…
         </button>
@@ -188,7 +196,119 @@ export function Composer() {
       </div>
       {error ? <div class="msg err">{error}</div> : null}
       {saving && p ? <SaveAutomationDialog body={runBody(p)} onClose={() => setSaving(false)} /> : null}
+      {comparing && p ? (
+        <CompareDialog
+          base={{ ...runBody(p), approvals: {} }}
+          onClose={() => setComparing(false)}
+          onStarted={(group) => {
+            resetComposer();
+            void refreshRuns();
+            route.value = { view: "insights", group };
+          }}
+        />
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * POST that asks you first when the server needs a decision: a task from someone outside the
+ * repo whose checks would run on this machine without Docker.
+ */
+async function postConfirmed<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  try {
+    return await post<T>(path, body);
+  } catch (err) {
+    if (!(err instanceof ApiError) || err.confirm !== "allowUntrusted") throw err;
+    if (!confirm(`${err.message}\n\nRun its checks on this machine anyway?`)) throw new Error("Not started: the source isn't trusted and Docker isn't available.");
+    return post<T>(path, { ...body, allowUntrusted: true });
+  }
+}
+
+/** Start the same task with several patterns (each with the team you last set for it). */
+function CompareDialog({ base, onClose, onStarted }: { base: Record<string, any>; onClose: () => void; onStarted: (group: string) => void }) {
+  const ref = useDialog(true, onClose);
+  const current = pattern.value?.id;
+  const [picked, setPicked] = useState<Set<string>>(new Set(current ? [current] : []));
+  const [repeat, setRepeat] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const choices = patterns.value.map((p) => {
+    const roles = rolesFor(p);
+    return { p, roles, problem: startProblem(p, roles) };
+  });
+  const runs = picked.size * repeat;
+  const go = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const variants = choices
+        .filter((c) => picked.has(c.p.id))
+        .map((c) => ({ label: c.p.name, pattern: c.p.id, roles: c.roles, options: optionsFor(c.p), roleSettings: roleModels.value[c.p.id] ?? {} }));
+      const { group } = await postConfirmed<{ group: string }>("/api/compare", { run: base, variants, repeat });
+      onClose();
+      onStarted(group);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <dialog class="picker" ref={ref} aria-labelledby="compare-title">
+      <div class="picker-inner">
+        <div class="picker-head">
+          <h3 id="compare-title">Compare setups</h3>
+          <div class="help">
+            Runs this task once per setup, at the same time, and shows the results side by side in Insights: did it pass, how long, how many steps and tokens, did it touch the
+            tests. Each pattern uses the team you last picked for it — select a pattern in the composer to change its team.
+          </div>
+        </div>
+        <div class="dialog-body">
+          {choices.map(({ p, roles, problem }) => (
+            <label key={p.id} class={`compare-choice ${problem ? "off" : ""}`}>
+              <input
+                type="checkbox"
+                checked={picked.has(p.id)}
+                disabled={!!problem}
+                onChange={(e) => {
+                  const next = new Set(picked);
+                  if (e.currentTarget.checked) next.add(p.id);
+                  else next.delete(p.id);
+                  setPicked(next);
+                }}
+              />
+              <span>
+                <b>{p.name}</b>
+                <span class="help">{problem || teamSentence(p, roles)}</span>
+              </span>
+            </label>
+          ))}
+          <label class="check">
+            Run each
+            <select class="field inline" value={repeat} onChange={(e) => setRepeat(Number(e.currentTarget.value))}>
+              <option value={1}>once</option>
+              <option value={2}>twice</option>
+              <option value={3}>3 times</option>
+            </select>
+            (repeats show how consistent a setup is)
+          </label>
+          {error ? <div class="msg err">{error}</div> : null}
+        </div>
+        <div class="picker-foot">
+          <span class="ps">
+            {runs} run{runs === 1 ? "" : "s"}
+            {runs > 9 ? " — at most 9" : ""}; they share code-flow's agent slots, so some may wait their turn.
+          </span>
+          <button class="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button class="btn primary" disabled={busy || picked.size < 2 || runs > 9} onClick={go} title={picked.size < 2 ? "Pick at least two setups" : ""}>
+            {busy ? "Starting…" : `Start ${runs} runs`}
+          </button>
+        </div>
+      </div>
+    </dialog>
   );
 }
 
@@ -465,9 +585,9 @@ function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>): strin
     case "race":
       return `${many("contestants")} each solve it separately → ${many("judge")} ${(roles.judge?.length ?? 0) > 1 ? "vote" : "picks"} the best, blind${doneWhen}`;
     case "debate":
-      return `${many("debaters")} propose and debate → ${one("synthesizer")} writes the final plan${roles.builder?.length ? ` → ${one("builder")} builds it` : " (design only)"}${doneWhen}`;
+      return `${many("debaters")} propose and debate → ${one("synthesizer")} writes the final plan${roles.builder?.length ? ` → ${one("builder")} builds it${roles.reviewer?.length ? ` → ${one("reviewer")} reviews it` : ""}` : " (design only)"}${doneWhen}`;
     case "supervisor":
-      return `${one("supervisor")} splits the work → ${many("workers")} build the parts in parallel → ${one("supervisor")} merges and reviews${doneWhen}`;
+      return `${one("supervisor")} splits the work and sets the contracts → ${many("workers")} build the parts in parallel → ${one("supervisor")} merges${roles.reviewer?.length ? ` → ${one("reviewer")} reviews` : " and reviews its own work"}${doneWhen}`;
     case "tdd":
       return `${one("tester")} writes tests → ${one("builder")} makes them pass → ${one("tester")} tries to break it${doneWhen}`;
     case "council":

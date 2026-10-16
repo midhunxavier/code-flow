@@ -1,5 +1,6 @@
 import type { CheckResult } from "../checks.js";
 import type { Pattern, StepOutcome } from "../engine.js";
+import { describeIssues } from "../integrity.js";
 import { REVIEW_SCHEMA } from "./schemas.js";
 import { checkSection, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
 
@@ -74,6 +75,7 @@ export const pipelinePattern: Pattern = {
     let review: StepOutcome | undefined;
     let fixer = build;
     let check: CheckResult | null = null;
+    let reviewRounds = 0;
 
     for (let round = 1; round <= maxRounds; round++) {
       // Every round starts with code-flow running the check; a reviewer never sees red code.
@@ -86,6 +88,8 @@ export const pipelinePattern: Pattern = {
       }
 
       const diff = await ctx.diff(wt);
+      // Test changes go to the reviewer: only someone who didn't write them should accept them.
+      const testChanges = await ctx.testChanges(wt);
       const decided = await ctx.decide<ReviewVerdict>({
         title: `Review (round ${round})`,
         schema: REVIEW_SCHEMA,
@@ -99,9 +103,16 @@ export const pipelinePattern: Pattern = {
           (review ? "The builder addressed your previous review. Here is the updated diff.\n" : "") +
           preamble("reviewer", reviewer, `${READ_ONLY} You did not write this code; review it critically.`) +
           section("Task", ctx.task) +
-          (round === 1 ? section("Plan", plan.finalText) : "") +
+          // A reviewer without its earlier session hasn't seen the plan.
+          (round === 1 || !review?.sessionId ? section("Plan", plan.finalText) : "") +
           section("Diff against base", fence(diff, "diff")) +
           (check ? checkSection(check) : "") +
+          (testChanges.length
+            ? section(
+                "Changes to tests (found by code-flow)",
+                `These can make the check pass without fixing anything. Request changes unless the task clearly requires them:\n${describeIssues(testChanges)}`,
+              )
+            : "") +
           section(
             "Deliverable",
             "Check correctness, missed requirements, edge cases, tests and security. Only request changes for real problems, not style preferences.",
@@ -113,7 +124,9 @@ export const pipelinePattern: Pattern = {
 
       review = decided.outcome;
       verdict = decided.value;
+      reviewRounds = round;
       ctx.log(`Review round ${round}: ${verdict.verdict} (${verdict.issues?.length ?? 0} issues)`);
+      if (verdict.verdict === "changes_requested") ctx.learn(verdict.issues ?? []);
       if (verdict.verdict === "approve" || round === maxRounds) break;
 
       fixer = await ctx.ask({
@@ -134,6 +147,7 @@ export const pipelinePattern: Pattern = {
     const green = !check || check.ok;
     const approved = green && !!review && (!verdict || verdict.verdict === "approve");
     if (ctx.hasCheck) ctx.setVerdict(green ? "passed" : "failing");
+    ctx.setFacts({ reviewRounds, approved });
     const headline = !green
       ? `Check \`${check!.command}\` still fails after ${checkFixes} fix attempts`
       : approved
