@@ -2,7 +2,9 @@
 // Stand-in for the GitHub CLI in tests. Issues, PRs, checks and comments live in the JSON file
 // named by FAKE_GH_STATE; a PR's head is read from the repo's real `origin` remote, so pushes
 // made by code-flow are what the fake "CI" sees. A PR's checks fail while its head commit is
-// listed in `failOn` (or always, with "all").
+// listed in `failOn` (or always, with "all"). Dependabot and code scanning alerts and leaked
+// secrets are listed from `dependabotAlerts`, `codeScanningAlerts` and `secretAlerts`; a name in
+// `alertErrors` makes that listing fail the way GitHub does when the feature is off.
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
@@ -26,8 +28,43 @@ const prOf = (ref) => {
 };
 const headOf = (pr) => execFileSync("git", ["ls-remote", "origin", `refs/heads/${pr.headRefName}`]).toString().split(/\s/)[0];
 
+const failingHead = (pr) => pr.failOn === "all" || (Array.isArray(pr.failOn) && pr.failOn.length > 0 && pr.failOn.includes(headOf(pr)));
+/** What `gh pr list --json statusCheckRollup` reports for a PR. */
+const rollup = (pr) =>
+  pr.noChecks
+    ? []
+    : pr.pending
+      ? [{ __typename: "CheckRun", name: "test", status: "IN_PROGRESS", conclusion: "" }]
+      : [
+          { __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion: "SUCCESS" },
+          { __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: failingHead(pr) ? "FAILURE" : "SUCCESS" },
+        ];
+const ALERTS = { dependabot: "dependabotAlerts", "code-scanning": "codeScanningAlerts", "secret-scanning": "secretAlerts" };
+const ALERT_ERRORS = {
+  dependabot: "gh: Dependabot alerts are disabled for this repository. (HTTP 403)",
+  "code-scanning": "gh: Code scanning is not enabled for this repository. (HTTP 404)",
+  "secret-scanning": "gh: Resource not accessible by personal access token (HTTP 403)",
+};
+
 const [group, command, target] = args;
-if (group === "api" && command === "user") print({ login: process.env.FAKE_GH_USER ?? "me" });
+const alertPath = group === "api" ? command?.match(/^repos\/\{owner\}\/\{repo\}\/(dependabot|code-scanning|secret-scanning)\/alerts(?:\/(\d+))?(?:\?.*)?$/) : null;
+if (alertPath) {
+  const [, tool, number] = alertPath;
+  if ((state.alertErrors ?? []).includes(tool)) {
+    process.stderr.write(`${ALERT_ERRORS[tool]}\n`);
+    process.exit(1);
+  }
+  const alerts = state[ALERTS[tool]] ?? [];
+  if (!number) print(alerts.filter((a) => (a.state ?? "open") === "open"));
+  else {
+    const alert = alerts.find((a) => a.number === Number(number));
+    if (!alert) {
+      process.stderr.write("gh: Not Found (HTTP 404)\n");
+      process.exit(1);
+    }
+    print(alert);
+  }
+} else if (group === "api" && command === "user") print({ login: process.env.FAKE_GH_USER ?? "me" });
 else if (group === "api" && /^repos\/\{owner\}\/\{repo\}\/issues\/\d+$/.test(command)) {
   // Issues and PRs share GitHub's issues endpoint, which says who wrote them.
   const number = Number(command.split("/").pop());
@@ -42,7 +79,11 @@ else if (group === "issue" && command === "view") {
   const issue = state.issues.find((i) => i.number === Number(target));
   if (!issue) process.exit(1);
   print(issue);
-} else if (group === "pr" && command === "list") print(Object.values(state.prs).filter((p) => p.state === "OPEN"));
+} else if (group === "pr" && command === "list") {
+  const app = flag("--app");
+  const open = Object.values(state.prs).filter((p) => p.state === "OPEN" && (!app || new RegExp(app).test(p.author?.login ?? "")));
+  print(flag("--json")?.includes("statusCheckRollup") ? open.map((p) => ({ ...p, statusCheckRollup: rollup(p) })) : open);
+}
 else if (group === "pr" && command === "view") {
   const pr = prOf(target);
   print({ ...pr, headRefOid: headOf(pr), reviews: pr.reviews ?? [] });

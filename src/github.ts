@@ -50,9 +50,39 @@ export interface PrStatus {
   comments: PrComment[];
 }
 
+export type AlertTool = "dependabot" | "code-scanning";
+
+/** A security alert a run fixes: a Dependabot alert (several, for one package) or a code scanning alert. */
+export interface AlertInfo {
+  tool: AlertTool;
+  /** Every alert this run covers; Dependabot alerts for one package are fixed together. */
+  numbers: number[];
+  /** critical, high, medium, low (or a code scanning rule's error / warning / note). */
+  severity: string;
+  /** The code scanning rule, or the advisory (GHSA) for a single Dependabot alert. */
+  rule?: string;
+  package?: string;
+  ecosystem?: string;
+  manifest?: string;
+  vulnerable?: string;
+  patched?: string;
+  path?: string;
+  line?: number;
+}
+
+/** Where a run starts from on GitHub, as the composer, a sweep or a webhook asks for it. */
+export interface SourceInput {
+  kind: "issue" | "pr" | "alert";
+  number: number;
+  ciLogs?: boolean;
+  /** Alerts only: which tool raised it, and every alert number it covers. */
+  tool?: AlertTool;
+  numbers?: number[];
+}
+
 /** What a run was started from; its text goes to every agent along with the task. */
 export interface RunSource {
-  kind: "issue" | "pr";
+  kind: "issue" | "pr" | "alert";
   number: number;
   url: string;
   title: string;
@@ -62,6 +92,8 @@ export interface RunSource {
   isCrossRepository?: boolean;
   /** Failing CI checks and their logs when the run started ("Fix failing CI"). */
   ci?: { failing: string[]; logs: string };
+  /** The security alert(s), for runs started from one. */
+  alert?: AlertInfo;
   /** Who opened the issue or PR, and their relation to the repo (OWNER, MEMBER, NONE…). */
   author?: string;
   association?: string;
@@ -79,9 +111,50 @@ export const CODEFLOW_MARKER = "<!-- code-flow -->";
 
 const PR_FIELDS = "number,title,body,url,headRefName,baseRefName,author,isDraft,isCrossRepository";
 
-export async function listIssues(repo: string): Promise<Issue[]> {
-  const raw = await gh(repo, ["issue", "list", "--state", "open", "--limit", "50", "--json", "number,title,body,url,labels"]);
+export async function listIssues(repo: string, limit = 50): Promise<Issue[]> {
+  const raw = await gh(repo, ["issue", "list", "--state", "open", "--limit", String(limit), "--json", "number,title,body,url,labels"]);
   return JSON.parse(raw).map(toIssue);
+}
+
+export type CiState = "pass" | "fail" | "pending" | "none";
+
+/** Dependabot's open pull requests, each with where its CI stands. */
+export async function listDependabotPrs(repo: string): Promise<(PullRequest & { ci: CiState })[]> {
+  const raw = await gh(repo, ["pr", "list", "--state", "open", "--app", "dependabot", "--limit", "100", "--json", `${PR_FIELDS},statusCheckRollup`]);
+  return JSON.parse(raw).map((p: any) => ({ ...toPr(p), ci: ciState(p.statusCheckRollup ?? []) }));
+}
+
+/** One state for a PR's checks: any failure fails it; anything unfinished keeps it pending. */
+export function ciState(rollup: any[]): CiState {
+  if (!rollup.length) return "none";
+  const failed = /^(FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED|STARTUP_FAILURE)$/;
+  if (rollup.some((c) => failed.test(String(c.conclusion ?? "")) || failed.test(String(c.state ?? "")))) return "fail";
+  const unfinished = rollup.some((c) => (c.status && c.status !== "COMPLETED") || /^(PENDING|EXPECTED|QUEUED|IN_PROGRESS)$/.test(String(c.state ?? "")));
+  return unfinished ? "pending" : "pass";
+}
+
+/** Open Dependabot alerts, with their advisory and the version that fixes them. */
+export async function listDependabotAlerts(repo: string): Promise<any[]> {
+  return JSON.parse(await gh(repo, ["api", "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=100"]));
+}
+
+export async function listCodeScanningAlerts(repo: string): Promise<any[]> {
+  return JSON.parse(await gh(repo, ["api", "repos/{owner}/{repo}/code-scanning/alerts?state=open&per_page=100"]));
+}
+
+/** Leaked secrets: listed so you can rotate them. They're never handed to an agent. */
+export async function listSecretScanningAlerts(repo: string): Promise<any[]> {
+  return JSON.parse(await gh(repo, ["api", "repos/{owner}/{repo}/secret-scanning/alerts?state=open&per_page=100"]));
+}
+
+/** Why an alert listing failed, in words that say what to do. */
+export function alertsError(what: string, err: Error): string {
+  const message = err.message;
+  if (/disabled|not enabled|no analysis/i.test(message)) return `${what} aren't turned on for this repository`;
+  if (/HTTP 40[34]|not accessible|admin rights|security_events|scope/i.test(message)) {
+    return `Your gh login can't read ${what.toLowerCase()} — run \`gh auth refresh -s security_events\` (private repositories also need admin or security manager access)`;
+  }
+  return `${what}: ${message}`;
 }
 
 export async function viewIssue(repo: string, number: number): Promise<Issue> {
@@ -198,9 +271,10 @@ export function untrustedBlock(what: string, text: string, trusted = false): str
   return note + safeFence(text);
 }
 
-/** The source as a prompt section (issue text, PR description, CI failures). */
+/** The source as a prompt section (issue text, PR description, CI failures, alert details). */
 export function sourcePrompt(source: RunSource | undefined): string {
   if (!source) return "";
+  if (source.kind === "alert") return alertPrompt(source);
   const what = source.kind === "issue" ? `GitHub issue #${source.number}` : `Pull request #${source.number}`;
   // Runs saved before trust was recorded predate this check; treat their sources as trusted.
   const trusted = source.trusted !== false;
@@ -213,6 +287,92 @@ export function sourcePrompt(source: RunSource | undefined): string {
     if (source.ci.logs) parts.push(`### Logs of the failed jobs\n${untrustedBlock("CI log", source.ci.logs, trusted)}`);
   }
   return parts.join("\n\n");
+}
+
+function alertPrompt(source: RunSource): string {
+  const a = source.alert!;
+  const nums = a.numbers.map((n) => `#${n}`).join(", ");
+  const what = a.tool === "dependabot" ? `Dependabot alert${a.numbers.length > 1 ? "s" : ""} ${nums}` : `Code scanning alert ${nums}`;
+  const parts = [`\n\n## ${what}: ${source.title}\n${source.url}`];
+  if (a.tool === "dependabot") {
+    parts.push(
+      `Package \`${a.package}\` (${a.ecosystem}${a.manifest ? `, \`${a.manifest}\`` : ""}), severity ${a.severity}: vulnerable ${a.vulnerable ? `\`${a.vulnerable}\`` : "versions"}, ` +
+        (a.patched ? `fixed in \`${a.patched}\`.` : "no patched version yet."),
+    );
+  } else {
+    parts.push(`Rule \`${a.rule}\` (${a.severity})${a.path ? ` at \`${a.path}${a.line ? `:${a.line}` : ""}\`` : ""}.`);
+  }
+  // Alert text comes from GitHub's advisory database or your own scanning tools.
+  if (source.body.trim()) parts.push(untrustedBlock("alert", source.body.trim().slice(0, 8_000), true));
+  return parts.join("\n\n");
+}
+
+const SEVERITY = ["critical", "high", "error", "medium", "warning", "low", "note"];
+/** Sorts critical first; unknown severities last. */
+export const severityRank = (s?: string) => {
+  const i = SEVERITY.indexOf(String(s ?? "").toLowerCase());
+  return i < 0 ? SEVERITY.length : i;
+};
+
+/** Read alerts and turn them into a run's source (Dependabot alerts for one package together). */
+async function loadAlertSource(repo: string, tool: AlertTool, numbers: number[]): Promise<RunSource> {
+  const endpoint = tool === "dependabot" ? "dependabot/alerts" : "code-scanning/alerts";
+  const alerts = await Promise.all(numbers.map(async (n) => JSON.parse(await gh(repo, ["api", `repos/{owner}/{repo}/${endpoint}/${n}`]))));
+  const first = alerts[0];
+  if (tool === "dependabot") {
+    const advisories = alerts.map((x) => x.security_advisory ?? {});
+    const worst = [...alerts].sort((x, y) => severityRank(x.security_advisory?.severity) - severityRank(y.security_advisory?.severity))[0];
+    const patched = alerts.map((x) => x.security_vulnerability?.first_patched_version?.identifier).filter(Boolean).sort(compareVersions).at(-1);
+    const pkg = first.dependency?.package ?? first.security_vulnerability?.package ?? {};
+    return {
+      kind: "alert",
+      number: numbers[0]!,
+      url: first.html_url,
+      title: alerts.length > 1 ? `${pkg.name}: ${alerts.length} vulnerabilities` : advisories[0].summary ?? pkg.name,
+      body: alerts
+        .map((x) => {
+          const adv = x.security_advisory ?? {};
+          const ids = [adv.ghsa_id, adv.cve_id].filter(Boolean).join(" / ");
+          const fix = x.security_vulnerability?.first_patched_version?.identifier;
+          return `### ${adv.summary ?? "Advisory"} (${ids || `alert #${x.number}`}, ${adv.severity ?? "unknown"})\nVulnerable: ${x.security_vulnerability?.vulnerable_version_range ?? "?"}${fix ? ` · fixed in ${fix}` : " · no fix yet"}\n\n${String(adv.description ?? "").slice(0, 2_000)}`;
+        })
+        .join("\n\n"),
+      trusted: true,
+      alert: {
+        tool,
+        numbers,
+        severity: worst?.security_advisory?.severity ?? "unknown",
+        rule: alerts.length === 1 ? advisories[0].ghsa_id : undefined,
+        package: pkg.name,
+        ecosystem: pkg.ecosystem,
+        manifest: first.dependency?.manifest_path,
+        vulnerable: first.security_vulnerability?.vulnerable_version_range,
+        patched,
+      },
+    };
+  }
+  const rule = first.rule ?? {};
+  const where = first.most_recent_instance?.location ?? {};
+  return {
+    kind: "alert",
+    number: numbers[0]!,
+    url: first.html_url,
+    title: rule.description || rule.name || rule.id,
+    body: [first.most_recent_instance?.message?.text, rule.full_description, rule.help].filter(Boolean).join("\n\n"),
+    trusted: true,
+    alert: { tool, numbers, severity: rule.security_severity_level ?? rule.severity ?? "unknown", rule: rule.id, path: where.path, line: where.start_line },
+  };
+}
+
+/** Compare dotted versions numerically ("1.10.0" after "1.9.3"); good enough for "the highest fix". */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(/[.-]/).map((x) => parseInt(x, 10));
+  const pb = b.split(/[.-]/).map((x) => parseInt(x, 10));
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d;
+  }
+  return 0;
 }
 
 /** Who opened issue or PR `number`, and their relation to the repo (GitHub's author_association). */
@@ -233,8 +393,12 @@ export function githubUser(repo: string): Promise<string> {
   return user;
 }
 
-/** Resolve a run's source: fetch the issue or PR (and, if asked, its failing CI logs). */
-export async function loadSource(repo: string, input: { kind: "issue" | "pr"; number: number; ciLogs?: boolean }): Promise<{ source: RunSource; branch?: string }> {
+/** Dependabot's GitHub App: its PRs are written by GitHub, not by a person who could aim them at agents. */
+const DEPENDABOT = /^(app\/)?dependabot(\[bot\])?$/;
+
+/** Resolve a run's source: fetch the issue, PR (and, if asked, its failing CI logs) or alerts. */
+export async function loadSource(repo: string, input: SourceInput): Promise<{ source: RunSource; branch?: string }> {
+  if (input.kind === "alert") return { source: await loadAlertSource(repo, input.tool ?? "code-scanning", input.numbers?.length ? input.numbers : [input.number]) };
   // Unknown authorship counts as untrusted: the run is locked down rather than exposed.
   const who = await authorOf(repo, input.number).catch(() => ({ author: "", association: "UNKNOWN" }));
   if (input.kind === "issue") {
@@ -254,8 +418,9 @@ export async function loadSource(repo: string, input: { kind: "issue" | "pr"; nu
     isCrossRepository: pr.isCrossRepository,
     ...who,
     author: who.author || pr.author,
-    // A fork's code (and so its CI output) is written by whoever opened it.
-    trusted: TRUSTED_ASSOCIATIONS.has(who.association) && !pr.isCrossRepository,
+    // A fork's code (and so its CI output) is written by whoever opened it. Dependabot's PRs come
+    // from GitHub itself.
+    trusted: (TRUSTED_ASSOCIATIONS.has(who.association) || DEPENDABOT.test(who.author || pr.author)) && !pr.isCrossRepository,
   };
   if (input.ciLogs) {
     const checks = await prChecks(repo, String(pr.number));

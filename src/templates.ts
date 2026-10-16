@@ -1,6 +1,9 @@
+import type { SweepKind } from "./sweeps.js";
+
 /**
  * Starting points for common jobs. A template picks the pattern and drafts the task; ones that
  * need an issue or PR ask you to pick it, and "{number}" / "{title}" are filled in from it.
+ * A sweep template lists many items instead and starts one run per item you pick.
  */
 export interface Template {
   id: string;
@@ -11,6 +14,8 @@ export interface Template {
   needs?: "issue" | "pr";
   /** Include the PR's failing CI checks and their logs in what agents are given. */
   ciLogs?: boolean;
+  /** A sweep: list this kind of work and start one run per picked item (`task` is for webhooks). */
+  sweep?: SweepKind;
 }
 
 export const templates: Template[] = [
@@ -45,5 +50,30 @@ export const templates: Template[] = [
     description: "Bump a package, read its changelog for breaking changes, and keep the tests green.",
     pattern: "pipeline",
     task: "Upgrade PACKAGE to its latest version. Read its changelog for breaking changes, update every call site, and keep the tests passing.",
+  },
+  {
+    id: "sweep-issues",
+    name: "Fix open issues",
+    description: "List the open issues, pick the ones to fix, and start one Plan → Build → Review run each. Results wait in your inbox.",
+    pattern: "pipeline",
+    sweep: "issues",
+    task: "Fix the GitHub issue below. Add a test that fails without the fix.",
+  },
+  {
+    id: "sweep-dependabot",
+    name: "Fix Dependabot PRs",
+    description: "Every Dependabot PR whose CI fails gets a run that fixes it; approving pushes the fix to the PR. Green ones are left for you to merge.",
+    pattern: "pipeline",
+    sweep: "dependabot",
+    ciLogs: true,
+    task: "Make CI pass on the Dependabot pull request below by adapting the code to the new version. Don't pin it back, and don't disable, skip or weaken tests.",
+  },
+  {
+    id: "sweep-alerts",
+    name: "Fix security alerts",
+    description: "Dependabot alerts (one run per package) and code scanning alerts (one per alert). Leaked secrets are listed for you to rotate; agents never get them.",
+    pattern: "pipeline",
+    sweep: "alerts",
+    task: "Fix the security alert below. Fix the cause rather than suppressing the alert, and keep the tests passing.",
   },
 ];

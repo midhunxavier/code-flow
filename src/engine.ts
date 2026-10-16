@@ -47,7 +47,7 @@ import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJso
 import { branchDiff, mergeInto, openPullRequest, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
-import { commentOnPr, loadSource, mergeBase, pushBranch, sourcePrompt, type RunSource } from "./github.js";
+import { commentOnPr, loadSource, mergeBase, pushBranch, sourcePrompt, type RunSource, type SourceInput } from "./github.js";
 
 /** How many agent CLIs, and how many check/setup commands, may run at once across all runs. */
 const agentSlots = new Slots(Math.max(1, Number(process.env.CODEFLOW_MAX_AGENTS) || 6));
@@ -199,8 +199,11 @@ export interface Run {
   watches: Record<string, PrWatch>;
   /** How "Auto" roles were filled when the run started. */
   routing?: string[];
-  /** Started by an automation (schedule, webhook, or "Run now") rather than by you. */
-  trigger?: { id: string; name: string; via: "schedule" | "webhook" | "manual" };
+  /**
+   * Started by an automation (schedule, webhook, or "Run now") or a sweep, rather than by you
+   * one at a time: its result waits in the inbox.
+   */
+  trigger?: { id: string; name: string; via: "schedule" | "webhook" | "manual" | "sweep" };
   /** Your decision on an automation's result: it waits in the inbox until you make one. */
   triage?: { state: "pending" | "approved" | "rejected" | "empty"; at: number; note?: string };
   /** Changes to tests in each result branch that could make the check pass without a fix. */
@@ -1080,7 +1083,7 @@ export interface StartRunInput {
   roleSettings?: Record<string, AgentSettings>;
   trust?: Trust;
   /** Start from a GitHub issue or PR (a PR's branch becomes the base). */
-  source?: { kind: "issue" | "pr"; number: number; ciLogs?: boolean };
+  source?: SourceInput;
   /** How "Auto" roles were resolved, for the log. */
   routing?: string[];
   /** Set when an automation starts the run. */
@@ -1301,7 +1304,7 @@ export class RunManager {
     const agents = [...new Set(Object.values(run.roles).flat())].join(", ");
     const body = [
       run.task,
-      run.source?.kind === "issue" ? `\nCloses #${run.source.number}` : "",
+      run.source?.kind === "issue" ? `\nCloses #${run.source.number}` : run.source?.kind === "alert" ? `\nFixes ${run.source.url}` : "",
       "",
       "---",
       `Made by a code-flow team (${this.findPattern(run.pattern)?.name ?? run.pattern}; agents: ${agents}).`,
@@ -1584,7 +1587,7 @@ export class RunManager {
     if (source && source.trusted === false) {
       const who = source.author ? `@${source.author}` : "someone the repository doesn't know";
       const relation = source.isCrossRepository ? "from a fork" : `who isn't one of its maintainers (${(source.association ?? "unknown").toLowerCase()})`;
-      lockdown = `${source.kind === "issue" ? "Issue" : "Pull request"} #${source.number} comes from ${who}, ${relation}`;
+      lockdown = `${source.kind === "issue" ? "Issue" : source.kind === "pr" ? "Pull request" : "Alert"} #${source.number} comes from ${who}, ${relation}`;
       trust = "safe";
       loop.copy = undefined;
       if (!loop.container && (loop.check || loop.setup)) {
@@ -1787,10 +1790,13 @@ export class RunManager {
     run.triage = { state: "pending", at: Date.now(), note: run.triage?.note };
   }
 
-  /** Your decision on an automation's result. Approving never merges; it can open a PR. */
-  async triage(id: string, input: { decision: "approve" | "revise" | "reject"; note?: string; openPr?: boolean }) {
+  /**
+   * Your decision on an automation's or sweep's result. Approving never merges; it can open a
+   * PR, or push to the PR the run started from (a Dependabot PR, say).
+   */
+  async triage(id: string, input: { decision: "approve" | "revise" | "reject"; note?: string; openPr?: boolean; pushPr?: boolean }) {
     const run = this.require(id);
-    if (!run.trigger) throw new Error("Only automation runs go through the inbox");
+    if (!run.trigger) throw new Error("Only automation and sweep runs go through the inbox");
     if (run.status === "running") throw new Error("Wait for the run to finish");
     if (input.decision === "revise") {
       const note = input.note?.trim();
@@ -1814,14 +1820,18 @@ export class RunManager {
       return run;
     }
     let pr: string | undefined;
-    if (input.openPr) {
+    if (input.pushPr) {
+      const artifact = run.artifacts.find((a) => a.stat?.trim());
+      if (!artifact) throw new Error("There's no change to push");
+      pr = (await this.pushToPr(id, { branch: artifact.branch })).url;
+    } else if (input.openPr) {
       const artifact = run.artifacts.find((a) => a.stat?.trim());
       if (!artifact) throw new Error("There's no change to open a pull request for");
       pr = await this.pullRequest(id, { branch: artifact.branch, into: run.baseLabel === "HEAD" ? await currentBranch(run.repo) : run.baseLabel });
     }
     run.triage = { state: "approved", at: Date.now(), note: input.note?.trim() || undefined };
     run.seen = true;
-    this.emit(run, { type: "log", level: "info", text: `You approved the result${pr ? ` and opened ${pr}` : ""}` });
+    this.emit(run, { type: "log", level: "info", text: `You approved the result${pr ? (input.pushPr ? ` and pushed it to ${pr}` : ` and opened ${pr}`) : ""}` });
     this.emitRun(run);
     return run;
   }

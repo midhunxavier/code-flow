@@ -23,7 +23,8 @@ import { listBranches, repoRoot, worktreeRoot } from "./git.js";
 import { folderSizes, removeWorktrees } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
 import { acquireLock, writeHealth } from "./store.js";
-import { listIssues, listPullRequests } from "./github.js";
+import { listIssues, listPullRequests, type SourceInput } from "./github.js";
+import { listSweep, runSweep, type SweepKind } from "./sweeps.js";
 import { resolveAuto } from "./routing.js";
 import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
@@ -40,7 +41,7 @@ process.once("exit", releaseLock);
 
 const manager = new RunManager(findPattern);
 const watcher = new PrWatcher(manager);
-const automations = new Automations(manager, (body, extra) => startFromBody(body, extra));
+const automations = new Automations(manager, (body, extra) => startFromBody(body, extra), (repo, kind) => listSweep(repo, kind, manager.list()));
 let remote: RemoteSettings;
 const REMOTE_PORT = Number(process.env.CODEFLOW_REMOTE_PORT ?? PORT + 1);
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
@@ -184,14 +185,57 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string): P
   return { roles, notes: resolved.notes };
 }
 
-/** { kind: "issue" | "pr", number, ciLogs? } — where a run starts from on GitHub. */
-function validateSource(input: unknown): { kind: "issue" | "pr"; number: number; ciLogs?: boolean } | undefined {
+/** { kind: "issue" | "pr", number, ciLogs? } or { kind: "alert", tool, number, numbers? } — where a run starts from on GitHub. */
+function validateSource(input: unknown): SourceInput | undefined {
   if (!input || typeof input !== "object") return undefined;
   const raw = input as Record<string, unknown>;
   const number = Number(raw.number);
-  if (raw.kind !== "issue" && raw.kind !== "pr") throw new HttpError(400, "Source must be an issue or a pull request");
-  if (!Number.isInteger(number) || number < 1) throw new HttpError(400, "Source needs an issue or PR number");
-  return { kind: raw.kind, number, ciLogs: raw.ciLogs === true };
+  if (raw.kind !== "issue" && raw.kind !== "pr" && raw.kind !== "alert") throw new HttpError(400, "Source must be an issue, a pull request or an alert");
+  if (!Number.isInteger(number) || number < 1) throw new HttpError(400, "Source needs an issue, PR or alert number");
+  if (raw.kind !== "alert") return { kind: raw.kind, number, ciLogs: raw.ciLogs === true };
+  if (raw.tool !== "dependabot" && raw.tool !== "code-scanning") throw new HttpError(400, "An alert comes from Dependabot or code scanning");
+  const numbers = Array.isArray(raw.numbers) ? [...new Set(raw.numbers.map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 50) : [];
+  return { kind: "alert", tool: raw.tool, number, numbers: numbers.length ? numbers : undefined };
+}
+
+const SWEEP_KINDS: SweepKind[] = ["issues", "dependabot", "alerts"];
+/** Most runs one sweep starts at once; agents and checks still queue behind CODEFLOW_MAX_AGENTS/CHECKS. */
+const MAX_SWEEP = 25;
+
+/**
+ * Start a sweep: one run per item, each starting from its issue, PR or alert, with its result in
+ * the inbox. `run` is the composer's run request (team, check, settings) shared by every item.
+ * With a schedule, the sweep is also saved as an automation that starts runs for new items.
+ */
+async function startSweep(body: Record<string, any>) {
+  const kind = body.kind as SweepKind;
+  if (!SWEEP_KINDS.includes(kind)) throw new HttpError(400, "Unknown kind of sweep");
+  const name = String(body.name ?? "").trim().slice(0, 80) || "Sweep";
+  const base = body.run && typeof body.run === "object" ? body.run : {};
+  const items: { key: string; task: string; source: SourceInput }[] = [];
+  for (const i of Array.isArray(body.items) ? body.items : []) {
+    const item = { key: String(i?.key ?? "").slice(0, 200), task: String(i?.task ?? "").trim().slice(0, 4_000), source: validateSource(i?.source) };
+    if (!item.key || !item.task || !item.source) throw new HttpError(400, "Every item needs a task and a source");
+    items.push({ ...item, source: item.source });
+  }
+  if (!items.length) throw new HttpError(400, "Pick at least one item");
+  if (items.length > MAX_SWEEP) throw new HttpError(400, `Pick at most ${MAX_SWEEP} items; the rest can go in a later sweep`);
+  const repo = (await buildStartInput({ ...base, task: items[0]!.task })).repo; // same checks as one run, before any starts
+  const root = await repoRoot(repo);
+  const schedule = body.schedule ? await attempt(async () => validateSchedule(body.schedule)) : undefined;
+  const id = `s-${randomBytes(4).toString("hex")}`;
+  const saved = schedule
+    ? await automations.create({ name, enabled: true, run: { ...automationRun({ ...base, task: templates.find((t) => t.sweep === kind)?.task ?? name }), source: undefined }, schedule, webhook: false, isolate: false, sweep: { kind, max: Math.min(10, Math.max(1, Number(body.max) || 5)) } })
+    : undefined;
+  const trigger = { id: saved?.id ?? id, name, via: "sweep" as const };
+  const outcome = await runSweep({
+    repo: root,
+    items,
+    runs: manager.list(),
+    start: (item) => startFromBody({ ...base, task: item.task, source: item.source }, { trigger }),
+  });
+  if (saved) await automations.markHandled(saved.id, outcome.started.map((s) => s.key));
+  return { sweep: trigger.id, automation: saved?.id, ...outcome };
 }
 
 /** Per-role model/effort overrides: { role: { agent: { model, effort } } }, each validated like agentSettings. */
@@ -513,7 +557,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (id && req.method === "POST" && parts[3] === "run") {
       const fired = await attempt(() => automations.fire(id, { via: "manual" }));
       if (fired.skipped) throw new HttpError(409, `Skipped: ${fired.skipped}`);
-      return send(res, 201, { id: fired.run!.id });
+      return send(res, 201, { id: fired.run?.id ?? fired.runs?.[0]?.id, ids: fired.runs?.map((r) => r.id) });
     }
     if (id && req.method === "POST" && !parts[3]) {
       const body = await readJson(req);
@@ -528,6 +572,13 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       return send(res, 200, describeAutomation(await automations.update(id, patch)));
     }
   }
+  if (req.method === "GET" && parts[1] === "github" && parts[2] === "sweep") {
+    const repo = await requestedRepo(url);
+    const kind = url.searchParams.get("kind") as SweepKind;
+    if (!SWEEP_KINDS.includes(kind)) throw new HttpError(400, "Unknown kind of sweep");
+    return send(res, 200, await attempt(() => listSweep(repo, kind, manager.list())));
+  }
+  if (req.method === "POST" && parts[1] === "sweeps") return send(res, 201, await startSweep(await readJson(req)));
   if (req.method === "GET" && parts[1] === "github" && (parts[2] === "issues" || parts[2] === "prs")) {
     const repo = await requestedRepo(url);
     return send(res, 200, await attempt<unknown[]>(() => (parts[2] === "issues" ? listIssues(repo) : listPullRequests(repo))));
@@ -656,7 +707,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (req.method === "POST" && parts[3] === "triage") {
       const body = await readJson(req);
       if (!["approve", "revise", "reject"].includes(body.decision)) throw new HttpError(400, "Unknown decision");
-      await attempt(() => manager.triage(run.id, { decision: body.decision, note: typeof body.note === "string" ? body.note : undefined, openPr: !!body.openPr }));
+      await attempt(() => manager.triage(run.id, { decision: body.decision, note: typeof body.note === "string" ? body.note : undefined, openPr: !!body.openPr, pushPr: !!body.pushPr }));
       return send(res, 200, { ok: true });
     }
     if (req.method === "POST" && parts[3] === "push-pr") {

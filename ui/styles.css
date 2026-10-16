@@ -415,6 +415,38 @@
   .chip-tpl { border: 1px solid var(--border); background: var(--raised); border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 500; color: var(--muted); transition: border-color .15s, color .15s, background-color .15s; }
   .chip-tpl:hover { border-color: var(--accent-line); color: var(--text); background: var(--accent-soft); }
   .chip-tpl.ghost { border-style: dashed; }
+  .templates + .templates { margin-top: -6px; }
+  .chip-tpl.sweep { display: inline-flex; align-items: center; gap: 6px; color: var(--text); border-color: var(--accent-line); background: var(--accent-soft); }
+  .chip-tpl.sweep .icon { width: 13px; height: 13px; color: var(--accent-ink); }
+  .chip-tpl.sweep:hover { border-color: var(--accent-edge); }
+
+  /* ---------- sweeps: many items, one run each ---------- */
+  dialog.sweep-dialog { width: min(760px, calc(100vw - 32px)); }
+  .sweep-dialog h3 { display: flex; align-items: center; gap: 8px; }
+  .sweep-dialog h3 .icon { width: 18px; height: 18px; color: var(--accent-ink); }
+  .sweep-tools { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); }
+  .sweep-tools b { color: var(--text); }
+  .sweep-list { display: grid; gap: 4px; align-content: start; }
+  .sweep-list .config-note { margin: 2px 4px 6px; }
+  .msg.pad { padding: 8px 12px; }
+  .sweep-item { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 9px 12px; border: 1px solid transparent; border-radius: 14px; cursor: pointer; transition: background-color .15s, border-color .15s; }
+  .sweep-item:hover { background: var(--hover); }
+  .sweep-item.on { background: var(--accent-soft); border-color: var(--accent-line); }
+  .sweep-item.manual { cursor: default; }
+  .sweep-item input { margin-top: 3px; }
+  .si-main { display: grid; gap: 2px; min-width: 0; }
+  .si-title { font-weight: 600; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .si-ref { font-family: var(--mono); font-size: 11.5px; font-weight: 500; color: var(--muted); margin-right: 4px; }
+  .si-detail { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .si-detail .sev { margin-right: 4px; }
+  .si-note { font-size: 12px; color: var(--faint); }
+  .si-note.warn { color: var(--warn); font-weight: 600; }
+  .si-link { color: var(--faint); text-decoration: none; padding: 0 4px; border-radius: 6px; }
+  .si-link:hover { color: var(--accent-ink); background: var(--hover); }
+  .sweep-how { padding: 12px 20px; border-top: 1px solid var(--border); display: grid; gap: 8px; background: var(--panel); }
+  .sweep-how .help { margin: 0; }
+  .sweep-how label.check { flex-wrap: wrap; }
+  .sweep-how .field.inline { padding: 3px 8px; }
   .chip-ctx.source { background: var(--accent-soft); border-color: var(--accent-line); }
   .chip-ctx.source .note { color: var(--muted); display: inline-flex; align-items: center; gap: 3px; }
   .gh-item { align-items: flex-start; }

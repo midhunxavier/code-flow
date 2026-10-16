@@ -1,7 +1,8 @@
 import { useEffect, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { api, enc } from "./lib.js";
-import { applyTemplate, ghPicker, repo, setTask, source, task, templates, type SourcePick, type Template } from "./state.js";
+import { Icon } from "./icons.js";
+import { applyTemplate, ghPicker, repo, setTask, source, sweepPicker, task, templates, type SourcePick, type Template } from "./state.js";
 
 interface Item {
   number: number;
@@ -113,26 +114,41 @@ export function GitHubPicker() {
   );
 }
 
-/** Template chips: pick one, then (if it needs one) an issue or PR. */
+/** Template chips: pick one, then (if it needs one) an issue or PR. Sweeps open their own list. */
 export function Templates() {
   if (!templates.value.length) return null;
   const choose = (t: Template) => {
-    if (t.needs) ghPicker.value = { kind: t.needs, template: t };
+    if (t.sweep) sweepPicker.value = t;
+    else if (t.needs) ghPicker.value = { kind: t.needs, template: t };
     else applyTemplate(t);
   };
+  const single = templates.value.filter((t) => !t.sweep);
+  const sweeps = templates.value.filter((t) => t.sweep);
   return (
-    <div class="templates">
-      <span class="lbl">Start from</span>
-      {templates.value.map((t) => (
-        <button key={t.id} type="button" class="chip-tpl" title={t.description} onClick={() => choose(t)}>
-          {t.needs === "pr" ? "⇄ " : t.needs === "issue" ? "◎ " : "✦ "}
-          {t.name}
+    <>
+      <div class="templates">
+        <span class="lbl">Start from</span>
+        {single.map((t) => (
+          <button key={t.id} type="button" class="chip-tpl" title={t.description} onClick={() => choose(t)}>
+            {t.needs === "pr" ? "⇄ " : t.needs === "issue" ? "◎ " : "✦ "}
+            {t.name}
+          </button>
+        ))}
+        <button type="button" class="chip-tpl ghost" title="Start from any open issue or pull request" onClick={() => (ghPicker.value = { kind: "issue" })}>
+          GitHub…
         </button>
-      ))}
-      <button type="button" class="chip-tpl ghost" title="Start from any open issue or pull request" onClick={() => (ghPicker.value = { kind: "issue" })}>
-        GitHub…
-      </button>
-    </div>
+      </div>
+      {sweeps.length ? (
+        <div class="templates">
+          <span class="lbl">Sweep</span>
+          {sweeps.map((t) => (
+            <button key={t.id} type="button" class="chip-tpl sweep" title={t.description} onClick={() => choose(t)}>
+              <Icon name="layers" /> {t.name}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -143,7 +159,7 @@ export function SourceChip() {
   return (
     <span class="chip-ctx source" title={s.url}>
       <span class="n">
-        {s.kind === "issue" ? "◎ Issue" : "⇄ PR"} #{s.number} · {s.title}
+        {s.kind === "issue" ? "◎ Issue" : s.kind === "pr" ? "⇄ PR" : "⚠ Alert"} #{s.number} · {s.title}
       </span>
       {s.kind === "pr" ? <span class="note">starts from {s.headRefName}</span> : null}
       {s.kind === "pr" ? (

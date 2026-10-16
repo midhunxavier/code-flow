@@ -48,6 +48,7 @@ Open **http://localhost:4317**, choose a repository, describe the task, pick a t
 - **Done means the check passes.** code-flow runs your test command itself after every change, feeds failures back, and flags edits that make tests pass without fixing anything.
 - **A conversation, not a job queue.** Approve the plan before anyone builds, message the team while it works (straight into a running Codex turn), and reply after it finishes.
 - **Where the work lives, even when you're away.** Start from GitHub issues and PRs, fix failing CI, have a council review a PR, run on a schedule or from webhooks, and check in from your phone.
+- **Sweep the backlog.** Fix every open issue, every Dependabot PR with failing CI, or every security alert in one go: pick from the list, get one run each, approve the results from your inbox. Optionally every night, for new ones only.
 
 ## Pick a team
 

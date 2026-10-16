@@ -3,6 +3,7 @@ import { Composer, FilesPanel } from "./composer.js";
 import { RunView } from "./run.js";
 import { Review } from "./review.js";
 import { GitHubPicker } from "./github.js";
+import { SweepDialog } from "./sweeps.js";
 import { AutomationsView, inbox } from "./automations.js";
 import { InsightsView } from "./insights.js";
 import { Icon } from "./icons.js";
@@ -73,6 +74,7 @@ export function App() {
       </div>
       <FolderPicker />
       <GitHubPicker />
+      <SweepDialog />
       {healthOpen.value ? <HealthDialog /> : null}
       {shortcutsOpen.value ? <ShortcutsDialog /> : null}
       <div class="sr-only" role="status" aria-live="polite">
@@ -237,7 +239,7 @@ function Rail() {
       >
         <span class={`dot ${runState(r)}`} aria-hidden="true" />
         <span class="t">
-          {r.trigger ? "⏱ " : ""}
+          {r.trigger ? (r.trigger.via === "sweep" ? "▤ " : "⏱ ") : ""}
           {r.group ? "⚖ " : ""}
           {r.task.split("\n")[0] || "(no task)"}
         </span>

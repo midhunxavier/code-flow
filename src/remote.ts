@@ -139,7 +139,7 @@ function renderRun(run: Run, base: string): string {
   return [
     `<p><a href="${base}/">← All runs</a></p>`,
     `<h1>${esc(run.task.split("\n")[0])}</h1>`,
-    `<p class="m">${badge(run)} · ${esc(run.pattern)} · ${esc(run.repo.split("/").pop())} · started ${ago(run.createdAt)}${run.trigger ? ` · by automation “${esc(run.trigger.name)}”` : ""}</p>`,
+    `<p class="m">${badge(run)} · ${esc(run.pattern)} · ${esc(run.repo.split("/").pop())} · started ${ago(run.createdAt)}${run.trigger ? ` · by ${run.trigger.via === "sweep" ? "sweep" : "automation"} “${esc(run.trigger.name)}”` : ""}</p>`,
     run.awaiting ? `<h2>Waiting for you</h2><p>${esc(run.awaiting.title)} — open code-flow on your computer to answer.</p><pre>${esc(run.awaiting.content.slice(0, 4_000))}</pre>` : "",
     run.triage?.state === "pending" ? "<h2>In your inbox</h2><p>Approve, revise or reject it in code-flow on your computer.</p>" : "",
     run.error ? `<h2>Error</h2><pre>${esc(run.error)}</pre>` : "",

@@ -36,3 +36,4 @@ export interface ContextItem {
 }
 export type { Stats, AgentStats, PatternStats, GroupRun } from "../src/stats.js";
 export type { IntegrityIssue } from "../src/integrity.js";
+export type { SweepItem, SweepKind, SweepList } from "../src/sweeps.js";

@@ -10,24 +10,31 @@ Set up a run in the composer (task, team, check, settings), then choose **Save a
 
 Times missed while code-flow was closed are skipped, not caught up. If the previous run is still going, the next one is skipped, so automations never pile up.
 
+## Sweeps
+
+A [sweep](github.md#sweeps-many-at-once) saved with *Also check every day at…* is an automation too. Each time it fires it lists the open issues, Dependabot PRs or security alerts again and starts a run for each **new** item that would be picked by default, up to 5 at a time. It remembers which items it already started, so nothing is swept twice. **Run now** does the same on demand.
+
 ## Webhooks
 
 `POST /hooks/<id>` with `Authorization: Bearer <secret>` and a JSON body. Both fields are optional:
 
 - `details` is added to the task;
-- `source` (e.g. `{"kind": "pr", "number": 12}`) starts from that issue or PR.
+- `source` (e.g. `{"kind": "pr", "number": 12}`) starts from that issue or PR, or from a security alert (`{"kind": "alert", "tool": "dependabot", "number": 3}`, or `"tool": "code-scanning"`).
 
 GitHub webhooks work directly through a tunnel. Use the secret as the webhook secret; code-flow checks `X-Hub-Signature-256`. These events start a run, and all others are ignored:
 
 - an opened issue starts from that issue;
 - an opened or updated pull request starts from that PR;
-- a failed workflow run starts from its PR, with the failure logs.
+- a failed workflow run starts from its PR, with the failure logs;
+- a new or reopened Dependabot alert or code scanning alert starts from that alert.
+
+Leaked-secret alerts never start a run.
 
 ## The inbox
 
-Automation results wait on the Automations page (with a count in the top bar) and under *Needs you*:
+Automation and sweep results wait on the Automations page (with a count in the top bar) and under *Needs you*:
 
-- **Approve:** keeps the result. **Approve & open PR** also pushes the branch and opens a pull request.
+- **Approve:** keeps the result. **Approve & open PR** also pushes the branch and opens a pull request. For a run that started from a pull request (a Dependabot PR, say), **Approve & push to PR #N** pushes the fix to that PR instead.
 - **Revise:** your note goes to the agent that wrote the code, in its own session. The result comes back to the inbox.
 - **Reject:** deletes the run's worktrees and branches.
 - Runs that changed nothing are archived on their own, and their branches deleted.

@@ -4,6 +4,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import type { Run, RunManager } from "./engine.js";
+import { repoRoot } from "./git.js";
+import type { SourceInput } from "./github.js";
+import { coveringRun, nextSweepItems, type SweepKind, type SweepList } from "./sweeps.js";
 
 /**
  * Automations: a saved run (repo, pattern, task, team, settings) that starts on a schedule, from
@@ -31,6 +34,13 @@ export interface Trigger {
   lastFiredAt?: number;
   lastRunId?: string;
   lastError?: string;
+  /**
+   * A recurring sweep: each time it fires it lists this kind of work and starts one run per new
+   * item (at most `max`), instead of the one saved run.
+   */
+  sweep?: { kind: SweepKind; max: number };
+  /** Items a sweep has started a run for, so it never starts them twice. */
+  handled?: string[];
 }
 
 /** What a webhook or schedule adds to the saved run. */
@@ -38,8 +48,11 @@ export interface FireInput {
   via: "schedule" | "webhook" | "manual";
   /** Extra text for the task (e.g. from a webhook payload). */
   details?: string;
-  source?: { kind: "issue" | "pr"; number: number; ciLogs?: boolean };
+  source?: SourceInput;
 }
+
+/** A sweep remembers this many handled items; the oldest are forgotten first. */
+const MAX_HANDLED = 2_000;
 
 const FILE = join(CODEFLOW_HOME, "triggers.json");
 const MIN_EVERY_MINUTES = 5;
@@ -88,6 +101,8 @@ export class Automations {
     private readonly manager: RunManager,
     /** Starts a run exactly like POST /api/runs (validation, Auto roles…). */
     private readonly startRun: (body: Record<string, any>, extra: { trigger: NonNullable<Run["trigger"]> }) => Promise<Run>,
+    /** Lists a sweep's items (GitHub issues, Dependabot PRs, alerts) for a recurring sweep. */
+    private readonly listSweep?: (repo: string, kind: SweepKind) => Promise<SweepList>,
   ) {}
 
   async load() {
@@ -110,7 +125,7 @@ export class Automations {
     return this.triggers.find((t) => t.id === id);
   }
 
-  async create(input: Omit<Trigger, "id" | "token" | "createdAt" | "nextAt">): Promise<Trigger> {
+  async create(input: Omit<Trigger, "id" | "token" | "createdAt" | "nextAt" | "handled"> & { handled?: string[] }): Promise<Trigger> {
     const trigger: Trigger = { ...input, id: `t-${randomBytes(4).toString("hex")}`, token: randomBytes(24).toString("hex"), createdAt: Date.now() };
     trigger.nextAt = trigger.enabled && trigger.schedule ? nextFire(trigger.schedule, Date.now()) : undefined;
     this.triggers.push(trigger);
@@ -127,6 +142,13 @@ export class Automations {
     t.nextAt = t.enabled && t.schedule ? nextFire(t.schedule, Date.now()) : undefined;
     await this.save();
     return { ...t };
+  }
+
+  /** A sweep started runs for these items itself (when you created it): don't start them again. */
+  async markHandled(id: string, keys: string[]) {
+    const t = this.require(id);
+    t.handled = [...new Set([...(t.handled ?? []), ...keys])].slice(-MAX_HANDLED);
+    await this.save();
   }
 
   async remove(id: string) {
@@ -158,8 +180,9 @@ export class Automations {
    * Start the automation's run. If its previous run is still going, this one is skipped:
    * automations never pile up.
    */
-  async fire(id: string, input: FireInput): Promise<{ run?: Run; skipped?: string }> {
+  async fire(id: string, input: FireInput): Promise<{ run?: Run; runs?: Run[]; skipped?: string }> {
     const t = this.require(id);
+    if (t.sweep) return this.fireSweep(t, input);
     const previous = t.lastRunId ? this.manager.get(t.lastRunId) : undefined;
     if (previous?.status === "running") {
       return { skipped: `the previous run (${previous.id}) is still running` };
@@ -179,6 +202,53 @@ export class Automations {
     } catch (err) {
       t.lastError = (err as Error).message;
       throw err;
+    } finally {
+      await this.save();
+    }
+  }
+
+  /**
+   * A sweep fires: a webhook names one item (an issue, PR or alert); a schedule or "Run now" lists
+   * the work and starts a run for each new item that would be picked by default, up to `max`.
+   * Items already started (or covered by another run) are left alone.
+   */
+  private async fireSweep(t: Trigger, input: FireInput): Promise<{ runs: Run[]; skipped?: string }> {
+    const sweep = t.sweep!;
+    const handled = new Set(t.handled ?? []);
+    t.lastFiredAt = Date.now();
+    try {
+      let items: { key: string; task: string; source: SourceInput }[];
+      if (input.source) {
+        const key = sourceKey(input.source);
+        const covered = coveringRun(this.manager.list(), await repoRoot(t.run.repo).catch(() => t.run.repo), input.source);
+        items = handled.has(key) || covered ? [] : [{ key, task: input.details?.trim() ? `${t.run.task}\n\n## Details from the webhook\n${input.details.trim().slice(0, 4_000)}` : t.run.task, source: input.source }];
+      } else {
+        if (!this.listSweep) throw new Error("Sweeps aren't available here");
+        items = nextSweepItems(await this.listSweep(t.run.repo, sweep.kind), handled, sweep.max);
+      }
+      if (!items.length) {
+        t.lastError = undefined;
+        return { runs: [], skipped: "nothing new to sweep" };
+      }
+      const runs: Run[] = [];
+      const errors: string[] = [];
+      for (const item of items) {
+        try {
+          const run = await this.startRun(
+            { ...t.run, task: item.task, source: item.source, loop: { ...(t.run.loop ?? {}), container: t.isolate ? { image: t.image || "node:22", network: true } : undefined } },
+            { trigger: { id: t.id, name: t.name, via: input.via } },
+          );
+          runs.push(run);
+          handled.add(item.key);
+        } catch (err) {
+          errors.push(`${item.key}: ${(err as Error).message}`);
+        }
+      }
+      t.handled = [...handled].slice(-MAX_HANDLED);
+      t.lastRunId = runs.at(-1)?.id ?? t.lastRunId;
+      t.lastError = errors.length ? errors.join("; ").slice(0, 1_000) : undefined;
+      if (!runs.length && errors.length) throw new Error(t.lastError);
+      return { runs };
     } finally {
       await this.save();
     }
@@ -227,11 +297,20 @@ export function readWebhook(headers: Record<string, string | string[] | undefine
   const event = String(headers["x-github-event"] ?? "");
   if (!event) {
     const source = payload?.source;
-    const valid = source && (source.kind === "issue" || source.kind === "pr") && Number.isInteger(Number(source.number)) && Number(source.number) > 0;
+    const number = Number(source?.number);
+    const tool = source?.tool === "dependabot" || source?.tool === "code-scanning" ? source.tool : undefined;
+    const valid = source && (source.kind === "issue" || source.kind === "pr" || (source.kind === "alert" && tool)) && Number.isInteger(number) && number > 0;
     return {
       details: typeof payload?.details === "string" ? payload.details : typeof payload?.task === "string" ? payload.task : undefined,
-      source: valid ? { kind: source.kind, number: Number(source.number), ciLogs: source.ciLogs === true } : undefined,
+      source: valid ? (source.kind === "alert" ? { kind: "alert", tool, number } : { kind: source.kind, number, ciLogs: source.ciLogs === true }) : undefined,
     };
+  }
+  // A new or reopened security alert: Dependabot's (a vulnerable dependency) or code scanning's.
+  if (event === "dependabot_alert" && ["created", "reopened", "reintroduced"].includes(payload?.action) && payload.alert?.number) {
+    return { source: { kind: "alert", tool: "dependabot", number: payload.alert.number }, details: `GitHub: Dependabot alert ${payload.action}` };
+  }
+  if (event === "code_scanning_alert" && ["created", "reopened", "appeared_in_branch"].includes(payload?.action) && payload.alert?.number) {
+    return { source: { kind: "alert", tool: "code-scanning", number: payload.alert.number }, details: `GitHub: code scanning alert ${payload.action}` };
   }
   if (event === "issues" && ["opened", "labeled", "reopened"].includes(payload?.action) && payload.issue?.number) {
     return { source: { kind: "issue", number: payload.issue.number }, details: `GitHub: issue ${payload.action} by @${payload.sender?.login ?? "someone"}` };
@@ -244,6 +323,12 @@ export function readWebhook(headers: Record<string, string | string[] | undefine
     return pr ? { source: { kind: "pr", number: pr, ciLogs: true }, details: `GitHub: workflow "${payload.workflow_run.name}" failed` } : null;
   }
   return null;
+}
+
+/** A source's key in a sweep's list ("issue#12", "pr#3", "code-scanning#7"…). */
+export function sourceKey(source: SourceInput): string {
+  if (source.kind === "alert") return `${source.tool ?? "alert"}#${source.number}`;
+  return `${source.kind}#${source.number}`;
 }
 
 function same(a: string, b: string): boolean {

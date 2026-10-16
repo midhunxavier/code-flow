@@ -347,9 +347,11 @@ export interface Template {
   task: string;
   needs?: "issue" | "pr";
   ciLogs?: boolean;
+  /** A sweep: list this kind of work and start one run per picked item. */
+  sweep?: "issues" | "dependabot" | "alerts";
 }
 export interface SourcePick {
-  kind: "issue" | "pr";
+  kind: "issue" | "pr" | "alert";
   number: number;
   title: string;
   url: string;
@@ -357,8 +359,12 @@ export interface SourcePick {
   baseRefName?: string;
   isCrossRepository?: boolean;
   ciLogs?: boolean;
+  tool?: "dependabot" | "code-scanning";
+  numbers?: number[];
 }
 export const templates = signal<Template[]>([]);
+/** The sweep dialog, open with the sweep template you picked. */
+export const sweepPicker = signal<Template | null>(null);
 /** The issue or PR the next run starts from. */
 export const source = signal<SourcePick | null>(null);
 /** The GitHub picker, and the template waiting for its pick. */

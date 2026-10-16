@@ -32,6 +32,23 @@ Runs can start from GitHub instead of a blank task box, using GitHub CLI (`gh`) 
 | **Review a PR as a council** | Review council | a PR |
 | **Upgrade a dependency** | Plan → Build → Review | the task box (replace `PACKAGE`) |
 
+### Sweeps: many at once
+
+**Sweep** under *Start from* lists a whole kind of work, with a checkbox per item. The ones you pick start **one run each**, with the team, check and settings you set up in the composer. Each result waits in the [inbox](automations.md#the-inbox) for you to approve, revise or reject, and nothing is merged automatically.
+
+| Sweep | Lists | Picked by default | Each run |
+|---|---|---|---|
+| **Fix open issues** | open issues | all, except ones labelled *question*, *wontfix*, *duplicate*, *invalid*… | fixes the issue and adds a test; **Approve & open PR** says `Closes #N` |
+| **Fix Dependabot PRs** | Dependabot's open PRs (`gh pr list --app dependabot`), with their CI | only the ones whose CI fails; green ones say *ready for you to merge* | gets the failing checks and their logs, adapts the code to the new version; **Approve & push to PR #N** pushes the fix to Dependabot's branch (never forced) |
+| **Fix security alerts** | Dependabot alerts, code scanning alerts and leaked secrets | high and medium alerts that have a fix | Dependabot alerts: one run per package, upgrading past every alert on it. Code scanning: one run per alert, fixing the cause rather than suppressing it |
+
+- An item that already has a run (running, or finished and not rejected) starts unpicked and links to that run, so sweeping again doesn't redo work.
+- Dependabot alerts that an open Dependabot PR already upgrades start unpicked, and so do alerts with no patched version yet (that run would have to mitigate instead).
+- **Leaked secrets are never handed to an agent.** They're listed so you can revoke and rotate them yourself.
+- At most 25 runs start per sweep; agents and checks still queue behind `CODEFLOW_MAX_AGENTS` and `CODEFLOW_MAX_CHECKS`. A run that can't start (an untrusted issue without Docker, say) is reported, and the rest go on.
+- *Also check every day at…* saves the sweep as an [automation](automations.md#sweeps) that starts runs for new items.
+- Reading security alerts needs the `security_events` scope for private repositories: `gh auth refresh -s security_events` (and admin or security manager access). The sweep says so if it's missing, or if a feature isn't turned on for the repo.
+
 ### Issues and pull requests
 
 **GitHub** in the task box starts from any open issue or PR:
@@ -59,7 +76,7 @@ A read-only pattern: several agents review the same changes independently, and a
 
 ### Untrusted text
 
-Text from outside the repo is untrusted. Issue and PR descriptions, comments and CI logs can carry instructions aimed at the agents. code-flow asks GitHub who wrote an issue or PR. Unless it's the repo's owner, a member or a collaborator, and not a fork, the run is locked down (🔒 in the run view):
+Text from outside the repo is untrusted. Issue and PR descriptions, comments and CI logs can carry instructions aimed at the agents. code-flow asks GitHub who wrote an issue or PR. Unless it's the repo's owner, a member or a collaborator (or Dependabot, whose PRs GitHub writes), and not a fork, the run is locked down (🔒 in the run view):
 
 - agents run in Safe mode;
 - files like `.env` aren't copied in;

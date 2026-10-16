@@ -19,7 +19,8 @@ src/ship.ts              per-file diffs, safe merges, pull requests, worktree cl
 src/github.ts            gh: issues, PRs, checks, failed-job logs, comments, pushes
 src/watch.ts             PR follow-through: polls watched PRs and sends CI failures and comments back
 src/routing.ts           "Auto" roles: pick an agent whose plan has room (and that passes most in this repo)
-src/templates.ts         starting points (fix an issue, fix failing CI, council review…)
+src/templates.ts         starting points (fix an issue, fix failing CI, council review…) and sweeps
+src/sweeps.ts            sweeps: list issues, Dependabot PRs and alerts; start one run per picked item
 src/automation.ts        automations: schedules, webhooks (Bearer or GitHub signature), firing runs
 src/remote.ts            the read-only phone view (server-rendered, secret link)
 src/engine.ts            RunManager, TeamContext (ask / worktree / commit / diff), event log
@@ -61,7 +62,7 @@ npm run test:e2e   # the real UI in Chrome (headless) against a server with fake
 The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota.
 
 - The fake `codex` also serves the app-server protocol (`test/fake-codex-app-server.mjs`). Its threads persist across processes, so resume and per-turn token counts are tested. A prompt containing `WAIT-FOR-STEER` keeps a turn open until a note is steered in. `test/codex-app-server.test.ts` covers mid-turn notes, declined approvals, cancellation, and the `exec` fallback.
-- A fake `gh` keeps issues, PRs, checks and comments in a JSON file and pushes to a local bare repository, so the GitHub flows (fix CI → push → watch → fix again) are tested without touching GitHub.
+- A fake `gh` keeps issues, PRs, checks, comments and security alerts in a JSON file and pushes to a local bare repository, so the GitHub flows (fix CI → push → watch → fix again, and sweeps of issues, Dependabot PRs and alerts) are tested without touching GitHub.
 - A fake `docker` records its arguments and runs the command in place, so isolation is tested without Docker.
 - The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, and the guarantee that your checkout is untouched.
 

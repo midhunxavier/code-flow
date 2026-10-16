@@ -345,14 +345,19 @@ function RunMeta({ run }: { run: RunSummary }) {
         <Icon name="folder" /> {baseName(run.repo)}
       </span>
       {run.trigger ? (
-        <a class="src-link" href="#/automations" title={`Started by ${run.trigger.via === "schedule" ? "its schedule" : run.trigger.via === "webhook" ? "a webhook" : "Run now"}`}>
-          ⏱ {run.trigger.name}
+        <a class="src-link" href="#/automations" title={`Started by ${run.trigger.via === "schedule" ? "its schedule" : run.trigger.via === "webhook" ? "a webhook" : run.trigger.via === "sweep" ? "a sweep" : "Run now"}`}>
+          {run.trigger.via === "sweep" ? "▤" : "⏱"} {run.trigger.name}
         </a>
       ) : null}
       {run.triage && run.triage.state !== "pending" ? <span class="badge">{run.triage.state === "empty" ? "no changes · archived" : run.triage.state}</span> : null}
       {run.source ? (
         <a class="src-link" href={run.source.url} target="_blank" rel="noreferrer" title={run.source.title}>
-          {run.source.kind === "issue" ? "◎ issue" : "⇄ PR"} #{run.source.number} ↗
+          {run.source.kind === "issue"
+            ? `◎ issue #${run.source.number}`
+            : run.source.kind === "pr"
+              ? `⇄ PR #${run.source.number}`
+              : `⚠ ${run.source.alert?.tool === "dependabot" ? "Dependabot" : "code scanning"} alert ${(run.source.alert?.numbers ?? [run.source.number]).map((n) => `#${n}`).join(", ")}`}{" "}
+          ↗
         </a>
       ) : null}
       <span>
@@ -1417,6 +1422,8 @@ function editAndRerun(run: RunSummary) {
           baseRefName: run.source.baseRefName,
           isCrossRepository: run.source.isCrossRepository,
           ciLogs: !!run.source.ci,
+          tool: run.source.alert?.tool,
+          numbers: run.source.alert?.numbers,
         }
       : null;
   };

@@ -74,7 +74,7 @@ export function Composer() {
     roles,
     options: optionsFor(p),
     baseRef: baseRef.value,
-    source: source.value ? { kind: source.value.kind, number: source.value.number, ciLogs: !!source.value.ciLogs } : undefined,
+    source: source.value ? { kind: source.value.kind, number: source.value.number, ciLogs: !!source.value.ciLogs, tool: source.value.tool, numbers: source.value.numbers } : undefined,
     branchPrefix: branchPrefix.value.trim(),
     context: {
       paths: [...contextPaths.value.values()].map((c) => ({ path: c.path })),
@@ -314,9 +314,10 @@ function CompareDialog({ base, onClose, onStarted }: { base: Record<string, any>
   );
 }
 
-function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>): string {
+/** Why the run can't start yet ("" when it can); `needsTask: false` for sweeps, whose items bring their tasks. */
+export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true): string {
   if (!repo.value) return "Choose a repository first";
-  if (!task.value.trim()) return "Describe the task to start";
+  if (needsTask && !task.value.trim()) return "Describe the task to start";
   if (!p) return "Pick how the agents work together";
   for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return `Pick an agent for ${role.label}`;
   if (p.id === "race" && (roles.contestants?.length ?? 0) < 2) return "A race needs at least two contestants";
@@ -407,7 +408,7 @@ function TaskBox({ onStart }: { onStart: () => void }) {
         <button class="btn ghost small" title="Attach files from your computer" onClick={() => fileInput.current?.click()}>
           <Icon name="attach" /> Attach
         </button>
-        <button class="btn ghost small" title="Start from a GitHub issue or pull request" onClick={() => (ghPicker.value = { kind: source.value?.kind ?? "issue" })}>
+        <button class="btn ghost small" title="Start from a GitHub issue or pull request" onClick={() => (ghPicker.value = { kind: source.value?.kind === "pr" ? "pr" : "issue" })}>
           <Icon name="pull" /> GitHub
         </button>
         <button
@@ -576,7 +577,8 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
   );
 }
 
-function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>): string {
+/** What the team will do, in one sentence; `checkpoints: false` leaves out plan approval (sweeps don't pause). */
+export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>, checkpoints = true): string {
   const one = (r: string) => (roles[r]?.[0] ? SHORT[roles[r]![0]!] : "—");
   const many = (r: string) => {
     const n = (roles[r] ?? []).map((id) => SHORT[id]);
@@ -584,7 +586,7 @@ function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>): strin
   };
   const opts = optionsFor(p);
   const check = checkCmd.value.trim();
-  const doneWhen = (check ? ` · done when “${check}” passes` : "") + (CHECKPOINTS[p.id] && approvePlan.value && (p.id !== "debate" || roles.builder?.length) ? ` · you approve ${CHECKPOINTS[p.id]} first` : "");
+  const doneWhen = (check ? ` · done when “${check}” passes` : "") + (checkpoints && CHECKPOINTS[p.id] && approvePlan.value && (p.id !== "debate" || roles.builder?.length) ? ` · you approve ${CHECKPOINTS[p.id]} first` : "");
   switch (p.id) {
     case "pipeline":
       return `${one("planner")} plans → ${one("builder")} builds → ${one("reviewer")} reviews (up to ${opts.maxRounds} rounds of fixes)${doneWhen}`;

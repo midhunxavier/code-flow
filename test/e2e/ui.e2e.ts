@@ -231,6 +231,37 @@ test("automations: a webhook starts a run, it waits in the inbox, you approve it
   assert.equal((await fetch(`${BASE}/r/not-the-token`)).status, 404);
 });
 
+test("sweep: pick open issues, start one run each, and approve the results in the inbox", async () => {
+  const s = JSON.parse(readFileSync(ghState, "utf8"));
+  s.issues = [
+    { number: 41, title: "E2E sweep: fix the greeting", body: "Hello is misspelled.", url: "https://github.com/o/r/issues/41", labels: [{ name: "bug" }] },
+    { number: 42, title: "E2E sweep: how do I run it?", body: "A question.", url: "https://github.com/o/r/issues/42", labels: [{ name: "question" }] },
+    { number: 43, title: "E2E sweep: tidy the readme", body: "", url: "https://github.com/o/r/issues/43", labels: [] },
+  ];
+  writeFileSync(ghState, JSON.stringify(s));
+
+  await page.goto(BASE);
+  await page.getByRole("button", { name: /Fix open issues/ }).click();
+  const dialog = page.locator("dialog.sweep-dialog");
+  await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).waitFor();
+  assert.equal(await dialog.getByRole("checkbox", { name: /how do I run it/ }).isChecked(), false, "a question starts unpicked");
+  await dialog.getByRole("checkbox", { name: /tidy the readme/ }).uncheck();
+  await dialog.getByRole("button", { name: "Start 1 run" }).click();
+
+  await page.waitForURL(/#\/automations/);
+  const item = page.locator(".inbox-item", { hasText: "Fix issue #41: E2E sweep: fix the greeting" });
+  await item.waitFor({ timeout: 30_000 });
+  await item.getByRole("button", { name: "✓ Approve" }).click();
+  await item.waitFor({ state: "detached" });
+
+  // The next sweep knows #41 has a run.
+  await page.goto(BASE);
+  await page.getByRole("button", { name: /Fix open issues/ }).click();
+  await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).getByText("Already has a run").waitFor();
+  assert.equal(await dialog.getByRole("checkbox", { name: /fix the greeting/ }).isChecked(), false);
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+});
+
 test("sign-in: the first browser claims code-flow; once agents have run, others need the link", async () => {
   // Agents have run by now (earlier tests), so nothing new can claim the session.
   assert.equal((await fetch(`${BASE}/api/runs`)).status, 401, "the API needs the browser's session");

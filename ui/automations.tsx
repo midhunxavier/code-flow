@@ -23,6 +23,9 @@ export interface Automation {
   lastFiredAt?: number;
   lastRunId?: string;
   lastError?: string;
+  /** A recurring sweep: lists this kind of work and starts runs for new items. */
+  sweep?: { kind: "issues" | "dependabot" | "alerts"; max: number };
+  handled?: string[];
 }
 interface RemoteInfo {
   enabled: boolean;
@@ -93,7 +96,7 @@ function InboxItem({ run }: { run: RunSummary }) {
           {run.task.split("\n")[0]}
         </a>
         <span class="help">
-          ⏱ {run.trigger?.name} · {STATUS_TEXT[run.status] ?? run.status}
+          {run.trigger?.via === "sweep" ? "▤" : "⏱"} {run.trigger?.name} · {STATUS_TEXT[run.status] ?? run.status}
           {run.verdict ? ` · check ${run.verdict}` : ""} · {baseName(run.repo)} · {ago(run.createdAt)}
         </span>
       </div>
@@ -120,7 +123,17 @@ export function TriageActions({ run }: { run: RunSummary }) {
     setBusy(decision);
     try {
       await post(`/api/runs/${run.id}/triage`, { decision, note, ...extra });
-      showToast(decision === "approve" ? (extra.openPr ? "Approved — pull request opened" : "Approved") : decision === "revise" ? "Sent — the agent is revising it" : "Rejected and cleaned up");
+      showToast(
+        decision === "approve"
+          ? extra.pushPr
+            ? `Approved — pushed to PR #${run.source?.number}`
+            : extra.openPr
+              ? "Approved — pull request opened"
+              : "Approved"
+          : decision === "revise"
+            ? "Sent — the agent is revising it"
+            : "Rejected and cleaned up",
+      );
       setNote("");
     } catch (err) {
       showToast((err as Error).message, 5000);
@@ -130,6 +143,8 @@ export function TriageActions({ run }: { run: RunSummary }) {
   };
   const hasChange = run.artifacts.some((a) => a.stat?.trim());
   const running = run.status === "running";
+  // A fix for a pull request (Dependabot's, say) goes onto that PR, not into a new one.
+  const toPr = run.source?.kind === "pr" && !run.source.isCrossRepository ? run.source : undefined;
   return (
     <div class="triage">
       <input class="field" placeholder="What should change? (for Revise)" value={note} onInput={(e) => setNote(e.currentTarget.value)} disabled={running} />
@@ -139,7 +154,11 @@ export function TriageActions({ run }: { run: RunSummary }) {
       <button class="btn small primary" disabled={running || !!busy} onClick={() => act("approve")}>
         ✓ Approve
       </button>
-      {hasChange ? (
+      {hasChange && toPr ? (
+        <button class="btn small" disabled={running || !!busy} title={`Approve and push the fix to ${toPr.headRefName}, updating PR #${toPr.number} (never forced)`} onClick={() => act("approve", { pushPr: true })}>
+          {busy === "approve" ? "…" : `Approve & push to PR #${toPr.number}`}
+        </button>
+      ) : hasChange ? (
         <button class="btn small" disabled={running || !!busy} title="Approve, push the branch and open a pull request into the base branch" onClick={() => act("approve", { openPr: true })}>
           {busy === "approve" ? "…" : "Approve & open PR"}
         </button>
@@ -164,6 +183,7 @@ function AutomationRow({ a }: { a: Automation }) {
         </label>
         <b>{a.name}</b>
         <span class="help">
+          {a.sweep ? `Sweep: up to ${a.sweep.max} new ${a.sweep.kind === "issues" ? "issues" : a.sweep.kind === "dependabot" ? "Dependabot PRs" : "alerts"} · ` : ""}
           {a.scheduleText}
           {a.webhook ? " · webhook" : ""}
           {a.isolate ? ` · checks in ${a.image || "node:22"}` : ""}
@@ -172,10 +192,12 @@ function AutomationRow({ a }: { a: Automation }) {
         <button
           class="btn small"
           onClick={() =>
-            post<{ id: string }>(`/api/automations/${a.id}/run`).then(
-              ({ id }) => {
+            post<{ id?: string; ids?: string[] }>(`/api/automations/${a.id}/run`).then(
+              ({ id, ids }) => {
                 void loadAutomations();
-                route.value = { view: "run", id };
+                // A sweep can start several runs: stay here, where their results will arrive.
+                if (ids && ids.length !== 1) showToast(`Started ${ids.length} runs — their results will wait in the inbox`);
+                else if (id) route.value = { view: "run", id };
               },
               (e) => showToast(e.message, 5000),
             )
@@ -197,6 +219,7 @@ function AutomationRow({ a }: { a: Automation }) {
       </div>
       <div class="ar-meta help">
         {patterns.value.find((p) => p.id === a.run.pattern)?.name ?? a.run.pattern} in {baseName(a.run.repo)}: “{a.run.task.split("\n")[0]}”
+        {a.sweep && a.handled?.length ? ` · ${a.handled.length} handled so far` : ""}
         {Object.values(a.run.roles)
           .flat()
           .filter((x, i, all) => all.indexOf(x) === i)
