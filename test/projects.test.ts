@@ -194,3 +194,65 @@ test("runs record their project: new repo, a reply, moving a run, and an automat
   assert.equal(later.get(inSuite.id)!.project, suite.id);
   assert.equal(later.get(first.id)!.project, moved.id, "the move was saved too");
 });
+
+test("runs from before projects stay put when their project gives up the repo, or is deleted", async () => {
+  // Runs started without projects record none, like runs from before projects existed.
+  const before = new RunManager(findPattern);
+  const oldApi = await start(before, api);
+  const oldWeb = await start(before, web);
+  assert.equal(oldApi.project, undefined);
+  await flushWrites();
+
+  const projects = fresh();
+  await projects.load([oldApi, oldWeb]);
+  const manager = new RunManager(findPattern, projects);
+  await manager.load();
+  const seededApi = projects.forRepo(api)!;
+  const seededWeb = projects.forRepo(web)!;
+  // Later projects that also hold the repos: without a recorded project, the runs would move there.
+  await projects.create({ name: "Also api", repos: [api] });
+  await projects.create({ name: "Also web", repos: [web] });
+  const of = (id: string) => projectOf(manager.get(id)!, projects.list());
+  assert.equal(of(oldApi.id), seededApi.id, "no project recorded: the first project holding the repo");
+
+  await manager.updateProject(seededApi.id, { repos: [] });
+  assert.equal(manager.get(oldApi.id)!.project, seededApi.id, "recorded before the repo left");
+  assert.equal(of(oldApi.id), seededApi.id, "still in its project");
+
+  await manager.removeProject(seededWeb.id);
+  assert.equal(of(oldWeb.id), undefined, "in no project, not in “Also web”");
+  await flushWrites();
+  const again = new RunManager(findPattern, projects);
+  await again.load();
+  assert.equal(again.get(oldApi.id)!.project, seededApi.id, "recorded in the run's log");
+});
+
+test("generated names stay unique within the length limit", async () => {
+  const projects = fresh();
+  await projects.load();
+  const long = "a-very-long-repository-name-that-goes-on-and-on-past-the-limit-x";
+  const one = (await projects.place(makeRepo("one", long))).project.name;
+  const two = (await projects.place(makeRepo("two", long))).project.name;
+  const three = (await projects.place(makeRepo("three", "two", long))).project.name;
+  assert.equal(new Set([one, two, three].map((n) => n.toLowerCase())).size, 3, `${one} | ${two} | ${three}`);
+  for (const name of [one, two, three]) assert.ok(name.length <= 60, name);
+  assert.match(two, / \(two\)$/, "the parent folder tells them apart");
+  assert.match(three, / 2$/, "numbered when the parent is taken too");
+});
+
+test("a change that can't be saved fails and is undone, so nothing reports done that a restart would lose", async () => {
+  const notAFolder = join(mkdtempSync(join(tmpdir(), "codeflow-projects-ro-")), "file");
+  writeFileSync(notAFolder, "");
+  const projects = new Projects(join(notAFolder, "projects.json"));
+  await projects.load([{ repo: api, createdAt: 1 }]); // seeding still works in memory
+  assert.equal(projects.list().length, 1);
+  await assert.rejects(projects.create({ name: "Lost" }), /couldn't save projects/);
+  await assert.rejects(projects.place(web), /couldn't save projects/);
+  await assert.rejects(projects.update(projects.forRepo(api)!.id, { name: "Renamed" }), /couldn't save projects/);
+  assert.deepEqual(projects.list().map((p) => [p.name, p.repos]), [["api", [api]]], "every failed change was undone");
+  assert.equal((await projects.place(api)).project.name, "api", "placing in an existing project needs no save");
+  await projects.remember(projects.forRepo(api)!.id, { pattern: "pipeline", roles }); // logged, never thrown
+
+  const manager = new RunManager(findPattern, projects);
+  await assert.rejects(start(manager, web), /couldn't save projects/, "the run doesn't start in a project that wouldn't survive a restart");
+});

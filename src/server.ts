@@ -612,10 +612,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (id && !projects.get(id)) throw new HttpError(404, "Project not found");
     if (id && req.method === "POST") {
       const body = await readJson(req);
-      return send(res, 200, await attempt(() => projects.update(id, { name: body.name, repos: Array.isArray(body.repos) ? body.repos : undefined })));
+      return send(res, 200, await attempt(() => manager.updateProject(id, { name: body.name, repos: Array.isArray(body.repos) ? body.repos : undefined })));
     }
     if (id && req.method === "DELETE") {
-      await projects.remove(id);
+      await manager.removeProject(id);
       return send(res, 200, { deleted: true });
     }
   }

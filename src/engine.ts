@@ -49,7 +49,7 @@ import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJso
 import { branchDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
-import type { Projects } from "./projects.js";
+import { projectOf, type Project, type Projects } from "./projects.js";
 import { commentOnPr, loadSource, mergeBase, pushBranch, sourcePrompt, type RunSource, type SourceInput } from "./github.js";
 
 /** How many agent CLIs, and how many check/setup commands, may run at once across all runs. */
@@ -1306,13 +1306,47 @@ export class RunManager {
   /** Move a run to another project; its repo joins that project if it isn't in it yet. */
   async setProject(id: string, projectId: string) {
     const run = this.require(id);
-    if (!this.projects) throw new Error("Projects aren't available here");
-    const { project, added } = await this.projects.include(projectId, run.repo);
+    const { project, added } = await this.requireProjects().include(projectId, run.repo);
     if (run.project === project.id) return project;
     run.project = project.id;
     this.emit(run, { type: "log", level: "info", text: `Moved to the project “${project.name}”${added ? `, which now includes ${basename(run.repo)}` : ""}` });
     this.emitRun(run);
     return project;
+  }
+
+  /**
+   * Rename a project or change its repos. Runs from before projects record none: they belong to
+   * the first project holding their repo, so taking the repo out would move them elsewhere. The
+   * project is recorded on them first, so the runs already in a project stay in it.
+   */
+  async updateProject(id: string, patch: { name?: unknown; repos?: unknown[] }) {
+    const projects = this.requireProjects();
+    const before = projects.list();
+    const updated = await projects.update(id, patch);
+    this.keepInProject(id, before, (repo) => !updated.repos.includes(repo));
+    return updated;
+  }
+
+  /** Delete a project. Its runs stay, in no project; older runs too, rather than moving to another project with their repo. */
+  async removeProject(id: string) {
+    const projects = this.requireProjects();
+    const before = projects.list();
+    await projects.remove(id);
+    this.keepInProject(id, before, () => true);
+  }
+
+  /** Record `id` on the runs that belonged to it only through their repo (as of `before`). */
+  private keepInProject(id: string, before: Project[], affected: (repo: string) => boolean) {
+    for (const run of this.runs.values()) {
+      if (run.project || !affected(run.repo) || projectOf(run, before) !== id) continue;
+      run.project = id;
+      this.emitRun(run);
+    }
+  }
+
+  private requireProjects(): Projects {
+    if (!this.projects) throw new Error("Projects aren't available here");
+    return this.projects;
   }
 
   /**
