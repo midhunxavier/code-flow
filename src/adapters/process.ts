@@ -10,6 +10,8 @@ export interface JsonlProcessOptions {
   env?: NodeJS.ProcessEnv;
   /** Written to stdin, which is then closed. Prompts go here, not argv (Linux caps one arg at 128 KB). */
   input?: string;
+  /** Keep stdin open for `send` (a CLI that serves JSON-RPC on stdio) instead of closing it. */
+  interactive?: boolean;
   /** Called for every stdout line that parses as JSON. */
   onJson: (obj: any) => void;
   /** Called for stdout lines that are not JSON. */
@@ -59,26 +61,41 @@ export function killGroup(pid: number | undefined, graceMs = 5_000) {
   setTimeout(() => signalGroup(pid, "SIGKILL"), graceMs).unref();
 }
 
+/** A CLI started by `startJsonlProcess`. */
+export interface JsonlProcess {
+  /** Write one message as a JSON line on stdin (`interactive` only); false once stdin is closed. */
+  send(message: unknown): boolean;
+  /** Close stdin; a CLI serving requests on it exits when it sees EOF. */
+  endInput(): void;
+  /** Stop the CLI and everything it started. */
+  kill(): void;
+  readonly outcome: Promise<ProcessOutcome>;
+}
+
 /**
- * Spawn a CLI and parse its stdout as JSON Lines. stdin carries the prompt when given, and is
- * otherwise closed (the CLIs would wait for piped input). The CLI runs in its own process group,
- * so cancelling or timing out stops whatever it started too, and a background process that keeps
- * the output pipe open can't keep the step running after the CLI has exited.
+ * Spawn a CLI and parse its stdout as JSON Lines. stdin carries the prompt when given, stays open
+ * for `send` when `interactive`, and is otherwise closed (the CLIs would wait for piped input).
+ * The CLI runs in its own process group, so cancelling or timing out stops whatever it started
+ * too, and a background process that keeps the output pipe open can't keep the step running
+ * after the CLI has exited.
  */
 export function runJsonlProcess(opts: JsonlProcessOptions): Promise<ProcessOutcome> {
-  return new Promise((resolve) => {
-    const child = spawn(opts.command, opts.args, {
-      cwd: opts.cwd,
-      env: opts.env ?? process.env,
-      detached: true,
-      stdio: [opts.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    });
-    trackGroup(child.pid);
-    if (opts.input !== undefined) {
-      child.stdin?.on("error", () => {}); // the CLI may exit before reading everything
-      child.stdin?.end(opts.input);
-    }
+  return startJsonlProcess(opts).outcome;
+}
 
+export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
+  const piped = opts.input !== undefined || !!opts.interactive;
+  const child = spawn(opts.command, opts.args, {
+    cwd: opts.cwd,
+    env: opts.env ?? process.env,
+    detached: true,
+    stdio: [piped ? "pipe" : "ignore", "pipe", "pipe"],
+  });
+  trackGroup(child.pid);
+  child.stdin?.on("error", () => {}); // the CLI may exit before reading everything
+  if (opts.input !== undefined && !opts.interactive) child.stdin?.end(opts.input);
+
+  const outcome = new Promise<ProcessOutcome>((resolve) => {
     let stderr = "";
     let aborted = false;
     let timedOut = false;
@@ -147,6 +164,18 @@ export function runJsonlProcess(opts: JsonlProcessOptions): Promise<ProcessOutco
     });
     child.on("close", (code) => finish(code));
   });
+
+  return {
+    send: (message) => {
+      const stdin = child.stdin;
+      if (!stdin || stdin.destroyed || stdin.writableEnded) return false;
+      stdin.write(`${JSON.stringify(message)}\n`);
+      return true;
+    },
+    endInput: () => child.stdin?.end(),
+    kill: () => killGroup(child.pid),
+    outcome,
+  };
 }
 
 /** Run a short command and return its stdout (used for model listings). */

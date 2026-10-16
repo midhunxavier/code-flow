@@ -24,7 +24,7 @@ import {
   source,
   upsertRun,
 } from "./state.js";
-import type { AgentEvent, AgentId, Artifact, FollowUp, IntegrityIssue, MergeOutcome, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
+import type { AgentEvent, AgentId, Artifact, FollowUp, IntegrityIssue, MergeOutcome, Note, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
 const modelNote = (run: RunSummary | null, id?: AgentId) =>
@@ -954,6 +954,13 @@ function AwaitingCard({ run }: { run: RunSummary }) {
   );
 }
 
+/** Which step a delivered note reached, and whether it arrived during the turn. */
+function noteStep(note: Note, steps: Step[]): string {
+  const step = steps.find((s) => s.id === note.deliveredTo?.stepId);
+  if (!step) return "";
+  return note.deliveredTo?.midTurn ? ` mid-turn (${step.title})` : ` (${step.title})`;
+}
+
 /** While running: message the team. After it finishes: reply to an agent, or the whole team. */
 function ConversationBar({ run, steps }: { run: RunSummary; steps: Step[] }) {
   const [text, setText] = useState("");
@@ -976,8 +983,9 @@ function ConversationBar({ run, steps }: { run: RunSummary; steps: Step[] }) {
     setBusy(true);
     try {
       if (running) {
-        await post(`/api/runs/${run.id}/notes`, { text, agent: chosen || undefined });
-        showToast(chosen ? `Queued for ${chosen}'s next turn` : "Queued for the next agent's turn");
+        const note = await post<Note>(`/api/runs/${run.id}/notes`, { text, agent: chosen || undefined });
+        if (note.deliveredTo?.midTurn) showToast(`Sent into ${note.deliveredTo.agent}'s running turn`);
+        else showToast(chosen ? `Queued for ${chosen}'s next turn` : "Queued for the next agent's turn");
       } else if (chosen === "team") {
         const base = run.artifacts[0]?.branch ?? run.baseLabel;
         const { id } = await post<{ id: string }>("/api/runs", {
@@ -1014,7 +1022,7 @@ function ConversationBar({ run, steps }: { run: RunSummary; steps: Step[] }) {
           {run.notes.map((n) => (
             <span key={n.id} class={`chip-ctx note-chip ${n.status}`} title={n.text}>
               <span class="n">
-                {n.status === "delivered" ? `✓ delivered to ${n.deliveredTo?.agent}` : `⏳ queued for ${n.agent ?? "next agent"}`}: {n.text}
+                {n.status === "delivered" ? `✓ delivered to ${n.deliveredTo?.agent}${noteStep(n, steps)}` : `⏳ queued for ${n.agent ?? "next agent"}`}: {n.text}
               </span>
             </span>
           ))}
@@ -1025,10 +1033,10 @@ function ConversationBar({ run, steps }: { run: RunSummary; steps: Step[] }) {
         <select class="field inline" value={chosen} onChange={(e) => setTarget(e.currentTarget.value)}>
           {running ? (
             <>
-              <option value="">next agent to take a turn</option>
+              <option value="">the first agent that can take it</option>
               {teamAgents.map((a) => (
                 <option key={a} value={a}>
-                  {a}'s next turn
+                  {a} (its running turn if it takes messages, else its next)
                 </option>
               ))}
             </>

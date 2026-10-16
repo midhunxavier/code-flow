@@ -121,7 +121,8 @@ test("a failing agent fails the pipeline but not a race", async () => {
   try {
     const pipeline = await runPattern("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] });
     assert.equal(pipeline.status, "failed");
-    assert.match(pipeline.error!, /Implement plan \(codex\) failed: codex exited with code 1: boom/);
+    // Codex's app-server reports the failure as the turn's error.
+    assert.match(pipeline.error!, /Implement plan \(codex\) failed: boom/);
 
     const race = await runPattern("race", { contestants: ["claude", "codex"], judge: ["claude"] });
     assert.equal(race.status, "done", race.error);

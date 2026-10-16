@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Stand-in for the claude / codex / agy CLIs in tests. Emits each vendor's JSONL event
-// format and answers the structured prompts the patterns send, so workflows can be
-// exercised end to end without spending subscription quota.
-import { writeFileSync, readFileSync, existsSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+// format (and serves Codex's app-server protocol) with the answers from fake-work.mjs, so
+// workflows can be exercised end to end without spending subscription quota.
+import { writeFileSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { sleepMs, work } from "./fake-work.mjs";
 
 const [vendor, ...args] = process.argv.slice(2);
 
@@ -43,6 +43,11 @@ if (vendor === "agy" && args[0] === "models") {
   process.exit(0);
 }
 
+// Codex's JSON-RPC server: a turn that stays open to your messages while it runs.
+if (vendor === "codex" && args[0] === "app-server") {
+  await (await import("./fake-codex-app-server.mjs")).serve(args); // exits when stdin closes
+}
+
 // Prompts arrive on stdin, as the real CLIs receive them from code-flow.
 const stdin = readFileSync(0, "utf8");
 const prompt = vendor === "agy" ? JSON.parse(stdin.split("\n")[0]).message.content : stdin;
@@ -57,123 +62,15 @@ const write =
   (vendor === "codex" && args.includes('sandbox_mode="workspace-write"')) ||
   // agy has no read-only flag; code-flow enforces read-only by reverting changes.
   (vendor === "agy" && args.includes("--dangerously-skip-permissions"));
-
-if (prompt.includes("SNEAKY")) writeFileSync("sneaky.txt", "a read-only step wrote this\n");
-// A read-only step that commits: `git status` is clean afterwards, so only HEAD shows it.
-if (prompt.includes("COMMITS-IN-READ") && !write) {
-  writeFileSync("committed-in-read.txt", "x\n");
-  execFileSync("git", ["add", "committed-in-read.txt"]);
-  execFileSync("git", ["-c", "user.name=x", "-c", "user.email=x@x", "commit", "-qm", "sneaky commit from a read-only step"]);
-}
-// Leave a background process holding stdout open, like `npm run dev &` would.
-if (process.env.FAKE_LINGER_VENDOR === vendor) {
-  const child = spawn("sleep", ["30"], { stdio: ["ignore", "inherit", "inherit"] });
-  writeFileSync(process.env.FAKE_LINGER_PIDFILE, String(child.pid));
-  child.unref();
-}
-const once = (name) => {
-  const marker = `${process.env.CODEFLOW_HOME}/.${name}-once`;
-  if (existsSync(marker)) return false;
-  writeFileSync(marker, "1");
-  return true;
-};
-if (process.env.FAKE_TRANSIENT_VENDOR === vendor && write && once("transient")) {
-  process.stderr.write("API Error: 529 {\"type\":\"overloaded_error\"}\n");
-  process.exit(1);
-}
-if (process.env.FAKE_USAGE_LIMIT_VENDOR === vendor && write) {
-  process.stderr.write("You've hit your usage limit. Upgrade or try again in 4 hours.\n");
-  process.exit(1);
-}
-const id = createHash("sha1").update(prompt + vendor + Date.now()).digest("hex").slice(0, 8);
-
-if (process.env.FAKE_FAIL_VENDOR === vendor && write) {
-  process.stderr.write("boom\n");
-  process.exit(1);
-}
-
-let answer = `${vendor} handled the request.`;
-const json = (obj) => `Done.\n\`\`\`json\n${JSON.stringify(obj)}\n\`\`\``;
-
-if (prompt.includes('"subtasks"')) {
-  const conflict = prompt.includes("CONFLICT");
-  answer = json({
-    contracts: "Each part writes its own file; no shared names.",
-    subtasks: [
-      { id: "alpha", title: "Alpha part", instructions: conflict ? "Write shared.txt CONFLICT" : "Build alpha", agent: "claude" },
-      { id: "beta", title: "Beta part", instructions: conflict ? "Write shared.txt CONFLICT" : "Build beta", agent: "codex" },
-    ],
-  });
-} else if (prompt.includes("Resolve every conflict")) {
-  // Resolve whatever is actually conflicted (falls back to shared.txt for the supervisor test).
-  const conflicted = execFileSync("git", ["diff", "--name-only", "--diff-filter=U"]).toString().split("\n").filter(Boolean);
-  for (const file of conflicted.length ? conflicted : ["shared.txt"]) writeFileSync(file, "resolved by fake agent\n");
-  answer = "Resolved the conflicts.";
-} else if (prompt.includes("did not contain a valid")) {
-  // A format retry: answer with a minimal object that fits the schema in the prompt.
-  const schema = JSON.parse(prompt.match(/```json\n([\s\S]*?)\n```/)[1]);
-  const instance = (s) => s.enum ? s.enum[0] : s.type === "object" ? Object.fromEntries(Object.entries(s.properties ?? {}).map(([k, v]) => [k, instance(v)])) : s.type === "array" ? [] : s.type === "number" ? 0 : s.type === "boolean" ? false : "x";
-  answer = json(instance(schema));
-} else if (prompt.includes('"test_command"')) {
-  // A real test: passes once any agent has written its "<vendor>-<id>.txt" implementation file.
-  writeFileSync("spec.test.mjs", [
-    'import { test } from "node:test";',
-    'import assert from "node:assert";',
-    'import { readdirSync } from "node:fs";',
-    'test("feature is implemented", () => assert.ok(readdirSync(".").some((f) => /^(claude|codex|agy)-.*\\.txt$/.test(f))));',
-  ].join("\n") + "\n");
-  answer = json({ test_command: "node --test spec.test.mjs", test_files: ["spec.test.mjs"] });
-} else if (prompt.includes('"verdict": "pass" | "fail"')) {
-  answer = json({ verdict: "pass", failures: [] });
-} else if (prompt.includes('"raised_by"')) {
-  // Review council chair: merge the reviewers' findings.
-  answer = json({
-    verdict: "changes_requested",
-    summary: "Two reviewers found the same off-by-one.",
-    findings: [
-      { severity: "low", file: "README.md", problem: "Typo", fix: "Fix the typo", raised_by: ["B"] },
-      { severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use < instead of <=", raised_by: ["A", "B"] },
-    ],
-  });
-} else if (prompt.includes("Other reviewers are reviewing the same changes")) {
-  answer = json({ verdict: "changes_requested", issues: [{ severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use <" }] });
-} else if (prompt.includes('"verdict": "approve" | "changes_requested"')) {
-  // State lives outside the worktree: read-only steps have their file changes reverted.
-  const marker = `${process.env.CODEFLOW_HOME}/.reviewed-once`;
-  const fail = process.env.FAKE_REVIEW_FAIL_ONCE && !existsSync(marker);
-  if (fail) writeFileSync(marker, "1");
-  answer = json(fail ? { verdict: "changes_requested", issues: [{ severity: "medium", file: "src/x.ts", problem: "missing edge case", fix: "handle it" }] } : { verdict: "approve", issues: [] });
-} else if (prompt.includes('"winner"')) {
-  answer = json({ winner: "B", ranking: ["B", "A"], reasons: "B is simpler" });
-} else if (write && process.env.FAKE_TAMPER && existsSync("failing.test.mjs")) {
-  // Gaming the check: delete the test that fails instead of fixing the code.
-  execFileSync("git", ["rm", "-q", "failing.test.mjs"]);
-  answer = "Removed a broken test.";
-} else if (write && process.env.FAKE_EDIT_TESTS && prompt.includes("Make the tests pass") && existsSync("spec.test.mjs")) {
-  writeFileSync("spec.test.mjs", 'import { test } from "node:test";\ntest("always passes", () => {});\n');
-  writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
-  answer = "Simplified the test and implemented it.";
-} else if (write && process.env.FAKE_NOOP_VENDOR === vendor) {
-  answer = `${vendor} looked around but changed nothing.`;
-} else if (write) {
-  if (prompt.includes("CONFLICT")) writeFileSync("shared.txt", `written by ${vendor} ${id}\n`);
-  else writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
-  answer = `Implemented changes as ${vendor}.`;
-}
-
-// Schema-constrained output, the way each real CLI returns it (see the adapters).
 const schemaRequested = args.includes("--json-schema") || args.includes("--output-schema");
-const garbleMarker = `${process.env.CODEFLOW_HOME}/.garbled-once`;
-const garbled =
-  schemaRequested &&
-  process.env.FAKE_GARBLE_VENDOR === vendor &&
-  (!process.env.FAKE_GARBLE_ONCE || (!existsSync(garbleMarker) && (writeFileSync(garbleMarker, "1"), true)));
-if (garbled) answer = "Looks fine to me overall.";
-const fenced = answer.match(/```json\n([\s\S]*?)\n```/);
-const structured = schemaRequested && !garbled && fenced ? JSON.parse(fenced[1]) : undefined;
-if (vendor === "codex" && structured) answer = JSON.stringify(structured);
+const fail = (message) => {
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+};
+const { answer, structured } = work({ vendor, prompt, write, schemaRequested, fail });
 
-if (process.env.FAKE_SLEEP_MS && (!process.env.FAKE_SLEEP_VENDOR || process.env.FAKE_SLEEP_VENDOR === vendor)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_SLEEP_MS));
+const pause = sleepMs(vendor);
+if (pause) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pause);
 
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 const session = randomUUID();

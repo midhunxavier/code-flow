@@ -9,7 +9,7 @@ code-flow never handles credentials. Each adapter launches the vendor's **offici
 | Agent | Command used | Login | Sandbox / permissions |
 |---|---|---|---|
 | Claude Code | `claude -p --output-format stream-json` | Pro/Max (or API key) via `claude` | read: edit tools disabled, git read-only commands allowed · write: `acceptEdits` + an allow-list of build/test commands |
-| Codex | `codex exec --json` / `codex exec resume` | ChatGPT plan (or API key) via `codex login` | Codex sandbox: `read-only` / `workspace-write` |
+| Codex | `codex app-server` (JSON-RPC over stdio: `thread/start` or `thread/resume`, `turn/start`, `turn/steer`); `codex exec --json` / `codex exec resume` when app-server isn't available | ChatGPT plan (or API key) via `codex login` | Codex sandbox: `read-only` / `workspace-write`, approvals off |
 | Antigravity | `agy -p --output-format stream-json` | Google AI Pro/Ultra via an interactive `agy` login | `--sandbox` (verified: blocks writes outside the worktree) + `--dangerously-skip-permissions` (see caveats) |
 
 **Read-only is enforced by code-flow itself, for every agent.** Before a read-only step (plan, review, judge, debate) code-flow snapshots its worktree: the commit, uncommitted changes and untracked files. Afterwards it puts back anything the step changed, including commits, and logs a warning.
@@ -262,12 +262,15 @@ Runs are conversations, not fire-and-forget jobs:
   - **Ask for changes:** your note goes to the author, who revises in its own session and asks again.
   - **Reject:** the run ends without building anything.
   - A pending checkpoint survives restarts. Waiting runs show under *Needs you*, with a notification.
-- **Message the team** while it runs: your note is delivered at the start of the next turn of the agent you pick (or whoever goes next), never into a turn that has already started. The run view shows each note as queued or delivered.
+- **Message the team** while it runs. Pick an agent, or let the first agent that can take the note have it.
+  - **Into a running Codex turn:** Codex runs through `codex app-server`, so a note for Codex (or for anyone) reaches its running turn right away, as a new message on the live thread (`turn/steer`). Codex takes it into account from its next step, without waiting for the turn to end.
+  - **At the start of the next turn:** Claude, agy, and Codex on the `exec` fallback can't take input mid-turn. Their notes are added to the start of that agent's next turn.
+  - The run view shows each note as queued or delivered, and which step it reached ("✓ delivered to codex mid-turn (Implement plan)"). A mid-turn note also shows in that step's transcript. If the turn ended just as the note arrived, the note goes back in the queue for the next turn. If the step is retried, the retry gets the note in its prompt.
 - **Reply** after it finishes:
   - to an agent in its worktree: it continues its own session, then code-flow commits and re-runs the check;
   - or to *the whole team again*: a new run that starts from this run's result branch, with your feedback added to the task.
 
-Prompts are passed on **stdin**, not as command-line arguments (`claude -p` reading stdin, `codex exec -`, and agy's stream-json input), so long tasks and diffs aren't limited by the operating system's argument size.
+Prompts are passed on **stdin**, not as command-line arguments (`claude -p` reading stdin, Codex's JSON-RPC or `codex exec -`, and agy's stream-json input), so long tasks and diffs aren't limited by the operating system's argument size.
 
 ## Runs survive restarts
 
@@ -338,7 +341,7 @@ src/repo-tree.ts         file tree + search for the Files panel
 src/context.ts           validates and stages task context for agents
 ```
 
-- **AgentAdapter** (`src/adapters/types.ts`): `run({prompt, cwd, mode, resumeSessionId}, onEvent) → {ok, finalText, sessionId}`. Adapters convert each CLI's JSONL into `text | thinking | tool_call | tool_result | usage | status | error` events.
+- **AgentAdapter** (`src/adapters/types.ts`): `run({prompt, cwd, mode, resumeSessionId}, onEvent) → {ok, finalText, sessionId}`. Adapters convert each CLI's JSONL into `text | thinking | tool_call | tool_result | usage | status | error` events. An adapter whose turns take input while they run calls `onSteerable(steer)` once its turn can be steered. The engine then hands queued notes to `steer`. `src/adapters/codex-app-server.ts` turns app-server notifications into the events `codex exec --json` prints, so both Codex transports share one handler.
 - **TeamContext** gives patterns a few primitives. `ask()` runs one agent turn as a visible step, and `resume` continues that agent's own conversation. `worktree()`, `commit()`, `diff()` and `artifact()` handle git. Structured hand-offs (review verdicts, judge picks, subtask lists) use a fenced ```` ```json ```` block that `extractJson` parses.
 - Every event is appended to `~/.codeflow/runs/<run>.jsonl`. Worktrees live in `<repo>/.worktrees/<run-id>/` (see above).
 
@@ -367,6 +370,7 @@ Implement `AgentAdapter` in `src/adapters/`, then register it in `src/adapters/i
 | `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view and webhooks on your network, when *Reachable from my Wi-Fi* is on |
 | `CODEFLOW_SCHEDULER_TICK_MS` | `30000` | How often due automations are checked |
 | `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments |
+| `CODEFLOW_CODEX_TRANSPORT` | `auto` | `auto`: `codex app-server` when the installed Codex has it, else `codex exec` (decided once per server start). `app-server`: require it. `exec`: always `codex exec` (your notes then wait for Codex's next turn) |
 | `CODEFLOW_AGY_SKIP_PERMISSIONS` | `1` | Set to `0` to stop passing `--dangerously-skip-permissions` to agy; then configure `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` |
 
 ## Tests
@@ -376,7 +380,7 @@ npm test           # unit + workflow tests against fake CLIs
 npm run test:e2e   # the real UI in Chrome (headless) against a server with fake agents
 ```
 
-The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota. A fake `gh` keeps issues, PRs, checks and comments in a JSON file and pushes to a local bare repository, so the GitHub flows (fix CI → push → watch → fix again) are tested without touching GitHub. A fake `docker` records its arguments and runs the command in place, so isolation is tested without Docker. The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, and the guarantee that your checkout is untouched. `test/hardening.test.ts` covers the guarantees about processes, runs and tests:
+The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota. The fake `codex` also serves the app-server protocol (`test/fake-codex-app-server.mjs`). Its threads persist across processes, so resume and per-turn token counts are tested. A prompt containing `WAIT-FOR-STEER` keeps a turn open until a note is steered in. `test/codex-app-server.test.ts` covers mid-turn notes, declined approvals, cancellation, and the `exec` fallback. A fake `gh` keeps issues, PRs, checks and comments in a JSON file and pushes to a local bare repository, so the GitHub flows (fix CI → push → watch → fix again) are tested without touching GitHub. A fake `docker` records its arguments and runs the command in place, so isolation is tested without Docker. The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, and the guarantee that your checkout is untouched. `test/hardening.test.ts` covers the guarantees about processes, runs and tests:
 - a background process an agent leaves behind neither hangs a step nor survives it;
 - a run can't be resumed twice at once;
 - a commit made in a read-only step is undone;
@@ -390,12 +394,13 @@ The GitHub tests cover untrusted issues (lockdown, fenced text, Docker or your c
 ## Caveats and next steps
 
 - **agy permissions** (tested with agy 1.3.5): when headless agy hits a tool it isn't allowed to use, it doesn't work around it. The turn ends with an empty answer, which code-flow reports as a failed step that names the denied action. That's why code-flow passes `--dangerously-skip-permissions` together with `--sandbox` by default. The sandbox confines writes to the worktree, and code-flow reverts any changes made during read-only steps. Older agy versions printed nothing when piped; code-flow reports that as an error too.
-- Headless agents can't ask you anything. Tools that are not pre-allowed are denied, and the agent works around it or reports it.
+- Headless agents can't ask you anything. Tools that are not pre-allowed are denied, and the agent works around it or reports it. Codex runs with approvals off (`approvalPolicy: "never"`); if it asks for an approval anyway, code-flow declines.
+- **Mid-turn notes are Codex-only, and app-server is experimental.** Mid-turn delivery needs `codex app-server`, which Codex labels experimental (written against codex-cli 0.162). If the installed Codex lacks it, or speaks a protocol this client doesn't, code-flow falls back to `codex exec` and logs that once. It then sticks with exec until the server restarts, so restart code-flow after upgrading Codex. A note is marked delivered as soon as Codex accepts it into the turn. If Codex rejects it (the turn just ended), it goes to the next turn instead. A note for "anyone" goes to a running Codex turn, not to whoever starts next.
 - Claude's write mode can run allow-listed commands such as `npm`, `node` and `make`, and those can run arbitrary project scripts. Only run it on repos you trust. Codex is additionally confined by its own sandbox.
 - agy needs `--dangerously-skip-permissions` for read-only steps too, so for agy the snapshot-and-restore is what enforces read-only. Changes to gitignored files during a read-only step aren't detected.
 - The test-integrity checks catch the common ways to game a check, not every one. A flagged result is a prompt to look, and an unflagged one isn't proof.
 - Next steps worth doing:
-  - Use `codex app-server` instead of `exec` for mid-turn steering and real approvals.
+  - Real approvals through `codex app-server` (it already declines approval requests): ask you in the UI instead.
   - A container option for the agents themselves (today only checks and setup run in Docker).
   - Write run snapshots as deltas and compact old logs (today every state change appends a full snapshot).
   - Read PR line comments (review threads), not just conversation comments and review summaries.

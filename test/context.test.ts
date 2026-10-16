@@ -160,10 +160,29 @@ test("model and effort reach each CLI in its own flag format", async () => {
     const calls = readdirSync(recordDir).map((f) => JSON.parse(readFileSync(join(recordDir, f), "utf8")));
     const argsOf = (vendor: string) => calls.find((c) => c.vendor === vendor)!.args.join(" ");
     assert.match(argsOf("claude"), /--model opus --effort high/);
-    assert.match(argsOf("codex"), /-m gpt-a -c model_reasoning_effort="low"/);
     assert.match(argsOf("agy"), /--model model-one --effort max/);
+    // Codex's app-server takes them as thread and turn parameters.
+    const codex = calls.find((c) => c.vendor === "codex")!;
+    assert.deepEqual([codex.transport, codex.thread.model, codex.turn.effort], ["app-server", "gpt-a", "low"]);
   } finally {
     delete process.env.FAKE_RECORD_DIR;
+  }
+});
+
+test("codex exec (the fallback) gets model and effort as flags", async () => {
+  const recordDir = mkdtempSync(join(tmpdir(), "codeflow-record-"));
+  process.env.FAKE_RECORD_DIR = recordDir;
+  process.env.CODEFLOW_CODEX_TRANSPORT = "exec";
+  try {
+    const run = await startRun({ agentSettings: validateAgentSettings({ codex: { model: "gpt-a", effort: "low" } }) });
+    assert.equal(run.status, "done", run.error);
+    const calls = readdirSync(recordDir).map((f) => JSON.parse(readFileSync(join(recordDir, f), "utf8")));
+    const codex = calls.find((c) => c.vendor === "codex")!;
+    assert.equal(codex.args[0], "exec");
+    assert.match(codex.args.join(" "), /-m gpt-a -c model_reasoning_effort="low"/);
+  } finally {
+    delete process.env.FAKE_RECORD_DIR;
+    delete process.env.CODEFLOW_CODEX_TRANSPORT;
   }
 });
 

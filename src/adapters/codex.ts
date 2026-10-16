@@ -1,17 +1,22 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { codexTransport } from "../config.js";
 import type { AgentAdapter, AgentEvent, ModelCatalog, ModelInfo, RunOptions, RunResult } from "./types.js";
-import { captureOutput, commandExists, describeFailure, runJsonlProcess, stringify, truncate } from "./process.js";
+import { runAppServerTurn } from "./codex-app-server.js";
+import { captureOutput, commandExists, describeFailure, runJsonlProcess, stringify, truncate, type ProcessOutcome } from "./process.js";
 
 /**
- * Codex via `codex exec --json` (JSONL thread/turn/item events).
+ * Codex, through `codex app-server` (JSON-RPC over stdio) when the installed Codex has it, so a
+ * message you send reaches a turn while it runs; otherwise through `codex exec --json`, one
+ * process per turn (CODEFLOW_CODEX_TRANSPORT picks one explicitly). Both report the same
+ * thread/turn/item events, handled once below.
  * Uses whatever login the local `codex` binary already has (ChatGPT plan or API key).
  * Codex's own sandbox enforces the access mode: read-only or workspace-write.
- *
- * `codex app-server` (JSON-RPC) is the richer option for interactive approvals and
- * steering mid-turn; `exec` keeps this MVP simple.
  */
+
+/** Set once "auto" found that this Codex can't serve app-server turns: later turns use exec. */
+let appServerMissing: string | undefined;
 
 export const codexAdapter: AgentAdapter = {
   id: "codex",
@@ -43,19 +48,9 @@ export const codexAdapter: AgentAdapter = {
 
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
     const sandbox = opts.mode === "write" ? "workspace-write" : "read-only";
-    // `-c sandbox_mode=` works for both `exec` and `exec resume` (resume has no -s flag).
-    const common = ["--json", "--skip-git-repo-check", "-c", `sandbox_mode="${sandbox}"`];
-    if (opts.model) common.push("-m", opts.model);
     // Codex always sandboxes writes to the worktree; "trusted" additionally allows network access.
-    if (opts.mode === "write" && opts.trust === "trusted") common.push("-c", "sandbox_workspace_write.network_access=true");
-    if (opts.effort) common.push("-c", `model_reasoning_effort="${opts.effort}"`);
-    const schemaFile = opts.jsonSchema ? await writeSchemaFile(opts.jsonSchema) : undefined;
-    if (schemaFile) common.push("--output-schema", schemaFile);
-
-    // "-" reads the prompt from stdin, so its size isn't limited by argv.
-    const args = opts.resumeSessionId
-      ? ["exec", "resume", ...common, opts.resumeSessionId, "-"]
-      : ["exec", ...common, "-C", opts.cwd, "-"];
+    const network = opts.mode === "write" && opts.trust === "trusted" ? ["-c", "sandbox_workspace_write.network_access=true"] : [];
+    const transport = codexTransport();
 
     let sessionId = opts.resumeSessionId;
     let finalText = "";
@@ -64,51 +59,95 @@ export const codexAdapter: AgentAdapter = {
     let lastError: string | undefined;
     let completed = false;
 
-    const outcome = await runJsonlProcess({
-      command: "codex",
-      args,
-      input: opts.prompt,
-      cwd: opts.cwd,
-      signal: opts.signal,
-      timeoutMs: opts.timeoutMs,
-      onText: (line) => onEvent({ kind: "status", text: line }),
-      onJson: (msg) => {
-        switch (msg.type) {
-          case "thread.started":
-            sessionId = msg.thread_id;
-            onEvent({ kind: "session", sessionId: msg.thread_id });
-            break;
+    const handle = (msg: any) => {
+      switch (msg.type) {
+        case "thread.started":
+          sessionId = msg.thread_id;
+          onEvent({ kind: "session", sessionId: msg.thread_id });
+          break;
 
-          case "item.started":
-          case "item.updated":
-          case "item.completed":
-            handleItem(msg.type, msg.item, onEvent, (text) => (finalText = text));
-            break;
+        case "item.started":
+        case "item.updated":
+        case "item.completed":
+          handleItem(msg.type, msg.item, onEvent, (text) => (finalText = text));
+          break;
 
-          case "turn.completed": {
-            completed = true;
-            const cached = msg.usage?.cached_input_tokens ?? 0;
-            onEvent({
-              kind: "usage",
-              // Codex counts cached input inside input_tokens.
-              inputTokens: msg.usage?.input_tokens !== undefined ? Math.max(0, msg.usage.input_tokens - cached) : undefined,
-              outputTokens: msg.usage?.output_tokens,
-              cacheReadTokens: cached || undefined,
-            });
-            break;
-          }
-
-          case "turn.failed":
-            turnError = msg.error?.message ?? lastError ?? "Codex turn failed";
-            break;
-
-          case "error":
-            lastError = msg.message ?? stringify(msg);
-            onEvent({ kind: "status", text: `Codex: ${lastError}` });
-            break;
+        case "turn.completed": {
+          completed = true;
+          const cached = msg.usage?.cached_input_tokens ?? 0;
+          onEvent({
+            kind: "usage",
+            // Codex counts cached input inside input_tokens.
+            inputTokens: msg.usage?.input_tokens !== undefined ? Math.max(0, msg.usage.input_tokens - cached) : undefined,
+            outputTokens: msg.usage?.output_tokens,
+            cacheReadTokens: cached || undefined,
+          });
+          break;
         }
-      },
-    });
+
+        case "turn.failed":
+          turnError = msg.error?.message ?? lastError ?? "Codex turn failed";
+          break;
+
+        case "error":
+          lastError = msg.message ?? stringify(msg);
+          onEvent({ kind: "status", text: `Codex: ${lastError}` });
+          break;
+      }
+    };
+    const onText = (line: string) => onEvent({ kind: "status", text: line });
+
+    let outcome: ProcessOutcome | undefined;
+    let schemaFile: string | undefined;
+    if (transport === "app-server" || (transport === "auto" && !appServerMissing)) {
+      const served = await runAppServerTurn({
+        prompt: opts.prompt,
+        cwd: opts.cwd,
+        sandbox,
+        resumeThreadId: opts.resumeSessionId,
+        model: opts.model,
+        effort: opts.effort,
+        outputSchema: opts.jsonSchema,
+        config: network,
+        signal: opts.signal,
+        timeoutMs: opts.timeoutMs,
+        onMessage: handle,
+        onText,
+        onSteerable: opts.onSteerable,
+      });
+      if (!("unavailable" in served)) outcome = served;
+      else if (transport === "app-server") {
+        const error = `codex app-server isn't available (${served.unavailable}); unset CODEFLOW_CODEX_TRANSPORT to fall back to codex exec`;
+        onEvent({ kind: "error", message: error });
+        return { ok: false, finalText, sessionId, error };
+      } else {
+        appServerMissing = served.unavailable;
+        onEvent({ kind: "status", text: `codex app-server isn't available (${served.unavailable.split("\n")[0]}); using codex exec — your messages wait for the next turn` });
+      }
+    }
+
+    if (!outcome) {
+      // `-c sandbox_mode=` works for both `exec` and `exec resume` (resume has no -s flag).
+      const common = ["--json", "--skip-git-repo-check", "-c", `sandbox_mode="${sandbox}"`, ...network];
+      if (opts.model) common.push("-m", opts.model);
+      if (opts.effort) common.push("-c", `model_reasoning_effort="${opts.effort}"`);
+      schemaFile = opts.jsonSchema ? await writeSchemaFile(opts.jsonSchema) : undefined;
+      if (schemaFile) common.push("--output-schema", schemaFile);
+      // "-" reads the prompt from stdin, so its size isn't limited by argv.
+      const args = opts.resumeSessionId
+        ? ["exec", "resume", ...common, opts.resumeSessionId, "-"]
+        : ["exec", ...common, "-C", opts.cwd, "-"];
+      outcome = await runJsonlProcess({
+        command: "codex",
+        args,
+        input: opts.prompt,
+        cwd: opts.cwd,
+        signal: opts.signal,
+        timeoutMs: opts.timeoutMs,
+        onText,
+        onJson: handle,
+      });
+    }
 
     if (schemaFile) await rm(dirname(schemaFile), { recursive: true, force: true }).catch(() => undefined);
     if (!completed || turnError || outcome.exitCode !== 0) {
@@ -170,7 +209,7 @@ function handleItem(
           kind: "tool_result",
           callId: item.id,
           output: truncate(item.aggregated_output ?? ""),
-          isError: item.exit_code !== 0 && item.exit_code != null,
+          isError: (item.exit_code !== 0 && item.exit_code != null) || item.status === "declined",
         });
       }
       break;

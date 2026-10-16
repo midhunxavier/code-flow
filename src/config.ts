@@ -17,3 +17,13 @@ export const MAX_DIFF_CHARS = Number(process.env.CODEFLOW_MAX_DIFF_CHARS ?? 60_0
 
 /** Per agent-step timeout. */
 export const STEP_TIMEOUT_MS = Number(process.env.CODEFLOW_STEP_TIMEOUT_MIN ?? 30) * 60_000;
+
+/**
+ * How code-flow drives Codex: "app-server" (JSON-RPC; your messages reach a turn while it runs),
+ * "exec" (one `codex exec` per turn), or "auto" — app-server when the installed Codex has it.
+ * Read on every turn, so changing it doesn't need a restart of running runs.
+ */
+export function codexTransport(): "auto" | "app-server" | "exec" {
+  const value = process.env.CODEFLOW_CODEX_TRANSPORT;
+  return value === "app-server" || value === "exec" ? value : "auto";
+}

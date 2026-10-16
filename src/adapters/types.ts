@@ -35,6 +35,12 @@ export interface RunOptions {
    * common build/test commands, "trusted" = any command (and network, where the CLI sandboxes).
    */
   trust?: "safe" | "standard" | "trusted";
+  /**
+   * Adapters whose CLI takes more input while a turn runs (Codex app-server) call this once the
+   * turn can be steered, with a function that adds a user message to it (resolving false when
+   * the turn no longer takes input), and again with undefined when the turn ends.
+   */
+  onSteerable?: (steer: ((text: string) => Promise<boolean>) | undefined) => void;
 }
 
 /** Normalized event stream — the UI and workflow engine only ever see these. */

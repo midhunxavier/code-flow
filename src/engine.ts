@@ -170,7 +170,10 @@ export interface Run {
   /** The user has looked at the finished run (otherwise it "needs you"). */
   seen: boolean;
   archived: boolean;
-  /** Messages you sent while the run was going; delivered at the start of an agent's next turn. */
+  /**
+   * Messages you sent while the run was going: delivered into a running turn that takes input
+   * (Codex app-server), otherwise at the start of an agent's next turn.
+   */
   notes: Note[];
   /** Checkpoints you asked to approve (e.g. the plan before building). */
   approvals: { plan?: boolean };
@@ -232,10 +235,11 @@ export type RunSummary = Omit<Run, "steps">;
 export interface Note {
   id: string;
   text: string;
-  /** Deliver to this agent's next turn; undefined = whichever agent goes next. */
+  /** Deliver to this agent's running turn (if it takes input) or next turn; undefined = whoever can take it first. */
   agent?: AgentId;
   status: "queued" | "delivered";
-  deliveredTo?: { stepId: string; agent: AgentId };
+  /** midTurn: it went into that step's turn while it ran, not into the turn's opening prompt. */
+  deliveredTo?: { stepId: string; agent: AgentId; midTurn?: boolean };
   at: number;
 }
 
@@ -508,16 +512,21 @@ export class TeamContext {
     });
   }
 
-  /** Notes you queued for the agent that's about to take a turn. */
-  private takeNotes(agent: AgentId, stepId: string): string {
+  /** Hand the notes you queued for this agent to the turn it's about to take. */
+  private takeNotes(agent: AgentId, stepId: string) {
     const due = this.run.notes.filter((n) => n.status === "queued" && (!n.agent || n.agent === agent));
-    if (!due.length) return "";
+    if (!due.length) return;
     for (const n of due) {
       n.status = "delivered";
       n.deliveredTo = { stepId, agent };
     }
     this.manager.emitRun(this.run);
-    return `## A message from the user\n(Sent while the team was working — take it into account.)\n${due.map((n) => `- ${n.text}`).join("\n")}\n\n`;
+  }
+
+  /** Every note a step was given, as the prompt preamble (a retry repeats mid-turn ones too). */
+  private notesFor(stepId: string): string {
+    const given = this.run.notes.filter((n) => n.status === "delivered" && n.deliveredTo?.stepId === stepId);
+    return given.length ? `${noteMessage(given.map((n) => n.text))}\n\n` : "";
   }
 
   /** End the run because a budget ran out; in-flight agents and checks are stopped. */
@@ -895,9 +904,9 @@ export class TeamContext {
       status: "running",
       startedAt: Date.now(),
     };
-    // Notes are picked up before the step is announced: anything sent after it shows as
-    // running goes to the next turn, never into a turn that already started.
-    const notes = this.takeNotes(params.agent, step.id);
+    // Notes are picked up before the step is announced. Anything sent after it shows as running
+    // goes into the turn itself if the turn takes input (Codex app-server), else to the next turn.
+    this.takeNotes(params.agent, step.id);
     this.run.steps.push(step);
     this.manager.emit(this.run, { type: "step", step: { ...step } });
 
@@ -916,9 +925,10 @@ export class TeamContext {
     try {
       release = await agentSlots.acquire(this.signal).catch(() => undefined);
       step.startedAt = Date.now();
-      result = release ? await this.runAgent(params, notes, step, onEvent) : { ok: false, finalText: "", error: "Cancelled before it started" };
+      result = release ? await this.runAgent(params, step, onEvent) : { ok: false, finalText: "", error: "Cancelled before it started" };
     } finally {
       release?.();
+      this.manager.setSteerer(this.run, step.id, params.agent, undefined);
     }
 
     // Out of plan usage steers "Auto" away from this agent; a per-minute 429 was just retried.
@@ -952,13 +962,13 @@ export class TeamContext {
    * The agent turn itself: read-only enforced by snapshot and restore (for every agent, not
    * just trusted to each CLI's flags), and passing failures (overloaded, network) retried.
    */
-  private async runAgent(params: AskParams, notes: string, step: Step, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
+  private async runAgent(params: AskParams, step: Step, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
     const before = params.mode === "read" ? await snapshot(params.cwd.path).catch(() => undefined) : undefined;
     let result: RunResult;
     for (let attempt = 0; ; attempt++) {
       result = await adapters[params.agent].run(
         {
-          prompt: notes + params.prompt,
+          prompt: this.notesFor(step.id) + params.prompt,
           cwd: params.cwd.path,
           mode: params.mode,
           resumeSessionId: params.resume?.sessionId,
@@ -968,6 +978,7 @@ export class TeamContext {
           trust: params.trust ?? this.run.trust,
           signal: this.signal,
           timeoutMs: STEP_TIMEOUT_MS,
+          onSteerable: (steer) => this.manager.setSteerer(this.run, step.id, params.agent, steer),
         },
         onEvent,
       );
@@ -1005,6 +1016,12 @@ export class TeamContext {
     add(this.run.usage);
     add(this.agentUsage(agent));
   }
+}
+
+/** How your notes are put to an agent: before its turn, or into the turn while it runs. */
+function noteMessage(texts: string[], midTurn = false): string {
+  const when = midTurn ? "Sent while you were working on this — take it into account from here on." : "Sent while the team was working — take it into account.";
+  return `## A message from the user\n(${when})\n${texts.map((t) => `- ${t}`).join("\n")}`;
 }
 
 /** Plan usage used up: hours until it resets. */
@@ -1395,6 +1412,8 @@ export class RunManager {
   }
 
   private readonly waiters = new Map<string, (answer: ApprovalAnswer) => void>();
+  /** Turns that take input while they run, by run and step: where notes can go right away. */
+  private readonly steerers = new Map<string, Map<string, { agent: AgentId; steer: (text: string) => Promise<boolean> }>>();
   /** Latest plan-usage signal per vendor (Claude reports windows; others only "limited"). */
   readonly quota: Partial<Record<AgentId, { status: string; windows: Record<string, { utilization?: number; resetsAt?: number }>; at: number }>> = {};
   /** "Run app" dev servers, keyed `${runId}/${worktree}`. */
@@ -1455,16 +1474,68 @@ export class RunManager {
     waiter({ decision: answer.decision, note: answer.note?.trim() || undefined });
   }
 
-  /** Queue a message for the running team; it reaches the next turn of `agent` (or of anyone). */
+  /**
+   * Send a message to the running team: into the running turn of `agent` (or of anyone) when that
+   * turn takes input, otherwise queued for its next turn.
+   */
   addNote(id: string, text: string, agent?: AgentId): Note {
     const run = this.require(id);
     if (run.status !== "running") throw new Error("The run has finished — use Reply instead");
     if (!text.trim()) throw new Error("Write a message");
     const note: Note = { id: `n${run.notes.length + 1}`, text: text.trim(), agent, status: "queued", at: Date.now() };
     run.notes.push(note);
-    this.emit(run, { type: "log", level: "info", text: `Message queued for ${agent ?? "the next agent"}: ${note.text}` });
+    this.deliverMidTurn(run);
+    if (note.status === "queued") this.emit(run, { type: "log", level: "info", text: `Message queued for ${agent ?? "the next agent"}: ${note.text}` });
     this.emitRun(run);
     return note;
+  }
+
+  /** A step's turn started (or stopped) taking input while it runs. */
+  setSteerer(run: Run, stepId: string, agent: AgentId, steer: ((text: string) => Promise<boolean>) | undefined) {
+    let live = this.steerers.get(run.id);
+    if (steer) {
+      if (!live) this.steerers.set(run.id, (live = new Map()));
+      live.set(stepId, { agent, steer });
+      this.deliverMidTurn(run); // notes sent while the turn was starting
+    } else if (live?.delete(stepId) && !live.size) {
+      this.steerers.delete(run.id);
+    }
+  }
+
+  /**
+   * Queued notes go into a running turn that takes input and is the note's agent's (or anyone's,
+   * for an untargeted note). They're marked delivered before the turn confirms, so a turn that
+   * starts meanwhile can't take them too; if the turn ended first they're queued again.
+   */
+  private deliverMidTurn(run: Run) {
+    const live = this.steerers.get(run.id);
+    if (!live) return;
+    let changed = false;
+    for (const note of run.notes) {
+      if (note.status !== "queued") continue;
+      const target = [...live].find(([, s]) => !note.agent || note.agent === s.agent);
+      if (!target) continue;
+      const [stepId, { agent, steer }] = target;
+      note.status = "delivered";
+      note.deliveredTo = { stepId, agent, midTurn: true };
+      changed = true;
+      void steer(noteMessage([note.text], true)).then((ok) => {
+        if (ok) {
+          this.emit(run, { type: "agent", stepId, event: { kind: "status", text: `Your message reached this turn: ${note.text}` } });
+          this.emit(run, { type: "log", level: "info", text: `Message delivered to ${agent} mid-turn: ${note.text}` });
+        } else {
+          if (this.steerers.get(run.id)?.get(stepId)?.steer === steer) this.setSteerer(run, stepId, agent, undefined);
+          if (note.deliveredTo?.stepId === stepId && note.deliveredTo.midTurn) {
+            note.status = "queued";
+            note.deliveredTo = undefined;
+            this.deliverMidTurn(run);
+            if (note.status === "queued") this.emit(run, { type: "log", level: "info", text: `Message queued for ${note.agent ?? "the next agent"}: ${note.text}` });
+          }
+        }
+        this.emitRun(run);
+      });
+    }
+    if (changed) this.emitRun(run);
   }
 
   private require(id: string): Run {

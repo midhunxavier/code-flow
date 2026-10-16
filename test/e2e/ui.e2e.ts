@@ -144,6 +144,29 @@ test("approve the plan from the UI: ask for changes, then approve", async () => 
   assert.equal(await page.locator(".tl-step", { hasText: "Revise the plan (1)" }).count(), 1);
 });
 
+test("a message sent while Codex is working reaches its running turn", async () => {
+  await page.goto(BASE);
+  await page.getByRole("button", { name: /Plan → Build → Review/ }).click();
+  await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from the last test
+  // The fake Codex keeps this turn open until a message is steered into it.
+  await page.getByLabel("Task", { exact: true }).fill("E2E: steer WAIT-FOR-STEER");
+  await page.getByRole("button", { name: /^Start run/ }).click();
+  await page.waitForURL(/#\/run\//);
+  const runId = decodeURIComponent(page.url().split("#/run/")[1]!.split("/")[0]!);
+
+  await page.locator(".tl-step", { hasText: "Implement plan" }).waitFor({ timeout: 30_000 });
+  await page.locator(".convo select").selectOption("codex");
+  await page.locator(".convo input.field").fill("Prefer tabs over spaces");
+  await page.locator(".convo input.field").press("Enter");
+  await page.locator(".note-chip", { hasText: "✓ delivered to codex mid-turn (Implement plan): Prefer tabs over spaces" }).waitFor({ timeout: 10_000 });
+  await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
+
+  const run = await fetch(`${BASE}/api/runs/${runId}`, { headers: bearer }).then((r) => r.json());
+  const implement = run.steps.find((s: { title: string }) => s.title === "Implement plan");
+  assert.deepEqual(run.notes.map((n: { deliveredTo: unknown }) => n.deliveredTo), [{ stepId: implement.id, agent: "codex", midTurn: true }]);
+  assert.equal(implement.status, "done");
+});
+
 test("start from a PR with a template: the council's findings are ranked, and posting takes your click", async () => {
   await page.goto(BASE);
   await page.getByRole("button", { name: /Review a PR as a council/ }).click();
