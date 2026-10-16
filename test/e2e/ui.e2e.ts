@@ -130,7 +130,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   assert.equal(await page.locator("#checkCmd").inputValue(), "npm test", "the check is detected from package.json");
 
   // Describe the task, pick the pipeline, start with the keyboard.
-  await page.getByRole("button", { name: /Plan → Build → Review/ }).click();
+  await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
   await page.getByLabel("Task", { exact: true }).fill("E2E: make the check pass");
   await page.getByLabel("Task", { exact: true }).press("Meta+Enter");
 
@@ -162,7 +162,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
 
 test("approve the plan from the UI: ask for changes, then approve", async () => {
   await page.goto(BASE);
-  await page.getByRole("button", { name: /Plan → Build → Review/ }).click();
+  await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
   await page.getByText("Let me approve the plan").click();
   await page.getByLabel("Task", { exact: true }).fill("E2E: checkpoint");
   await page.getByRole("button", { name: /^Start run/ }).click();
@@ -179,7 +179,7 @@ test("approve the plan from the UI: ask for changes, then approve", async () => 
 
 test("a message sent while Codex is working reaches its running turn", async () => {
   await page.goto(BASE);
-  await page.getByRole("button", { name: /Plan → Build → Review/ }).click();
+  await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from the last test
   // The fake Codex keeps this turn open until a message is steered into it.
   await page.getByLabel("Task", { exact: true }).fill("E2E: steer WAIT-FOR-STEER");
@@ -399,7 +399,7 @@ test("insights and run search", async () => {
 
 test("supervisor: the reviewer defaults to a different vendor than the supervisor", async () => {
   await page.goto(BASE);
-  await page.getByRole("button", { name: /Supervisor → Workers/ }).click();
+  await page.getByRole("button", { name: /^Supervisor → Workers/ }).click();
   const role = (label: string) => page.locator(".role").filter({ has: page.locator(".rl", { hasText: new RegExp(`^${label}`) }) });
   const pressed = async (label: string) =>
     (await role(label).locator(".pill[aria-pressed=true]").allInnerTexts()).map((t) => t.trim());
@@ -410,6 +410,47 @@ test("supervisor: the reviewer defaults to a different vendor than the superviso
   // Your own choice stands, even to let the supervisor review itself.
   await role("Reviewer").getByRole("button", { name: "Skip" }).click();
   assert.deepEqual(await pressed("Reviewer"), ["Skip"]);
+});
+
+test("projects: the first run made one; a new project scopes the sidebar and new runs; a run moves back", async () => {
+  const projects = () => fetch(`${BASE}/api/projects`, { headers: bearer }).then((r) => r.json() as Promise<{ id: string; name: string; repos: string[] }[]>);
+  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: repo }).toString().trim();
+  const [own, ...others] = await projects();
+  assert.deepEqual([own!.name, own!.repos, others.length], [root.split("/").pop(), [root], 0], "one project, named after the repo and holding it");
+
+  await page.goto(BASE);
+  await page.locator(".project-btn", { hasText: "All projects" }).waitFor();
+  // The repo you last used comes back after the page loads: a new project starts with it.
+  await page.locator(".repo-btn:not(.project-btn) .name", { hasText: own!.name }).waitFor();
+  await page.locator(".project-btn").click();
+  await page.getByRole("button", { name: "New project" }).click();
+  await page.locator("#project-name").fill("E2E side");
+  assert.equal(await page.locator(".project-repos .dir").count(), 1, "starts with the repo you're in");
+  await page.getByRole("button", { name: "Create project" }).click();
+  await page.locator(".project-btn", { hasText: "E2E side" }).waitFor();
+  await page.locator(".rail-empty", { hasText: "No runs in E2E side yet" }).waitFor();
+
+  await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
+  await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from earlier tests: the run mustn't wait for approval
+  await page.getByLabel("Task", { exact: true }).fill("E2E: in the side project");
+  await page.getByRole("button", { name: /^Start run/ }).click();
+  await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
+  await page.locator(".project-chip", { hasText: "E2E side" }).waitFor();
+  assert.deepEqual(await page.locator(".rail .run-item .t").allInnerTexts(), ["E2E: in the side project"], "the sidebar shows this project's runs");
+
+  // Move it back to the repo's own project.
+  await page.locator(".project-chip").click();
+  await page.locator(".move-choice").filter({ has: page.locator(".dn", { hasText: new RegExp(`^${own!.name}`) }) }).locator("input").check();
+  await page.getByRole("button", { name: "Move", exact: true }).click();
+  await page.locator(".project-chip", { hasText: own!.name }).waitFor();
+  await page.locator(".rail-empty", { hasText: "No runs in E2E side yet" }).waitFor();
+  const runId = decodeURIComponent(page.url().split("#/run/")[1]!);
+  const run = await fetch(`${BASE}/api/runs/${runId}`, { headers: bearer }).then((r) => r.json());
+  assert.equal(run.project, own!.id);
+
+  await page.locator(".project-btn").click();
+  await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
+  await page.locator(".rail .run-item").nth(1).waitFor(); // every project's runs again
 });
 
 test("side panel: chat with one agent, read a file, run a command, keep a note", async () => {
@@ -453,4 +494,11 @@ test("side panel: chat with one agent, read a file, run a command, keep a note",
   await side.getByText("Saved just now").waitFor({ timeout: 5_000 });
   const note = await fetch(`${BASE}/api/notes?key=${encodeURIComponent(realpathSync(repo))}`, { headers: bearer }).then((r) => r.json());
   assert.equal(note.text, "remember the loop bound");
+
+  // The chat went in the repo's project, and didn't replace the team the composer remembers there.
+  const projects: { id: string; repos: string[]; defaults?: { pattern: string } }[] = await fetch(`${BASE}/api/projects`, { headers: bearer }).then((r) => r.json());
+  const chat = (await fetch(`${BASE}/api/runs`, { headers: bearer }).then((r) => r.json())).find((r: { task: string }) => r.task === "E2E: what does check.mjs do?");
+  const own = projects.find((p) => p.repos.includes(realpathSync(repo)))!;
+  assert.equal(chat.project, own.id);
+  assert.notEqual(own.defaults?.pattern, chat.pattern, "a chat isn't the composer's choice of team");
 });

@@ -8,6 +8,8 @@ import type {
   CatalogOrError,
   ContextItem,
   PatternInfo,
+  Project,
+  ProjectDefaults,
   RepoInfo,
   RunSummary,
 } from "./types.js";
@@ -104,6 +106,101 @@ export async function setRepo(path: string, remember = true) {
   }
 }
 export const recentRepos = () => store.json<string[]>("recentRepos", []);
+/** The folder picker adds a repo to something (a project you're editing) instead of choosing the composer's repo. */
+export const pickerChoose = signal<{ title: string; choose: (path: string) => void } | null>(null);
+
+// ---------------------------------------------------------------- projects
+/** Which runs the app shows: one project's (its id), every run (ALL), or the runs in no project (NONE). */
+export const ALL = "";
+export const NONE = "none";
+export const projects = signal<Project[]>([]);
+export const currentProject = signal(store.get("project") ?? ALL);
+export const activeProject = computed(() => projects.value.find((p) => p.id === currentProject.value));
+export const projectsOpen = signal(false);
+
+export async function loadProjects() {
+  try {
+    projects.value = await api<Project[]>("/api/projects");
+  } catch {
+    return; // keep what we have
+  }
+  const id = currentProject.value;
+  if (id !== ALL && id !== NONE && !projects.value.some((p) => p.id === id)) setCurrentProject(ALL); // deleted, maybe in another tab
+}
+
+/** The project a run belongs to, as the server decides it (projectOf in projects.ts). */
+export function projectFor(run: { project?: string; repo: string }): Project | undefined {
+  if (run.project) return projects.value.find((p) => p.id === run.project);
+  return projects.value.find((p) => p.repos.includes(run.repo));
+}
+
+/** Is the run in what the app is showing? */
+export function inScope(run: RunSummary, scope = currentProject.value): boolean {
+  if (scope === ALL) return true;
+  const p = projectFor(run);
+  return scope === NONE ? !p : p?.id === scope;
+}
+
+function setCurrentProject(id: string) {
+  currentProject.value = id;
+  store.set("project", id);
+}
+
+/**
+ * Show a project: its runs in the sidebar, and new runs start in it. Unless told not to, the
+ * composer moves to the project's repo you used last and to the team you last picked here.
+ */
+export function selectProject(id: string, opts: { defaults?: boolean; repo?: boolean } = {}) {
+  setCurrentProject(id);
+  const p = projects.value.find((x) => x.id === id);
+  if (!p) return;
+  if (opts.defaults !== false && p.defaults) applyDefaults(p.defaults);
+  if (opts.repo !== false && p.repos.length && !p.repos.includes(repo.value)) void setRepo(lastRepo(p));
+}
+
+function lastRepo(p: Project): string {
+  const latest = [...runs.value.values()].filter((r) => p.repos.includes(r.repo) && projectFor(r)?.id === p.id).sort((a, b) => b.createdAt - a.createdAt)[0];
+  return latest?.repo ?? p.repos[0]!;
+}
+
+function applyDefaults(d: ProjectDefaults) {
+  for (const [patternId, team] of Object.entries(d.teams)) {
+    roleSel.value = { ...roleSel.value, [patternId]: team.roles as Record<string, RoleValue[]> };
+    roleModels.value = { ...roleModels.value, [patternId]: team.roleSettings ?? {} };
+  }
+  if (patterns.value.some((p) => p.id === d.pattern)) setPattern(d.pattern);
+  agentSettings.value = d.agentSettings ?? {};
+  store.set("roleSel", JSON.stringify(roleSel.value));
+  store.set("roleModels", JSON.stringify(roleModels.value));
+  store.set("agentSettings", JSON.stringify(agentSettings.value));
+}
+
+/** You picked a repo: if the project you're in doesn't hold it, show the repo's own project (or every run, if none holds it yet). */
+export async function pickRepo(path: string) {
+  await setRepo(path);
+  const p = activeProject.value;
+  const r = repo.value;
+  if (!r || !p || !p.repos.length || p.repos.includes(r)) return;
+  const own = projects.value.find((x) => x.repos.includes(r));
+  if (own) selectProject(own.id);
+  else setCurrentProject(ALL);
+}
+
+/**
+ * Where the next run goes: the project you're in, else the repo's. `adds`: the repo joins that
+ * project when the run starts; `creates`: no project holds the repo yet, so starting makes one.
+ */
+export const target = computed(() => {
+  const r = repo.value;
+  const p = activeProject.value ?? projects.value.find((x) => x.repos.includes(r));
+  return { project: p, adds: !!p && !!r && !p.repos.includes(r), creates: !p && !!r };
+});
+
+/** A run started: its project may be new, or have a new repo. Keep showing the project it went in. */
+export async function afterStart(project?: string) {
+  await loadProjects();
+  if (project && currentProject.value !== ALL) setCurrentProject(project);
+}
 
 /** Why a folder couldn't be opened: not a repository is only one of the reasons. */
 function repoProblem(name: string, err: unknown): string {
@@ -417,6 +514,8 @@ export function matchesFilter(r: RunSummary, f = runFilter.value): boolean {
 }
 export const isFlagged = flagged;
 
+const fetchedFor = new Set<string>();
+
 type FeedMessage =
   | { type: "hello"; epoch: string; seq: number; runs?: RunSummary[]; resumed?: boolean }
   | { type: "run"; seq: number; run: RunSummary };
@@ -446,6 +545,11 @@ export function watchAllRuns(notify: (run: RunSummary) => void) {
       feed.seq = Math.max(feed.seq, seq);
       const before = runs.value.get(run.id);
       upsertRun(run);
+      // A project made elsewhere (an automation's first run in a repo, another tab): fetch it once.
+      if (run.project && !projects.value.some((p) => p.id === run.project) && !fetchedFor.has(run.project)) {
+        fetchedFor.add(run.project);
+        void loadProjects();
+      }
       noticeChange(before, run);
     };
     // Back after a drop (the browser reconnects by itself): catch up on what the stream may have missed.

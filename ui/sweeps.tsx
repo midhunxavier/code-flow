@@ -19,6 +19,8 @@ import {
   setPattern,
   setupCmd,
   sweepPicker,
+  loadProjects,
+  target,
   trust,
 } from "./state.js";
 import type { SweepItem, SweepList } from "./types.js";
@@ -100,6 +102,7 @@ export function SweepDialog() {
         schedule: repeat ? { at } : undefined,
         run: {
           repo: repo.value,
+          project: target.value.project?.id,
           pattern: p.id,
           roles,
           options: optionsFor(p),
@@ -111,7 +114,7 @@ export function SweepDialog() {
         },
         items: chosen.map((i) => ({ key: i.key, task: i.task, source: i.source })),
       });
-      await refreshRuns();
+      await Promise.all([refreshRuns(), loadProjects()]);
       const n = (k: number, what: string) => `${k} ${what}${k === 1 ? "" : "s"}`;
       showToast(
         [

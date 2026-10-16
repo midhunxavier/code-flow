@@ -4,7 +4,7 @@
 
 ```
 ui/*.tsx                 UI: Preact + TypeScript, compiled against the server's own types
-                         (app: shell and sidebar · composer · run: the run thread · review · insights · automations
+                         (app: shell and sidebar · composer · run: the run thread · review · insights · automations · projects
                           · side: the side panel's chat, files, terminal, browser and notes)
 ui/bits.tsx              small shared pieces: agent tags, the Markdown renderer, QR codes
 ui/styles.css, ui/fonts  the stylesheet and its fonts (Manrope, Roboto Mono; licences included)
@@ -12,6 +12,7 @@ scripts/build-ui.mjs     bundles the UI, fonts and images into one self-containe
 scripts/check-node.mjs   stops npm start and npm run dev on a Node older than 20, saying why
 src/server.ts            HTTP API + SSE on 127.0.0.1 (Host/Origin checked, session cookie or Bearer token)
 src/store.ts             run logs and the replay journal on disk, the one-server lock
+src/projects.ts          projects: named groups of repos, and which project a new run goes in
 src/log.ts               code-flow's own log, ~/.codeflow/server.log (rotated at 5 MB)
 src/env.ts               the environment of everything code-flow starts: yours, minus its token, npm_* and its own node_modules/.bin
 src/integrity.ts         finds changes to tests that could make a check pass without a fix

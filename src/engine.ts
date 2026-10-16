@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { cp, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import {
   adapters,
@@ -54,6 +54,7 @@ import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJso
 import { branchDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
+import { projectOf, type Project, type Projects } from "./projects.js";
 import { commentOnPr, loadSource, mergeBase, pushBranch, sourcePrompt, type RunSource, type SourceInput } from "./github.js";
 
 /** How many agent CLIs, and how many check/setup commands, may run at once across all runs. */
@@ -144,6 +145,8 @@ export interface Run {
   pattern: string;
   task: string;
   repo: string;
+  /** The project the run belongs to (see projects.ts); runs from before projects have none recorded. */
+  project?: string;
   /** Commit every worktree starts from. */
   baseRef: string;
   /** What the user picked as the base (branch name, or HEAD). */
@@ -1418,6 +1421,8 @@ export interface StartRunInput {
   pattern: Pattern;
   task: string;
   repo: string;
+  /** The project to start it in; by default the project of the run it continues, or the repo's. */
+  project?: string;
   /** Branch, tag or commit to start from; defaults to the repo's current HEAD. */
   baseRef?: string;
   /** Defaults to `codeflow/<run id>`. */
@@ -1462,7 +1467,11 @@ export class RunManager {
   private seq = 0;
   private shuttingDown = false;
 
-  constructor(private readonly findPattern: (id: string) => Pattern | undefined = () => undefined) {
+  constructor(
+    private readonly findPattern: (id: string) => Pattern | undefined = () => undefined,
+    /** Where runs are grouped; without it runs record no project. */
+    readonly projects?: Projects,
+  ) {
     this.bus.setMaxListeners(0);
   }
 
@@ -1603,6 +1612,52 @@ export class RunManager {
     run.archived = archived;
     if (archived) run.seen = true;
     this.emitRun(run);
+  }
+
+  /** Move a run to another project; its repo joins that project if it isn't in it yet. */
+  async setProject(id: string, projectId: string) {
+    const run = this.require(id);
+    const { project, added } = await this.requireProjects().include(projectId, run.repo);
+    if (run.project === project.id) return project;
+    run.project = project.id;
+    this.emit(run, { type: "log", level: "info", text: `Moved to the project “${project.name}”${added ? `, which now includes ${basename(run.repo)}` : ""}` });
+    this.emitRun(run);
+    return project;
+  }
+
+  /**
+   * Rename a project or change its repos. Runs from before projects record none: they belong to
+   * the first project holding their repo, so taking the repo out would move them elsewhere. The
+   * project is recorded on them first, so the runs already in a project stay in it.
+   */
+  async updateProject(id: string, patch: { name?: unknown; repos?: unknown[] }) {
+    const projects = this.requireProjects();
+    const before = projects.list();
+    const updated = await projects.update(id, patch);
+    this.keepInProject(id, before, (repo) => !updated.repos.includes(repo));
+    return updated;
+  }
+
+  /** Delete a project. Its runs stay, in no project; older runs too, rather than moving to another project with their repo. */
+  async removeProject(id: string) {
+    const projects = this.requireProjects();
+    const before = projects.list();
+    await projects.remove(id);
+    this.keepInProject(id, before, () => true);
+  }
+
+  /** Record `id` on the runs that belonged to it only through their repo (as of `before`). */
+  private keepInProject(id: string, before: Project[], affected: (repo: string) => boolean) {
+    for (const run of this.runs.values()) {
+      if (run.project || !affected(run.repo) || projectOf(run, before) !== id) continue;
+      run.project = id;
+      this.emitRun(run);
+    }
+  }
+
+  private requireProjects(): Projects {
+    if (!this.projects) throw new Error("Projects aren't available here");
+    return this.projects;
   }
 
   /**
@@ -2076,12 +2131,20 @@ export class RunManager {
       await rm(worktreeDir, { recursive: true, force: true });
       throw err;
     });
+    // An automation's saved project may have been deleted since: then the repo's project takes its
+    // runs. With projects off (projects.json unreadable), runs still start and record none.
+    const parent = input.parentRunId ? this.runs.get(input.parentRunId) : undefined;
+    const placed = await (this.projects?.available ? this.projects : undefined)?.place(repo, { requested: input.project, parent: parent?.project, lenient: !!input.trigger }).catch(async (err) => {
+      await rm(worktreeDir, { recursive: true, force: true });
+      throw err;
+    });
 
     const run: Run = {
       id,
       pattern: input.pattern.id,
       task: input.task,
       repo,
+      project: placed?.project.id,
       baseRef,
       baseLabel,
       branchPrefix,
@@ -2125,6 +2188,8 @@ export class RunManager {
     this.history.set(run.id, []);
     this.emitRun(run);
     for (const note of input.routing ?? []) this.emit(run, { type: "log", level: "info", text: note });
+    if (placed?.created) this.emit(run, { type: "log", level: "info", text: `No project held ${basename(repo)} yet, so it has one of its own now: “${placed.project.name}”` });
+    if (placed?.added) this.emit(run, { type: "log", level: "info", text: `${basename(repo)} is now part of the project “${placed.project.name}”` });
     if (fullCapped) this.emit(run, { type: "log", level: "warn", text: "Full access isn't used for automations and sweeps: agents run with Trusted permissions." });
     else if (trust === "full") this.emit(run, { type: "log", level: "warn", text: "Full access: agents can run any command, with no sandbox." });
     if (lockdown) {

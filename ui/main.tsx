@@ -4,7 +4,7 @@ import { useEffect, useState } from "preact/hooks";
 import { App, notifyFinished } from "./app.js";
 import logo from "./brand/vibesboard-mark.png";
 import { api, showToast, store } from "./lib.js";
-import { agents, loadHealth, loadModels, patterns, refreshRuns, route, setRepo, templates, watchAllRuns, type Route } from "./state.js";
+import { agents, loadHealth, loadModels, loadProjects, patterns, refreshRuns, route, setRepo, templates, watchAllRuns, type Route } from "./state.js";
 
 /** The current view lives in the URL hash, so reload, back/forward and links work. */
 function routeFromHash(): Route {
@@ -80,9 +80,10 @@ async function boot() {
   );
   const saved = store.get("repo");
   if (saved) void setRepo(saved, false);
-  await refreshRuns();
+  await Promise.all([refreshRuns(), loadProjects()]);
   watchAllRuns(notifyFinished);
-  setInterval(refreshRuns, 30_000); // safety net if the event stream drops
+  // A safety net if the event stream drops; projects change when a run starts in a new repo.
+  setInterval(() => void Promise.all([refreshRuns(), loadProjects()]), 30_000);
 }
 
 void boot();

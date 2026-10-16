@@ -5,6 +5,7 @@ import { AgentTag, Markdown } from "./bits.js";
 import { Icon, type IconName } from "./icons.js";
 import { ago, api, baseName, enc, fmtSize, onPhone, post, SHORT, showToast, store, STATUS_TEXT } from "./lib.js";
 import {
+  afterStart,
   agents,
   agentSettings,
   closeSide,
@@ -25,6 +26,7 @@ import {
   sideOpen,
   sideTab,
   sideWidth,
+  target,
   task,
   trust,
   type SideTab,
@@ -273,8 +275,11 @@ function NewChat() {
     setBusy(true);
     setError("");
     try {
-      const { id } = await post<{ id: string }>("/api/runs", {
+      const continues = base && run ? run.id : undefined;
+      const { id, project } = await post<{ id: string; project?: string }>("/api/runs", {
         repo: repo.value,
+        // In the project you're in; a chat that continues a run stays in that run's project.
+        project: continues ? undefined : target.value.project?.id,
         task: text.trim(),
         pattern: solo.id,
         roles: { agent: [agent] },
@@ -283,10 +288,11 @@ function NewChat() {
         agentSettings: agentSettings.value,
         trust: trust.value,
         loop: { maxMinutes: limits.value.maxMinutes, maxSteps: limits.value.maxSteps },
-        parentRunId: base && run ? run.id : undefined,
+        parentRunId: continues,
       });
       setText("");
       setSideChat(id);
+      void afterStart(project); // a chat in a repo no project held made one
     } catch (err) {
       setError((err as Error).message);
     } finally {

@@ -5,6 +5,7 @@ export type { DiffFile, MergeOutcome } from "../src/ship.js";
 export type { TreeEntry } from "../src/repo-tree.js";
 export type { BranchInfo } from "../src/git.js";
 export type { DirListing } from "../src/fs.js";
+export type { Project, ProjectDefaults } from "../src/projects.js";
 export type { ShellEvent, ShellInfo } from "../src/shell.js";
 export type { FileContent } from "../src/repo-tree.js";
 export type { DevServer } from "../src/serve.js";

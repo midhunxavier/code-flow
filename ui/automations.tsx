@@ -4,14 +4,18 @@ import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote, QrCode } from "./bits.js";
 import { Icon } from "./icons.js";
 import { ago, api, baseName, copy, post, showToast, STATUS_TEXT } from "./lib.js";
-import { patterns, route, runs, runState } from "./state.js";
+import { patterns, projects, route, runs, runState } from "./state.js";
 import type { RunSummary } from "./types.js";
+
+/** The project an automation's runs go in: the one it was saved with, or (deleted since) its repo's. */
+const automationProject = (run: { project?: string; repo: string }) =>
+  projects.value.find((p) => p.id === run.project) ?? projects.value.find((p) => p.repos.includes(run.repo));
 
 export interface Automation {
   id: string;
   name: string;
   enabled: boolean;
-  run: { repo: string; pattern: string; task: string; roles: Record<string, string[]> };
+  run: { repo: string; project?: string; pattern: string; task: string; roles: Record<string, string[]> };
   schedule?: { every: number } | { at: string; days?: number[] };
   scheduleText: string;
   webhook: boolean;
@@ -230,7 +234,8 @@ function AutomationRow({ a }: { a: Automation }) {
         </button>
       </div>
       <div class="ar-meta help">
-        {patterns.value.find((p) => p.id === a.run.pattern)?.name ?? a.run.pattern} in {baseName(a.run.repo)}: “{a.run.task.split("\n")[0]}”
+        {patterns.value.find((p) => p.id === a.run.pattern)?.name ?? a.run.pattern} in {baseName(a.run.repo)}
+        {automationProject(a.run) ? <> · <Icon name="project" class="inline-icon" /> {automationProject(a.run)!.name}</> : null}: “{a.run.task.split("\n")[0]}”
         {a.sweep && a.handled?.length ? ` · ${a.handled.length} handled so far` : ""}
         {Object.values(a.run.roles)
           .flat()

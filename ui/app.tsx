@@ -7,10 +7,21 @@ import { GitHubPicker } from "./github.js";
 import { SweepDialog } from "./sweeps.js";
 import { AutomationsView, inbox } from "./automations.js";
 import { InsightsView } from "./insights.js";
+import { ProjectButton, ProjectsDialog } from "./projects.js";
 import { Icon } from "./icons.js";
 import logo from "./brand/vibesboard-mark.png";
 import { ago, api, baseName, fmtCost, fmtTokens, showToast, STATUS_TEXT, store, toast } from "./lib.js";
 import {
+  ALL,
+  NONE,
+  activeProject,
+  currentProject,
+  inScope,
+  pickRepo,
+  pickerChoose,
+  projectFor,
+  projectsOpen,
+  selectProject,
   agents,
   announcement,
   filterActive,
@@ -40,7 +51,6 @@ import {
   route,
   runs,
   runState,
-  setRepo,
   waitingCount,
   watchNeedingYou,
 } from "./state.js";
@@ -84,6 +94,7 @@ export function App() {
       <FolderPicker />
       <GitHubPicker />
       <SweepDialog />
+      {projectsOpen.value ? <ProjectsDialog /> : null}
       {healthOpen.value ? <HealthDialog /> : null}
       {shortcutsOpen.value ? <ShortcutsDialog /> : null}
       <div class="sr-only" role="status" aria-live="polite">
@@ -110,6 +121,7 @@ function TopBar() {
         <img class="brand-mark" src={logo} alt="" width={28} height={28} />
         <span class="brand-name">code-flow</span>
       </span>
+      <ProjectButton />
       <button
         class={`repo-btn ${info ? "" : "empty"} ${repoError.value ? "bad" : ""}`}
         title={info ? info.repo : "Choose repository"}
@@ -237,8 +249,14 @@ function Rail() {
   const [showFilters, setShowFilters] = useState(false);
   const all = [...runs.value.values()].sort((a, b) => b.createdAt - a.createdAt);
   const filtering = filterActive.value;
-  const list = all.filter((r) => matchesFilter(r));
   const f = runFilter.value;
+  // The project you're in, except while you search: then every project, so nothing is out of reach.
+  const searching = !!f.q.trim();
+  const scoped = currentProject.value !== ALL && !searching;
+  const shown = scoped ? all.filter((r) => inScope(r)) : all;
+  const list = shown.filter((r) => matchesFilter(r));
+  const elsewhere = scoped ? all.filter((r) => needsYou(r) && !inScope(r)).length : 0;
+  const project = activeProject.value;
   const current = "id" in route.value ? route.value.id : undefined;
   const groups: [string, RunSummary[], boolean][] = [
     ["Needs you", list.filter(needsYou), true],
@@ -270,12 +288,19 @@ function Rail() {
         <span class="s">
           {r.awaiting ? "Waiting for you" : r.triage?.state === "pending" ? "In your inbox" : runState(r) === "failing" ? "Check failing" : runState(r) === "unchecked" ? "Check can't run" : STATUS_TEXT[r.status] ?? r.status}
           {isFlagged(r) ? <span class="flag" title="Tests were changed in ways that could hide failures"> · ⚠ tests</span> : null} ·{" "}
-          {patterns.value.find((p) => p.id === r.pattern)?.name ?? r.pattern} · {baseName(r.repo)} · {ago(r.createdAt)}
+          {patterns.value.find((p) => p.id === r.pattern)?.name ?? r.pattern}
+          {where(r) ? ` · ${where(r)}` : ""} · {ago(r.createdAt)}
           {tokens ? ` · ${fmtTokens(tokens)} tok` : ""}
           {r.usage?.costUsd ? ` · ${fmtCost(r.usage.costUsd)}` : ""}
         </span>
       </button>
     );
+  };
+  /** Where a run is: its project when every project is listed, its repo when the project has several. */
+  const where = (r: RunSummary) => {
+    const p = projectFor(r);
+    if (!scoped) return p?.name ?? baseName(r.repo);
+    return p && p.repos.length > 1 ? baseName(r.repo) : "";
   };
   const empty = !groups.some(([, l]) => l.length) && !archived.length;
   return (
@@ -350,9 +375,17 @@ function Rail() {
           </label>
         </div>
       ) : null}
+      {elsewhere ? (
+        <div class="rail-hint elsewhere">
+          {elsewhere} in other projects need{elsewhere === 1 ? "s" : ""} you
+          <button type="button" onClick={() => selectProject(ALL)}>
+            show all
+          </button>
+        </div>
+      ) : null}
       {filtering ? (
         <div class="rail-hint">
-          {list.length} of {all.length} runs
+          {list.length} of {shown.length} runs{searching && currentProject.value !== ALL ? " · in every project" : ""}
           <button type="button" onClick={() => setRunFilter({ q: "", status: "all", pattern: "", agent: "", thisRepo: false })}>
             clear
           </button>
@@ -382,7 +415,11 @@ function Rail() {
           {showArchived || filtering ? archived.map(item) : null}
         </section>
       ) : null}
-      {empty ? <div class="rail-empty">{filtering ? "No runs match" : "No runs yet — start one on the right"}</div> : null}
+      {empty ? (
+        <div class="rail-empty">
+          {filtering ? "No runs match" : project ? `No runs in ${project.name} yet — start one on the right` : currentProject.value === NONE ? "No runs without a project" : "No runs yet — start one on the right"}
+        </div>
+      ) : null}
     </nav>
   );
 }
@@ -393,6 +430,7 @@ const SHORTCUTS: [string, string][] = [
   ["j / k", "Next / previous run in the list"],
   ["[ / ]", "Previous / next step of the open run"],
   ["n", "New run"],
+  ["p", "Switch project"],
   ["i", "Insights"],
   ["a", "Automations"],
   ["⌘↵", "Start the run, or send what you typed"],
@@ -421,6 +459,10 @@ function onShortcut(e: KeyboardEvent) {
     }
     case "n":
       return go({ view: "composer" });
+    case "p":
+      e.preventDefault();
+      projectsOpen.value = true;
+      return;
     case "i":
       return go({ view: "insights" });
     case "a":
@@ -566,7 +608,11 @@ function FolderPicker() {
   const [path, setPath] = useState("");
   const [status, setStatus] = useState("");
   const [hidden, setHidden] = useState(false);
-  const dialog = useDialog(pickerOpen.value, () => (pickerOpen.value = false));
+  const dialog = useDialog(pickerOpen.value, () => {
+    pickerOpen.value = false;
+    pickerChoose.value = null;
+  });
+  const adding = pickerChoose.value;
   // Only the latest listing counts: a slow earlier one must not replace a path you just typed.
   const latest = useRef(0);
   // You typed in the path field since the latest listing was requested: it lists, but keeps your text.
@@ -597,7 +643,8 @@ function FolderPicker() {
 
   const choose = (p: string) => {
     pickerOpen.value = false;
-    void setRepo(p);
+    if (adding) adding.choose(p);
+    else void pickRepo(p);
   };
   const parts = dir ? dir.path.split("/").filter(Boolean) : [];
   const recent = dir && dir.path === dir.home ? recentRepos() : [];
@@ -625,7 +672,7 @@ function FolderPicker() {
     <dialog class="picker" ref={dialog}>
       <div class="picker-inner">
         <div class="picker-head">
-          <h3>Choose a repository</h3>
+          <h3>{adding ? adding.title : "Choose a repository"}</h3>
           <div class="row">
             <button class="btn small" type="button" title="Parent folder" disabled={!dir?.parent} onClick={() => dir?.parent && browse(dir.parent)}>
               ↑
@@ -689,7 +736,7 @@ function FolderPicker() {
             Cancel
           </button>
           <button class="btn primary" type="button" disabled={!dir} onClick={() => dir && choose(dir.path)}>
-            Use this folder
+            {adding ? "Add this folder" : "Use this folder"}
           </button>
         </div>
       </div>

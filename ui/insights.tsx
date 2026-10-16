@@ -1,7 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
 import { api, baseName, duration, fmtCost, fmtSize, fmtTokens, pct, post, showToast, STATUS_TEXT } from "./lib.js";
-import { patterns, repo, route, runState } from "./state.js";
+import { activeProject, currentProject, NONE, patterns, repo, route, runState } from "./state.js";
 import type { AgentId, Stats } from "./types.js";
 
 const patternName = (id: string) => patterns.value.find((p) => p.id === id)?.name ?? id;
@@ -12,13 +12,26 @@ const PERIODS = { "7": 7, "30": 30, all: 0 } as const;
  * comparisons — plus how much disk the worktrees take.
  */
 export function InsightsView({ group }: { group?: string }) {
-  const [scope, setScope] = useState<"repo" | "all">(repo.value ? "repo" : "all");
+  // The project you're in (or the runs in none), one repo, or everything.
+  const project = activeProject.value;
+  const inProject = !!project || currentProject.value === NONE;
+  // A repo is worth its own button when it isn't simply the whole project.
+  const repoScope = !!repo.value && !(project?.repos.length === 1 && project.repos[0] === repo.value);
+  const [chosen, setScope] = useState<"project" | "repo" | "all">(inProject ? "project" : repo.value ? "repo" : "all");
+  // Switching projects shows the new project's runs (as does the project arriving after a reload).
+  useEffect(() => setScope(inProject ? "project" : repo.value ? "repo" : "all"), [currentProject.value, inProject]);
+  const scope = chosen === "project" && !inProject ? "all" : chosen === "repo" && !repoScope ? (inProject ? "project" : "all") : chosen;
   const [period, setPeriod] = useState<keyof typeof PERIODS>("30");
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState("");
-  const query = () => {
+  const scopeQuery = () => {
     const q = new URLSearchParams();
+    if (scope === "project") q.set("project", currentProject.value);
     if (scope === "repo" && repo.value) q.set("repo", repo.value);
+    return q;
+  };
+  const query = () => {
+    const q = scopeQuery();
     if (PERIODS[period]) q.set("since", String(Date.now() - PERIODS[period] * 86_400_000));
     return q.toString();
   };
@@ -35,7 +48,7 @@ export function InsightsView({ group }: { group?: string }) {
       alive = false;
       clearInterval(timer);
     };
-  }, [scope, period, repo.value]);
+  }, [scope, period, repo.value, currentProject.value]);
 
   const groups = stats ? [...stats.groups].sort((a, b) => (a.id === group ? -1 : b.id === group ? 1 : 0)) : [];
   return (
@@ -43,11 +56,18 @@ export function InsightsView({ group }: { group?: string }) {
       <div class="ins-head">
         <h1>Insights</h1>
         <div class="segmented" role="group" aria-label="Which runs">
-          <button class={scope === "repo" ? "on" : ""} aria-pressed={scope === "repo"} disabled={!repo.value} onClick={() => setScope("repo")}>
-            {repo.value ? baseName(repo.value) : "This repo"}
-          </button>
+          {inProject ? (
+            <button class={scope === "project" ? "on" : ""} aria-pressed={scope === "project"} title="Runs in this project" onClick={() => setScope("project")}>
+              {project ? project.name : "No project"}
+            </button>
+          ) : null}
+          {repoScope || !inProject ? (
+            <button class={scope === "repo" ? "on" : ""} aria-pressed={scope === "repo"} disabled={!repo.value} title="Runs in this repository" onClick={() => setScope("repo")}>
+              {repo.value ? baseName(repo.value) : "This repo"}
+            </button>
+          ) : null}
           <button class={scope === "all" ? "on" : ""} aria-pressed={scope === "all"} onClick={() => setScope("all")}>
-            All repos
+            Everything
           </button>
         </div>
         <div class="segmented" role="group" aria-label="Period">
@@ -220,7 +240,7 @@ export function InsightsView({ group }: { group?: string }) {
           </section>
         </>
       ) : null}
-      <DiskPanel scopeRepo={scope === "repo" ? repo.value : undefined} />
+      <DiskPanel scope={scopeQuery()} />
     </div>
   );
 }
@@ -241,21 +261,22 @@ interface Disk {
 }
 
 /** Every worktree is a full checkout (often with its own node_modules): see what they take, clean up. */
-function DiskPanel({ scopeRepo }: { scopeRepo?: string }) {
+function DiskPanel({ scope }: { scope: URLSearchParams }) {
+  const key = scope.toString();
   const [disk, setDisk] = useState<Disk | null>(null);
   const [busy, setBusy] = useState(false);
   const [days, setDays] = useState(7);
   const measure = async () => {
     setBusy(true);
     try {
-      setDisk(await api<Disk>(`/api/disk${scopeRepo ? `?repo=${encodeURIComponent(scopeRepo)}` : ""}`));
+      setDisk(await api<Disk>(`/api/disk${key ? `?${key}` : ""}`));
     } catch (err) {
       showToast((err as Error).message, 5000);
     } finally {
       setBusy(false);
     }
   };
-  useEffect(() => setDisk(null), [scopeRepo]);
+  useEffect(() => setDisk(null), [key]);
   return (
     <section class="ins-section" aria-labelledby="ins-disk">
       <h2 id="ins-disk">Disk</h2>
@@ -279,7 +300,7 @@ function DiskPanel({ scopeRepo }: { scopeRepo?: string }) {
           onClick={async () => {
             if (!confirm(`Remove the worktrees of runs that finished more than ${days} days ago and need nothing from you? Branches are kept, so you can still merge or resume them.`)) return;
             try {
-              const result = await post<{ runs: number; worktrees: number }>("/api/cleanup", { olderThanDays: days, repo: scopeRepo });
+              const result = await post<{ runs: number; worktrees: number }>("/api/cleanup", { olderThanDays: days, repo: scope.get("repo") ?? undefined, project: scope.get("project") ?? undefined });
               showToast(result.worktrees ? `Removed ${result.worktrees} worktree(s) from ${result.runs} run(s)` : "Nothing to clean up", 4000);
               if (disk) void measure();
             } catch (err) {
