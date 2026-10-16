@@ -49,7 +49,11 @@ Per provider in **Settings → Models & effort**, and per role right under each 
 
 ## Health
 
-Click the agent names in the top bar to see, for each CLI, whether it's installed, its version, and whether it's signed in. It uses `claude auth status`, `codex login status`, and for agy whether it can list models; credentials are never read. Claude's 5-hour and 7-day usage windows are shown from its own reports, with how to fix anything that's wrong. A run won't start with an agent that's signed out.
+Click the agent names in the top bar to see, for each CLI, whether it's installed, its version, and whether it's signed in. It uses `claude auth status`, `codex login status`, and for agy whether it can list models; credentials are never read. Claude's 5-hour and 7-day usage windows are shown from its own reports, with how to fix anything that's wrong. A run won't start with an agent that's signed out, and Auto skips an agent that turned out to be signed out for 15 minutes. If agy can't reach its servers, its sign-in shows as unknown rather than signed out.
+
+Health also checks that each installed CLI still accepts the flags and subcommands code-flow passes (from its `--help`), and warns when one is missing: after a CLI update, that's the difference between "healthy" and every step failing on an unknown option. It also checks for git 2.38 or newer, which Merge needs.
+
+Once an agent CLI reports its final result, it gets 10 seconds to exit; one that's still running then (a hook or MCP server that hangs on shutdown) is stopped and its result kept. A single output line over 16 MB is skipped, not read into memory.
 
 ## Environment variables
 
@@ -70,7 +74,7 @@ Click the agent names in the top bar to see, for each CLI, whether it's installe
 | `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view (or the full app, with phone control) and webhooks on your network, when *Reachable from my Wi-Fi* is on |
 | `CODEFLOW_SCHEDULER_TICK_MS` | `30000` | How often due automations are checked |
 | `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments |
-| `CODEFLOW_CODEX_TRANSPORT` | `auto` | `auto`: `codex app-server` when the installed Codex has it, else `codex exec` (decided once per server start). `app-server`: require it. `exec`: always `codex exec` (your notes then wait for Codex's next turn) |
+| `CODEFLOW_CODEX_TRANSPORT` | `auto` | `auto`: `codex app-server` when the installed Codex has it, else `codex exec`. A Codex without app-server is re-checked every 10 minutes; a slow or failed app-server start fails only that turn. `app-server`: require it. `exec`: always `codex exec` (your notes then wait for Codex's next turn) |
 | `CODEFLOW_AGY_SKIP_PERMISSIONS` | `1` | Set to `0` to stop passing `--dangerously-skip-permissions` to agy; then configure `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` |
 
 A numeric setting that isn't a valid number (`30m`, say) or is out of range falls back to its default, with a warning in the terminal.

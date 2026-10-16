@@ -14,7 +14,7 @@
 
 Every pattern works with any mix of agents. A good default is to have a **different vendor review or judge** than the one that wrote the code.
 
-**Auto** in a role picks an installed agent when the run starts. It skips plans that are at 90% or more of a usage window or recently hit a limit, until the limit resets (Claude reports its windows; the others report only when they're limited). Once agents have a few finished runs in a repo, it prefers the one whose code passed the check most often there. The pick and the reason are written to the run's activity log. Quota is saved, so a restart remembers which plans are out.
+**Auto** in a role picks an installed agent when the run starts. It skips plans that are at 90% or more of a usage window or recently hit a limit, until the limit resets (Claude reports its windows; the others report only when they're limited), and for 15 minutes a CLI that turned out not to be signed in. Once agents have a few finished runs in a repo, it prefers the one whose code passed the check most often there. The pick and the reason are written to the run's activity log. Quota is saved, so a restart remembers which plans are out.
 
 Verdicts, judge picks, subtask lists and test specs are **schema-constrained**: `claude --json-schema`, `codex --output-schema` and `agy --json-schema`. An answer that still doesn't fit gets one retry in the same session, and then the run **fails**: an unreadable review is never treated as approval.
 
