@@ -219,6 +219,16 @@ const PHONE_LOCKED_PAGE = lockedPage(
 <p>Making a new link, or turning off full control from your phone, signs phones out.</p>`,
 );
 
+/**
+ * What the full-control link answers with: it sets the phone's cookie, then moves on to the app.
+ * Not a redirect: a QR scanner hands the link to the browser from another app, so the browser
+ * counts it as a cross-site navigation and leaves the SameSite=Strict cookie off a redirect that
+ * follows — the phone would land on "Scan the QR code again". This page moving on by itself is
+ * same-site, so the cookie goes along; `replace` keeps the link out of the phone's history.
+ */
+const signingInPage = (target: string) =>
+  lockedPage("signing in", `<h1>Signing in…</h1><p><a href="${target}">Open code-flow</a></p><script>location.replace(${JSON.stringify(target)})</script>`);
+
 /** Run an action whose errors are the user's to fix (shown as 400 with the message). */
 async function attempt<T>(fn: () => Promise<T>): Promise<T> {
   try {
@@ -484,8 +494,8 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
     if (via === "lan" && phoneControl() && tokenMatches(token, remote.controlToken)) {
       // Full control: the link signs this phone in and opens the app (on the run it linked to).
       const run = url.pathname.slice(base.length).match(/^\/run\/([\w-]+)$/)?.[1];
-      res.writeHead(302, { location: run ? `/#/run/${run}` : "/", "set-cookie": phoneCookie(), "cache-control": "no-store", "referrer-policy": "no-referrer" });
-      res.end();
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "set-cookie": phoneCookie(), "cache-control": "no-store", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
+      res.end(signingInPage(run ? `/#/run/${run}` : "/"));
       return true;
     }
     // The read-only link only ever shows the read-only view, whatever is turned on.
