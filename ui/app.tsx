@@ -517,9 +517,12 @@ function FolderPicker() {
   const dialog = useDialog(pickerOpen.value, () => (pickerOpen.value = false));
   // Only the latest listing counts: a slow earlier one must not replace a path you just typed.
   const latest = useRef(0);
+  // You typed in the path field since the latest listing was requested: it lists, but keeps your text.
+  const typed = useRef(false);
 
   const browse = async (target?: string, showHidden = hidden) => {
     const request = ++latest.current;
+    typed.current = false;
     setStatus("Loading…");
     const q = new URLSearchParams();
     if (target) q.set("path", target);
@@ -528,7 +531,7 @@ function FolderPicker() {
       const d = await api<DirListing>(`/api/fs?${q}`);
       if (request !== latest.current) return;
       setDir(d);
-      setPath(d.path);
+      if (!typed.current) setPath(d.path);
       setStatus(d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked GIT, or type a path");
     } catch (err) {
       if (request !== latest.current) return;
@@ -584,7 +587,10 @@ function FolderPicker() {
               spellcheck={false}
               aria-label="Folder path"
               value={path}
-              onInput={(e) => setPath(e.currentTarget.value)}
+              onInput={(e) => {
+                typed.current = true;
+                setPath(e.currentTarget.value);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();

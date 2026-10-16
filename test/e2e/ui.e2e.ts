@@ -87,12 +87,23 @@ after(async () => {
 test("pick a repo, run a team, review, send a comment, and merge — all in the UI", async () => {
   await page.goto(BASE);
 
-  // Choose the repository through the folder picker.
+  // Choose the repository through the folder picker. The picker's opening listing (your home
+  // folder) is held back until the path has been typed, then lands before Enter: it must not
+  // replace what you typed.
+  let releaseHome!: () => void;
+  const homeHeld = new Promise<void>((resolve) => (releaseHome = resolve));
+  await page.route(/\/api\/fs\b/, async (route) => {
+    if (!new URL(route.request().url()).searchParams.has("path")) await homeHeld;
+    await route.continue();
+  });
   await page.getByRole("button", { name: "Choose repository" }).first().click();
   const path = page.getByLabel("Folder path");
   await path.fill(repo);
+  releaseHome();
+  await page.getByText("Open a folder marked GIT, or type a path").waitFor();
   await path.press("Enter");
   await page.getByText("✓ This folder is a git repository").waitFor();
+  await page.unroute(/\/api\/fs\b/);
   await page.getByRole("button", { name: "Use this folder" }).click();
   await page.locator(".repo-btn .name", { hasText: repo.split("/").pop()! }).waitFor();
   assert.equal(await page.locator("#checkCmd").inputValue(), "npm test", "the check is detected from package.json");

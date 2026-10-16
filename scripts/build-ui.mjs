@@ -1,7 +1,7 @@
 // Bundles ui/main.tsx with esbuild and inlines it, with ui/styles.css, into a single
 // self-contained public/index.html (so any version of the server can serve it).
 import * as esbuild from "esbuild";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { watch as watchFile } from "node:fs";
 
 const watching = process.argv.includes("--watch");
@@ -11,6 +11,7 @@ async function assemble(js) {
   const html = template
     .replace("/*__CSS__*/", () => css)
     .replace("//__JS__", () => js.replace(/<\/script/gi, "<\\/script"));
+  await mkdir("public", { recursive: true }); // not in git: a fresh checkout has no public/
   await writeFile("public/index.html", html);
 }
 
