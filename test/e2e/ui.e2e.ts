@@ -24,6 +24,17 @@ const REMOTE_PORT = await freePort(); // the phone's (Wi-Fi) listener
 const BASE = `http://localhost:${PORT}`;
 const TOKEN = "e2e-session-token";
 const bearer = { authorization: `Bearer ${TOKEN}` };
+
+/** A webhook is answered before its run starts: the run it started, once there is one. */
+async function startedRun(automationId: string): Promise<string> {
+  for (let i = 0; i < 150; i++) {
+    const list: { id: string; lastRunId?: string }[] = await fetch(`${BASE}/api/automations`, { headers: bearer }).then((r) => r.json());
+    const runId = list.find((a) => a.id === automationId)?.lastRunId;
+    if (runId) return runId;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`automation ${automationId} didn't start a run`);
+}
 let server: ChildProcess;
 let browser: Browser;
 let page: Page;
@@ -71,6 +82,8 @@ before(async () => {
       PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`,
       FAKE_GH_STATE: ghState,
       CODEFLOW_TOKEN: TOKEN,
+      // The phone test reaches the Wi-Fi listener from this machine, which it otherwise refuses.
+      CODEFLOW_LAN_ALLOW_LOCAL: "1",
     },
     stdio: process.env.E2E_DEBUG ? "inherit" : "ignore",
   });
@@ -110,6 +123,10 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   await page.unroute(/\/api\/fs\b/);
   await page.getByRole("button", { name: "Use this folder" }).click();
   await page.locator(".repo-btn .name", { hasText: repo.split("/").pop()! }).waitFor();
+  // The check is detected after the repo is chosen (two more requests): wait for it, don't race it.
+  await page
+    .waitForFunction(() => (document.querySelector("#checkCmd") as HTMLInputElement | null)?.value === "npm test", undefined, { timeout: 10_000 })
+    .catch(() => undefined);
   assert.equal(await page.locator("#checkCmd").inputValue(), "npm test", "the check is detected from package.json");
 
   // Describe the task, pick the pipeline, start with the keyboard.
@@ -187,7 +204,7 @@ test("start from a PR with a template: the council's findings are ranked, and po
   await page.goto(BASE);
   await page.getByRole("button", { name: /Review a PR as a council/ }).click();
   await page.locator(".gh-item", { hasText: "Add feature loop" }).click();
-  assert.match(await page.getByLabel("Task", { exact: true }).inputValue(), /^Review pull request #1: Add feature loop/);
+  assert.match(await page.getByLabel("Task", { exact: true }).inputValue(), /^Review pull request #1\./);
   await page.locator(".chip-ctx.source", { hasText: "PR #1" }).waitFor();
   await page.getByRole("button", { name: /^Start run/ }).click();
 
@@ -217,7 +234,7 @@ test("automations: a webhook starts a run, it waits in the inbox, you approve it
   assert.equal((await hook("wrong")).status, 401);
   const fired = await hook(automation.token);
   assert.equal(fired.status, 202);
-  const { run } = await fired.json();
+  const run = await startedRun(automation.id);
 
   await page.goto(`${BASE}/#/automations`);
   const item = page.locator(".inbox-item", { hasText: "E2E: automated chore" });
@@ -247,7 +264,7 @@ test("a check that can't run here: the result is still reviewed, and the inbox a
   assert.ok(automation.token, automation.error);
   const fired = await fetch(`${BASE}/hooks/${automation.id}`, { method: "POST", headers: { authorization: `Bearer ${automation.token}`, "content-type": "application/json" }, body: "{}" });
   assert.equal(fired.status, 202);
-  const { run: id } = await fired.json();
+  const id = await startedRun(automation.id);
 
   await page.goto(`${BASE}/#/automations`);
   const item = page.locator(".inbox-item", { hasText: "E2E: check can't run" });
@@ -285,7 +302,7 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   await dialog.getByRole("button", { name: "Start 1 run" }).click();
 
   await page.waitForURL(/#\/automations/);
-  const item = page.locator(".inbox-item", { hasText: "Fix issue #41: E2E sweep: fix the greeting" });
+  const item = page.locator(".inbox-item", { hasText: "E2E sweep: fix the greeting" });
   await item.waitFor({ timeout: 30_000 });
   await item.getByRole("button", { name: "✓ Approve" }).click();
   await item.waitFor({ state: "detached" });
@@ -309,8 +326,10 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   assert.doesNotMatch(await (await fetch(`${PHONE}${remote.path}`)).text(), /<button|<form/);
   assert.equal((await fetch(`${PHONE}/api/runs`)).status, 404);
 
-  await api("/api/remote", { control: true });
-  const signIn = await fetch(`${PHONE}${remote.path}`, { redirect: "manual" });
+  // Full control has a link of its own: the read-only one never becomes a full-control link.
+  const { phonePath } = await api("/api/remote", { control: true });
+  assert.notEqual(phonePath, remote.path);
+  const signIn = await fetch(`${PHONE}${phonePath}`, { redirect: "manual" });
   assert.equal(signIn.status, 302);
   assert.equal(signIn.headers.get("location"), "/");
   const cookie = signIn.headers.get("set-cookie")!.split(";")[0]!;
@@ -325,7 +344,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   // A phone-sized browser: scanning the QR code lands in the app, ready to start a run.
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const tab = await phone.newPage();
-  await tab.goto(`${PHONE}${remote.path}`);
+  await tab.goto(`${PHONE}${phonePath}`);
   await tab.getByRole("heading", { name: "What should the team build?" }).waitFor();
   assert.equal(new URL(tab.url()).pathname, "/");
   await tab.getByRole("button", { name: "Show runs" }).click();

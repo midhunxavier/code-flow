@@ -11,10 +11,10 @@ import {
   type AgentId,
 } from "./adapters/index.js";
 import { listTree, searchFiles } from "./repo-tree.js";
-import { doctor } from "./doctor.js";
+import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig } from "./repo-config.js";
 import { openFolder } from "./serve.js";
-import { CODEFLOW_HOME, PORT } from "./config.js";
+import { CODEFLOW_HOME, envNumber, PORT } from "./config.js";
 import { RunManager, UntrustedSourceError, type LoopSettings, type Pattern } from "./engine.js";
 import { detectCheckCommand } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
@@ -23,14 +23,16 @@ import { listBranches, repoRoot, worktreeRoot } from "./git.js";
 import { folderSizes, remoteBranches, removeWorktrees } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
 import { acquireLock, writeHealth } from "./store.js";
+import { reapOrphanGroups } from "./adapters/process.js";
+import { logError, logInfo, logWarn } from "./log.js";
 import { listIssues, listPullRequests, type SourceInput } from "./github.js";
-import { listSweep, runSweep, type SweepKind } from "./sweeps.js";
+import { listSweep, runSweep, sourceKeys, type SweepKind } from "./sweeps.js";
 import { resolveAuto } from "./routing.js";
 import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
 import { Automations, describeSchedule, readWebhook, validateSchedule } from "./automation.js";
-import { lanAddresses, loadRemote, newToken, renderRemote, saveRemote, tokenMatches, type RemoteSettings } from "./remote.js";
-import type { Run, StartRunInput } from "./engine.js";
+import { changeRemote, isOwnAddress, lanAddresses, loadRemote, renderRemote, saveRemote, tokenMatches, type RemoteSettings } from "./remote.js";
+import type { Run, RunEvent, RunSummary, StartRunInput } from "./engine.js";
 
 // One server per CODEFLOW_HOME (waits for one that is still shutting down).
 const releaseLock = await acquireLock().catch((err: Error) => {
@@ -39,11 +41,29 @@ const releaseLock = await acquireLock().catch((err: Error) => {
 });
 process.once("exit", releaseLock);
 
+// A stray rejection or throw must not take every live run down with it: log it and keep
+// serving. A burst of uncaught exceptions means state is likely broken, so then stop cleanly
+// (runs are interrupted, resumable) rather than limp on.
+const recentCrashes: number[] = [];
+process.on("unhandledRejection", (reason) => logError("Unhandled promise rejection", reason));
+process.on("uncaughtException", (err) => {
+  logError("Uncaught exception", err);
+  const now = Date.now();
+  recentCrashes.push(now);
+  while (recentCrashes[0]! < now - 60_000) recentCrashes.shift();
+  if (recentCrashes.length >= 10) void stop("too many uncaught exceptions in a minute", 1);
+});
+
+// Agents and checks a previous code-flow left running (it crashed, or its terminal closed)
+// would keep editing worktrees: stop them before any run is resumed.
+const reaped = await reapOrphanGroups();
+if (reaped) logInfo(`Stopped ${reaped} process group(s) a previous code-flow left running`);
+
 const manager = new RunManager(findPattern);
 const watcher = new PrWatcher(manager);
 const automations = new Automations(manager, (body, extra) => startFromBody(body, extra), (repo, kind) => listSweep(repo, kind, manager.list()));
 let remote: RemoteSettings;
-const REMOTE_PORT = Number(process.env.CODEFLOW_REMOTE_PORT ?? PORT + 1);
+const REMOTE_PORT = envNumber("CODEFLOW_REMOTE_PORT", PORT + 1, { min: 1, max: 65_535 });
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
 const HOST = "127.0.0.1";
 const allowedHosts = new Set([`${HOST}:${PORT}`, `localhost:${PORT}`]);
@@ -107,6 +127,18 @@ const auth = {
 manager.onActivity(() => (auth.claimable = false));
 const COOKIE = "codeflow_session";
 
+/**
+ * Only a browser on this machine may claim the session. The Host header alone doesn't say so:
+ * a tunnel (ngrok, cloudflared) forwarding to this port can rewrite it to localhost, and then
+ * the first stranger through the tunnel would sign in. Its connection still comes from the
+ * tunnel's process on this machine, so the forwarding headers it adds are what give it away.
+ */
+function mayClaim(req: IncomingMessage): boolean {
+  const forwarded = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip", "cf-connecting-ip", "true-client-ip"].some((h) => req.headers[h] !== undefined);
+  const address = (req.socket.remoteAddress ?? "").replace(/^::ffff:/i, "");
+  return auth.claimable && !forwarded && (address === "::1" || address.startsWith("127."));
+}
+
 function sessionCookie(): string {
   return `${COOKIE}=${auth.token}; HttpOnly; SameSite=Strict; Path=/`;
 }
@@ -128,21 +160,23 @@ function signedIn(req: IncomingMessage): boolean {
 
 /**
  * Phones sign in with the phone link instead, when full control from the phone is on: opening
- * `/r/<token>` on the network listener sets this cookie and opens the app. The phone token is
- * saved in remote.json, so the phone stays signed in across restarts until you make a new link
- * or turn phone control off. The name carries the port because cookies ignore ports, and a
- * second code-flow on this machine has a link of its own.
+ * `/r/<controlToken>` on the network listener sets this cookie and opens the app. That secret is
+ * full control's own (the read-only link never signs a phone in) and is saved in remote.json,
+ * so the phone stays signed in across restarts for up to 30 days, until you make a new link or
+ * turn phone control, the Wi-Fi listener or the phone link off. The name carries the port
+ * because cookies ignore ports, and a second code-flow on this machine has a link of its own.
  */
 const PHONE_COOKIE = `codeflow_phone_${REMOTE_PORT}`;
+const PHONE_COOKIE_DAYS = 30;
 const phoneControl = (s: RemoteSettings = remote) => s.enabled && s.lan && s.control;
 
 function phoneCookie(): string {
-  return `${PHONE_COOKIE}=${remote.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${400 * 86_400}`;
+  return `${PHONE_COOKIE}=${remote.controlToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${PHONE_COOKIE_DAYS * 86_400}`;
 }
 
 function phoneSignedIn(req: IncomingMessage): boolean {
   const cookie = readCookie(req, PHONE_COOKIE);
-  return phoneControl() && !!cookie && tokenMatches(cookie, remote.token);
+  return phoneControl() && !!cookie && tokenMatches(cookie, remote.controlToken);
 }
 
 /**
@@ -280,7 +314,10 @@ async function startSweep(body: Record<string, any>) {
     runs: manager.list(),
     start: (item) => startFromBody({ ...base, task: item.task, source: item.source }, { trigger }),
   });
-  if (saved) await automations.markHandled(saved.id, outcome.started.map((s) => s.key));
+  if (saved) {
+    const started = new Set(outcome.started.map((s) => s.key));
+    await automations.markHandled(saved.id, items.filter((i) => started.has(i.key)).flatMap((i) => sourceKeys(i.source)));
+  }
   return { sweep: trigger.id, automation: saved?.id, ...outcome };
 }
 
@@ -427,24 +464,26 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
     }
     const wanted = readWebhook(req.headers, payload);
     if (!wanted) return send(res, 200, { ignored: "This event doesn't start a run" }), true;
-    const fired = await automations.fire(trigger.id, { via: "webhook", ...wanted }).catch((err: Error) => {
-      throw err instanceof HttpError ? err : new HttpError(400, err.message);
-    });
-    if (fired.skipped) return send(res, 409, { skipped: fired.skipped }), true;
-    send(res, 202, { run: fired.run!.id });
+    // Answered before the run starts: GitHub gives up on a delivery after 10 seconds. Whether it
+    // started, waits for a running run, or why not, shows on the automation.
+    const delivery = typeof req.headers["x-github-delivery"] === "string" ? req.headers["x-github-delivery"].slice(0, 100) : undefined;
+    const accepted = automations.accept(trigger.id, wanted, delivery);
+    send(res, "ignored" in accepted ? 200 : 202, "ignored" in accepted ? accepted : { accepted: true, automation: trigger.id });
     return true;
   }
   if (parts[0] === "r" && req.method === "GET") {
     const token = parts[1] ?? "";
-    if (!remote.enabled || !tokenMatches(token, remote.token)) throw new HttpError(404, "Not found");
+    if (!remote.enabled) throw new HttpError(404, "Not found");
     const base = `/r/${token}`;
-    if (via === "lan" && phoneControl()) {
+    if (via === "lan" && phoneControl() && tokenMatches(token, remote.controlToken)) {
       // Full control: the link signs this phone in and opens the app (on the run it linked to).
       const run = url.pathname.slice(base.length).match(/^\/run\/([\w-]+)$/)?.[1];
       res.writeHead(302, { location: run ? `/#/run/${run}` : "/", "set-cookie": phoneCookie(), "cache-control": "no-store", "referrer-policy": "no-referrer" });
       res.end();
       return true;
     }
+    // The read-only link only ever shows the read-only view, whatever is turned on.
+    if (!tokenMatches(token, remote.token)) throw new HttpError(404, "Not found");
     const html = renderRemote(manager, base, url.pathname.slice(base.length));
     if (!html) throw new HttpError(404, "Not found");
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
@@ -455,13 +494,17 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
 }
 
 function remoteInfo() {
+  // What the QR code opens: with full control the sign-in link, otherwise the read-only view.
+  const phonePath = `/r/${phoneControl() ? remote.controlToken : remote.token}`;
   return {
     enabled: remote.enabled,
     lan: remote.lan,
     control: remote.control,
     path: `/r/${remote.token}`,
+    phonePath,
     local: `http://localhost:${PORT}/r/${remote.token}`,
-    lanUrls: remote.lan ? lanAddresses().map((ip) => `http://${ip}:${REMOTE_PORT}/r/${remote.token}`) : [],
+    lanUrls: remote.lan && lanServer && !lanError ? lanAddresses().map((ip) => `http://${ip}:${REMOTE_PORT}${phonePath}`) : [],
+    lanError: remote.enabled && remote.lan ? lanError : undefined,
   };
 }
 
@@ -469,45 +512,157 @@ function remoteInfo() {
  * A second listener on your network for your phone and webhooks: the phone view, or with phone
  * control the whole app for a phone signed in with the phone link. `signOut` drops the phones'
  * open connections (their live event streams would otherwise keep going).
+ *
+ * It refuses connections from this machine itself. Programs here (the agents code-flow runs
+ * among them) can read ~/.codeflow, phone secrets included; through this listener they could
+ * sign in with full control and run anything outside their sandboxes. Binding only to the Wi-Fi
+ * addresses wouldn't stop that — a program here can connect to those as well, and its
+ * connection then comes from that same address — so each connection's source is checked
+ * against all of this machine's addresses instead. CODEFLOW_LAN_ALLOW_LOCAL=1 lifts this for
+ * tests that play the phone on the same machine.
  */
 let lanServer: ReturnType<typeof createServer> | undefined;
-function syncLanServer(signOut = false) {
+/** Why the network listener isn't listening (e.g. its port is taken), shown instead of a QR code. */
+let lanError: string | undefined;
+const LAN_ALLOW_LOCAL = process.env.CODEFLOW_LAN_ALLOW_LOCAL === "1";
+
+/** Start, stop or sign out the network listener to match the settings; resolves once it's listening (or failed to). */
+function syncLanServer(signOut = false): Promise<void> {
   if (remote.enabled && remote.lan && !lanServer) {
-    lanServer = createServer(listener("lan")).listen(REMOTE_PORT, "0.0.0.0");
-    lanServer.on("error", (err) => console.error(`Phone view on port ${REMOTE_PORT}: ${err.message}`));
-  } else if ((!remote.enabled || !remote.lan) && lanServer) {
-    lanServer.close();
-    lanServer.closeAllConnections();
+    lanError = undefined;
+    const server = createServer(listener("lan"));
+    server.on("connection", (socket) => {
+      if (!LAN_ALLOW_LOCAL && isOwnAddress(socket.remoteAddress)) socket.destroy();
+    });
+    const ready = new Promise<void>((resolve) => {
+      server.once("listening", resolve);
+      server.on("error", (err: NodeJS.ErrnoException) => {
+        lanError =
+          err.code === "EADDRINUSE"
+            ? `Port ${REMOTE_PORT} is already in use by another program, so your phone can't reach code-flow. Start code-flow with CODEFLOW_REMOTE_PORT set to a free port.`
+            : `code-flow couldn't listen on your network (port ${REMOTE_PORT}): ${err.message}`;
+        logError(lanError, err);
+        if (lanServer === server) lanServer = undefined;
+        server.close();
+        resolve();
+      });
+    });
+    server.listen(REMOTE_PORT, "0.0.0.0");
+    lanServer = server;
+    return ready;
+  } else if ((!remote.enabled || !remote.lan) && (lanServer || lanError)) {
+    lanServer?.close();
+    lanServer?.closeAllConnections();
     lanServer = undefined;
+    lanError = undefined;
   } else if (signOut) {
     lanServer?.closeAllConnections();
   }
+  return Promise.resolve();
 }
 
-function openStream(req: IncomingMessage, res: ServerResponse): (event: unknown) => void {
+/**
+ * A random id per server start. Event numbers are only comparable within one start (a crash can
+ * lose the last few, and they're numbered again), so a client that sees it change starts over.
+ */
+const EPOCH = randomBytes(6).toString("hex");
+/** A client that stops reading (a phone gone to sleep) is dropped after this, rather than buffered for. */
+const STALL_MS = envNumber("CODEFLOW_SSE_STALL_MS", 30_000, { min: 100 });
+
+/**
+ * An event stream. Each event carries `id: <epoch>:<seq>`, which the browser sends back as
+ * Last-Event-ID when it reconnects, so only what it missed is sent again.
+ */
+function openStream(res: ServerResponse): { send(event: unknown, seq?: number): void } {
   res.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
     connection: "keep-alive",
   });
-  const ping = setInterval(() => res.write(": ping\n\n"), 15_000);
-  req.on("close", () => clearInterval(ping));
-  return (event: unknown) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  let stalled: ReturnType<typeof setTimeout> | undefined;
+  const write = (chunk: string) => {
+    if (res.destroyed || res.writableEnded) return;
+    if (res.write(chunk) || stalled) return;
+    // The client's buffer is full: wait for it to drain, but not forever.
+    stalled = setTimeout(() => res.destroy(), STALL_MS);
+    res.once("drain", () => {
+      clearTimeout(stalled);
+      stalled = undefined;
+    });
+  };
+  const ping = setInterval(() => write(": ping\n\n"), 15_000);
+  res.on("close", () => {
+    clearInterval(ping);
+    clearTimeout(stalled);
+  });
+  return { send: (event, seq) => write(`${seq === undefined ? "" : `id: ${EPOCH}:${seq}\n`}data: ${JSON.stringify(event)}\n\n`) };
 }
 
+/** The last event a reconnecting client got (its Last-Event-ID), if it's from this server start. */
+function lastEventSeq(req: IncomingMessage): number | undefined {
+  const [epoch, seq] = String(req.headers["last-event-id"] ?? "").split(":");
+  const n = Number(seq);
+  return epoch === EPOCH && seq !== "" && Number.isInteger(n) && n >= 0 ? n : undefined;
+}
+
+/**
+ * A run's events: its history, then live ones. Live events that arrive while the history is
+ * still being read wait for it, so the client never gets an older snapshot after a newer one.
+ */
 async function streamEvents(req: IncomingMessage, res: ServerResponse, runId: string) {
-  const write = openStream(req, res);
-  // Subscribe before replaying so nothing emitted in between is lost; the client de-dupes by seq.
-  const unsubscribe = manager.subscribe(runId, write);
-  req.on("close", unsubscribe);
-  for (const event of await manager.events(runId)) write(event);
+  const stream = openStream(res);
+  const after = lastEventSeq(req);
+  // Which server start this is: the client keeps what it has only when it's the one it knew.
+  stream.send({ type: "hello", epoch: EPOCH, resumed: after !== undefined });
+  let last = after ?? 0;
+  const deliver = (e: RunEvent) => {
+    if (e.seq <= last) return;
+    last = e.seq;
+    stream.send(e, e.seq);
+  };
+  let waiting: RunEvent[] | undefined = [];
+  const unsubscribe = manager.subscribe(runId, (e) => (waiting ? waiting.push(e) : deliver(e)));
+  res.on("close", unsubscribe);
+  try {
+    for (const event of await manager.events(runId)) deliver(event);
+  } finally {
+    const live = waiting.sort((a, b) => a.seq - b.seq);
+    waiting = undefined;
+    for (const event of live) deliver(event);
+  }
 }
 
-/** Every run's status changes, for the sidebar and notifications. */
+/**
+ * Every run snapshot as it changes, numbered, with the latest few hundred kept so a client that
+ * reconnects gets only what it missed. Subscribed before runs load, so none is missed.
+ */
+const runFeed = { seq: 0, recent: [] as { seq: number; run: RunSummary }[], clients: new Set<(entry: { seq: number; run: RunSummary }) => void>() };
+const RUN_FEED_KEEP = 500;
+manager.subscribeAll((run) => {
+  const entry = { seq: ++runFeed.seq, run };
+  runFeed.recent.push(entry);
+  if (runFeed.recent.length > RUN_FEED_KEEP) runFeed.recent.shift();
+  for (const client of runFeed.clients) client(entry);
+});
+
+/**
+ * Every run's status changes, for the sidebar and notifications. A first connection (or one
+ * from before a restart, or that missed too much) starts with the whole list, in step with the
+ * stream; a reconnect gets the snapshots it missed.
+ */
 function streamAllRuns(req: IncomingMessage, res: ServerResponse) {
-  const write = openStream(req, res);
-  const unsubscribe = manager.subscribeAll((run) => write({ type: "run", run }));
-  req.on("close", unsubscribe);
+  const stream = openStream(res);
+  const after = lastEventSeq(req);
+  const oldest = runFeed.recent[0]?.seq ?? runFeed.seq + 1;
+  if (after !== undefined && after >= oldest - 1 && after <= runFeed.seq) {
+    stream.send({ type: "hello", epoch: EPOCH, seq: runFeed.seq, resumed: true });
+    for (const e of runFeed.recent) if (e.seq > after) stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq);
+  } else {
+    stream.send({ type: "hello", epoch: EPOCH, seq: runFeed.seq, runs: manager.list() }, runFeed.seq);
+  }
+  const client = (e: { seq: number; run: RunSummary }) => stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq);
+  runFeed.clients.add(client);
+  res.on("close", () => runFeed.clients.delete(client));
 }
 
 /** Which listener a request came in on: this machine's, or the one on your network. */
@@ -538,7 +693,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       res.writeHead(302, { location: "/", "set-cookie": sessionCookie(), "cache-control": "no-store", "referrer-policy": "no-referrer" });
       return res.end();
     }
-    const claim = !signedIn(req) && auth.claimable;
+    const claim = !signedIn(req) && mayClaim(req);
     if (!signedIn(req) && !claim) {
       res.writeHead(401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       return res.end(LOCKED_PAGE);
@@ -576,7 +731,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     });
     return send(res, 200, listing);
   }
-  if (req.method === "GET" && parts[1] === "doctor") return send(res, 200, await doctor(manager.quota));
+  if (req.method === "GET" && parts[1] === "doctor" && parts[2] === "git") return send(res, 200, await checkGit());
+  if (req.method === "GET" && parts[1] === "doctor") {
+    const health = await doctor(manager.quota);
+    // Auto stays away from an agent that's signed out, and goes back once it's signed in again.
+    for (const entry of health) {
+      if (entry.installed && entry.signedIn === false) manager.recordQuota(entry.id, "signed_out", {});
+      else if (entry.signedIn === true && manager.quota[entry.id]?.status === "signed_out") manager.recordQuota(entry.id, "allowed", {});
+    }
+    return send(res, 200, health);
+  }
   if (req.method === "GET" && parts[1] === "health") {
     return send(res, 200, { busy: manager.busy, writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length });
   }
@@ -595,15 +759,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (parts[1] === "remote") {
     if (req.method === "POST") {
       const body = await readJson(req);
-      const before = { ...remote };
-      if (typeof body.enabled === "boolean") remote.enabled = body.enabled;
-      if (typeof body.lan === "boolean") remote.lan = body.lan;
-      if (typeof body.control === "boolean") remote.control = body.control;
-      if (body.rotate) remote.token = newToken();
-      await saveRemote(remote);
-      const signOut = remote.token !== before.token || (phoneControl(before) && !phoneControl());
-      // After replying (or a dropped request): the phone may be the one turning itself off.
-      res.once("close", () => syncLanServer(signOut));
+      const before = remote;
+      // Turning anything off makes new secrets: old links and phones' cookies stop working.
+      remote = changeRemote(before, { enabled: body.enabled, lan: body.lan, control: body.control, rotate: !!body.rotate });
+      await saveRemote(remote).catch((err) => {
+        remote = before; // what's in effect stays what's saved
+        logError("Couldn't save the phone settings", err);
+        throw new HttpError(500, `Couldn't save the phone settings: ${(err as Error).message}`);
+      });
+      const signOut = remote.controlToken !== before.controlToken || remote.token !== before.token || (phoneControl(before) && !phoneControl());
+      // Listening starts now, so the reply's links (or why there are none) are real.
+      if (remote.enabled && remote.lan && !lanServer) await syncLanServer();
+      // Signing out waits until after replying (or a dropped request): the phone may be the one
+      // turning itself off.
+      res.once("close", () => void syncLanServer(signOut));
     }
     return send(res, 200, remoteInfo());
   }
@@ -691,7 +860,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     const run = runId ? manager.get(runId) : undefined;
     if (!run) throw new HttpError(404, "Run not found");
     if (req.method === "GET" && parts.length === 3) return send(res, 200, run);
-    if (req.method === "GET" && parts[3] === "events") return streamEvents(req, res, run.id);
+    if (req.method === "GET" && parts[3] === "events") return await streamEvents(req, res, run.id);
     if (req.method === "POST" && parts[3] === "cancel") return send(res, 200, { cancelled: manager.cancel(run.id) });
     if (req.method === "POST" && parts[3] === "resume") {
       await manager.resume(run.id).catch((err: Error) => {
@@ -747,6 +916,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
           const command = (typeof body.command === "string" && body.command.trim()) || run.app?.command;
           if (!command) throw new HttpError(400, 'Say how to run the app (e.g. "npm run dev"), or add "run" to .codeflow/config.json');
           if (/[\r\n]/.test(command)) throw new HttpError(400, "The command must be a single line");
+          // A locked-down run's code is an outsider's, and the app runs on this machine, never in
+          // Docker: the same confirmation its checks would need.
+          if (run.lockdown && body.allowUntrusted !== true) {
+            throw Object.assign(new HttpError(409, `${run.lockdown}. Run app starts that code on this machine, outside any sandbox or container.`), { confirm: "allowUntrusted" });
+          }
           manager.noteActivity(); // the app is the repo's code running on this machine
           return send(res, 200, await manager.devServers.start(key, wt.path, command, run.app?.port));
         }
@@ -819,14 +993,16 @@ await manager.load();
 await automations.load();
 remote = await loadRemote();
 watcher.start();
-automations.start(Number(process.env.CODEFLOW_SCHEDULER_TICK_MS) || 30_000);
-syncLanServer();
+automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 }));
+void syncLanServer();
 
 function listener(via: Via) {
   return (req: IncomingMessage, res: ServerResponse) => {
     handle(req, res, via).catch((err: Error & { confirm?: string; signIn?: boolean }) => {
+      const status = err instanceof HttpError ? err.status : 500;
+      if (status >= 500) logError(`${req.method} ${req.url?.split("?")[0]} failed`, err);
       if (res.headersSent) return res.end();
-      send(res, err instanceof HttpError ? err.status : 500, { error: err.message, confirm: err.confirm, signIn: err.signIn });
+      send(res, status, { error: err.message, confirm: err.confirm, signIn: err.signIn });
     });
   };
 }
@@ -837,6 +1013,11 @@ const server = createServer(listener("local")).listen(PORT, HOST, async () => {
   console.log(`code-flow running at http://localhost:${PORT}  (${runs.length} runs loaded from ${CODEFLOW_HOME})`);
   console.log(`  Open http://localhost:${PORT}/?token=${auth.token}  (the first browser to open code-flow signs in without it)`);
   for (const a of agents) console.log(`  ${a.available ? "✓" : "✗"} ${a.displayName} (${a.binary})`);
+  const gitHealth = await checkGit();
+  if (!gitHealth.ok) {
+    console.log(`  ✗ ${gitHealth.warning}`);
+    logWarn(gitHealth.warning ?? "git check failed");
+  }
   const interrupted = runs.filter((r) => r.status === "interrupted").length;
   if (interrupted) console.log(`  ${interrupted} interrupted run(s) can be resumed from the UI`);
 });
@@ -912,8 +1093,9 @@ async function cleanUp(days: number, repo?: string) {
     if (repo && r.repo !== repo) continue;
     if (r.status === "running" || !r.endedAt || r.endedAt > cutoff || !r.seen) continue;
     if (r.triage?.state === "pending" || Object.values(r.watches).some((w) => ["watching", "fixing", "green"].includes(w.state))) continue;
-    const result = await removeWorktrees(r.repo, r.worktrees, false).catch(() => undefined);
-    if (!result?.removed.length) continue;
+    const result = await removeWorktrees(r.repo, r.worktrees, false).catch((err: Error) => ({ removed: [], deletedBranches: [], failed: [err.message] }));
+    if (result.failed.length) manager.log(r.id, `Clean-up couldn't remove everything: ${result.failed.join("; ")}`, "warn");
+    if (!result.removed.length) continue;
     removed += result.removed.length;
     done.push(r.id);
     if (!r.archived) manager.setArchived(r.id, true);
@@ -923,17 +1105,26 @@ async function cleanUp(days: number, repo?: string) {
 }
 
 // Stop cleanly: running agents are stopped and their runs marked "interrupted" (resumable).
+// SIGHUP too: closing the terminal that runs code-flow must not leave its agents running.
 let stopping = false;
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.on(signal, async () => {
-    if (stopping) process.exit(1); // second Ctrl-C: don't wait
-    stopping = true;
-    console.log("\nStopping code-flow: interrupting running runs so they can be resumed…");
+async function stop(reason: string, code = 0) {
+  if (stopping) process.exit(1); // second Ctrl-C: don't wait
+  stopping = true;
+  console.log(`\nStopping code-flow (${reason}): interrupting running runs so they can be resumed…`);
+  logInfo(`Stopping: ${reason}`);
+  let automationsSaved: Promise<unknown> = Promise.resolve();
+  try {
     server.close();
     lanServer?.close();
     watcher.stop();
-    automations.stop();
-    await manager.shutdown();
-    process.exit(0);
-  });
+    automationsSaved = automations.stop();
+  } catch {
+    // still starting up: nothing is listening yet
+  }
+  await manager.shutdown().catch((err) => logError("Shutdown failed", err));
+  await automationsSaved;
+  process.exit(code);
+}
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(signal, () => void stop(signal));
 }

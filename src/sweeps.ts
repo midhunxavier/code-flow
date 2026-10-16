@@ -2,10 +2,11 @@ import type { RunSummary } from "./engine.js";
 import { repoRoot } from "./git.js";
 import {
   alertsError,
+  LIST_CAP,
   listCodeScanningAlerts,
   listDependabotAlerts,
   listDependabotPrs,
-  listIssues,
+  listOpenIssues,
   listSecretScanningAlerts,
   severityRank,
   type PullRequest,
@@ -21,7 +22,7 @@ import {
 export type SweepKind = "issues" | "dependabot" | "alerts";
 
 export interface SweepItem {
-  /** Stable id for the item ("issue#12", "pr#34", "dependabot:npm/lodash", "code-scanning#7", "secret#3"). */
+  /** Stable id for the item ("issue#12", "pr#34", "dependabot#5", "code-scanning#7", "secret#3"). */
   key: string;
   /** "#12", "3 alerts"… */
   ref: string;
@@ -41,6 +42,11 @@ export interface SweepItem {
   /** What the item's run gets: its task and where it starts from. */
   task?: string;
   source?: SourceInput;
+  /**
+   * The key sweeps used for this item before alerts were keyed by number
+   * ("dependabot:npm/lodash"), so an automation that remembers it doesn't sweep it again.
+   */
+  legacyKey?: string;
 }
 
 export interface SweepList {
@@ -68,12 +74,15 @@ export async function listSweep(repo: string, kind: SweepKind, runs: RunSummary[
   return list;
 }
 
+/** Says that GitHub had more than a sweep lists. */
+const cutShort = (what: string, cap: number) => `Only the first ${cap} ${what} are listed; sweep again once these are done`;
+
 async function issueItems(repo: string): Promise<SweepList> {
-  const issues = await listIssues(repo, 100);
+  const issues = await listOpenIssues(repo);
   return {
     kind: "issues",
-    notices: [],
-    items: issues.map((i) => {
+    notices: issues.truncated ? [cutShort("open issues", LIST_CAP)] : [],
+    items: issues.items.map((i) => {
       const skip = i.labels.find((l) => NOT_A_FIX.test(l));
       return {
         key: `issue#${i.number}`,
@@ -84,7 +93,9 @@ async function issueItems(repo: string): Promise<SweepList> {
         url: i.url,
         selected: !skip,
         note: skip ? `Labelled “${skip}”` : undefined,
-        task: `Fix issue #${i.number}: ${i.title}. Add a test that fails without the fix.`,
+        // Not the title: whoever opened the issue wrote it, and the task is read as instructions.
+        // The run gets the title with the issue's text, fenced as information.
+        task: `Fix issue #${i.number}. Add a test that fails without the fix.`,
         source: { kind: "issue", number: i.number },
       };
     }),
@@ -97,8 +108,8 @@ async function dependabotItems(repo: string): Promise<SweepList> {
   const prs = await listDependabotPrs(repo);
   return {
     kind: "dependabot",
-    notices: [],
-    items: prs.map((pr) => ({
+    notices: prs.truncated ? [cutShort("Dependabot pull requests", prs.items.length)] : [],
+    items: prs.items.map((pr) => ({
       key: `pr#${pr.number}`,
       ref: `#${pr.number}`,
       title: pr.title,
@@ -107,8 +118,9 @@ async function dependabotItems(repo: string): Promise<SweepList> {
       // Only a failing PR needs an agent; code-flow never merges the green ones for you.
       selected: pr.ci === "fail",
       note: pr.ci === "fail" ? undefined : CI_NOTE[pr.ci],
+      // The PR's title stays out of the task: package names and versions come from upstream.
       task:
-        `Make CI pass on Dependabot's pull request #${pr.number} (${pr.title}). The failing checks and their logs are below. ` +
+        `Make CI pass on Dependabot's pull request #${pr.number}. The failing checks and their logs are below. ` +
         "Fix the cause by adapting the code to the new version; don't pin it back, and don't disable, skip or weaken tests.",
       source: { kind: "pr", number: pr.number, ciLogs: true },
     })),
@@ -124,13 +136,17 @@ async function alertItems(repo: string): Promise<SweepList> {
   ]);
   const notices: string[] = [];
   const items: SweepItem[] = [];
-  const openPrs = prs.status === "fulfilled" ? prs.value : [];
+  const openPrs = prs.status === "fulfilled" ? prs.value.items : [];
+  const note = (what: string, list: { items: unknown[]; truncated: boolean }) => list.truncated && notices.push(cutShort(what, list.items.length));
 
-  if (dependabot.status === "fulfilled") items.push(...dependabotAlertItems(dependabot.value, openPrs));
-  else notices.push(alertsError("Dependabot alerts", dependabot.reason));
+  if (dependabot.status === "fulfilled") {
+    items.push(...dependabotAlertItems(dependabot.value.items, openPrs));
+    note("Dependabot alerts", dependabot.value);
+  } else notices.push(alertsError("Dependabot alerts", dependabot.reason));
 
   if (codeScanning.status === "fulfilled") {
-    for (const a of codeScanning.value) {
+    note("code scanning alerts", codeScanning.value);
+    for (const a of codeScanning.value.items) {
       const rule = a.rule ?? {};
       const where = a.most_recent_instance?.location ?? {};
       const severity = String(rule.security_severity_level ?? rule.severity ?? "unknown");
@@ -154,7 +170,8 @@ async function alertItems(repo: string): Promise<SweepList> {
   } else notices.push(alertsError("Code scanning alerts", codeScanning.reason));
 
   if (secrets.status === "fulfilled") {
-    for (const a of secrets.value) {
+    note("leaked secrets", secrets.value);
+    for (const a of secrets.value.items) {
       items.push({
         key: `secret#${a.number}`,
         ref: `#${a.number}`,
@@ -173,7 +190,10 @@ async function alertItems(repo: string): Promise<SweepList> {
   return { kind: "alerts", items, notices };
 }
 
-/** Dependabot alerts, one item per package: upgrading it fixes them together. */
+/**
+ * Dependabot alerts, one item per package: upgrading it fixes them together. The item is keyed
+ * by its alerts' numbers, not the package, so a new alert on a package swept before is new work.
+ */
 function dependabotAlertItems(alerts: any[], prs: PullRequest[]): SweepItem[] {
   const byPackage = new Map<string, any[]>();
   for (const a of alerts) {
@@ -196,7 +216,8 @@ function dependabotAlertItems(alerts: any[], prs: PullRequest[]): SweepItem[] {
     const manifest = worst.dependency?.manifest_path;
     const count = numbers.length > 1 ? `${numbers.length} Dependabot alerts` : `Dependabot alert #${numbers[0]}`;
     return {
-      key: `dependabot:${key}`,
+      key: `dependabot#${numbers[0]}`,
+      legacyKey: `dependabot:${key}`,
       ref: numbers.length > 1 ? `${numbers.length} alerts` : `#${numbers[0]}`,
       title: `${pkg.name} (${pkg.ecosystem})`,
       detail: [`${worst.security_vulnerability?.vulnerable_version_range ?? "?"} → ${patched ?? "no fix yet"}`, worst.security_advisory?.summary].filter(Boolean).join(" · "),
@@ -218,16 +239,61 @@ function upgrades(pr: PullRequest, name: string): boolean {
   return new RegExp(`\\bbump ${escaped} from\\b`, "i").test(pr.title) || new RegExp(`/${escaped.replace(/\//g, "\\/")}-\\d`).test(pr.headRefName);
 }
 
-/** A run in `repo` that already covers this source and still counts (not rejected, failed or archived). */
+/**
+ * A run in `repo` that already covers this source and still counts (not rejected, failed or
+ * archived). Alerts are covered only when every one of them is: a new alert on a package that
+ * already has a run is new work.
+ */
 export function coveringRun(runs: RunSummary[], repo: string, source: SourceInput): RunSummary | undefined {
+  const standing = runs.filter(
+    (r) => r.repo === repo && !r.archived && r.triage?.state !== "rejected" && r.status !== "failed" && r.status !== "cancelled" && r.source?.kind === source.kind,
+  );
+  if (source.kind !== "alert") return standing.find((r) => r.source!.number === source.number);
   const numbers = source.numbers?.length ? source.numbers : [source.number];
-  return runs.find((r) => {
-    if (r.repo !== repo || r.archived || r.triage?.state === "rejected" || r.status === "failed" || r.status === "cancelled") return false;
-    const s = r.source;
+  const covers = numbers.map((n) => standing.find((r) => r.source!.alert?.tool === source.tool && (r.source!.alert?.numbers ?? [r.source!.number]).includes(n)));
+  return covers.every(Boolean) ? covers[0] : undefined;
+}
+
+/**
+ * What a sweep remembers once it started a run for `source`: one key per issue, PR or alert
+ * ("issue#12", "pr#3", "dependabot#5", "code-scanning#7"). Webhooks and schedules use the same
+ * keys, so one alert is never swept by both.
+ */
+export function sourceKeys(source: SourceInput): string[] {
+  if (source.kind !== "alert") return [`${source.kind}#${source.number}`];
+  const numbers = source.numbers?.length ? source.numbers : [source.number];
+  return numbers.map((n) => `${source.tool ?? "alert"}#${n}`);
+}
+
+/** The kind of GitHub item each sweep works on; a webhook for anything else is ignored. */
+const SWEEP_SOURCE: Record<SweepKind, SourceInput["kind"]> = { issues: "issue", dependabot: "pr", alerts: "alert" };
+export const sweepTakes = (kind: SweepKind, source: SourceInput) => SWEEP_SOURCE[kind] === source.kind;
+
+/** The listed item a webhook's source points at (for alerts: the item that includes that alert). */
+export function findSweepItem(list: SweepList, source: SourceInput): SweepItem | undefined {
+  return list.items.find((i) => {
+    const s = i.source;
     if (!s || s.kind !== source.kind) return false;
-    if (s.kind === "alert") return s.alert?.tool === source.tool && (s.alert?.numbers ?? [s.number]).some((n) => numbers.includes(n));
-    return s.number === source.number;
+    if (s.kind !== "alert") return s.number === source.number;
+    return s.tool === source.tool && (s.numbers ?? [s.number]).includes(source.number);
   });
+}
+
+/**
+ * Sweeps used to remember a package's Dependabot alerts as one key ("dependabot:npm/lodash").
+ * Where an old key matches a listed package, its alerts open right now become handled by
+ * number and the old key is dropped, so it can't keep a later alert on that package from being
+ * swept. Returns whether `handled` changed.
+ */
+export function upgradeLegacyKeys(list: SweepList, handled: Set<string>): boolean {
+  let changed = false;
+  for (const item of list.items) {
+    if (!item.legacyKey || !item.source || !handled.has(item.legacyKey)) continue;
+    handled.delete(item.legacyKey);
+    for (const key of sourceKeys(item.source)) handled.add(key);
+    changed = true;
+  }
+  return changed;
 }
 
 export interface SweepRequestItem {
@@ -281,10 +347,13 @@ export async function runSweep(input: {
   return outcome;
 }
 
-/** The items a recurring sweep starts this time: picked by default, not handled before, at most `max`. */
+/**
+ * The items a recurring sweep starts this time: picked by default, not handled before, at most
+ * `max`. An item is handled once every alert (or the issue or PR) it covers is.
+ */
 export function nextSweepItems(list: SweepList, handled: Set<string>, max: number): SweepRequestItem[] {
   return list.items
-    .filter((i) => i.selected && !i.manual && i.source && i.task && !handled.has(i.key))
+    .filter((i) => i.selected && !i.manual && i.source && i.task && !sourceKeys(i.source).every((k) => handled.has(k)))
     .slice(0, max)
     .map((i) => ({ key: i.key, task: i.task!, source: i.source! }));
 }

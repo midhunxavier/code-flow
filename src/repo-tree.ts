@@ -1,6 +1,6 @@
 import { readdir, realpath, stat } from "node:fs/promises";
 import { basename, join, sep } from "node:path";
-import { git, gitWithInput } from "./git.js";
+import { git } from "./git.js";
 
 export interface TreeEntry {
   name: string;
@@ -12,6 +12,13 @@ export interface TreeEntry {
 }
 
 const MAX_ENTRIES = 1_000;
+
+/**
+ * The Files panel waits on these: in a huge repo, or one another git is busy with, it says so
+ * after this long instead of loading forever. Every call goes through `git()`, so none of them
+ * prompts or takes the optional locks your own git needs.
+ */
+const PANEL_TIMEOUT_MS = 30_000;
 
 /** Normalize a repo-relative path from the client and refuse anything that leaves the repo. */
 export function normalizeRepoPath(raw: string): string {
@@ -59,7 +66,7 @@ export async function listTree(repo: string, relDir = ""): Promise<{ path: strin
 export async function searchFiles(repo: string, query: string, limit = 100): Promise<TreeEntry[]> {
   const q = query.trim().toLowerCase();
   if (!q) return [];
-  const res = await git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], repo);
+  const res = await git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], repo, { timeoutMs: PANEL_TIMEOUT_MS });
   if (res.code !== 0) throw new Error(res.stderr.trim() || "git ls-files failed");
   const unique = [...new Set(res.stdout.split("\0").filter(Boolean))];
   const nameHits: string[] = [];
@@ -75,14 +82,16 @@ export async function searchFiles(repo: string, query: string, limit = 100): Pro
 async function ignoredPaths(repo: string, paths: string[]): Promise<Set<string>> {
   if (!paths.length) return new Set();
   // Exit 0 = some ignored, 1 = none ignored; anything else means git couldn't tell.
-  const res = await gitWithInput(["check-ignore", "-z", "--stdin"], repo, paths.join("\0") + "\0");
+  const res = await git(["check-ignore", "-z", "--stdin"], repo, { input: paths.join("\0") + "\0", timeoutMs: PANEL_TIMEOUT_MS });
+  // A timeout also exits 1; listing everything as not ignored would show node_modules and co.
+  if (res.timedOut) throw new Error(res.stderr.split("\n")[0]);
   if (res.code !== 0 && res.code !== 1) return new Set();
   return new Set(res.stdout.split("\0").filter(Boolean));
 }
 
 /** Map of child name → status, rolled up from `git status` for everything under `rel`. */
 async function childStatuses(repo: string, rel: string): Promise<Map<string, TreeEntry["status"]>> {
-  const res = await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", rel || "."], repo);
+  const res = await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", rel || "."], repo, { timeoutMs: PANEL_TIMEOUT_MS });
   const statuses = new Map<string, TreeEntry["status"]>();
   if (res.code !== 0) return statuses;
 

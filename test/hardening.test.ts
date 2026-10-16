@@ -492,7 +492,7 @@ test("one server per CODEFLOW_HOME: a live holder keeps the lock, a dead one doe
   holder.kill("SIGKILL");
   await until(() => !alive(holder.pid!));
   const release = await acquireLock(300);
-  assert.equal(readFileSync(lock, "utf8"), String(process.pid));
+  assert.equal(JSON.parse(readFileSync(lock, "utf8")).pid, process.pid);
   release();
   assert.ok(!existsSync(lock));
 });

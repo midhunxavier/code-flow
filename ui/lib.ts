@@ -13,7 +13,13 @@ export class ApiError extends Error {
 }
 
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
-  const res = await fetch(path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
+  let res: Response;
+  try {
+    res = await fetch(path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
+  } catch {
+    // The browser only says "Failed to fetch": the server is down or restarting.
+    throw new ApiError("Can't reach code-flow. Is the server still running?", 0);
+  }
   const body = (await res.json().catch(() => ({}))) as { error?: string; confirm?: string; signIn?: boolean };
   if (res.status === 401 && body.signIn) signInAgain();
   if (!res.ok) throw new ApiError(body.error || res.statusText, res.status, body.confirm);

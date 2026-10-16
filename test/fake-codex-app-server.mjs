@@ -2,6 +2,14 @@
 // with the methods and notifications code-flow uses (see src/adapters/codex-app-server.ts).
 // A turn stays open to `turn/steer` while it runs: a prompt containing WAIT-FOR-STEER keeps a new
 // thread's first turn running until a message is steered in (or 20 s pass).
+//
+// Misbehaviour on request:
+//   FAKE_CODEX_SLOW_INIT_MS=<ms>       answer `initialize` only after this long
+//   FAKE_CODEX_INIT_CRASH=<message>    print this to stderr and exit 1 when asked to initialize
+//   FAKE_CODEX_HANG_METHOD=<method>    never answer this request (e.g. turn/start)
+//   FAKE_CODEX_SERVER_REQUEST=<method> ask code-flow this mid-turn; the agent says what came back
+//   FAKE_CRASH_VENDOR=codex            die mid-turn, after some output
+//   FAKE_HANG_AFTER_RESULT_VENDOR=codex  stay running (and ignore SIGTERM) once stdin closes
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
@@ -39,6 +47,7 @@ export async function serve(args) {
   let record;
   let nextServerRequest = 1;
   const serverRequests = new Map();
+  /** A request to code-flow: resolves with its result, or `{ error }` when it answered with one. */
   const ask = (method, params) =>
     new Promise((resolve) => {
       const id = `srv-${nextServerRequest++}`;
@@ -94,6 +103,15 @@ export async function serve(args) {
         const ran = decision === "accept" || decision === "acceptForSession";
         notify("item/completed", { ...base, item: { ...cmd, status: ran ? "completed" : "declined", exitCode: ran ? 0 : null, aggregatedOutput: "" }, completedAtMs: Date.now() });
       }
+      if (process.env.FAKE_CODEX_SERVER_REQUEST) {
+        const method = process.env.FAKE_CODEX_SERVER_REQUEST;
+        const answer = await ask(method, { ...base, itemId: "i4", reason: "wants to reach the network" });
+        item({ type: "agentMessage", id: "i4", text: `${method} got ${JSON.stringify(answer)}`, phase: "commentary", memoryCitation: null, delivery: null, questions: null });
+      }
+      if (forCodex("CRASH")) {
+        process.stderr.write("thread 'main' panicked: fake crash mid-turn\n");
+        process.exit(1);
+      }
       notify("turn/plan/updated", { ...base, explanation: null, plan: [{ step: "Look around", status: "completed" }, { step: "Answer", status: "inProgress" }] });
       // Codex reports a reconnect as an `error` it will retry, then carries on: not a failure.
       if (process.env.FAKE_CODEX_WARN) notify("error", { ...base, willRetry: true, error: { message: "Reconnecting... 1/5", codexErrorInfo: null, additionalDetails: null } });
@@ -105,10 +123,11 @@ export async function serve(args) {
         await new Promise((resolve) => {
           const timer = setTimeout(resolve, waitForSteer ? 20_000 : pause);
           active.wake = () => {
-            // A steered message ends the wait; a plain sleep runs its course.
-            if (waitForSteer) {
+            // A steered message ends the wait, and an interrupt ends any wait; otherwise a plain
+            // sleep runs its course.
+            if (waitForSteer || active?.interrupted) {
               clearTimeout(timer);
-              setTimeout(resolve, 300);
+              setTimeout(resolve, active?.interrupted ? 0 : 300);
             }
           };
         });
@@ -134,6 +153,10 @@ export async function serve(args) {
 
   const handlers = {
     initialize: () => {
+      if (process.env.FAKE_CODEX_INIT_CRASH) {
+        process.stderr.write(`${process.env.FAKE_CODEX_INIT_CRASH}\n`);
+        process.exit(1);
+      }
       if (initialized) throw rpcError(-32600, "Already initialized");
       initialized = true;
       return { userAgent: "codex_cli_rs/0.162.1 (fake)", codexHome: join(process.env.CODEFLOW_HOME ?? ".", ".codex"), platformFamily: "unix", platformOs: "macos" };
@@ -173,6 +196,10 @@ export async function serve(args) {
     "turn/interrupt": (params) => {
       if (active && params.turnId === active.id) {
         active.interrupted = true;
+        if (record) {
+          record.body.interrupted = true;
+          writeRecord();
+        }
         active.wake?.();
       }
       return {};
@@ -189,26 +216,41 @@ export async function serve(args) {
     const msg = JSON.parse(line);
     if (msg.method === undefined) {
       // A response to one of our requests (an approval).
-      serverRequests.get(msg.id)?.(msg.result ?? {});
+      serverRequests.get(msg.id)?.(msg.result ?? (msg.error ? { error: msg.error } : {}));
       serverRequests.delete(msg.id);
       return;
     }
     if (msg.id === undefined) return; // notifications: `initialized`
-    try {
-      if (!initialized && msg.method !== "initialize") throw rpcError(-32600, "Not initialized");
-      const handler = handlers[msg.method];
-      if (!handler) throw rpcError(-32601, `Method not found: ${msg.method}`);
-      out({ id: msg.id, result: handler(msg.params ?? {}) });
-    } catch (err) {
-      out({ id: msg.id, error: { code: err.code ?? -32603, message: err.message } });
-    }
+    if (msg.method === process.env.FAKE_CODEX_HANG_METHOD) return; // never answered
+    const answer = () => {
+      try {
+        if (!initialized && msg.method !== "initialize") throw rpcError(-32600, "Not initialized");
+        const handler = handlers[msg.method];
+        if (!handler) throw rpcError(-32601, `Method not found: ${msg.method}`);
+        out({ id: msg.id, result: handler(msg.params ?? {}) });
+      } catch (err) {
+        out({ id: msg.id, error: { code: err.code ?? -32603, message: err.message } });
+      }
+    };
+    const slow = msg.method === "initialize" ? Number(process.env.FAKE_CODEX_SLOW_INIT_MS ?? 0) : 0;
+    if (slow) setTimeout(answer, slow);
+    else answer();
   });
   // Like the real server: stdin closing ends it (after what it already wrote is flushed).
   await new Promise((resolve) => lines.on("close", resolve));
+  if (forCodex("HANG_AFTER_RESULT")) {
+    process.on("SIGTERM", () => {});
+    await new Promise((resolve) => setTimeout(resolve, 60_000));
+  }
   process.stdout.write("", () => process.exit(0));
   await new Promise(() => {});
 }
 
 function rpcError(code, message) {
   return Object.assign(new Error(message), { code });
+}
+
+/** FAKE_<name>_VENDOR names codex (alone, or in a comma-separated list). */
+function forCodex(name) {
+  return (process.env[`FAKE_${name}_VENDOR`] ?? "").split(",").includes("codex");
 }

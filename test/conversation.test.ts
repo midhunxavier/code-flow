@@ -86,10 +86,14 @@ test("reject: the run ends without building", async () => {
 });
 
 test("the time budget pauses while the run waits for you", async () => {
+  const budgetMs = 3_000;
   const m = new RunManager(findPattern);
-  const run = await start(m, "pipeline", pipelineRoles, { approvals: { plan: true }, loop: { maxMinutes: 0.02 } });
+  const run = await start(m, "pipeline", pipelineRoles, { approvals: { plan: true }, loop: { maxMinutes: budgetMs / 60_000 } });
   await until(() => !!run.awaiting);
-  await new Promise((r) => setTimeout(r, 1_600)); // longer than the whole 1.2 s budget
+  // Wait out more than the whole budget, watching all along that the run is still waiting. The
+  // budget leaves the rest of the run (after approving) ample time, even on a busy machine.
+  const since = Date.now();
+  await until(() => run.status !== "running" || Date.now() - since > budgetMs + 500, budgetMs + 10_000);
   assert.equal(run.status, "running", "still waiting, not stopped at the time limit");
   m.answer(run.id, { decision: "approve" });
   await finished(m, run);

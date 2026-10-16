@@ -52,7 +52,10 @@ export async function readRepoConfig(repo: string): Promise<{ config: RepoConfig
     if (raw.run && str(raw.run.command)) config.run = { command: str(raw.run.command)!, port: Number(raw.run.port) || undefined };
     if (raw.models && typeof raw.models === "object") config.models = raw.models;
     if (raw.limits && typeof raw.limits === "object") {
-      config.limits = { maxMinutes: Number(raw.limits.maxMinutes) || undefined, maxSteps: Number(raw.limits.maxSteps) || undefined };
+      // Positive numbers only: a negative or absurd budget would stop every run at once.
+      const positive = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : undefined);
+      const steps = positive(raw.limits.maxSteps);
+      config.limits = { maxMinutes: positive(raw.limits.maxMinutes), maxSteps: steps === undefined ? undefined : Math.max(1, Math.round(steps)) };
     }
     // Not "full": a repo's own file mustn't be able to turn off the agents' sandboxes.
     if (["safe", "standard", "trusted"].includes(raw.trust)) config.trust = raw.trust;
