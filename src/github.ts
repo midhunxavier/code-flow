@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { killGroup, trackGroup, untrackGroup } from "./adapters/process.js";
+import { childEnv } from "./env.js";
 import { git } from "./git.js";
 
 /**
@@ -465,7 +466,7 @@ function ghRaw(cwd: string, args: string[], input?: string): Promise<{ code: num
       cwd,
       detached: true,
       stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-      env: { ...process.env, GH_PROMPT_DISABLED: "1", NO_COLOR: "1", GH_NO_UPDATE_NOTIFIER: "1" },
+      env: { ...childEnv(), GH_PROMPT_DISABLED: "1", NO_COLOR: "1", GH_NO_UPDATE_NOTIFIER: "1" },
     });
     trackGroup(child.pid);
     let stdout = "";

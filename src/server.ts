@@ -23,6 +23,8 @@ import { listBranches, repoRoot, worktreeRoot } from "./git.js";
 import { folderSizes, remoteBranches, removeWorktrees } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
 import { acquireLock, writeHealth } from "./store.js";
+import { reapOrphanGroups } from "./adapters/process.js";
+import { logError, logInfo } from "./log.js";
 import { listIssues, listPullRequests, type SourceInput } from "./github.js";
 import { listSweep, runSweep, type SweepKind } from "./sweeps.js";
 import { resolveAuto } from "./routing.js";
@@ -38,6 +40,24 @@ const releaseLock = await acquireLock().catch((err: Error) => {
   process.exit(1);
 });
 process.once("exit", releaseLock);
+
+// A stray rejection or throw must not take every live run down with it: log it and keep
+// serving. A burst of uncaught exceptions means state is likely broken, so then stop cleanly
+// (runs are interrupted, resumable) rather than limp on.
+const recentCrashes: number[] = [];
+process.on("unhandledRejection", (reason) => logError("Unhandled promise rejection", reason));
+process.on("uncaughtException", (err) => {
+  logError("Uncaught exception", err);
+  const now = Date.now();
+  recentCrashes.push(now);
+  while (recentCrashes[0]! < now - 60_000) recentCrashes.shift();
+  if (recentCrashes.length >= 10) void stop("too many uncaught exceptions in a minute", 1);
+});
+
+// Agents and checks a previous code-flow left running (it crashed, or its terminal closed)
+// would keep editing worktrees: stop them before any run is resumed.
+const reaped = await reapOrphanGroups();
+if (reaped) logInfo(`Stopped ${reaped} process group(s) a previous code-flow left running`);
 
 const manager = new RunManager(findPattern);
 const watcher = new PrWatcher(manager);
@@ -825,8 +845,10 @@ syncLanServer();
 function listener(via: Via) {
   return (req: IncomingMessage, res: ServerResponse) => {
     handle(req, res, via).catch((err: Error & { confirm?: string; signIn?: boolean }) => {
+      const status = err instanceof HttpError ? err.status : 500;
+      if (status >= 500) logError(`${req.method} ${req.url?.split("?")[0]} failed`, err);
       if (res.headersSent) return res.end();
-      send(res, err instanceof HttpError ? err.status : 500, { error: err.message, confirm: err.confirm, signIn: err.signIn });
+      send(res, status, { error: err.message, confirm: err.confirm, signIn: err.signIn });
     });
   };
 }
@@ -923,17 +945,24 @@ async function cleanUp(days: number, repo?: string) {
 }
 
 // Stop cleanly: running agents are stopped and their runs marked "interrupted" (resumable).
+// SIGHUP too: closing the terminal that runs code-flow must not leave its agents running.
 let stopping = false;
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.on(signal, async () => {
-    if (stopping) process.exit(1); // second Ctrl-C: don't wait
-    stopping = true;
-    console.log("\nStopping code-flow: interrupting running runs so they can be resumed…");
+async function stop(reason: string, code = 0) {
+  if (stopping) process.exit(1); // second Ctrl-C: don't wait
+  stopping = true;
+  console.log(`\nStopping code-flow (${reason}): interrupting running runs so they can be resumed…`);
+  logInfo(`Stopping: ${reason}`);
+  try {
     server.close();
     lanServer?.close();
     watcher.stop();
     automations.stop();
-    await manager.shutdown();
-    process.exit(0);
-  });
+  } catch {
+    // still starting up: nothing is listening yet
+  }
+  await manager.shutdown().catch((err) => logError("Shutdown failed", err));
+  process.exit(code);
+}
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(signal, () => void stop(signal));
 }

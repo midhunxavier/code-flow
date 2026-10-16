@@ -1,5 +1,6 @@
 import type { AgentAdapter, AgentEvent, ModelCatalog, RunOptions, RunResult } from "./types.js";
 import { captureOutput, commandExists, describeFailure, runJsonlProcess, stringify, truncate } from "./process.js";
+import { childEnv } from "../env.js";
 
 /**
  * Google Antigravity CLI via `agy -p --output-format stream-json`.
@@ -21,7 +22,7 @@ import { captureOutput, commandExists, describeFailure, runJsonlProcess, stringi
 // git command the agent runs fail. Point git at empty global config inside the worktree.
 function sandboxGitEnv(): NodeJS.ProcessEnv {
   return {
-    ...process.env,
+    ...childEnv(),
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "core.excludesFile",

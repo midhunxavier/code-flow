@@ -1,28 +1,210 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { WORKTREE_DIR } from "./config.js";
+import { envNumber, WORKTREE_DIR } from "./config.js";
+import { childEnv } from "./env.js";
 
 export interface GitResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** Killed for taking longer than its timeout. */
+  timedOut?: boolean;
+  /** Stopped by its abort signal. */
+  aborted?: boolean;
 }
 
-export function git(args: string[], cwd: string): Promise<GitResult> {
+export interface GitOptions {
+  /** Default CODEFLOW_GIT_TIMEOUT_SEC (5 minutes). */
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  /** Added to the environment every git call gets. */
+  env?: NodeJS.ProcessEnv;
+  /** Written to stdin. */
+  input?: string;
+}
+
+const GIT_TIMEOUT_MS = envNumber("CODEFLOW_GIT_TIMEOUT_SEC", 300, { min: 1 }) * 1000;
+const GIT_MAX_OUTPUT = 64 * 1024 * 1024;
+
+/**
+ * Every git code-flow runs: never waits on a prompt (a credential prompt would hang a push for
+ * good), takes no optional locks (so a `git status` for the Files panel can't block your own
+ * git), and prints its messages in English (code-flow reads some of them).
+ */
+function gitEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return childEnv({ GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never", GIT_OPTIONAL_LOCKS: "0", LANGUAGE: "C", LC_MESSAGES: "C", ...extra });
+}
+
+/**
+ * Run git. Never throws: a non-zero `code` says it failed. Bounded in time (a hook, an LFS
+ * fetch or a stalled remote can't hang a run) and in output (a huge diff fails cleanly instead
+ * of ending up in an error message).
+ */
+export function git(args: string[], cwd: string, opts: GitOptions = {}): Promise<GitResult> {
+  const timeoutMs = opts.timeoutMs ?? GIT_TIMEOUT_MS;
   return new Promise((resolve) => {
-    execFile("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const code = err ? (typeof (err as any).code === "number" ? (err as any).code : 1) : 0;
-      resolve({ code, stdout: stdout.toString(), stderr: stderr.toString() });
+    // Its own process group, so a timeout also stops the hooks (and their children) git started.
+    const child = spawn("git", args, { cwd, env: gitEnv(opts.env), detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let outBytes = 0;
+    let errBytes = 0;
+    let overflow = false;
+    let timedOut = false;
+    let aborted = false;
+    let settled = false;
+
+    const kill = () => {
+      try {
+        process.kill(-child.pid!, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      kill();
+    }, timeoutMs);
+    timer.unref();
+    const onAbort = () => {
+      aborted = true;
+      kill();
+    };
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    if (opts.signal?.aborted) onAbort();
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (overflow) return;
+      outBytes += chunk.length;
+      if (outBytes > GIT_MAX_OUTPUT) {
+        overflow = true;
+        kill();
+      } else out.push(chunk);
     });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (errBytes > 1024 * 1024) return;
+      errBytes += chunk.length;
+      err.push(chunk);
+    });
+
+    const finish = (exitCode: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
+      const stdout = Buffer.concat(out).toString();
+      const stderr = Buffer.concat(err).toString();
+      if (overflow) resolve({ code: 1, stdout: "", stderr: `git ${args[0]} printed more than ${GIT_MAX_OUTPUT / 1024 / 1024} MB` });
+      else if (aborted) resolve({ code: 1, stdout: "", stderr: `git ${args[0]} was cancelled`, aborted: true });
+      else if (timedOut) resolve({ code: 1, stdout, stderr: `git ${args[0]} timed out after ${Math.round(timeoutMs / 1000)}s\n${stderr}`.trim(), timedOut: true });
+      else resolve({ code: exitCode ?? 1, stdout, stderr });
+    };
+    child.on("error", (e) => {
+      err.push(Buffer.from(e.message));
+      finish(1);
+    });
+    child.on("close", (code) => finish(code));
+    // Something a hook started can hold the pipes open after git itself has exited.
+    child.on("exit", (code) => {
+      setTimeout(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish(code);
+      }, 2_000).unref();
+    });
+    child.stdin.on("error", () => {});
+    child.stdin.end(opts.input);
   });
 }
 
-async function gitOk(args: string[], cwd: string): Promise<string> {
-  const res = await git(args, cwd);
-  if (res.code !== 0) throw new Error(`git ${args.join(" ")} failed: ${res.stderr.trim() || res.stdout.trim()}`);
+/** git's error text, short enough for a log line or a run's error. */
+export function gitError(args: string[], res: GitResult): string {
+  const text = (res.stderr.trim() || res.stdout.trim()).slice(0, 2_000);
+  return `git ${args.join(" ").slice(0, 200)} failed: ${text}`;
+}
+
+async function gitOk(args: string[], cwd: string, opts?: GitOptions): Promise<string> {
+  const res = await git(args, cwd, opts);
+  if (res.code !== 0) throw new Error(gitError(args, res));
   return res.stdout.trim();
+}
+
+/** Why a git command failed, for an error that says what to do instead of "would conflict". */
+export type GitFailure = "locked" | "untracked" | "dirty" | "conflict" | "hook" | "identity" | "auth" | "timeout" | "other";
+
+export function classifyGitFailure(res: GitResult): GitFailure {
+  if (res.timedOut) return "timeout";
+  const text = `${res.stderr}\n${res.stdout}`;
+  if (/index\.lock|Unable to create '.*\.lock'|another git process seems to be running/i.test(text)) return "locked";
+  if (/untracked working tree files would be (?:overwritten|removed)/i.test(text)) return "untracked";
+  if (/local changes to the following files would be overwritten|Please commit your changes or stash them/i.test(text)) return "dirty";
+  if (/^CONFLICT|Automatic merge failed|fix conflicts and then commit/im.test(text)) return "conflict";
+  if (/Please tell me who you are|unable to auto-detect email address|empty ident name/i.test(text)) return "identity";
+  if (/Authentication failed|could not read (?:Username|Password)|terminal prompts disabled|Permission denied \(publickey|returned error: 403|Repository not found/i.test(text)) return "auth";
+  if (/hook\b.*(?:failed|declined|exit)|(?:pre|post)-\w+ hook/i.test(text)) return "hook";
+  return "other";
+}
+
+/** A plain-language reason for a classified failure. */
+export function describeGitFailure(kind: GitFailure): string {
+  switch (kind) {
+    case "locked":
+      return "another git process is using this repository (an index.lock exists); try again when it finishes";
+    case "untracked":
+      return "untracked files in your checkout would be overwritten";
+    case "dirty":
+      return "your checkout has uncommitted changes that would be overwritten";
+    case "conflict":
+      return "the branches conflict";
+    case "hook":
+      return "a git hook failed";
+    case "identity":
+      return "git doesn't know your name and email (set user.name and user.email)";
+    case "auth":
+      return "git couldn't sign in to the remote (check your credentials)";
+    case "timeout":
+      return "git took too long";
+    default:
+      return "git failed";
+  }
+}
+
+let versionPromise: Promise<[number, number, number] | undefined> | undefined;
+
+/** The installed git's version, e.g. [2, 39, 3]; undefined if it can't be read. */
+export function gitVersion(): Promise<[number, number, number] | undefined> {
+  versionPromise ??= git(["--version"], process.cwd(), { timeoutMs: 10_000 }).then((res) => {
+    const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(res.stdout);
+    return m ? ([Number(m[1]), Number(m[2]), Number(m[3] ?? 0)] as [number, number, number]) : undefined;
+  });
+  return versionPromise;
+}
+
+/** True when the installed git is at least `major.minor`. */
+export async function gitAtLeast(major: number, minor: number): Promise<boolean> {
+  const v = await gitVersion();
+  return !!v && (v[0] > major || (v[0] === major && v[1] >= minor));
+}
+
+const repoLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Run `fn` while no other code-flow operation is changing `repo`'s worktrees or refs (creating
+ * or removing worktrees, deleting branches, merging into your checkout). Concurrent runs on
+ * one repo otherwise trip over each other's `.git` lock files.
+ */
+export function withRepoLock<T>(repo: string, fn: () => Promise<T>): Promise<T> {
+  const key = resolve(repo);
+  const prev = repoLocks.get(key) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(fn);
+  const tail = next.catch(() => undefined);
+  repoLocks.set(key, tail);
+  void tail.then(() => {
+    if (repoLocks.get(key) === tail) repoLocks.delete(key);
+  });
+  return next;
 }
 
 export async function repoRoot(path: string): Promise<string> {
@@ -74,13 +256,7 @@ export async function ensureCodeflowExcludes(repo: string): Promise<void> {
 
 /** Run git with data on stdin (used for `check-ignore --stdin`). */
 export function gitWithInput(args: string[], cwd: string, input: string): Promise<GitResult> {
-  return new Promise((resolve) => {
-    const child = execFile("git", args, { cwd, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const code = err ? (typeof (err as any).code === "number" ? (err as any).code : 1) : 0;
-      resolve({ code, stdout: stdout.toString(), stderr: stderr.toString() });
-    });
-    child.stdin?.end(input);
-  });
+  return git(args, cwd, { input });
 }
 
 /** "blob" or "tree" if `path` exists in commit `ref`, else null. */
@@ -109,27 +285,33 @@ export async function openWorktree(
   const base = await resolveCommit(repo, fromRef);
   const wt = { name, path, branch, base };
   if (existsSync(join(path, ".git"))) return { wt, created: false };
-  await mkdir(dirname(path), { recursive: true });
-  if ((await git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repo)).code === 0) {
-    await git(["worktree", "prune"], repo);
-    await gitOk(["worktree", "add", path, branch], repo);
-    return { wt, created: false };
-  }
-  await gitOk(["worktree", "add", "-b", branch, path, fromRef], repo);
-  return { wt, created: true };
+  return withRepoLock(repo, async () => {
+    await mkdir(dirname(path), { recursive: true });
+    if ((await git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repo)).code === 0) {
+      await git(["worktree", "prune"], repo);
+      await gitOk(["worktree", "add", path, branch], repo);
+      return { wt, created: false };
+    }
+    await gitOk(["worktree", "add", "-b", branch, path, fromRef], repo);
+    return { wt, created: true };
+  });
 }
 
 /** A throwaway checkout of `ref` on no branch (e.g. to run the check on the base commit). */
 export async function openDetachedWorktree(repo: string, path: string, ref: string): Promise<void> {
   await removeDetachedWorktree(repo, path);
-  await mkdir(dirname(path), { recursive: true });
-  await gitOk(["worktree", "add", "--detach", path, ref], repo);
+  await withRepoLock(repo, async () => {
+    await mkdir(dirname(path), { recursive: true });
+    await gitOk(["worktree", "add", "--detach", path, ref], repo);
+  });
 }
 
 export async function removeDetachedWorktree(repo: string, path: string): Promise<void> {
-  if (existsSync(path)) await git(["worktree", "remove", "--force", path], repo);
-  await rm(path, { recursive: true, force: true });
-  await git(["worktree", "prune"], repo);
+  await withRepoLock(repo, async () => {
+    if (existsSync(path)) await git(["worktree", "remove", "--force", path], repo);
+    await rm(path, { recursive: true, force: true });
+    await git(["worktree", "prune"], repo);
+  });
 }
 
 export interface BranchInfo {

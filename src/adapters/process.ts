@@ -1,5 +1,10 @@
 import { execFile, spawn } from "node:child_process";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { uptime } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { CODEFLOW_HOME } from "../config.js";
+import { childEnv } from "../env.js";
 
 export interface JsonlProcessOptions {
   command: string;
@@ -29,17 +34,103 @@ const DEFAULT_TIMEOUT = 30 * 60_000;
 /** After the CLI exits, how long its output pipes may stay open (held by leftover children). */
 const DRAIN_MS = 3_000;
 
-/** Process groups code-flow started and hasn't seen finish; killed if code-flow itself exits. */
-const liveGroups = new Set<number>();
+interface GroupRecord {
+  pid: number;
+  /** When code-flow started it (ms since epoch): tells it apart from a later process that got the same pid. */
+  startedAt: number;
+}
+
+/**
+ * Process groups code-flow started and hasn't seen finish (agent CLIs, checks, Run app, gh).
+ * They're killed when code-flow exits, and also written to disk: after a crash, kill -9, or a
+ * closed terminal, the next start kills what's left (`reapOrphanGroups`) before resuming
+ * anything, so an orphaned agent can't keep editing a worktree a resumed run is using.
+ */
+const liveGroups = new Map<number, GroupRecord>();
+/** Groups sent SIGTERM whose SIGKILL is still pending; killed outright if code-flow exits first. */
+const dyingGroups = new Map<number, GroupRecord>();
+const GROUPS_FILE = join(CODEFLOW_HOME, "processes.json");
+
 process.once("exit", () => {
-  for (const pid of liveGroups) signalGroup(pid, "SIGKILL");
+  for (const pid of [...liveGroups.keys(), ...dyingGroups.keys()]) signalGroup(pid, "SIGKILL");
+  liveGroups.clear();
+  dyingGroups.clear();
+  persistGroups();
 });
 
+/** When this machine booted (ms since epoch); pids from before a reboot belong to someone else now. */
+function bootTime(): number {
+  return Date.now() - uptime() * 1000;
+}
+
+function persistGroups() {
+  try {
+    mkdirSync(CODEFLOW_HOME, { recursive: true });
+    const groups = [...new Map([...dyingGroups, ...liveGroups]).values()];
+    const tmp = `${GROUPS_FILE}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ server: process.pid, boot: Math.round(bootTime()), groups }));
+    renameSync(tmp, GROUPS_FILE);
+  } catch {
+    // best effort: the in-memory list still covers a normal exit
+  }
+}
+
 export function trackGroup(pid: number | undefined) {
-  if (pid) liveGroups.add(pid);
+  if (!pid) return;
+  liveGroups.set(pid, { pid, startedAt: Date.now() });
+  persistGroups();
 }
 export function untrackGroup(pid: number | undefined) {
-  if (pid) liveGroups.delete(pid);
+  if (!pid || !liveGroups.delete(pid)) return;
+  persistGroups();
+}
+
+function probe(command: string, args: string[]): Promise<{ code: number; stdout: string }> {
+  return new Promise((resolve) => {
+    execFile(command, args, { timeout: 10_000, env: { ...process.env, LC_ALL: "C" } }, (err, stdout) => {
+      resolve({ code: err ? (typeof (err as any).code === "number" ? (err as any).code : 1) : 0, stdout: String(stdout) });
+    });
+  });
+}
+
+/** Whether the group recorded as `g` is still the one code-flow started. */
+async function isOurGroup(g: GroupRecord): Promise<boolean> {
+  const members = (await probe("pgrep", ["-g", String(g.pid)])).stdout.split(/\s+/).filter(Boolean).map(Number);
+  if (!members.length) return false;
+  // The leader is gone but its group lives on: a group id isn't reused while the group has
+  // members, so these are what code-flow's process left behind.
+  if (!members.includes(g.pid)) return true;
+  // The leader is alive: make sure it's the process code-flow started, not one that got its pid.
+  const lstart = (await probe("ps", ["-o", "lstart=", "-p", String(g.pid)])).stdout.trim();
+  const started = lstart ? Date.parse(lstart) : NaN;
+  return Number.isFinite(started) && Math.abs(started - g.startedAt) < 5_000;
+}
+
+/**
+ * Kill the process groups a previous code-flow left running (it crashed, was killed, or its
+ * terminal closed). Call once at startup, before resuming or marking runs interrupted.
+ * Returns how many groups were killed.
+ */
+export async function reapOrphanGroups(): Promise<number> {
+  if (process.platform === "win32") return 0;
+  let saved: { server?: number; boot?: number; groups?: GroupRecord[] } | undefined;
+  try {
+    saved = JSON.parse(readFileSync(GROUPS_FILE, "utf8"));
+  } catch {
+    return 0;
+  }
+  let killed = 0;
+  const sameBoot = typeof saved?.boot === "number" && Math.abs(saved.boot - bootTime()) < 120_000;
+  if (sameBoot && Array.isArray(saved?.groups)) {
+    for (const g of saved!.groups) {
+      if (!Number.isInteger(g?.pid) || g.pid <= 1 || g.pid === process.pid || liveGroups.has(g.pid)) continue;
+      if (!(await isOurGroup(g))) continue;
+      signalGroup(g.pid, "SIGKILL");
+      killed++;
+    }
+  }
+  persistGroups();
+  return killed;
 }
 
 function signalGroup(pid: number, signal: NodeJS.Signals) {
@@ -58,7 +149,14 @@ function signalGroup(pid: number, signal: NodeJS.Signals) {
 export function killGroup(pid: number | undefined, graceMs = 5_000) {
   if (!pid) return;
   signalGroup(pid, "SIGTERM");
-  setTimeout(() => signalGroup(pid, "SIGKILL"), graceMs).unref();
+  if (dyingGroups.has(pid)) return; // a SIGKILL is already scheduled
+  dyingGroups.set(pid, liveGroups.get(pid) ?? { pid, startedAt: Date.now() });
+  persistGroups();
+  setTimeout(() => {
+    signalGroup(pid, "SIGKILL");
+    dyingGroups.delete(pid);
+    persistGroups();
+  }, graceMs).unref();
 }
 
 /** A CLI started by `startJsonlProcess`. */
@@ -87,7 +185,7 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
   const piped = opts.input !== undefined || !!opts.interactive;
   const child = spawn(opts.command, opts.args, {
     cwd: opts.cwd,
-    env: opts.env ?? process.env,
+    env: opts.env ?? childEnv(),
     detached: true,
     stdio: [piped ? "pipe" : "ignore", "pipe", "pipe"],
   });
