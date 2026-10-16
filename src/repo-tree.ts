@@ -1,4 +1,4 @@
-import { readdir, realpath, stat } from "node:fs/promises";
+import { open, readdir, realpath, stat } from "node:fs/promises";
 import { basename, join, sep } from "node:path";
 import { git } from "./git.js";
 
@@ -111,4 +111,36 @@ async function childStatuses(repo: string, rel: string): Promise<Map<string, Tre
     statuses.set(child, previous && previous !== status ? "M" : status);
   }
   return statuses;
+}
+
+export interface FileContent {
+  path: string;
+  size: number;
+  /** The file's text; absent for a binary file. */
+  text?: string;
+  binary: boolean;
+  /** Only the first part of a long file is here. */
+  truncated: boolean;
+}
+
+/** How much of a file the side panel's viewer gets; longer files are cut, not refused. */
+const MAX_FILE_BYTES = 512 * 1024;
+
+/** A file's contents for the Files tab: text up to a limit, or that it's binary. */
+export async function readRepoFile(repo: string, relPath: string): Promise<FileContent> {
+  const rel = normalizeRepoPath(relPath);
+  if (!rel) throw new Error("Name a file");
+  const abs = await resolveInsideRepo(repo, rel);
+  const info = await stat(abs);
+  if (info.isDirectory()) throw new Error(`"${rel}" is a folder`);
+  const handle = await open(abs, "r");
+  try {
+    const buf = Buffer.alloc(Math.min(info.size, MAX_FILE_BYTES));
+    const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+    const head = buf.subarray(0, Math.min(bytesRead, 8_000));
+    if (head.includes(0)) return { path: rel, size: info.size, binary: true, truncated: false };
+    return { path: rel, size: info.size, text: buf.subarray(0, bytesRead).toString("utf8"), binary: false, truncated: info.size > bytesRead };
+  } finally {
+    await handle.close();
+  }
 }

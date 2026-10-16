@@ -34,7 +34,7 @@ const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelle
 const modelNote = (run: RunSummary | null, id?: AgentId) =>
   run && id ? [run.agentSettings?.[id]?.model, run.agentSettings?.[id]?.effort].filter(Boolean).join(" · ") : "";
 
-interface RunData {
+export interface RunData {
   steps: Map<string, Step>;
   events: Map<string, AgentEvent[]>;
   /** Transcript items per step, built incrementally as events arrive (see itemsFor). */
@@ -50,18 +50,19 @@ interface RunData {
 
 const emptyData = (): RunData => ({ steps: new Map(), events: new Map(), built: new Map(), logs: [], seen: new Set(), runSeq: 0, stepSeq: new Map(), epoch: "" });
 
-export function RunView({ id }: { id: string }) {
+/**
+ * A run's event stream: its snapshot, every step and agent event, kept in `data` (mutated in
+ * place; `version` changes as events arrive so components re-render). The run view and the side
+ * panel's chat both read a run this way. `onStep` sees each step update as it lands.
+ */
+export function useRunStream(id: string, onStep?: (step: Step) => void) {
   const [run, setRun] = useState<RunSummary | null>(null);
   /** Why the run can't be shown (it doesn't exist, or the server said no). */
   const [problem, setProblem] = useState("");
   const data = useRef<RunData>(emptyData());
-  const [, bump] = useReducer((x: number) => x + 1, 0);
-  /** The step whose transcript is open; "" when you closed it. */
-  const [selected, setSelected] = useState<string | null>(null);
-  /** The work section: open while running and closed once there's a result, unless you toggled it. */
-  const [workOpen, setWorkOpen] = useState<boolean | null>(null);
-  const follow = useRef(true);
-  const [archiving, setArchiving] = useState(false);
+  const [version, bump] = useReducer((x: number) => x + 1, 0);
+  const stepHandler = useRef(onStep);
+  stepHandler.current = onStep;
 
   useEffect(() => {
     let source: EventSource | undefined;
@@ -69,6 +70,8 @@ export function RunView({ id }: { id: string }) {
     let closed = false;
     let scheduled = false;
     setProblem("");
+    setRun(null);
+    data.current = emptyData();
     const connect = () => {
       source = new EventSource(`/api/runs/${id}/events`);
       source.onmessage = onMessage;
@@ -105,7 +108,7 @@ export function RunView({ id }: { id: string }) {
         if (ev.seq < (d.stepSeq.get(ev.step.id) ?? 0)) return;
         d.stepSeq.set(ev.step.id, ev.seq);
         d.steps.set(ev.step.id, ev.step);
-        if (follow.current && ev.step.status === "running") setSelected(ev.step.id);
+        stepHandler.current?.(ev.step);
       } else if (ev.type === "agent") {
         if (!d.events.has(ev.stepId)) d.events.set(ev.stepId, []);
         d.events.get(ev.stepId)!.push(ev.event);
@@ -132,6 +135,20 @@ export function RunView({ id }: { id: string }) {
       source?.close();
     };
   }, [id]);
+
+  return { run, problem, data, version };
+}
+
+export function RunView({ id }: { id: string }) {
+  /** The step whose transcript is open; "" when you closed it. */
+  const [selected, setSelected] = useState<string | null>(null);
+  /** The work section: open while running and closed once there's a result, unless you toggled it. */
+  const [workOpen, setWorkOpen] = useState<boolean | null>(null);
+  const follow = useRef(true);
+  const [archiving, setArchiving] = useState(false);
+  const { run, problem, data } = useRunStream(id, (step) => {
+    if (follow.current && step.status === "running") setSelected(step.id);
+  });
 
   useEffect(() => {
     if (run && run.status !== "running" && !run.seen && !document.hidden) void markSeen(run.id);
@@ -193,6 +210,8 @@ export function RunView({ id }: { id: string }) {
   };
   const p = patterns.value.find((x) => x.id === run.pattern);
   const state = runState(run);
+  /** A conversation with one agent (Single agent): the turns are the thread, not a list of steps. */
+  const chat = !!p?.chat;
 
   return (
     <div class="runview">
@@ -282,56 +301,61 @@ export function RunView({ id }: { id: string }) {
             </div>
           ) : null}
 
-          {/* The agents' work: one disclosure, each step opening inline to its transcript. */}
-          <details class={`work ${finished ? "" : "live"}`} open={showWork}>
-            <summary
-              onClick={(e) => {
-                e.preventDefault();
-                setWorkOpen(!showWork);
-              }}
-            >
-              <WorkSummary run={run} steps={steps} />
-            </summary>
-            <div class="steps" role="list" aria-label="Steps ([ and ] to move)">
-              {steps.length ? (
-                steps.map((s) => (
-                  <div key={s.id} role="listitem" class={`step ${s.id === current ? "open" : ""}`}>
-                    <button
-                      type="button"
-                      class={`tl-step ${s.id === current ? "selected" : ""}`}
-                      aria-expanded={s.id === current}
-                      aria-label={`${s.title}: ${STATUS_TEXT[s.status] ?? s.status}`}
-                      onClick={() => toggleStep(s.id)}
-                    >
-                      <span class={`ic ${s.status}`} aria-hidden="true">
-                        {STEP_ICON[s.status] ?? ""}
-                      </span>
-                      <span class="tt">{s.title}</span>
-                      <span class="tm">
-                        <StepTag step={s} />
-                        <span>{(s.kind ?? "agent") === "agent" ? s.role : s.finalText || "running…"}</span>
-                        {s.endedAt ? <span>{duration(s.endedAt - s.startedAt)}</span> : null}
-                        {s.usage ? <span title={usageTitle(s.usage)}>{fmtTokens(s.usage.inputTokens + s.usage.outputTokens)} tok</span> : null}
-                        {s.retries ? <span title="Retried after a passing failure (overloaded, network)">↻{s.retries}</span> : null}
-                      </span>
-                    </button>
-                    {/* The data is mutated in place; `version` changes as events arrive so the transcript re-renders. */}
-                    {s.id === current ? <Transcript run={run} step={s} data={data.current} version={data.current.events.get(s.id)?.length ?? 0} /> : null}
-                  </div>
-                ))
-              ) : (
-                <div class="tl-empty">Starting…</div>
-              )}
-            </div>
-          </details>
+          {chat ? (
+            <ChatThread run={run} steps={steps} data={data.current} />
+          ) : (
+            /* The agents' work: one disclosure, each step opening inline to its transcript. */
+            <details class={`work ${finished ? "" : "live"}`} open={showWork}>
+              <summary
+                onClick={(e) => {
+                  e.preventDefault();
+                  setWorkOpen(!showWork);
+                }}
+              >
+                <WorkSummary run={run} steps={steps} />
+              </summary>
+              <div class="steps" role="list" aria-label="Steps ([ and ] to move)">
+                {steps.length ? (
+                  steps.map((s) => (
+                    <div key={s.id} role="listitem" class={`step ${s.id === current ? "open" : ""}`}>
+                      <button
+                        type="button"
+                        class={`tl-step ${s.id === current ? "selected" : ""}`}
+                        aria-expanded={s.id === current}
+                        aria-label={`${s.title}: ${STATUS_TEXT[s.status] ?? s.status}`}
+                        onClick={() => toggleStep(s.id)}
+                      >
+                        <span class={`ic ${s.status}`} aria-hidden="true">
+                          {STEP_ICON[s.status] ?? ""}
+                        </span>
+                        <span class="tt">{s.title}</span>
+                        <span class="tm">
+                          <StepTag step={s} />
+                          <span>{(s.kind ?? "agent") === "agent" ? s.role : s.finalText || "running…"}</span>
+                          {s.endedAt ? <span>{duration(s.endedAt - s.startedAt)}</span> : null}
+                          {s.usage ? <span title={usageTitle(s.usage)}>{fmtTokens(s.usage.inputTokens + s.usage.outputTokens)} tok</span> : null}
+                          {s.retries ? <span title="Retried after a passing failure (overloaded, network)">↻{s.retries}</span> : null}
+                        </span>
+                      </button>
+                      {/* The data is mutated in place; `version` changes as events arrive so the transcript re-renders. */}
+                      {s.id === current ? <Transcript run={run} step={s} data={data.current} version={data.current.events.get(s.id)?.length ?? 0} /> : null}
+                    </div>
+                  ))
+                ) : (
+                  <div class="tl-empty">Starting…</div>
+                )}
+              </div>
+            </details>
+          )}
 
-          {finished ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
-          <FollowUpThread run={run} />
+          {finished && !chat ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
+          {chat ? null : <FollowUpThread run={run} data={data.current} />}
+          {finished && chat ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} chat /> : null}
           <ActivityLog logs={data.current.logs} count={data.current.logs.length} />
         </div>
       </div>
 
-      <ConversationBar run={run} steps={steps} />
+      <ConversationBar run={run} steps={steps} chat={chat} />
       {archiving ? <ArchiveDialog run={run} onClose={() => setArchiving(false)} /> : null}
     </div>
   );
@@ -443,6 +467,11 @@ function RunMeta({ run }: { run: RunSummary }) {
           ⚖ comparison: {run.group.label}
         </a>
       ) : null}
+      {run.trust === "full" ? (
+        <span class="full-access" title="Agents could run any command, with no sandbox">
+          ⚠ full access
+        </span>
+      ) : null}
       {run.conventions ? <span title="The repo's AGENTS.md, CLAUDE.md… are given to every agent">📘 conventions</span> : null}
       {run.lessons?.length ? (
         <span title={`Problems reviewers raised in earlier runs here, given to every agent:\n${run.lessons.map((l) => `• ${l}`).join("\n")}`}>🧠 {run.lessons.length} lesson{run.lessons.length === 1 ? "" : "s"}</span>
@@ -472,7 +501,8 @@ const agentUsageTitle = (run: RunSummary) =>
     .join("\n");
 
 // ---------------------------------------------------------------- result & shipping
-function ResultCard({ run, steps, onSelectStep }: { run: RunSummary; steps: Step[]; onSelectStep: (id: string) => void }) {
+/** In a chat, the answers are already in the thread: the card is about the branch (and the check). */
+function ResultCard({ run, steps, onSelectStep, chat }: { run: RunSummary; steps: Step[]; onSelectStep: (id: string) => void; chat?: boolean }) {
   const state = runState(run);
   const failedSteps = steps.filter((s) => s.status === "failed");
   const titles: Record<string, string> = {
@@ -484,9 +514,11 @@ function ResultCard({ run, steps, onSelectStep }: { run: RunSummary; steps: Step
     stopped: `■ Stopped at the ${run.stopReason ?? "limit"} — work so far is kept below`,
     interrupted: "■ Interrupted — press Resume to continue where it stopped",
   };
+  if (chat) Object.assign(titles, { done: run.verdict === "passed" ? "✓ The check passes" : "", failing: "⚠ The check fails", unchecked: "⚠ The check couldn't run, so nothing was tested" });
+  const title = titles[state] ?? run.status;
   return (
-    <div class={`result ${state}`}>
-      <div class="rh">{titles[state] ?? run.status}</div>
+    <div class={`result ${state} ${chat ? "chat" : ""}`}>
+      {title ? <div class="rh">{title}</div> : null}
       {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
       {failedSteps.length && run.status !== "done" ? (
         <div class="failures">
@@ -508,7 +540,7 @@ function ResultCard({ run, steps, onSelectStep }: { run: RunSummary; steps: Step
         </div>
       ) : run.review ? (
         <ReviewCard run={run} />
-      ) : run.summary ? (
+      ) : run.summary && !chat ? (
         <div class="rb">
           <Markdown text={run.summary} />
         </div>
@@ -525,43 +557,158 @@ function ResultCard({ run, steps, onSelectStep }: { run: RunSummary; steps: Step
 }
 
 /** What was sent back after the run and what the agent answered, as the rest of the conversation. */
-function FollowUpThread({ run }: { run: RunSummary }) {
+function FollowUpThread({ run, data }: { run: RunSummary; data: RunData }) {
   if (!run.followUps?.length) return null;
   return (
     <>
-      {run.followUps.map((f) => (
-        <div key={f.id} class="fu">
-          {f.kind === "reply" || (f.kind === "comments" && !f.from) ? (
-            <div class="msg-you">
-              <div class="bubble">
-                <Markdown text={f.message} />
+      {run.followUps.map((f) => {
+        const step = f.stepId ? data.steps.get(f.stepId) : undefined;
+        return (
+          <div key={f.id} class="fu">
+            {f.kind === "reply" || (f.kind === "comments" && !f.from) ? (
+              <div class="msg-you">
+                <div class="bubble">
+                  <Markdown text={f.message} />
+                </div>
+              </div>
+            ) : (
+              <div class="fu-sent help">
+                {f.kind === "resolve-conflicts" ? `Sent ${f.mergeFrom}'s merge conflicts to` : f.kind === "ci-fix" ? "Sent the pull request's failing CI to" : `Sent ${f.from}'s comments to`}{" "}
+                <AgentTag id={f.agent} />
+              </div>
+            )}
+            <div class={`fu-answer ${f.status}`}>
+              <div class="fu-head">
+                <AgentTag id={f.agent} />
+                <span>
+                  {followUpLabel(f)} in {f.worktree}
+                </span>
+                <FollowUpBadges f={f} />
+              </div>
+              {step ? <TurnBody run={run} step={step} data={data} answer={f.status === "pending" ? undefined : f.result} /> : f.result ? <Markdown text={f.result} /> : null}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+/** How a follow-up went: still working, didn't finish, pushed, the check, test changes. */
+function FollowUpBadges({ f }: { f: FollowUp }) {
+  return (
+    <>
+      {f.status === "pending" ? <span class="fu-live">working…</span> : f.status === "failed" ? <span class="err">✕ didn't finish</span> : null}
+      {f.pushed ? <span class="ok">pushed {f.pushed.slice(0, 7)}</span> : f.pushError ? <span class="note">push failed: {f.pushError}</span> : null}
+      {f.checkPassed === false ? <span class="note">check fails</span> : f.checkPassed ? <span class="ok">check passes</span> : null}
+      {f.integrity?.length ? (
+        <span class="note" title={f.integrity.map((i) => `${i.file}: ${i.detail}`).join("\n")}>
+          ⚠ changed tests
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * An agent's turn in the thread: its live transcript while it works, then its answer, with the
+ * work (tool calls, thinking) folded away behind "Show work".
+ */
+function TurnBody({ run, step, data, answer }: { run: RunSummary; step: Step; data: RunData; answer?: string }) {
+  const [open, setOpen] = useState(false);
+  const version = data.events.get(step.id)?.length ?? 0;
+  if (step.status === "running") return <Transcript run={run} step={step} data={data} version={version} />;
+  const tools = itemsFor(data, step).filter((i) => i.kind === "tool").length;
+  const text = answer ?? (step.status === "done" ? step.finalText : step.error ?? step.finalText);
+  return (
+    <div class="turn-body">
+      <button type="button" class="show-work" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {open ? "Hide work" : `Show work${tools ? ` · ${tools} tool call${tools === 1 ? "" : "s"}` : ""}`}
+        {step.endedAt ? ` · ${duration(step.endedAt - step.startedAt)}` : ""}
+      </button>
+      {open ? <Transcript run={run} step={step} data={data} version={version} /> : null}
+      {!text ? null : step.status === "done" ? <Markdown text={text} /> : <div class="ev error">{text}</div>}
+    </div>
+  );
+}
+
+/**
+ * A conversation with one agent: your task, then each turn in order, each of your later messages
+ * right before the turn that answered it. A message that never got a turn (still waiting, or it
+ * failed before the agent started) keeps its place, with what happened to it.
+ */
+export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[]; data: RunData }) {
+  const byStep = new Map(run.followUps.filter((f) => f.stepId).map((f) => [f.stepId!, f]));
+  const turns = steps.filter((s) => (s.kind ?? "agent") === "agent");
+  const stepless = run.followUps.filter((f) => !f.stepId || !data.steps.has(f.stepId));
+  const thread: { at: number; step?: Step; followUp?: FollowUp }[] = [
+    ...turns.map((step) => ({ at: step.startedAt, step })),
+    ...stepless.map((followUp) => ({ at: followUp.at, followUp })),
+  ].sort((a, b) => a.at - b.at);
+  const agent = Object.values(run.roles).flat()[0];
+  return (
+    <>
+      {thread.map(({ step: s, followUp }) => {
+        if (!s) {
+          const f = followUp!;
+          return (
+            <div key={f.id} class="fu">
+              <div class="msg-you">
+                <div class="bubble">
+                  <Markdown text={f.message} />
+                </div>
+              </div>
+              <div class="fu-answer">
+                <div class="fu-head">
+                  <AgentTag id={f.agent} />
+                  {f.status === "pending" ? <span class="fu-live">{run.status === "running" ? "up next…" : "waiting…"}</span> : <FollowUpBadges f={f} />}
+                </div>
+                {f.status === "pending" || !f.result ? null : f.status === "failed" ? <div class="ev error">{f.result}</div> : <Markdown text={f.result} />}
               </div>
             </div>
-          ) : (
-            <div class="fu-sent help">
-              {f.kind === "resolve-conflicts" ? `Sent ${f.mergeFrom}'s merge conflicts to` : f.kind === "ci-fix" ? "Sent the pull request's failing CI to" : `Sent ${f.from}'s comments to`}{" "}
-              <AgentTag id={f.agent} />
+          );
+        }
+        const f = byStep.get(s.id);
+        // Messages a turn took when it started, or while it ran (Codex takes them mid-turn).
+        const notes = run.notes.filter((n) => n.deliveredTo?.stepId === s.id && !n.followUp);
+        return (
+          <div key={s.id} class="fu">
+            {f ? (
+              <div class="msg-you">
+                <div class="bubble">
+                  <Markdown text={f.message} />
+                </div>
+              </div>
+            ) : null}
+            {notes.map((n) => (
+              <div key={n.id} class="msg-you">
+                <div class="bubble">
+                  <Markdown text={n.text} />
+                  {n.deliveredTo?.midTurn ? <div class="help">sent while it worked</div> : null}
+                </div>
+              </div>
+            ))}
+            <div class="fu-answer">
+              <div class="fu-head">
+                <AgentTag id={s.agent} note={modelNote(run, s.agent)} />
+                {f ? <FollowUpBadges f={f} /> : s.status === "running" ? <span class="fu-live">working…</span> : s.status === "failed" ? <span class="err">✕ didn't finish</span> : null}
+                {!f && s.status !== "running" && run.lastCheck && run.followUps.length === 0 ? (
+                  run.lastCheck.ok ? <span class="ok">check passes</span> : <span class="note">check fails</span>
+                ) : null}
+              </div>
+              <TurnBody run={run} step={s} data={data} />
             </div>
-          )}
-          <div class={`fu-answer ${f.status}`}>
-            <div class="fu-head">
-              <AgentTag id={f.agent} />
-              <span>
-                {followUpLabel(f)} in {f.worktree}
-              </span>
-              {f.status === "pending" ? <span class="fu-live">working…</span> : f.status === "failed" ? <span class="err">✕ didn't finish</span> : null}
-              {f.pushed ? <span class="ok">pushed {f.pushed.slice(0, 7)}</span> : f.pushError ? <span class="note">push failed: {f.pushError}</span> : null}
-              {f.checkPassed === false ? <span class="note">check fails</span> : f.checkPassed ? <span class="ok">check passes</span> : null}
-              {f.integrity?.length ? (
-                <span class="note" title={f.integrity.map((i) => `${i.file}: ${i.detail}`).join("\n")}>
-                  ⚠ changed tests
-                </span>
-              ) : null}
-            </div>
-            {f.result ? <Markdown text={f.result} /> : null}
+          </div>
+        );
+      })}
+      {!turns.length && run.status === "running" ? (
+        <div class="fu-answer">
+          <div class="fu-head">
+            <AgentTag id={agent} />
+            <span class="fu-live">starting…</span>
           </div>
         </div>
-      ))}
+      ) : null}
     </>
   );
 }
@@ -1146,7 +1293,7 @@ function noteStep(note: Note, steps: Step[]): string {
 }
 
 /** While running: message the team. After it finishes: reply to an agent, or the whole team. */
-function ConversationBar({ run, steps }: { run: RunSummary; steps: Step[] }) {
+export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: Step[]; chat: boolean }) {
   const [text, setText] = useState("");
   const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1209,24 +1356,42 @@ function ConversationBar({ run, steps }: { run: RunSummary; steps: Step[] }) {
 
   const [agentId, worktree] = chosen.split("@") as [AgentId, string | undefined];
   const name = SHORT[agentId] ?? agentId;
-  const hint = running
-    ? chosen
-      ? `Steered into ${name}'s running turn if it takes messages, otherwise its next turn`
-      : "Goes to the next agent that takes a turn"
-    : chosen === "team"
-      ? "Starts a new run with the same team, from this result"
-      : `Continues ${name}'s session on its branch, in ${worktree}`;
-  const placeholder = running ? "Message the team…" : chosen === "team" ? "Tell the team what to change…" : `Reply to ${name}…`;
+  /** In a chat there's one agent to talk to, so no "To"; a message it can't take now is its next turn. */
+  const chatName = SHORT[(writers.at(-1)?.agent ?? teamAgents[0])!] ?? "the agent";
+  const hint = chat
+    ? running
+      ? `Goes into ${chatName}'s running turn if it takes messages, otherwise it's sent as soon as the turn ends`
+      : chosen === "team"
+        ? "Starts again from this result"
+        : `Continues ${chatName}'s session on its branch`
+    : running
+      ? chosen
+        ? `Steered into ${name}'s running turn if it takes messages, otherwise its next turn`
+        : "Goes to the next agent that takes a turn"
+      : chosen === "team"
+        ? "Starts a new run with the same team, from this result"
+        : `Continues ${name}'s session on its branch, in ${worktree}`;
+  const placeholder = chat ? `Message ${chatName}…` : running ? "Message the team…" : chosen === "team" ? "Tell the team what to change…" : `Reply to ${name}…`;
+  // In a chat, what you said is already in the thread; only what's still on its way shows here.
+  const liveSteps = new Set(steps.filter((s) => s.status === "running").map((s) => s.id));
+  const shownNotes = (run.notes ?? []).filter((n) => !chat || n.status === "queued" || (n.deliveredTo && liveSteps.has(n.deliveredTo.stepId) && !n.followUp));
 
   return (
     <div class="convo">
       <div class="convo-inner">
-        {running && run.notes?.length ? (
+        {running && shownNotes.length ? (
           <div class="notes">
-            {run.notes.map((n) => (
+            {shownNotes.map((n) => (
               <span key={n.id} class={`chip-ctx note-chip ${n.status}`} title={n.text}>
                 <span class="n">
-                  {n.status === "delivered" ? `✓ delivered to ${n.deliveredTo?.agent}${noteStep(n, steps)}` : `⏳ queued for ${n.agent ?? "next agent"}`}: {n.text}
+                  {n.followUp
+                    ? "✓ sent as your next message"
+                    : n.status === "delivered"
+                      ? `✓ delivered to ${n.deliveredTo?.agent}${noteStep(n, steps)}`
+                      : chat
+                        ? "⏳ sent when this turn ends"
+                        : `⏳ queued for ${n.agent ?? "next agent"}`}
+                  : {n.text}
                 </span>
               </span>
             ))}
@@ -1248,36 +1413,38 @@ function ConversationBar({ run, steps }: { run: RunSummary; steps: Step[] }) {
             }}
           />
           <div class="chatbox-bar">
-            <label class="to">
-              <span class="to-lbl">To</span>
-              <select aria-label="Who gets this" value={chosen} onChange={(e) => setTarget(e.currentTarget.value)}>
-                {running ? (
-                  <>
-                    <option value="">Next agent</option>
-                    {teamAgents.map((a) => (
-                      <option key={a} value={a}>
-                        {SHORT[a] ?? a}
-                      </option>
-                    ))}
-                  </>
-                ) : (
-                  <>
-                    {writers.length ? (
-                      <optgroup label="Continue a session">
-                        {writers.map((s) => (
-                          <option key={`${s.agent}@${s.worktree}`} value={`${s.agent}@${s.worktree}`}>
-                            {SHORT[s.agent!] ?? s.agent} · {s.worktree}
-                          </option>
-                        ))}
+            {chat ? null : (
+              <label class="to">
+                <span class="to-lbl">To</span>
+                <select aria-label="Who gets this" value={chosen} onChange={(e) => setTarget(e.currentTarget.value)}>
+                  {running ? (
+                    <>
+                      <option value="">Next agent</option>
+                      {teamAgents.map((a) => (
+                        <option key={a} value={a}>
+                          {SHORT[a] ?? a}
+                        </option>
+                      ))}
+                    </>
+                  ) : (
+                    <>
+                      {writers.length ? (
+                        <optgroup label="Continue a session">
+                          {writers.map((s) => (
+                            <option key={`${s.agent}@${s.worktree}`} value={`${s.agent}@${s.worktree}`}>
+                              {SHORT[s.agent!] ?? s.agent} · {s.worktree}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null}
+                      <optgroup label="Start again">
+                        <option value="team">Whole team · new run</option>
                       </optgroup>
-                    ) : null}
-                    <optgroup label="Start again">
-                      <option value="team">Whole team · new run</option>
-                    </optgroup>
-                  </>
-                )}
-              </select>
-            </label>
+                    </>
+                  )}
+                </select>
+              </label>
+            )}
             <span class="chatbox-hint" title={hint}>
               {hint}
             </span>

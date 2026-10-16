@@ -2,7 +2,7 @@
 
 - [Getting started](getting-started.md): install, sign in, your first run, giving agents context, models and effort, worktrees and branches.
 - [Team patterns, checks and limits](patterns.md): the seven patterns, Auto roles, and the loop code-flow runs around the agents.
-- [Runs](runs.md): the run view, talking to a running team, replies, projects, restarts and resume, Insights.
+- [Runs](runs.md): the run view, talking to a running team, replies, projects, the side panel (chat, files, terminal, browser, notes), restarts and resume, Insights.
 - [GitHub, review and shipping](github.md): review and merge results, start from issues and PRs, review councils, PR follow-through, untrusted text.
 - [Automations and away mode](automations.md): schedules, webhooks, the inbox, Docker isolation, the phone view.
 - [Configuration](configuration.md): `.codeflow/config.json`, permissions, health, environment variables.

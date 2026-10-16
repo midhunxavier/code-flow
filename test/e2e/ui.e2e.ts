@@ -3,7 +3,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -188,9 +188,9 @@ test("a message sent while Codex is working reaches its running turn", async () 
   const runId = decodeURIComponent(page.url().split("#/run/")[1]!.split("/")[0]!);
 
   await page.locator(".tl-step", { hasText: "Implement plan" }).waitFor({ timeout: 30_000 });
-  await page.locator(".convo select").selectOption("codex");
-  await page.locator(".convo textarea").fill("Prefer tabs over spaces");
-  await page.locator(".convo textarea").press("Enter");
+  await page.locator("main .convo select").selectOption("codex");
+  await page.locator("main .convo textarea").fill("Prefer tabs over spaces");
+  await page.locator("main .convo textarea").press("Enter");
   await page.locator(".note-chip", { hasText: "✓ delivered to codex mid-turn (Implement plan): Prefer tabs over spaces" }).waitFor({ timeout: 10_000 });
   await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
 
@@ -439,6 +439,56 @@ test("projects: the first run made one; a new project scopes the sidebar and new
   await page.locator(".project-btn").click();
   await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
   await page.locator(".rail .run-item").nth(1).waitFor(); // every project's runs again
+});
+
+test("side panel: chat with one agent, read a file, run a command, keep a note", async () => {
+  await page.goto(BASE);
+  await page.locator(".repo-btn .name", { hasText: repo.split("/").pop()! }).waitFor(); // the remembered repo is loaded after the page
+  const toggle = page.getByRole("button", { name: "Side panel", exact: true });
+  if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
+  const side = page.getByRole("complementary", { name: "Side panel" });
+
+  // Chat: a question to Claude starts a Single-agent run; its answer shows in the panel.
+  await side.getByRole("tab", { name: "Chat" }).click();
+  await side.locator(".to select").first().selectOption("claude");
+  await side.getByLabel("Message").fill("E2E: what does check.mjs do?");
+  await side.getByLabel("Message").press("Enter");
+  await side.getByText("Implemented changes as claude.").waitFor({ timeout: 30_000 });
+  assert.match(await side.locator(".chat-meta code").innerText(), /\/solo$/, "the chat works on its own branch");
+  assert.equal(await page.locator(".rail .run-item", { hasText: "E2E: what does check.mjs do?" }).count(), 1, "a chat is a run like any other");
+
+  // Files: a file opens in the viewer.
+  await side.getByRole("tab", { name: "Files" }).click();
+  await side.locator(".node", { hasText: "package.json" }).click();
+  await side.locator(".file-view").getByText(/"name":"e2e"/).waitFor();
+  await side.getByRole("button", { name: "Back to the files" }).click();
+  await side.locator(".node", { hasText: "check.mjs" }).waitFor();
+
+  // Terminal: the shell keeps its folder between commands and reports exit codes.
+  await side.getByRole("tab", { name: "Terminal" }).click();
+  const command = side.getByLabel("Command");
+  await command.waitFor();
+  await command.fill("mkdir -p sub && cd sub && echo side-$((20+22))");
+  await command.press("Enter");
+  await side.locator(".term-out").getByText("side-42").waitFor({ timeout: 10_000 });
+  await command.fill("basename \"$PWD\"; false");
+  await command.press("Enter");
+  await side.locator(".term-out").getByText("exit 1").waitFor({ timeout: 10_000 });
+  assert.match(await side.locator(".term-out").innerText(), /\nsub\n/, "`cd` held for the next command");
+
+  // Notes: saved as you type, on the server.
+  await side.getByRole("tab", { name: "Notes" }).click();
+  await side.getByRole("textbox", { name: "Notes" }).fill("remember the loop bound");
+  await side.getByText("Saved just now").waitFor({ timeout: 5_000 });
+  const note = await fetch(`${BASE}/api/notes?key=${encodeURIComponent(realpathSync(repo))}`, { headers: bearer }).then((r) => r.json());
+  assert.equal(note.text, "remember the loop bound");
+
+  // The chat went in the repo's project, and didn't replace the team the composer remembers there.
+  const projects: { id: string; repos: string[]; defaults?: { pattern: string } }[] = await fetch(`${BASE}/api/projects`, { headers: bearer }).then((r) => r.json());
+  const chat = (await fetch(`${BASE}/api/runs`, { headers: bearer }).then((r) => r.json())).find((r: { task: string }) => r.task === "E2E: what does check.mjs do?");
+  const own = projects.find((p) => p.repos.includes(realpathSync(repo)))!;
+  assert.equal(chat.project, own.id);
+  assert.notEqual(own.defaults?.pattern, chat.pattern, "a chat isn't the composer's choice of team");
 });
 
 test("projects: the Automations page and its inbox follow the project you're in; the phone view lists runs by project", async () => {

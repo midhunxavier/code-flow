@@ -74,7 +74,10 @@ export const claudeAdapter: AgentAdapter = {
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push("--effort", opts.effort);
     if (opts.jsonSchema) args.push("--json-schema", JSON.stringify(opts.jsonSchema));
-    if (opts.mode === "write") {
+    if (opts.mode === "write" && opts.trust === "full") {
+      // Full access: every tool, without permission checks.
+      args.push("--permission-mode", "bypassPermissions");
+    } else if (opts.mode === "write") {
       args.push("--permission-mode", "acceptEdits", "--allowedTools", writeTools(opts.trust).join(","));
     } else {
       args.push(

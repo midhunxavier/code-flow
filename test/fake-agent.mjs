@@ -108,11 +108,11 @@ if (resumeId && when("INVALID_SESSION")) {
 // Let tests inspect exactly what code-flow passed to the CLI.
 if (process.env.FAKE_RECORD_DIR) {
   writeFileSync(`${process.env.FAKE_RECORD_DIR}/${vendor}-${Date.now()}-${randomUUID().slice(0, 6)}.json`,
-    JSON.stringify({ vendor, args, prompt, cwd: process.cwd() }));
+    JSON.stringify({ vendor, args, prompt, cwd: process.cwd(), token: process.env.CODEFLOW_TOKEN ?? null }));
 }
 const write =
-  (vendor === "claude" && args.includes("acceptEdits")) ||
-  (vendor === "codex" && args.includes('sandbox_mode="workspace-write"')) ||
+  (vendor === "claude" && (args.includes("acceptEdits") || args.includes("bypassPermissions"))) ||
+  (vendor === "codex" && (args.includes('sandbox_mode="workspace-write"') || args.includes('sandbox_mode="danger-full-access"'))) ||
   // agy has no read-only flag; code-flow enforces read-only by reverting changes.
   (vendor === "agy" && args.includes("--dangerously-skip-permissions"));
 const schemaRequested = args.includes("--json-schema") || args.includes("--output-schema");

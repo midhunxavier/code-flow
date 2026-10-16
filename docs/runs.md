@@ -34,6 +34,15 @@ Runs are conversations, not fire-and-forget jobs:
 
 <kbd>↵</kbd> sends and <kbd>⇧</kbd><kbd>↵</kbd> adds a line.
 
+### A single agent
+
+A **Single agent** run is one conversation with one agent, as in that agent's own app:
+
+- The run reads as a chat: your messages, and each turn the agent takes. A turn streams live while the agent works. Once it's done, it folds into the agent's answer, with **Show work** for its tool calls and thinking.
+- There's no **To**: every message goes to that agent. A message you send while it works goes into its running turn if the turn takes input (Codex). Otherwise it's sent as your next message as soon as the turn ends, so nothing waits for a reply you'd have to send again.
+- A turn that fails ends that turn, not the conversation: reply to try again or to change course. Whatever it changed is kept on its branch.
+- code-flow commits after every turn and runs your check if you set one. The branch, and merging it or opening a pull request, are at the bottom of the thread.
+
 Prompts are passed on **stdin**, not as command-line arguments (`claude -p` reading stdin, Codex's JSON-RPC or `codex exec -`, and agy's stream-json input), so long tasks and diffs aren't limited by the operating system's argument size.
 
 ## Projects
@@ -45,13 +54,24 @@ Runs are grouped into projects. A project has a name and the repositories its ru
   - When a run in another project needs you, the sidebar says so, with a link to show all. So does the Automations page, for its inbox and automations.
   - The read-only [phone view](automations.md#phone-view) lists every project's runs, each under its project's name.
   - Search always looks in every project.
-- **Switching projects** moves the composer to the project's repository you used last, and to the pattern and team you last started a run with there. Each project remembers its own.
+- **Switching projects** moves the composer to the project's repository you used last, and to the pattern and team you last started a run with there from the composer (chats in the side panel don't change it). Each project remembers its own.
 - **Several repositories:** a project can hold several, and a repository can be in several projects. Each run still works in one repository. **New project** and **Edit** in the switcher name a project and add or remove its repositories.
 - **A run's repository always belongs to its project.** Starting a run in a project, or moving one there, adds the repository if it's missing. The composer says so before you start.
 - **Moving a run:** click the project chip at the top of the run. Its branches and worktrees stay where they are.
-- **Runs started from other runs stay in that run's project:** replies to the whole team, comparisons, sweeps and automations. An automation whose project was deleted starts its runs in its repository's project.
+- **A side-panel chat** starts in the project you're in, like a run from the composer.
+- **Runs started from other runs stay in that run's project:** replies to the whole team, chats started from a run's result, comparisons, sweeps and automations. An automation whose project was deleted starts its runs in its repository's project.
 - **Deleting a project** keeps its runs; they show under *No project*. Taking a repository out of a project keeps the runs already in it.
 - Projects are saved in `~/.codeflow/projects.json`. Each run records its project in its own log.
+
+## The side panel
+
+The panel on the right (the button at the top right, or <kbd>\</kbd>) stays as you move between runs, like the side pane in Claude's or Codex's app. It has five tabs; drag its left edge to resize it.
+
+- **Chat** is a conversation with one agent about the selected repository: pick the agent, ask a question or ask for a change, and keep replying. Under the hood it's a [Single agent](#a-single-agent) run on its own branch, so it shows in the sidebar, keeps its session and its branch, and **Open** shows it as a run with its result, merge and pull request. While a run is open, **From** lets a new chat start from that run's result branch, so the agent sees that work. Earlier chats in the repository are in the list at the top.
+- **Files** lists the repository's files (ignored files hidden; **M** changed, **U** new), with search. A file opens in a viewer with line numbers. While a run is open, the folder picker also offers that run's worktrees, and switches to the first one, so you can read what the agent wrote before merging. From the composer, **+** and dragging add a file to the task's context.
+- **Terminal** is a shell in the repository or in a run's worktree. It stays open between commands, so `cd`, exported variables and virtualenvs stick, and it reports each command's exit code. It's your login shell fed through a pipe, not an interactive terminal: no pagers, prompts or full-screen programs, and colours are off. **Stop** ends what's running (the shell with it) and opens a new one in the same folder; <kbd>↑</kbd>/<kbd>↓</kbd> recall commands. Shells close when code-flow stops.
+- **Browser** shows the app a run started with **Run app** (every running one is a chip), or any address you type. Sites that refuse to be shown inside another page open in a new tab with **↗**.
+- **Notes** is a scratchpad per repository (plus a general one), saved as you type in `~/.codeflow/notes.json`, so it's the same on your phone. **→ Task** adds the selection (or the whole note) to the task in the composer; **→ Chat** sends it to a new chat.
 
 ## Runs survive restarts
 
@@ -80,4 +100,4 @@ Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and t
 - **Compare setups…** (next to *Start run*) starts the same task with several patterns at once, each with the team you last picked for it, optionally 2–3 times each. Insights shows them side by side: result, time, steps, tokens, cost, and whether tests were touched. The best value in each column is highlighted.
 - **Tokens and cost** also show on each step, in the run's details under the header (with a per-agent breakdown on hover) and in the sidebar.
 - **Disk:** every worktree is a full checkout, often with its own `node_modules`. Insights measures them and **Clean up** removes the worktrees, not the branches, of runs that finished more than *N* days ago and need nothing from you.
-- **Finding runs:** the sidebar lists the [project](#projects) you're in. It has search (<kbd>/</kbd>, across every project), filters (needs you, running, passed, failing, tests changed; pattern; agent; this repo), and <kbd>j</kbd>/<kbd>k</kbd> to move between runs. In a run, <kbd>[</kbd>/<kbd>]</kbd> move between steps. <kbd>?</kbd> lists every shortcut. Run status changes are announced to screen readers.
+- **Finding runs:** the sidebar lists the [project](#projects) you're in. It has search (<kbd>/</kbd>, across every project), filters (needs you, running, passed, failing, tests changed; pattern; agent; this repo), and <kbd>j</kbd>/<kbd>k</kbd> to move between runs. In a run, <kbd>[</kbd>/<kbd>]</kbd> move between steps. <kbd>\</kbd> shows or hides the side panel. <kbd>?</kbd> lists every shortcut. Run status changes are announced to screen readers.

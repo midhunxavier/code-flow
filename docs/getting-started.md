@@ -43,7 +43,7 @@ git merge codeflow/<run>/build
 
 ## Giving agents context
 
-The **Files** panel shows the selected repo: ignored files are hidden, files with uncommitted changes are marked **M**, and untracked files **U**. To add something to the task's context, drag it onto the task box, click **+**, or double-click it. You can also add files from your computer, such as specs, screenshots or logs (up to 10 MB each, 25 MB in total). Drop them from Finder, or use **Attach**.
+The **Files** tab of the [side panel](runs.md#the-side-panel) (the **Files** button under the task, or <kbd>\</kbd>) shows the selected repo: ignored files are hidden, files with uncommitted changes are marked **M**, and untracked files **U**. To add something to the task's context, drag it onto the task box, click **+**, or double-click it; clicking a file opens it to read. You can also add files from your computer, such as specs, screenshots or logs (up to 10 MB each, 25 MB in total). Drop them from Finder, or use **Attach**.
 
 Every agent's first prompt gets a *Context from the user* section listing these items. Nothing is pasted into the prompt:
 

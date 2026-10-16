@@ -22,7 +22,7 @@ import {
   checkHint,
   contextError,
   contextPaths,
-  filesOpen,
+  openSide,
   limits,
   optionsFor,
   pattern,
@@ -103,7 +103,7 @@ export function Composer() {
     setStarting(true);
     setError("");
     try {
-      const { id, project } = await postConfirmed<{ id: string; project?: string }>("/api/runs", runBody(p));
+      const { id, project } = await postConfirmed<{ id: string; project?: string }>("/api/runs", { ...runBody(p), remember: true });
       resetComposer();
       await Promise.all([afterStart(project), refreshRuns()]);
       route.value = { view: "run", id };
@@ -424,15 +424,7 @@ function TaskBox({ onStart }: { onStart: () => void }) {
         <button class="btn ghost small" title="Start from a GitHub issue or pull request" onClick={() => (ghPicker.value = { kind: source.value?.kind === "pr" ? "pr" : "issue" })}>
           <Icon name="pull" /> GitHub
         </button>
-        <button
-          class="btn ghost small"
-          title="Show repository files"
-          aria-pressed={filesOpen.value}
-          onClick={() => {
-            filesOpen.value = !filesOpen.value;
-            store.set("filesOpen", filesOpen.value ? "1" : "0");
-          }}
-        >
+        <button class="btn ghost small" title="Show the repository's files in the side panel" onClick={() => openSide("files")}>
           <Icon name="files" /> Files
         </button>
         <span class="hint">
@@ -590,6 +582,17 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
   );
 }
 
+/** What agents may do while building, from least to most. */
+const TRUST = {
+  safe: { label: "Safe", help: "Edit files only. Claude can't run commands; Codex stays sandboxed." },
+  standard: { label: "Standard", help: "Edit files and run common build/test commands (npm, node, pytest, uv, poetry, cargo, go, make…)." },
+  trusted: { label: "Trusted", help: "Any command for Claude; network access inside Codex's sandbox. Use on repos you trust." },
+  full: {
+    label: "Full access",
+    help: "Every agent can run any command, use the network and change files outside its worktree, with your credentials. Only for repos and tasks you trust completely.",
+  },
+} as const;
+
 /** What the team will do, in one sentence; `checkpoints: false` leaves out plan approval (sweeps don't pause). */
 export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>, checkpoints = true): string {
   const one = (r: string) => (roles[r]?.[0] ? SHORT[roles[r]![0]!] : "—");
@@ -613,6 +616,8 @@ export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>,
       return `${one("tester")} writes tests → ${one("builder")} makes them pass → ${one("tester")} tries to break it${doneWhen}`;
     case "council":
       return `${many("reviewers")} review on their own, read-only → ${one("chair")} merges what they found · nothing is changed or posted without you`;
+    case "solo":
+      return `${one("agent")} works on it in its own branch; reply to keep going, like a chat${check ? ` · code-flow runs “${check}” after every turn` : ""}`;
     case "loop": {
       const w = roles.workers ?? [];
       const handoff = w.length > 1 ? `, handing over to ${w.slice(1).map((id) => SHORT[id]).join(", then ")} if stuck` : "";
@@ -716,6 +721,7 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
         <span class="st">Settings</span>
         <span class="ss">
           from {baseLabel} · {models.length ? models.join(", ") : "default models"} · stops after {limits.value.maxMinutes} min or {limits.value.maxSteps} steps
+          {trust.value === "full" ? <span class="full-access"> · ⚠ full access</span> : null}
         </span>
       </summary>
       <div class="settings-body">
@@ -795,22 +801,29 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
         <div>
           <span class="lbl">What agents may do while building</span>
           <div class="segmented" role="radiogroup" aria-label="Agent permissions">
-            {(
-              [
-                ["safe", "Safe", "Edit files only. Claude can't run commands; Codex stays sandboxed."],
-                ["standard", "Standard", "Edit files and run common build/test commands (npm, node, pytest, uv, poetry, cargo, go, make…)."],
-                ["trusted", "Trusted", "Any command for Claude; network access inside Codex's sandbox. Use on repos you trust."],
-              ] as const
-            ).map(([value, label, help]) => (
-              <button key={value} type="button" role="radio" aria-checked={trust.value === value} class={trust.value === value ? "on" : ""} title={help} onClick={() => setTrust(value)}>
-                {label}
+            {(Object.keys(TRUST) as (keyof typeof TRUST)[]).map((value) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={trust.value === value}
+                class={`${trust.value === value ? "on" : ""} ${value === "full" ? "full" : ""}`}
+                title={TRUST[value].help}
+                onClick={() => setTrust(value)}
+              >
+                {TRUST[value].label}
               </button>
             ))}
           </div>
-          <div class="help">
-            {{ safe: "Edit files only. Claude can't run commands; Codex stays sandboxed.", standard: "Edit files and run common build/test commands (npm, node, pytest, uv, poetry, cargo, go, make…).", trusted: "Any command for Claude; network access inside Codex's sandbox. Use on repos you trust." }[trust.value]}{" "}
-            Antigravity always runs with its sandbox (writes stay in the worktree). code-flow never merges or pushes on its own.
-          </div>
+          {trust.value === "full" ? (
+            <div class="full-warn" role="alert">
+              <b>⚠ Full access: no sandbox.</b> {TRUST.full.help} Automations and sweeps run with Trusted instead, and fixes for watched pull requests with Standard.
+            </div>
+          ) : (
+            <div class="help">
+              {TRUST[trust.value].help} Antigravity always runs with its sandbox (writes stay in the worktree). code-flow never merges or pushes on its own.
+            </div>
+          )}
         </div>
         <div>
           <span class="lbl">Models &amp; effort</span>
@@ -888,7 +901,12 @@ function ModelRow({ agent, used }: { agent: AgentInfo; used: boolean }) {
 }
 
 // ================================================================= files panel
-export function FilesPanel({ open }: { open: boolean }) {
+/**
+ * The repository's files, searchable, for the side panel's Files tab: a file opens in the viewer
+ * (`onOpen`), and from the composer, drags into the task or is added to it with +. `root` is
+ * the repository, or one of a run's worktrees.
+ */
+export function FileTree({ root, onOpen }: { root: string; onOpen: (path: string) => void }) {
   const [entries, setEntries] = useState<TreeEntry[] | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [message, setMessage] = useState("");
@@ -898,81 +916,70 @@ export function FilesPanel({ open }: { open: boolean }) {
   useEffect(() => {
     setQuery("");
     setResults(null);
-    if (!repo.value) {
+    if (!root) {
       setEntries(null);
       setMessage("Choose a repository to see its files.");
       return;
     }
     setMessage("Loading…");
-    api<{ entries: TreeEntry[]; truncated: boolean }>(`/api/tree?repo=${enc(repo.value)}&path=`)
+    api<{ entries: TreeEntry[]; truncated: boolean }>(`/api/tree?repo=${enc(root)}&path=`)
       .then((d) => {
         setEntries(d.entries);
         setTruncated(d.truncated);
         setMessage("");
       })
       .catch((err) => setMessage((err as Error).message));
-  }, [repo.value]);
+  }, [root]);
 
   useEffect(() => {
     const q = query.trim();
-    if (!q || !repo.value) return setResults(null);
+    if (!q || !root) return setResults(null);
     const timer = setTimeout(async () => {
       try {
-        setResults(await api<TreeEntry[]>(`/api/search?repo=${enc(repo.value)}&q=${enc(q)}`));
+        setResults(await api<TreeEntry[]>(`/api/search?repo=${enc(root)}&q=${enc(q)}`));
       } catch (err) {
         setMessage((err as Error).message);
       }
     }, 180);
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [query, root]);
 
+  const inComposer = route.value.view === "composer" && root === repo.value;
   return (
-    <aside class={`files-panel ${open ? "open" : ""}`} aria-label="Repository files">
-      <div class="files-head">
-        <span class="ft">Files</span>
-        <span class="fr">{repoInfo.value ? repoInfo.value.repo.split("/").pop() : ""}</span>
-        <button
-          class="btn ghost small"
-          title="Hide files"
-          onClick={() => {
-            filesOpen.value = false;
-            store.set("filesOpen", "0");
-          }}
-        >
-          ✕
-        </button>
-      </div>
-      <input type="search" class="field files-search" placeholder="Search files…" autocomplete="off" spellcheck={false} value={query} onInput={(e) => setQuery(e.currentTarget.value)} />
+    <>
+      <input type="search" class="field files-search" placeholder="Search files…" aria-label="Search files" autocomplete="off" spellcheck={false} value={query} onInput={(e) => setQuery(e.currentTarget.value)} />
       <div class="tree">
         {message ? <div class="tree-empty">{message}</div> : null}
         {results
           ? results.length
-            ? results.map((r) => <TreeNode key={r.path} entry={r} depth={0} sub={r.path.includes("/") ? r.path.slice(0, r.path.lastIndexOf("/")) : ""} />)
+            ? results.map((r) => <TreeNode key={r.path} entry={r} depth={0} sub={r.path.includes("/") ? r.path.slice(0, r.path.lastIndexOf("/")) : ""} root={root} onOpen={onOpen} context={inComposer} />)
             : <div class="tree-empty">No matching files</div>
-          : entries?.map((e) => <TreeNode key={e.path} entry={e} depth={0} />)}
+          : entries?.map((e) => <TreeNode key={e.path} entry={e} depth={0} root={root} onOpen={onOpen} context={inComposer} />)}
         {!results && truncated ? <div class="tree-empty">Showing the first 1000 — use search</div> : null}
       </div>
-      <div class="files-foot">
-        Drag into the task, or click <b>+</b>. <b style="color:var(--warn)">M</b> changed · <b style="color:var(--ok)">U</b> new
-      </div>
-    </aside>
+      {inComposer ? (
+        <div class="files-foot">
+          Click a file to read it; <b>+</b> or drag adds it to the task. <b style="color:var(--warn)">M</b> changed · <b style="color:var(--ok)">U</b> new
+        </div>
+      ) : null}
+    </>
   );
 }
 
-function TreeNode({ entry, depth, sub }: { entry: TreeEntry; depth: number; sub?: string }) {
+function TreeNode({ entry, depth, sub, root, onOpen, context }: { entry: TreeEntry; depth: number; sub?: string; root: string; onOpen: (path: string) => void; context: boolean }) {
   const [children, setChildren] = useState<TreeEntry[] | null>(null);
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
-  const added = contextPaths.value.has(entry.path);
+  const added = context && contextPaths.value.has(entry.path);
   const statusName = entry.status ? ({ M: "changed", U: "new, not committed", A: "added" } as const)[entry.status] : "";
   const toggle = async () => {
-    if (entry.type !== "dir") return;
+    if (entry.type !== "dir") return onOpen(entry.path);
     if (open) return setOpen(false);
     setOpen(true);
     if (children) return;
     setMessage("Loading…");
     try {
-      const d = await api<{ entries: TreeEntry[] }>(`/api/tree?repo=${enc(repo.value)}&path=${enc(entry.path)}`);
+      const d = await api<{ entries: TreeEntry[] }>(`/api/tree?repo=${enc(root)}&path=${enc(entry.path)}`);
       setChildren(d.entries);
       setMessage(d.entries.length ? "" : "Empty folder");
     } catch (err) {
@@ -983,11 +990,11 @@ function TreeNode({ entry, depth, sub }: { entry: TreeEntry; depth: number; sub?
     <div>
       <div
         class={`node ${added ? "added" : ""}`}
-        draggable
-        title={`${entry.path}${statusName ? ` — ${statusName}` : ""}\nDrag into the task, or click +`}
+        draggable={context}
+        title={`${entry.path}${statusName ? ` — ${statusName}` : ""}${context ? "\nDrag into the task, or click +" : ""}`}
         style={`padding-left:${2 + depth * 14}px`}
         onClick={toggle}
-        onDblClick={() => entry.type === "file" && addContext(entry)}
+        onDblClick={() => context && entry.type === "file" && addContext(entry)}
         onDragStart={(e) => {
           e.dataTransfer!.setData(DRAG_TYPE, JSON.stringify({ path: entry.path, type: entry.type }));
           e.dataTransfer!.setData("text/plain", entry.path);
@@ -1002,18 +1009,20 @@ function TreeNode({ entry, depth, sub }: { entry: TreeEntry; depth: number; sub?
         </span>
         {sub ? <span class="sub">{sub}</span> : null}
         <span class={`st ${entry.status ?? ""}`}>{entry.status ?? ""}</span>
-        <button
-          type="button"
-          class="add"
-          title={`Add ${entry.path} to the task`}
-          aria-label={`Add ${entry.path} to the task`}
-          onClick={(e) => {
-            e.stopPropagation();
-            toggleContext(entry);
-          }}
-        >
-          +
-        </button>
+        {context ? (
+          <button
+            type="button"
+            class="add"
+            title={`Add ${entry.path} to the task`}
+            aria-label={`Add ${entry.path} to the task`}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleContext(entry);
+            }}
+          >
+            +
+          </button>
+        ) : null}
       </div>
       {open ? (
         <div>
@@ -1022,7 +1031,7 @@ function TreeNode({ entry, depth, sub }: { entry: TreeEntry; depth: number; sub?
               {message}
             </div>
           ) : null}
-          {children?.map((c) => <TreeNode key={c.path} entry={c} depth={depth + 1} />)}
+          {children?.map((c) => <TreeNode key={c.path} entry={c} depth={depth + 1} root={root} onOpen={onOpen} context={context} />)}
         </div>
       ) : null}
     </div>
