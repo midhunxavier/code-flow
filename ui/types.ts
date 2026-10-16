@@ -5,6 +5,7 @@ export type { DiffFile, MergeOutcome } from "../src/ship.js";
 export type { TreeEntry } from "../src/repo-tree.js";
 export type { BranchInfo } from "../src/git.js";
 export type { DirListing } from "../src/fs.js";
+export type { Project, ProjectDefaults } from "../src/projects.js";
 export type { RunContext } from "../src/context.js";
 
 import type { AgentId, ModelCatalog } from "../src/adapters/types.js";

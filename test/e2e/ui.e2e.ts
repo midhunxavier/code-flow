@@ -110,6 +110,8 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   await page.unroute(/\/api\/fs\b/);
   await page.getByRole("button", { name: "Use this folder" }).click();
   await page.locator(".repo-btn .name", { hasText: repo.split("/").pop()! }).waitFor();
+  // Detection takes two more requests once the repo shows: wait for it instead of racing it.
+  await page.waitForFunction(() => (document.querySelector("#checkCmd") as HTMLInputElement | null)?.value, undefined, { timeout: 5_000 }).catch(() => undefined);
   assert.equal(await page.locator("#checkCmd").inputValue(), "npm test", "the check is detected from package.json");
 
   // Describe the task, pick the pipeline, start with the keyboard.
@@ -379,4 +381,42 @@ test("supervisor: the reviewer defaults to a different vendor than the superviso
   // Your own choice stands, even to let the supervisor review itself.
   await role("Reviewer").getByRole("button", { name: "Skip" }).click();
   assert.deepEqual(await pressed("Reviewer"), ["Skip"]);
+});
+
+test("projects: the first run made one; a new project scopes the sidebar and new runs; a run moves back", async () => {
+  const projects = () => fetch(`${BASE}/api/projects`, { headers: bearer }).then((r) => r.json() as Promise<{ id: string; name: string; repos: string[] }[]>);
+  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: repo }).toString().trim();
+  const [own, ...others] = await projects();
+  assert.deepEqual([own!.name, own!.repos, others.length], [root.split("/").pop(), [root], 0], "one project, named after the repo and holding it");
+
+  await page.goto(BASE);
+  await page.locator(".project-btn", { hasText: "All projects" }).waitFor();
+  await page.keyboard.press("p");
+  await page.getByRole("button", { name: "New project" }).click();
+  await page.locator("#project-name").fill("E2E side");
+  assert.equal(await page.locator(".project-repos .dir").count(), 1, "starts with the repo you're in");
+  await page.getByRole("button", { name: "Create project" }).click();
+  await page.locator(".project-btn", { hasText: "E2E side" }).waitFor();
+  await page.locator(".rail-empty", { hasText: "No runs in E2E side yet" }).waitFor();
+
+  await page.getByRole("button", { name: /Plan → Build → Review/ }).click();
+  await page.getByLabel("Task", { exact: true }).fill("E2E: in the side project");
+  await page.getByRole("button", { name: /^Start run/ }).click();
+  await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
+  await page.locator(".project-chip", { hasText: "E2E side" }).waitFor();
+  assert.deepEqual(await page.locator(".rail .run-item .t").allInnerTexts(), ["E2E: in the side project"], "the sidebar shows this project's runs");
+
+  // Move it back to the repo's own project.
+  await page.locator(".project-chip").click();
+  await page.locator(".move-choice").filter({ has: page.locator(".dn", { hasText: new RegExp(`^${own!.name}`) }) }).locator("input").check();
+  await page.getByRole("button", { name: "Move", exact: true }).click();
+  await page.locator(".project-chip", { hasText: own!.name }).waitFor();
+  await page.locator(".rail-empty", { hasText: "No runs in E2E side yet" }).waitFor();
+  const runId = decodeURIComponent(page.url().split("#/run/")[1]!);
+  const run = await fetch(`${BASE}/api/runs/${runId}`, { headers: bearer }).then((r) => r.json());
+  assert.equal(run.project, own!.id);
+
+  await page.keyboard.press("p");
+  await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
+  assert.ok((await page.locator(".rail .run-item").count()) > 1, "every project's runs again");
 });

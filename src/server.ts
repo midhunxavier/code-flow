@@ -30,6 +30,7 @@ import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
 import { Automations, describeSchedule, readWebhook, validateSchedule } from "./automation.js";
 import { lanAddresses, loadRemote, newToken, renderRemote, saveRemote, tokenMatches, type RemoteSettings } from "./remote.js";
+import { projectOf, Projects } from "./projects.js";
 import type { Run, StartRunInput } from "./engine.js";
 
 // One server per CODEFLOW_HOME (waits for one that is still shutting down).
@@ -39,7 +40,8 @@ const releaseLock = await acquireLock().catch((err: Error) => {
 });
 process.once("exit", releaseLock);
 
-const manager = new RunManager(findPattern);
+const projects = new Projects();
+const manager = new RunManager(findPattern, projects);
 const watcher = new PrWatcher(manager);
 const automations = new Automations(manager, (body, extra) => startFromBody(body, extra), (repo, kind) => listSweep(repo, kind, manager.list()));
 let remote: RemoteSettings;
@@ -201,8 +203,8 @@ function describePattern(p: Pattern) {
   return rest;
 }
 
-/** Who fills each role; "auto" picks an installed agent whose plan has room (see routing.ts). */
-async function validateRoles(pattern: Pattern, input: unknown, repo?: string): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
+/** The agents (or "auto") asked for in each of the pattern's roles. */
+function requestedRoles(pattern: Pattern, input: unknown): Record<string, string[]> {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const requested: Record<string, string[]> = {};
   for (const spec of pattern.roles) {
@@ -210,6 +212,12 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string): P
     const list = (Array.isArray(value) ? value : value ? [value] : []).filter((v): v is string => v === "auto" || isAgentId(v));
     requested[spec.id] = spec.multiple ? list.slice(0, 6) : list.slice(0, 1);
   }
+  return requested;
+}
+
+/** Who fills each role; "auto" picks an installed agent whose plan has room (see routing.ts). */
+async function validateRoles(pattern: Pattern, input: unknown, repo?: string): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
+  const requested = requestedRoles(pattern, input);
   const installed = new Set((await agentAvailability()).filter((a) => a.available).map((a) => a.id));
   const wantsAuto = Object.values(requested).some((list) => list.includes("auto"));
   const rank = wantsAuto && repo ? rankAgents(manager.list(), repo) : undefined;
@@ -358,6 +366,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
     pattern,
     task,
     repo,
+    project: typeof body.project === "string" && body.project ? body.project : undefined,
     baseRef: body.baseRef ? String(body.baseRef) : undefined,
     branchPrefix: body.branchPrefix ? String(body.branchPrefix) : undefined,
     context: body.context && typeof body.context === "object" ? body.context : undefined,
@@ -391,7 +400,7 @@ async function startFromBody(body: Record<string, any>, extra: { trigger?: Run["
 
 /** The parts of a run request an automation keeps (no attachments: they'd go stale). */
 function automationRun(body: Record<string, any>) {
-  const keep = ["repo", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
+  const keep = ["repo", "project", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
   const run: Record<string, any> = Object.fromEntries(keep.filter((k) => body[k] !== undefined).map((k) => [k, body[k]]));
   if (Array.isArray(body.context?.paths)) run.context = { paths: body.context.paths.map((p: any) => ({ path: String(p.path ?? "") })) };
   return run as { repo: string; pattern: string; task: string };
@@ -583,13 +592,32 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (req.method === "GET" && parts[1] === "stats") {
     const since = Number(url.searchParams.get("since")) || undefined;
     const repo = url.searchParams.get("repo") ? await requestedRepo(url) : undefined;
-    return send(res, 200, computeStats(manager.list(), { repo, since }));
+    return send(res, 200, computeStats(runsIn(url.searchParams.get("project")), { repo, since }));
   }
   if (req.method === "POST" && parts[1] === "compare") return send(res, 201, await startComparison(await readJson(req)));
-  if (req.method === "GET" && parts[1] === "disk") return send(res, 200, await diskUsage(url.searchParams.get("repo") ? await requestedRepo(url) : undefined));
+  if (req.method === "GET" && parts[1] === "disk") {
+    return send(res, 200, await diskUsage(runsIn(url.searchParams.get("project")), url.searchParams.get("repo") ? await requestedRepo(url) : undefined));
+  }
   if (req.method === "POST" && parts[1] === "cleanup") {
     const body = await readJson(req);
-    return send(res, 200, await cleanUp(Math.max(0, Number(body.olderThanDays ?? 7)), typeof body.repo === "string" ? body.repo : undefined));
+    return send(res, 200, await cleanUp(runsIn(body.project), Math.max(0, Number(body.olderThanDays ?? 7)), typeof body.repo === "string" ? body.repo : undefined));
+  }
+  if (parts[1] === "projects") {
+    const id = parts[2];
+    if (!id && req.method === "GET") return send(res, 200, projects.list());
+    if (!id && req.method === "POST") {
+      const body = await readJson(req);
+      return send(res, 201, await attempt(() => projects.create({ name: body.name, repos: Array.isArray(body.repos) ? body.repos : [] })));
+    }
+    if (id && !projects.get(id)) throw new HttpError(404, "Project not found");
+    if (id && req.method === "POST") {
+      const body = await readJson(req);
+      return send(res, 200, await attempt(() => projects.update(id, { name: body.name, repos: Array.isArray(body.repos) ? body.repos : undefined })));
+    }
+    if (id && req.method === "DELETE") {
+      await projects.remove(id);
+      return send(res, 200, { deleted: true });
+    }
   }
   if (req.method === "GET" && parts[1] === "templates") return send(res, 200, templates);
   if (parts[1] === "remote") {
@@ -683,8 +711,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (!runId) {
       if (req.method === "GET") return send(res, 200, manager.list());
       if (req.method === "POST") {
-        const run = await startFromBody(await readJson(req));
-        return send(res, 201, { id: run.id });
+        const body = await readJson(req);
+        const run = await startFromBody(body);
+        // The composer starts from this team next time you're in the project. A reply reuses the old run's team, so it isn't a choice.
+        if (run.project && !body.parentRunId) {
+          void projects.remember(run.project, { pattern: run.pattern, roles: requestedRoles(findPattern(run.pattern)!, body.roles), roleSettings: run.roleSettings, agentSettings: validateAgentSettings(body.agentSettings) });
+        }
+        return send(res, 201, { id: run.id, project: run.project });
       }
     }
 
@@ -698,6 +731,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         throw new HttpError(400, err.message);
       });
       return send(res, 200, { resumed: true });
+    }
+    if (req.method === "POST" && parts[3] === "project") {
+      const body = await readJson(req);
+      if (typeof body.project !== "string" || !projects.get(body.project)) throw new HttpError(400, "Pick a project");
+      return send(res, 200, await attempt(() => manager.setProject(run.id, body.project)));
     }
     if (req.method === "POST" && parts[3] === "seen") {
       manager.setSeen(run.id, true);
@@ -816,6 +854,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
 }
 
 await manager.load();
+await projects.load(manager.list());
 await automations.load();
 remote = await loadRemote();
 watcher.start();
@@ -888,9 +927,17 @@ async function startComparison(body: Record<string, any>) {
   return { group: group.id, runs: started };
 }
 
+/** Runs in a project ("none": in no project), or all runs. */
+function runsIn(project: unknown) {
+  const all = manager.list();
+  if (typeof project !== "string" || !project) return all;
+  const list = projects.list();
+  return all.filter((r) => (projectOf(r, list) ?? "none") === project);
+}
+
 /** Disk space taken by each run's worktrees (every worktree holds its own node_modules…). */
-async function diskUsage(repo?: string) {
-  const runs = manager.list().filter((r) => !repo || r.repo === repo);
+async function diskUsage(all: ReturnType<typeof manager.list>, repo?: string) {
+  const runs = all.filter((r) => !repo || r.repo === repo);
   const sizes = await folderSizes(runs.map((r) => r.worktreeDir));
   const list = runs
     .filter((r) => sizes[r.worktreeDir] !== undefined)
@@ -904,11 +951,11 @@ async function diskUsage(repo?: string) {
  * nothing from you: seen, not waiting in the inbox, not watching a PR. Committed work stays on
  * its branch and comes back if you resume or follow up.
  */
-async function cleanUp(days: number, repo?: string) {
+async function cleanUp(all: ReturnType<typeof manager.list>, days: number, repo?: string) {
   const cutoff = Date.now() - days * 86_400_000;
   const done: string[] = [];
   let removed = 0;
-  for (const r of manager.list()) {
+  for (const r of all) {
     if (repo && r.repo !== repo) continue;
     if (r.status === "running" || !r.endedAt || r.endedAt > cutoff || !r.seen) continue;
     if (r.triage?.state === "pending" || Object.values(r.watches).some((w) => ["watching", "fixing", "green"].includes(w.state))) continue;

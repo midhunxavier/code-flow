@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import {
   adapters,
@@ -49,6 +49,7 @@ import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJso
 import { branchDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
+import type { Projects } from "./projects.js";
 import { commentOnPr, loadSource, mergeBase, pushBranch, sourcePrompt, type RunSource, type SourceInput } from "./github.js";
 
 /** How many agent CLIs, and how many check/setup commands, may run at once across all runs. */
@@ -139,6 +140,8 @@ export interface Run {
   pattern: string;
   task: string;
   repo: string;
+  /** The project the run belongs to (see projects.ts); runs from before projects have none recorded. */
+  project?: string;
   /** Commit every worktree starts from. */
   baseRef: string;
   /** What the user picked as the base (branch name, or HEAD). */
@@ -1151,6 +1154,8 @@ export interface StartRunInput {
   pattern: Pattern;
   task: string;
   repo: string;
+  /** The project to start it in; by default the project of the run it continues, or the repo's. */
+  project?: string;
   /** Branch, tag or commit to start from; defaults to the repo's current HEAD. */
   baseRef?: string;
   /** Defaults to `codeflow/<run id>`. */
@@ -1193,7 +1198,11 @@ export class RunManager {
   private seq = 0;
   private shuttingDown = false;
 
-  constructor(private readonly findPattern: (id: string) => Pattern | undefined = () => undefined) {
+  constructor(
+    private readonly findPattern: (id: string) => Pattern | undefined = () => undefined,
+    /** Where runs are grouped; without it runs record no project. */
+    readonly projects?: Projects,
+  ) {
     this.bus.setMaxListeners(0);
   }
 
@@ -1292,6 +1301,18 @@ export class RunManager {
     run.archived = archived;
     if (archived) run.seen = true;
     this.emitRun(run);
+  }
+
+  /** Move a run to another project; its repo joins that project if it isn't in it yet. */
+  async setProject(id: string, projectId: string) {
+    const run = this.require(id);
+    if (!this.projects) throw new Error("Projects aren't available here");
+    const { project, added } = await this.projects.include(projectId, run.repo);
+    if (run.project === project.id) return project;
+    run.project = project.id;
+    this.emit(run, { type: "log", level: "info", text: `Moved to the project “${project.name}”${added ? `, which now includes ${basename(run.repo)}` : ""}` });
+    this.emitRun(run);
+    return project;
   }
 
   /**
@@ -1703,12 +1724,19 @@ export class RunManager {
       await rm(worktreeDir, { recursive: true, force: true });
       throw err;
     });
+    // An automation's saved project may have been deleted since: then the repo's project takes its runs.
+    const parent = input.parentRunId ? this.runs.get(input.parentRunId) : undefined;
+    const placed = await this.projects?.place(repo, { requested: input.project, parent: parent?.project, lenient: !!input.trigger }).catch(async (err) => {
+      await rm(worktreeDir, { recursive: true, force: true });
+      throw err;
+    });
 
     const run: Run = {
       id,
       pattern: input.pattern.id,
       task: input.task,
       repo,
+      project: placed?.project.id,
       baseRef,
       baseLabel,
       branchPrefix,
@@ -1751,6 +1779,8 @@ export class RunManager {
     this.history.set(run.id, []);
     this.emitRun(run);
     for (const note of input.routing ?? []) this.emit(run, { type: "log", level: "info", text: note });
+    if (placed?.created) this.emit(run, { type: "log", level: "info", text: `No project held ${basename(repo)} yet, so it has one of its own now: “${placed.project.name}”` });
+    if (placed?.added) this.emit(run, { type: "log", level: "info", text: `${basename(repo)} is now part of the project “${placed.project.name}”` });
     if (lockdown) {
       const checks = loop.container ? "checks run in Docker without network" : loop.check || loop.setup ? "checks run on this machine because you allowed it" : "";
       this.emit(run, { type: "log", level: "warn", text: `${lockdown}: agents run in Safe mode and files like .env aren't copied in${checks ? `; ${checks}` : ""}.` });

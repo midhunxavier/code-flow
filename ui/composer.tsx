@@ -46,8 +46,12 @@ import {
   source,
   task,
   ghPicker,
+  afterStart,
+  loadProjects,
+  target,
   type RoleValue,
 } from "./state.js";
+import { ProjectNote } from "./projects.js";
 import { SourceChip, Templates } from "./github.js";
 import { SaveAutomationDialog } from "./automations.js";
 import { Icon } from "./icons.js";
@@ -69,6 +73,7 @@ export function Composer() {
   const [saving, setSaving] = useState(false);
   const runBody = (p: PatternInfo) => ({
     repo: repo.value,
+    project: target.value.project?.id,
     task: task.value,
     pattern: p.id,
     roles,
@@ -98,9 +103,9 @@ export function Composer() {
     setStarting(true);
     setError("");
     try {
-      const { id } = await postConfirmed<{ id: string }>("/api/runs", runBody(p));
+      const { id, project } = await postConfirmed<{ id: string; project?: string }>("/api/runs", runBody(p));
       resetComposer();
-      await refreshRuns();
+      await Promise.all([afterStart(project), refreshRuns()]);
       route.value = { view: "run", id };
     } catch (err) {
       setError((err as Error).message);
@@ -144,6 +149,7 @@ export function Composer() {
           )}
         </div>
       ) : null}
+      <ProjectNote />
       {repoInfo.value ? <Templates /> : null}
       <TaskBox onStart={start} />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
@@ -205,6 +211,7 @@ export function Composer() {
           onStarted={(group) => {
             resetComposer();
             void refreshRuns();
+            void loadProjects();
             route.value = { view: "insights", group };
           }}
         />

@@ -1,4 +1,4 @@
-# Runs: talking to them, restarts, insights
+# Runs: talking to them, projects, restarts, insights
 
 ## The run view
 
@@ -36,6 +36,22 @@ Runs are conversations, not fire-and-forget jobs:
 
 Prompts are passed on **stdin**, not as command-line arguments (`claude -p` reading stdin, Codex's JSON-RPC or `codex exec -`, and agy's stream-json input), so long tasks and diffs aren't limited by the operating system's argument size.
 
+## Projects
+
+Runs are grouped into projects. A project has a name and the repositories its runs work in.
+
+- **No setup:** the first time you start a run in a repository that no project holds, code-flow makes a project named after it. The first time you start a code-flow that has projects, every repository that already has runs gets one, so your runs are grouped from the start.
+- **The switcher** (the project button in the top bar, or <kbd>p</kbd>) picks the project you're in. The sidebar lists its runs, new runs start in it, and Insights shows it. *All projects* lists every run.
+  - When a run in another project needs you, the sidebar says so, with a link to show all.
+  - Search always looks in every project.
+- **Switching projects** moves the composer to the project's repository you used last, and to the pattern and team you last started a run with there. Each project remembers its own.
+- **Several repositories:** a project can hold several, and a repository can be in several projects. Each run still works in one repository. **New project** and **Edit** in the switcher name a project and add or remove its repositories.
+- **A run's repository always belongs to its project.** Starting a run in a project, or moving one there, adds the repository if it's missing. The composer says so before you start.
+- **Moving a run:** click the project chip at the top of the run. Its branches and worktrees stay where they are.
+- **Runs started from other runs stay in that run's project:** replies to the whole team, comparisons, sweeps and automations. An automation whose project was deleted starts its runs in its repository's project.
+- **Deleting a project** keeps its runs; they show under *No project*. Taking a repository out of a project keeps the runs already in it.
+- Projects are saved in `~/.codeflow/projects.json`. Each run records its project in its own log.
+
 ## Runs survive restarts
 
 Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and the server rebuilds the run list from those files when it starts.
@@ -52,7 +68,7 @@ Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and t
 
 ## Insights, comparisons and finding runs
 
-- **Insights** (in the top bar, or <kbd>i</kbd>) shows, per agent and per pattern, for one repo or all, over 7 days, 30 days or all time:
+- **Insights** (in the top bar, or <kbd>i</kbd>) shows, per agent and per pattern, for the project you're in, one repo, or everything, over 7 days, 30 days or all time:
   - runs, and how often the result passed its check;
   - race wins, loops each agent got green, and review findings other reviewers agreed with;
   - failed steps, tokens (input, output, cached) and time per step;
@@ -60,4 +76,4 @@ Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and t
 - **Compare setups…** (next to *Start run*) starts the same task with several patterns at once, each with the team you last picked for it, optionally 2–3 times each. Insights shows them side by side: result, time, steps, tokens, cost, and whether tests were touched. The best value in each column is highlighted.
 - **Tokens and cost** also show on each step, in the run's details under the header (with a per-agent breakdown on hover) and in the sidebar.
 - **Disk:** every worktree is a full checkout, often with its own `node_modules`. Insights measures them and **Clean up** removes the worktrees, not the branches, of runs that finished more than *N* days ago and need nothing from you.
-- **Finding runs:** the sidebar has search (<kbd>/</kbd>), filters (needs you, running, passed, failing, tests changed; pattern; agent; this repo), and <kbd>j</kbd>/<kbd>k</kbd> to move between runs. In a run, <kbd>[</kbd>/<kbd>]</kbd> move between steps. <kbd>?</kbd> lists every shortcut. Run status changes are announced to screen readers.
+- **Finding runs:** the sidebar lists the [project](#projects) you're in. It has search (<kbd>/</kbd>, across every project), filters (needs you, running, passed, failing, tests changed; pattern; agent; this repo), and <kbd>j</kbd>/<kbd>k</kbd> to move between runs. In a run, <kbd>[</kbd>/<kbd>]</kbd> move between steps. <kbd>?</kbd> lists every shortcut. Run status changes are announced to screen readers.

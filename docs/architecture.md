@@ -4,12 +4,13 @@
 
 ```
 ui/*.tsx                 UI: Preact + TypeScript, compiled against the server's own types
-                         (app: shell and sidebar · composer · run: the run thread · review · insights · automations)
+                         (app: shell and sidebar · composer · run: the run thread · review · insights · automations · projects)
 ui/bits.tsx              small shared pieces: agent tags, the Markdown renderer, QR codes
 ui/styles.css, ui/fonts  the stylesheet and its fonts (Manrope, Roboto Mono; licences included)
 scripts/build-ui.mjs     bundles the UI, fonts and images into one self-contained public/index.html (npm start builds it)
 src/server.ts            HTTP API + SSE on 127.0.0.1 (Host/Origin checked, session cookie or Bearer token)
 src/store.ts             run logs and the replay journal on disk, the one-server lock
+src/projects.ts          projects: named groups of repos, and which project a new run goes in
 src/integrity.ts         finds changes to tests that could make a check pass without a fix
 src/diff.ts              fits a long diff into a prompt (whole files first)
 src/learnings.ts         the repo's conventions files, and problems reviewers keep raising

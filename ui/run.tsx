@@ -24,7 +24,10 @@ import {
   setupCmd,
   source,
   upsertRun,
+  projectFor,
+  selectProject,
 } from "./state.js";
+import { ProjectChip } from "./projects.js";
 import type { AgentEvent, AgentId, Artifact, FollowUp, IntegrityIssue, MergeOutcome, Note, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
@@ -342,6 +345,7 @@ function RunMeta({ run }: { run: RunSummary }) {
   const team = Object.entries(run.roles).filter(([, ids]) => ids.length);
   return (
     <div class="run-meta">
+      <ProjectChip run={run} />
       <span title={run.repo} class="repo-line">
         <Icon name="folder" /> {baseName(run.repo)}
       </span>
@@ -1468,6 +1472,9 @@ function editAndRerun(run: RunSummary) {
         }
       : null;
   };
+  // Back in the run's project, so the new run goes there too.
+  const project = projectFor(run);
+  if (project) selectProject(project.id, { defaults: false, repo: false });
   route.value = { view: "composer" };
   if (run.repo !== repo.value) void setRepo(run.repo).then(restore);
   else restore();
