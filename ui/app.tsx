@@ -6,6 +6,7 @@ import { GitHubPicker } from "./github.js";
 import { AutomationsView, inbox } from "./automations.js";
 import { InsightsView } from "./insights.js";
 import { Icon } from "./icons.js";
+import logo from "./brand/vibesboard-mark.png";
 import { ago, api, baseName, fmtCost, fmtTokens, showToast, STATUS_TEXT, store, toast } from "./lib.js";
 import {
   agents,
@@ -95,9 +96,7 @@ function TopBar() {
         <Icon name="menu" />
       </button>
       <span class="brand">
-        <span class="brand-mark">
-          <Icon name="flow" />
-        </span>
+        <img class="brand-mark" src={logo} alt="" width={28} height={28} />
         <span class="brand-name">code-flow</span>
       </span>
       <button

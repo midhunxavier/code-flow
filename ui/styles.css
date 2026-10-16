@@ -92,8 +92,7 @@
   /* ---------- top bar ---------- */
   .topbar { height: 60px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); position: relative; z-index: 7; }
   .brand { display: inline-flex; align-items: center; gap: 9px; font-weight: 700; font-size: 16px; letter-spacing: -.035em; margin-right: 6px; }
-  .brand-mark { width: 28px; height: 28px; border-radius: 9px; background: var(--accent); color: var(--accent-text); display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 0 0 4px var(--ring); }
-  .brand-mark .icon { width: 16px; height: 16px; }
+  .brand-mark { flex: none; width: 28px; height: 28px; display: block; }
   .repo-btn { border: 1px solid var(--border); background: var(--raised); border-radius: 999px; padding: 5px 12px 5px 10px; min-height: 36px; display: flex; align-items: center; gap: 8px; max-width: 46vw; transition: border-color .15s, box-shadow .15s; }
   .repo-btn:hover { border-color: var(--accent-line); box-shadow: var(--shadow); }
   .repo-btn > .icon { color: var(--muted); }

@@ -1,6 +1,7 @@
 import { effect } from "@preact/signals";
 import { render } from "preact";
 import { App, notifyFinished } from "./app.js";
+import logo from "./brand/vibesboard-mark.png";
 import { api, store } from "./lib.js";
 import { agents, loadHealth, loadModels, patterns, refreshRuns, route, setRepo, templates, watchAllRuns, type Route } from "./state.js";
 
@@ -20,6 +21,10 @@ function hashFor(r: Route): string {
   if (r.view === "review") return `#/review/${encodeURIComponent(r.id)}/${r.branch.split("/").map(encodeURIComponent).join("/")}`;
   return "#/";
 }
+
+// The tab icon: the vibesboard mark, like the top bar.
+const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/png", href: logo });
+document.head.append(icon);
 
 async function boot() {
   const [agentList, patternList] = await Promise.all([api("/api/agents"), api("/api/patterns")]);

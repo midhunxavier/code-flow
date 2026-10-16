@@ -2,8 +2,6 @@
 const circle = (x: number, y: number, r: number) => `M${x - r} ${y}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0`;
 
 const PATHS = {
-  // three agents, one result
-  flow: `${circle(5.5, 6, 2.25)}${circle(5.5, 18, 2.25)}${circle(18.5, 12, 2.5)}M7.6 7.1l8.6 3.9M7.6 16.9l8.6-3.9`,
   menu: "M4 7h16M4 12h16M4 17h16",
   plus: "M12 5v14M5 12h14",
   search: `${circle(11, 11, 7)}M20 20l-4-4`,
