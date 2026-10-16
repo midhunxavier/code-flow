@@ -134,16 +134,83 @@ export async function mergeInto(repo: string, branch: string, into: string, mess
   return { ok: true, commit, method: "ref" };
 }
 
-/** Push the result branch and open a pull request with `gh`. */
-export async function openPullRequest(repo: string, branch: string, into: string, title: string, body: string): Promise<string> {
+/**
+ * The branches on origin right now, and its default branch. Asks the remote itself: a local
+ * origin/* ref outlives a branch deleted on GitHub (after its pull request was merged).
+ */
+export async function remoteBranches(repo: string): Promise<{ branches: string[]; defaultBranch?: string }> {
   const remote = await git(["remote", "get-url", "origin"], repo);
   if (remote.code !== 0) throw new Error("This repository has no 'origin' remote to open a pull request on");
+  const out = await gitOrThrow(["ls-remote", "--symref", "origin", "HEAD", "refs/heads/*"], repo);
+  const branches: string[] = [];
+  let defaultBranch: string | undefined;
+  for (const line of out.split("\n")) {
+    const [left = "", ref = ""] = line.split("\t");
+    if (left.startsWith("ref: refs/heads/") && ref === "HEAD") defaultBranch = left.slice("ref: refs/heads/".length);
+    else if (ref.startsWith("refs/heads/")) branches.push(ref.slice("refs/heads/".length));
+  }
+  return { branches, defaultBranch };
+}
+
+/**
+ * Where a result's pull request goes: the branch the run started from while it's still on
+ * origin, otherwise origin's default branch (the starting branch was merged and deleted, or
+ * never pushed).
+ */
+export async function pullRequestTarget(repo: string, startedFrom: string | undefined): Promise<string> {
+  const { branches, defaultBranch } = await remoteBranches(repo);
+  if (startedFrom && branches.includes(startedFrom)) return startedFrom;
+  if (defaultBranch) return defaultBranch;
+  throw new Error("Pick a branch to open the pull request into");
+}
+
+/**
+ * Push the result branch and open a pull request with `gh`. `base` is the commit the run
+ * started from: when it was squash-merged into `into` since, `into` is merged into the result
+ * branch first, so the pull request shows only the run's own changes.
+ */
+export async function openPullRequest(
+  repo: string,
+  branch: string,
+  into: string,
+  title: string,
+  body: string,
+  base?: string,
+): Promise<{ url: string; caughtUp?: string }> {
+  const { branches, defaultBranch } = await remoteBranches(repo);
+  if (!branches.includes(into)) {
+    const instead = defaultBranch && defaultBranch !== into ? `, such as ${defaultBranch}` : "";
+    throw new Error(`"${into}" isn't a branch on GitHub (it may have been merged and deleted), so a pull request can't go into it. Pick another branch${instead}.`);
+  }
+  const caughtUp = base ? await catchUpWithSquashedBase(repo, branch, into, base) : undefined;
   const push = await git(["push", "-u", "origin", branch], repo);
   if (push.code !== 0) throw new Error(`Pushing ${branch} failed: ${push.stderr.trim().split("\n").slice(-2).join(" ")}`);
   const out = await run("gh", ["pr", "create", "--base", into, "--head", branch, "--title", title, "--body", body], repo);
   const url = out.trim().split("\n").filter((l) => l.startsWith("http")).pop();
   if (!url) throw new Error(`gh didn't return a pull request URL: ${out.trim()}`);
-  return url;
+  return { url, caughtUp };
+}
+
+/**
+ * A run that started from a branch since squash-merged into `into` still carries that branch's
+ * commits, and GitHub would show their changes again as part of the pull request. When `base`
+ * adds nothing that origin's `into` doesn't already have, merge `into` into the result branch
+ * (the files don't change) so the pull request shows only the run's commits. Returns the merge
+ * commit, or undefined when nothing needed doing.
+ */
+async function catchUpWithSquashedBase(repo: string, branch: string, into: string, base: string): Promise<string | undefined> {
+  const target = `refs/remotes/origin/${into}`;
+  await gitOrThrow(["fetch", "--quiet", "origin", `+refs/heads/${into}:${target}`], repo);
+  if ((await git(["merge-base", "--is-ancestor", base, target], repo)).code === 0) return undefined;
+  const merged = await git(["merge-tree", "--write-tree", target, base], repo);
+  if (merged.code !== 0) return undefined; // base has changes `into` doesn't: they belong in the pull request
+  const targetTree = (await gitOrThrow(["rev-parse", `${target}^{tree}`], repo)).trim();
+  if (merged.stdout.split("\n")[0]!.trim() !== targetTree) return undefined;
+  const outcome = await mergeInto(repo, target, branch, `Merge origin/${into} into ${branch}`);
+  if (!outcome.ok) {
+    throw new Error(`origin/${into} conflicts with ${branch} in ${outcome.conflicts.join(", ")}. Merge it into the branch and resolve them, then open the pull request again.`);
+  }
+  return outcome.commit;
 }
 
 /** Remove a run's worktrees (branches are kept unless asked). Returns what was removed. */

@@ -271,6 +271,7 @@ export function RunView({ id }: { id: string }) {
           </details>
 
           {finished ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
+          <FollowUpThread run={run} />
           <ActivityLog logs={data.current.logs} count={data.current.logs.length} />
         </div>
       </div>
@@ -454,25 +455,6 @@ function ResultCard({ run, steps, onSelectStep }: { run: RunSummary; steps: Step
           <Markdown text={run.summary} />
         </div>
       ) : null}
-      {run.followUps?.length ? (
-        <div class="followups">
-          <div class="lbl">Follow-ups</div>
-          {run.followUps.map((f) => (
-            <div key={f.id} class={`followup ${f.status}`}>
-              <span class={`ic ${f.status === "done" ? "done" : f.status === "failed" ? "failed" : ""}`}>{f.status === "done" ? "✓" : f.status === "failed" ? "✕" : "…"}</span>
-              <AgentTag id={f.agent} /> {followUpLabel(f)} in {f.worktree}
-              {f.pushed ? <span class="ok"> · pushed {f.pushed.slice(0, 7)}</span> : f.pushError ? <span class="note"> · push failed: {f.pushError}</span> : null}
-              {f.checkPassed === false ? <span class="note"> · check fails</span> : f.checkPassed ? <span class="ok"> · check passes</span> : null}
-              {f.integrity?.length ? (
-                <span class="note" title={f.integrity.map((i) => `${i.file}: ${i.detail}`).join("\n")}>
-                  {" "}
-                  · ⚠ changed tests
-                </span>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      ) : null}
       {run.artifacts.length ? (
         <div class="artifacts">
           {run.artifacts.map((a) => (
@@ -481,6 +463,48 @@ function ResultCard({ run, steps, onSelectStep }: { run: RunSummary; steps: Step
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** What was sent back after the run and what the agent answered, as the rest of the conversation. */
+function FollowUpThread({ run }: { run: RunSummary }) {
+  if (!run.followUps?.length) return null;
+  return (
+    <>
+      {run.followUps.map((f) => (
+        <div key={f.id} class="fu">
+          {f.kind === "reply" || (f.kind === "comments" && !f.from) ? (
+            <div class="msg-you">
+              <div class="bubble">
+                <Markdown text={f.message} />
+              </div>
+            </div>
+          ) : (
+            <div class="fu-sent help">
+              {f.kind === "resolve-conflicts" ? `Sent ${f.mergeFrom}'s merge conflicts to` : f.kind === "ci-fix" ? "Sent the pull request's failing CI to" : `Sent ${f.from}'s comments to`}{" "}
+              <AgentTag id={f.agent} />
+            </div>
+          )}
+          <div class={`fu-answer ${f.status}`}>
+            <div class="fu-head">
+              <AgentTag id={f.agent} />
+              <span>
+                {followUpLabel(f)} in {f.worktree}
+              </span>
+              {f.status === "pending" ? <span class="fu-live">working…</span> : f.status === "failed" ? <span class="err">✕ didn't finish</span> : null}
+              {f.pushed ? <span class="ok">pushed {f.pushed.slice(0, 7)}</span> : f.pushError ? <span class="note">push failed: {f.pushError}</span> : null}
+              {f.checkPassed === false ? <span class="note">check fails</span> : f.checkPassed ? <span class="ok">check passes</span> : null}
+              {f.integrity?.length ? (
+                <span class="note" title={f.integrity.map((i) => `${i.file}: ${i.detail}`).join("\n")}>
+                  ⚠ changed tests
+                </span>
+              ) : null}
+            </div>
+            {f.result ? <Markdown text={f.result} /> : null}
+          </div>
+        </div>
+      ))}
+    </>
   );
 }
 
@@ -823,16 +847,22 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
 }
 
 function PrPanel({ run, branch }: { run: RunSummary; branch: string }) {
-  const { branches, initial } = useTargetBranches(run);
+  // Only branches that are on GitHub now: the run's starting branch may have been merged and deleted.
+  const [targets, setTargets] = useState<{ branches: string[]; initial: string } | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api<{ branches: string[]; initial: string }>(`/api/runs/${run.id}/pr-targets`).then(setTargets, (e) => setError((e as Error).message));
+  }, [run.id]);
   const [into, setInto] = useState("");
   const [busy, setBusy] = useState(false);
-  const target = into || initial;
+  const target = into || targets?.initial || "";
   return (
     <div class="ship-panel">
       <div class="row">
         <label class="lbl">Pull request into</label>
-        <select class="field" value={target} onChange={(e) => setInto(e.currentTarget.value)}>
-          {branches.map((b) => (
+        <select class="field" value={target} disabled={!targets} onChange={(e) => setInto(e.currentTarget.value)}>
+          {targets ? null : <option value="">{error ? "—" : "Asking GitHub…"}</option>}
+          {(targets?.branches ?? []).filter((b) => b !== branch).map((b) => (
             <option key={b} value={b}>
               {b}
             </option>
@@ -857,6 +887,7 @@ function PrPanel({ run, branch }: { run: RunSummary; branch: string }) {
           {busy ? "Opening…" : "Push & open PR"}
         </button>
       </div>
+      {error ? <div class="msg warn">{error}</div> : null}
       <div class="help">
         This pushes <code>{branch}</code> to <code>origin</code> and opens a pull request with GitHub CLI (<code>gh</code>), using the run's task and summary as the description.
       </div>

@@ -20,7 +20,7 @@ import { detectCheckCommand } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
 import { listBranches, repoRoot, worktreeRoot } from "./git.js";
-import { folderSizes, removeWorktrees } from "./ship.js";
+import { folderSizes, remoteBranches, removeWorktrees } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
 import { acquireLock, writeHealth } from "./store.js";
 import { listIssues, listPullRequests, type SourceInput } from "./github.js";
@@ -698,6 +698,14 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
         manager.merge(run.id, { branch: String(body.branch ?? ""), into: String(body.into ?? ""), archiveAfter: !!body.archiveAfter }),
       );
       return send(res, 200, outcome);
+    }
+    if (req.method === "GET" && parts[3] === "pr-targets") {
+      // Branches on GitHub a pull request can go into, and the one it would go into by default.
+      const targets = await attempt(async () => {
+        const { branches } = await remoteBranches(run.repo);
+        return { branches, initial: await manager.pullRequestTarget(run.id) };
+      });
+      return send(res, 200, targets);
     }
     if (req.method === "POST" && parts[3] === "pr") {
       const body = await readJson(req);

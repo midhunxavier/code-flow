@@ -332,3 +332,35 @@ test("without Docker, an untrusted source's checks only run on this machine if y
     process.env.PATH = savedPath;
   }
 });
+
+test("a run from a branch since squash-merged and deleted on GitHub opens its PR into the default branch, showing only its own changes", async () => {
+  // You're on "topic" (pushed), a sweep starts a run from HEAD; then topic's PR is squash-merged
+  // into main and GitHub deletes the branch, while your checkout and its origin/topic ref stay.
+  git("checkout", "-q", "-b", "topic");
+  writeFileSync(join(repo, "topic.txt"), "topic work\n");
+  git("add", ".");
+  git("commit", "-qm", "topic work");
+  git("push", "-q", "origin", "topic");
+  const run = await idle(
+    await manager.start({ pattern: findPattern("pipeline")!, task: "Fix it", repo, roles: { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, options: {} }),
+  );
+  assert.equal(run.status, "done", run.error);
+  assert.equal(run.baseLabel, "HEAD");
+  const branch = run.artifacts[0]!.branch;
+  const squash = mkdtempSync(join(tmpdir(), "codeflow-gh-squash-"));
+  execFileSync("git", ["clone", "-q", origin, squash]);
+  sh(squash, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--squash", "origin/topic");
+  sh(squash, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "topic work (#9)");
+  sh(squash, "push", "-q", "origin", "main", ":topic");
+
+  assert.equal(await manager.pullRequestTarget(run.id), "main", "topic is gone from GitHub, so the PR goes into main");
+  await assert.rejects(manager.pullRequest(run.id, { branch, into: "topic" }), /"topic" isn't a branch on GitHub/);
+  const url = await manager.pullRequest(run.id, { branch, into: "main" });
+  assert.equal(state().prs[url.split("/").pop()!].baseRefName, "main");
+  assert.match(await logs(run), /Merged origin\/main into .*squash merge/);
+  // What GitHub would show: the run's change only, not topic's again.
+  const shown = sh(origin, "diff", "--name-only", `main...${branch}`).split("\n");
+  assert.ok(!shown.includes("topic.txt"), `topic's change isn't part of the PR: ${shown.join(", ")}`);
+  assert.ok(shown.some((f) => f.startsWith("codex-")), "the run's change is");
+  git("checkout", "-q", "main");
+});

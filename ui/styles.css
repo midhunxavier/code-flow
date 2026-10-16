@@ -543,10 +543,12 @@
   .field.inline { width: auto; display: inline-block; padding: 5px 10px; }
   label.check { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
   .conflicts { display: grid; gap: 8px; }
-  .followups { padding: 0 16px 12px; display: grid; gap: 4px; font-size: 13px; }
-  .followup { display: flex; gap: 6px; align-items: center; }
-  .followup .ic.done { color: var(--ok); } .followup .ic.failed { color: var(--err); }
-  .followup .note { color: var(--warn); } .followup .ok { color: var(--ok); }
+  .fu { display: flex; flex-direction: column; gap: 12px; }
+  .fu-sent { display: flex; justify-content: flex-end; gap: 6px; align-items: center; font-size: 12.5px; }
+  .fu-answer { padding: 0 4px; }
+  .fu-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+  .fu-head .note { color: var(--warn); } .fu-head .ok { color: var(--ok); } .fu-head .err { color: var(--err); }
+  .fu-live { color: var(--accent-text); animation: pulse 1.4s var(--ease) infinite; }
   .small-dialog { width: min(480px, calc(100vw - 32px)); }
   .dialog-body { padding: 16px 20px; display: grid; gap: 12px; }
 
