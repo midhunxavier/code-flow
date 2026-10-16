@@ -85,16 +85,21 @@ export const tddPattern: Pattern = {
     let testerStep = written.outcome;
     const spec: TestSpec | undefined = written.value;
     const testsCommit = await ctx.commit(wt, `${tester}: failing tests`);
-    // Grows as the tester adds edge-case tests; the builder may not touch any of them.
-    const testFiles = testsCommit ? await changedFiles(wt.path, wt.base, testsCommit) : spec?.test_files ?? [];
+    // Grows as the tester adds edge-case tests; the builder may not touch any of them. Only test
+    // files (and the ones the tester named): a stub the tester added for the tests to import is
+    // the builder's to fill in, not tampering.
+    const named = (spec?.test_files ?? []).map((f) => f.replace(/^\.\//, ""));
+    const testFiles = testsCommit ? (await changedFiles(wt.path, wt.base, testsCommit)).filter((f) => isTestFile(f) || named.includes(f)) : named;
 
     // Evidence comes from code-flow running the tests itself. An agent-chosen command is only run
     // when it looks like a plain test invocation; the user's configured check always runs.
     const reported = spec?.test_command?.trim();
     const targeted = reported && isPlainTestCommand(reported) ? reported : undefined;
     if (reported && !targeted) ctx.log(`Not running the tester's command \`${reported}\`: it isn't a plain test command`, "warn");
-    // A check that turns out not to run here stops counting as evidence.
-    const evidence = () => !!targeted || ctx.hasCheck;
+    // A check that turns out not to run here stops counting as evidence — the tester's command
+    // too, when it is the run's check.
+    const runsTargeted = () => !!targeted && !(targeted === ctx.run.loop.check && ctx.run.checkCantRun);
+    const evidence = () => runsTargeted() || ctx.hasCheck;
     if (!evidence()) {
       if (!reported) throw new Error("Tester did not report a test command, and no check command is set");
       ctx.log("No test command code-flow can run; relying on the tester's verdict. Set a check in Settings → Done when.", "warn");
@@ -103,10 +108,12 @@ export const tddPattern: Pattern = {
     const testCommand = targeted ?? ctx.run.loop.check ?? reported!;
 
     /** Run the new tests and the full check; returns the first failure, or null when all pass. */
+    // null from a check means it can't run here (code-flow has said so in the log): no evidence
+    // either way, not a pass and not a failure.
     const runTests = async (title: string): Promise<CheckResult | null> => {
-      if (targeted) {
-        const result = (await ctx.check(wt, title, targeted))!;
-        if (!result.ok) return result;
+      if (runsTargeted()) {
+        const result = await ctx.check(wt, title, targeted);
+        if (result && !result.ok) return result;
       }
       if (ctx.hasCheck && ctx.run.loop.check !== targeted) {
         const result = await ctx.check(wt, `${title}: full check`);
@@ -116,9 +123,9 @@ export const tddPattern: Pattern = {
     };
 
     // Red first: new tests that already pass don't specify anything new.
-    if (targeted) {
-      const red = (await ctx.check(wt, "New tests (should fail)", targeted))!;
-      if (red.ok) ctx.log("The new tests already pass before any implementation; they may not test the new behaviour", "warn");
+    if (runsTargeted()) {
+      const red = await ctx.check(wt, "New tests (should fail)", targeted);
+      if (red?.ok) ctx.log("The new tests already pass before any implementation; they may not test the new behaviour", "warn");
     }
 
     let builderStep: StepOutcome | undefined;
