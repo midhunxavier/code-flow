@@ -20,6 +20,7 @@ This is the boundary each vendor draws for personal use. Don't extend code-flow 
 
 - It listens on `127.0.0.1` only, checks the Host and Origin headers, and wants a session cookie or Bearer token on every API call (see [signing in](getting-started.md#signing-in)).
 - The phone view and webhooks are only on your network when you turn on *Reachable from my Wi-Fi*, over plain HTTP. See [Automations](automations.md#phone-view).
+- *Full control from my phone* serves the whole app on that network listener, to a phone signed in with the phone link (a cookie bound to that address, revoked by **New link** or by turning it off). Cross-origin requests are refused there too. Whoever has the link can do everything you can, so treat it like a password. See [Full control from your phone](automations.md#full-control-from-your-phone).
 
 ## Running the agents' code
 

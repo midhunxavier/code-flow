@@ -22,7 +22,7 @@ src/routing.ts           "Auto" roles: pick an agent whose plan has room (and th
 src/templates.ts         starting points (fix an issue, fix failing CI, council review…) and sweeps
 src/sweeps.ts            sweeps: list issues, Dependabot PRs and alerts; start one run per picked item
 src/automation.ts        automations: schedules, webhooks (Bearer or GitHub signature), firing runs
-src/remote.ts            the read-only phone view (server-rendered, secret link)
+src/remote.ts            the phone link: read-only view (server-rendered), settings for full phone control
 src/engine.ts            RunManager, TeamContext (ask / worktree / commit / diff), event log
 src/patterns/*.ts        the team patterns, written against TeamContext
 src/adapters/*.ts        AgentAdapter per CLI → normalized AgentEvent stream

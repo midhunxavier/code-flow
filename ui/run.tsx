@@ -4,7 +4,7 @@ import { useDialog } from "./app.js";
 import { AgentTag, Markdown } from "./bits.js";
 import { TriageActions } from "./automations.js";
 import { Icon } from "./icons.js";
-import { api, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, post, SHORT, showToast, STATUS_TEXT } from "./lib.js";
+import { api, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, onPhone, post, SHORT, showToast, STATUS_TEXT } from "./lib.js";
 import {
   agents,
   attachments,
@@ -914,10 +914,12 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
     };
   }, [base]);
   const open = (target: string) =>
-    post<{ openedWith: string }>(`${base}/open`, { target }).then((r) => showToast(`Opened in ${r.openedWith}`), (e) => showToast(e.message, 5000));
+    post<{ openedWith: string }>(`${base}/open`, { target }).then((r) => showToast(`Opened in ${r.openedWith}${onPhone ? " on your computer" : ""}`), (e) => showToast(e.message, 5000));
+  // From the phone, the app is on the computer's Wi-Fi address — reachable if it listens there.
+  const appUrl = server && onPhone ? server.url.replace("//localhost:", `//${location.hostname}:`) : server?.url;
   return (
     <div class="ws-tools">
-      <span class="lbl">Try it</span>
+      <span class="lbl">{onPhone ? "On your computer" : "Try it"}</span>
       <button class="btn small" onClick={() => open("terminal")}>
         Terminal
       </button>
@@ -929,8 +931,14 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
       </button>
       {server?.status === "running" ? (
         <>
-          <a class="btn small primary" href={server.url} target="_blank" rel="noreferrer">
-            Open {server.url.replace("http://", "")} ↗
+          <a
+            class="btn small primary"
+            href={appUrl}
+            target="_blank"
+            rel="noreferrer"
+            title={onPhone ? "Opens only if the app listens on your network too (e.g. vite --host)" : undefined}
+          >
+            Open {appUrl!.replace("http://", "")} ↗
           </a>
           <button class="btn small" onClick={() => setShowLogs(!showLogs)}>
             {showLogs ? "Hide logs" : "Logs"}

@@ -11,13 +11,16 @@ import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "playwright-core";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-// A port the OS says is free — never one a real code-flow (4317) or dev server might be on.
-const PORT = await new Promise<number>((resolve) => {
-  const probe = createServer().listen(0, "127.0.0.1", () => {
-    const { port } = probe.address() as AddressInfo;
-    probe.close(() => resolve(port));
+// Ports the OS says are free — never one a real code-flow (4317) or dev server might be on.
+const freePort = () =>
+  new Promise<number>((resolve) => {
+    const probe = createServer().listen(0, "127.0.0.1", () => {
+      const { port } = probe.address() as AddressInfo;
+      probe.close(() => resolve(port));
+    });
   });
-});
+const PORT = await freePort();
+const REMOTE_PORT = await freePort(); // the phone's (Wi-Fi) listener
 const BASE = `http://localhost:${PORT}`;
 const TOKEN = "e2e-session-token";
 const bearer = { authorization: `Bearer ${TOKEN}` };
@@ -63,6 +66,7 @@ before(async () => {
     env: {
       ...process.env,
       PORT: String(PORT),
+      CODEFLOW_REMOTE_PORT: String(REMOTE_PORT),
       CODEFLOW_HOME: mkdtempSync(join(tmpdir(), "codeflow-e2e-home-")),
       PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`,
       FAKE_GH_STATE: ghState,
@@ -260,6 +264,49 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).getByText("Already has a run").waitFor();
   assert.equal(await dialog.getByRole("checkbox", { name: /fix the greeting/ }).isChecked(), false);
   await dialog.getByRole("button", { name: "Cancel" }).click();
+});
+
+test("phone: with full control, the phone link signs a phone in to the whole app", async () => {
+  const api = (path: string, body?: unknown) =>
+    fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+  const PHONE = `http://127.0.0.1:${REMOTE_PORT}`; // the Wi-Fi listener, reached the way a phone would
+  const remote = await api("/api/remote", { enabled: true, lan: true, control: false });
+  for (let i = 0; i < 50 && !(await fetch(`${PHONE}${remote.path}`).then((r) => r.ok, () => false)); i++) await new Promise((r) => setTimeout(r, 100));
+
+  // Without full control the link is the read-only view, and the app's API isn't served.
+  assert.doesNotMatch(await (await fetch(`${PHONE}${remote.path}`)).text(), /<button|<form/);
+  assert.equal((await fetch(`${PHONE}/api/runs`)).status, 404);
+
+  await api("/api/remote", { control: true });
+  const signIn = await fetch(`${PHONE}${remote.path}`, { redirect: "manual" });
+  assert.equal(signIn.status, 302);
+  assert.equal(signIn.headers.get("location"), "/");
+  const cookie = signIn.headers.get("set-cookie")!.split(";")[0]!;
+  assert.match(cookie, new RegExp(`^codeflow_phone_${REMOTE_PORT}=`));
+  assert.equal((await fetch(`${PHONE}/api/runs`, { headers: { cookie } })).status, 200, "the phone's cookie opens the API");
+  assert.equal((await fetch(`${PHONE}/api/runs`)).status, 401);
+  assert.equal((await fetch(`${PHONE}/api/runs`, { headers: bearer })).status, 401, "the computer's token isn't a phone sign-in");
+  assert.equal((await fetch(`${BASE}/api/runs`, { headers: { cookie } })).status, 401, "nor is the phone's cookie a sign-in on the computer's listener");
+  const crossSite = await fetch(`${PHONE}/api/remote`, { method: "POST", headers: { cookie, origin: "http://evil.example", "content-type": "application/json" }, body: "{}" });
+  assert.equal(crossSite.status, 403);
+
+  // A phone-sized browser: scanning the QR code lands in the app, ready to start a run.
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const tab = await phone.newPage();
+  await tab.goto(`${PHONE}${remote.path}`);
+  await tab.getByRole("heading", { name: "What should the team build?" }).waitFor();
+  assert.equal(new URL(tab.url()).pathname, "/");
+  await tab.getByRole("button", { name: "Show runs" }).click();
+  await tab.locator(".rail.open").waitFor();
+
+  // A new link signs phones out.
+  await api("/api/remote", { rotate: true });
+  await new Promise((r) => setTimeout(r, 200)); // phones' open connections are dropped just after the reply
+  assert.equal((await fetch(`${PHONE}/api/runs`, { headers: { cookie } })).status, 401);
+  await tab.reload();
+  await tab.getByText("Scan the QR code again").waitFor();
+  await phone.close();
+  await api("/api/remote", { enabled: false, lan: false, control: false });
 });
 
 test("sign-in: the first browser claims code-flow; once agents have run, others need the link", async () => {

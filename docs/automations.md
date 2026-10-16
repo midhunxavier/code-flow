@@ -52,12 +52,19 @@ Agents still run as their own CLIs (they need your subscription logins) inside t
 
 ## Phone view
 
-Turn on the *read-only view behind a secret link* on the Automations page.
+Turn on the *Phone link* under **Phone** on the Automations page.
 
-- It lists what's running and what needs you, and each run's summary, review, results and steps. It refreshes itself.
-- It has no buttons: nothing can be started, approved or merged from it.
+- On its own it's a read-only view: what's running and what needs you, and each run's summary, review, results and steps. It refreshes itself and has no buttons.
 - *Reachable from my Wi-Fi* also serves it, and webhooks, on your network at port `PORT+1`. It's plain HTTP, so use it only on networks you trust, or over a VPN like Tailscale.
 - With *Reachable from my Wi-Fi* on, the page shows a **QR code** for the Wi-Fi link: scan it with your phone's camera. (The `localhost` link only opens on the computer running code-flow, so there's no QR code until the Wi-Fi link exists.)
 - **New link** revokes the old one.
 
-Automations live in `~/.codeflow/triggers.json` and the phone view's settings in `~/.codeflow/remote.json`. Both files are readable only by you.
+### Full control from your phone
+
+With *Reachable from my Wi-Fi* on, you can also turn on *Full control from my phone*. Then the Wi-Fi link signs your phone in to the whole app, laid out for a phone: start runs (pick the repo, attach files, start from GitHub), answer plan approvals, message agents, review diffs and send comments, merge, open PRs, triage the inbox, and change automations.
+
+- Scanning the QR code sets a cookie for that address and opens code-flow. The phone stays signed in, across restarts too, until you make a **New link** or turn full control off. Either one signs every phone out and closes their open connections.
+- *Terminal*, *Editor* and *Folder* on a result open on your computer, not the phone. *Run app* starts the app on your computer; its link uses the computer's Wi-Fi address, so it only opens if the app listens on your network too (e.g. `vite --host`).
+- Anyone who gets the link can run agents and commands on your computer, the same as you can. Keep it to your own phone, and to networks you trust or a VPN. The link isn't encrypted on plain HTTP.
+
+Automations live in `~/.codeflow/triggers.json` and the phone settings in `~/.codeflow/remote.json`. Both files are readable only by you.
