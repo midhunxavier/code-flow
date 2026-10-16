@@ -35,7 +35,7 @@ src/context.ts           validates and stages task context for agents
 ```
 
 - **AgentAdapter** (`src/adapters/types.ts`): `run({prompt, cwd, mode, resumeSessionId}, onEvent) → {ok, finalText, sessionId}`. Adapters convert each CLI's JSONL into `text | thinking | tool_call | tool_result | usage | status | error` events. An adapter whose turns take input while they run calls `onSteerable(steer)` once its turn can be steered. The engine then hands queued notes to `steer`. `src/adapters/codex-app-server.ts` turns app-server notifications into the events `codex exec --json` prints, so both Codex transports share one handler.
-- **TeamContext** gives patterns a few primitives. `ask()` runs one agent turn as a visible step, and `resume` continues that agent's own conversation. `worktree()`, `commit()`, `diff()` and `artifact()` handle git. Structured hand-offs (review verdicts, judge picks, subtask lists) use a fenced ```` ```json ```` block that `extractJson` parses.
+- **TeamContext** gives patterns a few primitives. `ask()` runs one agent turn as a visible step, and `resume` continues that agent's own conversation. `worktree()`, `commit()`, `diff()` and `artifact()` handle git. `parallel()` runs branches side by side (race contestants, workers, debaters); when one throws, the others are stopped and waited for, so nothing keeps running after the run ends. Structured hand-offs (review verdicts, judge picks, subtask lists) use a fenced ```` ```json ```` block that `extractJson` parses.
 - Every event is appended to `~/.codeflow/runs/<run>.jsonl`. Worktrees live in `<repo>/.worktrees/<run-id>/` (see [Worktrees and branches](getting-started.md#worktrees-and-branches)).
 
 ### Adding a pattern

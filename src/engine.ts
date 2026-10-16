@@ -781,7 +781,8 @@ export class TeamContext {
   /** Set up a throwaway checkout of `commit` and run the check there; undefined when setup fails. */
   private async checkOnBase(commit: string, command: string): Promise<CheckResult | undefined> {
     const wt: Worktree = { name: "base", path: join(this.run.worktreeDir, ".base-check"), branch: "", base: commit };
-    await openDetachedWorktree(this.run.repo, wt.path, commit);
+    const { warning } = await openDetachedWorktree(this.run.repo, wt.path, commit, { signal: this.signal });
+    if (warning) this.log(warning, "warn");
     try {
       if (this.run.loop.copy?.length) await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
       if (this.run.loop.setup && !(await this.command("setup", "Setup base commit", wt, this.run.loop.setup)).ok) return undefined;
@@ -862,9 +863,10 @@ export class TeamContext {
       if (!(await branchExists(this.run.repo, wt.branch))) {
         throw new Error(`Branch ${wt.branch} was deleted, so the work in ${name} is gone. Start a new run instead.`);
       }
-      const { wt: reopened } = await openWorktree(this.run.repo, name, wt.path, wt.branch, fromRef);
+      const { wt: reopened, warning } = await openWorktree(this.run.repo, name, wt.path, wt.branch, fromRef, { signal: this.signal });
       wt = { ...reopened, base: wt.base };
       this.manager.emit(this.run, { type: "log", level: "info", text: `Re-attached ${name} at ${wt.path} (branch ${wt.branch})` });
+      if (warning) this.log(warning, "warn");
       await this.prepareWorktree(wt);
     }
     if (!this.heads.has(name)) {
@@ -876,16 +878,18 @@ export class TeamContext {
   }
 
   private async openWorktreeLive(name: string, fromRef: string): Promise<Worktree> {
-    const { wt, created } = await openWorktree(
+    const { wt, created, warning } = await openWorktree(
       this.run.repo,
       name,
       join(this.run.worktreeDir, name),
       `${this.run.branchPrefix}/${name}`,
       fromRef,
+      { signal: this.signal },
     );
     if (!this.run.worktrees.some((w) => w.name === name)) {
       this.run.worktrees.push({ name: wt.name, branch: wt.branch, path: wt.path });
     }
+    if (warning) this.log(warning, "warn");
     if (!created) {
       // Recorded only once it's set up, so an earlier attempt may have stopped mid-setup (a crash
       // during `npm ci`): agents would get a worktree without its dependencies.
@@ -2292,7 +2296,8 @@ export class RunManager {
     this.history.get(run.id)?.push(event);
     this.bus.emit(run.id, event);
     if (event.type === "run") this.bus.emit("*", event.run);
-    appendLine(`${run.id}.jsonl`, event);
+    // A finished run's last snapshot is synced: after a power cut it must not reload as running.
+    appendLine(`${run.id}.jsonl`, event, { sync: event.type === "run" && event.run.status !== "running" });
   }
 }
 
