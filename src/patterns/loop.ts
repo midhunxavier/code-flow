@@ -90,7 +90,10 @@ export const loopPattern: Pattern = {
       const progress = !!sha && (result.ok || failureFingerprint(result) !== failureFingerprint(last));
       last = result;
       if (result.ok) {
-        const issues = (await ctx.testChanges(wt)).filter((i) => i.severity === "high");
+        // Without a test count from the runner, a drop in tests can't be seen, so removed
+        // assertions are the evidence left: they block too.
+        const uncounted = baseline.tests === undefined || result.tests === undefined;
+        const issues = (await ctx.testChanges(wt)).filter((i) => i.severity === "high" || (uncounted && i.kind === "weakened-test"));
         if (!issues.length) {
           solvedBy = agent;
           break;

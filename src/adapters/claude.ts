@@ -1,5 +1,6 @@
-import type { AgentAdapter, AgentEvent, ModelCatalog, RunOptions, RunResult } from "./types.js";
-import { commandExists, describeFailure, runJsonlProcess, stringify, truncate } from "./process.js";
+import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, RunOptions, RunResult } from "./types.js";
+import { classifyError, resetFromText } from "./errors.js";
+import { commandExists, describeFailure, processErrorKind, startJsonlProcess, stderrTail, stringify, truncate } from "./process.js";
 
 /**
  * Claude Code via `claude -p --output-format stream-json`.
@@ -83,20 +84,24 @@ export const claudeAdapter: AgentAdapter = {
       );
     }
 
-    let sessionId = opts.resumeSessionId;
+    // Only a session the CLI confirms in this turn: a resume that failed must not hand back its id.
+    let sessionId: string | undefined;
     let finalText = "";
     let lastAssistantText = "";
     let resultError: string | undefined;
     let sawResult = false;
     let structured: unknown;
+    /** The plan refused this turn (rate_limit_event "rejected"), and when it resets if it said. */
+    let rejected: { resetsAt?: number } | undefined;
 
-    const outcome = await runJsonlProcess({
+    const proc = startJsonlProcess({
       command: "claude",
       args,
       input: opts.prompt,
       cwd: opts.cwd,
       signal: opts.signal,
       timeoutMs: opts.timeoutMs,
+      idleTimeoutMs: opts.idleTimeoutMs,
       onText: (line) => onEvent({ kind: "status", text: line }),
       onJson: (msg) => {
         switch (msg.type) {
@@ -152,15 +157,21 @@ export const claudeAdapter: AgentAdapter = {
             }
             onEvent({ kind: "quota", status: info.status ?? "unknown", windows });
             if (info.status && info.status !== "allowed") onEvent({ kind: "status", text: `Claude rate limit: ${info.status}` });
+            if (info.status === "rejected") {
+              // The window that refused it resets last among the full ones; the top level names it directly.
+              const full = Object.values(windows).filter((w) => (w.utilization ?? 0) >= 1 && w.resetsAt).map((w) => w.resetsAt!);
+              rejected = { resetsAt: info.resetsAt ? info.resetsAt * 1000 : full.length ? Math.max(...full) : undefined };
+            }
             break;
           }
 
           case "result":
             sawResult = true;
+            proc.resultSeen();
             finalText = typeof msg.result === "string" ? msg.result : lastAssistantText;
             if (msg.session_id) sessionId = msg.session_id;
             if (msg.structured_output !== undefined) structured = msg.structured_output;
-            if (msg.is_error) resultError = finalText || msg.subtype || "Claude reported an error";
+            if (msg.is_error || /^error/.test(msg.subtype ?? "")) resultError = resultErrorText(msg);
             onEvent({
               kind: "usage",
               // Writing to the prompt cache is billed as input; reading from it is counted apart.
@@ -178,11 +189,44 @@ export const claudeAdapter: AgentAdapter = {
       },
     });
 
-    if (!sawResult || outcome.exitCode !== 0 || resultError) {
-      const error = resultError ?? describeFailure("claude", outcome);
-      onEvent({ kind: "error", message: error });
-      return { ok: false, finalText: finalText || lastAssistantText, sessionId, error };
-    }
-    return { ok: true, finalText, sessionId, structured };
+    const outcome = await proc.outcome;
+
+    // After a successful result, how the process ended (a hook that hung, a non-zero exit) doesn't matter.
+    if (sawResult && !resultError && !outcome.aborted) return { ok: true, finalText, sessionId, structured };
+
+    const tail = stderrTail(outcome);
+    const error = resultError
+      ? `${resultError}${tail && !resultError.includes(tail) ? `\n${tail}` : ""}`
+      : !sawResult && outcome.exitCode === 0
+        ? `claude exited without a result${tail ? `: ${tail}` : ""}`
+        : describeFailure("claude", outcome);
+    let errorKind: ErrorKind = processErrorKind(outcome) ?? classifyError(error);
+    if (rejected && (errorKind === "other" || errorKind === "rate_limit")) errorKind = "usage_limit";
+    const resetsAt = errorKind === "usage_limit" ? (rejected?.resetsAt ?? resetFromText(error)) : undefined;
+    onEvent({ kind: "error", message: error });
+    return {
+      ok: false,
+      finalText: finalText || lastAssistantText,
+      sessionId: errorKind === "session_not_found" ? undefined : sessionId,
+      error,
+      errorKind,
+      ...(resetsAt && { resetsAt }),
+    };
   },
 };
+
+/**
+ * What a failed `result` event says went wrong. With `is_error`, `result` is the CLI's error
+ * text ("API Error: 529 …"); without a `result`, the subtype (and `errors`) say. Never the
+ * agent's last message: an agent quoting an error from its work hasn't failed.
+ */
+function resultErrorText(msg: any): string {
+  if (msg.is_error && typeof msg.result === "string" && msg.result.trim()) return msg.result.trim();
+  const errors = Array.isArray(msg.errors) ? msg.errors.filter((e: unknown) => typeof e === "string" && e).join("; ") : "";
+  const what =
+    msg.subtype === "error_max_turns" ? "Claude stopped at its turn limit" :
+    msg.subtype === "error_max_budget_usd" ? "Claude stopped at its budget limit" :
+    msg.subtype === "error_during_execution" ? "Claude stopped with an error during execution" :
+    `Claude reported an error${msg.subtype && msg.subtype !== "success" ? ` (${msg.subtype})` : ""}`;
+  return errors ? `${what}: ${errors}` : what;
+}

@@ -4,6 +4,8 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { killGroup, trackGroup, untrackGroup } from "./adapters/process.js";
+import { timerMs } from "./config.js";
+import { childEnv } from "./env.js";
 
 /**
  * The "done when" check: a command code-flow runs itself (never an agent) in a worktree,
@@ -136,7 +138,7 @@ export function dockerArgs(cwd: string, command: string, container: Container, n
 /** Run a shell command in `cwd` with a timeout; the whole process group is killed on timeout/abort. */
 export function runCheck(cwd: string, command: string, opts: { timeoutMs: number; signal?: AbortSignal; container?: Container }): Promise<CheckResult> {
   const started = Date.now();
-  const env: NodeJS.ProcessEnv = { ...process.env, CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" };
+  const env: NodeJS.ProcessEnv = { ...childEnv(), CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" };
   // Inherited from whatever runs code-flow; a nested `node --test` would silently skip every
   // test and exit 0 — a false pass.
   delete env.NODE_TEST_CONTEXT;
@@ -168,7 +170,7 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
     const timer = setTimeout(() => {
       timedOut = true;
       stop();
-    }, opts.timeoutMs);
+    }, timerMs(opts.timeoutMs, 1));
     const onAbort = () => stop();
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 

@@ -13,6 +13,24 @@ if (args[0] === "--version") {
   process.stdout.write({ claude: "2.1.300 (Claude Code)\n", codex: "codex-cli 0.162.1\n", agy: "1.3.6\n" }[vendor]);
   process.exit(0);
 }
+
+// --help lists the flags and subcommands code-flow passes. FAKE_UNKNOWN_FLAG is one this CLI
+// doesn't have (an older or newer version): it's left out of --help and rejected when passed.
+const unknownFlag = process.env.FAKE_UNKNOWN_FLAG;
+if (args.includes("--help")) {
+  const sub = args.filter((a) => a !== "--help").join(" ");
+  const help = helpText(vendor, sub);
+  const drop = (line) =>
+    (unknownFlag && new RegExp(`(^|[\\s,])${unknownFlag}(?=$|[\\s,<])`).test(line)) ||
+    (process.env.FAKE_NO_APP_SERVER && vendor === "codex" && /^\s+app-server\b/.test(line));
+  process.stdout.write(help.split("\n").filter((line) => !drop(line)).join("\n"));
+  process.exit(0);
+}
+if (unknownFlag && args.includes(unknownFlag)) {
+  // commander's wording (claude, agy) and clap's (codex)
+  process.stderr.write(vendor === "codex" ? `error: unexpected argument '${unknownFlag}' found\n\nUsage: codex exec [OPTIONS] [PROMPT]\n` : `error: unknown option '${unknownFlag}'\n`);
+  process.exit(vendor === "codex" ? 2 : 1);
+}
 if (vendor === "claude" && args[0] === "auth" && args[1] === "status") {
   process.stdout.write(JSON.stringify({ loggedIn: process.env.FAKE_SIGNED_OUT !== "claude", authMethod: "claude.ai" }));
   process.exit(0);
@@ -21,6 +39,10 @@ if (vendor === "codex" && args[0] === "login" && args[1] === "status") {
   if (process.env.FAKE_SIGNED_OUT === "codex") {
     process.stderr.write("Not logged in\n");
     process.exit(1);
+  }
+  if (process.env.FAKE_SIGNED_OUT === "codex-exit0") {
+    process.stdout.write("Not logged in\n");
+    process.exit(0);
   }
   process.stdout.write("Logged in using ChatGPT\n");
   process.exit(0);
@@ -39,6 +61,15 @@ if (vendor === "codex" && args[0] === "debug" && args[1] === "models") {
   process.exit(0);
 }
 if (vendor === "agy" && args[0] === "models") {
+  // FAKE_AGY_MODELS_FAIL: "network" (Google unreachable) or "signed-out".
+  if (process.env.FAKE_AGY_MODELS_FAIL === "network") {
+    process.stderr.write("Error: request to https://cloudcode-pa.googleapis.com failed: getaddrinfo ENOTFOUND cloudcode-pa.googleapis.com\n");
+    process.exit(1);
+  }
+  if (process.env.FAKE_AGY_MODELS_FAIL === "signed-out") {
+    process.stderr.write("Error: not signed in. Run agy to sign in with your Google account.\n");
+    process.exit(1);
+  }
   process.stdout.write("Fetching available models...\nmodel-one\tModel One (High)\nmodel-two\tModel Two\n");
   process.exit(0);
 }
@@ -51,6 +82,28 @@ if (vendor === "codex" && args[0] === "app-server") {
 // Prompts arrive on stdin, as the real CLIs receive them from code-flow.
 const stdin = readFileSync(0, "utf8");
 const prompt = vendor === "agy" ? JSON.parse(stdin.split("\n")[0]).message.content : stdin;
+
+/** FAKE_<name>_VENDOR names this vendor (one, or a comma-separated list). */
+const when = (name) => (process.env[`FAKE_${name}_VENDOR`] ?? "").split(",").includes(vendor);
+const sleepFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A CLI stuck before printing anything (a login prompt, a stalled network).
+if (when("SILENT")) {
+  await sleepFor(60_000);
+  process.exit(0);
+}
+
+// Resuming a conversation that's gone, in each CLI's real wording.
+const flagValue = (flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined);
+const resumeId = vendor === "claude" ? flagValue("--resume") : vendor === "agy" ? flagValue("--conversation") : args[1] === "resume" ? args.at(-2) : undefined;
+if (resumeId && when("INVALID_SESSION")) {
+  if (vendor === "agy") {
+    process.stdout.write(JSON.stringify({ event: "result", result: { status: "NOT_FOUND", error: `conversation ${resumeId} not found` } }) + "\n");
+  } else {
+    process.stderr.write(vendor === "claude" ? `No conversation found with session ID: ${resumeId}\n` : `Error: thread/resume: no rollout found for thread id ${resumeId}\n`);
+  }
+  process.exit(1);
+}
 
 // Let tests inspect exactly what code-flow passed to the CLI.
 if (process.env.FAKE_RECORD_DIR) {
@@ -75,7 +128,44 @@ if (pause) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pause);
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 const session = randomUUID();
 
-if (vendor === "claude") {
+// One line far over code-flow's limit (a runaway tool output, FAKE_HUGE_LINE_MB), before the stream.
+if (when("HUGE_LINE")) out({ type: "noise", data: "x".repeat(Number(process.env.FAKE_HUGE_LINE_MB ?? 17) * 1024 * 1024) });
+
+if (when("CRASH")) {
+  // Some output, then the CLI dies without a result.
+  if (vendor === "claude") {
+    out({ type: "system", subtype: "init", session_id: session });
+    out({ type: "assistant", message: { content: [{ type: "text", text: "Starting on it." }] } });
+  } else if (vendor === "codex") {
+    out({ type: "thread.started", thread_id: session });
+    out({ type: "item.started", item: { id: "i1", type: "command_execution", command: "ls", status: "in_progress" } });
+  } else {
+    out({ event: "init", conversation_id: session, init: { cwd: process.cwd() } });
+    out({ event: "step_update", step_update: { step_type: "agent_response", state: "ACTIVE", text_delta: "Starting on it." } });
+  }
+  process.stderr.write("fatal: fake crash mid-stream\n");
+  process.exitCode = 1;
+} else if (vendor === "claude" && process.env.FAKE_CLAUDE_FAIL) {
+  // How Claude Code ends a turn that failed: "rejected" (plan usage used up), "auth", or
+  // "agent-says-500" (a failed result with no text, after the agent quoted an error from its work).
+  const mode = process.env.FAKE_CLAUDE_FAIL;
+  out({ type: "system", subtype: "init", session_id: session });
+  if (mode === "rejected") {
+    const resetsAt = Number(process.env.FAKE_CLAUDE_RESETS_AT ?? 1792092600);
+    out({ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt, rateLimitType: "five_hour", utilization: 1, isUsingOverage: false } });
+    const text = "You've hit your limit · resets 5pm (Europe/Stockholm)";
+    out({ type: "assistant", message: { content: [{ type: "text", text }] } });
+    out({ type: "result", subtype: "success", is_error: true, result: text, session_id: session });
+  } else if (mode === "auth") {
+    const text = "Invalid API key · Please run /login";
+    out({ type: "assistant", message: { content: [{ type: "text", text }] } });
+    out({ type: "result", subtype: "success", is_error: true, result: text, session_id: session });
+  } else {
+    out({ type: "assistant", message: { content: [{ type: "text", text: "The API returned 500 and the request timed out, so I stopped." }] } });
+    out({ type: "result", subtype: "error_during_execution", is_error: true, session_id: session });
+  }
+  process.exitCode = 1;
+} else if (vendor === "claude") {
   out({ type: "system", subtype: "init", session_id: session });
   out({ type: "rate_limit_event", rate_limit_info: { status: "allowed", unifiedWindows: { five_hour: { utilization: 0.42, resetsAt: 1792092600 }, seven_day: { utilization: 0.1, resetsAt: 1792350000 } } } });
   out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "x" } }] } });
@@ -104,4 +194,86 @@ if (vendor === "claude") {
     out({ event: "step_update", step_update: { step_type: "agent_response", state: "ACTIVE", text_delta: chunk } });
   }
   out({ event: "result", result: { conversation_id: session, status: "SUCCESS", response: answer, structured_output: structured, usage: { input_tokens: 1 } } });
+}
+
+// The result is out, but the CLI doesn't exit (a hook or MCP server that hangs on shutdown),
+// and it ignores SIGTERM.
+if (when("HANG_AFTER_RESULT")) {
+  process.on("SIGTERM", () => {});
+  setTimeout(() => {}, 60_000);
+}
+
+function helpText(vendor, sub) {
+  if (vendor === "claude") {
+    return `Usage: claude [options] [command] [prompt]
+
+Options:
+  -p, --print                                       Print response and exit (useful for pipes)
+  --output-format <format>                          Output format (only works with --print)
+  --verbose                                         Override verbose mode setting from config
+  -r, --resume [value]                              Resume a conversation by session ID
+  --model <model>                                   Model for the current session
+  --effort <level>                                  Effort level for the current session
+  --json-schema <schema>                            JSON Schema for structured output validation
+  --permission-mode <mode>                          Permission mode to use for the session
+  --allowedTools, --allowed-tools <tools...>        Tools to allow
+  --disallowedTools, --disallowed-tools <tools...>  Tools to deny
+  -v, --version                                     Output the version number
+  -h, --help                                        Display help for command
+`;
+  }
+  if (vendor === "codex" && sub === "exec") {
+    return `Run Codex non-interactively
+
+Usage: codex exec [OPTIONS] [PROMPT]
+       codex exec [OPTIONS] <COMMAND> [ARGS]
+
+Commands:
+  resume  Resume a previous session by id or pick the most recent with --last
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -c, --config <key=value>    Override a configuration value
+  -m, --model <MODEL>         Model the agent should use
+  -C, --cd <DIR>              Tell the agent to use the specified directory as its working root
+      --skip-git-repo-check   Allow running Codex outside a Git repository
+      --output-schema <FILE>  Path to a JSON Schema file describing the model's final response shape
+      --json                  Print events to stdout as JSONL
+  -h, --help                  Print help
+`;
+  }
+  if (vendor === "codex") {
+    return `Codex CLI
+
+Usage: codex [OPTIONS] [PROMPT]
+       codex [OPTIONS] <COMMAND> [ARGS]
+
+Commands:
+  exec        Run Codex non-interactively [aliases: e]
+  login       Manage login
+  app-server  [experimental] Run the app server or related tooling
+  debug       Internal debugging commands
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+  -c, --config <key=value>  Override a configuration value
+  -h, --help                Print help
+  -V, --version             Print version
+`;
+  }
+  return `Usage: agy [options] [prompt]
+
+Options:
+  -p, --print                     Print the response and exit
+  --input-format <format>         Input format: text or stream-json
+  --output-format <format>        Output format: text, json or stream-json
+  --print-timeout <duration>      How long a print-mode run may take
+  --sandbox                       Confine writes to the working directory
+  --conversation <id>             Continue a conversation
+  --model <model>                 Model to use
+  --effort <level>                Reasoning effort
+  --json-schema <schema>          JSON Schema for the final answer
+  --dangerously-skip-permissions  Allow every tool without asking
+  -h, --help                      Show help
+`;
 }

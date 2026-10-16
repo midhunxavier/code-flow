@@ -36,8 +36,17 @@ export function GitHubPicker() {
     if (!open || !repo.value) return;
     setItems(null);
     setError("");
-    api<Item[]>(`/api/github/${kind === "issue" ? "issues" : "prs"}?repo=${enc(repo.value)}`).then(setItems, (e) => setError(e.message));
-  }, [open, kind]);
+    // Only the latest list counts: opening on "Pull requests" first asks for issues (the kind
+    // before the switch), and whichever answer came last used to win.
+    let current = true;
+    api<Item[]>(`/api/github/${kind === "issue" ? "issues" : "prs"}?repo=${enc(repo.value)}`).then(
+      (list) => current && setItems(list),
+      (e) => current && setError(e.message),
+    );
+    return () => {
+      current = false;
+    };
+  }, [open, kind, repo.value]);
 
   const pick = (item: Item) => {
     const chosen: SourcePick = {
