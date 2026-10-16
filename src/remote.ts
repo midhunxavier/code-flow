@@ -7,9 +7,10 @@ import { CODEFLOW_HOME } from "./config.js";
 import type { Run, RunManager, RunSummary } from "./engine.js";
 
 /**
- * A read-only view for your phone: what's running, what needs you, and each run's result.
- * Plain server-rendered HTML that refreshes itself, behind a secret link. It has no buttons —
- * nothing can be started, approved or merged from it.
+ * code-flow on your phone, behind a secret link. By default it's a read-only view: what's
+ * running, what needs you, and each run's result, as plain server-rendered HTML that refreshes
+ * itself and has no buttons. With `control` on (and the Wi-Fi listener), the link signs the
+ * phone in to the full app instead — see server.ts.
  */
 
 export interface RemoteSettings {
@@ -17,6 +18,8 @@ export interface RemoteSettings {
   token: string;
   /** Also listen on your local network (so a phone on the same Wi-Fi can open it). */
   lan: boolean;
+  /** The link opens the whole app on the network listener: start, answer, merge — everything. */
+  control: boolean;
 }
 
 const FILE = join(CODEFLOW_HOME, "remote.json");
@@ -25,12 +28,12 @@ export async function loadRemote(): Promise<RemoteSettings> {
   if (existsSync(FILE)) {
     try {
       const raw = JSON.parse(await readFile(FILE, "utf8"));
-      if (typeof raw.token === "string" && raw.token.length >= 32) return { enabled: !!raw.enabled, token: raw.token, lan: !!raw.lan };
+      if (typeof raw.token === "string" && raw.token.length >= 32) return { enabled: !!raw.enabled, token: raw.token, lan: !!raw.lan, control: !!raw.control };
     } catch {
       // fall through to fresh settings
     }
   }
-  return { enabled: false, token: randomBytes(24).toString("hex"), lan: false };
+  return { enabled: false, token: randomBytes(24).toString("hex"), lan: false, control: false };
 }
 
 export async function saveRemote(settings: RemoteSettings) {

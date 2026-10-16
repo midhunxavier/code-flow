@@ -51,12 +51,17 @@ export function App() {
     window.addEventListener("keydown", onShortcut);
     return () => window.removeEventListener("keydown", onShortcut);
   }, []);
+  // On phones the runs list is a drawer: going anywhere closes it.
+  useEffect(() => {
+    railOpen.value = false;
+  }, [route.value]);
 
   return (
     <>
       <TopBar />
       <div class={`app ${showFiles ? "" : "no-files"}`}>
         <Rail />
+        {railOpen.value ? <div class="rail-scrim" aria-hidden="true" onClick={() => (railOpen.value = false)} /> : null}
         <main>
           {route.value.view === "run" ? (
             <RunView key={route.value.id} id={route.value.id} />

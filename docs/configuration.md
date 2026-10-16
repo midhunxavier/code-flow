@@ -58,7 +58,7 @@ Click the agent names in the top bar to see, for each CLI, whether it's installe
 | `CODEFLOW_TOKEN` | random per start | The session token (set it to keep browsers signed in across restarts; anything that can read it can use the API) |
 | `CODEFLOW_MAX_DIFF_CHARS` | `60000` | Diffs longer than this are fitted (whole files first) before being passed to another agent |
 | `CODEFLOW_CLAUDE_WRITE_TOOLS` | build/test allow-list | Comma-separated Claude tool rules for write mode, e.g. `Edit,Bash` |
-| `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view and webhooks on your network, when *Reachable from my Wi-Fi* is on |
+| `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view (or the full app, with phone control) and webhooks on your network, when *Reachable from my Wi-Fi* is on |
 | `CODEFLOW_SCHEDULER_TICK_MS` | `30000` | How often due automations are checked |
 | `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments |
 | `CODEFLOW_CODEX_TRANSPORT` | `auto` | `auto`: `codex app-server` when the installed Codex has it, else `codex exec` (decided once per server start). `app-server`: require it. `exec`: always `codex exec` (your notes then wait for Codex's next turn) |

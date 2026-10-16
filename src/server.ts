@@ -111,27 +111,73 @@ function sessionCookie(): string {
   return `${COOKIE}=${auth.token}; HttpOnly; SameSite=Strict; Path=/`;
 }
 
-function signedIn(req: IncomingMessage): boolean {
-  const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-  if (bearer && tokenMatches(bearer, auth.token)) return true;
+function readCookie(req: IncomingMessage, name: string): string | undefined {
   const cookie = String(req.headers.cookie ?? "")
     .split(";")
     .map((c) => c.trim())
-    .find((c) => c.startsWith(`${COOKIE}=`));
-  return !!cookie && tokenMatches(cookie.slice(COOKIE.length + 1), auth.token);
+    .find((c) => c.startsWith(`${name}=`));
+  return cookie?.slice(name.length + 1);
 }
 
-const LOCKED_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>code-flow — sign in</title><style>
+function signedIn(req: IncomingMessage): boolean {
+  const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+  if (bearer && tokenMatches(bearer, auth.token)) return true;
+  const cookie = readCookie(req, COOKIE);
+  return !!cookie && tokenMatches(cookie, auth.token);
+}
+
+/**
+ * Phones sign in with the phone link instead, when full control from the phone is on: opening
+ * `/r/<token>` on the network listener sets this cookie and opens the app. The phone token is
+ * saved in remote.json, so the phone stays signed in across restarts until you make a new link
+ * or turn phone control off. The name carries the port because cookies ignore ports, and a
+ * second code-flow on this machine has a link of its own.
+ */
+const PHONE_COOKIE = `codeflow_phone_${REMOTE_PORT}`;
+const phoneControl = (s: RemoteSettings = remote) => s.enabled && s.lan && s.control;
+
+function phoneCookie(): string {
+  return `${PHONE_COOKIE}=${remote.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${400 * 86_400}`;
+}
+
+function phoneSignedIn(req: IncomingMessage): boolean {
+  const cookie = readCookie(req, PHONE_COOKIE);
+  return phoneControl() && !!cookie && tokenMatches(cookie, remote.token);
+}
+
+/**
+ * The network listener has no fixed host name to check (Wi-Fi addresses change, VPNs add their
+ * own), so it only refuses cross-origin requests. A page that rebinds its own name to this
+ * address still can't use it: the phone's cookie belongs to the address it signed in on.
+ */
+function checkLanOrigin(req: IncomingMessage) {
+  const origin = req.headers.origin;
+  if (origin && origin !== `http://${req.headers.host}`) throw new HttpError(403, "Cross-origin request refused");
+}
+
+const lockedPage = (title: string, body: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>code-flow — ${title}</title><style>
 :root{--bg:#f7f7f5;--text:#222f30;--muted:#445e5f;--panel:#fdfdfc;--border:#e4e3e3}
 @media (prefers-color-scheme:dark){:root{--bg:#111918;--text:#f5f8f7;--muted:#c9cbbe;--panel:#192425;--border:#2b3a3c}}
-body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 Manrope,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+body{margin:0;padding:0 16px;background:var(--bg);color:var(--text);font:15px/1.55 Manrope,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
 main{max-width:520px;margin:12vh auto;padding:28px;background:var(--panel);border:1px solid var(--border);border-radius:24px;box-shadow:0 12px 30px rgba(34,47,48,.06),0 2px 10px rgba(34,47,48,.04)}
 h1{font-size:22px;letter-spacing:-.03em;margin:0 0 10px}p{color:var(--muted);margin:8px 0}code{font:13px ui-monospace,Menlo,monospace}
-</style></head><body><main><h1>Open code-flow from its link</h1>
+</style></head><body><main>${body}</main></body></html>`;
+
+const LOCKED_PAGE = lockedPage(
+  "sign in",
+  `<h1>Open code-flow from its link</h1>
 <p>This code-flow server is already in use, so it only accepts browsers that open it with its link.</p>
 <p>Find the line <code>Open http://localhost:${PORT}/?token=…</code> where code-flow was started (the terminal, or the preview's server log) and open that link here.</p>
-<p>Restarting code-flow and reloading this page also works, as long as no run has started yet.</p></main></body></html>`;
+<p>Restarting code-flow and reloading this page also works, as long as no run has started yet.</p>`,
+);
+
+const PHONE_LOCKED_PAGE = lockedPage(
+  "scan the QR code",
+  `<h1>Scan the QR code again</h1>
+<p>This phone isn't signed in to code-flow. On your computer, open code-flow's <b>Automations</b> page and scan the QR code under <b>Phone</b>.</p>
+<p>Making a new link, or turning off full control from your phone, signs phones out.</p>`,
+);
 
 /** Run an action whose errors are the user's to fix (shown as 400 with the message). */
 async function attempt<T>(fn: () => Promise<T>): Promise<T> {
@@ -355,8 +401,8 @@ function describeAutomation(t: ReturnType<typeof automations.list>[number]) {
   return { ...t, scheduleText: describeSchedule(t.schedule), hookPath: `/hooks/${t.id}` };
 }
 
-/** Unauthenticated-origin routes with their own tokens: webhooks and the read-only phone view. */
-async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL, parts: string[]): Promise<boolean> {
+/** Unauthenticated-origin routes with their own tokens: webhooks and the phone link. */
+async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL, parts: string[], via: Via): Promise<boolean> {
   if (parts[0] === "hooks" && parts[1] && req.method === "POST") {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -392,6 +438,13 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
     const token = parts[1] ?? "";
     if (!remote.enabled || !tokenMatches(token, remote.token)) throw new HttpError(404, "Not found");
     const base = `/r/${token}`;
+    if (via === "lan" && phoneControl()) {
+      // Full control: the link signs this phone in and opens the app (on the run it linked to).
+      const run = url.pathname.slice(base.length).match(/^\/run\/([\w-]+)$/)?.[1];
+      res.writeHead(302, { location: run ? `/#/run/${run}` : "/", "set-cookie": phoneCookie(), "cache-control": "no-store", "referrer-policy": "no-referrer" });
+      res.end();
+      return true;
+    }
     const html = renderRemote(manager, base, url.pathname.slice(base.length));
     if (!html) throw new HttpError(404, "Not found");
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
@@ -405,30 +458,29 @@ function remoteInfo() {
   return {
     enabled: remote.enabled,
     lan: remote.lan,
+    control: remote.control,
     path: `/r/${remote.token}`,
     local: `http://localhost:${PORT}/r/${remote.token}`,
     lanUrls: remote.lan ? lanAddresses().map((ip) => `http://${ip}:${REMOTE_PORT}/r/${remote.token}`) : [],
   };
 }
 
-/** A second listener on your network that serves only the phone view and webhooks. */
+/**
+ * A second listener on your network for your phone and webhooks: the phone view, or with phone
+ * control the whole app for a phone signed in with the phone link. `signOut` drops the phones'
+ * open connections (their live event streams would otherwise keep going).
+ */
 let lanServer: ReturnType<typeof createServer> | undefined;
-function syncLanServer() {
+function syncLanServer(signOut = false) {
   if (remote.enabled && remote.lan && !lanServer) {
-    lanServer = createServer((req, res) => {
-      const url = new URL(req.url ?? "/", "http://lan");
-      handlePublic(req, res, url, url.pathname.split("/").filter(Boolean))
-        .then((handled) => {
-          if (!handled) send(res, 404, { error: "Not found" });
-        })
-        .catch((err: Error) => {
-          if (!res.headersSent) send(res, err instanceof HttpError ? err.status : 500, { error: err.message });
-        });
-    }).listen(REMOTE_PORT, "0.0.0.0");
+    lanServer = createServer(listener("lan")).listen(REMOTE_PORT, "0.0.0.0");
     lanServer.on("error", (err) => console.error(`Phone view on port ${REMOTE_PORT}: ${err.message}`));
   } else if ((!remote.enabled || !remote.lan) && lanServer) {
     lanServer.close();
+    lanServer.closeAllConnections();
     lanServer = undefined;
+  } else if (signOut) {
+    lanServer?.closeAllConnections();
   }
 }
 
@@ -458,11 +510,25 @@ function streamAllRuns(req: IncomingMessage, res: ServerResponse) {
   req.on("close", unsubscribe);
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse) {
+/** Which listener a request came in on: this machine's, or the one on your network. */
+type Via = "local" | "lan";
+
+async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   const url = new URL(req.url ?? "/", "http://localhost");
   const parts = url.pathname.split("/").filter(Boolean);
-  if (await handlePublic(req, res, url, parts)) return;
-  checkOrigin(req);
+  if (await handlePublic(req, res, url, parts, via)) return;
+  if (via === "lan") {
+    checkLanOrigin(req);
+    if (req.method === "GET" && url.pathname === "/") {
+      const ok = phoneSignedIn(req);
+      res.writeHead(ok ? 200 : 401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
+      return res.end(ok ? await readFile(indexHtml) : PHONE_LOCKED_PAGE);
+    }
+    // Without phone control, the network listener serves only the phone view and webhooks.
+    if (!phoneControl()) throw new HttpError(404, "Not found");
+  } else {
+    checkOrigin(req);
+  }
 
   if (req.method === "GET" && url.pathname === "/") {
     const given = url.searchParams.get("token");
@@ -484,7 +550,9 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   }
 
   if (parts[0] !== "api") throw new HttpError(404, "Not found");
-  if (!signedIn(req)) throw Object.assign(new HttpError(401, "Not signed in: reload code-flow, or open it from the link printed at startup"), { signIn: true });
+  if (via === "lan" ? !phoneSignedIn(req) : !signedIn(req)) {
+    throw Object.assign(new HttpError(401, via === "lan" ? "Not signed in: scan the phone QR code again" : "Not signed in: reload code-flow, or open it from the link printed at startup"), { signIn: true });
+  }
 
   if (req.method === "GET" && parts[1] === "agents") return send(res, 200, await agentAvailability());
   if (req.method === "GET" && parts[1] === "events") return streamAllRuns(req, res);
@@ -527,11 +595,15 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (parts[1] === "remote") {
     if (req.method === "POST") {
       const body = await readJson(req);
+      const before = { ...remote };
       if (typeof body.enabled === "boolean") remote.enabled = body.enabled;
       if (typeof body.lan === "boolean") remote.lan = body.lan;
+      if (typeof body.control === "boolean") remote.control = body.control;
       if (body.rotate) remote.token = newToken();
       await saveRemote(remote);
-      syncLanServer();
+      const signOut = remote.token !== before.token || (phoneControl(before) && !phoneControl());
+      // After replying (or a dropped request): the phone may be the one turning itself off.
+      res.once("close", () => syncLanServer(signOut));
     }
     return send(res, 200, remoteInfo());
   }
@@ -750,12 +822,16 @@ watcher.start();
 automations.start(Number(process.env.CODEFLOW_SCHEDULER_TICK_MS) || 30_000);
 syncLanServer();
 
-const server = createServer((req, res) => {
-  handle(req, res).catch((err: Error & { confirm?: string; signIn?: boolean }) => {
-    if (res.headersSent) return res.end();
-    send(res, err instanceof HttpError ? err.status : 500, { error: err.message, confirm: err.confirm, signIn: err.signIn });
-  });
-}).listen(PORT, HOST, async () => {
+function listener(via: Via) {
+  return (req: IncomingMessage, res: ServerResponse) => {
+    handle(req, res, via).catch((err: Error & { confirm?: string; signIn?: boolean }) => {
+      if (res.headersSent) return res.end();
+      send(res, err instanceof HttpError ? err.status : 500, { error: err.message, confirm: err.confirm, signIn: err.signIn });
+    });
+  };
+}
+
+const server = createServer(listener("local")).listen(PORT, HOST, async () => {
   const agents = await agentAvailability();
   const runs = manager.list();
   console.log(`code-flow running at http://localhost:${PORT}  (${runs.length} runs loaded from ${CODEFLOW_HOME})`);

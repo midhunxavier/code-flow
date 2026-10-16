@@ -61,6 +61,9 @@ export const store = {
   },
 };
 
+/** This page came from the phone link (code-flow's Wi-Fi listener), not from the computer itself. */
+export const onPhone = !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+
 export const enc = encodeURIComponent;
 export const baseName = (p: string) => (p || "").replace(/\/+$/, "").split("/").pop() ?? "";
 export const fmtSize = (b: number) => (b < 1024 ? `${b} B` : b < 1048576 ? `${Math.round(b / 1024)} KB` : `${(b / 1048576).toFixed(1)} MB`);

@@ -30,6 +30,8 @@ export interface Automation {
 interface RemoteInfo {
   enabled: boolean;
   lan: boolean;
+  /** The phone link opens the whole app (on the Wi-Fi listener), not the read-only view. */
+  control: boolean;
   path: string;
   local: string;
   lanUrls: string[];
@@ -267,13 +269,15 @@ function PhoneView() {
   }, []);
   const set = (patch: object) => post<RemoteInfo>("/api/remote", patch).then(setInfo, (e) => showToast(e.message, 5000));
   if (!info) return null;
+  const full = info.control && info.lan;
+  const short = (u: string) => u.replace(/\/r\/(\w{6})\w+/, "/r/$1…");
   return (
     <div class="section">
-      <div class="section-title">Phone view</div>
+      <div class="section-title">Phone</div>
       <label class="checkpoint">
         <input type="checkbox" checked={info.enabled} onChange={(e) => set({ enabled: e.currentTarget.checked })} />
         <span>
-          <b>Read-only view behind a secret link</b> — what's running, what needs you, and each result. It has no buttons: nothing can be started, approved or merged from it.
+          <b>Phone link</b> — a secret link to what's running, what needs you, and each result. On its own it's a read-only view: nothing can be started, approved or merged from it.
         </span>
       </label>
       {info.enabled ? (
@@ -284,6 +288,15 @@ function PhoneView() {
               <b>Reachable from my Wi-Fi</b> — also serve it on your local network (plain HTTP, so only on networks you trust, or over a VPN like Tailscale).
             </span>
           </label>
+          {info.lan ? (
+            <label class={`checkpoint${info.control ? " danger" : ""}`}>
+              <input type="checkbox" checked={info.control} onChange={(e) => set({ control: e.currentTarget.checked })} />
+              <span>
+                <b>Full control from my phone</b> — the link opens all of code-flow, the same as on this computer: start runs, answer questions, review, approve, merge and open pull requests.
+                Anyone who gets the link can run agents and commands on this computer, so keep it to your own phone; <b>New link</b> signs every phone out.
+              </span>
+            </label>
+          ) : null}
           <div class="phone-qr">
             {info.lanUrls[0] ? (
               <QrCode text={info.lanUrls[0]} />
@@ -296,15 +309,16 @@ function PhoneView() {
               <b>{info.lanUrls[0] ? "Scan with your phone" : "Scanning needs your Wi-Fi"}</b>
               <span class="help">
                 {info.lanUrls[0]
-                  ? `Opens the read-only view at ${info.lanUrls[0].replace(/\/r\/(\w{6})\w+/, "/r/$1…")} — your phone has to be on the same Wi-Fi (or VPN).`
+                  ? `${full ? "Signs your phone in to code-flow" : "Opens the read-only view"} at ${short(info.lanUrls[0])} — your phone has to be on the same Wi-Fi (or VPN).${full ? " It stays signed in, even after code-flow restarts." : ""}`
                   : "The link below only opens on this computer. Turn on “Reachable from my Wi-Fi” to get a QR code your phone can open."}
               </span>
             </div>
           </div>
           <div class="hook">
-            {[info.local, ...info.lanUrls].map((u) => (
+            {/* With full control the phone gets the whole app, so a read-only preview here would mislead. */}
+            {[...(full ? [] : [info.local]), ...info.lanUrls].map((u) => (
               <div key={u}>
-                <code>{u.replace(/\/r\/(\w{6})\w+/, "/r/$1…")}</code>{" "}
+                <code>{short(u)}</code>{" "}
                 <button class="btn small" onClick={() => copy(u, "Link copied")}>
                   Copy link
                 </button>
@@ -314,7 +328,7 @@ function PhoneView() {
               </div>
             ))}
             <div>
-              <button class="btn small" onClick={() => confirm("Make a new link? The old one stops working.") && set({ rotate: true })}>
+              <button class="btn small" onClick={() => confirm(full ? "Make a new link? The old one stops working, and phones signed in with it are signed out." : "Make a new link? The old one stops working.") && set({ rotate: true })}>
                 New link
               </button>
             </div>
