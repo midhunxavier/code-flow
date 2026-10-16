@@ -2,7 +2,8 @@
 
 ## Requirements
 
-- Node 20+ and git.
+- Node 20+ (`npm start` and `npm run dev` stop with a clear message on an older Node).
+- git 2.38 or newer: **Merge** relies on `git merge-tree --write-tree`, which 2.38 added. Check yours with `git --version`.
 - At least one of `claude`, `codex` and `agy` installed and signed in. Run each CLI once interactively first. The top bar shows which agents code-flow found.
 
 ## Install and run
@@ -76,6 +77,7 @@ git worktree add -b <prefix>/<name> <repo>/.worktrees/<run-id>/<name> <base>
 
 - **Base branch:** the starting point for every worktree in the run. By default this is the repo's current `HEAD`. The dropdown also lists local branches, remote branches, and the result branches of earlier runs, so you can build on a previous result. Uncommitted changes in your checkout aren't included.
 - **Result branch prefix:** defaults to `codeflow/<run-id>`. If you set it to, say, `feat/rate-limit`, results land on `feat/rate-limit/build`. A prefix can only be used once, because git can't have both a `feat/rate-limit` branch and `feat/rate-limit/…` branches.
+- **Submodules:** a worktree of a repo with a `.gitmodules` gets its submodules checked out (`git submodule init`, then `git submodule update --init --recursive`, for up to 10 minutes). `init` registers them in the repo's `.git/config`, as it would in your checkout. If cloning one fails (say a private submodule git would have to prompt for), the worktree is still created, without it.
 - **Location:** worktrees go in `<repo>/.worktrees/`. code-flow adds `/.worktrees/` to `.git/info/exclude`, which keeps them out of `git status` without editing your `.gitignore`. Tools that don't read git's ignore files (some test runners, linters, `tsc` globs) may still scan `.worktrees/`. Exclude it in their config, or set `CODEFLOW_WORKTREE_DIR` to an absolute path to keep worktrees outside the repo.
 - **Cleanup:** remove a run's worktrees with `git worktree remove .worktrees/<run-id>/<name>`, or delete the folder and run `git worktree prune`. The branches stay until you delete them. **Archive…** on a run, and **Clean up** in [Insights](runs.md#insights-comparisons-and-finding-runs), do this for you.
 

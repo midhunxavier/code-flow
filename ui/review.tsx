@@ -26,6 +26,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   const [run, setRun] = useState<Run | null>(null);
   const [files, setFiles] = useState<DiffFile[] | null>(null);
   const [error, setError] = useState("");
+  const [runError, setRunError] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [comments, setCommentsState] = useState<Comment[]>(() => store.json(draftKey, []));
   const [general, setGeneral] = useState(() => store.get(`${draftKey}:general`) ?? "");
@@ -45,7 +46,8 @@ export function Review({ id, branch }: { id: string; branch: string }) {
       },
       (e) => setError((e as Error).message),
     );
-    api<Run>(`/api/runs/${id}`).then(setRun, () => {});
+    // Without the run, comments still work, but "Send to" can't default to the agent that wrote the code.
+    api<Run>(`/api/runs/${id}`).then(setRun, (e) => setRunError(`Couldn't load this run: ${(e as Error).message}. Check who the comments go to before sending.`));
   }, [id, branch]);
 
   const worktree = ((run ?? summary)?.worktrees ?? []).find((w) => w.branch === branch);
@@ -108,6 +110,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
         )}
       </div>
       {error ? <div class="msg err" style="padding:16px">{error}</div> : null}
+      {runError ? <div class="msg warn" style="padding:16px">{runError}</div> : null}
       <div class="review-body">
         <div class="review-files">
           {files?.map((f) => {

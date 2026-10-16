@@ -1,5 +1,6 @@
 // Development: rebuild the UI on change and restart the server on change (tsx watch).
 // Use `npm run dev` (fake agents, port 4318) — never your real server on 4317.
+import "./check-node.mjs";
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { delimiter } from "node:path";

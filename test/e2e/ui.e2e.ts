@@ -110,6 +110,10 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   await page.unroute(/\/api\/fs\b/);
   await page.getByRole("button", { name: "Use this folder" }).click();
   await page.locator(".repo-btn .name", { hasText: repo.split("/").pop()! }).waitFor();
+  // The check is detected after the repo is chosen (two more requests): wait for it, don't race it.
+  await page
+    .waitForFunction(() => (document.querySelector("#checkCmd") as HTMLInputElement | null)?.value === "npm test", undefined, { timeout: 10_000 })
+    .catch(() => undefined);
   assert.equal(await page.locator("#checkCmd").inputValue(), "npm test", "the check is detected from package.json");
 
   // Describe the task, pick the pipeline, start with the keyboard.

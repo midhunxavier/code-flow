@@ -271,9 +271,36 @@ export async function workingCopyDiffers(repo: string, ref: string, path: string
   return (await git(["diff", "--quiet", ref, "--", path], repo)).code !== 0;
 }
 
+/** Cloning submodules can take far longer than other git calls. */
+const SUBMODULE_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * `git worktree add` leaves submodule folders empty, so setup and checks would fail. Registering
+ * them (`submodule init`) writes the repo's shared config, so it runs under the repo lock;
+ * cloning them (`submodule update`) can take minutes and runs outside it. Both return a
+ * warning instead of failing: a worktree without its submodules can still be worked in.
+ */
+async function registerSubmodules(path: string): Promise<string | undefined> {
+  if (!existsSync(join(path, ".gitmodules"))) return undefined;
+  const args = ["submodule", "init"];
+  const res = await git(args, path);
+  return res.code === 0 ? undefined : submoduleWarning(path, args, res);
+}
+
+async function updateSubmodules(path: string, signal?: AbortSignal): Promise<string | undefined> {
+  if (!existsSync(join(path, ".gitmodules"))) return undefined;
+  const args = ["submodule", "update", "--init", "--recursive"];
+  const res = await git(args, path, { timeoutMs: SUBMODULE_TIMEOUT_MS, signal });
+  return res.code === 0 ? undefined : submoduleWarning(path, args, res);
+}
+
+const submoduleWarning = (path: string, args: string[], res: GitResult) =>
+  `Submodules weren't checked out in ${path}, so setup and checks that need them may fail. ${gitError(args, res)}`;
+
 /**
  * A worktree at `path` on `branch`: reused if it already exists, re-attached if only the
- * branch survives (e.g. the folder was deleted), otherwise created from `fromRef`.
+ * branch survives (e.g. the folder was deleted), otherwise created from `fromRef`. A new or
+ * re-attached checkout gets its submodules; `warning` says when that failed.
  */
 export async function openWorktree(
   repo: string,
@@ -281,29 +308,37 @@ export async function openWorktree(
   path: string,
   branch: string,
   fromRef: string,
-): Promise<{ wt: Worktree; created: boolean }> {
+  opts: { signal?: AbortSignal } = {},
+): Promise<{ wt: Worktree; created: boolean; warning?: string }> {
   const base = await resolveCommit(repo, fromRef);
   const wt = { name, path, branch, base };
   if (existsSync(join(path, ".git"))) return { wt, created: false };
-  return withRepoLock(repo, async () => {
+  const opened = await withRepoLock(repo, async () => {
     await mkdir(dirname(path), { recursive: true });
+    let created = false;
     if ((await git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repo)).code === 0) {
       await git(["worktree", "prune"], repo);
       await gitOk(["worktree", "add", path, branch], repo);
-      return { wt, created: false };
+    } else {
+      await gitOk(["worktree", "add", "-b", branch, path, fromRef], repo);
+      created = true;
     }
-    await gitOk(["worktree", "add", "-b", branch, path, fromRef], repo);
-    return { wt, created: true };
+    return { created, warning: await registerSubmodules(path) };
   });
+  const warning = opened.warning ?? (await updateSubmodules(path, opts.signal));
+  return warning ? { wt, created: opened.created, warning } : { wt, created: opened.created };
 }
 
-/** A throwaway checkout of `ref` on no branch (e.g. to run the check on the base commit). */
-export async function openDetachedWorktree(repo: string, path: string, ref: string): Promise<void> {
+/** A throwaway checkout of `ref` on no branch (e.g. to run the check on the base commit), with its submodules. */
+export async function openDetachedWorktree(repo: string, path: string, ref: string, opts: { signal?: AbortSignal } = {}): Promise<{ warning?: string }> {
   await removeDetachedWorktree(repo, path);
-  await withRepoLock(repo, async () => {
+  const registered = await withRepoLock(repo, async () => {
     await mkdir(dirname(path), { recursive: true });
     await gitOk(["worktree", "add", "--detach", path, ref], repo);
+    return registerSubmodules(path);
   });
+  const warning = registered ?? (await updateSubmodules(path, opts.signal));
+  return warning ? { warning } : {};
 }
 
 export async function removeDetachedWorktree(repo: string, path: string): Promise<void> {

@@ -195,7 +195,13 @@ export function notifyFinished(run: RunSummary) {
       : `code-flow: run ${verbs[run.status] ?? run.status}`;
   announcement.value = `${title.replace(/^code-flow: /, "")}: ${run.task.split("\n")[0]!.slice(0, 120)}`;
   if (!canNotify() || (viewing && !document.hidden)) return;
-  const n = new Notification(title, { body: run.task.split("\n")[0], tag: run.id });
+  let n: Notification;
+  try {
+    n = new Notification(title, { body: run.task.split("\n")[0], tag: run.id });
+  } catch {
+    // Android Chrome (the phone link) only shows notifications from a service worker: a toast instead.
+    return showToast(title.replace(/^code-flow: /, ""), 5000);
+  }
   n.onclick = () => {
     window.focus();
     route.value = { view: "run", id: run.id };
