@@ -119,15 +119,24 @@ export interface Health {
   account?: string;
   quota?: { status: string; windows: Record<string, { utilization?: number; resetsAt?: number }>; at: number };
   fix?: string;
+  /** false: the CLI's --help lacks a flag code-flow passes, so steps will fail on it. */
+  compatible?: boolean;
+  missing?: string[];
+  warnings?: string[];
+}
+export interface GitHealth {
+  installed: boolean;
+  version?: string;
+  ok: boolean;
+  warning?: string;
 }
 export const health = signal<Health[] | null>(null);
+export const gitHealth = signal<GitHealth | null>(null);
 export const healthOpen = signal(false);
 export async function loadHealth() {
-  try {
-    health.value = await api<Health[]>("/api/doctor");
-  } catch {
-    health.value = null;
-  }
+  const [agents, git] = await Promise.allSettled([api<Health[]>("/api/doctor"), api<GitHealth>("/api/doctor/git")]);
+  health.value = agents.status === "fulfilled" ? agents.value : null;
+  gitHealth.value = git.status === "fulfilled" ? git.value : null;
 }
 
 /** "Let me approve the plan before agents build" (patterns that have a plan step). */

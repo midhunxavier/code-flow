@@ -1590,6 +1590,7 @@ export class RunManager {
       level: "info",
       text: `Archived: removed ${result.removed.length} worktree(s)${result.deletedBranches.length ? ` and ${result.deletedBranches.length} branch(es)` : "; branches kept"}`,
     });
+    if (result.failed.length) this.emit(run, { type: "log", level: "warn", text: `Couldn't remove: ${result.failed.join("; ")}` });
     return result;
   }
 
@@ -1673,7 +1674,8 @@ export class RunManager {
       "",
       run.summary ?? "",
     ].join("\n");
-    const { url, caughtUp } = await openPullRequest(run.repo, input.branch, input.into, title, body, run.baseRef);
+    const { url, caughtUp, note } = await openPullRequest(run.repo, input.branch, input.into, title, body, run.baseRef);
+    if (note) this.emit(run, { type: "log", level: "warn", text: note });
     if (caughtUp) {
       this.emit(run, {
         type: "log",
@@ -2222,8 +2224,9 @@ export class RunManager {
     if (empty) {
       run.triage = { state: "empty", at: Date.now() };
       run.archived = true;
-      const removed = await removeWorktrees(run.repo, run.worktrees, true).catch(() => undefined);
-      this.emit(run, { type: "log", level: "info", text: `No changes, so the run was archived${removed ? " and its worktrees and branches removed" : ""}` });
+      const removed = await removeWorktrees(run.repo, run.worktrees, true).catch((err: Error) => ({ removed: [], deletedBranches: [], failed: [err.message] }));
+      const clean = !removed.failed.length;
+      this.emit(run, { type: "log", level: clean ? "info" : "warn", text: `No changes, so the run was archived${clean ? " and its worktrees and branches removed" : `; couldn't remove: ${removed.failed.join("; ")}`}` });
       return;
     }
     run.triage = { state: "pending", at: Date.now(), note: run.triage?.note };

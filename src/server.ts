@@ -11,7 +11,7 @@ import {
   type AgentId,
 } from "./adapters/index.js";
 import { listTree, searchFiles } from "./repo-tree.js";
-import { doctor } from "./doctor.js";
+import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig } from "./repo-config.js";
 import { openFolder } from "./serve.js";
 import { CODEFLOW_HOME, envNumber, PORT } from "./config.js";
@@ -24,7 +24,7 @@ import { folderSizes, remoteBranches, removeWorktrees } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
 import { acquireLock, writeHealth } from "./store.js";
 import { reapOrphanGroups } from "./adapters/process.js";
-import { logError, logInfo } from "./log.js";
+import { logError, logInfo, logWarn } from "./log.js";
 import { listIssues, listPullRequests, type SourceInput } from "./github.js";
 import { listSweep, runSweep, sourceKeys, type SweepKind } from "./sweeps.js";
 import { resolveAuto } from "./routing.js";
@@ -731,6 +731,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     });
     return send(res, 200, listing);
   }
+  if (req.method === "GET" && parts[1] === "doctor" && parts[2] === "git") return send(res, 200, await checkGit());
   if (req.method === "GET" && parts[1] === "doctor") {
     const health = await doctor(manager.quota);
     // Auto stays away from an agent that's signed out, and goes back once it's signed in again.
@@ -1012,6 +1013,11 @@ const server = createServer(listener("local")).listen(PORT, HOST, async () => {
   console.log(`code-flow running at http://localhost:${PORT}  (${runs.length} runs loaded from ${CODEFLOW_HOME})`);
   console.log(`  Open http://localhost:${PORT}/?token=${auth.token}  (the first browser to open code-flow signs in without it)`);
   for (const a of agents) console.log(`  ${a.available ? "✓" : "✗"} ${a.displayName} (${a.binary})`);
+  const gitHealth = await checkGit();
+  if (!gitHealth.ok) {
+    console.log(`  ✗ ${gitHealth.warning}`);
+    logWarn(gitHealth.warning ?? "git check failed");
+  }
   const interrupted = runs.filter((r) => r.status === "interrupted").length;
   if (interrupted) console.log(`  ${interrupted} interrupted run(s) can be resumed from the UI`);
 });

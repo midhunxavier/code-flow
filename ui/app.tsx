@@ -20,6 +20,7 @@ import {
   shortcutsOpen,
   type RunFilter,
   filesOpen,
+  gitHealth,
   health,
   healthOpen,
   loadHealth,
@@ -507,9 +508,24 @@ function HealthDialog() {
               ) : h.installed ? (
                 <div class="help">{h.id === "claude" ? "Quota shows after the next Claude step." : "This CLI doesn't report remaining quota."}</div>
               ) : null}
+              {h.warnings?.map((w) => (
+                <div key={w} class="msg warn">
+                  {w}
+                </div>
+              ))}
               {h.fix ? <div class="msg warn">{h.fix}</div> : null}
             </div>
           ))}
+          {gitHealth.value ? (
+            <div class="health-row">
+              <div class="hr-title">
+                <span class="agent">git</span>
+                <span class={`badge ${gitHealth.value.ok ? "ok" : ""}`}>{gitHealth.value.ok ? "ok" : gitHealth.value.installed ? "too old" : "not found"}</span>
+                <span class="help">{gitHealth.value.version}</span>
+              </div>
+              {gitHealth.value.warning ? <div class="msg warn">{gitHealth.value.warning}</div> : null}
+            </div>
+          ) : null}
         </div>
         <div class="picker-foot">
           <span class="ps" />
