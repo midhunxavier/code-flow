@@ -5,6 +5,7 @@ import { Review } from "./review.js";
 import { GitHubPicker } from "./github.js";
 import { AutomationsView, inbox } from "./automations.js";
 import { InsightsView } from "./insights.js";
+import { Icon } from "./icons.js";
 import { ago, api, baseName, fmtCost, fmtTokens, showToast, STATUS_TEXT, store, toast } from "./lib.js";
 import {
   agents,
@@ -91,18 +92,23 @@ function TopBar() {
   return (
     <header class="topbar">
       <button class="btn ghost menu-btn" aria-label="Show runs" onClick={() => (railOpen.value = !railOpen.value)}>
-        ☰
+        <Icon name="menu" />
       </button>
-      <span class="brand">code-flow</span>
+      <span class="brand">
+        <span class="brand-mark">
+          <Icon name="flow" />
+        </span>
+        <span class="brand-name">code-flow</span>
+      </span>
       <button
         class={`repo-btn ${info ? "" : "empty"} ${repoError.value ? "bad" : ""}`}
         title={info ? info.repo : "Choose repository"}
         onClick={() => (pickerOpen.value = true)}
       >
-        <span>📁</span>
+        <Icon name="folder" />
         <span class="name">{info ? baseName(info.repo) : repoChecking.value ? "Checking…" : repoError.value || "Choose repository…"}</span>
         {info ? <span class="branch">{info.current || "detached"}</span> : null}
-        <span style="color:var(--faint)">▾</span>
+        <Icon name="chevron" class="caret" />
       </button>
       <span class="spacer" />
       <button
@@ -111,7 +117,7 @@ function TopBar() {
         title="What runs cost and how they went, per agent and pattern; comparisons; disk use (i)"
         onClick={() => (route.value = { view: "insights" })}
       >
-        ◔ <span class="label">Insights</span>
+        <Icon name="chart" /> <span class="label">Insights</span>
       </button>
       <button
         class="btn ghost auto-btn"
@@ -119,7 +125,7 @@ function TopBar() {
         title="Scheduled and webhook runs, their inbox, and the phone view"
         onClick={() => (route.value = { view: "automations" })}
       >
-        ⏱ <span class="label">Automations</span>
+        <Icon name="clock" /> <span class="label">Automations</span>
         {inbox().length ? <span class="count">{inbox().length}</span> : null}
       </button>
       <button class="agent-status" title="Health: install, sign-in and quota for each CLI" onClick={() => (healthOpen.value = true)}>
@@ -162,7 +168,7 @@ function Bell() {
         showToast(permission === "granted" ? "You'll be notified when a run needs you" : "Notifications are blocked in the browser settings");
       }}
     >
-      🔔
+      <Icon name="bell" />
     </button>
   );
 }
@@ -257,7 +263,7 @@ function Rail() {
           railOpen.value = false;
         }}
       >
-        ＋ New run
+        <Icon name="plus" /> New run
       </button>
       <div class="rail-search">
         <input
@@ -286,7 +292,7 @@ function Rail() {
           title="Filter runs"
           onClick={() => setShowFilters(!showFilters)}
         >
-          ⚲ Filter
+          <Icon name="filter" /> Filter
         </button>
       </div>
       {showFilters ? (

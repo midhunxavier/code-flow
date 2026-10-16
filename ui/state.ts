@@ -278,7 +278,7 @@ export const filterActive = computed(() => {
   const f = runFilter.value;
   return !!(f.q.trim() || f.status !== "all" || f.pattern || f.agent || f.thisRepo);
 });
-const flagged = (r: RunSummary) => Object.keys(r.integrity ?? {}).length > 0 || r.followUps.some((f) => f.integrity?.length);
+const flagged = (r: RunSummary) => Object.keys(r.integrity ?? {}).length > 0 || !!r.followUps?.some((f) => f.integrity?.length); // replayed snapshots of older runs have no followUps
 export function matchesFilter(r: RunSummary, f = runFilter.value): boolean {
   if (f.thisRepo && repo.value && r.repo !== repo.value) return false;
   if (f.pattern && r.pattern !== f.pattern) return false;

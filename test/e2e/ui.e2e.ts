@@ -167,8 +167,8 @@ test("a message sent while Codex is working reaches its running turn", async () 
 
   await page.locator(".tl-step", { hasText: "Implement plan" }).waitFor({ timeout: 30_000 });
   await page.locator(".convo select").selectOption("codex");
-  await page.locator(".convo input.field").fill("Prefer tabs over spaces");
-  await page.locator(".convo input.field").press("Enter");
+  await page.locator(".convo textarea").fill("Prefer tabs over spaces");
+  await page.locator(".convo textarea").press("Enter");
   await page.locator(".note-chip", { hasText: "✓ delivered to codex mid-turn (Implement plan): Prefer tabs over spaces" }).waitFor({ timeout: 10_000 });
   await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
 

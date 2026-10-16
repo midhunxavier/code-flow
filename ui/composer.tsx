@@ -50,6 +50,7 @@ import {
 } from "./state.js";
 import { SourceChip, Templates } from "./github.js";
 import { SaveAutomationDialog } from "./automations.js";
+import { Icon } from "./icons.js";
 import type { AgentId, AgentInfo, ContextItem, ModelCatalog, PatternInfo, TreeEntry } from "./types.js";
 
 const DRAG_TYPE = "application/x-codeflow-path";
@@ -119,6 +120,7 @@ export function Composer() {
 
   return (
     <div class="composer">
+      <div class="eyebrow">New run</div>
       <h1>What should the team build?</h1>
       <p class="lede">Describe the task, add the files that matter, and pick how your agents work together.</p>
       {!repoInfo.value ? (
@@ -187,10 +189,10 @@ export function Composer() {
           {starting ? "Starting…" : "Start run"} <span class="kbd">⌘↵</span>
         </button>
         <button class="btn" disabled={!!problem} title="Run this task with several patterns or teams at once and see them side by side" onClick={() => setComparing(true)}>
-          ⚖ Compare setups…
+          <Icon name="compare" /> Compare setups…
         </button>
         <button class="btn" disabled={!!problem} title="Run this task with this team on a schedule or from a webhook" onClick={() => setSaving(true)}>
-          ⏱ Save as automation…
+          <Icon name="clock" /> Save as automation…
         </button>
         <span class="why">{problem}</span>
       </div>
@@ -403,10 +405,10 @@ function TaskBox({ onStart }: { onStart: () => void }) {
       <ContextChips />
       <div class="bar">
         <button class="btn ghost small" title="Attach files from your computer" onClick={() => fileInput.current?.click()}>
-          📎 Attach
+          <Icon name="attach" /> Attach
         </button>
         <button class="btn ghost small" title="Start from a GitHub issue or pull request" onClick={() => (ghPicker.value = { kind: source.value?.kind ?? "issue" })}>
-          ⇄ GitHub
+          <Icon name="pull" /> GitHub
         </button>
         <button
           class="btn ghost small"
@@ -417,7 +419,7 @@ function TaskBox({ onStart }: { onStart: () => void }) {
             store.set("filesOpen", filesOpen.value ? "1" : "0");
           }}
         >
-          📁 Files
+          <Icon name="files" /> Files
         </button>
         <span class="hint">
           {count ? `${count} item${count === 1 ? "" : "s"} of context — agents read these before starting` : "Drag files here from the file list or Finder to give the agents context"}
@@ -522,41 +524,45 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
                 {role.multiple ? <span class="rd"> · pick several</span> : null}
               </div>
               <div class="rd">{role.description}</div>
-              {selected.some((id) => id !== "auto") ? <RoleModels p={p} roleId={role.id} agents={selected.filter((id): id is AgentId => id !== "auto")} /> : null}
             </div>
-            <div class="pills">
-              {agents.value.map((a) => {
-                const on = selected.includes(a.id);
-                return (
-                  <button
-                    key={a.id}
-                    type="button"
-                    class="pill"
-                    aria-pressed={on}
-                    disabled={!a.available}
-                    title={a.available ? `${role.multiple ? "Toggle" : "Choose"} ${a.displayName}` : `${a.displayName} isn't installed`}
-                    onClick={() => setRoles(p.id, role.id, role.multiple ? (on ? selected.filter((x) => x !== a.id) : [...selected, a.id]) : [a.id])}
-                  >
-                    <span class={`agent ${a.id}`}>{a.displayName}</span>
-                  </button>
-                );
-              })}
-              <button
-                type="button"
-                class="pill auto"
-                aria-pressed={selected.includes("auto")}
-                title="code-flow picks an installed agent when the run starts, skipping plans that are near their usage limit"
-                onClick={() => {
-                  const on = selected.includes("auto");
-                  setRoles(p.id, role.id, role.multiple ? (on ? selected.filter((x) => x !== "auto") : [...selected, "auto"]) : ["auto"]);
-                }}
-              >
-                Auto
-              </button>
-              {role.optional ? (
-                <button type="button" class="pill none" aria-pressed={!selected.length} onClick={() => setRoles(p.id, role.id, [])}>
-                  Skip
+            <div class="role-pick">
+              <div class="pills">
+                {agents.value.map((a) => {
+                  const on = selected.includes(a.id);
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      class="pill"
+                      aria-pressed={on}
+                      disabled={!a.available}
+                      title={a.available ? `${role.multiple ? "Toggle" : "Choose"} ${a.displayName}` : `${a.displayName} isn't installed`}
+                      onClick={() => setRoles(p.id, role.id, role.multiple ? (on ? selected.filter((x) => x !== a.id) : [...selected, a.id]) : [a.id])}
+                    >
+                      <span class={`agent ${a.id}`}>{a.displayName}</span>
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  class="pill auto"
+                  aria-pressed={selected.includes("auto")}
+                  title="code-flow picks an installed agent when the run starts, skipping plans that are near their usage limit"
+                  onClick={() => {
+                    const on = selected.includes("auto");
+                    setRoles(p.id, role.id, role.multiple ? (on ? selected.filter((x) => x !== "auto") : [...selected, "auto"]) : ["auto"]);
+                  }}
+                >
+                  Auto
                 </button>
+                {role.optional ? (
+                  <button type="button" class="pill none" aria-pressed={!selected.length} onClick={() => setRoles(p.id, role.id, [])}>
+                    Skip
+                  </button>
+                ) : null}
+              </div>
+              {selected.some((id) => id !== "auto") ? (
+                <RoleModels p={p} roleId={role.id} roleLabel={role.label.toLowerCase()} agents={selected.filter((id): id is AgentId => id !== "auto")} />
               ) : null}
             </div>
           </div>
@@ -613,50 +619,65 @@ function configSummary(config: Record<string, any>): string {
   return parts.length ? `: ${parts.join(" · ")}` : "";
 }
 
-/** Override model/effort for one role (e.g. Opus to plan, Sonnet to review). */
-function RoleModels({ p, roleId, agents: ids }: { p: PatternInfo; roleId: string; agents: AgentId[] }) {
-  const [open, setOpen] = useState(false);
+/**
+ * Model and effort for each agent in a role, right under its pills (e.g. Opus to plan, Sonnet to
+ * review). Empty means the agent's own setting from Settings, or the CLI's default.
+ */
+function RoleModels({ p, roleId, roleLabel, agents: ids }: { p: PatternInfo; roleId: string; roleLabel: string; agents: AgentId[] }) {
   const current = roleModels.value[p.id]?.[roleId] ?? {};
-  const summary = ids
-    .map((id) => [current[id]?.model, current[id]?.effort].filter(Boolean).join(" "))
-    .filter(Boolean)
-    .join(", ");
   return (
     <div class="role-models">
-      <button type="button" class="linkish" onClick={() => setOpen(!open)}>
-        ⚙ {summary ? `model: ${summary}` : "model for this role"}
-      </button>
-      {open
-        ? ids.map((id) => {
-            const cat = catalogs.value[id];
-            if (!cat || "error" in cat) return null;
-            const c = cat as ModelCatalog;
-            const s = current[id] ?? {};
-            const model = c.models.find((m) => m.id === s.model);
-            const efforts = model?.efforts?.length ? model.efforts : c.efforts;
-            return (
-              <div key={id} class="model-row compact">
-                <AgentTag id={id} />
-                <select class="field" value={s.model ?? ""} onChange={(e) => setRoleModel(p.id, roleId, id, { model: e.currentTarget.value })}>
-                  <option value="">Provider default</option>
-                  {c.models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-                <select class="field" value={s.effort ?? ""} onChange={(e) => setRoleModel(p.id, roleId, id, { effort: e.currentTarget.value })}>
-                  <option value="">Default effort</option>
-                  {efforts.map((x) => (
-                    <option key={x} value={x}>
-                      {x}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            );
-          })
-        : null}
+      {ids.map((id) => {
+        const cat = catalogs.value[id];
+        if (!cat) return null; // still loading
+        if ("error" in cat) {
+          return (
+            <span key={id} class="mpick off">
+              <AgentTag id={id} /> <span class="help">CLI defaults</span>
+            </span>
+          );
+        }
+        const c = cat as ModelCatalog;
+        const s = current[id] ?? {};
+        const base = agentSettings.value[id] ?? {};
+        const labelOf = (mid?: string) => c.models.find((m) => m.id === mid)?.label ?? mid;
+        const baseModel = base.model || c.defaultModel;
+        const model = c.models.find((m) => m.id === (s.model || base.model));
+        const efforts = model?.efforts?.length ? model.efforts : c.efforts;
+        const baseEffort = base.effort || model?.defaultEffort || c.defaultEffort;
+        return (
+          <span key={id} class="mpick">
+            <AgentTag id={id} />
+            <select
+              aria-label={`${SHORT[id]} model for the ${roleLabel}`}
+              value={s.model ?? ""}
+              onChange={(e) => {
+                const next = e.currentTarget.value;
+                const nextModel = c.models.find((m) => m.id === (next || base.model));
+                const allowed = nextModel?.efforts?.length ? nextModel.efforts : c.efforts;
+                setRoleModel(p.id, roleId, id, { model: next, effort: s.effort && allowed.includes(s.effort) ? s.effort : "" });
+              }}
+            >
+              <option value="">{baseModel ? `Default · ${labelOf(baseModel)}` : "Default model"}</option>
+              {c.models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+              {s.model && !c.models.some((m) => m.id === s.model) ? <option value={s.model}>{s.model}</option> : null}
+            </select>
+            <span class="sep" aria-hidden="true" />
+            <select aria-label={`${SHORT[id]} effort for the ${roleLabel}`} value={s.effort ?? ""} onChange={(e) => setRoleModel(p.id, roleId, id, { effort: e.currentTarget.value })}>
+              <option value="">{baseEffort ? `Default · ${baseEffort}` : "Default effort"}</option>
+              {efforts.map((x) => (
+                <option key={x} value={x}>
+                  {x}
+                </option>
+              ))}
+            </select>
+          </span>
+        );
+      })}
     </div>
   );
 }

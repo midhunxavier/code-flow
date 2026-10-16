@@ -122,11 +122,11 @@ function signedIn(req: IncomingMessage): boolean {
 
 const LOCKED_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>code-flow — sign in</title><style>
-:root{--bg:#f7f7f5;--text:#1c1c1a;--muted:#6d6c67;--panel:#fff;--border:#e4e3de}
-@media (prefers-color-scheme:dark){:root{--bg:#141413;--text:#ecebe6;--muted:#9b9a94;--panel:#1b1b1a;--border:#2e2e2b}}
-body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-main{max-width:520px;margin:12vh auto;padding:24px;background:var(--panel);border:1px solid var(--border);border-radius:14px}
-h1{font-size:18px;margin:0 0 8px}p{color:var(--muted);margin:8px 0}code{font:13px ui-monospace,Menlo,monospace}
+:root{--bg:#f7f7f5;--text:#222f30;--muted:#445e5f;--panel:#fdfdfc;--border:#e4e3e3}
+@media (prefers-color-scheme:dark){:root{--bg:#111918;--text:#f5f8f7;--muted:#c9cbbe;--panel:#192425;--border:#2b3a3c}}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 Manrope,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:520px;margin:12vh auto;padding:28px;background:var(--panel);border:1px solid var(--border);border-radius:24px;box-shadow:0 12px 30px rgba(34,47,48,.06),0 2px 10px rgba(34,47,48,.04)}
+h1{font-size:22px;letter-spacing:-.03em;margin:0 0 10px}p{color:var(--muted);margin:8px 0}code{font:13px ui-monospace,Menlo,monospace}
 </style></head><body><main><h1>Open code-flow from its link</h1>
 <p>This code-flow server is already in use, so it only accepts browsers that open it with its link.</p>
 <p>Find the line <code>Open http://localhost:${PORT}/?token=…</code> where code-flow was started (the terminal, or the preview's server log) and open that link here.</p>

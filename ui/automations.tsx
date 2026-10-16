@@ -1,7 +1,8 @@
 import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
-import { AgentTag } from "./bits.js";
+import { AgentTag, QrCode } from "./bits.js";
+import { Icon } from "./icons.js";
 import { ago, api, baseName, copy, post, showToast, STATUS_TEXT } from "./lib.js";
 import { patterns, route, runs, runState } from "./state.js";
 import type { RunSummary } from "./types.js";
@@ -260,6 +261,23 @@ function PhoneView() {
               <b>Reachable from my Wi-Fi</b> — also serve it on your local network (plain HTTP, so only on networks you trust, or over a VPN like Tailscale).
             </span>
           </label>
+          <div class="phone-qr">
+            {info.lanUrls[0] ? (
+              <QrCode text={info.lanUrls[0]} />
+            ) : (
+              <div class="qr-off" aria-hidden="true">
+                <Icon name="phone" />
+              </div>
+            )}
+            <div class="phone-qr-text">
+              <b>{info.lanUrls[0] ? "Scan with your phone" : "Scanning needs your Wi-Fi"}</b>
+              <span class="help">
+                {info.lanUrls[0]
+                  ? `Opens the read-only view at ${info.lanUrls[0].replace(/\/r\/(\w{6})\w+/, "/r/$1…")} — your phone has to be on the same Wi-Fi (or VPN).`
+                  : "The link below only opens on this computer. Turn on “Reachable from my Wi-Fi” to get a QR code your phone can open."}
+              </span>
+            </div>
+          </div>
           <div class="hook">
             {[info.local, ...info.lanUrls].map((u) => (
               <div key={u}>

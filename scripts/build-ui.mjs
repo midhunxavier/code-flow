@@ -6,8 +6,15 @@ import { watch as watchFile } from "node:fs";
 
 const watching = process.argv.includes("--watch");
 
+// Fonts referenced as url("fonts/<file>.woff2") are inlined, so the page needs no network.
+async function inlineFonts(css) {
+  const files = [...new Set([...css.matchAll(/url\("fonts\/([\w.-]+\.woff2)"\)/g)].map((m) => m[1]))];
+  const data = new Map(await Promise.all(files.map(async (f) => [f, (await readFile(`ui/fonts/${f}`)).toString("base64")])));
+  return css.replace(/url\("fonts\/([\w.-]+\.woff2)"\)/g, (_, f) => `url(data:font/woff2;base64,${data.get(f)})`);
+}
+
 async function assemble(js) {
-  const [template, css] = await Promise.all([readFile("ui/index.html", "utf8"), readFile("ui/styles.css", "utf8")]);
+  const [template, css] = await Promise.all([readFile("ui/index.html", "utf8"), readFile("ui/styles.css", "utf8").then(inlineFonts)]);
   const html = template
     .replace("/*__CSS__*/", () => css)
     .replace("//__JS__", () => js.replace(/<\/script/gi, "<\\/script"));

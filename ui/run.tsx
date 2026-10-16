@@ -3,7 +3,8 @@ import { useEffect, useReducer, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { AgentTag, Markdown } from "./bits.js";
 import { TriageActions } from "./automations.js";
-import { api, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, post, showToast, STATUS_TEXT } from "./lib.js";
+import { Icon } from "./icons.js";
+import { api, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, post, SHORT, showToast, STATUS_TEXT } from "./lib.js";
 import {
   agents,
   attachments,
@@ -43,7 +44,10 @@ export function RunView({ id }: { id: string }) {
   const [run, setRun] = useState<RunSummary | null>(null);
   const data = useRef<RunData>({ steps: new Map(), events: new Map(), built: new Map(), logs: [], seen: new Set() });
   const [, bump] = useReducer((x: number) => x + 1, 0);
+  /** The step whose transcript is open; "" when you closed it. */
   const [selected, setSelected] = useState<string | null>(null);
+  /** The work section: open while running and closed once there's a result, unless you toggled it. */
+  const [workOpen, setWorkOpen] = useState<boolean | null>(null);
   const follow = useRef(true);
   const [archiving, setArchiving] = useState(false);
 
@@ -96,6 +100,7 @@ export function RunView({ id }: { id: string }) {
       if (!ids.length) return;
       e.preventDefault();
       follow.current = false;
+      setWorkOpen(true);
       setSelected((cur) => {
         const at = ids.indexOf(cur ?? ids.at(-1)!);
         return ids[Math.min(ids.length - 1, Math.max(0, (at < 0 ? ids.length - 1 : at) + (e.key === "]" ? 1 : -1)))]!;
@@ -104,136 +109,201 @@ export function RunView({ id }: { id: string }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  // Bring a step you picked (or the live one being followed) into view; not on load.
   useEffect(() => {
-    document.querySelector(".tl-step.selected")?.scrollIntoView({ block: "nearest" });
+    if (selected) document.querySelector(".tl-step.selected")?.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
-  if (!run) return <div class="runview"><div class="run-head">Loading…</div></div>;
+  if (!run)
+    return (
+      <div class="runview">
+        <div class="run-scroll">
+          <div class="thread help">Loading…</div>
+        </div>
+      </div>
+    );
   const steps = [...data.current.steps.values()];
-  const current = selected && data.current.steps.has(selected) ? selected : steps.at(-1)?.id ?? null;
+  const current = selected === "" ? null : selected && data.current.steps.has(selected) ? selected : steps.at(-1)?.id ?? null;
+  const finished = run.status !== "running";
+  const showWork = workOpen ?? !finished;
+  /** Open a step's transcript (from the result card, say), opening the work section too. */
   const selectStep = (stepId: string) => {
     follow.current = false;
+    setWorkOpen(true);
     setSelected(stepId);
   };
-  const finished = run.status !== "running";
+  const toggleStep = (stepId: string) => {
+    follow.current = false;
+    setSelected(stepId === current ? "" : stepId);
+  };
   const p = patterns.value.find((x) => x.id === run.pattern);
   const state = runState(run);
 
   return (
     <div class="runview">
-      <div class="run-head">
-        <div class="run-title">
-          <span class={`status-pill ${run.awaiting ? "awaiting" : state}`}>
-            {run.awaiting ? "Waiting for you" : state === "failing" ? "Done · check failing" : STATUS_TEXT[run.status] ?? run.status}
-          </span>
-          <h2>{p?.name ?? run.pattern}</h2>
-          <span class="spacer" />
-          {["interrupted", "stopped", "failed", "cancelled"].includes(run.status) ? (
-            <button
-              class="btn primary"
-              title={run.status === "interrupted" ? "Continue where it stopped; finished steps aren't redone" : "Continue with a fresh budget; finished steps aren't redone"}
-              onClick={() => post(`/api/runs/${run.id}/resume`).catch((e) => showToast(e.message))}
-            >
-              ▶ Resume
-            </button>
+      <div class="run-scroll">
+        <header class="run-head">
+          <div class="run-title">
+            <span class={`status-pill ${run.awaiting ? "awaiting" : state}`}>
+              {run.awaiting ? "Waiting for you" : state === "failing" ? "Done · check failing" : STATUS_TEXT[run.status] ?? run.status}
+            </span>
+            <h2 title={run.task}>{run.task.split("\n")[0] || "(no task)"}</h2>
+            <span class="run-pattern">{p?.name ?? run.pattern}</span>
+            <span class="spacer" />
+            {["interrupted", "stopped", "failed", "cancelled"].includes(run.status) ? (
+              <button
+                class="btn primary"
+                title={run.status === "interrupted" ? "Continue where it stopped; finished steps aren't redone" : "Continue with a fresh budget; finished steps aren't redone"}
+                onClick={() => post(`/api/runs/${run.id}/resume`).catch((e) => showToast(e.message))}
+              >
+                ▶ Resume
+              </button>
+            ) : null}
+            {finished ? (
+              <button class="btn" onClick={() => editAndRerun(run)}>
+                ✎ Edit &amp; run again
+              </button>
+            ) : null}
+            {finished && !run.archived ? (
+              <button class="btn" onClick={() => setArchiving(true)}>
+                Archive…
+              </button>
+            ) : null}
+            {run.archived ? (
+              <button class="btn" onClick={() => post(`/api/runs/${run.id}/archive`, { archived: false }).then(() => showToast("Moved back to your runs"), (e) => showToast(e.message))}>
+                Unarchive
+              </button>
+            ) : null}
+            {!finished ? (
+              <button
+                class="btn danger"
+                onClick={() => {
+                  if (confirm("Stop this run? Agents still working will be stopped; finished work stays on its branches.")) {
+                    post(`/api/runs/${run.id}/cancel`).catch((e) => showToast(e.message));
+                  }
+                }}
+              >
+                Stop run
+              </button>
+            ) : null}
+          </div>
+        </header>
+
+        <div class="thread">
+          <RunMeta run={run} />
+          {run.lockdown ? (
+            <div class="lockdown" role="note">
+              🔒 <b>Locked down.</b> {run.lockdown}, so agents run in Safe mode, files like .env aren't copied in, and checks{" "}
+              {run.loop.container ? "run in Docker without network" : "run on this machine because you allowed it"}.
+            </div>
           ) : null}
-          {finished ? (
-            <button class="btn" onClick={() => editAndRerun(run)}>
-              ✎ Edit &amp; run again
-            </button>
+
+          {/* Your task, as the message that started the conversation. */}
+          <div class="msg-you">
+            <div class="bubble">
+              <div class="run-task">
+                <Markdown text={run.task} />
+              </div>
+              <RunChips run={run} />
+              {run.parentRunId ? (
+                <a class="help" href={`#/run/${run.parentRunId}`}>
+                  ↩ continues an earlier run
+                </a>
+              ) : null}
+            </div>
+          </div>
+
+          {run.awaiting ? <AwaitingCard run={run} /> : null}
+          {run.triage?.state === "pending" && run.status !== "running" ? (
+            <div class="awaiting-card">
+              <div class="aw-head">
+                <span class="status-pill awaiting">In your inbox</span>
+                <b>From your automation “{run.trigger?.name}”</b>
+                <span class="help">Approving never merges (it can open a pull request); rejecting deletes the worktrees and branches.</span>
+              </div>
+              <div class="aw-actions">
+                <TriageActions run={run} />
+              </div>
+            </div>
           ) : null}
-          {finished && !run.archived ? (
-            <button class="btn" onClick={() => setArchiving(true)}>
-              Archive…
-            </button>
-          ) : null}
-          {run.archived ? (
-            <button class="btn" onClick={() => post(`/api/runs/${run.id}/archive`, { archived: false }).then(() => showToast("Moved back to your runs"), (e) => showToast(e.message))}>
-              Unarchive
-            </button>
-          ) : null}
-          {!finished ? (
-            <button
-              class="btn danger"
-              onClick={() => {
-                if (confirm("Stop this run? Agents still working will be stopped; finished work stays on its branches.")) {
-                  post(`/api/runs/${run.id}/cancel`).catch((e) => showToast(e.message));
-                }
+
+          {/* The agents' work: one disclosure, each step opening inline to its transcript. */}
+          <details class={`work ${finished ? "" : "live"}`} open={showWork}>
+            <summary
+              onClick={(e) => {
+                e.preventDefault();
+                setWorkOpen(!showWork);
               }}
             >
-              Stop run
-            </button>
-          ) : null}
-        </div>
-        <p class="run-task">{run.task}</p>
-        {run.parentRunId ? (
-          <a class="help" href={`#/run/${run.parentRunId}`}>
-            ↩ continues an earlier run
-          </a>
-        ) : null}
-        <RunChips run={run} />
-        <RunMeta run={run} />
-        {run.lockdown ? (
-          <div class="lockdown" role="note">
-            🔒 <b>Locked down.</b> {run.lockdown}, so agents run in Safe mode, files like .env aren't copied in, and checks{" "}
-            {run.loop.container ? "run in Docker without network" : "run on this machine because you allowed it"}.
-          </div>
-        ) : null}
-      </div>
+              <WorkSummary run={run} steps={steps} />
+            </summary>
+            <div class="steps" role="list" aria-label="Steps ([ and ] to move)">
+              {steps.length ? (
+                steps.map((s) => (
+                  <div key={s.id} role="listitem" class={`step ${s.id === current ? "open" : ""}`}>
+                    <button
+                      type="button"
+                      class={`tl-step ${s.id === current ? "selected" : ""}`}
+                      aria-expanded={s.id === current}
+                      aria-label={`${s.title}: ${STATUS_TEXT[s.status] ?? s.status}`}
+                      onClick={() => toggleStep(s.id)}
+                    >
+                      <span class={`ic ${s.status}`} aria-hidden="true">
+                        {STEP_ICON[s.status] ?? ""}
+                      </span>
+                      <span class="tt">{s.title}</span>
+                      <span class="tm">
+                        <StepTag step={s} />
+                        <span>{(s.kind ?? "agent") === "agent" ? s.role : s.finalText || "running…"}</span>
+                        {s.endedAt ? <span>{duration(s.endedAt - s.startedAt)}</span> : null}
+                        {s.usage ? <span title={usageTitle(s.usage)}>{fmtTokens(s.usage.inputTokens + s.usage.outputTokens)} tok</span> : null}
+                        {s.retries ? <span title="Retried after a passing failure (overloaded, network)">↻{s.retries}</span> : null}
+                      </span>
+                    </button>
+                    {/* The data is mutated in place; `version` changes as events arrive so the transcript re-renders. */}
+                    {s.id === current ? <Transcript run={run} step={s} data={data.current} version={data.current.events.get(s.id)?.length ?? 0} /> : null}
+                  </div>
+                ))
+              ) : (
+                <div class="tl-empty">Starting…</div>
+              )}
+            </div>
+          </details>
 
-      {run.awaiting ? <AwaitingCard run={run} /> : null}
-      {run.triage?.state === "pending" && run.status !== "running" ? (
-        <div class="awaiting-card">
-          <div class="aw-head">
-            <span class="status-pill awaiting">In your inbox</span>
-            <b>From your automation “{run.trigger?.name}”</b>
-            <span class="help">Approving never merges (it can open a pull request); rejecting deletes the worktrees and branches.</span>
-          </div>
-          <div class="aw-actions">
-            <TriageActions run={run} />
-          </div>
+          {finished ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
+          <ActivityLog logs={data.current.logs} count={data.current.logs.length} />
         </div>
-      ) : null}
-      {finished ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
-
-      <div class="run-body">
-        <div class="timeline" role="list" aria-label="Steps ([ and ] to move)">
-          {steps.length ? (
-            steps.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                role="listitem"
-                class={`tl-step ${s.id === current ? "selected" : ""}`}
-                aria-current={s.id === current ? "step" : undefined}
-                aria-label={`${s.title}: ${STATUS_TEXT[s.status] ?? s.status}`}
-                onClick={() => selectStep(s.id)}
-              >
-                <span class={`ic ${s.status}`} aria-hidden="true">
-                  {STEP_ICON[s.status] ?? ""}
-                </span>
-                <span class="tt">{s.title}</span>
-                <span class="tm">
-                  <StepTag step={s} />
-                  <span>{s.kind === "agent" ? s.role : s.finalText || "running…"}</span>
-                  {s.endedAt ? <span>{duration(s.endedAt - s.startedAt)}</span> : null}
-                  {s.usage ? <span title={usageTitle(s.usage)}>{fmtTokens(s.usage.inputTokens + s.usage.outputTokens)} tok</span> : null}
-                  {s.retries ? <span title="Retried after a passing failure (overloaded, network)">↻{s.retries}</span> : null}
-                </span>
-              </button>
-            ))
-          ) : (
-            <div class="tl-empty">Starting…</div>
-          )}
-        </div>
-        {/* The data is mutated in place; `version` changes as events arrive so the transcript re-renders. */}
-        <Transcript run={run} step={current ? data.current.steps.get(current) : undefined} data={data.current} version={current ? data.current.events.get(current)?.length ?? 0 : 0} />
       </div>
 
       <ConversationBar run={run} steps={steps} />
-      <ActivityLog logs={data.current.logs} count={data.current.logs.length} />
       {archiving ? <ArchiveDialog run={run} onClose={() => setArchiving(false)} /> : null}
     </div>
+  );
+}
+
+/** One line for the work section: what's happening now, or how the work went. */
+function WorkSummary({ run, steps }: { run: RunSummary; steps: Step[] }) {
+  const live = steps.filter((s) => s.status === "running");
+  const failed = steps.filter((s) => s.status === "failed").length;
+  const who = [...new Set(steps.map((s) => s.agent).filter((a): a is AgentId => !!a))];
+  const took = duration((run.endedAt ?? Date.now()) - run.createdAt);
+  return (
+    <>
+      <span class={`work-ic ${run.status === "running" ? "running" : ""}`} aria-hidden="true" />
+      <span class="work-title">
+        {run.status === "running" ? (live.length ? `Working — ${live.map((s) => s.title).join(", ")}` : "Working…") : `${steps.length} step${steps.length === 1 ? "" : "s"}`}
+      </span>
+      <span class="work-meta">
+        {run.status === "running" ? `${steps.length} step${steps.length === 1 ? "" : "s"} so far · ${took}` : took}
+        {failed ? <span class="warn"> · {failed} failed</span> : null}
+      </span>
+      <span class="work-agents">
+        {who.map((a) => (
+          <AgentTag key={a} id={a} />
+        ))}
+      </span>
+      <span class="work-chev" aria-hidden="true" />
+    </>
   );
 }
 
@@ -271,7 +341,9 @@ function RunMeta({ run }: { run: RunSummary }) {
   const team = Object.entries(run.roles).filter(([, ids]) => ids.length);
   return (
     <div class="run-meta">
-      <span title={run.repo}>📁 {baseName(run.repo)}</span>
+      <span title={run.repo} class="repo-line">
+        <Icon name="folder" /> {baseName(run.repo)}
+      </span>
       {run.trigger ? (
         <a class="src-link" href="#/automations" title={`Started by ${run.trigger.via === "schedule" ? "its schedule" : run.trigger.via === "webhook" ? "a webhook" : "Run now"}`}>
           ⏱ {run.trigger.name}
@@ -966,6 +1038,14 @@ function ConversationBar({ run, steps }: { run: RunSummary; steps: Step[] }) {
   const [text, setText] = useState("");
   const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
+  const area = useRef<HTMLTextAreaElement>(null);
+  // The box grows with what you type, up to a limit (then it scrolls).
+  useEffect(() => {
+    const el = area.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+  }, [text]);
   const running = run.status === "running";
   // Who you can talk to after the run: each agent that wrote code, in its worktree.
   const writers = [
@@ -1015,57 +1095,85 @@ function ConversationBar({ run, steps }: { run: RunSummary; steps: Step[] }) {
     }
   };
 
+  const [agentId, worktree] = chosen.split("@") as [AgentId, string | undefined];
+  const name = SHORT[agentId] ?? agentId;
+  const hint = running
+    ? chosen
+      ? `Steered into ${name}'s running turn if it takes messages, otherwise its next turn`
+      : "Goes to the next agent that takes a turn"
+    : chosen === "team"
+      ? "Starts a new run with the same team, from this result"
+      : `Continues ${name}'s session on its branch, in ${worktree}`;
+  const placeholder = running ? "Message the team…" : chosen === "team" ? "Tell the team what to change…" : `Reply to ${name}…`;
+
   return (
     <div class="convo">
-      {running && run.notes?.length ? (
-        <div class="notes">
-          {run.notes.map((n) => (
-            <span key={n.id} class={`chip-ctx note-chip ${n.status}`} title={n.text}>
-              <span class="n">
-                {n.status === "delivered" ? `✓ delivered to ${n.deliveredTo?.agent}${noteStep(n, steps)}` : `⏳ queued for ${n.agent ?? "next agent"}`}: {n.text}
+      <div class="convo-inner">
+        {running && run.notes?.length ? (
+          <div class="notes">
+            {run.notes.map((n) => (
+              <span key={n.id} class={`chip-ctx note-chip ${n.status}`} title={n.text}>
+                <span class="n">
+                  {n.status === "delivered" ? `✓ delivered to ${n.deliveredTo?.agent}${noteStep(n, steps)}` : `⏳ queued for ${n.agent ?? "next agent"}`}: {n.text}
+                </span>
               </span>
+            ))}
+          </div>
+        ) : null}
+        <div class="chatbox">
+          <textarea
+            ref={area}
+            rows={1}
+            aria-label={running ? "Message the team" : "Reply"}
+            placeholder={placeholder}
+            value={text}
+            onInput={(e) => setText(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+          />
+          <div class="chatbox-bar">
+            <label class="to">
+              <span class="to-lbl">To</span>
+              <select aria-label="Who gets this" value={chosen} onChange={(e) => setTarget(e.currentTarget.value)}>
+                {running ? (
+                  <>
+                    <option value="">Next agent</option>
+                    {teamAgents.map((a) => (
+                      <option key={a} value={a}>
+                        {SHORT[a] ?? a}
+                      </option>
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    {writers.length ? (
+                      <optgroup label="Continue a session">
+                        {writers.map((s) => (
+                          <option key={`${s.agent}@${s.worktree}`} value={`${s.agent}@${s.worktree}`}>
+                            {SHORT[s.agent!] ?? s.agent} · {s.worktree}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null}
+                    <optgroup label="Start again">
+                      <option value="team">Whole team · new run</option>
+                    </optgroup>
+                  </>
+                )}
+              </select>
+            </label>
+            <span class="chatbox-hint" title={hint}>
+              {hint}
             </span>
-          ))}
+            <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={busy || !text.trim()} onClick={send}>
+              <Icon name="send" />
+            </button>
+          </div>
         </div>
-      ) : null}
-      <div class="convo-row">
-        <span class="lbl">{running ? "Message the team" : "Reply"}</span>
-        <select class="field inline" value={chosen} onChange={(e) => setTarget(e.currentTarget.value)}>
-          {running ? (
-            <>
-              <option value="">the first agent that can take it</option>
-              {teamAgents.map((a) => (
-                <option key={a} value={a}>
-                  {a} (its running turn if it takes messages, else its next)
-                </option>
-              ))}
-            </>
-          ) : (
-            <>
-              {writers.map((s) => (
-                <option key={`${s.agent}@${s.worktree}`} value={`${s.agent}@${s.worktree}`}>
-                  {s.agent} in {s.worktree} (continues its session)
-                </option>
-              ))}
-              <option value="team">the whole team again (new run from this result)</option>
-            </>
-          )}
-        </select>
-        <input
-          class="field"
-          placeholder={running ? "e.g. Use the existing logger instead of console.log" : "e.g. Also handle the empty-input case"}
-          value={text}
-          onInput={(e) => setText(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void send();
-            }
-          }}
-        />
-        <button class="btn primary" disabled={busy || !text.trim()} onClick={send}>
-          Send
-        </button>
       </div>
     </div>
   );
@@ -1083,24 +1191,18 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
   useEffect(() => {
     if (stick.current && body.current) body.current.scrollTop = body.current.scrollHeight;
   });
-  if (!step) {
-    return (
-      <div class="transcript">
-        <div class="tr-head">Select a step to see what the agent is doing</div>
-      </div>
-    );
-  }
+  if (!step) return null;
   const items = itemsFor(data, step);
   const hidden = Math.max(0, items.length - shown);
+  const model = modelNote(run, step.agent);
   return (
     <div class="transcript" aria-label={`Transcript of ${step.title}`}>
       <div class="tr-head">
-        <span class="tt">{step.title}</span>
-        <StepTag step={step} model={modelNote(run, step.agent)} />
+        {model ? <span>{model}</span> : null}
         <span>{(step.kind ?? "agent") === "agent" ? (step.mode === "write" ? "can edit files" : "read-only") : "run by code-flow"}</span>
         <span>worktree {step.worktree}</span>
         {step.usage ? <span title={usageTitle(step.usage)}>{fmtTokens(step.usage.inputTokens + step.usage.outputTokens)} tokens{step.usage.costUsd ? ` · ≈${fmtCost(step.usage.costUsd)}` : ""}</span> : null}
-        <span class={`status-pill ${step.status}`}>{STATUS_TEXT[step.status] ?? step.status}</span>
+        {step.status !== "done" ? <span class={`status-pill ${step.status}`}>{STATUS_TEXT[step.status] ?? step.status}</span> : null}
       </div>
       <div
         class="tr-body"
@@ -1125,6 +1227,7 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
         {items.slice(hidden).map((item, i) => (
           <TranscriptRow key={hidden + i} item={item} v={item.v} />
         ))}
+        {!items.length ? <div class="ev status">{step.status === "running" ? "Starting…" : "Nothing was recorded for this step."}</div> : null}
       </div>
     </div>
   );
@@ -1139,14 +1242,25 @@ class TranscriptRow extends Component<{ item: Item; v: number }> {
     const { item } = this.props;
     switch (item.kind) {
       case "text":
-        return <div class="ev text">{item.text}</div>;
+        return (
+          <div class="ev text">
+            <Markdown text={item.text} />
+          </div>
+        );
       case "thinking":
-        return <ThinkingRow text={item.text} />;
+        return (
+          <details class="ev thinking">
+            <summary>
+              Thinking <span class="peek">{item.text.replace(/\s+/g, " ").slice(0, 120)}</span>
+            </summary>
+            <div class="think-body">{item.text}</div>
+          </details>
+        );
       case "tool":
         return (
           <details class={`ev tool ${item.isError ? "err" : ""}`}>
             <summary>
-              <b>{item.name}</b> {item.input.replace(/\s+/g, " ").slice(0, 140)}
+              <b>{item.name}</b> <span class="arg">{toolArg(item.input)}</span>
               {item.isError ? <span class="sr-only"> (failed)</span> : null}
             </summary>
             <pre>{item.input}</pre>
@@ -1165,17 +1279,21 @@ class TranscriptRow extends Component<{ item: Item; v: number }> {
   }
 }
 
-function ThinkingRow({ text }: { text: string }) {
-  const [all, setAll] = useState(false);
-  if (text.length <= 800 || all) return <div class="ev thinking">{text}</div>;
-  return (
-    <div class="ev thinking">
-      {text.slice(0, 800)}…{" "}
-      <button type="button" class="linkish" onClick={() => setAll(true)}>
-        show all
-      </button>
-    </div>
-  );
+/** A tool call's one-line gist: its command, file, pattern or URL rather than the raw JSON. */
+function toolArg(input: string): string {
+  let value = input;
+  try {
+    const args = JSON.parse(input) as Record<string, unknown>;
+    const key = ["command", "cmd", "file_path", "path", "pattern", "url", "query", "description"].find((k) => typeof args[k] === "string" && args[k]);
+    if (key) {
+      value = args[key] as string;
+      // Paths inside a worktree read best from the repo root.
+      if (key === "file_path" || key === "path") value = value.replace(/^.*\/\.worktrees\/[^/]+\/[^/]+\//, "");
+    }
+  } catch {
+    // not JSON: show it as it is
+  }
+  return value.replace(/\s+/g, " ").slice(0, 200);
 }
 
 type Item = (
