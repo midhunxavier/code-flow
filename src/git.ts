@@ -479,8 +479,13 @@ async function stashCreate(cwd: string): Promise<string> {
   const index = resolve(cwd, await gitOk(["rev-parse", "--git-path", "index"], cwd));
   const copy = `${index}.codeflow-${process.pid}-${randomBytes(4).toString("hex")}`;
   const copied = await copyFile(index, copy).then(() => true, () => false);
+  const env = copied ? { env: { GIT_INDEX_FILE: copy } } : undefined;
   try {
-    return (await gitOk(["stash", "create"], cwd, copied ? { env: { GIT_INDEX_FILE: copy } } : undefined)).trim();
+    // Refreshed first: a file touched but unchanged makes `stash create` see a change, then none
+    // once it refreshes, and exit 1 with nothing printed. (On the real index, the first call's
+    // refresh hid that; a copy is stale every time.)
+    if (copied) await git(["update-index", "-q", "--refresh"], cwd, env);
+    return (await gitOk(["stash", "create"], cwd, env)).trim();
   } finally {
     if (copied) await Promise.all([rm(copy, { force: true }), rm(`${copy}.lock`, { force: true })]);
   }

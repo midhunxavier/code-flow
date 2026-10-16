@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -121,4 +121,17 @@ test("read-only steps side by side in one worktree: snapshots don't collide on i
   assert.deepEqual(await restoreSnapshot(repo, snaps[0]!), ["edits"]);
   assert.equal(readFileSync(join(repo, "b.txt"), "utf8"), "b\n");
   assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "changed\n", "the change from before the step is kept");
+});
+
+test("a file touched but not changed doesn't make a snapshot fail", async () => {
+  const repo = newRepo("codeflow-git-touch-", { "a.txt": "a\n", "b.txt": "b\n" });
+  // Its stat no longer matches the index, its content does: `git stash create` on a stale index
+  // sees a change, then none, and exits 1 printing nothing.
+  const later = new Date(Date.now() + 5_000);
+  utimesSync(join(repo, "a.txt"), later, later);
+  const snap = await snapshot(repo);
+  assert.equal(snap.changes, "");
+  writeFileSync(join(repo, "sneaky.txt"), "a read-only step wrote this\n");
+  utimesSync(join(repo, "b.txt"), later, later);
+  assert.deepEqual(await restoreSnapshot(repo, snap), ["1 new file"]);
 });

@@ -1,7 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -311,9 +311,20 @@ test("without Docker, an untrusted source's checks only run on this machine if y
   const script = (file: string, ...args: string[]) => `#!/bin/sh\nexec "${process.execPath}" "${join(fakeBin, "..", file)}" ${args.join(" ")} "$@"\n`;
   for (const vendor of ["claude", "codex", "agy"]) writeFileSync(join(bin, vendor), script("fake-agent.mjs", vendor), { mode: 0o755 });
   writeFileSync(join(bin, "gh"), script("fake-gh.mjs"), { mode: 0o755 });
+  // Only the system tools code-flow runs, linked one by one: docker often sits right next to
+  // them (/usr/bin on Linux CI, node's own folder on many Macs), so no whole folder goes on PATH.
+  const tools = mkdtempSync(join(tmpdir(), "codeflow-tools-"));
+  for (const tool of ["git", "which", "sh", "env", "ps", "uname"]) {
+    let found = "";
+    try {
+      found = execFileSync("which", [tool], { encoding: "utf8" }).trim();
+    } catch {
+      // not installed here; nothing this test runs needs it then
+    }
+    if (found) symlinkSync(found, join(tools, tool));
+  }
   const savedPath = process.env.PATH;
-  // Not even node's own folder: on many machines docker is installed right next to it.
-  process.env.PATH = `${bin}:/usr/bin:/bin`;
+  process.env.PATH = `${bin}:${tools}`;
   try {
     const input = {
       pattern: findPattern("pipeline")!,
