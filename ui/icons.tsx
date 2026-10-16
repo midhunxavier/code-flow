@@ -18,6 +18,15 @@ const PATHS = {
   phone: "M8 2h8a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zM11 18h2",
   send: "M12 19V5M6 11l6-6 6 6",
   compare: "M12 4v16M8 20h8M5 7h14M5 7l-3 7a3 3 0 0 0 6 0zM19 7l-3 7a3 3 0 0 0 6 0z",
+  chat: "M4 5h16v11H9l-5 4z",
+  terminal: "M4 17l6-5-6-5M12 19h8",
+  globe: `${circle(12, 12, 9)}M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18`,
+  note: "M5 4h10l4 4v12H5zM15 4v4h4M8 11h8M8 15h6",
+  panel: "M4 5h16v14H4zM15 5v14",
+  close: "M6 6l12 12M18 6L6 18",
+  external: "M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5",
+  refresh: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5",
+  stop: "M7 7h10v10H7z",
 } as const;
 
 export type IconName = keyof typeof PATHS;

@@ -45,6 +45,16 @@ A **Single agent** run is one conversation with one agent, as in that agent's ow
 
 Prompts are passed on **stdin**, not as command-line arguments (`claude -p` reading stdin, Codex's JSON-RPC or `codex exec -`, and agy's stream-json input), so long tasks and diffs aren't limited by the operating system's argument size.
 
+## The side panel
+
+The panel on the right (the button at the top right, or <kbd>\</kbd>) stays as you move between runs, like the side pane in Claude's or Codex's app. It has five tabs; drag its left edge to resize it.
+
+- **Chat** is a conversation with one agent about the selected repository: pick the agent, ask a question or ask for a change, and keep replying. Under the hood it's a [Single agent](#a-single-agent) run on its own branch, so it shows in the sidebar, keeps its session and its branch, and **Open** shows it as a run with its result, merge and pull request. While a run is open, **From** lets a new chat start from that run's result branch, so the agent sees that work. Earlier chats in the repository are in the list at the top.
+- **Files** lists the repository's files (ignored files hidden; **M** changed, **U** new), with search. A file opens in a viewer with line numbers. While a run is open, the folder picker also offers that run's worktrees, and switches to the first one, so you can read what the agent wrote before merging. From the composer, **+** and dragging add a file to the task's context.
+- **Terminal** is a shell in the repository or in a run's worktree. It stays open between commands, so `cd`, exported variables and virtualenvs stick, and it reports each command's exit code. It's your login shell fed through a pipe, not an interactive terminal: no pagers, prompts or full-screen programs, and colours are off. **Stop** ends what's running (the shell with it) and opens a new one in the same folder; <kbd>↑</kbd>/<kbd>↓</kbd> recall commands. Shells close when code-flow stops.
+- **Browser** shows the app a run started with **Run app** (every running one is a chip), or any address you type. Sites that refuse to be shown inside another page open in a new tab with **↗**.
+- **Notes** is a scratchpad per repository (plus a general one), saved as you type in `~/.codeflow/notes.json`, so it's the same on your phone. **→ Task** adds the selection (or the whole note) to the task in the composer; **→ Chat** sends it to a new chat.
+
 ## Runs survive restarts
 
 Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and the server rebuilds the run list from those files when it starts.
@@ -72,4 +82,4 @@ Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and t
 - **Compare setups…** (next to *Start run*) starts the same task with several patterns at once, each with the team you last picked for it, optionally 2–3 times each. Insights shows them side by side: result, time, steps, tokens, cost, and whether tests were touched. The best value in each column is highlighted.
 - **Tokens and cost** also show on each step, in the run's details under the header (with a per-agent breakdown on hover) and in the sidebar.
 - **Disk:** every worktree is a full checkout, often with its own `node_modules`. Insights measures them and **Clean up** removes the worktrees, not the branches, of runs that finished more than *N* days ago and need nothing from you.
-- **Finding runs:** the sidebar has search (<kbd>/</kbd>), filters (needs you, running, passed, failing, tests changed; pattern; agent; this repo), and <kbd>j</kbd>/<kbd>k</kbd> to move between runs. In a run, <kbd>[</kbd>/<kbd>]</kbd> move between steps. <kbd>?</kbd> lists every shortcut. Run status changes are announced to screen readers.
+- **Finding runs:** the sidebar has search (<kbd>/</kbd>), filters (needs you, running, passed, failing, tests changed; pattern; agent; this repo), and <kbd>j</kbd>/<kbd>k</kbd> to move between runs. In a run, <kbd>[</kbd>/<kbd>]</kbd> move between steps. <kbd>\</kbd> shows or hides the side panel. <kbd>?</kbd> lists every shortcut. Run status changes are announced to screen readers.

@@ -27,7 +27,47 @@ export type Route =
 export const route = signal<Route>({ view: "composer" });
 export const railOpen = signal(false);
 export const pickerOpen = signal(false);
-export const filesOpen = signal(store.get("filesOpen") ? store.get("filesOpen") === "1" : window.innerWidth > 1180);
+
+// ---------------------------------------------------------------- side panel
+/** The side panel's tabs: a chat with one agent, the files, a terminal, a browser, your notes. */
+export type SideTab = "chat" | "files" | "terminal" | "browser" | "notes";
+export const SIDE_TABS: SideTab[] = ["chat", "files", "terminal", "browser", "notes"];
+/** Open as you left it on a wide screen; on a phone it covers the work, so it starts closed. */
+export const sideOpen = signal(window.innerWidth > 760 && (store.get("sideOpen") ? store.get("sideOpen") === "1" : window.innerWidth > 1180));
+export const sideTab = signal<SideTab>(SIDE_TABS.includes(store.get("sideTab") as SideTab) ? (store.get("sideTab") as SideTab) : "chat");
+/** Width of the side panel on wide screens, in pixels; dragged, and remembered. */
+export const sideWidth = signal(Math.min(Math.max(Number(store.get("sideWidth")) || 420, 300), 900));
+export function openSide(tab?: SideTab) {
+  if (tab) {
+    sideTab.value = tab;
+    store.set("sideTab", tab);
+  }
+  sideOpen.value = true;
+  store.set("sideOpen", "1");
+}
+export function closeSide() {
+  sideOpen.value = false;
+  store.set("sideOpen", "0");
+}
+export function setSideWidth(px: number) {
+  sideWidth.value = Math.min(Math.max(Math.round(px), 300), 900);
+  store.set("sideWidth", String(sideWidth.value));
+}
+/** The chat shown in the side panel: a Single-agent run, or none (a fresh chat). */
+export const sideChat = signal<string | null>(store.get("sideChat"));
+export function setSideChat(id: string | null) {
+  sideChat.value = id;
+  if (id) store.set("sideChat", id);
+  else store.set("sideChat", "");
+}
+/** Text handed to the side chat's composer (from Notes, or a file). */
+export const sideDraft = signal("");
+/** A file the Files tab should show: set by anything that opens a file (a transcript, a diff). */
+export const sideFile = signal<{ root: string; path: string } | null>(null);
+export function openFile(root: string, path: string) {
+  sideFile.value = { root, path };
+  openSide("files");
+}
 
 export const available = (id: AgentId) => agents.value.find((a) => a.id === id)?.available ?? false;
 /** Read out by screen readers when a run finishes or needs you (an aria-live region). */
