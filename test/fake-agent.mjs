@@ -108,7 +108,7 @@ if (resumeId && when("INVALID_SESSION")) {
 // Let tests inspect exactly what code-flow passed to the CLI.
 if (process.env.FAKE_RECORD_DIR) {
   writeFileSync(`${process.env.FAKE_RECORD_DIR}/${vendor}-${Date.now()}-${randomUUID().slice(0, 6)}.json`,
-    JSON.stringify({ vendor, args, prompt, cwd: process.cwd() }));
+    JSON.stringify({ vendor, args, prompt, cwd: process.cwd(), token: process.env.CODEFLOW_TOKEN ?? null }));
 }
 const write =
   (vendor === "claude" && (args.includes("acceptEdits") || args.includes("bypassPermissions"))) ||

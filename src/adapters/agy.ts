@@ -87,7 +87,8 @@ export const agyAdapter: AgentAdapter = {
       args,
       input: `${JSON.stringify({ event: "user", message: { content: opts.prompt } })}\n`,
       cwd: opts.cwd,
-      env: sandboxed ? sandboxGitEnv() : process.env,
+      // Without the sandbox the agent's commands use your git config, but never code-flow's own secrets.
+      env: sandboxed ? sandboxGitEnv() : childEnv(),
       signal: opts.signal,
       timeoutMs: timeoutMs + 30_000,
       idleTimeoutMs: opts.idleTimeoutMs,

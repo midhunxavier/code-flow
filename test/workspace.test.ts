@@ -171,7 +171,9 @@ test("full access: every tool and no sandbox in write steps; read steps stay rea
     { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] },
     { planner: ["codex"], builder: ["agy"], reviewer: ["claude"] },
   ];
-  const calls: (ReturnType<typeof recorded>[number] & { thread?: { sandbox: string } })[] = [];
+  const calls: (ReturnType<typeof recorded>[number] & { thread?: { sandbox: string }; token?: string | null })[] = [];
+  // No sandbox doesn't mean code-flow's own secrets: the agents still get the filtered environment.
+  process.env.CODEFLOW_TOKEN = "server-secret";
   for (const roles of teams) {
     const dir = mkdtempSync(join(tmpdir(), "codeflow-record-"));
     process.env.FAKE_RECORD_DIR = dir;
@@ -185,6 +187,7 @@ test("full access: every tool and no sandbox in write steps; read steps stay rea
     }
     calls.push(...recorded(dir));
   }
+  delete process.env.CODEFLOW_TOKEN;
   const write = (c: (typeof calls)[number]) => c.prompt.includes("You are the builder");
   const claudeWrite = calls.find((c) => c.vendor === "claude" && write(c))!;
   assert.match(claudeWrite.args.join(" "), /--permission-mode bypassPermissions/);
@@ -195,6 +198,9 @@ test("full access: every tool and no sandbox in write steps; read steps stay rea
   assert.equal(calls.find((c) => c.vendor === "codex" && !write(c))!.thread?.sandbox, "read-only");
   assert.ok(!calls.find((c) => c.vendor === "agy" && write(c))!.args.includes("--sandbox"));
   assert.ok(calls.find((c) => c.vendor === "agy" && !write(c))!.args.includes("--sandbox"), "a read step keeps agy's sandbox");
+  const started = calls.filter((c) => c.token !== undefined);
+  assert.ok(started.some((c) => c.vendor === "agy" && write(c)));
+  assert.deepEqual(started.filter((c) => c.token !== null).map((c) => c.vendor), [], "no agent sees CODEFLOW_TOKEN");
 });
 
 test("full access is never taken from a repo's config file", async () => {

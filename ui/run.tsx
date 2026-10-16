@@ -613,16 +613,40 @@ function TurnBody({ run, step, data, answer }: { run: RunSummary; step: Step; da
 
 /**
  * A conversation with one agent: your task, then each turn in order, each of your later messages
- * right before the turn that answered it.
+ * right before the turn that answered it. A message that never got a turn (still waiting, or it
+ * failed before the agent started) keeps its place, with what happened to it.
  */
 function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[]; data: RunData }) {
   const byStep = new Map(run.followUps.filter((f) => f.stepId).map((f) => [f.stepId!, f]));
   const turns = steps.filter((s) => (s.kind ?? "agent") === "agent");
-  const waiting = run.followUps.filter((f) => f.status === "pending" && (!f.stepId || !data.steps.has(f.stepId)));
+  const stepless = run.followUps.filter((f) => !f.stepId || !data.steps.has(f.stepId));
+  const thread: { at: number; step?: Step; followUp?: FollowUp }[] = [
+    ...turns.map((step) => ({ at: step.startedAt, step })),
+    ...stepless.map((followUp) => ({ at: followUp.at, followUp })),
+  ].sort((a, b) => a.at - b.at);
   const agent = Object.values(run.roles).flat()[0];
   return (
     <>
-      {turns.map((s) => {
+      {thread.map(({ step: s, followUp }) => {
+        if (!s) {
+          const f = followUp!;
+          return (
+            <div key={f.id} class="fu">
+              <div class="msg-you">
+                <div class="bubble">
+                  <Markdown text={f.message} />
+                </div>
+              </div>
+              <div class="fu-answer">
+                <div class="fu-head">
+                  <AgentTag id={f.agent} />
+                  {f.status === "pending" ? <span class="fu-live">{run.status === "running" ? "up next…" : "waiting…"}</span> : <FollowUpBadges f={f} />}
+                </div>
+                {f.status === "pending" || !f.result ? null : f.status === "failed" ? <div class="ev error">{f.result}</div> : <Markdown text={f.result} />}
+              </div>
+            </div>
+          );
+        }
         const f = byStep.get(s.id);
         // Messages a turn took when it started, or while it ran (Codex takes them mid-turn).
         const notes = run.notes.filter((n) => n.deliveredTo?.stepId === s.id && !n.followUp);
@@ -656,21 +680,6 @@ function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[]; data
           </div>
         );
       })}
-      {waiting.map((f) => (
-        <div key={f.id} class="fu">
-          <div class="msg-you">
-            <div class="bubble">
-              <Markdown text={f.message} />
-            </div>
-          </div>
-          <div class="fu-answer">
-            <div class="fu-head">
-              <AgentTag id={f.agent} />
-              <span class="fu-live">{run.status === "running" ? "up next…" : "waiting…"}</span>
-            </div>
-          </div>
-        </div>
-      ))}
       {!turns.length && run.status === "running" ? (
         <div class="fu-answer">
           <div class="fu-head">
