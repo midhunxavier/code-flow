@@ -128,9 +128,10 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   await page.locator(".review-head select").selectOption("claude");
   await page.getByRole("button", { name: "Send 1 comment" }).click();
 
-  // Back on the run: the follow-up ran and the check passes now.
+  // Back on the run: the comment is in the thread, Claude's follow-up ran, and the check passes now.
   await page.getByText("✓ Finished — the check passes").waitFor({ timeout: 30_000 });
-  await page.locator(".followup", { hasText: "check passes" }).waitFor();
+  await page.locator(".fu .msg-you", { hasText: "Implement it properly so npm test passes" }).waitFor();
+  await page.locator(".fu-head", { hasText: "check passes" }).waitFor();
 
   // Merge into main from the UI.
   await page.getByRole("button", { name: "Merge…" }).click();
