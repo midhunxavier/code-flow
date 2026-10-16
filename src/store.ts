@@ -244,14 +244,20 @@ async function holderAlive(text: string, mtimeMs: number): Promise<{ live: boole
   return { live: info.boot === undefined || Math.abs(info.boot - bootTime()) < BOOT_SLACK_MS, pid };
 }
 
-/** The lock's text and its file's identity, read from one handle so they belong together. */
+/**
+ * The lock's text and its file's identity, read from one handle so they belong together.
+ * Undefined when it's gone; an unreadable lock (another user's) throws instead of spinning.
+ */
 async function readLock(file: string): Promise<{ text: string; stat: Stats } | undefined> {
-  const handle = await open(file, "r").catch(() => undefined);
-  if (!handle) return undefined;
+  let handle;
+  try {
+    handle = await open(file, "r");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new Error(`Can't read ${file}: ${(err as Error).message}`);
+  }
   try {
     return { stat: await handle.stat(), text: await handle.readFile("utf8") };
-  } catch {
-    return undefined;
   } finally {
     await handle.close();
   }
@@ -299,8 +305,9 @@ async function takeOverLock(file: string, temp: string, judged: { text: string; 
     return false;
   }
   try {
-    const now = await stat(token);
-    if (now.ino !== judged.stat.ino || now.dev !== judged.stat.dev || (await readFile(token, "utf8")) !== judged.text) return false;
+    const now = await stat(token).catch(() => undefined);
+    const text = await readFile(token, "utf8").catch(() => undefined);
+    if (!now || now.ino !== judged.stat.ino || now.dev !== judged.stat.dev || text !== judged.text) return false;
     await rename(temp, file);
     return true;
   } finally {
@@ -329,6 +336,7 @@ export async function acquireLock(waitMs = 20_000): Promise<() => void> {
       const holder = await holderAlive(seen.text, seen.stat.mtimeMs);
       if (!holder.live) {
         if (await takeOverLock(file, temp, seen)) break;
+        if (Date.now() > deadline) throw new Error(`Couldn't replace the stale ${file}. Delete it and start code-flow again.`);
         await new Promise((r) => setTimeout(r, 25));
         continue;
       }
