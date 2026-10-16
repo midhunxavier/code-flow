@@ -502,3 +502,54 @@ test("side panel: chat with one agent, read a file, run a command, keep a note",
   assert.equal(chat.project, own.id);
   assert.notEqual(own.defaults?.pattern, chat.pattern, "a chat isn't the composer's choice of team");
 });
+
+test("projects: the Automations page and its inbox follow the project you're in; the phone view lists runs by project", async () => {
+  const api = (path: string, body?: unknown) =>
+    fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: repo }).toString().trim();
+  const side = await api("/api/projects", { name: "E2E scoped", repos: [root] });
+  assert.ok(side.id, side.error);
+  const projects: { id: string; name: string; repos: string[] }[] = await api("/api/projects");
+  const own = projects.find((p) => p.repos.includes(root))!; // the repo's first project: earlier runs and automations are in it
+  assert.notEqual(own.id, side.id);
+  const automation = await api("/api/automations", {
+    name: "E2E side hook",
+    webhook: true,
+    run: { repo, project: side.id, pattern: "pipeline", task: "E2E: side chore", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["codex"] }, loop: { check: "" } },
+  });
+  assert.ok(automation.token, automation.error);
+  const fired = await fetch(`${BASE}/hooks/${automation.id}`, { method: "POST", headers: { authorization: `Bearer ${automation.token}`, "content-type": "application/json" }, body: "{}" });
+  assert.equal(fired.status, 202);
+
+  await page.goto(`${BASE}/#/automations`);
+  await page.locator(".project-btn").click(); // start from every project, whichever one earlier tests left selected
+  await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
+  await page.locator(".inbox-item", { hasText: "E2E: side chore" }).waitFor({ timeout: 30_000 });
+  const pending = (await api("/api/runs")).filter((r: { triage?: { state: string }; archived?: boolean }) => r.triage?.state === "pending" && !r.archived).length;
+  const total = (await api("/api/automations")).length;
+  assert.ok(pending > 1 && total > 1, "earlier tests left results and automations in the repo's own project");
+
+  await page.locator(".project-btn").click();
+  await page.locator(".project-row", { hasText: "E2E scoped" }).locator(".pr-main").click();
+  await page.locator(".project-btn", { hasText: "E2E scoped" }).waitFor();
+  assert.deepEqual(await page.locator(".inbox-item a.t").allInnerTexts(), ["E2E: side chore"], "only this project's results");
+  assert.deepEqual(await page.locator(".auto-row b").allInnerTexts(), ["E2E side hook"], "only this project's automations");
+  await page.locator(".automations .rail-hint", { hasText: `${pending - 1} in other projects need${pending === 2 ? "s" : ""} you` }).waitFor();
+  await page.locator(".automations .rail-hint", { hasText: `${total - 1} more in other projects` }).waitFor();
+  assert.equal(await page.locator(".auto-btn .count").innerText(), String(pending), "the top bar still counts every project's results");
+
+  // The read-only phone view lists each project's runs under its name.
+  const remote = await api("/api/remote", { enabled: true });
+  const sections = (await (await fetch(`${BASE}${remote.path}`)).text()).split("<section>").slice(1);
+  const under = (name: string) => sections.find((s) => s.startsWith(`<h2 class="project">${name}</h2>`)) ?? "";
+  assert.match(under("E2E scoped"), /E2E: side chore/);
+  assert.doesNotMatch(under(own.name), /E2E: side chore/);
+  assert.match(under(own.name), /E2E: check can&#39;t run/);
+  await api("/api/remote", { enabled: false });
+
+  // "show all" goes back to every project, as the sidebar's does.
+  await page.locator(".automations .rail-hint", { hasText: "more in other projects" }).getByRole("button", { name: "show all" }).click();
+  await page.locator(".project-btn", { hasText: "All projects" }).waitFor();
+  assert.equal(await page.locator(".auto-row").count(), total);
+  assert.equal(await page.locator(".inbox-item").count(), pending);
+});
