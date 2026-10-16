@@ -1,5 +1,5 @@
 import { computed, signal } from "@preact/signals";
-import { api, post, store } from "./lib.js";
+import { api, ApiError, post, store } from "./lib.js";
 import type {
   AgentId,
   AgentInfo,
@@ -54,7 +54,7 @@ export async function setRepo(path: string, remember = true) {
     }
   } catch (err) {
     repoInfo.value = null;
-    repoError.value = path ? `${path.split("/").pop()} isn't a git repository` : "";
+    repoError.value = path ? repoProblem(path.split("/").pop() || path, err) : "";
   } finally {
     repoChecking.value = false;
   }
@@ -64,6 +64,15 @@ export async function setRepo(path: string, remember = true) {
   }
 }
 export const recentRepos = () => store.json<string[]>("recentRepos", []);
+
+/** Why a folder couldn't be opened: not a repository is only one of the reasons. */
+function repoProblem(name: string, err: unknown): string {
+  if (!(err instanceof ApiError)) return `Couldn't reach code-flow to open ${name}`;
+  if (err.status === 400 && /not a git repository/i.test(err.message)) return `${name} isn't a git repository`;
+  if (err.status === 401) return "Not signed in to code-flow";
+  if (err.status >= 500) return `Couldn't open ${name}: ${err.message}`;
+  return err.message;
+}
 
 // ---------------------------------------------------------------- composer
 export const task = signal(store.get("draftTask") ?? "");
@@ -110,15 +119,24 @@ export interface Health {
   account?: string;
   quota?: { status: string; windows: Record<string, { utilization?: number; resetsAt?: number }>; at: number };
   fix?: string;
+  /** false: the CLI's --help lacks a flag code-flow passes, so steps will fail on it. */
+  compatible?: boolean;
+  missing?: string[];
+  warnings?: string[];
+}
+export interface GitHealth {
+  installed: boolean;
+  version?: string;
+  ok: boolean;
+  warning?: string;
 }
 export const health = signal<Health[] | null>(null);
+export const gitHealth = signal<GitHealth | null>(null);
 export const healthOpen = signal(false);
 export async function loadHealth() {
-  try {
-    health.value = await api<Health[]>("/api/doctor");
-  } catch {
-    health.value = null;
-  }
+  const [agents, git] = await Promise.allSettled([api<Health[]>("/api/doctor"), api<GitHealth>("/api/doctor/git")]);
+  health.value = agents.status === "fulfilled" ? agents.value : null;
+  gitHealth.value = git.status === "fulfilled" ? git.value : null;
 }
 
 /** "Let me approve the plan before agents build" (patterns that have a plan step). */
@@ -257,10 +275,51 @@ export function upsertRun(run: RunSummary) {
   runs.value = next;
 }
 
+/**
+ * Where the event stream is: the server start it belongs to (its epoch), the newest event it
+ * brought, and per run the event its snapshot came with. A snapshot older than the one shown
+ * (a list fetched while the stream moved on) never replaces a newer one.
+ */
+const feed = { epoch: "", seq: 0, runSeq: new Map<string, number>() };
+/** Called when a run finishes, pauses for you, or a PR watch hands it back (see watchAllRuns). */
+let onFinished: ((run: RunSummary) => void) | undefined;
+
+/**
+ * A run snapshot from a run's own stream (the run view): it updates the list only when it's newer
+ * than what the list shows. That stream replays a run's history first, and an old "running"
+ * snapshot in the list would make the next refresh announce a finish that happened long ago.
+ */
+export function upsertRunFrom(run: RunSummary, seq: number) {
+  if (seq <= (feed.runSeq.get(run.id) ?? 0)) return;
+  feed.runSeq.set(run.id, seq);
+  upsertRun(run);
+}
+
+/** Tell `onFinished` about what changed between two snapshots of a run. */
+function noticeChange(before: RunSummary | undefined, run: RunSummary) {
+  if (!onFinished) return;
+  if (before?.status === "running" && run.status !== "running") onFinished(run);
+  else if (run.awaiting && !before?.awaiting) onFinished(run); // paused for your decision
+  else if (watchNeedingYou(run) && !watchNeedingYou(before)) onFinished(run); // a PR watch handed back to you
+}
+
+/** A whole list of runs: `fresher` says which runs this list may not replace. */
+function applyRunList(list: RunSummary[], fresher: (id: string) => boolean) {
+  const before = runs.value;
+  const next = new Map<string, RunSummary>();
+  for (const run of list) next.set(run.id, fresher(run.id) && before.has(run.id) ? before.get(run.id)! : run);
+  for (const [id, run] of before) if (!next.has(id) && fresher(id)) next.set(id, run);
+  runs.value = next;
+  for (const run of next.values()) noticeChange(before.get(run.id), run);
+}
+
 export async function refreshRuns() {
+  const { epoch, seq } = feed;
   try {
     const list = await api<RunSummary[]>("/api/runs");
-    runs.value = new Map(list.map((r) => [r.id, r]));
+    // The server restarted while this was on its way: the stream's own list is newer.
+    if (feed.epoch !== epoch) return;
+    applyRunList(list, (id) => (feed.runSeq.get(id) ?? 0) > seq);
   } catch {
     // keep what we have; the event stream will catch up
   }
@@ -318,19 +377,45 @@ export function matchesFilter(r: RunSummary, f = runFilter.value): boolean {
 }
 export const isFlagged = flagged;
 
-export function watchAllRuns(onFinished: (run: RunSummary) => void) {
+type FeedMessage =
+  | { type: "hello"; epoch: string; seq: number; runs?: RunSummary[]; resumed?: boolean }
+  | { type: "run"; seq: number; run: RunSummary };
+
+export function watchAllRuns(notify: (run: RunSummary) => void) {
+  onFinished = notify;
   const connect = () => {
     const source = new EventSource("/api/events");
+    let dropped = false;
     source.onmessage = (msg) => {
-      const { run } = JSON.parse(msg.data) as { run: RunSummary };
+      const data = JSON.parse(msg.data) as FeedMessage;
+      if (data.type === "hello") {
+        // Another server start numbers its events afresh: what we kept from the last one says nothing.
+        if (data.epoch !== feed.epoch) feed.runSeq.clear();
+        feed.epoch = data.epoch;
+        if (data.runs) {
+          // The whole list, in step with the stream: every run in it is as new as this event.
+          for (const run of data.runs) feed.runSeq.set(run.id, data.seq);
+          applyRunList(data.runs, () => false);
+        }
+        feed.seq = Math.max(data.runs ? 0 : feed.seq, data.seq);
+        return;
+      }
+      const { run, seq } = data;
+      if (seq <= (feed.runSeq.get(run.id) ?? 0)) return; // older than what's shown
+      feed.runSeq.set(run.id, seq);
+      feed.seq = Math.max(feed.seq, seq);
       const before = runs.value.get(run.id);
       upsertRun(run);
-      if (before?.status === "running" && run.status !== "running") onFinished(run);
-      else if (run.awaiting && !before?.awaiting) onFinished(run); // paused for your decision
-      else if (watchNeedingYou(run) && !watchNeedingYou(before)) onFinished(run); // a PR watch handed back to you
+      noticeChange(before, run);
+    };
+    // Back after a drop (the browser reconnects by itself): catch up on what the stream may have missed.
+    source.onopen = () => {
+      if (dropped) void refreshRuns();
+      dropped = false;
     };
     // A closed stream (the server restarted, or this session ended): find out which, then reconnect.
     source.onerror = () => {
+      dropped = true;
       if (source.readyState !== EventSource.CLOSED) return;
       setTimeout(() => {
         api("/api/health").then(

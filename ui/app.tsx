@@ -20,6 +20,7 @@ import {
   shortcutsOpen,
   type RunFilter,
   filesOpen,
+  gitHealth,
   health,
   healthOpen,
   loadHealth,
@@ -195,7 +196,13 @@ export function notifyFinished(run: RunSummary) {
       : `code-flow: run ${verbs[run.status] ?? run.status}`;
   announcement.value = `${title.replace(/^code-flow: /, "")}: ${run.task.split("\n")[0]!.slice(0, 120)}`;
   if (!canNotify() || (viewing && !document.hidden)) return;
-  const n = new Notification(title, { body: run.task.split("\n")[0], tag: run.id });
+  let n: Notification;
+  try {
+    n = new Notification(title, { body: run.task.split("\n")[0], tag: run.id });
+  } catch {
+    // Android Chrome (the phone link) only shows notifications from a service worker: a toast instead.
+    return showToast(title.replace(/^code-flow: /, ""), 5000);
+  }
   n.onclick = () => {
     window.focus();
     route.value = { view: "run", id: run.id };
@@ -501,9 +508,24 @@ function HealthDialog() {
               ) : h.installed ? (
                 <div class="help">{h.id === "claude" ? "Quota shows after the next Claude step." : "This CLI doesn't report remaining quota."}</div>
               ) : null}
+              {h.warnings?.map((w) => (
+                <div key={w} class="msg warn">
+                  {w}
+                </div>
+              ))}
               {h.fix ? <div class="msg warn">{h.fix}</div> : null}
             </div>
           ))}
+          {gitHealth.value ? (
+            <div class="health-row">
+              <div class="hr-title">
+                <span class="agent">git</span>
+                <span class={`badge ${gitHealth.value.ok ? "ok" : ""}`}>{gitHealth.value.ok ? "ok" : gitHealth.value.installed ? "too old" : "not found"}</span>
+                <span class="help">{gitHealth.value.version}</span>
+              </div>
+              {gitHealth.value.warning ? <div class="msg warn">{gitHealth.value.warning}</div> : null}
+            </div>
+          ) : null}
         </div>
         <div class="picker-foot">
           <span class="ps" />

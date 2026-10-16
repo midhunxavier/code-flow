@@ -28,6 +28,8 @@ export interface RunOptions {
   signal?: AbortSignal;
   /** Hard cap per run. Defaults to 30 minutes. */
   timeoutMs?: number;
+  /** Stop the CLI (error kind "stalled") when it prints nothing for this long. */
+  idleTimeoutMs?: number;
   /** Constrain the final answer to this JSON Schema (all three CLIs support it). */
   jsonSchema?: object;
   /**
@@ -57,12 +59,40 @@ export type AgentEvent =
   /** Plan usage reported by the CLI (Claude reports its 5-hour and 7-day windows). */
   | { kind: "quota"; status: string; windows: Record<string, { utilization?: number; resetsAt?: number }> };
 
+/**
+ * Why a turn failed, from the CLI's own signals where it gives them (exit status, structured
+ * error events), so the engine never has to guess from text the agent may have written itself.
+ * - usage_limit: the plan's usage is used up; `resetsAt` says until when, if the CLI said
+ * - rate_limit / transient: worth another try in a minute (429, overloaded, network)
+ * - auth: signed out or the login expired; retrying won't help until you sign in
+ * - session_not_found: the conversation to resume is gone; start a fresh one
+ * - cli_incompatible: the installed CLI rejected a flag or protocol code-flow uses
+ * - stalled: no output for too long; the CLI was stopped
+ * - timeout / cancelled: the step's time ran out, or you stopped it
+ */
+export type ErrorKind =
+  | "usage_limit"
+  | "rate_limit"
+  | "transient"
+  | "auth"
+  | "session_not_found"
+  | "cli_incompatible"
+  | "stalled"
+  | "timeout"
+  | "cancelled"
+  | "other";
+
 export interface RunResult {
   ok: boolean;
   /** The agent's final answer for this turn. */
   finalText: string;
+  /** The conversation this turn ran in. Never a session that failed to resume. */
   sessionId?: string;
   error?: string;
+  /** Set when `ok` is false. */
+  errorKind?: ErrorKind;
+  /** For a usage limit: when it resets (ms since epoch), if the CLI said. */
+  resetsAt?: number;
   /** The schema-constrained answer, when `jsonSchema` was given and the CLI returned one. */
   structured?: unknown;
 }

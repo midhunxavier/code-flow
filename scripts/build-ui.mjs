@@ -1,5 +1,6 @@
 // Bundles ui/main.tsx with esbuild and inlines it, with ui/styles.css, into a single
 // self-contained public/index.html (so any version of the server can serve it).
+import "./check-node.mjs";
 import * as esbuild from "esbuild";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { watch as watchFile } from "node:fs";

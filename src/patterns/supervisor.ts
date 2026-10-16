@@ -125,6 +125,21 @@ export const supervisorPattern: Pattern = {
 
     const plan = decomposed.outcome;
     const subtasks = decomposed.value.subtasks.slice(0, maxSubtasks);
+    const extra = decomposed.value.subtasks.slice(maxSubtasks);
+    if (extra.length) {
+      // More parts than workers to run at once: the rest goes to the last part, not lost.
+      const last = subtasks[subtasks.length - 1]!;
+      subtasks[subtasks.length - 1] = {
+        ...last,
+        title: `${last.title} (+${extra.length} more)`,
+        instructions: last.instructions + extra.map((t) => section(`Also part of your subtask: ${t.title}`, t.instructions)).join(""),
+      };
+      ctx.log(
+        `The supervisor split the task into ${decomposed.value.subtasks.length} subtasks, more than the ${maxSubtasks} allowed; ` +
+          `${extra.map((t) => `"${t.title}"`).join(", ")} ${extra.length === 1 ? "goes" : "go"} to the worker of "${last.title}"`,
+        "warn",
+      );
+    }
     const contracts = decomposed.value.contracts?.trim() ?? "";
 
     // Respect the supervisor's assignment when it named a worker on the roster; otherwise round-robin.
@@ -135,31 +150,30 @@ export const supervisorPattern: Pattern = {
     }));
     ctx.log(`Subtasks: ${assigned.map((a) => `${a.id} → ${a.agent}`).join(", ")}`);
 
-    const results = await Promise.all(
-      assigned.map(async ({ sub, id, agent }) => {
-        const wt = await ctx.worktree(`sub-${id}`);
-        const result = await ctx.ask({
-          title: `Subtask: ${sub.title}`,
-          role: "workers",
-          agent,
-          mode: "write",
-          cwd: wt,
-          allowFailure: true,
-          prompt:
-            preamble("worker", agent, `${WRITE} Other workers are building other parts in parallel; stay within your subtask.`) +
-            section("Overall goal (for context only)", ctx.task) +
-            (contracts ? section("Contracts every part follows", `Other workers rely on these; don't deviate from them.\n${contracts}`) : "") +
-            section(`Your subtask: ${sub.title}`, sub.instructions) +
-            section("Deliverable", "Implement your subtask, run relevant tests, and summarize what you changed."),
-        });
-        await ctx.commit(wt, `${agent}: ${sub.title}`);
-        // A turn can end fine without changing anything (blocked, or nothing seemed needed):
-        // that part is missing, not done.
-        const changed = (await changedFiles(wt.path, wt.base)).length > 0;
-        if (result.ok && !changed) ctx.failStep(result, `Made no changes: ${firstLine(result.finalText)}`);
-        return { sub, agent, wt, result, changed };
-      }),
-    );
+    // A worker's failed turn is a missing part; anything else failing stops the other workers too.
+    const results = await ctx.parallel(assigned, async ({ sub, id, agent }) => {
+      const wt = await ctx.worktree(`sub-${id}`);
+      const result = await ctx.ask({
+        title: `Subtask: ${sub.title}`,
+        role: "workers",
+        agent,
+        mode: "write",
+        cwd: wt,
+        allowFailure: true,
+        prompt:
+          preamble("worker", agent, `${WRITE} Other workers are building other parts in parallel; stay within your subtask.`) +
+          section("Overall goal (for context only)", ctx.task) +
+          (contracts ? section("Contracts every part follows", `Other workers rely on these; don't deviate from them.\n${contracts}`) : "") +
+          section(`Your subtask: ${sub.title}`, sub.instructions) +
+          section("Deliverable", "Implement your subtask, run relevant tests, and summarize what you changed."),
+      });
+      await ctx.commit(wt, `${agent}: ${sub.title}`);
+      // A turn can end fine without changing anything (blocked, or nothing seemed needed):
+      // that part is missing, not done.
+      const changed = (await changedFiles(wt.path, wt.base)).length > 0;
+      if (result.ok && !changed) ctx.failStep(result, `Made no changes: ${firstLine(result.finalText)}`);
+      return { sub, agent, wt, result, changed };
+    });
     const outcome = (r: (typeof results)[number]) =>
       !r.result.ok ? `failed (${firstLine(r.result.error)})` : r.changed ? "done" : `no changes (${firstLine(r.result.finalText)})`;
 

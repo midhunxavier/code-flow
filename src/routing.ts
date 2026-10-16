@@ -3,7 +3,8 @@ import { adapters, AGENT_IDS, type AgentId } from "./adapters/index.js";
 /**
  * "Auto" in a role: pick an agent for it when the run starts, steering away from plans that
  * are close to their usage limit. Claude reports how much of each window is used; any CLI
- * that hit a rate limit is "limited" until its window resets (or for an hour if unknown).
+ * that hit a rate limit is "limited" until its window resets (or for an hour if unknown), and
+ * one that failed for being signed out ("signed_out") is passed over for 15 minutes.
  * Among agents with room, the one whose code has passed most often in this repo goes first
  * once there's enough history (see rankAgents); otherwise a fixed preference order.
  */
@@ -14,11 +15,14 @@ export type Quota = Partial<Record<AgentId, { status: string; windows: Record<st
 const PREFERENCE: AgentId[] = ["claude", "codex", "agy"];
 const NEARLY_FULL = 0.9;
 const LIMITED_FOR_MS = 60 * 60_000;
+/** A CLI that failed for being signed out is passed over this long; then it's tried again (you may have signed in). */
+const SIGNED_OUT_FOR_MS = 15 * 60_000;
 
 /** Why an agent shouldn't get new work right now, or undefined if it has room. */
 export function exhausted(agent: AgentId, quota: Quota, now = Date.now()): string | undefined {
   const q = quota[agent];
   if (!q) return undefined;
+  if (q.status === "signed_out") return now - q.at < SIGNED_OUT_FOR_MS ? "isn't signed in" : undefined;
   const windows = Object.entries(q.windows);
   const live = windows.filter(([, w]) => !w.resetsAt || w.resetsAt > now);
   if (q.status === "limited" || q.status === "rejected") {

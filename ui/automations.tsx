@@ -26,15 +26,22 @@ export interface Automation {
   /** A recurring sweep: lists this kind of work and starts runs for new items. */
   sweep?: { kind: "issues" | "dependabot" | "alerts"; max: number };
   handled?: string[];
+  /** Webhook events waiting for the running run to end. */
+  queued?: unknown[];
 }
 interface RemoteInfo {
   enabled: boolean;
   lan: boolean;
   /** The phone link opens the whole app (on the Wi-Fi listener), not the read-only view. */
   control: boolean;
+  /** The read-only view. */
   path: string;
+  /** What the QR code opens: with full control, the sign-in link (a secret of its own). */
+  phonePath: string;
   local: string;
   lanUrls: string[];
+  /** Why the Wi-Fi listener isn't listening (its port is taken…): shown instead of a QR code. */
+  lanError?: string;
 }
 
 export const automations = signal<Automation[]>([]);
@@ -96,6 +103,8 @@ function InboxItem({ run }: { run: RunSummary }) {
         <span class={`dot ${runState(run)}`} />
         <a href={`#/run/${run.id}`} class="t">
           {run.task.split("\n")[0]}
+          {/* Tasks leave an issue's title out (its author wrote it); it's still worth seeing here. */}
+          {run.source?.title && !run.task.includes(run.source.title) ? ` — ${run.source.title}` : null}
         </a>
         <span class="help">
           {run.trigger?.via === "sweep" ? "▤" : "⏱"} {run.trigger?.name} · {STATUS_TEXT[run.status] ?? run.status}
@@ -236,6 +245,7 @@ function AutomationRow({ a }: { a: Automation }) {
             {last ? <a href={`#/run/${last.id}`}>{ago(a.lastFiredAt)} ({last.triage?.state === "empty" ? "no changes" : STATUS_TEXT[last.status] ?? last.status})</a> : ago(a.lastFiredAt)}
           </>
         ) : null}
+        {a.queued?.length ? ` · ${a.queued.length} webhook event${a.queued.length === 1 ? "" : "s"} waiting for the run to end` : null}
         {a.lastError ? <span class="msg err inline"> · couldn't start: {a.lastError}</span> : null}
       </div>
       {showHook ? (
@@ -294,10 +304,11 @@ function PhoneView() {
               <input type="checkbox" checked={info.control} onChange={(e) => set({ control: e.currentTarget.checked })} />
               <span>
                 <b>Full control from my phone</b> — the link opens all of code-flow, the same as on this computer: start runs, answer questions, review, approve, merge and open pull requests.
-                Anyone who gets the link can run agents and commands on this computer, so keep it to your own phone; <b>New link</b> signs every phone out.
+                Anyone who gets the link can run agents and commands on this computer, so keep it to your own phone; <b>New link</b>, or turning this off, signs every phone out.
               </span>
             </label>
           ) : null}
+          {info.lanError ? <p class="msg err">{info.lanError}</p> : null}
           <div class="phone-qr">
             {info.lanUrls[0] ? (
               <QrCode text={info.lanUrls[0]} />
@@ -310,8 +321,10 @@ function PhoneView() {
               <b>{info.lanUrls[0] ? "Scan with your phone" : "Scanning needs your Wi-Fi"}</b>
               <span class="help">
                 {info.lanUrls[0]
-                  ? `${full ? "Signs your phone in to code-flow" : "Opens the read-only view"} at ${short(info.lanUrls[0])} — your phone has to be on the same Wi-Fi (or VPN).${full ? " It stays signed in, even after code-flow restarts." : ""}`
-                  : "The link below only opens on this computer. Turn on “Reachable from my Wi-Fi” to get a QR code your phone can open."}
+                  ? `${full ? "Signs your phone in to code-flow" : "Opens the read-only view"} at ${short(info.lanUrls[0])} — your phone has to be on the same Wi-Fi (or VPN).${full ? " It stays signed in for up to 30 days, even after code-flow restarts." : ""}`
+                  : info.lan && info.lanError
+                    ? "No QR code while code-flow can't listen on your network."
+                    : "The link below only opens on this computer. Turn on “Reachable from my Wi-Fi” to get a QR code your phone can open."}
               </span>
             </div>
           </div>
