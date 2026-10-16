@@ -2,7 +2,7 @@ import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,7 @@ process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-auto-home-"));
 
 const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
-const { Automations, nextFire, describeSchedule, readWebhook, validateSchedule } = await import("../src/automation.js");
+const { Automations, nextFire, describeSchedule, readWebhook, resumeSchedule, stillDue, validateSchedule } = await import("../src/automation.js");
 const { renderRemote } = await import("../src/remote.js");
 type Run = import("../src/engine.js").Run;
 type AgentId = import("../src/adapters/index.js").AgentId;
@@ -176,6 +176,150 @@ test("webhooks: bearer token or GitHub signature; GitHub events map to issues an
   assert.equal(readWebhook({ "x-github-event": "push" }, {}), null);
 });
 
+test("schedules survive restarts: a missed time fires once within an hour, else it's skipped, and never on a day left out", () => {
+  const at = (day: number, h: number, m = 0) => new Date(2026, 9, 12 + day, h, m).getTime(); // day 0 = Mon 12 Oct 2026
+  const weekdays = { at: "07:00", days: [1, 2, 3, 4, 5] };
+  // Restarted at 07:20 on Monday: that morning's 07:00 still fires (once, on the next tick).
+  assert.equal(resumeSchedule(weekdays, at(0, 7), at(0, 7, 20)), at(0, 7));
+  // Back at 09:00: too late, so the next one is Tuesday's.
+  assert.equal(resumeSchedule(weekdays, at(0, 7), at(0, 9)), at(1, 7));
+  // Friday's 07:00 missed by a weekend asleep: next is Monday, not "now, on a Sunday".
+  assert.equal(new Date(resumeSchedule(weekdays, at(4, 7), at(6, 12))).getDay(), 1);
+  // Within the hour, but the day changed to one it leaves out: skipped.
+  const mondayNights = { at: "23:30", days: [1] };
+  assert.equal(stillDue(mondayNights, at(0, 23, 30), at(1, 0, 10)), false);
+  assert.equal(stillDue(mondayNights, at(0, 23, 30), at(0, 23, 50)), true);
+  // An hourly automation keeps its next time across restarts instead of starting the hour again.
+  assert.equal(resumeSchedule({ every: 60 }, at(0, 10), at(0, 9, 40)), at(0, 10));
+  assert.equal(resumeSchedule({ every: 60 }, undefined, at(0, 9)), at(0, 10));
+  // A saved time further off than the schedule ever waits (the clock went back) starts over.
+  assert.equal(resumeSchedule({ every: 60 }, at(3, 9), at(0, 9)), at(0, 10));
+});
+
+test("a schedule's next time is saved and honoured on load; a time slept through is skipped, not fired late", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "codeflow-triggers-")), "triggers.json");
+  const started: string[] = [];
+  const make = () =>
+    new Automations(manager, async (body, extra) => {
+      started.push(extra.trigger.via);
+      return manager.start({ pattern: findPattern(body.pattern)!, task: body.task, repo: body.repo, roles: body.roles, options: {}, trigger: extra.trigger });
+    }, undefined, file);
+  const first = make();
+  await first.load();
+  const t = await first.create({ name: "Hourly", enabled: true, schedule: { every: 60 }, webhook: false, isolate: false, run: { repo, pattern: "pipeline", task: "Hourly chore", roles: team } });
+  // Restart 20 minutes later: same next time, not an hour from now.
+  const second = make();
+  await second.load(t.nextAt! - 40 * 60_000);
+  assert.equal(second.get(t.id)!.nextAt, t.nextAt);
+  // The computer slept through it by three hours: the tick moves on without firing.
+  await second.tick(t.nextAt! + 3 * 3_600_000);
+  assert.deepEqual(started, []);
+  assert.equal(second.get(t.id)!.nextAt, t.nextAt! + 3 * 3_600_000 + 60 * 60_000);
+  // Ten minutes late (code-flow was restarting): it fires.
+  const due = second.get(t.id)!.nextAt!;
+  await second.tick(due + 10 * 60_000);
+  assert.deepEqual(started, ["schedule"]);
+  await idle(manager.get(second.get(t.id)!.lastRunId!)!);
+  // Renaming it doesn't move its next time.
+  const next = second.get(t.id)!.nextAt;
+  await second.update(t.id, { name: "Hourly (renamed)" });
+  assert.equal(second.get(t.id)!.nextAt, next);
+});
+
+test("triggers.json that can't be read is moved aside and never written over", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codeflow-triggers-"));
+  const file = join(dir, "triggers.json");
+  const make = () => new Automations(manager, async () => assert.fail("nothing should start"), undefined, file);
+  const aside = () => readdirSync(dir).filter((f) => f.startsWith("triggers.json.corrupt-"));
+
+  // Not JSON (a torn write, a bad hand edit): set aside, and the next save starts a fresh file.
+  writeFileSync(file, '[{"id": "t-1", "token": "');
+  const broken = make();
+  await broken.load();
+  assert.deepEqual(broken.list(), []);
+  assert.equal(aside().length, 1);
+  assert.equal(readFileSync(join(dir, aside()[0]!), "utf8"), '[{"id": "t-1", "token": "', "what was there is kept");
+  await broken.tick();
+  assert.ok(!existsSync(file), "a tick doesn't write an empty list over it");
+
+  // Valid JSON that isn't a list used to crash startup.
+  rmSync(join(dir, aside()[0]!));
+  writeFileSync(file, '{"not": "a list"}');
+  await make().load();
+  assert.equal(aside().length, 1);
+
+  // A list with one unusable entry: the good ones load, the file is kept aside first.
+  rmSync(join(dir, aside()[0]!));
+  const good = { id: "t-good", name: "Good", enabled: true, run: { repo, pattern: "pipeline", task: "x", roles: team }, webhook: true, token: "a".repeat(48), isolate: false, createdAt: 1 };
+  const oddSchedule = { ...good, id: "t-odd", name: "Odd schedule", schedule: { at: "7 o'clock" } };
+  writeFileSync(file, JSON.stringify([good, { id: "t-bad" }, oddSchedule]));
+  const partial = make();
+  await partial.load();
+  assert.deepEqual(partial.list().map((t) => t.id), ["t-good", "t-odd"]);
+  assert.equal(partial.get("t-odd")!.enabled, false, "kept with its secret, but off until its schedule is set again");
+  assert.match(partial.get("t-odd")!.lastError!, /schedule couldn't be read/);
+  assert.equal(aside().length, 1);
+  assert.match(readFileSync(join(dir, aside()[0]!), "utf8"), /t-bad/);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).map((t: { id: string }) => t.id), ["t-good", "t-odd"]);
+
+  // A file that can't be read at all (permissions) is left alone: nothing is saved over it.
+  chmodSync(file, 0o000);
+  try {
+    const locked = make();
+    await locked.load();
+    assert.deepEqual(locked.list(), []);
+    await locked.create({ name: "New", enabled: true, webhook: true, isolate: false, run: { repo, pattern: "pipeline", task: "x", roles: team } });
+  } finally {
+    chmodSync(file, 0o600);
+  }
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).map((t: { id: string }) => t.id), ["t-good", "t-odd"]);
+});
+
+test("two fires at once start one run; a webhook while it runs waits and fires once it ends; a replayed delivery is ignored", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "codeflow-triggers-")), "triggers.json");
+  const starts: string[] = [];
+  const auto = new Automations(manager, async (body, extra) => {
+    starts.push(extra.trigger.via);
+    await new Promise((r) => setTimeout(r, 100)); // starting a run takes a while
+    return manager.start({ pattern: findPattern(body.pattern)!, task: body.task, repo: body.repo, roles: body.roles, options: {}, trigger: extra.trigger });
+  }, undefined, file);
+  await auto.load();
+  auto.start(3_600_000);
+  try {
+    const t = await auto.create({ name: "Pushes", enabled: true, webhook: true, isolate: false, run: { repo, pattern: "pipeline", task: "On push", roles: team } });
+    process.env.FAKE_SLEEP_MS = "500";
+    let first: Run;
+    try {
+      const [a, b] = await Promise.all([auto.fire(t.id, { via: "manual" }), auto.fire(t.id, { via: "manual" })]);
+      assert.equal([a, b].filter((r) => r.run).length, 1, "one run, not two");
+      assert.match((a.skipped ?? b.skipped)!, /starting a run right now/);
+      first = (a.run ?? b.run)!;
+      // A push while it runs isn't dropped: it waits. The same push twice waits once.
+      assert.deepEqual(auto.accept(t.id, { details: "pushed abc" }, "delivery-1"), { accepted: true });
+      assert.deepEqual(auto.accept(t.id, { details: "pushed abc" }, "delivery-2"), { accepted: true });
+      // GitHub sending the same delivery again starts nothing.
+      assert.match((auto.accept(t.id, { details: "pushed abc" }, "delivery-1") as { ignored: string }).ignored, /already handled/);
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal(auto.get(t.id)!.queued?.length, 1);
+    } finally {
+      delete process.env.FAKE_SLEEP_MS;
+    }
+    await idle(first);
+    // When it ends, the waiting event fires.
+    for (let i = 0; i < 100 && auto.get(t.id)!.lastRunId === first.id; i++) await new Promise((r) => setTimeout(r, 50));
+    const next = manager.get(auto.get(t.id)!.lastRunId!)!;
+    assert.notEqual(next.id, first.id);
+    assert.equal(next.trigger?.via, "webhook");
+    assert.match(next.task, /## Details from the webhook\npushed abc/);
+    assert.equal(auto.get(t.id)!.queued, undefined);
+    assert.deepEqual(starts, ["manual", "webhook"]);
+    assert.deepEqual(auto.get(t.id)!.deliveries, ["delivery-1", "delivery-2"]);
+    await idle(next);
+  } finally {
+    auto.stop();
+  }
+});
+
 test("phone view: read-only HTML with everything escaped", async () => {
   const run = await idle(
     await manager.start({ pattern: findPattern("pipeline")!, task: "<script>alert(1)</script> escape me", repo, roles: team, options: {} }),
@@ -189,3 +333,4 @@ test("phone view: read-only HTML with everything escaped", async () => {
   assert.doesNotMatch(detail, /<form|<button|method="post"/i, "no actions");
   assert.equal(renderRemote(manager, "/r/tok", "/run/nope"), null);
 });
+

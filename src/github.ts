@@ -99,8 +99,9 @@ export interface RunSource {
   author?: string;
   association?: string;
   /**
-   * Written by the repo's owners, members or collaborators. Anyone else's text (and a fork's CI
-   * logs) can carry instructions aimed at the agents, so the run is locked down (see engine).
+   * Written by the repo's owners, members or collaborators. Anyone else's text (and a fork's or
+   * a Dependabot PR's CI logs) can carry instructions aimed at the agents, so the run is locked
+   * down (see engine).
    */
   trusted?: boolean;
 }
@@ -112,17 +113,41 @@ export const CODEFLOW_MARKER = "<!-- code-flow -->";
 
 const PR_FIELDS = "number,title,body,url,headRefName,baseRefName,author,isDraft,isCrossRepository";
 
+/**
+ * Most items a sweep lists of one kind. GitHub pages its lists 100 at a time; up to this many
+ * are read, and past it the sweep says the list was cut short instead of quietly stopping.
+ */
+export const LIST_CAP = 1_000;
+
+/** A list read from GitHub, and whether there were more than it holds. */
+export interface Listed<T> {
+  items: T[];
+  truncated: boolean;
+}
+
 export async function listIssues(repo: string, limit = 50): Promise<Issue[]> {
   const raw = await gh(repo, ["issue", "list", "--state", "open", "--limit", String(limit), "--json", "number,title,body,url,labels"]);
   return JSON.parse(raw).map(toIssue);
 }
 
+/** Open issues up to `cap` (gh pages through them); one more is asked for, to tell whether there were more. */
+export async function listOpenIssues(repo: string, cap = LIST_CAP): Promise<Listed<Issue>> {
+  return capped(await listIssues(repo, cap + 1), cap);
+}
+
 export type CiState = "pass" | "fail" | "pending" | "none";
 
-/** Dependabot's open pull requests, each with where its CI stands. */
-export async function listDependabotPrs(repo: string): Promise<(PullRequest & { ci: CiState })[]> {
-  const raw = await gh(repo, ["pr", "list", "--state", "open", "--app", "dependabot", "--limit", "100", "--json", `${PR_FIELDS},statusCheckRollup`]);
-  return JSON.parse(raw).map((p: any) => ({ ...toPr(p), ci: ciState(p.statusCheckRollup ?? []) }));
+/**
+ * Dependabot's open pull requests, each with where its CI stands. Every PR carries its CI
+ * rollup, which makes the query heavy, so fewer are read than for other lists; Dependabot keeps
+ * only a handful open at a time anyway.
+ */
+export async function listDependabotPrs(repo: string, cap = 200): Promise<Listed<PullRequest & { ci: CiState }>> {
+  const raw = await gh(repo, ["pr", "list", "--state", "open", "--app", "dependabot", "--limit", String(cap + 1), "--json", `${PR_FIELDS},statusCheckRollup`]);
+  return capped(
+    JSON.parse(raw).map((p: any) => ({ ...toPr(p), ci: ciState(p.statusCheckRollup ?? []) })),
+    cap,
+  );
 }
 
 /** One state for a PR's checks: any failure fails it; anything unfinished keeps it pending. */
@@ -135,17 +160,34 @@ export function ciState(rollup: any[]): CiState {
 }
 
 /** Open Dependabot alerts, with their advisory and the version that fixes them. */
-export async function listDependabotAlerts(repo: string): Promise<any[]> {
-  return JSON.parse(await gh(repo, ["api", "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=100"]));
+export async function listDependabotAlerts(repo: string, cap = LIST_CAP): Promise<Listed<any>> {
+  return capped(await ghPages(repo, "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=100"), cap);
 }
 
-export async function listCodeScanningAlerts(repo: string): Promise<any[]> {
-  return JSON.parse(await gh(repo, ["api", "repos/{owner}/{repo}/code-scanning/alerts?state=open&per_page=100"]));
+export async function listCodeScanningAlerts(repo: string, cap = LIST_CAP): Promise<Listed<any>> {
+  return capped(await ghPages(repo, "repos/{owner}/{repo}/code-scanning/alerts?state=open&per_page=100"), cap);
 }
 
 /** Leaked secrets: listed so you can rotate them. They're never handed to an agent. */
-export async function listSecretScanningAlerts(repo: string): Promise<any[]> {
-  return JSON.parse(await gh(repo, ["api", "repos/{owner}/{repo}/secret-scanning/alerts?state=open&per_page=100"]));
+export async function listSecretScanningAlerts(repo: string, cap = LIST_CAP): Promise<Listed<any>> {
+  return capped(await ghPages(repo, "repos/{owner}/{repo}/secret-scanning/alerts?state=open&per_page=100"), cap);
+}
+
+/**
+ * Every page of a REST list. `--paginate` follows GitHub's Link headers (the alert lists page
+ * by cursor, not by number), and `--jq '.[]'` prints one item per line, so the pages don't have
+ * to be glued back into one JSON array.
+ */
+async function ghPages(repo: string, path: string): Promise<any[]> {
+  const out = await gh(repo, ["api", path, "--paginate", "--jq", ".[]"]);
+  return out
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line));
+}
+
+function capped<T>(items: T[], cap: number): Listed<T> {
+  return { items: items.slice(0, cap), truncated: items.length > cap };
 }
 
 /** Why an alert listing failed, in words that say what to do. */
@@ -227,6 +269,50 @@ export async function commentOnPr(repo: string, pr: string, body: string): Promi
   await gh(repo, ["pr", "comment", pr, "--body-file", "-"], `${body}\n\n${CODEFLOW_MARKER}`);
 }
 
+/** GitHub refuses a pull request description longer than this. */
+export const PR_BODY_LIMIT = 65_536;
+
+/** A description that fits GitHub's limit: cut at a line break, with a note that it was. */
+export function fitPrBody(body: string, limit = PR_BODY_LIMIT): string {
+  if (body.length <= limit) return body;
+  const note = "\n\n…(cut to fit GitHub's limit; the full summary is in code-flow)";
+  const cut = body.slice(0, limit - note.length - 1);
+  const end = cut.lastIndexOf("\n");
+  return (end > cut.length / 2 ? cut.slice(0, end) : cut) + note;
+}
+
+/**
+ * Open a pull request for `head` into `base`, or find the one that's already open for `head`.
+ * `gh pr create` can fail after GitHub made the PR (a timeout, a dropped connection), and a
+ * retry then says it "already exists"; either way, the PR's address is what to record.
+ */
+export async function createPullRequest(repo: string, pr: { base: string; head: string; title: string; body: string }): Promise<string> {
+  const args = ["pr", "create", "--base", pr.base, "--head", pr.head, "--title", pr.title, "--body-file", "-"];
+  const res = await ghRaw(repo, args, fitPrBody(pr.body));
+  const url = res.stdout.trim().split("\n").filter((l) => /^https?:\/\//.test(l)).pop();
+  if (res.code === 0 && url) return url;
+  const existing = await openPullRequestFor(repo, pr.head).catch(() => undefined);
+  if (existing) return existing;
+  if (res.code === 0) throw new Error(`gh didn't return a pull request URL: ${res.stdout.trim().slice(0, 300)}`);
+  throw ghFailure(args, res);
+}
+
+/** The open pull request whose head is `branch`, if there is one. */
+export async function openPullRequestFor(repo: string, branch: string): Promise<string | undefined> {
+  const list = JSON.parse(await gh(repo, ["pr", "list", "--head", branch, "--state", "open", "--limit", "1", "--json", "url"]));
+  return list[0]?.url || undefined;
+}
+
+/** `gh auth status`: whether gh is signed in, and what it says when it isn't. */
+export async function ghAuthStatus(repo: string): Promise<{ ok: boolean; message: string }> {
+  const res = await ghRaw(repo, ["auth", "status"]);
+  const message = (res.stderr.trim() || res.stdout.trim()).split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 3).join(" ");
+  return { ok: res.code === 0, message };
+}
+
+/** Errors that usually mean gh's login has expired or been revoked, rather than a GitHub hiccup. */
+export const GH_AUTH_ERROR = /isn't signed in|not logged|auth login|HTTP 401|Bad credentials|authentication|token .*(?:expired|revoked|invalid)/i;
+
 /** Push a local branch to `origin/<remote>`; never forced, so it fails if the PR moved on. */
 export async function pushBranch(repo: string, local: string, remote: string): Promise<string> {
   const res = await git(["push", "origin", `refs/heads/${local}:refs/heads/${remote}`], repo);
@@ -280,9 +366,19 @@ export function sourcePrompt(source: RunSource | undefined): string {
   // Runs saved before trust was recorded predate this check; treat their sources as trusted.
   const trusted = source.trusted !== false;
   const by = source.author ? ` (opened by @${source.author}${source.association ? `, ${source.association.toLowerCase()}` : ""})` : "";
-  const parts = [`\n\n## ${what}: ${source.title}\n${source.url}${by}`];
-  if (source.kind === "pr") parts.push(`Branch \`${source.headRefName}\` into \`${source.baseRefName}\`.`);
-  if (source.body.trim()) parts.push(untrustedBlock(source.kind === "issue" ? "issue text" : "pull request description", source.body.trim().slice(0, 8_000), trusted));
+  const body = source.body.trim().slice(0, 8_000);
+  const parts: string[] = [];
+  if (trusted) {
+    parts.push(`\n\n## ${what}: ${source.title}\n${source.url}${by}`);
+    if (source.kind === "pr") parts.push(`Branch \`${source.headRefName}\` into \`${source.baseRefName}\`.`);
+    if (body) parts.push(untrustedBlock(source.kind === "issue" ? "issue text" : "pull request description", body, true));
+  } else {
+    // The title and branch name are the author's words too: they go in the fence with the text,
+    // not in a heading the agents would read as part of their instructions.
+    parts.push(`\n\n## ${what}\n${source.url}${by}`);
+    const header = [`Title: ${source.title.slice(0, 300)}`, source.kind === "pr" ? `Branch: ${source.headRefName} into ${source.baseRefName}` : ""].filter(Boolean).join("\n");
+    parts.push(untrustedBlock(source.kind === "issue" ? "issue's title and text" : "pull request's title, branch and description", body ? `${header}\n\n${body}` : header, false));
+  }
   if (source.ci) {
     parts.push(`### Failing CI checks\n${source.ci.failing.map((n) => `- ${n}`).join("\n") || "(none reported)"}`);
     if (source.ci.logs) parts.push(`### Logs of the failed jobs\n${untrustedBlock("CI log", source.ci.logs, trusted)}`);
@@ -394,7 +490,11 @@ export function githubUser(repo: string): Promise<string> {
   return user;
 }
 
-/** Dependabot's GitHub App: its PRs are written by GitHub, not by a person who could aim them at agents. */
+/**
+ * Dependabot's GitHub App. Its PRs are opened by GitHub, but what they carry isn't GitHub's:
+ * the description quotes the new version's release notes and commit messages verbatim, and its
+ * CI runs (and prints the output of) the new package's code. So they count as untrusted.
+ */
 const DEPENDABOT = /^(app\/)?dependabot(\[bot\])?$/;
 
 /** Resolve a run's source: fetch the issue, PR (and, if asked, its failing CI logs) or alerts. */
@@ -419,9 +519,10 @@ export async function loadSource(repo: string, input: SourceInput): Promise<{ so
     isCrossRepository: pr.isCrossRepository,
     ...who,
     author: who.author || pr.author,
-    // A fork's code (and so its CI output) is written by whoever opened it. Dependabot's PRs come
-    // from GitHub itself.
-    trusted: (TRUSTED_ASSOCIATIONS.has(who.association) || DEPENDABOT.test(who.author || pr.author)) && !pr.isCrossRepository,
+    // A fork's code (and so its CI output) is written by whoever opened it, and a Dependabot PR's
+    // text and CI output come from the upstream package. Pushing to Dependabot's branch still
+    // works: it's in this repository.
+    trusted: TRUSTED_ASSOCIATIONS.has(who.association) && !pr.isCrossRepository && !DEPENDABOT.test(who.author || pr.author),
   };
   if (input.ciLogs) {
     const checks = await prChecks(repo, String(pr.number));
@@ -446,14 +547,17 @@ const toPr = (p: any): PullRequest => ({
 
 async function gh(cwd: string, args: string[], input?: string): Promise<string> {
   const res = await ghRaw(cwd, args, input);
-  if (res.code !== 0) {
-    const message = res.stderr.trim() || res.stdout.trim();
-    if (res.code === 127) throw new Error("GitHub CLI (gh) isn't installed — brew install gh, then gh auth login");
-    if (/not logged|auth login/i.test(message)) throw new Error("GitHub CLI isn't signed in — run `gh auth login`");
-    if (/no git remotes|none of the git remotes|not a github/i.test(message)) throw new Error("This repository has no GitHub remote");
-    throw new Error(`gh ${args.slice(0, 2).join(" ")} failed: ${message.split("\n")[0]}`);
-  }
+  if (res.code !== 0) throw ghFailure(args, res);
   return res.stdout;
+}
+
+/** A failed gh command as an error that says what to do. */
+function ghFailure(args: string[], res: { code: number; stdout: string; stderr: string }): Error {
+  const message = res.stderr.trim() || res.stdout.trim();
+  if (res.code === 127) return new Error("GitHub CLI (gh) isn't installed — brew install gh, then gh auth login");
+  if (/not logged|auth login/i.test(message)) return new Error("GitHub CLI isn't signed in — run `gh auth login`");
+  if (/no git remotes|none of the git remotes|not a github/i.test(message)) return new Error("This repository has no GitHub remote");
+  return new Error(`gh ${args.slice(0, 2).join(" ")} failed: ${message.split("\n")[0]}`);
 }
 
 const GH_TIMEOUT_MS = 60_000;

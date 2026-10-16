@@ -16,6 +16,7 @@ const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
 const { PrWatcher } = await import("../src/watch.js");
 const { resolveAuto } = await import("../src/routing.js");
+const { createPullRequest, fitPrBody, PR_BODY_LIMIT } = await import("../src/github.js");
 type Run = import("../src/engine.js").Run;
 
 let repo: string;
@@ -297,8 +298,10 @@ test("an issue from outside the repo locks the run down: Safe mode, nothing copi
   const builder = recorded.find((p) => p.vendor === "claude" && p.args.includes("acceptEdits"))!;
   assert.ok(!builder.args.join(" ").includes("Bash(npm"), "Safe mode: no shell for the builder");
   assert.match(builder.prompt!, /comes from someone outside this repository's maintainers/);
-  // The issue's own ``` can't close the fence it's quoted in.
-  assert.match(builder.prompt!, /`````text\nTo reproduce/);
+  // The issue's own ``` can't close the fence it's quoted in, and its title is inside it too.
+  assert.match(builder.prompt!, /## GitHub issue #6\nhttps:\/\/github\.com\/o\/r\/issues\/6 \(opened by @mallory, none\)\n/);
+  assert.match(builder.prompt!, /`````text\nTitle: Tests are flaky\n\nTo reproduce/);
+  assert.doesNotMatch(builder.prompt!, /## GitHub issue #6: Tests are flaky/);
   assert.ok(recorded.some((p) => p.vendor === "docker" && p.args.includes("--network") && p.args.includes("none")), "the check ran in a container without network");
 });
 
@@ -364,3 +367,18 @@ test("a run from a branch since squash-merged and deleted on GitHub opens its PR
   assert.ok(shown.some((f) => f.startsWith("codex-")), "the run's change is");
   git("checkout", "-q", "main");
 });
+
+test("a PR description is cut to fit GitHub's limit", async () => {
+  const long = `${"A line of the summary.\n".repeat(4_000)}`;
+  assert.ok(long.length > PR_BODY_LIMIT);
+  const fitted = fitPrBody(long);
+  assert.ok(fitted.length <= PR_BODY_LIMIT);
+  assert.match(fitted, /A line of the summary\.\n\n…\(cut to fit GitHub's limit/);
+  assert.equal(fitPrBody("short"), "short");
+  git("checkout", "-q", "-b", "long-body");
+  git("push", "-q", "origin", "long-body");
+  git("checkout", "-q", "main");
+  const url = await createPullRequest(repo, { base: "main", head: "long-body", title: "Long", body: long });
+  assert.ok(state().prs[url.split("/").pop()!].body.length <= PR_BODY_LIMIT);
+});
+
