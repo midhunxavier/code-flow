@@ -33,6 +33,11 @@ export class DevServers {
     return { ...rest, logs: [...rest.logs] };
   }
 
+  /** Every server, without their logs: what the side panel's Browser can open. */
+  list(): Omit<DevServer, "logs">[] {
+    return [...this.servers.values()].map(({ child: _child, logs: _logs, ...rest }) => ({ ...rest }));
+  }
+
   async start(key: string, cwd: string, command: string, preferredPort?: number): Promise<DevServer> {
     this.stop(key);
     const port = await freePort(preferredPort);

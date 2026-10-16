@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { Composer, FilesPanel } from "./composer.js";
+import { Composer } from "./composer.js";
+import { SidePanel } from "./side.js";
 import { RunView } from "./run.js";
 import { Review } from "./review.js";
 import { GitHubPicker } from "./github.js";
@@ -19,7 +20,10 @@ import {
   setRunFilter,
   shortcutsOpen,
   type RunFilter,
-  filesOpen,
+  closeSide,
+  openSide,
+  sideOpen,
+  sideWidth,
   gitHealth,
   health,
   healthOpen,
@@ -43,8 +47,6 @@ import {
 import type { DirListing, RunSummary } from "./types.js";
 
 export function App() {
-  const view = route.value.view;
-  const showFiles = view === "composer" && filesOpen.value;
   useEffect(() => {
     document.title = waitingCount.value ? `(${waitingCount.value}) code-flow` : "code-flow";
   }, [waitingCount.value]);
@@ -60,7 +62,7 @@ export function App() {
   return (
     <>
       <TopBar />
-      <div class={`app ${showFiles ? "" : "no-files"}`}>
+      <div class={`app ${sideOpen.value ? "with-side" : ""}`} style={`--side-w:${sideWidth.value}px`}>
         <Rail />
         {railOpen.value ? <div class="rail-scrim" aria-hidden="true" onClick={() => (railOpen.value = false)} /> : null}
         <main>
@@ -76,7 +78,8 @@ export function App() {
             <Composer />
           )}
         </main>
-        {view === "composer" ? <FilesPanel open={showFiles} /> : null}
+        {sideOpen.value ? <div class="side-scrim" aria-hidden="true" onClick={closeSide} /> : null}
+        <SidePanel />
       </div>
       <FolderPicker />
       <GitHubPicker />
@@ -148,6 +151,15 @@ function TopBar() {
         })}
       </button>
       <Bell />
+      <button
+        class="btn ghost side-btn"
+        aria-pressed={sideOpen.value}
+        aria-label="Side panel"
+        title="Side panel: chat, files, terminal, browser, notes (\\)"
+        onClick={() => (sideOpen.value ? closeSide() : openSide())}
+      >
+        <Icon name="panel" />
+      </button>
     </header>
   );
 }
@@ -385,6 +397,7 @@ const SHORTCUTS: [string, string][] = [
   ["a", "Automations"],
   ["⌘↵", "Start the run, or send what you typed"],
   ["Esc", "Close a dialog, or leave the search box"],
+  ["\\", "Show or hide the side panel"],
   ["?", "This list"],
 ];
 
@@ -415,6 +428,11 @@ function onShortcut(e: KeyboardEvent) {
     case "?":
       e.preventDefault();
       shortcutsOpen.value = true;
+      return;
+    case "\\":
+      e.preventDefault();
+      if (sideOpen.value) closeSide();
+      else openSide();
       return;
     case "j":
     case "k": {

@@ -47,6 +47,7 @@ Open **http://localhost:4317**, choose a repository, describe the task, pick a t
 - **Your checkout stays untouched.** Every run works in git worktrees. Results are branches: review them line by line, send comments back to the agent, merge safely, or open a PR.
 - **Done means the check passes.** code-flow runs your test command itself after every change, feeds failures back, and flags edits that make tests pass without fixing anything.
 - **A conversation, not a job queue.** Approve the plan before anyone builds, message the team while it works (straight into a running Codex turn), and reply after it finishes.
+- **A side panel, like the apps you know.** Next to the work: a chat with the agent you pick, the files (of the repo or of a run's worktree), a terminal, a browser for the app a run started, and your notes. It stays as you move between runs.
 - **Where the work lives, even when you're away.** Start from GitHub issues and PRs, fix failing CI, have a council review a PR, run on a schedule or from webhooks, and check in or take over from your phone.
 - **Sweep the backlog.** Fix every open issue, every Dependabot PR with failing CI, or every security alert in one go: pick from the list, get one run each, approve the results from your inbox. Optionally every night, for new ones only.
 
@@ -83,7 +84,7 @@ code-flow enforces read-only steps itself, for every agent. It never merges on i
 
 - [Getting started](docs/getting-started.md): install, your first run, context, models, worktrees
 - [Team patterns, checks and limits](docs/patterns.md)
-- [Runs](docs/runs.md): the run view, talking to a run, restarts and resume, Insights
+- [Runs](docs/runs.md): the run view, talking to a run, the side panel, restarts and resume, Insights
 - [GitHub, review and shipping](docs/github.md): review, merge, PRs, issues, follow-through
 - [Automations and away mode](docs/automations.md): schedules, webhooks, the inbox, the phone view and full control from your phone
 - [Configuration](docs/configuration.md): `.codeflow/config.json`, permissions, environment variables
