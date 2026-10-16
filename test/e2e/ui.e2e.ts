@@ -460,15 +460,14 @@ test("projects: the Automations page and its inbox follow the project you're in;
   assert.equal(fired.status, 202);
 
   await page.goto(`${BASE}/#/automations`);
-  await page.locator(".project-btn").waitFor();
-  await page.keyboard.press("p"); // start from every project, whichever one earlier tests left selected
+  await page.locator(".project-btn").click(); // start from every project, whichever one earlier tests left selected
   await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
   await page.locator(".inbox-item", { hasText: "E2E: side chore" }).waitFor({ timeout: 30_000 });
   const pending = (await api("/api/runs")).filter((r: { triage?: { state: string }; archived?: boolean }) => r.triage?.state === "pending" && !r.archived).length;
   const total = (await api("/api/automations")).length;
   assert.ok(pending > 1 && total > 1, "earlier tests left results and automations in the repo's own project");
 
-  await page.keyboard.press("p");
+  await page.locator(".project-btn").click();
   await page.locator(".project-row", { hasText: "E2E scoped" }).locator(".pr-main").click();
   await page.locator(".project-btn", { hasText: "E2E scoped" }).waitFor();
   assert.deepEqual(await page.locator(".inbox-item a.t").allInnerTexts(), ["E2E: side chore"], "only this project's results");
