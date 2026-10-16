@@ -40,30 +40,34 @@ code-flow treats each pattern as a loop, and what it engineers is the loop aroun
   - The log, the result card, the inbox and the phone view say *The check can't run here: \<first error line\>. Set `setup` and `check` in .codeflow/config.json*. *Loop until green* stops before its first round, since no round could pass.
   - If the check runs on the base commit, the change broke it, and it's a failing check like any other.
 - **A pass only counts if the tests are still the tests.** After every change, code-flow looks for edits that make a check pass without fixing anything:
-  - deleted test files;
+  - deleted test files, and test files renamed to a name the runner doesn't pick up (`parse.test.ts` → `parse.ts`);
   - added `.skip`, `.only`, `xit`, `@pytest.mark.skip`, `t.Skip()`…; in Python and JS/TS, not inside a string or comment (a test of a guard against skips may write one into a fixture);
   - test files that lost assertions;
   - a changed test config or CI workflow;
   - a changed `scripts.test` (or whichever script the check runs);
   - fewer tests running than before, read from the runner's summary.
 
+  If git can't show the change, that is reported too (*couldn't verify test integrity*), as a serious issue: not being able to look isn't the same as finding nothing.
+
   What happens next depends on the pattern:
-  - Loop until green: a pass that relies on such changes doesn't end the loop. The agent is told to undo them and fix the code. If it keeps them (the task may need it), the result is flagged.
+  - Loop until green: a pass that relies on such changes doesn't end the loop. The agent is told to undo them and fix the code. If it keeps them (the task may need it), the result is flagged. When the runner's summary doesn't say how many tests ran, removed assertions count as such a change too, since a drop in tests can't be seen.
   - Pipeline, Supervisor and Debate: the changes go to the reviewer, who requests changes unless the task needs them.
   - Race: a candidate that passes only that way can't beat one that passes honestly.
-  - Test-first: the builder's edits to the tests are undone, and so are the tester's edits outside them.
+  - Test-first: the builder's edits to the tests are undone, and so are the tester's edits outside them. Only test files count as the tests (plus any the tester names): a stub module the tester adds for its tests to import is the builder's to fill in.
   - PR follow-through: a fix that changes tests that way isn't pushed.
 
   Every flagged result shows **⚠ Changes to tests to check before merging**.
 - **Independent review:** Supervisor has a *Reviewer* role (the composer picks a different vendor than the supervisor) that checks the integrated result instead of the supervisor checking its own work. The supervisor also writes the *contracts* (interfaces, names, data shapes) that every worker gets. If you skip the reviewer, the supervisor reviews its own integration and fixes what it finds, but nobody reviews those fixes; the result says "fixed by the supervisor, not re-reviewed". Debate can have a reviewer check the build against the agreed plan.
-- **Missing parts are reported:** in Supervisor, a worker that finishes without changing anything is listed as *no changes* with the first line of its answer, not as done. Its branch isn't merged, the supervisor and reviewer are told which parts are missing, and Insights counts it as a failed step.
+- **Missing parts are reported:** in Supervisor, a worker that finishes without changing anything is listed as *no changes* with the first line of its answer, not as done. Its branch isn't merged, the supervisor and reviewer are told which parts are missing, and Insights counts it as a failed step. If the supervisor splits the task into more subtasks than *Max subtasks*, the extra ones are added to the last subtask (the log says so) rather than dropped.
+- **Parallel work stops together:** in Race, Supervisor and Debate, an agent's failed turn is part of the result (a failed candidate, a missing part), but when anything else fails in one branch (its worktree, setup, a commit or a check), the other branches are stopped too. The run ends once every branch has, so no agent keeps running after it, and Stop and the slots stay accurate.
 - **What agents see:** long diffs keep whole source files first, put lockfiles and generated files last, and list any file that didn't fit with the command to read it. A long check log keeps the lines around each failure plus the runner's summary, not just the tail. Agents also get the repo's own conventions files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, …), since each CLI otherwise reads only its own. They're also told about problems reviewers raised in more than one earlier run in that repo (turn this off with `"learn": false`).
 - **No progress means hand off:** in *Loop until green*, a round with no new commit, or with the same failure as before, counts as stuck. After *K* stuck rounds, the next vendor takes over.
-- **Limits:** every run stops at a maximum number of minutes or agent steps (60 and 40 by default). A stopped run keeps its work: each worktree with changes is listed as "Work so far".
-- **Plan usage:** if a CLI says its plan is out of usage, the run stops instead of failing, so you can resume it once the plan resets. A turn that fails for a passing reason (overloaded, a network error) is retried after 20 s, then 60 s.
+- **Limits:** every run stops at a maximum number of minutes or agent steps (60 and 40 by default). A limit that isn't a positive number is ignored (the default applies). A stopped run keeps its work: each worktree with changes is listed as "Work so far".
+- **Plan usage:** if a CLI says its plan is out of usage, the run stops instead of failing, so you can resume it once the plan resets. Auto skips that plan until the reset time the CLI gave (or the reset times it reported before). A CLI that isn't signed in fails the step with a message saying so, and Auto skips it for a while.
+- **Retries:** a turn that fails for a passing reason (overloaded, rate-limited, a network error, a CLI that stalled) is retried after 20 s, then 60 s, with its agent slot free meanwhile. A write turn picks up where it stopped: it continues its own session, or, without one, starts over from the worktree as the step found it, so a retry never redoes the work on top of half of it. Whether a failure is passing comes from the CLI's own error type; for a CLI that gives none, from its message (an HTTP status counts only with words around it, such as "status 503", not a bare 500 in a test log).
 - **One machine, many runs:** at most 6 agent CLIs and 3 checks run at once across all runs (`CODEFLOW_MAX_AGENTS`, `CODEFLOW_MAX_CHECKS`). Others wait their turn, and the step says so.
 - **Stopping really stops:** each agent CLI and each check runs in its own process group. Cancelling, a time limit or the CLI exiting stops everything it started, such as a dev server it left in the background, and escalates to SIGKILL if needed.
-- **Setup:** an optional command, such as `npm ci` or `uv sync`, that runs once in every new worktree before the agents start. code-flow runs it itself, outside the agents' sandboxes, so dependencies are installed even though Codex has no network in Standard mode.
+- **Setup:** an optional command, such as `npm ci` or `uv sync`, that runs once in every new worktree before the agents start. code-flow runs it itself, outside the agents' sandboxes, so dependencies are installed even though Codex has no network in Standard mode. A worktree is marked as set up (in its own git folder, not in its files) once setup finishes; one whose setup never finished, because code-flow stopped during `npm ci` say, is set up again when a resumed run reuses it.
 
 Agents may suggest their own test command (the tester in Test-first does). code-flow only runs it if it's a plain invocation of a known test runner, with no shell operators. Otherwise it falls back to your check.
 
