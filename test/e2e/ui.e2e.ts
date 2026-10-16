@@ -130,7 +130,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   assert.equal(await page.locator("#checkCmd").inputValue(), "npm test", "the check is detected from package.json");
 
   // Describe the task, pick the pipeline, start with the keyboard.
-  await page.getByRole("button", { name: /Plan → Build → Review/ }).click();
+  await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
   await page.getByLabel("Task", { exact: true }).fill("E2E: make the check pass");
   await page.getByLabel("Task", { exact: true }).press("Meta+Enter");
 
@@ -162,7 +162,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
 
 test("approve the plan from the UI: ask for changes, then approve", async () => {
   await page.goto(BASE);
-  await page.getByRole("button", { name: /Plan → Build → Review/ }).click();
+  await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
   await page.getByText("Let me approve the plan").click();
   await page.getByLabel("Task", { exact: true }).fill("E2E: checkpoint");
   await page.getByRole("button", { name: /^Start run/ }).click();
@@ -179,7 +179,7 @@ test("approve the plan from the UI: ask for changes, then approve", async () => 
 
 test("a message sent while Codex is working reaches its running turn", async () => {
   await page.goto(BASE);
-  await page.getByRole("button", { name: /Plan → Build → Review/ }).click();
+  await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from the last test
   // The fake Codex keeps this turn open until a message is steered into it.
   await page.getByLabel("Task", { exact: true }).fill("E2E: steer WAIT-FOR-STEER");
@@ -387,7 +387,7 @@ test("insights and run search", async () => {
 
 test("supervisor: the reviewer defaults to a different vendor than the supervisor", async () => {
   await page.goto(BASE);
-  await page.getByRole("button", { name: /Supervisor → Workers/ }).click();
+  await page.getByRole("button", { name: /^Supervisor → Workers/ }).click();
   const role = (label: string) => page.locator(".role").filter({ has: page.locator(".rl", { hasText: new RegExp(`^${label}`) }) });
   const pressed = async (label: string) =>
     (await role(label).locator(".pill[aria-pressed=true]").allInnerTexts()).map((t) => t.trim());
@@ -418,7 +418,8 @@ test("projects: the first run made one; a new project scopes the sidebar and new
   await page.locator(".project-btn", { hasText: "E2E side" }).waitFor();
   await page.locator(".rail-empty", { hasText: "No runs in E2E side yet" }).waitFor();
 
-  await page.getByRole("button", { name: /Plan → Build → Review/ }).click();
+  await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
+  await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from earlier tests: the run mustn't wait for approval
   await page.getByLabel("Task", { exact: true }).fill("E2E: in the side project");
   await page.getByRole("button", { name: /^Start run/ }).click();
   await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
