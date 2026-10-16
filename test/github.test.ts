@@ -368,6 +368,22 @@ test("a run from a branch since squash-merged and deleted on GitHub opens its PR
   git("checkout", "-q", "main");
 });
 
+test("opening a PR that gh made but reported as failed records it; a retry finds the same PR", async () => {
+  const run = await idle(
+    await manager.start({ pattern: findPattern("pipeline")!, task: "Half-failing PR", repo, roles: { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, options: {} }),
+  );
+  assert.equal(run.status, "done", run.error);
+  const branch = run.artifacts[0]!.branch;
+  // gh pushes, GitHub makes the PR, and then gh times out.
+  setState((s) => (s.createFails = "GraphQL: Something went wrong while executing your query (timeout)"));
+  const url = await manager.pullRequest(run.id, { branch, into: "main" });
+  assert.equal(state().prs[url.split("/").pop()!].headRefName, branch);
+  assert.equal(run.prs[branch], url, "the run knows its PR");
+  // Opening it again ("already exists") is the same PR, not an error.
+  assert.equal(await manager.pullRequest(run.id, { branch, into: "main" }), url);
+  assert.equal(Object.values(state().prs).filter((p: any) => p.headRefName === branch).length, 1);
+});
+
 test("a PR description is cut to fit GitHub's limit", async () => {
   const long = `${"A line of the summary.\n".repeat(4_000)}`;
   assert.ok(long.length > PR_BODY_LIMIT);
@@ -382,3 +398,32 @@ test("a PR description is cut to fit GitHub's limit", async () => {
   assert.ok(state().prs[url.split("/").pop()!].body.length <= PR_BODY_LIMIT);
 });
 
+test("a PR watch whose polls keep failing says why, needs you after three, and recovers on its own", async () => {
+  const run = await idle(
+    await manager.start({ pattern: findPattern("pipeline")!, task: "Watch me", repo, roles: { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, options: {} }),
+  );
+  const branch = run.artifacts[0]!.branch;
+  await manager.pullRequest(run.id, { branch, into: "main" });
+  manager.watchPr(run.id, { branch, agent: "codex" });
+  const hour = 3_600_000;
+  setState((s) => (s.signedOut = true));
+  try {
+    await watcher.poll();
+    assert.equal(run.watches[branch]!.state, "watching", "one failure is a hiccup");
+    assert.match(run.watches[branch]!.detail, /Couldn't check the PR 1 time in a row: gh isn't signed in — run `gh auth login` \(gh auth status: You are not logged into any GitHub hosts/);
+    await watcher.poll(Date.now() + hour / 6);
+    assert.match(run.watches[branch]!.detail, /1 time in a row/, "it waits before trying again");
+    await watcher.poll(Date.now() + hour);
+    assert.match(run.watches[branch]!.detail, /2 times in a row/);
+    run.seen = true;
+    await watcher.poll(Date.now() + 2 * hour);
+    assert.equal(run.watches[branch]!.state, "needs-you");
+    assert.match(run.watches[branch]!.detail, /3 times in a row: gh isn't signed in/);
+    assert.equal(run.seen, false, "it shows up as needing you");
+    assert.match(await logs(run), /PR watch needs you: Couldn't check the PR 3 times/);
+  } finally {
+    setState((s) => delete s.signedOut);
+  }
+  await watcher.poll(Date.now() + 10 * hour);
+  assert.ok(["watching", "green"].includes(run.watches[branch]!.state), `back to ${run.watches[branch]!.state} once gh works again`);
+});

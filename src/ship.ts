@@ -1,6 +1,9 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { git } from "./git.js";
+import { resolve } from "node:path";
+import { classifyGitFailure, describeGitFailure, git, gitAtLeast, gitError, withRepoLock, type GitFailure, type GitResult } from "./git.js";
+import { createPullRequest } from "./github.js";
+import { logWarn } from "./log.js";
 
 /**
  * Getting a result out of code-flow: per-file diffs for review, merging a result branch into
@@ -96,28 +99,62 @@ export type MergeOutcome =
 /**
  * Merge `branch` into `into` without touching anything else:
  * - if `into` is checked out (e.g. your main checkout), merge there — only when it has no
- *   uncommitted changes, and abort cleanly on conflicts;
+ *   uncommitted changes, and put it back as it was if the merge fails;
  * - otherwise build the merge with `git merge-tree` and move the branch ref, so no checkout
  *   is needed at all.
+ * Only a real conflict comes back as `ok: false` (an agent can resolve those); anything else
+ * that stops the merge (untracked files in the way, a lock, a hook, no git identity) is an
+ * error that says what to do.
  */
 export async function mergeInto(repo: string, branch: string, into: string, message: string): Promise<MergeOutcome> {
   if ((await git(["show-ref", "--verify", "--quiet", `refs/heads/${into}`], repo)).code !== 0) {
     throw new Error(`Branch "${into}" doesn't exist`);
   }
-  const checkout = await checkedOutAt(repo, into);
-  if (checkout) {
-    if (!existsSync(checkout)) throw new Error(`"${into}" is checked out at ${checkout}, which no longer exists`);
-    const dirty = (await git(["diff", "--quiet", "HEAD"], checkout)).code !== 0;
-    if (dirty) {
-      throw new Error(`"${into}" is checked out at ${checkout} and has uncommitted changes. Commit or stash them, then merge again.`);
-    }
-    const res = await git(["merge", "--no-ff", "-m", message, branch], checkout);
-    if (res.code === 0) return { ok: true, commit: (await gitOrThrow(["rev-parse", "HEAD"], checkout)).trim(), method: "checkout" };
-    const conflicts = (await git(["diff", "--name-only", "--diff-filter=U"], checkout)).stdout.trim().split("\n").filter(Boolean);
-    await git(["merge", "--abort"], checkout);
-    return { ok: false, conflicts, message: `Merging into ${into} would conflict` };
-  }
+  // Nothing else code-flow does may change worktrees or refs meanwhile (the lock isn't re-entrant).
+  return withRepoLock(repo, async () => {
+    const checkout = await checkedOutAt(repo, into);
+    return checkout ? mergeInCheckout(checkout, branch, into, message) : mergeByRef(repo, branch, into, message);
+  });
+}
 
+async function mergeInCheckout(checkout: string, branch: string, into: string, message: string): Promise<MergeOutcome> {
+  if (!existsSync(checkout)) throw new Error(`"${into}" is checked out at ${checkout}, which no longer exists`);
+  // Changes to tracked files, staged or not. Untracked files only matter when the merge would
+  // overwrite them, and git refuses that itself (told apart below).
+  const status = await git(["status", "--porcelain", "--untracked-files=no"], checkout);
+  if (status.code !== 0) throw new Error(`Couldn't read the state of ${checkout}: ${gitError(["status"], status)}`);
+  if (status.stdout.trim()) {
+    throw new Error(`"${into}" is checked out at ${checkout} and has uncommitted changes. Commit or stash them, then merge again.`);
+  }
+  if (await midMerge(checkout)) throw new Error(`${checkout} is in the middle of another merge. Finish it, or run \`git merge --abort\` there, then merge again.`);
+  // With the index locked, git still starts the merge (and calls it a conflict) but can't undo
+  // it either: don't start.
+  const lockPath = (await git(["rev-parse", "--git-path", "index.lock"], checkout)).stdout.trim();
+  const lock = lockPath && resolve(checkout, lockPath);
+  if (lock && existsSync(lock)) throw new Error(`Couldn't merge into ${into}: ${describeGitFailure("locked")} (${lock})`);
+
+  const res = await git(["merge", "--no-ff", "-m", message, branch], checkout);
+  if (res.code === 0) return { ok: true, commit: (await gitOrThrow(["rev-parse", "HEAD"], checkout)).trim(), method: "checkout" };
+  let kind = mergeFailure(res);
+  const conflicts = kind === "conflict" ? (await git(["diff", "--name-only", "--diff-filter=U"], checkout)).stdout.trim().split("\n").filter(Boolean) : [];
+  // "Automatic merge failed" with nothing unmerged wasn't a conflict.
+  if (kind === "conflict" && !conflicts.length) kind = "other";
+  // A conflict, a failed hook or a missing identity can leave the merge half done: undo it, and
+  // say so when that fails, rather than leave your checkout mid-merge without a word.
+  if (await midMerge(checkout)) {
+    const abort = await git(["merge", "--abort"], checkout);
+    if (abort.code !== 0) {
+      throw new Error(`Merging into ${into} failed (${describeGitFailure(kind)}), and undoing it failed too: ${gitError(["merge", "--abort"], abort)}. Run \`git merge --abort\` in ${checkout}.`);
+    }
+  }
+  if (kind === "conflict") return { ok: false, conflicts, message: `Merging into ${into} would conflict` };
+  throw new Error(`Couldn't merge into ${into} at ${checkout}: ${describeGitFailure(kind)}${details(kind, res)}`);
+}
+
+async function mergeByRef(repo: string, branch: string, into: string, message: string): Promise<MergeOutcome> {
+  if (!(await gitAtLeast(2, 38))) {
+    throw new Error(`Merging into "${into}" without checking it out needs git 2.38 or later. Check out ${into} somewhere and merge there, or upgrade git.`);
+  }
   const tree = await git(["merge-tree", "--write-tree", "--name-only", into, branch], repo);
   if (tree.code === 1) {
     // Output: tree id, then the conflicted paths, then a blank line and messages.
@@ -125,13 +162,42 @@ export async function mergeInto(repo: string, branch: string, into: string, mess
     const conflicts = lines.slice(1, lines.indexOf("") === -1 ? undefined : lines.indexOf("")).filter(Boolean);
     return { ok: false, conflicts, message: `Merging into ${into} would conflict` };
   }
-  if (tree.code !== 0) throw new Error(`git merge-tree failed: ${tree.stderr.trim()}`);
+  if (tree.code !== 0) throw new Error(gitError(["merge-tree", "--write-tree", into, branch], tree));
   const treeId = tree.stdout.split("\n")[0]!.trim();
   const intoSha = (await gitOrThrow(["rev-parse", into], repo)).trim();
   const branchSha = (await gitOrThrow(["rev-parse", branch], repo)).trim();
-  const commit = (await gitOrThrow(["commit-tree", treeId, "-p", intoSha, "-p", branchSha, "-m", message], repo)).trim();
-  await gitOrThrow(["update-ref", `refs/heads/${into}`, commit, intoSha], repo);
-  return { ok: true, commit, method: "ref" };
+  const commit = await git(["commit-tree", treeId, "-p", intoSha, "-p", branchSha, "-m", message], repo);
+  if (commit.code !== 0) throw new Error(`Couldn't make the merge commit: ${describeGitFailure(classifyGitFailure(commit))}${details("other", commit)}`);
+  // Moves the branch only if it's still where the merge started from.
+  const update = await git(["update-ref", `refs/heads/${into}`, commit.stdout.trim(), intoSha], repo);
+  if (update.code !== 0) {
+    const kind = classifyGitFailure(update);
+    throw new Error(kind === "locked" ? `Couldn't move ${into}: ${describeGitFailure(kind)}` : `${into} moved while merging, or couldn't be updated; merge again. ${gitError(["update-ref"], update)}`);
+  }
+  return { ok: true, commit: commit.stdout.trim(), method: "ref" };
+}
+
+/** True while a merge in `checkout` is started but not committed. */
+async function midMerge(checkout: string): Promise<boolean> {
+  return (await git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], checkout)).code === 0;
+}
+
+function mergeFailure(res: GitResult): GitFailure {
+  const text = `${res.stderr}\n${res.stdout}`;
+  // A lock taken after the check above: git says it can't write the index, then "conflict".
+  if (/Unable to write (?:new )?index/i.test(text)) return "locked";
+  const kind = classifyGitFailure(res);
+  // A pre-merge-commit or commit-msg hook says nothing git can recognise, but git then does.
+  return kind === "other" && /Not committing merge/i.test(text) ? "hook" : kind;
+}
+
+/** The files git named (untracked files in the way…) or its last line, after a plain-language reason. */
+function details(kind: GitFailure, res: GitResult): string {
+  const text = `${res.stderr}\n${res.stdout}`;
+  const files = text.split("\n").filter((l) => /^\t\S/.test(l)).map((l) => l.trim());
+  if ((kind === "untracked" || kind === "dirty") && files.length) return `: ${files.slice(0, 10).join(", ")}${files.length > 10 ? ` and ${files.length - 10} more` : ""}. Move or commit them, then merge again.`;
+  const last = text.split("\n").map((l) => l.trim()).filter(Boolean).pop();
+  return last ? ` (git: ${last.slice(0, 300)})` : "";
 }
 
 /**
@@ -176,19 +242,22 @@ export async function openPullRequest(
   title: string,
   body: string,
   base?: string,
-): Promise<{ url: string; caughtUp?: string }> {
+): Promise<{ url: string; caughtUp?: string; note?: string }> {
   const { branches, defaultBranch } = await remoteBranches(repo);
   if (!branches.includes(into)) {
     const instead = defaultBranch && defaultBranch !== into ? `, such as ${defaultBranch}` : "";
     throw new Error(`"${into}" isn't a branch on GitHub (it may have been merged and deleted), so a pull request can't go into it. Pick another branch${instead}.`);
   }
-  const caughtUp = base ? await catchUpWithSquashedBase(repo, branch, into, base) : undefined;
+  const caught = base ? await catchUpWithSquashedBase(repo, branch, into, base) : {};
   const push = await git(["push", "-u", "origin", branch], repo);
-  if (push.code !== 0) throw new Error(`Pushing ${branch} failed: ${push.stderr.trim().split("\n").slice(-2).join(" ")}`);
-  const out = await run("gh", ["pr", "create", "--base", into, "--head", branch, "--title", title, "--body", body], repo);
-  const url = out.trim().split("\n").filter((l) => l.startsWith("http")).pop();
-  if (!url) throw new Error(`gh didn't return a pull request URL: ${out.trim()}`);
-  return { url, caughtUp };
+  if (push.code !== 0) {
+    const kind = classifyGitFailure(push);
+    throw new Error(`Pushing ${branch} failed: ${kind === "other" ? push.stderr.trim().split("\n").slice(-2).join(" ") : describeGitFailure(kind)}`);
+  }
+  // Pushed: from here a failure leaves a branch on GitHub, so a PR that's already open for it
+  // (made by this attempt or an earlier one) is found and recorded rather than lost.
+  const url = await createPullRequest(repo, { base: into, head: branch, title, body });
+  return { url, caughtUp: caught.commit, note: caught.note };
 }
 
 /**
@@ -196,55 +265,74 @@ export async function openPullRequest(
  * commits, and GitHub would show their changes again as part of the pull request. When `base`
  * adds nothing that origin's `into` doesn't already have, merge `into` into the result branch
  * (the files don't change) so the pull request shows only the run's commits. Returns the merge
- * commit, or undefined when nothing needed doing.
+ * commit, or nothing when nothing needed doing; `note` says why it couldn't tell.
  */
-async function catchUpWithSquashedBase(repo: string, branch: string, into: string, base: string): Promise<string | undefined> {
+async function catchUpWithSquashedBase(repo: string, branch: string, into: string, base: string): Promise<{ commit?: string; note?: string }> {
   const target = `refs/remotes/origin/${into}`;
   await gitOrThrow(["fetch", "--quiet", "origin", `+refs/heads/${into}:${target}`], repo);
-  if ((await git(["merge-base", "--is-ancestor", base, target], repo)).code === 0) return undefined;
+  if ((await git(["merge-base", "--is-ancestor", base, target], repo)).code === 0) return {};
+  // Without merge-tree --write-tree, git says "usage", which mustn't read as "the base has changes".
+  const cantTell = (why: string) => {
+    const note = `Couldn't check whether the run's starting point was already squash-merged into ${into} (${why}); the pull request may show those changes again`;
+    logWarn(note, { repo, branch });
+    return { note };
+  };
+  if (!(await gitAtLeast(2, 38))) return cantTell("that needs git 2.38 or later");
   const merged = await git(["merge-tree", "--write-tree", target, base], repo);
-  if (merged.code !== 0) return undefined; // base has changes `into` doesn't: they belong in the pull request
+  if (merged.code === 1) return {}; // base conflicts with `into`: its changes belong in the pull request
+  if (merged.code !== 0) return cantTell(gitError(["merge-tree"], merged));
   const targetTree = (await gitOrThrow(["rev-parse", `${target}^{tree}`], repo)).trim();
-  if (merged.stdout.split("\n")[0]!.trim() !== targetTree) return undefined;
+  if (merged.stdout.split("\n")[0]!.trim() !== targetTree) return {}; // base has changes `into` doesn't
   const outcome = await mergeInto(repo, target, branch, `Merge origin/${into} into ${branch}`);
   if (!outcome.ok) {
     throw new Error(`origin/${into} conflicts with ${branch} in ${outcome.conflicts.join(", ")}. Merge it into the branch and resolve them, then open the pull request again.`);
   }
-  return outcome.commit;
+  return { commit: outcome.commit };
 }
 
-/** Remove a run's worktrees (branches are kept unless asked). Returns what was removed. */
+/**
+ * Remove a run's worktrees (branches are kept unless asked). Returns what was removed, and
+ * what couldn't be (with git's reason) instead of quietly leaving it behind.
+ */
 export async function removeWorktrees(
   repo: string,
   worktrees: { path: string; branch: string }[],
   deleteBranches: boolean,
-): Promise<{ removed: string[]; deletedBranches: string[] }> {
-  const removed: string[] = [];
-  const deletedBranches: string[] = [];
-  for (const wt of worktrees) {
-    if (existsSync(wt.path)) {
-      const res = await git(["worktree", "remove", "--force", wt.path], repo);
-      if (res.code === 0) removed.push(wt.path);
+): Promise<{ removed: string[]; deletedBranches: string[]; failed: string[] }> {
+  return withRepoLock(repo, async () => {
+    const removed: string[] = [];
+    const deletedBranches: string[] = [];
+    const failed: string[] = [];
+    for (const wt of worktrees) {
+      if (existsSync(wt.path)) {
+        let res = await git(["worktree", "remove", "--force", wt.path], repo);
+        // A worktree with submodules, or a locked one, takes --force twice.
+        if (res.code !== 0) res = await git(["worktree", "remove", "--force", "--force", wt.path], repo);
+        if (res.code === 0) removed.push(wt.path);
+        else failed.push(`${wt.path}: ${shortError(res)}`);
+      }
+      if (deleteBranches && (await git(["show-ref", "--verify", "--quiet", `refs/heads/${wt.branch}`], repo)).code === 0) {
+        const res = await git(["branch", "-D", wt.branch], repo);
+        if (res.code === 0) deletedBranches.push(wt.branch);
+        else failed.push(`branch ${wt.branch}: ${shortError(res)}`);
+      }
     }
-    if (deleteBranches && (await git(["branch", "-D", wt.branch], repo)).code === 0) deletedBranches.push(wt.branch);
-  }
-  await git(["worktree", "prune"], repo);
-  return { removed, deletedBranches };
+    await git(["worktree", "prune"], repo);
+    if (failed.length) logWarn(`Couldn't remove everything in ${repo}`, { failed });
+    return { removed, deletedBranches, failed };
+  });
+}
+
+function shortError(res: GitResult): string {
+  const kind = classifyGitFailure(res);
+  const last = (res.stderr.trim() || res.stdout.trim()).split("\n").pop()?.trim() ?? "";
+  return kind === "other" ? last.replace(/^(fatal|error):\s*/, "") || "git failed" : describeGitFailure(kind);
 }
 
 async function gitOrThrow(args: string[], cwd: string): Promise<string> {
   const res = await git(args, cwd);
   if (res.code !== 0) throw new Error(`git ${args[0]} failed: ${res.stderr.trim() || res.stdout.trim()}`);
   return res.stdout;
-}
-
-function run(command: string, args: string[], cwd: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(command, args, { cwd, timeout: 60_000 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(`${command} ${args[0]} ${args[1] ?? ""} failed: ${stderr.toString().trim() || err.message}`));
-      else resolve(stdout.toString());
-    });
-  });
 }
 
 /** Disk space each folder takes, in bytes (folders that don't exist are left out). */
