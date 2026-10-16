@@ -2,7 +2,9 @@ import type { SweepKind } from "./sweeps.js";
 
 /**
  * Starting points for common jobs. A template picks the pattern and drafts the task; ones that
- * need an issue or PR ask you to pick it, and "{number}" / "{title}" are filled in from it.
+ * need an issue or PR ask you to pick it, and "{number}" is filled in from it. The title isn't
+ * put in the task: whoever opened the issue wrote it, and agents read the task as instructions.
+ * They get the title with the issue's text instead, fenced as information when it's untrusted.
  * A sweep template lists many items instead and starts one run per item you pick.
  */
 export interface Template {
@@ -25,7 +27,7 @@ export const templates: Template[] = [
     description: "Plan, build and review a fix for a GitHub issue; the PR closes it.",
     pattern: "pipeline",
     needs: "issue",
-    task: "Fix issue #{number}: {title}. Add a test that fails without the fix.",
+    task: "Fix issue #{number}. Add a test that fails without the fix.",
   },
   {
     id: "fix-ci",
@@ -34,7 +36,7 @@ export const templates: Template[] = [
     pattern: "pipeline",
     needs: "pr",
     ciLogs: true,
-    task: "Make CI pass on pull request #{number} ({title}). The failing checks and their logs are below. Fix the cause; don't disable, skip or weaken tests.",
+    task: "Make CI pass on pull request #{number}. The failing checks and their logs are below. Fix the cause; don't disable, skip or weaken tests.",
   },
   {
     id: "review-pr",
@@ -42,7 +44,7 @@ export const templates: Template[] = [
     description: "Several agents review the PR independently; a chair merges their findings. You choose whether to post it.",
     pattern: "council",
     needs: "pr",
-    task: "Review pull request #{number}: {title}. Look for bugs, security problems, missing tests, and anything that doesn't match its description.",
+    task: "Review pull request #{number}. Look for bugs, security problems, missing tests, and anything that doesn't match its description.",
   },
   {
     id: "upgrade-dependency",

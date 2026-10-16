@@ -5,6 +5,9 @@
 // listed in `failOn` (or always, with "all"). Dependabot and code scanning alerts and leaked
 // secrets are listed from `dependabotAlerts`, `codeScanningAlerts` and `secretAlerts`; a name in
 // `alertErrors` makes that listing fail the way GitHub does when the feature is off.
+// `signedOut: true` makes every command fail the way an expired login does (and `gh auth
+// status` say so); `failAll: "<message>"` makes every command but `auth status` fail with it.
+// `createFails: "<message>"` makes `gh pr create` make the PR and then fail anyway (a timeout).
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
@@ -18,6 +21,20 @@ const state = JSON.parse(readFileSync(statePath, "utf8"));
 const save = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
 const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const print = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+const fail = (message) => {
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+};
+// `gh api … --paginate --jq '.[]'`: one item per line, the way gh prints a jq result.
+const printList = (list) => (args.includes("--paginate") && flag("--jq") === ".[]" ? process.stdout.write(list.map((x) => JSON.stringify(x) + "\n").join("")) : print(list));
+
+if (args[0] === "auth" && args[1] === "status") {
+  if (state.signedOut) fail("You are not logged into any GitHub hosts. To log in, run: gh auth login");
+  process.stdout.write("github.com\n  ✓ Logged in to github.com account me\n");
+  process.exit(0);
+}
+if (state.signedOut) fail("HTTP 401: Bad credentials (https://api.github.com/graphql)\nTry authenticating with:  gh auth login");
+if (state.failAll) fail(state.failAll);
 const prOf = (ref) => {
   const pr = state.prs[String(ref).match(/(\d+)\/?$/)?.[1]];
   if (!pr) {
@@ -55,8 +72,11 @@ if (alertPath) {
     process.exit(1);
   }
   const alerts = state[ALERTS[tool]] ?? [];
-  if (!number) print(alerts.filter((a) => (a.state ?? "open") === "open"));
-  else {
+  if (!number) {
+    const open = alerts.filter((a) => (a.state ?? "open") === "open");
+    // Without --paginate, gh reads only the first page (per_page in the query, 30 by default).
+    printList(args.includes("--paginate") ? open : open.slice(0, Number(command.match(/per_page=(\d+)/)?.[1] ?? 30)));
+  } else {
     const alert = alerts.find((a) => a.number === Number(number));
     if (!alert) {
       process.stderr.write("gh: Not Found (HTTP 404)\n");
@@ -74,14 +94,17 @@ else if (group === "api" && /^repos\/\{owner\}\/\{repo\}\/issues\/\d+$/.test(com
     process.exit(1);
   }
   print({ number, user: { login: item.author?.login ?? "me" }, author_association: item.authorAssociation ?? "OWNER" });
-} else if (group === "issue" && command === "list") print(state.issues);
+} else if (group === "issue" && command === "list") print(state.issues.slice(0, Number(flag("--limit") ?? 30)));
 else if (group === "issue" && command === "view") {
   const issue = state.issues.find((i) => i.number === Number(target));
   if (!issue) process.exit(1);
   print(issue);
 } else if (group === "pr" && command === "list") {
   const app = flag("--app");
-  const open = Object.values(state.prs).filter((p) => p.state === "OPEN" && (!app || new RegExp(app).test(p.author?.login ?? "")));
+  const head = flag("--head");
+  const open = Object.values(state.prs)
+    .filter((p) => p.state === "OPEN" && (!app || new RegExp(app).test(p.author?.login ?? "")) && (!head || p.headRefName === head))
+    .slice(0, Number(flag("--limit") ?? 30));
   print(flag("--json")?.includes("statusCheckRollup") ? open.map((p) => ({ ...p, statusCheckRollup: rollup(p) })) : open);
 }
 else if (group === "pr" && command === "view") {
@@ -106,10 +129,18 @@ else if (group === "pr" && command === "view") {
   pr.comments.push({ id: `c${Date.now()}`, author: { login: "me" }, authorAssociation: "OWNER", body: readFileSync(0, "utf8"), createdAt: new Date().toISOString() });
   save();
 } else if (group === "pr" && command === "create") {
+  // Like GitHub: one open PR per head branch.
+  const existing = Object.values(state.prs).find((p) => p.state === "OPEN" && p.headRefName === flag("--head"));
+  if (existing) fail(`a pull request for branch "${flag("--head")}" into branch "${existing.baseRefName}" already exists:\n${existing.url}`);
+  const body = flag("--body") ?? (flag("--body-file") === "-" ? readFileSync(0, "utf8") : "");
+  if (body.length > 65_536) fail("GraphQL: Body is too long (maximum is 65536 characters) (createPullRequest)");
   const number = Math.max(0, ...Object.keys(state.prs).map(Number)) + 1;
   const url = `https://github.com/o/r/pull/${number}`;
-  state.prs[number] = { number, title: flag("--title"), body: flag("--body"), url, headRefName: flag("--head"), baseRefName: flag("--base"), author: { login: "me" }, isDraft: false, isCrossRepository: false, state: "OPEN", comments: [] };
+  state.prs[number] = { number, title: flag("--title"), body, url, headRefName: flag("--head"), baseRefName: flag("--base"), author: { login: "me" }, isDraft: false, isCrossRepository: false, state: "OPEN", comments: [] };
+  const failAfter = state.createFails;
+  delete state.createFails;
   save();
+  if (failAfter) fail(failAfter);
   process.stdout.write(`${url}\n`);
 } else {
   process.stderr.write(`fake gh: unsupported command ${args.join(" ")}\n`);
