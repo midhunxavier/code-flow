@@ -16,7 +16,7 @@ process.env.CODEFLOW_RETRY_DELAYS_MS = "50,50";
 
 const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
-const { countTests, failureExcerpt } = await import("../src/checks.js");
+const { countTests, failureExcerpt, testCounts } = await import("../src/checks.js");
 const { fitDiff } = await import("../src/diff.js");
 const { extractJson } = await import("../src/json.js");
 const { Slots } = await import("../src/slots.js");
@@ -423,6 +423,18 @@ test("test counts are read from each runner's summary", () => {
   assert.equal(countTests("  10 passing (20ms)\n  2 failing\n"), 12);
   assert.equal(countTests("--- PASS: TestA (0.00s)\n--- FAIL: TestB (0.00s)\n"), 2);
   assert.equal(countTests("no summary here"), undefined);
+});
+
+test("failing tests are read from each runner's summary too", () => {
+  const failed = (output: string) => testCounts(output).failed;
+  assert.equal(failed("TAP version 13\n# tests 7\n# suites 0\n# pass 6\n# fail 1\n"), 1);
+  assert.equal(failed("Tests:       1 failed, 2 skipped, 10 passed, 13 total"), 1);
+  assert.equal(failed(" Test Files  2 passed (2)\n      Tests  2 failed | 10 passed (12)"), 2);
+  assert.equal(failed("test result: FAILED. 4 passed; 2 failed; 1 ignored\ntest result: ok. 2 passed; 1 failed; 0 ignored"), 3);
+  assert.equal(failed("========= 2 failed, 10 passed, 1 skipped, 1 error in 0.12s ========="), 3, "a pytest error didn't pass either");
+  assert.equal(failed("  10 passing (20ms)\n  2 failing\n"), 2);
+  assert.equal(failed("--- PASS: TestA (0.00s)\n--- FAIL: TestB (0.00s)\n"), 1);
+  assert.deepEqual(testCounts("no summary here"), {});
 });
 
 test("a long check log keeps its first failure, not only its tail", () => {

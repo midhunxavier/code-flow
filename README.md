@@ -61,10 +61,10 @@ Open **http://localhost:4317**, choose a repository, describe the task, pick a t
 
 | Pattern | How the agents work | Reach for it when |
 |---|---|---|
-| **Plan → Build → Review** | one plans, one builds, another reviews; code-flow runs the tests the reviewer shows bugs with; fixes until the check passes and nothing blocks | most features and bug fixes |
+| **Plan → Build → Review** | one plans, one builds, another vendor reviews against the task; code-flow runs the tests the reviewer shows bugs with; fixes until the check passes and nothing blocks | most features and bug fixes |
 | **Loop until green** | fix → code-flow runs the check → repeat; hands over to the next vendor when stuck | "done" is a command: failing tests, a broken build |
 | **Best-of-N race** | everyone solves it in parallel → a judge picks from anonymized diffs | the task is open-ended or risky |
-| **Debate → Synthesize → Build** | proposals → critique rounds → one plan → build | architecture, API design, big refactors |
+| **Debate → Synthesize → Build** | anonymous proposals → critique rounds → one plan → build → review until approved | architecture, API design, big refactors |
 | **Supervisor → Workers** | split into parallel subtasks → build on branches → integrate and review | larger tasks that split cleanly |
 | **Test-first** | one writes failing tests, another makes them pass without touching them | behavior you can specify with tests |
 | **Review council** | independent read-only reviews, bugs shown with tests code-flow runs → a chair ranks the worst confirmed first | reviewing a PR before merging |

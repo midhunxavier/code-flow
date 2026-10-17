@@ -157,7 +157,15 @@ test("start from a PR: a review council reviews its changes; posting is your cal
 
   const review = run.review!;
   assert.equal(review.verdict, "changes_requested");
-  assert.deepEqual(review.findings.map((f) => [f.problem, f.raisedBy]), [["Off-by-one in the loop", ["claude", "codex"]], ["Typo", ["codex"]]], "severity ranks first");
+  assert.deepEqual(
+    review.findings.map((f) => [f.severity, f.problem, f.raisedBy]),
+    [
+      ["high", "Off-by-one in the loop", ["claude", "codex"]],
+      ["high", "No check for empty input", ["claude"]],
+      ["low", "Typo", ["claude", "codex"]],
+    ],
+    "severity ranks first, then agreement: a low finding two reviewers raised doesn't outrank a high one",
+  );
   assert.match(run.summary!, /Review council: Changes requested/);
   assert.equal(state().prs[1].comments.length, 1, "nothing is posted without you");
 

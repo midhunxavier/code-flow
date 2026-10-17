@@ -80,8 +80,9 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
   } else if (prompt.includes('"verdict": "pass" | "fail"')) {
     answer = json({ verdict: "pass", failures: [] });
   } else if (prompt.includes('"raised_by"')) {
-    // Review council chair: merge the reviewers' findings. FAKE_REPRO: findings that came with
-    // tests, one that fails (raised by one reviewer) and one that passes (raised by both).
+    // Review council chair: merge the reviewers' findings, out of order (code-flow ranks them).
+    // FAKE_REPRO: findings that came with tests, one that fails (raised by one reviewer) and one
+    // that passes (raised by both).
     answer = json({
       verdict: "changes_requested",
       summary: "Two reviewers found the same off-by-one.",
@@ -93,7 +94,8 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
             { severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use < instead of <=", raised_by: ["A"], repro: failingRepro },
           ]
         : [
-            { severity: "low", file: "README.md", problem: "Typo", fix: "Fix the typo", raised_by: ["B"], repro: noRepro },
+            { severity: "low", file: "README.md", problem: "Typo", fix: "Fix the typo", raised_by: ["A", "B"], repro: noRepro },
+            { severity: "high", file: "feature.txt", problem: "No check for empty input", fix: "Return early when n is 0", raised_by: ["A"], repro: noRepro },
             { severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use < instead of <=", raised_by: ["A", "B"], repro: noRepro },
           ],
     });
@@ -143,6 +145,10 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     writeFileSync("spec.test.mjs", 'import { test } from "node:test";\ntest("always passes", () => {});\n');
     writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
     answer = "Simplified the test and implemented it.";
+  } else if (write && process.env.FAKE_BREAKS_VENDOR === vendor) {
+    // A change that makes things worse: see FAILING_CHECK in the loop tests.
+    writeFileSync(`broken-${vendor}-${id}.txt`, `${vendor} broke something\n`);
+    answer = `Tried something else as ${vendor}.`;
   } else if (write && process.env.FAKE_NOOP_VENDOR === vendor) {
     answer = `${vendor} looked around but changed nothing.\nIt would need network access to go further.`;
   } else if (write) {

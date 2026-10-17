@@ -22,6 +22,8 @@ export interface CheckResult {
   output: string;
   /** Tests that ran (passed + failed), when the runner's summary says. */
   tests?: number;
+  /** Tests that failed (pytest: and errored), when the runner's summary says. */
+  failed?: number;
 }
 
 const KEEP_OUTPUT = 20_000;
@@ -188,7 +190,7 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
         timedOut,
         durationMs: Date.now() - started,
         output: timedOut ? `${trimmed}\n[timed out after ${Math.round(opts.timeoutMs / 1000)}s]` : trimmed,
-        tests: countTests(output),
+        ...testCounts(output),
       });
     };
     child.on("error", (err) => {
@@ -209,39 +211,49 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
 }
 
 /**
- * How many tests ran, read from the runner's summary (node --test, Jest, Vitest, Mocha, pytest,
- * cargo, Go). Skipped tests don't count: a drop between two runs means tests were removed or
- * skipped. Undefined when the output has no summary code-flow recognizes.
+ * How many tests ran and how many of them failed, read from the runner's summary (node --test,
+ * Jest, Vitest, Mocha, pytest, cargo, Go). Skipped tests don't count: a drop in tests between two
+ * runs means tests were removed or skipped. Empty when the output has no summary code-flow
+ * recognizes.
  */
-export function countTests(output: string): number | undefined {
+export function testCounts(output: string): { tests?: number; failed?: number } {
   const tail = output.slice(-20_000);
   const last = (re: RegExp) => {
     const all = [...tail.matchAll(re)];
     return all.length ? all[all.length - 1]! : undefined;
   };
   const n = (s: string | undefined) => (s ? Number(s) : 0);
+  const counts = (passed: number, failed: number) => ({ tests: passed + failed, failed });
   // node --test: "# pass 12" / "# fail 1" (TAP) or "ℹ pass 12" / "ℹ fail 1" (spec reporter)
   const nodePass = last(/^(?:#|ℹ) pass (\d+)/gm);
-  if (nodePass) return n(nodePass[1]) + n(last(/^(?:#|ℹ) fail (\d+)/gm)?.[1]);
+  if (nodePass) return counts(n(nodePass[1]), n(last(/^(?:#|ℹ) fail (\d+)/gm)?.[1]));
   // Jest: "Tests:       1 failed, 2 skipped, 10 passed, 13 total"
   const jest = last(/^Tests:\s+(.*\d+ total)/gm);
-  if (jest) return n(jest[1]!.match(/(\d+) passed/)?.[1]) + n(jest[1]!.match(/(\d+) failed/)?.[1]);
+  if (jest) return counts(n(jest[1]!.match(/(\d+) passed/)?.[1]), n(jest[1]!.match(/(\d+) failed/)?.[1]));
   // Vitest: "Tests  2 failed | 10 passed (12)"
   const vitest = last(/^\s*Tests\s+(.*\(\d+\))/gm);
-  if (vitest) return n(vitest[1]!.match(/(\d+) passed/)?.[1]) + n(vitest[1]!.match(/(\d+) failed/)?.[1]);
+  if (vitest) return counts(n(vitest[1]!.match(/(\d+) passed/)?.[1]), n(vitest[1]!.match(/(\d+) failed/)?.[1]));
   // cargo: "test result: ok. 10 passed; 0 failed; 1 ignored" (one line per test binary)
   const cargo = [...tail.matchAll(/test result: \w+\. (\d+) passed; (\d+) failed/g)];
-  if (cargo.length) return cargo.reduce((sum, m) => sum + n(m[1]) + n(m[2]), 0);
-  // pytest: "===== 2 failed, 10 passed, 1 skipped in 0.12s ====="
+  if (cargo.length) return counts(cargo.reduce((sum, m) => sum + n(m[1]), 0), cargo.reduce((sum, m) => sum + n(m[2]), 0));
+  // pytest: "===== 2 failed, 10 passed, 1 skipped, 1 error in 0.12s =====" (an error is a test that didn't pass either)
   const pytest = last(/^=+ (.*\d+ (?:passed|failed).*) in [\d.]+s/gm);
-  if (pytest) return n(pytest[1]!.match(/(\d+) passed/)?.[1]) + n(pytest[1]!.match(/(\d+) failed/)?.[1]);
+  if (pytest) {
+    const failed = n(pytest[1]!.match(/(\d+) failed/)?.[1]);
+    return { tests: n(pytest[1]!.match(/(\d+) passed/)?.[1]) + failed, failed: failed + n(pytest[1]!.match(/(\d+) errors?\b/)?.[1]) };
+  }
   // Mocha: "  10 passing" / "  2 failing"
   const mocha = last(/^\s+(\d+) passing/gm);
-  if (mocha) return n(mocha[1]) + n(last(/^\s+(\d+) failing/gm)?.[1]);
+  if (mocha) return counts(n(mocha[1]), n(last(/^\s+(\d+) failing/gm)?.[1]));
   // go test -v: one line per test
   const go = tail.match(/^--- (?:PASS|FAIL): /gm);
-  if (go) return go.length;
-  return undefined;
+  if (go) return { tests: go.length, failed: go.filter((l) => l.includes("FAIL")).length };
+  return {};
+}
+
+/** How many tests ran, from the runner's summary (see `testCounts`). */
+export function countTests(output: string): number | undefined {
+  return testCounts(output).tests;
 }
 
 const TEST_RUNNER =

@@ -1,7 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,6 +47,19 @@ async function runPattern(
 
 const branchFiles = (branch: string) =>
   execFileSync("git", ["ls-tree", "-r", "--name-only", branch], { cwd: repo }).toString().split("\n");
+const logs = async (run: Run) => (await lastManager!.events(run.id)).map((e) => (e.type === "log" ? e.text : "")).join("\n");
+
+/** Run `fn` with the fake agents recording every prompt; returns its result and the prompts. */
+async function recording<T>(fn: () => Promise<T>): Promise<{ result: T; prompts: { vendor: string; prompt: string }[] }> {
+  const dir = mkdtempSync(join(tmpdir(), "codeflow-record-"));
+  process.env.FAKE_RECORD_DIR = dir;
+  try {
+    const result = await fn();
+    return { result, prompts: readdirSync(dir).map((f) => JSON.parse(readFileSync(join(dir, f), "utf8"))) };
+  } finally {
+    delete process.env.FAKE_RECORD_DIR;
+  }
+}
 
 test("pipeline: plan → build → review with a requested-changes round", async () => {
   process.env.FAKE_REVIEW_FAIL_ONCE = "1";
@@ -65,6 +78,15 @@ test("pipeline: plan → build → review with a requested-changes round", async
   }
 });
 
+test("pipeline: the reviewer judges the change against the task, with the plan as context", async () => {
+  const { result: run, prompts } = await recording(() => runPattern("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }));
+  assert.equal(run.status, "done", run.error);
+  const review = prompts.find((p) => p.prompt.includes("You are the reviewer"))!;
+  assert.match(review.prompt, /## The planner's plan \(context, not the spec\)/);
+  assert.match(review.prompt, /Judge the change against the task, not against the plan/);
+  assert.match(await logs(run), /claude both plans and reviews; a reviewer from another vendor is likelier to catch a wrong plan/);
+});
+
 test("race: contestants in parallel, judge picks anonymized winner", async () => {
   const run = await runPattern("race", { contestants: ["claude", "codex"], judge: ["agy"] });
   assert.equal(run.status, "done", run.error);
@@ -79,6 +101,40 @@ test("debate: proposals, critique, synthesis, build", async () => {
   assert.equal(run.status, "done", run.error);
   assert.equal(run.steps.filter((s) => s.role === "debaters").length, 4);
   assert.ok(branchFiles(run.artifacts[0]!.branch).some((f) => f.startsWith("agy-")));
+});
+
+test("debate: proposals are anonymous, and the build is reviewed again after its fixes", async () => {
+  rmSync(join(process.env.CODEFLOW_HOME!, ".reviewed-once"), { force: true }); // an earlier test's review already failed once
+  process.env.FAKE_REVIEW_FAIL_ONCE = "1";
+  let recorded;
+  try {
+    recorded = await recording(() =>
+      runPattern("debate", { debaters: ["claude", "codex"], synthesizer: ["claude"], builder: ["agy"], reviewer: ["codex"] }, "Design it", { rounds: 1 }),
+    );
+  } finally {
+    delete process.env.FAKE_REVIEW_FAIL_ONCE;
+  }
+  const { result: run, prompts } = recorded;
+  assert.equal(run.status, "done", run.error);
+  // Proposals go by letter: no vendor name labels a proposal, for the debaters or the synthesizer.
+  const critiques = prompts.filter((p) => p.prompt.includes("current proposals"));
+  assert.equal(critiques.length, 2);
+  assert.match(critiques.find((p) => p.vendor === "claude")!.prompt, /yours is Proposal A[\s\S]*## Proposal B\n/);
+  assert.match(critiques.find((p) => p.vendor === "codex")!.prompt, /yours is Proposal B[\s\S]*## Proposal A\n/);
+  const synthesis = prompts.find((p) => p.prompt.includes("You are the synthesizer"))!.prompt;
+  assert.match(synthesis, /## Final position: Proposal A\n[\s\S]*## Final position: Proposal B\n/);
+  for (const p of [...critiques, { prompt: synthesis }]) assert.doesNotMatch(p.prompt, /^## .*(Claude|Codex|Antigravity)/m, "no section names a vendor");
+  assert.match(await logs(run), /claude both debates and synthesizes; a synthesizer from another vendor is fairer/);
+
+  // The reviewer asked for changes, the builder addressed them, and the reviewer checked again.
+  assert.deepEqual(
+    run.steps.filter((s) => s.role === "reviewer" || s.title.startsWith("Address review")).map((s) => s.title),
+    ["Review the build", "Address review", "Review the build (round 2)"],
+  );
+  assert.deepEqual([run.facts?.approved, run.facts?.reviewRounds], [true, 2]);
+  assert.match(run.summary!, /Review by codex: approved in round 2\./);
+  const second = prompts.find((p) => p.prompt.startsWith("The builder addressed your previous review"));
+  assert.ok(second, "the second review continues the reviewer's session with the updated diff");
 });
 
 test("debate without builder stops at the plan", async () => {

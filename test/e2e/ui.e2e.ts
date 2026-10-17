@@ -209,7 +209,7 @@ test("start from a PR with a template: the council's findings are ranked, and po
   await page.getByRole("button", { name: /^Start run/ }).click();
 
   await page.locator(".council .badge", { hasText: "Changes requested" }).waitFor({ timeout: 30_000 });
-  assert.equal(await page.locator(".findings li").count(), 2);
+  assert.equal(await page.locator(".findings li").count(), 3);
   assert.match(await page.locator(".findings li").first().innerText(), /2 reviewers agree/);
   assert.equal(JSON.parse(readFileSync(ghState, "utf8")).prs[1].comments.length, 0, "nothing posted yet");
 

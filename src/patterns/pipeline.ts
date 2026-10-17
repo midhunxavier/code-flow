@@ -7,10 +7,12 @@ import { checkEvidence, fence, fixUntilGreen, jsonInstruction, planCheckpoint, p
 
 /**
  * Plan → Build → Review loop.
- * One agent plans, another implements, a third (ideally a different vendor) reviews the
- * diff with fresh context. code-flow runs the tests the reviewer shows its findings with, and
- * findings that block (see `blocks`) go back to the builder, which resumes its own session so it
- * keeps its context, and may dispute a finding no test shows.
+ * One agent plans, another implements, a third reviews the diff with fresh context. The
+ * reviewer defaults to a vendor other than the planner's (the composer suggests one too), and
+ * judges the change against the task, with the plan only as context: a reviewer that shares
+ * the planner's view would let a wrong plan through. code-flow runs the tests the reviewer shows
+ * its findings with, and findings that block (see `blocks`) go back to the builder, which resumes
+ * its own session so it keeps its context, and may dispute a finding no test shows.
  */
 export const pipelinePattern: Pattern = {
   id: "pipeline",
@@ -21,7 +23,7 @@ export const pipelinePattern: Pattern = {
   roles: [
     { id: "planner", label: "Planner", description: "Reads the code, writes the implementation plan", default: ["claude"] },
     { id: "builder", label: "Builder", description: "Implements the plan and applies review fixes", default: ["codex"] },
-    { id: "reviewer", label: "Reviewer", description: "Reviews the diff with fresh eyes", default: ["claude"] },
+    { id: "reviewer", label: "Reviewer", description: "Reviews the diff against the task, ideally a vendor other than the planner", default: ["agy"] },
   ],
   options: [
     { id: "maxRounds", label: "Max review rounds", type: "number", default: 2, min: 1, max: 5 },
@@ -33,6 +35,7 @@ export const pipelinePattern: Pattern = {
     const builder = ctx.agent("builder");
     const reviewer = ctx.agent("reviewer");
     const maxRounds = ctx.option("maxRounds", 2);
+    if (reviewer === planner) ctx.log(`${planner} both plans and reviews; a reviewer from another vendor is likelier to catch a wrong plan`, "warn");
     const wt = await ctx.worktree("build");
 
     let plan = await ctx.ask({
@@ -112,7 +115,7 @@ export const pipelinePattern: Pattern = {
           preamble("reviewer", reviewer, `${READ_ONLY} You did not write this code; review it critically.`) +
           section("Task", ctx.task) +
           // A reviewer without its earlier session hasn't seen the plan.
-          (round === 1 || !review?.sessionId ? section("Plan", plan.finalText) : "") +
+          (round === 1 || !review?.sessionId ? section("The planner's plan (context, not the spec)", plan.finalText) : "") +
           section("Diff against base", fence(diff, "diff")) +
           checkEvidence(ctx, check) +
           proofEvidence(proof) +
@@ -124,7 +127,9 @@ export const pipelinePattern: Pattern = {
             : "") +
           section(
             "Deliverable",
-            "Check correctness, missed requirements, edge cases, tests and security. Only raise real problems, not style preferences.",
+            "Judge the change against the task, not against the plan: the plan is one way to do it, and it can be wrong. " +
+              "If following it missed or broke something the task asks for, raise that and say what the task needs instead. " +
+              "Check correctness, missed requirements, edge cases, tests and security. Only raise real problems, not style preferences.",
           ) +
           reproRule(ctx) +
           jsonInstruction(REVIEW_SHAPE),
