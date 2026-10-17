@@ -569,22 +569,37 @@ export async function snapshot(cwd: string): Promise<Snapshot> {
  * commits, edits, new files. Returns what was undone (empty when nothing changed).
  */
 export async function restoreSnapshot(cwd: string, snap: Snapshot): Promise<string[]> {
+  return compareSnapshot(cwd, snap, true);
+}
+
+/**
+ * What changed in a worktree since `snapshot`, in the same words as `restoreSnapshot`, with all of
+ * it left in place (empty when nothing changed).
+ */
+export async function changedSince(cwd: string, snap: Snapshot): Promise<string[]> {
+  return compareSnapshot(cwd, snap, false);
+}
+
+/** What changed since `snap`; with `undo`, each change is undone as it's found. */
+function compareSnapshot(cwd: string, snap: Snapshot, undo: boolean): Promise<string[]> {
   return withWorktreeLock(cwd, async () => {
-    const undone: string[] = [];
+    const found: string[] = [];
     const head = await resolveCommit(cwd);
     const changesNow = await uncommittedTree(cwd);
     const changesBefore = snap.changes ? (await gitOk(["rev-parse", `${snap.changes}^{tree}`], cwd)).trim() : "";
-    if (head !== snap.head) undone.push("commits");
+    if (head !== snap.head) found.push("commits");
     if (head !== snap.head || changesNow !== changesBefore) {
-      if (head === snap.head) undone.push("edits");
-      await gitOkWhenFree(["reset", "--hard", "-q", snap.head], cwd);
-      if (snap.changes) await gitOkWhenFree(["stash", "apply", "-q", snap.changes], cwd);
+      if (head === snap.head) found.push("edits");
+      if (undo) {
+        await gitOkWhenFree(["reset", "--hard", "-q", snap.head], cwd);
+        if (snap.changes) await gitOkWhenFree(["stash", "apply", "-q", snap.changes], cwd);
+      }
     }
     const before = new Set(snap.untracked);
     const added = (await untrackedFiles(cwd)).filter((f) => !before.has(f));
     if (added.length) {
-      undone.push(`${added.length} new file${added.length === 1 ? "" : "s"}`);
-      for (let i = 0; i < added.length; i += 100) await gitOkWhenFree(["clean", "-fq", "--", ...added.slice(i, i + 100)], cwd);
+      found.push(`${added.length} new file${added.length === 1 ? "" : "s"}`);
+      if (undo) for (let i = 0; i < added.length; i += 100) await gitOkWhenFree(["clean", "-fq", "--", ...added.slice(i, i + 100)], cwd);
     }
     // Untracked files that were there before: edited or deleted since, they get their contents back.
     const saved = Object.entries(snap.untrackedBlobs ?? {});
@@ -595,13 +610,13 @@ export async function restoreSnapshot(cwd: string, snap: Snapshot): Promise<stri
       const now = present.length ? (await gitOk(["hash-object", "--stdin-paths"], cwd, { input: `${present.join("\n")}\n` })).split("\n") : [];
       const current = new Map(present.map((p, i) => [p, now[i]]));
       const changed = saved.filter(([path, id]) => current.get(path) !== id);
-      for (const [path, id] of changed) {
+      for (const [path, id] of undo ? changed : []) {
         await rm(join(cwd, path), { recursive: true, force: true });
         await writeBlob(cwd, id, path);
       }
-      if (changed.length) undone.push(`${changed.length} untracked file${changed.length === 1 ? "" : "s"} put back`);
+      if (changed.length) found.push(`${changed.length} untracked file${changed.length === 1 ? "" : "s"} ${undo ? "put back" : "changed"}`);
     }
-    return undone;
+    return found;
   });
 }
 

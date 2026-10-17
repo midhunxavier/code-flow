@@ -1,5 +1,5 @@
 import { computed, signal } from "@preact/signals";
-import { api, ApiError, post, store } from "./lib.js";
+import { api, ApiError, post, showToast, store } from "./lib.js";
 import type {
   AgentId,
   AgentInfo,
@@ -19,6 +19,8 @@ export const agents = signal<AgentInfo[]>([]);
 export const patterns = signal<PatternInfo[]>([]);
 export const catalogs = signal<Record<string, CatalogOrError>>({});
 export const runs = signal<Map<string, RunSummary>>(new Map());
+/** The first list of runs has come: until then, a run missing from `runs` may just not be here yet. */
+export const runsLoaded = signal(false);
 
 export type Route =
   | { view: "composer" }
@@ -30,6 +32,26 @@ export type Route =
   | { view: "run"; id: string }
   | { view: "review"; id: string; branch: string };
 export const route = signal<Route>({ view: "composer" });
+/** The current view lives in the URL hash, so reload, back/forward and links work. */
+export function routeFromHash(hash = location.hash): Route {
+  const [view, id, ...rest] = hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
+  if (view === "run" && id) return { view: "run", id };
+  if (view === "review" && id && rest.length) return { view: "review", id, branch: rest.join("/") };
+  if (view === "automations") return { view: "automations" };
+  if (view === "insights") return { view: "insights", group: id || undefined };
+  if (view === "project" && id) return { view: "project", id };
+  if (view === "side" && id && rest[0]) return { view: "side", tab: SIDE_TABS.includes(id as SideTab) ? (id as SideTab) : "chat", scope: rest[0] };
+  return { view: "composer" };
+}
+export function hashFor(r: Route): string {
+  if (r.view === "run") return `#/run/${encodeURIComponent(r.id)}`;
+  if (r.view === "automations") return "#/automations";
+  if (r.view === "project") return `#/project/${encodeURIComponent(r.id)}`;
+  if (r.view === "side") return `#/side/${r.tab}/${encodeURIComponent(r.scope)}`;
+  if (r.view === "insights") return r.group ? `#/insights/${encodeURIComponent(r.group)}` : "#/insights";
+  if (r.view === "review") return `#/review/${encodeURIComponent(r.id)}/${r.branch.split("/").map(encodeURIComponent).join("/")}`;
+  return "#/";
+}
 export const railOpen = signal(false);
 export const pickerOpen = signal(false);
 
@@ -64,18 +86,22 @@ export function setSideWidth(px: number) {
 }
 /**
  * The chat shown in the side panel for what it's looking at: a run's side chat ("side:<chat>"), a
- * Single-agent run (its id), a new separate chat ("solo"), or null for a new chat.
+ * Single-agent run (its id), a new separate chat ("solo"), or null for a new chat. `scope` is the
+ * key of the run or project it's for, when that may not be what the panel shows now.
  */
 export const sideChat = computed(() => sideMemo.value.chat || null);
-export function setSideChat(key: string | null) {
-  const m = sideMemo.value;
+export function setSideChat(key: string | null, scope = sideScope.value.key) {
+  const m = sideMemory.value[scope] ?? { at: 0 };
   const run = key && !key.startsWith("side:") && key !== "solo";
   // A chat you open here gets a place in the strip; a side chat you go back to comes back to it.
-  rememberSide({
-    chat: key ?? "",
-    chats: run && !(m.chats ?? []).includes(key) ? [...(m.chats ?? []), key] : m.chats,
-    closed: key?.startsWith("side:") ? m.closed?.filter((k) => k !== key) : m.closed,
-  });
+  rememberSide(
+    {
+      chat: key ?? "",
+      chats: run && !(m.chats ?? []).includes(key) ? [...(m.chats ?? []), key] : m.chats,
+      closed: key?.startsWith("side:") ? m.closed?.filter((k) => k !== key) : m.closed,
+    },
+    scope,
+  );
 }
 /** Text handed to the side chat's composer (from Notes, or a file). */
 export const sideDraft = signal("");
@@ -150,6 +176,8 @@ export const pickerChoose = signal<{ title: string; choose: (path: string) => vo
 export const ALL = "";
 export const NONE = "none";
 export const projects = signal<Project[]>([]);
+/** The list of projects has come: until then, an empty list says nothing about a project being gone. */
+export const projectsLoaded = signal(false);
 export const currentProject = signal(store.get("project") ?? ALL);
 export const activeProject = computed(() => projects.value.find((p) => p.id === currentProject.value));
 export const projectsOpen = signal(false);
@@ -163,6 +191,7 @@ export function editProject(id: string) {
 export async function loadProjects() {
   try {
     projects.value = await api<Project[]>("/api/projects");
+    projectsLoaded.value = true;
   } catch {
     return; // keep what we have
   }
@@ -267,6 +296,8 @@ export interface SideScope {
   /** The repository to work in; "" when there's none to go on. */
   repo: string;
   pinned: boolean;
+  /** Its run or project hasn't loaded yet: the panel waits, so no tab acts on a scope without them. */
+  waiting?: boolean;
 }
 type SidePin = { kind: "run"; id: string } | { kind: "project"; project?: string; repo: string };
 const sidePin = signal<SidePin | null>(store.json<SidePin | null>("sidePin", null));
@@ -275,6 +306,11 @@ const runScope = (run: RunSummary, pinned = false): SideScope => ({ key: `run:${
 function projectScope(project: Project | undefined, repo: string, pinned = false): SideScope {
   const r = repo || project?.repos[0] || "";
   return { key: project ? `project:${project.id}` : r ? `repo:${r}` : "none", kind: "project", project, repo: r, pinned };
+}
+/** A run's or project's scope by its key alone, for while the list it's in is on its way. */
+function waitingScope(key: string, pinned: boolean): SideScope {
+  const run = key.startsWith("run:");
+  return { key, kind: run ? "run" : "project", repo: "", pinned, waiting: !(run ? runsLoaded.value : projectsLoaded.value) };
 }
 /** Where a run's project-level memory lives (its app's address, say), for the run to fall back on. */
 export const projectKeyOf = (run: RunSummary) => projectScope(projectFor(run), run.repo).key;
@@ -287,11 +323,19 @@ const followed = computed<SideScope>(() => {
     const p = projects.value.find((x) => x.id === r.id);
     if (p) return projectScope(p, p.repos.includes(repo.value) ? repo.value : p.repos.length ? lastRepo(p) : "");
   }
-  const run = r.view === "run" || r.view === "review" ? runs.value.get(r.id) : undefined;
-  return run ? runScope(run) : projectScope(target.value.project, repo.value);
+  if (r.view === "run" || r.view === "review") {
+    const run = runs.value.get(r.id);
+    if (run) return runScope(run);
+    // On a reload the page can come before the runs: the panel waits on the run, not on the composer's scope.
+    if (!runsLoaded.value) return waitingScope(`run:${r.id}`, false);
+  }
+  return projectScope(target.value.project, repo.value);
 });
-/** In a side panel popped out into its own window: the scope it shows (never the route's, never saved). */
-export const poppedScope = signal<string | null>(null);
+/**
+ * In a side panel popped out into its own window: the scope it shows, from its own address
+ * (#/side/<tab>/<scope>), never saved. A window that stops being a popped-out panel stops showing it.
+ */
+export const poppedScope = computed(() => (route.value.view === "side" ? route.value.scope : null));
 function scopeFromKey(key: string): SideScope | undefined {
   if (key.startsWith("run:")) {
     const run = runs.value.get(key.slice(4));
@@ -307,7 +351,7 @@ function scopeFromKey(key: string): SideScope | undefined {
 export const sideScope = computed<SideScope>(() => {
   const popped = poppedScope.value;
   // Until its run or project has loaded, a popped-out panel waits on its key.
-  if (popped) return scopeFromKey(popped) ?? { key: popped, kind: "project", repo: "", pinned: true };
+  if (popped) return scopeFromKey(popped) ?? waitingScope(popped, true);
   const pin = sidePin.value;
   if (pin?.kind === "run") {
     // A run that isn't loaded (yet, or any more) can't be shown: follow until it is.
@@ -318,10 +362,26 @@ export const sideScope = computed<SideScope>(() => {
   }
   return followed.value;
 });
+function setPin(pin: SidePin | null) {
+  sidePin.value = pin;
+  store.set("sidePin", JSON.stringify(pin));
+}
 export function pinSide(on: boolean) {
   const s = sideScope.value;
-  sidePin.value = !on ? null : s.run ? { kind: "run", id: s.run.id } : { kind: "project", project: s.project?.id, repo: s.repo };
-  store.set("sidePin", JSON.stringify(sidePin.value));
+  setPin(!on ? null : s.run ? { kind: "run", id: s.run.id } : { kind: "project", project: s.project?.id, repo: s.repo });
+}
+
+/**
+ * Show a run's side chat in the panel. On another run, the panel moves to this one: it follows you
+ * again if you're on this run's page, else it's pinned to it. A popped-out panel shows only its own
+ * scope: the main window opens the run, with the chat in its panel.
+ */
+export function openSideChat(runId: string, chat: string) {
+  const key = `run:${runId}`;
+  if (poppedScope.value && poppedScope.value !== key) return handOff({ type: HANDOFF, route: { view: "run", id: runId }, drafts: [], sideChat: { run: runId, chat } });
+  setSideChat(`side:${chat}`, key);
+  if (sideScope.value.key !== key) setPin(followed.value.key === key ? null : { kind: "run", id: runId });
+  openSide("chat");
 }
 
 /** What the panel remembers per scope, so going back to a run brings back its panel. */
@@ -378,6 +438,85 @@ window.addEventListener("storage", (e) => {
 export function restoreSideTab() {
   const tab = sideMemo.value.tab;
   if (tab && SIDE_TABS.includes(tab) && tab !== sideTab.value) showSideTab(tab);
+}
+
+// ---------------------------------------------------------------- a popped-out panel and the main window
+const HANDOFF = "codeflow:open";
+const READY = "codeflow:ready";
+/**
+ * What a popped-out panel hands to the main window: a page to show, drafts for its message boxes,
+ * and a run's side chat to show in its panel.
+ */
+interface HandOff {
+  type: typeof HANDOFF;
+  route: Route;
+  drafts: ChatDraft[];
+  sideChat?: { run: string; chat: string };
+}
+/** The main window this panel opened, the one that opened it being gone, and what waits until it's ready. */
+let opened: Window | null = null;
+let openedReady = false;
+const forOpened: HandOff[] = [];
+
+/**
+ * Go to a page, with drafts for its message boxes. A popped-out panel stays a panel: the page opens
+ * in the main window, the one that opened it (or a new one if that's gone), and the drafts go along.
+ */
+export function navigate(to: Route, drafts: ChatDraft[] = []) {
+  if (route.value.view === "side") return handOff({ type: HANDOFF, route: to, drafts });
+  for (const d of drafts) draftTo(d.to, d.text, d.images);
+  route.value = to;
+}
+
+/** The window to hand off to: one this panel opened, else its opener, while it's still code-flow's. */
+function mainWindow(): Window | null {
+  for (const w of [opened, window.opener as Window | null]) {
+    try {
+      if (w && !w.closed && w.location.origin === location.origin) return w;
+    } catch {
+      // another site's window: its location can't be read
+    }
+  }
+  return null;
+}
+
+function handOff(h: HandOff) {
+  const main = mainWindow();
+  if (main && (main !== opened || openedReady)) {
+    main.postMessage(h, location.origin);
+    main.focus();
+    return;
+  }
+  // A new window can't take a message until it has loaded: it asks for what waits once it has.
+  if (!main) {
+    forOpened.length = 0;
+    openedReady = false;
+    opened = window.open(`${location.origin}${location.pathname}${hashFor(h.route)}`, "_blank");
+    if (!opened) return showToast("The browser blocked the window: allow pop-ups for code-flow", 5000);
+  }
+  forOpened.push(h);
+}
+
+/**
+ * Every window listens to the others: a main window takes what a popped-out panel hands over, and
+ * one a panel opened says it's ready for it. Only code-flow's own pages count, not one in the Browser tab.
+ */
+export function listenForHandOffs() {
+  window.addEventListener("message", (e: MessageEvent) => {
+    if (e.origin !== location.origin) return;
+    const m = e.data as Partial<HandOff> | { type?: string } | null;
+    if (m?.type === READY && opened && e.source === opened) {
+      openedReady = true;
+      for (const h of forOpened.splice(0)) opened.postMessage(h, location.origin);
+      return;
+    }
+    if (m?.type !== HANDOFF || route.value.view === "side") return;
+    const h = m as HandOff;
+    if (typeof h.route?.view !== "string" || h.route.view === "side") return;
+    navigate(h.route, Array.isArray(h.drafts) ? h.drafts : []);
+    if (h.sideChat) openSideChat(h.sideChat.run, h.sideChat.chat);
+  });
+  if (route.value.view !== "side") (window.opener as Window | null)?.postMessage({ type: READY }, location.origin);
 }
 
 // ---------------------------------------------------------------- composer
@@ -611,6 +750,7 @@ function applyRunList(list: RunSummary[], fresher: (id: string) => boolean) {
   for (const run of list) next.set(run.id, fresher(run.id) && before.has(run.id) ? before.get(run.id)! : run);
   for (const [id, run] of before) if (!next.has(id) && fresher(id)) next.set(id, run);
   runs.value = next;
+  runsLoaded.value = true;
   for (const run of next.values()) noticeChange(before.get(run.id), run);
 }
 

@@ -2,9 +2,9 @@ import { signal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
 import { api, baseName, onPhone, post, showToast } from "./lib.js";
-import { Menu, MenuItem, MenuTitle, Strip, type StripItem } from "./panel-bits.js";
+import { Menu, MenuItem, MenuTitle, resultWorktree, Strip, type StripItem } from "./panel-bits.js";
 import { sideChatsOf } from "./side-chat.js";
-import { draftTo, openSide, projectKeyOf, rememberSide, route, runs, setSideChat, sideMemo, sideMemory, sideScope, type SideScope } from "./state.js";
+import { draftTo, navigate, openSide, poppedScope, projectKeyOf, rememberSide, runs, setSideChat, sideMemo, sideMemory, sideScope, type SideScope } from "./state.js";
 import type { Attachment, DevServer, RunSummary } from "./types.js";
 
 /**
@@ -28,8 +28,8 @@ interface Rect {
 /** Something you pointed at on the page, and what you said about it. */
 interface Pin {
   n: number;
-  /** The overlay's id for it (what Adjust refers to). */
-  id: number;
+  /** The overlay's id for it (what Adjust refers to): opaque, and unique across the page's loads. */
+  id: string | number;
   kind: "element" | "box";
   selector: string;
   text: string;
@@ -43,6 +43,8 @@ interface Pin {
   comment: string;
   /** Style changes you tried (Adjust). */
   tried?: Record<string, string>;
+  /** Picked in an earlier load of the page: its element is gone, so Adjust can't reach it. */
+  gone?: boolean;
 }
 interface ConsoleLine {
   level: "error" | "warn" | "network";
@@ -55,6 +57,8 @@ interface PageState {
   capturing: number;
   /** The page's address as you'd type it (the app's own, not the preview's). */
   at?: string;
+  /** The frame shows the page through the preview, with the overlay: Pick, Box and Console work. */
+  preview?: boolean;
 }
 /** Per page (scope|page id): pins and console survive switching tabs and pages. */
 const pages = signal<Record<string, PageState>>({});
@@ -73,6 +77,16 @@ export function address(target: string): string {
 }
 const shortUrl = (url: string) => url.replace(/^https?:\/\//, "").replace(/\/$/, "") || "New page";
 const newId = () => `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+
+/**
+ * The app's own address for one reported from the frame, which is on the preview's origin. The
+ * page's own scripts can post these messages too, so anything else (another site, a javascript:
+ * URL) is ignored: it would end up in the address bar and the "Open in a new tab" link.
+ */
+export function appAddress(reported: unknown, preview: string, app: string): string | undefined {
+  if (typeof reported !== "string" || (reported !== preview && !reported.startsWith(`${preview}/`))) return undefined;
+  return app + reported.slice(preview.length);
+}
 
 export function BrowserTab() {
   const s = sideScope.value;
@@ -103,9 +117,10 @@ export function BrowserTab() {
   const second = memo.compare && memo.compare !== active?.id ? list.find((p) => p.id === memo.compare) : undefined;
   const device: Device = memo.device ?? "full";
 
-  // Nothing open here yet: the app this run (or project) started, else what its project had open.
+  // Nothing ever opened here: the app this run (or project) started, else what its project had open.
+  // Pages you closed stay closed.
   useEffect(() => {
-    if (list.length) return;
+    if (memo.pages || memo.url) return;
     const start = (mine[0] ? address(mine[0].url) : "") || (s.run ? sideMemory.value[projectKeyOf(s.run)]?.pages?.[0]?.url : "") || "";
     if (start) rememberSide({ pages: [{ id: newId(), url: start }] });
   }, [s.key, list.length, mine[0]?.url]);
@@ -120,6 +135,9 @@ export function BrowserTab() {
     const url = address(target);
     if (!url) return;
     if (!active) return openPage(url);
+    // Where the old address had got to is no longer where the page is: until the new page says
+    // (a page that isn't local never does), the address is the one you typed.
+    setPage(`${s.key}|${active.id}`, (p) => ({ ...p, at: undefined }));
     rememberSide({ pages: list.map((p) => (p.id === active.id ? { ...p, url } : p)) });
     setNonce((n) => n + 1);
   };
@@ -138,8 +156,10 @@ export function BrowserTab() {
   const key = active ? `${s.key}|${active.id}` : "";
   const state = key ? pageState(key) : undefined;
   const errors = state?.console.filter((c) => c.level !== "warn").length ?? 0;
-  const local = !!active?.url && LOCAL.test(active.url) && !onPhone;
-  useEffect(() => setMode("off"), [key]);
+  // Annotating needs the overlay, so the page shown through the preview: an https://localhost
+  // address, say, is refused by the preview and shown as it is.
+  const canAnnotate = !!active?.url && !!state?.preview;
+  useEffect(() => setMode("off"), [key, canAnnotate]);
 
   const items: StripItem[] = list.map((p) => ({ key: p.id, label: shortUrl(pageState(`${s.key}|${p.id}`).at ?? p.url), title: p.url || "New page", below: p.id === second?.id }));
   const idle = s.run ? s.run.worktrees.filter((w) => !running.some((x) => x.key === `${s.run!.id}/${w.name}`)) : [];
@@ -213,7 +233,7 @@ export function BrowserTab() {
           onDevice={(d) => rememberSide({ device: d })}
           mode={mode}
           onMode={setMode}
-          canAnnotate={local}
+          canAnnotate={canAnnotate}
           errors={errors}
           showConsole={showConsole}
           onConsole={() => setShowConsole(!showConsole)}
@@ -300,13 +320,21 @@ function PageFrame({ pageKey, url, device, mode, onModeOff }: { pageKey: string;
   useEffect(() => {
     let alive = true;
     setProblem("");
-    if (!local) return setView({ src: url });
+    if (!local) {
+      setPage(pageKey, (p) => ({ ...p, preview: false }));
+      return setView({ src: url });
+    }
     post<{ url: string; origin: string }>("/api/preview", { url }).then(
-      (p) => alive && setView({ src: p.url, origin: p.origin }),
+      (p) => {
+        if (!alive) return;
+        setView({ src: p.url, origin: p.origin });
+        setPage(pageKey, (page) => ({ ...page, preview: true }));
+      },
       (err) => {
         if (!alive) return;
         setProblem(`${(err as Error).message}: showing it without annotations`);
         setView({ src: url });
+        setPage(pageKey, (p) => ({ ...p, preview: false }));
       },
     );
     return () => {
@@ -327,12 +355,14 @@ function PageFrame({ pageKey, url, device, mode, onModeOff }: { pageKey: string;
     const onMessage = (e: MessageEvent) => {
       const from = origin.current;
       if (!from || e.source !== frame.current?.contentWindow || e.origin !== from || e.data?.codeflow !== 1) return;
-      const view = { origin: from };
       const mode = modeNow.current;
       const m = e.data;
       if (m.type === "ready" || m.type === "location") {
-        setPage(pageKey, (p) => ({ ...p, at: String(m.url).replace(view.origin!, targetOrigin) }));
+        const at = appAddress(m.url, from, targetOrigin);
+        if (at) setPage(pageKey, (p) => ({ ...p, at }));
         if (m.type === "ready") {
+          // A new document: nothing is being captured in it yet, and what was pinned went with the old one.
+          setPage(pageKey, (p) => ({ ...p, capturing: 0, pins: p.pins.map((x) => ({ ...x, gone: true })) }));
           send({ type: "mode", mode });
           send({ type: "pins", pins: pageState(pageKey).pins.map((p) => ({ n: p.n, rect: p.rect, kind: p.kind })) });
         }
@@ -341,7 +371,7 @@ function PageFrame({ pageKey, url, device, mode, onModeOff }: { pageKey: string;
       } else if (m.type === "pin-start") {
         setPage(pageKey, (p) => ({ ...p, capturing: p.capturing + 1 }));
       } else if (m.type === "pin") {
-        setPage(pageKey, (p) => ({ ...p, capturing: Math.max(0, p.capturing - 1), pins: [...p.pins, { ...m.pin, url: String(m.pin.url).replace(view.origin!, targetOrigin), n: (p.pins.at(-1)?.n ?? 0) + 1, comment: "" }] }));
+        setPage(pageKey, (p) => ({ ...p, capturing: Math.max(0, p.capturing - 1), pins: [...p.pins, { ...m.pin, url: appAddress(m.pin.url, from, targetOrigin) ?? p.at ?? url, n: (p.pins.at(-1)?.n ?? 0) + 1, comment: "" }] }));
       } else if (m.type === "mode") {
         onModeOff();
       }
@@ -407,33 +437,44 @@ function ConsoleDrawer({ pageKey, lines }: { pageKey: string; lines: ConsoleLine
 // ---------------------------------------------------------------- pins: what you say, and where it goes
 const ADJUST = ["font-size", "font-weight", "color", "background-color", "padding", "margin", "border-radius", "gap"];
 
-/** Where pins can go from this scope: the run's main chat first, its side chats, a new side chat, a new run. */
-function destinations(s: SideScope): { key: string; label: string; sub: string }[] {
+/**
+ * Where pins can go from this scope: the run's main chat first, its side chats, a new side chat, a
+ * new run. Only places with a message box to take them: a run or chat that failed or stopped has
+ * none, and a new side chat needs a worktree to work in (as the Chat tab decides).
+ */
+export function destinations(s: SideScope): { key: string; label: string; sub: string }[] {
   const out: { key: string; label: string; sub: string }[] = [];
+  const open = (r: RunSummary) => r.status === "done" || r.status === "running";
   const run = s.run;
-  if (run && (run.status === "done" || run.status === "running")) {
+  if (run && open(run)) {
     out.push({ key: `main:${run.id}`, label: "Main chat", sub: run.status === "running" ? "To the team while it works" : "A reply to the agent that built it" });
     for (const c of sideChatsOf(run)) out.push({ key: c.key, label: `Side chat: ${c.title}`, sub: "In this run's worktree" });
-    out.push({ key: "side:new", label: "New side chat", sub: "A conversation of its own, in this run's worktree" });
+    if (resultWorktree(run)) out.push({ key: "side:new", label: "New side chat", sub: "A conversation of its own, in this run's worktree" });
   }
   for (const id of sideMemo.value.chats ?? []) {
     const chat = runs.value.get(id);
-    if (chat) out.push({ key: `main:${chat.id}`, label: `Chat: ${chat.task.split("\n")[0]!.slice(0, 40)}`, sub: "A chat on its own branch" });
+    if (chat && open(chat)) out.push({ key: `main:${chat.id}`, label: `Chat: ${chat.task.split("\n")[0]!.slice(0, 40)}`, sub: "A chat on its own branch" });
   }
   out.push({ key: "composer", label: "New run", sub: "The task of a new run, in the composer" });
   return out;
 }
 
-/** The pins as a message: what each one points at and what you said, then the snapshots. */
-function pinsMessage(pins: Pin[], console: ConsoleLine[]): { text: string; images: Attachment[] } {
+/**
+ * The pins as a message: what each one points at and what you said, then the snapshots. Pins can
+ * be on different pages of the app, so each says where it was when that isn't the first one's.
+ * Snapshot names carry the batch: a second lot added to the same message box starts at 1 again.
+ */
+export function pinsMessage(pins: Pin[], console: ConsoleLine[], batch: number): { text: string; images: Attachment[] } {
   const url = pins[0]?.url ?? "";
+  const snapshot = (p: Pin) => `pin-${batch}-${p.n}.png`;
   const lines = pins.map((p) => {
     const what = p.kind === "box" ? `an area ${p.rect.w}×${p.rect.h} at ${p.rect.x},${p.rect.y} (around \`${p.selector}\`)` : `\`${p.selector}\``;
     const parts = [`${p.n}. ${what}: ${p.comment.trim() || "(no comment)"}`];
+    if (p.url !== url) parts.push(`   On: ${p.url}`);
     if (p.text) parts.push(`   Text: "${p.text.slice(0, 120)}"`);
     if (p.html) parts.push(`   HTML: ${p.html.replace(/\s+/g, " ").slice(0, 240)}`);
     if (p.tried && Object.values(p.tried).some(Boolean)) parts.push(`   Tried in the browser: ${Object.entries(p.tried).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join("; ")}`);
-    if (p.image) parts.push(`   Snapshot: pin-${p.n}.png`);
+    if (p.image) parts.push(`   Snapshot: ${snapshot(p)}`);
     return parts.join("\n");
   });
   const errors = console.filter((c) => c.level !== "warn").slice(-20);
@@ -443,10 +484,12 @@ function pinsMessage(pins: Pin[], console: ConsoleLine[]): { text: string; image
     .filter((p) => p.image)
     .map((p) => {
       const data = p.image!.replace(/^data:image\/png;base64,/, "");
-      return { name: `pin-${p.n}.png`, size: Math.round((data.length * 3) / 4), data };
+      return { name: snapshot(p), size: Math.round((data.length * 3) / 4), data };
     });
   return { text, images };
 }
+/** How many lots of pins this window has sent: each one's snapshots get names of their own. */
+let batches = 0;
 
 function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey: string; state: PageState; onSent: () => void }) {
   const [adjusting, setAdjusting] = useState<number | null>(null);
@@ -456,31 +499,36 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
   const remembered = options.find((o) => o.key === sideMemo.value.sendTo);
   const primary = remembered ?? options[0]!;
   const update = (n: number, patch: Partial<Pin>) => setPage(pageKey, (p) => ({ ...p, pins: p.pins.map((x) => (x.n === n ? { ...x, ...patch } : x)) }));
+  // A pin from an earlier load of the page has nothing to put back: its element went with that page.
   const remove = (pin: Pin) => {
-    overlays.get(pageKey)?.({ type: "reset", id: pin.id });
+    if (!pin.gone) overlays.get(pageKey)?.({ type: "reset", id: pin.id });
     setPage(pageKey, (p) => ({ ...p, pins: p.pins.filter((x) => x.n !== pin.n) }));
   };
   const sendTo = (to: string) => {
-    const { text, images } = pinsMessage(state.pins, withConsole ? errors : []);
-    draftTo(to, text, images);
+    const { text, images } = pinsMessage(state.pins, withConsole ? errors : [], ++batches);
+    const draft = { to, text, images };
     rememberSide({ sendTo: to });
-    for (const p of state.pins) overlays.get(pageKey)?.({ type: "reset", id: p.id });
+    for (const p of state.pins) if (!p.gone) overlays.get(pageKey)?.({ type: "reset", id: p.id });
     setPage(pageKey, (p) => ({ ...p, pins: [] }));
     onSent();
+    // The run's page and the composer are the main window's: a popped-out panel hands the draft over with them.
+    const there = poppedScope.value ? " in the main window" : "";
     if (to.startsWith("main:")) {
       const id = to.slice(5);
-      if (scope.run?.id === id) route.value = { view: "run", id };
+      if (scope.run?.id === id) navigate({ view: "run", id }, [draft]);
       else {
+        draftTo(to, text, images);
         setSideChat(id);
         openSide("chat");
       }
-      showToast("Added to the message box: add a line if you like, then send");
+      showToast(`Added to the message box${scope.run?.id === id ? there : ""}: add a line if you like, then send`);
     } else if (to.startsWith("side:")) {
+      draftTo(to, text, images);
       setSideChat(to === "side:new" ? null : to);
       openSide("chat");
     } else {
-      route.value = { view: "composer" };
-      showToast("Added to the task in the composer");
+      navigate({ view: "composer" }, [draft]);
+      showToast(`Added to the task in the composer${there}`);
     }
   };
   return (
@@ -494,7 +542,7 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
               {p.image ? <img class="pin-thumb" src={p.image} alt={`Snapshot of pin ${p.n}`} /> : <span class="help"> · no snapshot</span>}
             </div>
             <input class="field" aria-label={`What about pin ${p.n}?`} placeholder="What's wrong, or what should change?" value={p.comment} onInput={(e) => update(p.n, { comment: e.currentTarget.value })} />
-            {adjusting === p.n && p.kind === "element" ? (
+            {adjusting === p.n && p.kind === "element" && !p.gone ? (
               <div class="adjust">
                 {ADJUST.map((prop) => (
                   <label key={prop} class="adj">
@@ -516,7 +564,13 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
           </div>
           <div class="pin-actions">
             {p.kind === "element" ? (
-              <button type="button" class={`btn ghost small ${adjusting === p.n ? "on" : ""}`} title="Try style changes on the page; what you try goes with the pin" onClick={() => setAdjusting(adjusting === p.n ? null : p.n)}>
+              <button
+                type="button"
+                class={`btn ghost small ${adjusting === p.n && !p.gone ? "on" : ""}`}
+                disabled={p.gone}
+                title={p.gone ? "The page has loaded again since you picked this, so its element is gone" : "Try style changes on the page; what you try goes with the pin"}
+                onClick={() => setAdjusting(adjusting === p.n ? null : p.n)}
+              >
                 Adjust
               </button>
             ) : null}

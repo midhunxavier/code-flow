@@ -919,7 +919,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   // The side panel's Terminal: shells that stay open, fed over POST, streamed over SSE.
   if (parts[1] === "preview" && req.method === "POST") {
     const body = await readJson(req);
-    return send(res, 200, await attempt(() => previews.show(String(body.url ?? ""))));
+    // On the host name this page was opened with (checkOrigin allows only code-flow's own), so the app is same-site with it.
+    return send(res, 200, await attempt(() => previews.show(String(body.url ?? ""), req.headers.host)));
   }
   if (parts[1] === "shell") {
     const id = parts[2];
@@ -954,10 +955,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (id && req.method === "POST" && parts[3] === "input") {
       const body = await readJson(req);
       // An interactive shell takes keystrokes as typed (`data`: a paste, an arrow key's escape
-      // sequence); `text` is a whole command, sent with Enter, for either kind.
-      if (typeof body.data === "string" && shells.get(id)?.interactive) {
-        if (body.data.length > 1_000_000) throw new HttpError(413, "That paste is too long");
-        if (!shells.type(id, body.data)) throw new HttpError(409, "That shell has exited; open a new one");
+      // sequence) or bytes (`binary`, one per character: xterm's mouse reports, which aren't
+      // UTF-8); `text` is a whole command, sent with Enter, for either kind.
+      const keys = typeof body.binary === "string" ? body.binary : body.data;
+      if (typeof keys === "string" && shells.get(id)?.interactive) {
+        if (keys.length > 1_000_000) throw new HttpError(413, "That paste is too long");
+        if (!shells.type(id, keys, typeof body.binary === "string" ? "latin1" : "utf8")) throw new HttpError(409, "That shell has exited; open a new one");
         return send(res, 200, shells.get(id));
       }
       if (typeof body.text !== "string" || body.text.length > 20_000) throw new HttpError(400, "Send a command");

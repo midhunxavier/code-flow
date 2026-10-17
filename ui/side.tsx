@@ -8,6 +8,7 @@ import { placesFor, PlacePicker, usePlace } from "./panel-bits.js";
 import { ChatTab } from "./side-chat.js";
 import {
   closeSide,
+  navigate,
   openSide,
   pinSide,
   projectKeyOf,
@@ -17,7 +18,6 @@ import {
   route,
   setSideChat,
   setSideWidth,
-  setTask,
   SIDE_TABS,
   sideDraft,
   sideFile,
@@ -26,7 +26,6 @@ import {
   sideOpen,
   sideScope,
   sideTab,
-  task,
   type SideTab,
 } from "./state.js";
 import { TerminalTab } from "./terminal.js";
@@ -95,11 +94,15 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
         ))}
       </div>
       <div class="side-body">
-        {tabs.filter((t) => visited.has(t) || t === tab).map((t) => (
-          <div key={t} id={`side-pane-${t}`} role="tabpanel" aria-labelledby={`side-tab-${t}`} class="side-pane" hidden={t !== tab}>
-            {panes[t]()}
-          </div>
-        ))}
+        {sideScope.value.waiting ? (
+          <div class="side-empty help">Loading…</div>
+        ) : (
+          tabs.filter((t) => visited.has(t) || t === tab).map((t) => (
+            <div key={t} id={`side-pane-${t}`} role="tabpanel" aria-labelledby={`side-tab-${t}`} class="side-pane" hidden={t !== tab}>
+              {panes[t]()}
+            </div>
+          ))
+        )}
       </div>
     </aside>
   );
@@ -125,7 +128,7 @@ function ScopeHeader({ popped }: { popped: boolean }) {
         {popped ? "Own window" : s.pinned ? "Pinned" : "Following"}
       </span>
       <span class="scope-crumbs" title={[where, s.repo, task].filter(Boolean).join("\n")}>
-        {where ? <span class="sc-where">{where}</span> : <span class="help">No repository chosen</span>}
+        {where ? <span class="sc-where">{where}</span> : s.waiting ? null : <span class="help">No repository chosen</span>}
         {!s.run && s.project && s.project.repos.length > 1 ? (
           <>
             <span class="sep" aria-hidden="true">›</span>
@@ -136,7 +139,7 @@ function ScopeHeader({ popped }: { popped: boolean }) {
           <>
             <span class="sep" aria-hidden="true">›</span>
             {s.pinned ? (
-              <a class="sc-what" href={`#/run/${enc(s.run.id)}`} title="Open this run">
+              <a class="sc-what" href={`#/run/${enc(s.run.id)}`} title={popped ? "Open this run in the main window" : "Open this run"}>
                 {task}
               </a>
             ) : (
@@ -322,9 +325,8 @@ function NotesTab() {
           title="Add the selection (or the whole note) to the task in the composer"
           disabled={!text.trim()}
           onClick={() => {
-            const add = selection();
-            setTask(task.value.trim() ? `${task.value.trimEnd()}\n\n${add}` : add);
-            route.value = { view: "composer" };
+            // The composer takes it as a draft, so from a popped-out panel it goes to the main window's.
+            navigate({ view: "composer" }, [{ to: "composer", text: selection(), images: [] }]);
             showToast("Added to the task");
           }}
         >

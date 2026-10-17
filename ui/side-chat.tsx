@@ -3,13 +3,14 @@ import { AgentTag, Markdown } from "./bits.js";
 import { Icon } from "./icons.js";
 import { baseName, post, SHORT, showToast, store, STATUS_TEXT } from "./lib.js";
 import { Menu, MenuItem, MenuTitle, resultWorktree, Strip, type StripItem } from "./panel-bits.js";
-import { AgentPicker, ChatThread, ConversationBar, DraftImages, FollowUpBadges, TurnBody, useRunStream } from "./run.js";
+import { AgentPicker, ChatThread, ConversationBar, DraftImages, FollowUpBadges, teamSteps, TurnBody, useRunStream } from "./run.js";
 import {
   afterStart,
   agents,
   agentSettings,
   chatDrafts,
   limits,
+  markSeen,
   patterns,
   projectFor,
   rememberSide,
@@ -19,7 +20,9 @@ import {
   sideChat,
   sideDraft,
   sideMemo,
+  sideOpen,
   sideScope,
+  sideTab,
   takeDrafts,
   trust,
   type SideScope,
@@ -57,6 +60,18 @@ export function sideChatsOf(run: RunSummary): SideChat[] {
     chats.set(f.side.chat, c);
   }
   return [...chats.values()];
+}
+
+/**
+ * A side chat and the run snapshot to show it from. The run's stream replays its history from the
+ * start, and its first snapshots are older than the feed's and don't have the chat yet: until the
+ * stream has it, the feed's snapshot stands in, so the view (and the text in its composer) stays put.
+ */
+export function sideChatIn(live: RunSummary | null, summary: RunSummary, chat: string): { run: RunSummary; chat: SideChat } | undefined {
+  const streamed = live ? sideChatsOf(live).find((x) => x.chat === chat) : undefined;
+  if (streamed) return { run: live!, chat: streamed };
+  const fed = sideChatsOf(summary).find((x) => x.chat === chat);
+  return fed ? { run: summary, chat: fed } : undefined;
 }
 
 /** A run can have side chats once there's a worktree to work in and it's going or finished. */
@@ -200,10 +215,10 @@ function useFollow(deps: unknown[]) {
 /** A side chat's turns, each your message and then the agent's turn in the run's worktree. */
 function SideChatView({ run: summary, chat }: { run: RunSummary; chat: string }) {
   const { run: live, data, version } = useRunStream(summary.id);
-  const run = live ?? summary;
-  const c = sideChatsOf(run).find((x) => x.chat === chat);
-  const scroll = useFollow([version, c?.turns.length, c?.turns.at(-1)?.status]);
-  if (!c) return <div class="side-empty help">Loading…</div>;
+  const shown = sideChatIn(live, summary, chat);
+  const scroll = useFollow([version, shown?.chat.turns.length, shown?.chat.turns.at(-1)?.status]);
+  if (!shown) return <div class="side-empty help">Loading…</div>;
+  const { run, chat: c } = shown;
   const wt = run.worktrees.find((w) => w.name === c.turns[0]!.worktree);
   return (
     <>
@@ -290,7 +305,8 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
       await post(`/api/runs/${run.id}/followups`, { kind: "side", worktree: wt.name, agent, message: text.trim(), side: { chat: id, mode, title }, attachments: images.map(({ name, data }) => ({ name, data })) });
       setText("");
       setImages([]);
-      if (!chat) setSideChat(`side:${id}`);
+      // The run's own panel memory: the panel may be on another run or project by now.
+      if (!chat) setSideChat(`side:${id}`, `run:${run.id}`);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -374,6 +390,11 @@ function useDraft(text: string, setText: (fn: (t: string) => string) => void) {
 function ChatView({ id }: { id: string }) {
   const { run, problem, data, version } = useRunStream(id);
   const scroll = useFollow([version, run?.status, run?.followUps?.length]);
+  // A reply you watch arrive here is seen, as in the run's own view; not behind another tab or a closed panel.
+  const watched = sideOpen.value && sideTab.value === "chat";
+  useEffect(() => {
+    if (watched && run && run.status !== "running" && !run.seen && !document.hidden) void markSeen(run.id);
+  }, [watched, run?.status, run?.seen]);
   if (problem) {
     return (
       <div class="side-empty">
@@ -385,7 +406,8 @@ function ChatView({ id }: { id: string }) {
     );
   }
   if (!run) return <div class="side-empty help">Loading…</div>;
-  const steps = [...data.current.steps.values()];
+  // Side chats' turns aren't this conversation's: replies go to the chat's own agent.
+  const steps = teamSteps(run, data.current.steps.values());
   const agent = Object.values(run.roles).flat()[0] as AgentId | undefined;
   const state = runState(run);
   const branch = run.artifacts[0]?.branch ?? run.worktrees[0]?.branch;
@@ -461,11 +483,11 @@ function NewChat({ scope }: { scope: SideScope }) {
         parentRunId: run?.id,
       });
       setText("");
-      setSideChat(id);
+      // Where it was started, also if the panel has moved on since.
+      setSideChat(id, scope.key);
       // A chat in a repo no project held made one: the panel is then about that project, so keep the chat open there.
-      void afterStart(project).then(() => {
-        if (sideScope.value.key !== scope.key && scope.key.startsWith("repo:")) setSideChat(id);
-      });
+      void afterStart(project);
+      if (project && scope.key.startsWith("repo:")) setSideChat(id, `project:${project}`);
     } catch (err) {
       setError((err as Error).message);
     } finally {

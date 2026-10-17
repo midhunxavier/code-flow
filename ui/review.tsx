@@ -1,3 +1,4 @@
+import { signal } from "@preact/signals";
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { AgentPicker } from "./run.js";
 import { api, enc, post, showToast, store } from "./lib.js";
@@ -19,6 +20,38 @@ interface Row {
   new?: number;
 }
 
+/**
+ * Line comments not sent yet, per run and branch ("comments:<run>:<branch>"). The Review page and the
+ * side panel's Changes tab can be open at once, so both read and change this one copy: a comment sent
+ * from one is gone from the other, and one added in either is kept. localStorage holds them across
+ * visits, and brings in what another window (a popped-out panel) changed.
+ */
+const drafts = new Map<string, Comment[]>();
+const draftsChanged = signal(0);
+const cachedDrafts = (key: string): Comment[] => {
+  if (!drafts.has(key)) drafts.set(key, store.json<Comment[]>(key, []));
+  return drafts.get(key)!;
+};
+/** The comments not sent yet on a run's branch; a component that reads them re-renders when they change. */
+export function commentDrafts(key: string): Comment[] {
+  void draftsChanged.value;
+  return cachedDrafts(key);
+}
+/** Change them from what they are now (not from what a view last showed). */
+export function changeCommentDrafts(key: string, change: (comments: Comment[]) => Comment[]) {
+  const next = change(cachedDrafts(key));
+  drafts.set(key, next);
+  store.set(key, JSON.stringify(next));
+  draftsChanged.value++;
+}
+window.addEventListener("storage", (e) => {
+  if (e.key !== null && !e.key.startsWith("comments:")) return;
+  // Read again on next use; no key means the whole storage was cleared.
+  if (e.key === null) drafts.clear();
+  else drafts.delete(e.key);
+  draftsChanged.value++;
+});
+
 /** Review a result branch file by file; line comments go back to an agent as a follow-up. */
 export function Review({ id, branch }: { id: string; branch: string }) {
   const summary = runs.value.get(id);
@@ -28,15 +61,11 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   const [error, setError] = useState("");
   const [runError, setRunError] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  const [comments, setCommentsState] = useState<Comment[]>(() => store.json(draftKey, []));
+  // Shared with the side panel's Changes tab, which can be open next to this page.
+  const comments = commentDrafts(draftKey);
   const [general, setGeneral] = useState(() => store.get(`${draftKey}:general`) ?? "");
   const [agent, setAgent] = useState<AgentId | null>(null);
   const [sending, setSending] = useState(false);
-
-  const setComments = (next: Comment[]) => {
-    setCommentsState(next);
-    store.set(draftKey, JSON.stringify(next)); // drafts survive navigating away
-  };
 
   useEffect(() => {
     api<DiffFile[]>(`/api/runs/${id}/diff?branch=${enc(branch)}`).then(
@@ -64,7 +93,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
     const message = commentsMessage(comments, general);
     try {
       await post(`/api/runs/${id}/followups`, { kind: "comments", worktree: worktree.name, agent: target, message });
-      setComments([]);
+      changeCommentDrafts(draftKey, () => []);
       store.set(`${draftKey}:general`, "");
       showToast("Sent — the agent is working on your comments");
       route.value = { view: "run", id };
@@ -144,8 +173,8 @@ export function Review({ id, branch }: { id: string; branch: string }) {
               key={file.path}
               file={file}
               comments={comments.filter((c) => c.file === file.path)}
-              onAdd={(c) => setComments([...comments, c])}
-              onRemove={(c) => setComments(comments.filter((x) => x !== c))}
+              onAdd={(c) => changeCommentDrafts(draftKey, (now) => [...now, c])}
+              onRemove={(c) => changeCommentDrafts(draftKey, (now) => now.filter((x) => x !== c))}
             />
           ) : files ? null : (
             <div class="tree-empty">Loading diff…</div>

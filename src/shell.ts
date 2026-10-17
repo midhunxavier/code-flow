@@ -24,6 +24,9 @@ import { childEnv } from "./env.js";
  *   full-screen programs don't work and colours are turned off. After every command the shell
  *   prints a marker with the exit code and the current folder, which becomes a `done` event (the
  *   prompt, in effect); it's busy from a command until its marker.
+ *
+ * A shell with jobs in the background isn't busy, but it isn't closed to make room for another
+ * either: closing it would end them.
  */
 
 export interface ShellInfo {
@@ -75,6 +78,8 @@ interface Shell extends ShellInfo {
   clients: Set<(e: ShellEvent) => void>;
   /** Interactive: the shell's pid in the terminal (its process group too), once the helper says. */
   pid?: number;
+  /** Interactive: the terminal's name as ps shows it ("ttys004", "pts/3"), once the helper says. */
+  tty?: string;
   /** Interactive: the terminal's foreground process group. */
   fg?: number | null;
   decoder?: TextDecoder;
@@ -93,18 +98,29 @@ function loginShell(env = process.env): string {
   return own.startsWith("/") && existsSync(own) ? own : shellProgram(env);
 }
 
-const probes = new Map<string, Promise<boolean>>();
-/** Whether `python` can run scripts/pty.py: Python 3 with its pty, termios and fcntl modules. Checked once. */
-export function ptyAvailable(python = defaultPython()): Promise<boolean> {
-  if (process.platform === "win32") return Promise.resolve(false);
+const probes = new Map<string, Promise<string | undefined>>();
+/**
+ * The interpreter `python` names, as an absolute path, when it can run scripts/pty.py: Python 3
+ * with its pty, termios and fcntl modules. Checked once. The terminal runs that path, not the
+ * name: a version manager's shim (pyenv, asdf, mise) picks the interpreter by the folder it runs
+ * in, and a repository can pin one that isn't installed.
+ */
+function ptyPython(python = defaultPython()): Promise<string | undefined> {
+  if (process.platform === "win32") return Promise.resolve(undefined);
   let probe = probes.get(python);
   if (!probe) {
     probe = new Promise((resolve) => {
-      execFile(python, ["-I", "-c", "import sys, pty, termios, fcntl, select; sys.exit(sys.version_info < (3, 6))"], { timeout: 10_000, env: childEnv() }, (err) => resolve(!err));
+      const check = "import sys, pty, termios, fcntl, select\nif sys.version_info < (3, 6): sys.exit(1)\nprint(sys.executable)";
+      execFile(python, ["-I", "-c", check], { timeout: 10_000, env: childEnv() }, (err, stdout) => resolve(err ? undefined : String(stdout).trim() || python));
     });
     probes.set(python, probe);
   }
   return probe;
+}
+
+/** Whether `python` can run scripts/pty.py. */
+export function ptyAvailable(python = defaultPython()): Promise<boolean> {
+  return ptyPython(python).then(Boolean);
 }
 
 function defaultPython(): string {
@@ -153,17 +169,16 @@ export class Shells {
    * a line-based one (`interactive: false`).
    */
   async open(cwd: string, opts: { pty?: boolean; cols?: number; rows?: number } = {}): Promise<ShellInfo> {
-    const pty = !!opts.pty && (await this.interactive());
-    if (this.shells.size >= MAX_SHELLS) {
-      // Make room with a shell that's done, else the oldest one waiting for a command; never one
-      // that's running something.
-      const byAge = [...this.shells.values()].sort((a, b) => a.startedAt - b.startedAt);
-      const spare = byAge.find((s) => s.status === "exited") ?? byAge.find((s) => !s.busy);
+    const python = opts.pty ? await ptyPython(this.python) : undefined;
+    const pty = !!python;
+    // Again after each wait: another shell may have opened, or the spare closed, meanwhile.
+    while (this.shells.size >= MAX_SHELLS) {
+      const spare = await this.spare();
       if (!spare) throw new ShellLimitError(`${MAX_SHELLS} terminals are open and each is running something: stop or close one first`);
       this.close(spare.id);
     }
     const id = `sh${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
-    const shell = pty ? this.startPty(id, cwd, clamp(opts.cols, 2, 1000, 80), clamp(opts.rows, 1, 500, 24)) : this.startLines(id, cwd);
+    const shell = python ? this.startPty(id, python, cwd, clamp(opts.cols, 2, 1000, 80), clamp(opts.rows, 1, 500, 24)) : this.startLines(id, cwd);
     shell.child.stdin?.on("error", () => {}); // it exited while a write was on its way: the exit event says so
     // An interactive shell's helper owns its pipes (the shell's programs have the terminal), so
     // wait for them to close: its last output comes before `exit`. A line-based shell's
@@ -189,6 +204,20 @@ export class Shells {
     return describe(shell);
   }
 
+  /**
+   * The shell to close to make room for another: one that's done, else the oldest one waiting for
+   * a command. Never one that's running something, in the foreground or as a job in the
+   * background (`npm run dev &`, a stopped vim): closing the shell would end it.
+   */
+  private async spare(): Promise<Shell | undefined> {
+    const byAge = [...this.shells.values()].sort((a, b) => a.startedAt - b.startedAt);
+    const exited = byAge.find((s) => s.status === "exited");
+    if (exited) return exited;
+    if (!byAge.some((s) => !s.busy)) return undefined;
+    const procs = await processes();
+    return byAge.find((s) => s.status === "exited" || (!s.busy && !hasJobs(s, procs)));
+  }
+
   /** Send a command to a line-based shell. Its exit code and the folder it left the shell in come back as `done`. */
   write(id: string, text: string): boolean {
     const s = this.shells.get(id);
@@ -202,11 +231,14 @@ export class Shells {
     return true;
   }
 
-  /** Keystrokes for an interactive shell, as typed (a paste, an escape sequence, Ctrl-C as \x03). */
-  type(id: string, data: string): boolean {
+  /**
+   * Keystrokes for an interactive shell, as typed (a paste, an escape sequence, Ctrl-C as \x03).
+   * `latin1`: bytes, one per character, sent as they are (xterm's mouse reports, which aren't UTF-8).
+   */
+  type(id: string, data: string, encoding: "utf8" | "latin1" = "utf8"): boolean {
     const s = this.shells.get(id);
     if (!s || !s.interactive || s.status !== "running" || !s.child.stdin?.writable) return false;
-    s.child.stdin.write(Buffer.from(data, "utf8"));
+    s.child.stdin.write(Buffer.from(data, encoding));
     return true;
   }
 
@@ -244,8 +276,24 @@ export class Shells {
     return true;
   }
 
+  /**
+   * Close every shell: code-flow is stopping. An interactive shell's helper is left to hang up its
+   * terminal on its own, after code-flow has exited (about a second), so it's no longer tracked:
+   * killed at exit, it couldn't, and jobs in process groups of their own (`nohup cmd &`, `disown`)
+   * would keep running with nothing left that knows about them.
+   */
   closeAll() {
-    for (const id of [...this.shells.keys()]) this.close(id);
+    for (const s of [...this.shells.values()]) {
+      if (!s.interactive || s.status !== "running") {
+        this.close(s.id);
+        continue;
+      }
+      if (s.pid) signalGroup(s.pid, "SIGHUP");
+      if (s.child.pid) signalGroup(s.child.pid, "SIGTERM");
+      untrackGroup(s.child.pid);
+      untrackGroup(s.pid);
+      this.shells.delete(s.id);
+    }
   }
 
   private startLines(id: string, cwd: string): Shell {
@@ -264,14 +312,14 @@ export class Shells {
     return shell;
   }
 
-  private startPty(id: string, cwd: string, cols: number, rows: number): Shell {
+  private startPty(id: string, python: string, cwd: string, cols: number, rows: number): Shell {
     const program = loginShell();
     const env = childEnv({ TERM: "xterm-256color", COLORTERM: "truecolor" });
     // A server started outside a terminal (launchd, systemd) may have no locale: the shell then
     // garbles anything that isn't ASCII.
     if (!env.LC_ALL && !env.LC_CTYPE && !env.LANG) env.LANG = process.platform === "darwin" ? "en_US.UTF-8" : "C.UTF-8";
     // A login shell (argv[0] starting with "-"), as a terminal app opens: your PATH from .zprofile.
-    const child = spawn(this.python, ["-I", PTY_SCRIPT, String(cols), String(rows), program, `-${basename(program)}`], {
+    const child = spawn(python, ["-I", PTY_SCRIPT, String(cols), String(rows), program, `-${basename(program)}`], {
       cwd,
       detached: true, // the helper's own group; the shell gets a session of its own in the terminal
       stdio: ["pipe", "pipe", "pipe", "pipe"],
@@ -288,14 +336,14 @@ export class Shells {
     });
     // Only the helper itself writes here (the shell's stderr is the terminal): a Python error.
     child.stderr!.on("data", (chunk: Buffer) => this.emit(shell, { type: "output", text: chunk.toString().replace(/\r?\n/g, "\r\n") }));
-    child.on("error", (err) => this.emit(shell, { type: "output", text: `Couldn't start the terminal (${this.python}): ${err.message}\r\n` }));
+    child.on("error", (err) => this.emit(shell, { type: "output", text: `Couldn't start the terminal (${python}): ${err.message}\r\n` }));
     let control = "";
     child.stdio[3]?.on("data", (chunk: Buffer) => {
       control += chunk.toString();
       const lines = control.split("\n");
       control = lines.pop()!;
       for (const line of lines) {
-        let msg: { pid?: number; fg?: number | null };
+        let msg: { pid?: number; tty?: string; fg?: number | null };
         try {
           msg = JSON.parse(line);
         } catch {
@@ -306,6 +354,7 @@ export class Shells {
           // The shell leads its own process group: if code-flow dies, the next start kills it too.
           if (shell.status === "running") trackGroup(msg.pid);
         }
+        if (typeof msg.tty === "string") shell.tty = msg.tty.replace(/^\/dev\//, "");
         if ("fg" in msg) this.onForeground(shell, msg.fg ?? null);
       }
     });
@@ -373,6 +422,34 @@ export class Shells {
 
 function newShell(id: string, cwd: string, program: string, child: ChildProcess, interactive: boolean): Shell {
   return { id, cwd, shell: program, status: "running", startedAt: Date.now(), busy: false, interactive, child, history: [], historyBytes: 0, trimmed: false, pending: "", clients: new Set() };
+}
+
+interface Proc {
+  pid: number;
+  pgid: number;
+  /** Its controlling terminal, as ps names it ("ttys004", "pts/3"; "??" or "?" for none). */
+  tty: string;
+}
+
+/** Every process's pid, process group and terminal; none when ps fails. */
+function processes(): Promise<Proc[]> {
+  return new Promise((resolve) => {
+    execFile("ps", ["-A", "-o", "pid=,pgid=,tty="], { timeout: 5_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } }, (err, stdout) => {
+      if (err) return resolve([]);
+      const rows = String(stdout).split("\n").map((line) => line.trim().split(/\s+/));
+      resolve(rows.filter((r) => r.length >= 2).map(([pid, pgid, tty]) => ({ pid: Number(pid), pgid: Number(pgid), tty: tty ?? "" })));
+    });
+  });
+}
+
+/**
+ * Whether a shell waiting for a command still has jobs. In a terminal, a job has a process group of
+ * its own and keeps the terminal (`nohup` and `disown` too). In a line-based shell there's no job
+ * control: a job stays in the shell's group.
+ */
+function hasJobs(s: Shell, procs: Proc[]): boolean {
+  if (s.interactive) return !!s.tty && procs.some((p) => p.tty === s.tty && p.pgid !== s.pid);
+  return procs.some((p) => p.pgid === s.child.pid && p.pid !== s.child.pid);
 }
 
 function signalGroup(pid: number, signal: NodeJS.Signals) {

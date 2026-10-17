@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { commentsMessage, FileDiff, lastWriter, type Comment } from "./review.js";
+import { changeCommentDrafts, commentDrafts, commentsMessage, FileDiff, lastWriter } from "./review.js";
 import { AgentPicker } from "./run.js";
-import { api, enc, post, showToast, store } from "./lib.js";
-import { route } from "./state.js";
+import { api, enc, post, showToast } from "./lib.js";
+import { navigate, sideOpen, sideTab } from "./state.js";
 import type { AgentId, DiffFile, Run, RunSummary } from "./types.js";
 
 const STATUS = { added: "A", modified: "M", deleted: "D", renamed: "R" } as const;
@@ -20,18 +20,23 @@ export function ChangesTab({ run }: { run: RunSummary }) {
   const [error, setError] = useState("");
   const [open, setOpen] = useState<string | null>(null);
   const draftKey = `comments:${run.id}:${branch}`;
-  const [comments, setCommentsState] = useState<Comment[]>(() => store.json(draftKey, []));
+  // Shared with the Review page, which can be open next to this tab.
+  const comments = commentDrafts(draftKey);
   const [full, setFull] = useState<Run | null>(null);
   const [agent, setAgent] = useState<AgentId | null>(null);
   const [sending, setSending] = useState(false);
-  const setComments = (next: Comment[]) => {
-    setCommentsState(next);
-    store.set(draftKey, JSON.stringify(next));
-  };
-  useEffect(() => setCommentsState(store.json(draftKey, [])), [draftKey]);
 
   // New commits (a follow-up, a fix) change the diff: reload when the run moves on.
-  const moved = `${run.status}|${run.followUps.map((f) => f.status).join()}|${run.artifacts.map((a) => a.stat).join()}`;
+  const moved = `${run.status}|${run.followUps.map((f) => f.status).join()}|${run.artifacts.map((a) => a.stat).join()}|${run.usage?.agentSteps}|${run.lastCheck?.at}`;
+  // While the team works, a step's commit doesn't always come with a new snapshot of the run: look
+  // again every few seconds while you can see this tab.
+  const watching = run.status === "running" && sideOpen.value && sideTab.value === "changes";
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!watching) return;
+    const timer = setInterval(() => !document.hidden && setTick((t) => t + 1), 10_000);
+    return () => clearInterval(timer);
+  }, [watching]);
   // Another branch or view: its files, not the last ones, once they've loaded.
   const view = `${branch}|${last}`;
   const loaded = useRef(view);
@@ -50,7 +55,7 @@ export function ChangesTab({ run }: { run: RunSummary }) {
     return () => {
       alive = false;
     };
-  }, [run.id, branch, last, moved]);
+  }, [run.id, branch, last, moved, tick]);
   // The steps say who last wrote here: comments go to them unless you pick someone else.
   useEffect(() => {
     api<Run>(`/api/runs/${enc(run.id)}`).then(setFull, () => setFull(null));
@@ -67,7 +72,7 @@ export function ChangesTab({ run }: { run: RunSummary }) {
     setSending(true);
     try {
       await post(`/api/runs/${enc(run.id)}/followups`, { kind: "comments", worktree: worktree.name, agent: target, message: commentsMessage(comments) });
-      setComments([]);
+      changeCommentDrafts(draftKey, () => []);
       showToast("Sent — the agent is working on your comments");
     } catch (err) {
       showToast((err as Error).message, 5000);
@@ -101,7 +106,7 @@ export function ChangesTab({ run }: { run: RunSummary }) {
             Last step
           </button>
         </div>
-        <button type="button" class="btn ghost small" title="Review the branch file by file, full width" onClick={() => (route.value = { view: "review", id: run.id, branch })}>
+        <button type="button" class="btn ghost small" title="Review the branch file by file, full width" onClick={() => navigate({ view: "review", id: run.id, branch })}>
           Full review
         </button>
       </div>
@@ -126,8 +131,8 @@ export function ChangesTab({ run }: { run: RunSummary }) {
                 key={`${branch}:${file.path}:${last}`}
                 file={file}
                 comments={comments.filter((c) => c.file === file.path)}
-                onAdd={(c) => setComments([...comments, c])}
-                onRemove={(c) => setComments(comments.filter((x) => x !== c))}
+                onAdd={(c) => changeCommentDrafts(draftKey, (now) => [...now, c])}
+                onRemove={(c) => changeCommentDrafts(draftKey, (now) => now.filter((x) => x !== c))}
               />
             </div>
           </>

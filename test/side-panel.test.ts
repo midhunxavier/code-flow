@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const TOKEN = "side-panel-test-token";
@@ -32,6 +32,7 @@ let base: string;
 let child: ChildProcess;
 let repo: string;
 let home: string;
+let shellHome: string;
 
 before(async () => {
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
@@ -47,7 +48,7 @@ before(async () => {
   git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
   home = mkdtempSync(join(tmpdir(), "codeflow-side-home-"));
   // The terminals' login shell is bash with a home of its own: nobody's dotfiles, a known prompt.
-  const shellHome = mkdtempSync(join(tmpdir(), "codeflow-side-user-"));
+  shellHome = mkdtempSync(join(tmpdir(), "codeflow-side-user-"));
   writeFileSync(join(shellHome, ".bash_profile"), "PS1='pty$ '\n");
   const port = await freePort();
   child = spawn(join(root, "node_modules/.bin/tsx"), ["src/server.ts"], {
@@ -210,6 +211,29 @@ const gone = (pid: number) => {
   }
 };
 
+test("/api/shell: a shell with a job in the background isn't closed to make room, in a terminal or a line-based shell", async () => {
+  for (const s of (await api("/api/shell")).body) await api(`/api/shell/${s.id}`, undefined, "DELETE");
+  const ids: string[] = [(await api("/api/shell", { cwd: repo, pty: true })).body.id];
+  for (let i = 1; i < 12; i++) ids.push((await api("/api/shell", { cwd: repo })).body.id);
+  // Both get their prompt back, so neither is busy; each still has a job running.
+  await api(`/api/shell/${ids[0]}/input`, { data: "sleep 309 & echo pty-bg=$!\r" });
+  await api(`/api/shell/${ids[1]}/input`, { text: "sleep 310 & echo lines-bg=$!" });
+  const pty = await streamShell(ids[0]!, (evs, hello) => /pty-bg=\d+\r\n/.test(shown(evs, hello)));
+  const lines = await streamShell(ids[1]!, (evs) => evs.some((e) => e.type === "done"));
+  const pids = [Number(shown(pty.events, pty.hello).match(/pty-bg=(\d+)/)?.[1]), Number(shown(lines.events, lines.hello).match(/lines-bg=(\d+)/)?.[1])];
+  assert.ok(pids.every((p) => p > 1), `found both jobs: ${pids}`);
+  assert.equal((await api(`/api/shell/${ids[0]}`)).body.busy, false);
+  assert.equal((await api(`/api/shell/${ids[1]}`)).body.busy, false);
+
+  assert.equal((await api("/api/shell", { cwd: repo })).status, 201);
+  const listed: string[] = (await api("/api/shell")).body.map((s: { id: string }) => s.id);
+  assert.ok(listed.includes(ids[0]!) && listed.includes(ids[1]!), "the shells with jobs stay");
+  assert.ok(!listed.includes(ids[2]!), "the oldest shell without one made room");
+  assert.ok(pids.every((p) => !gone(p)), "both jobs are still running");
+  for (const id of listed) await api(`/api/shell/${id}`, undefined, "DELETE");
+  for (let i = 0; i < 60 && !pids.every(gone); i++) await new Promise((r) => setTimeout(r, 100));
+});
+
 test("/api/shell with pty: a real terminal takes keystrokes, has the size you set, replays its history and closes everything it started", async () => {
   const opened = await api("/api/shell", { cwd: repo, pty: true, cols: 100, rows: 30 });
   assert.equal(opened.status, 201);
@@ -232,6 +256,13 @@ test("/api/shell with pty: a real terminal takes keystrokes, has the size you se
   seen = await streamShell(id, (evs, hello) => /\r\n27 91\r\n/.test(shown(evs, hello)));
   assert.match(shown(seen.events, seen.hello), /\r\n27 91\r\n/, "stty sees the new size");
   assert.deepEqual([(await api(`/api/shell/${id}`)).body.cols, (await api(`/api/shell/${id}`)).body.rows], [91, 27]);
+
+  // Bytes (xterm's mouse reports in its default encoding) go in as they are, not UTF-8 encoded.
+  await typed("stty raw -echo; echo raw-on; head -c 3 | od -An -tx1; stty sane\r");
+  await streamShell(id, (evs, hello) => /\r\nraw-on\n/.test(shown(evs, hello)));
+  assert.equal((await api(`/api/shell/${id}/input`, { binary: "éÿ\u0080" })).status, 200);
+  seen = await streamShell(id, (evs, hello) => /e9\s+ff\s+80/.test(shown(evs, hello)));
+  assert.match(shown(seen.events, seen.hello), /e9\s+ff\s+80/, "three bytes, as sent");
 
   // A client that connects again gets what the terminal showed so far.
   const again = await streamShell(id, () => true);
@@ -270,6 +301,77 @@ test("/api/shell with pty: `exit` ends it with the shell's exit code, and a comm
   assert.equal((await api(`/api/shell/${id}/input`, { data: "x" })).status, 409, "an exited terminal takes no more keys");
   assert.equal((await api(`/api/shell/${id}/resize`, { cols: 80, rows: 24 })).status, 409);
   await api(`/api/shell/${id}`, undefined, "DELETE");
+});
+
+/**
+ * Run `body` in a code-flow process of its own, with `Shells` imported: bash with the test's home is
+ * its login shell, and what it tracks goes to a home of its own. Returns the last line it prints.
+ */
+function inOwnProcess(body: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "codeflow-side-own-"));
+  const script = join(dir, "script.mts");
+  writeFileSync(script, `import { Shells } from ${JSON.stringify(pathToFileURL(join(root, "src/shell.ts")).href)};\n${body}`);
+  const out = execFileSync(join(root, "node_modules/.bin/tsx"), [script], {
+    cwd: root,
+    timeout: 30_000,
+    env: { ...process.env, CODEFLOW_HOME: join(dir, "home"), SHELL: "/bin/bash", HOME: shellHome, BASH_SILENCE_DEPRECATION_WARNING: "1" },
+  });
+  return out.toString().trim().split("\n").at(-1)!;
+}
+
+test("when code-flow stops, an interactive terminal still hangs up its jobs, nohup'd and disowned ones too", async () => {
+  // A terminal with two jobs that leave the shell's process group (and ignore or never get the
+  // shell's hang-up), then code-flow stops as the server does: closeAll, exit.
+  const out = inOwnProcess(`const shells = new Shells();
+const sh = await shells.open(${JSON.stringify(repo)}, { pty: true });
+let seen = "";
+const started = new Promise<void>((resolve) => shells.subscribe(sh.id, (e) => {
+  if (e.type === "output") seen += e.text;
+  if (/nohup=\\d+\\r\\n/.test(seen) && /disowned=\\d+\\r\\n/.test(seen)) resolve();
+}));
+shells.type(sh.id, "nohup sleep 307 >/dev/null 2>&1 & echo nohup=$!\\r");
+shells.type(sh.id, "sleep 308 & disown; echo disowned=$!\\r");
+await started;
+console.log(JSON.stringify(["nohup", "disowned"].map((k) => Number(seen.match(new RegExp(k + "=(\\\\d+)"))?.[1]))));
+shells.closeAll();
+process.exit(0);
+`);
+  const pids: number[] = JSON.parse(out);
+  try {
+    assert.ok(pids.length === 2 && pids.every((p) => p > 1), `found both jobs: ${pids}`);
+    for (let i = 0; i < 60 && !pids.every(gone); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(pids.every(gone), `stopping ended both jobs: ${pids.filter((p) => !gone(p))} still running`);
+  } finally {
+    for (const p of pids) if (p > 1 && !gone(p)) process.kill(p, "SIGKILL");
+  }
+});
+
+test("a repository that pins a Python its version manager doesn't have still gets a terminal", async () => {
+  // A stand-in for a pyenv/asdf/mise shim: it picks the interpreter by the folder it runs in.
+  const bin = mkdtempSync(join(tmpdir(), "codeflow-side-shim-"));
+  const shim = join(bin, "python3");
+  writeFileSync(shim, `#!/bin/sh\nif [ -f .python-version ]; then echo "pyenv: version \\\`$(cat .python-version)' is not installed" >&2; exit 1; fi\nexec python3 "$@"\n`, { mode: 0o755 });
+  const pinned = mkdtempSync(join(tmpdir(), "codeflow-side-pinned-"));
+  writeFileSync(join(pinned, ".python-version"), "2.7.18\n");
+  const out = inOwnProcess(`const shells = new Shells({ python: ${JSON.stringify(shim)} });
+const sh = await shells.open(${JSON.stringify(pinned)}, { pty: true });
+let seen = "";
+const result = await new Promise<string>((resolve) => {
+  shells.subscribe(sh.id, (e) => {
+    if (e.type === "output") seen += e.text;
+    if (/ok-2\\r\\n/.test(seen)) resolve("ok");
+    if (e.type === "exit") resolve("exited");
+  });
+  shells.type(sh.id, "echo ok-$((1+1))\\r");
+  setTimeout(() => resolve("timed out"), 10_000);
+});
+console.log(JSON.stringify({ interactive: sh.interactive, result, seen: seen.slice(-300) }));
+shells.closeAll();
+process.exit(0);
+`);
+  const { interactive, result, seen } = JSON.parse(out);
+  assert.equal(interactive, true);
+  assert.equal(result, "ok", `the terminal works in the pinned folder: ${seen}`);
 });
 
 test("without python3, a terminal asked for as interactive is the line-based shell, and says so", async () => {

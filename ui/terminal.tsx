@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
 import { api, baseName, copy, enc, post, showToast, store } from "./lib.js";
 import { defaultPlace, Menu, MenuItem, MenuTitle, placeName, placesFor, Strip, type StripItem } from "./panel-bits.js";
-import { rememberSide, sideMemo, sideScope } from "./state.js";
+import { rememberSide, sideMemo, sideOpen, sideScope, sideTab } from "./state.js";
 import type { DevServer, ShellEvent, ShellInfo } from "./types.js";
 
 /** As in src/shell.ts: past this, a new terminal takes the place of the oldest idle one. */
@@ -34,8 +34,9 @@ export function TerminalTab() {
     return () => clearInterval(timer);
   }, []);
 
-  // The apps this run started with Run app: their logs can be shown like a terminal.
-  const runApps = s.run ? apps.filter((a) => a.key.startsWith(`${s.run!.id}/`) && a.status === "running") : [];
+  // The apps this run started with Run app: their logs can be shown like a terminal, an app that
+  // exited too (its last output says why).
+  const runApps = s.run ? apps.filter((a) => a.key.startsWith(`${s.run!.id}/`)) : [];
   const alive = (k?: string): k is string => !!k && (k.startsWith(APP) ? runApps.some((a) => APP + a.key === k) : !!list?.some((x) => x.id === k));
   const open = (memo.shells ?? []).filter(alive);
   const top = alive(memo.shell) && open.includes(memo.shell) ? memo.shell : open[0];
@@ -67,24 +68,29 @@ export function TerminalTab() {
     if (id) show(id);
   };
 
-  // The first time here: the shell already open in the panel's folder, or a new one.
+  // The first time here: the shell already open in the panel's folder, or a new one. Only once the
+  // tab is in view: a tab behind another, or in a closed panel, stays mounted as the panel follows
+  // you from run to run, and would open a shell in each.
+  const shown = sideOpen.value && sideTab.value === "terminal";
   const started = useRef("");
   useEffect(() => {
-    if (!list || open.length || started.current === s.key) return;
+    if (!shown || !list || open.length || started.current === s.key) return;
     const start = defaultPlace(s, places);
     if (!start) return;
     started.current = s.key;
     const key = s.key;
     const existing = list.find((x) => x.status === "running" && x.cwd === start.path);
     void (existing ? Promise.resolve(existing.id) : create(start.path)).then((id) => id && rememberSide({ shells: [id], shell: id }, key));
-  }, [list, s.key, open.length]);
+  }, [list, s.key, open.length, shown]);
 
   const close = async (k: string) => {
     const shell = list?.find((x) => x.id === k);
     if (shell?.busy && !confirm(`Stop ${shell.running ?? "what's running"} in ${placeName(shell.cwd, places)} and close it?`)) return;
     if (!k.startsWith(APP)) await api(`/api/shell/${k}`, { method: "DELETE" }).catch(() => {});
     const rest = open.filter((x) => x !== k);
-    rememberSide({ shells: rest, shell: top === k ? rest.find((x) => x !== bottom) ?? rest[0] : top, below: bottom === k ? undefined : bottom });
+    // Closing one of the two shown leaves the other on its own: no split, nothing kept for below.
+    if (bottom && (k === top || k === bottom)) rememberSide({ shells: rest, shell: k === top ? bottom : top, below: undefined, split: false });
+    else rememberSide({ shells: rest, shell: top === k ? rest[0] : top, below: bottom });
     setList((l) => l?.filter((x) => x.id !== k) ?? l);
   };
   /** A fresh shell in the same folder takes a stopped one's place. */
@@ -95,7 +101,7 @@ export function TerminalTab() {
     rememberSide({ shells: open.map((x) => (x === old ? id : x)), shell: top === old ? id : top, below: bottom === old ? id : bottom });
   };
   const split = async () => {
-    if (memo.split) return rememberSide({ split: false });
+    if (bottom) return rememberSide({ split: false });
     // The lower half shows another open terminal, or a new one where the upper one is.
     const other = open.find((x) => x !== top);
     const cwd = list?.find((x) => x.id === top)?.cwd ?? defaultPlace(s, places)?.path;
@@ -119,7 +125,7 @@ export function TerminalTab() {
   const items: StripItem[] = open.map((k) => {
     if (k.startsWith(APP)) {
       const app = runApps.find((a) => APP + a.key === k)!;
-      return { key: k, label: `▶ app :${app.port}`, title: `${app.command} in ${app.cwd} (read-only log)`, below: k === bottom };
+      return { key: k, label: `▶ app :${app.port}`, title: `${app.command} in ${app.cwd} (read-only log)`, note: app.status === "exited" ? "exited" : undefined, below: k === bottom };
     }
     const sh = list!.find((x) => x.id === k)!;
     return {
@@ -165,7 +171,7 @@ export function TerminalTab() {
               {runApps.map((a) => (
                 <MenuItem
                   key={a.key}
-                  sub={`${a.command} · read-only log`}
+                  sub={`${a.command} · ${a.status === "exited" ? `exited${a.exitCode == null ? "" : ` with ${a.exitCode}`}` : "read-only log"}`}
                   onClick={() => {
                     done();
                     show(APP + a.key);
@@ -178,7 +184,7 @@ export function TerminalTab() {
             </>
           )}
         </Menu>
-        <button type="button" class={`icon-btn ${memo.split ? "on" : ""}`} aria-pressed={!!memo.split} aria-label="Split" title={memo.split ? "One terminal" : "Two terminals, one above the other"} disabled={!top} onClick={() => void split()}>
+        <button type="button" class={`icon-btn ${bottom ? "on" : ""}`} aria-pressed={!!bottom} aria-label="Split" title={bottom ? "One terminal" : "Two terminals, one above the other"} disabled={!top} onClick={() => void split()}>
           <Icon name="split" />
         </button>
       </Strip>
@@ -237,30 +243,35 @@ function TermView({ id, places, split, focused, onFocus, onReplace }: ViewProps)
     let exited = false;
     let replaying = false; // xterm answers queries in replayed output: those answers aren't keystrokes
 
-    // Keystrokes: ~16 ms of them per request, one request at a time, so they arrive in order.
-    let queued = "";
+    // Keystrokes: ~16 ms of them per request, one request at a time, so they arrive in order. Mouse
+    // reports in xterm's default encoding come as bytes (`binary`, not UTF-8: vim's mouse), in
+    // their place among the keys.
+    const queued: { kind: "data" | "binary"; text: string }[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
     let sending = false;
     const flush = async () => {
       timer = undefined;
-      if (sending || !queued || closed) return;
-      const data = queued;
-      queued = "";
+      if (sending || !queued.length || closed) return;
+      const { kind, text } = queued.shift()!;
       sending = true;
       try {
-        await post(`/api/shell/${enc(id)}/input`, { data });
+        await post(`/api/shell/${enc(id)}/input`, { [kind]: text });
       } catch (err) {
         if (!exited && !closed) showToast((err as Error).message, 4000);
       } finally {
         sending = false;
-        if (queued) void flush();
+        if (queued.length) void flush();
       }
     };
-    t.onData((data) => {
+    const queue = (kind: "data" | "binary", text: string) => {
       if (replaying || exited) return;
-      queued += data;
+      const last = queued.at(-1);
+      if (last?.kind === kind) last.text += text;
+      else queued.push({ kind, text });
       timer ??= setTimeout(() => void flush(), 16);
-    });
+    };
+    t.onData((data) => queue("data", data));
+    t.onBinary((data) => queue("binary", data));
 
     // Copy and paste with Ctrl+Shift+C / Ctrl+Shift+V too (Ctrl+C is the shell's); ⌘C/⌘V work as they are.
     t.attachCustomKeyEventHandler((e) => {

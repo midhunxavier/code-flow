@@ -2,7 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import { automationProject, automations, inbox, loadAutomations } from "./automations.js";
 import { Icon } from "./icons.js";
 import { ago, baseName, fmtCost, STATUS_TEXT } from "./lib.js";
-import { editProject, needsYou, patterns, projectFor, projects, route, runs, runState, selectProject, setTask } from "./state.js";
+import { editProject, needsYou, patterns, projectFor, projects, projectsLoaded, route, runs, runState, selectProject, setTask } from "./state.js";
 import type { RunSummary } from "./types.js";
 
 const WEEK = 7 * 86_400_000;
@@ -21,7 +21,7 @@ export function ProjectView({ id }: { id: string }) {
   if (!p) {
     return (
       <div class="composer project-page">
-        <p class="help">{projects.value.length ? "This project doesn't exist any more." : "Loading…"}</p>
+        <p class="help">{projectsLoaded.value ? "This project doesn't exist any more." : "Loading…"}</p>
       </div>
     );
   }

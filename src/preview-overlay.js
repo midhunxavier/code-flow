@@ -35,7 +35,19 @@
       return original.apply(console, args);
     };
   }
-  addEventListener("error", (e) => report("error", [e.error || e.message || "Script error"]), true);
+  addEventListener(
+    "error",
+    (e) => {
+      // An image, script or stylesheet that fails to load fires a plain error event on its element.
+      const el = e.target;
+      if (el instanceof Element) {
+        const url = [el.currentSrc, el.src, el.href].find((u) => typeof u === "string" && u) || el.getAttribute("href") || "";
+        return report("network", [`failed to load ${el.tagName.toLowerCase()} ${url}`.trim()]);
+      }
+      report("error", [e.error || e.message || "Script error"]);
+    },
+    true,
+  );
   addEventListener("unhandledrejection", (e) => report("error", ["Unhandled promise rejection:", e.reason]));
   const originalFetch = window.fetch;
   if (originalFetch) {
@@ -52,12 +64,21 @@
       }
     };
   }
+  // One listener per request object, which a page may open again and again: it reports the
+  // latest open. It listens for the request being done, which comes before load and loadend,
+  // so a page that opens the next request from those still has this one reported.
   const xhrOpen = XMLHttpRequest.prototype.open;
+  const opened = new WeakMap();
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-    this.addEventListener("loadend", () => {
-      if (this.status === 0) report("network", [`${method} ${url} failed`]);
-      else if (this.status >= 400) report("network", [`${this.status} ${method} ${url}`]);
-    });
+    if (!opened.has(this)) {
+      this.addEventListener("readystatechange", () => {
+        if (this.readyState !== XMLHttpRequest.DONE) return;
+        const { method, url } = opened.get(this);
+        if (this.status === 0) report("network", [`${method} ${url} failed`]);
+        else if (this.status >= 400) report("network", [`${this.status} ${method} ${url}`]);
+      });
+    }
+    opened.set(this, { method, url });
     return xhrOpen.call(this, method, url, ...rest);
   };
 
@@ -135,7 +156,21 @@
       const el = document.createElement(src.tagName === "BODY" || src.tagName === "HTML" ? "div" : src.tagName);
       const cs = getComputedStyle(src);
       el.setAttribute("style", SNAP.map((p) => `${p}:${cs.getPropertyValue(p)}`).join(";"));
-      if (src.tagName === "INPUT" || src.tagName === "TEXTAREA") el.setAttribute("value", src.value);
+      if (src.tagName === "INPUT") {
+        el.setAttribute("type", src.type);
+        if (src.placeholder) el.setAttribute("placeholder", src.placeholder);
+        if (src.type === "checkbox" || src.type === "radio") {
+          if (src.checked) el.setAttribute("checked", "");
+        } else {
+          // A password never goes into a snapshot: dots stand in for it.
+          el.setAttribute("value", src.type === "password" ? "\u2022".repeat(src.value.length) : src.value);
+        }
+        return el;
+      }
+      if (src.tagName === "TEXTAREA") {
+        el.textContent = src.value;
+        return el;
+      }
       for (const child of src.childNodes) el.appendChild(copy(child));
       return el;
     };
@@ -172,14 +207,25 @@
     }
   };
 
+  /** An element's HTML, without what's typed in its password fields (frameworks copy it into the value attribute). */
+  const htmlOf = (el) => {
+    const passwords = (node) => [...(node.matches("input[type=password]") ? [node] : []), ...node.querySelectorAll("input[type=password]")];
+    if (!passwords(el).length) return el.outerHTML;
+    const clone = el.cloneNode(true);
+    for (const input of passwords(clone)) input.removeAttribute("value");
+    return clone.outerHTML;
+  };
+
   // ------------------------------------------------------------ pick and box
   let mode = "off";
   const picked = new Map();
+  // Pin ids are new in every page load, so a pin the panel kept from an earlier page never names an element on this one.
+  const load = Math.random().toString(36).slice(2, 10);
   let nextId = 1;
   const viewport = () => ({ w: innerWidth, h: innerHeight });
   const pin = async (kind, el, rect) => {
-    const id = nextId++;
-    if (kind === "element") picked.set(id, { el, original: el.getAttribute("style") });
+    const id = `${load}-${nextId++}`;
+    if (kind === "element") picked.set(id, { el, original: el.style.cssText });
     post({ type: "pin-start", id });
     const image = await snapshot(kind === "element" ? el : document.body, rect);
     post({
@@ -189,7 +235,7 @@
         kind,
         selector: selectorOf(el),
         text: (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 200),
-        html: kind === "element" ? el.outerHTML.slice(0, 600) : undefined,
+        html: kind === "element" ? htmlOf(el).slice(0, 600) : undefined,
         styles: kind === "element" ? stylesOf(el) : undefined,
         rect,
         url: location.href,
@@ -253,13 +299,14 @@
       label.remove();
     }
   };
-  // Pointer events for the box: cancelling a press (below) stops the mouse events that would follow it.
+  // Pointer events for the box. Cancelling a press stops the mouse events that would follow it,
+  // but not the click (or a right or middle click), so those are swallowed too.
   addEventListener("mousemove", onMove, true);
   addEventListener("pointermove", onDrag, true);
   addEventListener("click", onClick, true);
   addEventListener("pointerdown", onDown, true);
   addEventListener("pointerup", onUp, true);
-  for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "dblclick", "submit"]) addEventListener(type, swallow, true);
+  for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "auxclick", "contextmenu", "dblclick", "submit"]) addEventListener(type, swallow, true);
   addEventListener("keydown", (e) => {
     if (e.key === "Escape" && mode !== "off") {
       setMode("off");
@@ -296,8 +343,9 @@
   const reset = (id) => {
     const entry = picked.get(id);
     if (!entry) return;
-    if (entry.original === null) entry.el.removeAttribute("style");
-    else entry.el.setAttribute("style", entry.original);
+    // Through the style object, not the attribute: a page whose policy forbids inline styles still allows this.
+    entry.el.style.cssText = entry.original;
+    if (!entry.original) entry.el.removeAttribute("style");
   };
 
   addEventListener("message", (e) => {

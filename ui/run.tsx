@@ -25,7 +25,8 @@ import {
   source,
   projectFor,
   selectProject,
-  setSideChat,
+  navigate,
+  openSideChat,
   openSide,
   chatDrafts,
   takeDrafts,
@@ -151,9 +152,12 @@ export function RunView({ id }: { id: string }) {
   /** The work section: open while running and closed once there's a result, unless you toggled it. */
   const [workOpen, setWorkOpen] = useState<boolean | null>(null);
   const follow = useRef(true);
+  /** The steps the timeline shows, in order: what [ and ] step through. */
+  const listed = useRef<string[]>([]);
   const [archiving, setArchiving] = useState(false);
   const { run, problem, data } = useRunStream(id, (step) => {
-    if (follow.current && step.status === "running") setSelected(step.id);
+    // A side chat's turn isn't in the timeline: following it would close the step you're watching.
+    if (follow.current && step.status === "running" && !sideWork(step)) setSelected(step.id);
   });
 
   useEffect(() => {
@@ -165,7 +169,7 @@ export function RunView({ id }: { id: string }) {
     const onKey = (e: KeyboardEvent) => {
       if ((e.key !== "[" && e.key !== "]") || e.metaKey || e.ctrlKey || e.altKey) return;
       if ((e.target as HTMLElement | null)?.closest("input, textarea, select, dialog")) return;
-      const ids = [...data.current.steps.keys()];
+      const ids = listed.current;
       if (!ids.length) return;
       e.preventDefault();
       follow.current = false;
@@ -201,9 +205,9 @@ export function RunView({ id }: { id: string }) {
       </div>
     );
   // Side chats' turns (and the checks after them) are in the side panel; the timeline is the team's work.
-  const sideSteps = sideStepIds(run);
-  const steps = [...data.current.steps.values()].filter((s) => !sideSteps.has(s.id) && !/^Check after side chat /.test(s.title));
-  const current = selected === "" ? null : selected && data.current.steps.has(selected) ? selected : steps.at(-1)?.id ?? null;
+  const steps = teamSteps(run, data.current.steps.values());
+  listed.current = steps.map((s) => s.id);
+  const current = selected === "" ? null : selected && listed.current.includes(selected) ? selected : steps.at(-1)?.id ?? null;
   const finished = run.status !== "running";
   const showWork = workOpen ?? !finished;
   /** Open a step's transcript (from the result card, say), opening the work section too. */
@@ -571,7 +575,7 @@ function FollowUpThread({ run, data }: { run: RunSummary; data: RunData }) {
     <>
       {run.followUps.map((f) => {
         // A side chat lives in the side panel; a change it made gets a line here, so the history is whole.
-        if (f.side) return f.side.mode === "change" && f.status !== "pending" ? <SideNote key={f.id} f={f} /> : null;
+        if (f.side) return f.side.mode === "change" && f.status !== "pending" ? <SideNote key={f.id} run={run} f={f} /> : null;
         const step = f.stepId ? data.steps.get(f.stepId) : undefined;
         return (
           <div key={f.id} class="fu">
@@ -604,19 +608,12 @@ function FollowUpThread({ run, data }: { run: RunSummary; data: RunData }) {
   );
 }
 
-/** A change a side chat made on the run's branch, as one line in the run's thread. */
-function SideNote({ f }: { f: FollowUp }) {
+/** A change a side chat made on the run's branch, as one line in the run's thread; its link shows the chat. */
+function SideNote({ run, f }: { run: RunSummary; f: FollowUp }) {
   return (
     <div class="fu-sent help side-note">
       <AgentTag id={f.agent} /> {f.status === "done" ? "changed" : "tried to change"} {f.worktree} from the side chat{" "}
-      <button
-        type="button"
-        class="link"
-        onClick={() => {
-          setSideChat(`side:${f.side!.chat}`);
-          openSide("chat");
-        }}
-      >
+      <button type="button" class="link" onClick={() => openSideChat(run.id, f.side!.chat)}>
         “{f.side!.title}”
       </button>
       <FollowUpBadges f={f} />
@@ -673,14 +670,20 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
   const sideSteps = sideStepIds(run);
   const turns = steps.filter((s) => (s.kind ?? "agent") === "agent" && !sideSteps.has(s.id));
   const stepless = followUps.filter((f) => !f.stepId || !data.steps.has(f.stepId));
-  const thread: { at: number; step?: Step; followUp?: FollowUp }[] = [
+  // A change a side chat made gets a line, where its turn ran, so the history is whole.
+  const sideChanges = run.followUps.filter((f) => f.side?.mode === "change" && f.status !== "pending");
+  const thread: { at: number; step?: Step; followUp?: FollowUp; side?: FollowUp }[] = [
     ...turns.map((step) => ({ at: step.startedAt, step })),
     ...stepless.map((followUp) => ({ at: followUp.at, followUp })),
+    ...sideChanges.map((side) => ({ at: (side.stepId && data.steps.get(side.stepId)?.startedAt) || side.at, side })),
   ].sort((a, b) => a.at - b.at);
+  // The run's last check is the first turn's while nothing that changes the branch came after it (a side Ask doesn't).
+  const nothingAfter = followUps.length === 0 && sideChanges.length === 0;
   const agent = Object.values(run.roles).flat()[0];
   return (
     <>
-      {thread.map(({ step: s, followUp }) => {
+      {thread.map(({ step: s, followUp, side }) => {
+        if (side) return <SideNote key={side.id} run={run} f={side} />;
         if (!s) {
           const f = followUp!;
           return (
@@ -724,7 +727,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
               <div class="fu-head">
                 <AgentTag id={s.agent} note={modelNote(run, s.agent)} />
                 {f ? <FollowUpBadges f={f} /> : s.status === "running" ? <span class="fu-live">working…</span> : s.status === "failed" ? <span class="err">✕ didn't finish</span> : null}
-                {!f && s.status !== "running" && run.lastCheck && run.followUps.length === 0 ? (
+                {!f && s.status !== "running" && run.lastCheck && nothingAfter ? (
                   run.lastCheck.ok ? <span class="ok">check passes</span> : <span class="note">check fails</span>
                 ) : null}
               </div>
@@ -747,6 +750,13 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
 
 /** The steps that answered side chats: they show in the side panel, not in the run's thread. */
 export const sideStepIds = (run: RunSummary) => new Set(run.followUps.filter((f) => f.side && f.stepId).map((f) => f.stepId!));
+/** A side chat's turn, or the check after one, known from the step alone: it can arrive before the run says whose it is. */
+const sideWork = (s: Step) => s.role === "side chat" || /^Check after side chat /.test(s.title);
+/** The run's own steps, in order, without side chats' turns and the checks after them. */
+export function teamSteps(run: RunSummary, steps: Iterable<Step>): Step[] {
+  const side = sideStepIds(run);
+  return [...steps].filter((s) => !side.has(s.id) && !sideWork(s));
+}
 
 const followUpLabel = (f: FollowUp) =>
   f.side
@@ -1455,13 +1465,16 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
   const [images, setImages] = useState<Attachment[]>([]);
   const area = useRef<HTMLTextAreaElement>(null);
   // Pins sent here from the side panel's Browser land in the box, to add a line to before sending.
+  // Without a box (a run that failed or stopped) they wait in the queue, for when it's resumed.
+  const takes = run.status === "running" || run.status === "done";
   useEffect(() => {
+    if (!takes) return;
     const drafts = takeDrafts(`main:${run.id}`);
     if (!drafts.length) return;
     setText((t) => [t.trim(), ...drafts.map((d) => d.text)].filter(Boolean).join("\n\n"));
     setImages((i) => [...i, ...drafts.flatMap((d) => d.images)]);
     area.current?.focus();
-  }, [chatDrafts.value, run.id]);
+  }, [chatDrafts.value, run.id, takes]);
   // The box grows with what you type, up to a limit (then it scrolls).
   useEffect(() => {
     const el = area.current;
@@ -1508,7 +1521,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
           approvals: run.approvals,
           parentRunId: run.id,
         });
-        route.value = { view: "run", id };
+        navigate({ view: "run", id });
       } else {
         const [agent, worktree] = chosen.split("@");
         await post(`/api/runs/${run.id}/followups`, { kind: "reply", agent, worktree, message: text, attachments: files });

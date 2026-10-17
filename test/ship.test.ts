@@ -1,7 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +44,12 @@ async function runPattern(pattern: string, roles: Record<string, any>, extra: Re
 }
 const logs = async (r: Run) => (await manager.events(r.id)).map((e) => (e.type === "log" ? e.text : "")).join("\n");
 const agentTitles = (r: Run) => r.steps.filter((s) => s.kind === "agent").map((s) => s.title);
+/** The CLI calls the fake agents recorded in `dir` (FAKE_RECORD_DIR). */
+const recorded = (dir: string) => readdirSync(dir).map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as { args: string[]; prompt: string });
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function untilBuildWorktree(run: Run) {
+  for (let i = 0; i < 200 && !run.worktrees.some((w) => w.name === "build"); i++) await pause(50);
+}
 
 test("an unreadable review verdict fails the run instead of approving", async () => {
   process.env.FAKE_GARBLE_VENDOR = "claude";
@@ -122,6 +128,7 @@ test("a side chat on a run: Ask changes nothing; Change edits the run's worktree
     const change = run.followUps.at(-1)!;
     assert.equal(change.status, "done", change.result);
     assert.equal(git("log", "-1", "--format=%s", branch).trim(), `claude: side chat · What does it do? (${change.id})`);
+    assert.equal(change.commit, git("rev-parse", branch).trim());
     assert.equal(run.steps.find((s) => s.id === change.stepId)!.mode, "write");
     const calls = readdirSync(record).map((f) => JSON.parse(readFileSync(join(record, f), "utf8")) as { args: string[]; prompt: string });
     const resumed = calls.find((c) => c.prompt.includes("Write it down"))!;
@@ -166,6 +173,169 @@ test("a side chat's turn sent while the team works waits for it", async () => {
     delete process.env.FAKE_SLEEP_VENDOR;
     delete process.env.FAKE_SLEEP_MS;
   }
+});
+
+test("side chat turns queued behind the team get a step budget of their own", async () => {
+  process.env.FAKE_SLEEP_VENDOR = "claude";
+  process.env.FAKE_SLEEP_MS = "1500";
+  try {
+    // Plan, build and review take all three steps the run may use.
+    const run = await manager.start({ pattern: findPattern("pipeline")!, task: "Ship it", repo, roles: pipelineRoles, options: {}, loop: { maxSteps: 3 } });
+    await untilBuildWorktree(run);
+    assert.equal(run.status, "running");
+    for (const chat of ["c9a", "c9b"]) {
+      await manager.followUp(run.id, { kind: "side", worktree: "build", agent: "codex", message: "Any edge cases?", side: { chat, mode: "ask", title: "Edge cases" } });
+    }
+    await finished(run);
+    assert.equal(run.status, "done", run.error);
+    assert.deepEqual(run.followUps.map((f) => f.status), ["done", "done"]);
+  } finally {
+    delete process.env.FAKE_SLEEP_VENDOR;
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});
+
+test("a side chat's turn waiting for a team that's stopped ends, saying why", async () => {
+  process.env.FAKE_SLEEP_VENDOR = "claude";
+  process.env.FAKE_SLEEP_MS = "1500";
+  try {
+    const run = await manager.start({ pattern: findPattern("pipeline")!, task: "Ship it", repo, roles: pipelineRoles, options: {} });
+    await untilBuildWorktree(run);
+    await manager.followUp(run.id, { kind: "side", worktree: "build", agent: "codex", message: "Any edge cases?", side: { chat: "c28", mode: "ask", title: "Edge cases" } });
+    assert.ok(manager.cancel(run.id));
+    await finished(run);
+    assert.equal(run.status, "cancelled");
+    const f = run.followUps.at(-1)!;
+    assert.equal(f.status, "failed");
+    assert.equal(f.result, "The run was cancelled before this turn could finish. Resume the run, then send it again.");
+  } finally {
+    delete process.env.FAKE_SLEEP_VENDOR;
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});
+
+test("side chats and the run's thread keep apart: a reply continues the team's session, and team messages skip side turns", async () => {
+  const run = await runPattern("solo", { agent: ["claude"] });
+  const team = run.steps.find((s) => s.title === "Your task")!;
+  const record = mkdtempSync(join(tmpdir(), "codeflow-side-record-"));
+  process.env.FAKE_RECORD_DIR = record;
+  try {
+    await manager.followUp(run.id, { kind: "side", worktree: "solo", agent: "claude", message: "Where is it handled?", side: { chat: "c6", mode: "ask", title: "Where" } });
+    // Typed in the run's own box while the side chat's turn runs: it's for the team.
+    const note = manager.addNote(run.id, "also rename foo to bar");
+    await finished(run);
+    assert.equal(run.status, "done", run.error);
+    const side = run.followUps.find((f) => f.side?.chat === "c6")!;
+    assert.equal(side.status, "done", side.result);
+    assert.doesNotMatch(recorded(record).find((c) => c.prompt.includes("Where is it handled?"))!.prompt, /rename foo/);
+    // A chat turns what no turn took into its next turn: a reply to its own agent, in its own session.
+    assert.equal(note.status, "delivered");
+    const fromNote = run.followUps.find((f) => f.id === note.followUp)!;
+    assert.deepEqual([fromNote.kind, fromNote.status, fromNote.worktree], ["reply", "done", "solo"]);
+    const resumed = recorded(record).find((c) => c.prompt.includes("also rename foo to bar"))!;
+    assert.equal(resumed.args[resumed.args.indexOf("--resume") + 1], team.sessionId, "the team's conversation, not the side chat's");
+
+    await manager.followUp(run.id, { kind: "reply", worktree: "solo", agent: "claude", message: "Now handle empty input" });
+    await finished(run);
+    const reply = recorded(record).find((c) => c.prompt.includes("Now handle empty input"))!;
+    const sideSession = run.steps.find((s) => s.id === side.stepId)!.sessionId;
+    assert.notEqual(reply.args[reply.args.indexOf("--resume") + 1], sideSession);
+  } finally {
+    delete process.env.FAKE_RECORD_DIR;
+  }
+});
+
+test("a side chat's question keeps the run's verdict and leaves edits you make in the worktree meanwhile", async () => {
+  const run = await runPattern("pipeline", pipelineRoles, { loop: { check: "true" } });
+  assert.equal(run.verdict, "passed");
+  const wt = run.worktrees.find((w) => w.name === "build")!;
+  const record = mkdtempSync(join(tmpdir(), "codeflow-side-record-"));
+  process.env.FAKE_RECORD_DIR = record;
+  process.env.FAKE_SLEEP_VENDOR = "claude";
+  process.env.FAKE_SLEEP_MS = "1500";
+  try {
+    await manager.followUp(run.id, { kind: "side", worktree: "build", agent: "claude", message: "What's in the README?", side: { chat: "c10", mode: "ask", title: "README" } });
+    // The agent has its prompt, so code-flow took its snapshot of the worktree: now you edit it.
+    for (let i = 0; i < 200 && !readdirSync(record).length; i++) await pause(25);
+    assert.equal(run.status, "running");
+    writeFileSync(join(wt.path, "README.md"), "ship, with a typo fixed\n");
+    writeFileSync(join(wt.path, "notes.md"), "mine\n");
+    await finished(run);
+    assert.equal(run.followUps.at(-1)!.status, "done", run.followUps.at(-1)!.result);
+    assert.equal(readFileSync(join(wt.path, "README.md"), "utf8"), "ship, with a typo fixed\n");
+    assert.equal(readFileSync(join(wt.path, "notes.md"), "utf8"), "mine\n");
+    assert.match(await logs(run), /Side chat: README \(claude\) is read-only, but build changed while it ran \(edits, 1 new file\)\. Left as it is/);
+    assert.equal(run.verdict, "passed", "a question runs no check, so the verdict stands");
+  } finally {
+    delete process.env.FAKE_RECORD_DIR;
+    delete process.env.FAKE_SLEEP_VENDOR;
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});
+
+test("a side chat's change that changed nothing isn't reported as a change", async () => {
+  const run = await runPattern("pipeline", pipelineRoles);
+  const head = git("rev-parse", run.artifacts[0]!.branch).trim();
+  process.env.FAKE_NOOP_VENDOR = "claude";
+  try {
+    await manager.followUp(run.id, { kind: "side", worktree: "build", agent: "claude", message: "Match the header's padding", side: { chat: "c29", mode: "change", title: "Padding" } });
+    await finished(run);
+    const f = run.followUps.at(-1)!;
+    assert.equal(f.status, "done", f.result);
+    assert.equal(f.commit, undefined);
+    assert.equal(git("rev-parse", run.artifacts[0]!.branch).trim(), head);
+    assert.doesNotMatch(run.summary!, /side chat "Padding"/);
+  } finally {
+    delete process.env.FAKE_NOOP_VENDOR;
+  }
+});
+
+test("files sent to a run whose worktrees were removed: the worktree is checked out again first, and nothing lands in your checkout", async () => {
+  const run = await runPattern("pipeline", pipelineRoles);
+  const wt = run.worktrees.find((w) => w.name === "build")!;
+  await manager.archive(run.id, { cleanup: true });
+  assert.ok(!existsSync(wt.path), "removed; its branch is kept");
+  const head = git("rev-parse", "HEAD").trim();
+  writeFileSync(join(repo, "mine.txt"), "yours, not committed\n");
+  const status = git("status", "--porcelain");
+  try {
+    const png = Buffer.from("89504e470d0a1a0a", "hex").toString("base64");
+    await manager.followUp(run.id, { kind: "reply", worktree: "build", agent: "codex", message: "See the screenshot", attachments: [{ name: "pin.png", data: png }] });
+    await finished(run);
+    const f = run.followUps.at(-1)!;
+    assert.equal(f.status, "done", f.result);
+    assert.ok(existsSync(join(wt.path, ".git")), "a worktree again, not a plain folder");
+    assert.ok(existsSync(join(wt.path, f.files![0]!)), "with the file in it");
+    assert.equal(git("log", "-1", "--format=%s", wt.branch).trim(), `codex: follow-up to your reply (${f.id})`);
+    assert.equal(git("rev-parse", "HEAD").trim(), head, "nothing committed in your checkout");
+    assert.equal(git("status", "--porcelain"), status, "and your own changes there are as they were");
+  } finally {
+    rmSync(join(repo, "mine.txt"), { force: true });
+  }
+});
+
+test("a plain folder at a removed worktree's path: code-flow's own leftovers are cleared, anything else is left for you", async () => {
+  const run = await runPattern("pipeline", pipelineRoles);
+  const wt = run.worktrees.find((w) => w.name === "build")!;
+  await manager.archive(run.id, { cleanup: true });
+  // What an older code-flow left when files came with a reply to a removed worktree.
+  mkdirSync(join(wt.path, ".codeflow-context", "messages"), { recursive: true });
+  writeFileSync(join(wt.path, "notes.txt"), "mine\n");
+
+  await manager.followUp(run.id, { kind: "reply", worktree: "build", agent: "codex", message: "Go on" });
+  await finished(run);
+  const refused = run.followUps.at(-1)!;
+  assert.equal(refused.status, "failed");
+  assert.match(refused.result!, /is a folder but not the worktree of build/);
+  assert.equal(readFileSync(join(wt.path, "notes.txt"), "utf8"), "mine\n", "left alone");
+
+  rmSync(join(wt.path, "notes.txt"));
+  await manager.followUp(run.id, { kind: "reply", worktree: "build", agent: "codex", message: "Go on" });
+  await finished(run);
+  const f = run.followUps.at(-1)!;
+  assert.equal(f.status, "done", f.result);
+  assert.ok(existsSync(join(wt.path, ".git")));
+  assert.equal(git("log", "-1", "--format=%s", wt.branch).trim(), `codex: follow-up to your reply (${f.id})`);
 });
 
 test("review comments go back to the agent as a follow-up in the same run", async () => {

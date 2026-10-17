@@ -36,23 +36,29 @@ import {
   runs,
   waitingCount,
   watchNeedingYou,
-  poppedScope,
+  navigate,
+  routeFromHash,
   sideTab,
   type SideTab,
 } from "./state.js";
 import type { DirListing, RunSummary } from "./types.js";
 
 export function App() {
-  if (route.value.view === "side") return <PoppedSide tab={route.value.tab} scope={route.value.scope} />;
+  if (route.value.view === "side") return <PoppedSide tab={route.value.tab} />;
   return <MainApp />;
 }
 
-/** The side panel in a window of its own: one run's or project's, whatever the main window shows. */
-function PoppedSide({ tab, scope }: { tab: SideTab; scope: string }) {
-  poppedScope.value = scope;
+/**
+ * The side panel in a window of its own: one run's or project's, whatever the main window shows.
+ * Its scope is the route's (see `poppedScope`), and it stays a panel: the pages it opens open in
+ * the main window (see `navigate`).
+ */
+function PoppedSide({ tab }: { tab: SideTab }) {
   useEffect(() => {
     sideTab.value = tab;
     sideOpen.value = true;
+    document.addEventListener("click", handOffLink);
+    return () => document.removeEventListener("click", handOffLink);
   }, []);
   useEffect(() => {
     document.title = `code-flow · ${tab}`;
@@ -70,6 +76,15 @@ function PoppedSide({ tab, scope }: { tab: SideTab; scope: string }) {
       ) : null}
     </div>
   );
+}
+
+/** A link to one of the app's pages, clicked in a popped-out panel: the main window shows the page. */
+export function handOffLink(e: MouseEvent) {
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const link = (e.target as Element | null)?.closest?.("a[href^='#/']");
+  if (!link || link.getAttribute("target")) return;
+  e.preventDefault();
+  navigate(routeFromHash(link.getAttribute("href")!));
 }
 
 function MainApp() {
@@ -212,7 +227,7 @@ export function Bell() {
 
 export function notifyFinished(run: RunSummary) {
   if (route.value.view === "side") return; // a popped-out panel: the main window says it
-  const viewing = route.value.view === "run" && route.value.id === run.id;
+  const viewing = (route.value.view === "run" || route.value.view === "review") && route.value.id === run.id;
   const verbs: Record<string, string> = {
     done: run.verdict === "failing" ? "finished, but its check fails" : run.checkCantRun ? "finished, but its check couldn't run" : "finished",
     failed: "failed",

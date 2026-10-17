@@ -71,11 +71,24 @@ before(async () => {
     }),
   );
 
+  // The terminals' login shell is bash with a home of its own: nobody's dotfiles (a question at
+  // start-up, like oh-my-zsh's update prompt, would take the typed command as its answer), nothing
+  // added to their shell history, a known prompt. Only the shell's home: the server keeps yours,
+  // whose git identity the merge into main uses.
+  const shellHome = mkdtempSync(join(tmpdir(), "codeflow-e2e-user-"));
+  const loginShell = join(shellHome, "e2e-shell");
+  writeFileSync(
+    loginShell,
+    `#!/bin/bash\nexport HOME='${shellHome}' HISTFILE='${join(shellHome, ".bash_history")}' BASH_SILENCE_DEPRECATION_WARNING=1 PS1='e2e$ '\nexec /bin/bash --noprofile --norc -i\n`,
+    { mode: 0o755 },
+  );
+
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
   server = spawn("npx", ["tsx", "src/server.ts"], {
     cwd: root,
     env: {
       ...process.env,
+      SHELL: loginShell,
       PORT: String(PORT),
       CODEFLOW_REMOTE_PORT: String(REMOTE_PORT),
       CODEFLOW_HOME: mkdtempSync(join(tmpdir(), "codeflow-e2e-home-")),

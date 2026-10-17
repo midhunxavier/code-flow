@@ -11,7 +11,7 @@ ui/bits.tsx              small shared pieces: agent tags, the Markdown renderer,
 ui/styles.css, ui/fonts  the stylesheet and its fonts (Manrope, Roboto Mono; licences included)
 scripts/build-ui.mjs     bundles the UI, fonts and images into one self-contained public/index.html (npm start builds it)
 scripts/check-node.mjs   stops npm start and npm run dev on a Node older than 20, saying why
-scripts/pty.py           the Terminal's pseudo-terminal (Python 3 standard library, no native npm module): runs your login shell in a pty, relays its bytes, takes resizes and reports the foreground on fd 3
+scripts/pty.py           the Terminal's pseudo-terminal (Python 3 standard library, no native npm module): runs your login shell in a pty, relays its bytes, takes resizes and reports the shell's pid, its terminal and the foreground on fd 3; when it ends, it hangs up everything in the shell's session
 src/server.ts            HTTP API + SSE on 127.0.0.1 (Host/Origin checked, session cookie or Bearer token)
 src/store.ts             run logs and the replay journal on disk, the one-server lock
 src/projects.ts          projects: named groups of repos, and which project a new run goes in
@@ -35,8 +35,8 @@ src/patterns/*.ts        the team patterns, written against TeamContext
 src/adapters/*.ts        AgentAdapter per CLI → normalized AgentEvent stream
 src/git.ts               every git call (bounded, never prompts), worktrees with their submodules, branches, commits, diffs, merges
 src/repo-tree.ts         file tree, search and file contents for the Files tab
-src/shell.ts             the side panel's Terminal: shells kept open, in a pseudo-terminal through scripts/pty.py (busy while a program other than the shell is in the foreground); line-based with a marker after each command when there's no python3
-src/preview.ts           the side panel's Browser: a proxy per local app, on a port of its own, that adds the overlay (src/preview-overlay.js: pick, box, console, adjust)
+src/shell.ts             the side panel's Terminal: shells kept open, in a pseudo-terminal through scripts/pty.py (busy while a program other than the shell is in the foreground; never closed to make room while it has jobs in the background, found with ps); line-based with a marker after each command when there's no python3
+src/preview.ts           the side panel's Browser: a proxy per local app, on a port of its own, that adds the overlay (src/preview-overlay.js: pick, box, console, adjust), rewrites the app's Content-Security-Policy so only code-flow (and the app itself) can frame it, and keeps code-flow's cookies from the app
 src/notes.ts             the side panel's Notes, ~/.codeflow/notes.json
 src/context.ts           validates and stages task context for agents
 ```
@@ -77,6 +77,7 @@ The suite runs every pattern end to end against fake `claude` / `codex` / `agy` 
 - A fake `gh` keeps issues, PRs, checks, comments and security alerts in a JSON file and pushes to a local bare repository, so the GitHub flows (fix CI → push → watch → fix again, and sweeps of issues, Dependabot PRs and alerts) are tested without touching GitHub.
 - A fake `docker` records its arguments and runs the command in place, so isolation is tested without Docker.
 - The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, and the guarantee that your checkout is untouched.
+- `test/ship.test.ts` covers side chats too: sessions and messages kept apart from the run's thread, a budget of their own behind the team, an Ask that keeps the verdict and your edits, and files sent to a run whose worktrees were removed.
 
 `test/hardening.test.ts` covers the guarantees about processes, runs and tests:
 
@@ -93,11 +94,13 @@ Reliability has tests of its own:
 - `test/foundation.test.ts`: the child environment, numeric settings, bounded git, the repo lock, and orphaned processes reaped at the next start;
 - `test/store-reliability.test.ts`: a failed write can't corrupt the next line of a run log; the server lock is taken over from a reused pid or a previous boot, and of several servers starting at once exactly one gets it;
 - `test/git-reliability.test.ts`: worktrees get their submodules (nested, in parallel, or a warning when one can't be cloned), and the Files tab's git calls;
-- `test/side-panel.test.ts`: the side panel's server side: reading a file (and never one outside the repo), notes that persist, shells whose `cd` holds between commands and whose exit codes come back, a new shell never closing a busy one, the list of running apps, and the browser's preview proxy (the overlay added, frames allowed, the app's own host and origin, WebSockets, and the Host check);
+- `test/side-panel.test.ts`: the side panel's server side: reading a file (and never one outside the repo), notes that persist, shells whose `cd` holds between commands and whose exit codes come back, a new shell never closing a busy one or one with a job in the background, terminals that hang up their `nohup`'d and disowned jobs when code-flow stops and that still start in a repo pinning a Python its version manager doesn't have, the list of running apps, and the browser's preview proxy (the overlay added, frames allowed, the app's own host and origin, WebSockets, and the Host check);
+- `test/preview.test.ts`: the preview proxy against a stand-in dev server: where the overlay goes in a page, the app's policy kept but frameable, the host name and code-flow's cookies, compressed pages, connections that close when the browser's do, and the overlay itself in headless Chrome (Box doesn't click through, no passwords in snapshots, console reports; skipped without Chrome);
+- `test/browser.test.ts` and `test/chat-views.test.ts`: the side panel's UI logic, bundled with esbuild: which addresses the Browser believes from the page, where pins can be sent and how they're named, comment drafts shared by the review and the Changes tab, and side chats kept out of the run's thread;
 - `test/engine-reliability.test.ts`: parallel branches that stop together, steps that always end, read-only that fails closed, worktrees set up again after an interrupted setup, retries that continue instead of redoing, dead sessions, usage limits with reset times, lockdown without network, and unique run ids;
 - `test/adapters-reliability.test.ts` and `test/health-routing.test.ts`: the stall watchdog, the grace after a result, crashes mid-stream, dead sessions, unknown flags, huge lines, typed errors, Health's flag checks, and Auto skipping a signed-out CLI. The fakes simulate these with `FAKE_SLEEP_VENDOR`, `FAKE_HANG_AFTER_RESULT_VENDOR`, `FAKE_CRASH_VENDOR`, `FAKE_UNKNOWN_FLAG`, `FAKE_HUGE_LINE_MB`, `FAKE_CLAUDE_RESETS_AT`, and for app-server `FAKE_CODEX_SLOW_INIT_MS`, `FAKE_CODEX_INIT_CRASH`, `FAKE_CODEX_HANG_METHOD` and `FAKE_CODEX_SERVER_REQUEST`.
 
-The GitHub tests cover untrusted issues (lockdown, fenced text, Docker or your confirmation) and PR watches that act only on comments from you and the people you allow. The e2e test also covers sign-in, Insights and run search.
+The GitHub tests cover untrusted issues (lockdown, fenced text, Docker or your confirmation) and PR watches that act only on comments from you and the people you allow. The e2e test also covers sign-in, Insights and run search. Its terminals run bash with a home of their own, so your dotfiles and shell history stay out of it.
 
 ## What's next
 
