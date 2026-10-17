@@ -326,10 +326,7 @@ export function cantRunReason(result: CheckResult): string | undefined {
   const missingModule = /ModuleNotFoundError|No module named/;
   const code = result.exitCode;
 
-  // The shell couldn't find (126: couldn't execute) the command: `uv`, `poetry`, `pytest`…
-  if (code === 127 || code === 126) return first(/not found/i, /cannot execute|permission denied|no such file/i) ?? `command not found (exit code ${code})`;
-  // `python3 -m pytest` without pytest; uv or Poetry with nothing installed in the environment.
-  const noRunner = first(/No module named '?pytest'?$/, /^error: Failed to spawn: /, /^Command not found: /);
+  const noRunner = runnerMissing(result);
   if (noRunner) return noRunner;
 
   if (!/\bpytest\b/.test(result.command) && !/^=+ .*(test session starts|no tests ran)|^rootdir: |while loading conftest/m.test(output)) return undefined;
@@ -339,6 +336,46 @@ export function cantRunReason(result: CheckResult): string | undefined {
   // Test modules that can't import the project's own package: it isn't installed here.
   if (/errors? during collection/.test(output) && missingModule.test(output)) return first(missingModule);
   return undefined;
+}
+
+/**
+ * The test runner itself isn't there: the shell couldn't find (126: couldn't execute) the
+ * command (`uv`, `poetry`, `pytest`…), `python3 -m pytest` without pytest, or uv or Poetry with
+ * nothing installed in the environment. Returns the line that says so.
+ */
+export function runnerMissing(result: CheckResult): string | undefined {
+  if (result.ok || result.timedOut) return undefined;
+  const lines = result.output
+    .split("\n")
+    .map((l) => l.replace(/^E\s+/, "").trim())
+    .filter(Boolean);
+  const first = (...res: RegExp[]) => {
+    for (const re of res) {
+      const line = lines.find((l) => re.test(l));
+      if (line) return line.length > 200 ? `${line.slice(0, 200)}…` : line;
+    }
+    return undefined;
+  };
+  const code = result.exitCode;
+  if (code === 127 || code === 126) return first(/not found/i, /cannot execute|permission denied|no such file/i) ?? `command not found (exit code ${code})`;
+  return first(/No module named '?pytest'?$/, /^error: Failed to spawn: /, /^Command not found: /);
+}
+
+/**
+ * What a fail-to-pass proof's run says: the check on the base code, with the change's tests put
+ * onto it. Failing there is the point (a test needs the change); passing means none does. A run
+ * that couldn't get as far as the tests (no test runner, nothing collected, a timeout) says
+ * neither. A test that can't import code only the change adds does fail for the change, so an
+ * import error counts as failing.
+ */
+export function proofOutcome(result: CheckResult): { status: "proven" | "unproven" | "unverified"; detail: string } {
+  if (result.ok) return { status: "unproven", detail: `\`${result.command}\` passes on the base code too, with this change's tests` };
+  if (result.timedOut) return { status: "unverified", detail: `\`${result.command}\` timed out on the base code` };
+  const missing = runnerMissing(result);
+  if (missing) return { status: "unverified", detail: `the test runner didn't start on the base code: ${missing}` };
+  if (/^(code-flow couldn't run it|Cancelled before it started)/.test(result.output)) return { status: "unverified", detail: result.output.split("\n")[0]! };
+  if (result.exitCode === 5 && /\bpytest\b/.test(result.command)) return { status: "unverified", detail: "pytest collected no tests on the base code" };
+  return { status: "proven", detail: failureExcerpt(result.output, 1_500) || `exit code ${result.exitCode}` };
 }
 
 /** What to tell you when the check can't run; the fix is setting it up for this repo. */

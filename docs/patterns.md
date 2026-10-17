@@ -33,6 +33,7 @@ code-flow treats each pattern as a loop, and what it engineers is the loop aroun
   - Race: a candidate that fails can't win if another one passes.
   - Supervisor and Debate: the integrated or built result is checked, and the agent fixes failures.
   - Test-first: the new tests must fail first, then pass.
+  - Every pattern: a passing result is proven fail-to-pass (see below).
   - When a run finishes but the check still fails, the run is shown as a warning, not a success.
 - **A check that can't run isn't a failing check.** Some failures say the environment is wrong, not the code: the command isn't installed (exit 127), Python has neither pytest nor the project's package, pytest can't load `conftest.py` or collects nothing (exit 4 or 5).
   - When the run's first check fails like that, code-flow runs it once more on the base commit, in a throwaway checkout (with your setup). If it fails the same way there, the change isn't to blame.
@@ -58,6 +59,21 @@ code-flow treats each pattern as a loop, and what it engineers is the loop aroun
   - PR follow-through: a fix that changes tests that way isn't pushed.
 
   Every flagged result shows **⚠ Changes to tests to check before merging**.
+- **A pass should prove the change (fail-to-pass).** A check that passes with the change might pass without it too, and then it shows nothing about the change. So once a result's check passes, code-flow proves it:
+  - it puts the change's tests onto the base code, in a checkout of its own (set up once per run): the test files, their fixtures and snapshots, and the runner's settings (`jest.config.*`, `conftest.py`, `pytest.ini`…). A test file the change deleted is deleted there too;
+  - it runs the check there. **It should fail**: then at least one test needs the change, and the step reads *Fails without the change, as it should*. A test that imports code only the change adds fails there too, and counts;
+  - if it passes there as well, the result is **not proven**: no test fails without the change. A run that never reached the tests (no test runner, nothing collected, setup failed, a timeout) proves nothing either way and says so.
+
+  When a fix makes a failing check pass, the tests that failed before are the proof, and no new test is needed. When the check already passed before any change (a new feature, say), only a new test can prove it. What happens next depends on the pattern:
+  - Builders are told up front that their tests will run on the original code (Pipeline, Race, Debate, Supervisor's workers, Loop until green).
+  - Loop until green: an unproven pass doesn't end the loop the first time. The agent is asked for a test that fails without its change, or to say why the task can't be tested that way (docs, a pure refactor). If it adds none, the pass stands and the result is flagged. When the change touches no tests, the baseline check is the run on the base code, so the proof needs no extra run.
+  - Pipeline, Debate and Supervisor: before review, the builder (the supervisor, in Supervisor) is asked once for such a test. If the check then fails and the fix attempts don't help, code-flow undoes the new test, so asking for a proof never costs a green result. The reviewer sees the proof either way, and is told to ask for a test when it's missing.
+  - Race: each passing candidate is proven, and the judge sees which ones are, still blind. It's evidence for the judge, not a rule: an unproven candidate can win.
+  - Test-first: the tester's tests must fail before anything is implemented. If they pass, the tester is asked once to make them fail for the missing behaviour.
+  - Review council: with a check, code-flow runs it on the PR's changes and proves them against the code the PR started from, and every reviewer sees both. The proof goes into the review you can post.
+  - Single agent: the result is proven and the proof reported; nobody is asked for a test.
+
+  Each result shows **✓ Proven: a test fails without this change** (with how it fails), or **⚠ Not proven**. Insights counts proven results per pattern. A proof costs one more run of the check (plus setup once per run). Turn it off for a repo with `"prove": false` in `.codeflow/config.json`.
 - **Independent review:** Supervisor has a *Reviewer* role (the composer picks a different vendor than the supervisor) that checks the integrated result instead of the supervisor checking its own work. The supervisor also writes the *contracts* (interfaces, names, data shapes) that every worker gets. If you skip the reviewer, the supervisor reviews its own integration and fixes what it finds, but nobody reviews those fixes; the result says "fixed by the supervisor, not re-reviewed". Debate can have a reviewer check the build against the agreed plan.
 - **Missing parts are reported:** in Supervisor, a worker that finishes without changing anything is listed as *no changes* with the first line of its answer, not as done. Its branch isn't merged, the supervisor and reviewer are told which parts are missing, and Insights counts it as a failed step. If the supervisor splits the task into more subtasks than *Max subtasks*, the extra ones are added to the last subtask (the log says so) rather than dropped.
 - **Parallel work stops together:** in Race, Supervisor and Debate, an agent's failed turn is part of the result (a failed candidate, a missing part), but when anything else fails in one branch (its worktree, setup, a commit or a check), the other branches are stopped too. The run ends once every branch has, so no agent keeps running after it, and Stop and the slots stay accurate.

@@ -15,22 +15,24 @@ import {
 } from "./adapters/index.js";
 import { CODEFLOW_HOME, MAX_DIFF_CHARS, STEP_IDLE_MS, STEP_TIMEOUT_MS, timerMs } from "./config.js";
 import { logWarn } from "./log.js";
-import { cantRunMessage, cantRunReason, runCheck, type CheckResult, type Container } from "./checks.js";
+import { cantRunMessage, cantRunReason, proofOutcome, runCheck, type CheckResult, type Container } from "./checks.js";
 import { commandExists } from "./adapters/process.js";
 import { contextPrompt, hasStagedFiles, prepareContext, type ContextInput, type RunContext } from "./context.js";
 import { fitDiff } from "./diff.js";
-import { describeIssues, inspectChanges, unverifiedIssue, type IntegrityIssue } from "./integrity.js";
+import { describeIssues, inspectChanges, isTestSide, unverifiedIssue, type IntegrityIssue } from "./integrity.js";
 import { extractJson, shapeProblem } from "./json.js";
 import { readConventions, recordFindings, recurringLessons } from "./learnings.js";
 import { Slots } from "./slots.js";
 import {
   CONTEXT_DIR,
   branchExists,
+  changedFiles,
   commitAll,
   diffSince,
   diffStat,
   ensureCodeflowExcludes,
   git,
+  gitError,
   isAncestor,
   isClean,
   isMerging,
@@ -40,6 +42,7 @@ import {
   removeDetachedWorktree,
   repoRoot,
   resolveCommit,
+  restorePaths,
   restoreSnapshot,
   snapshot,
   uncommittedCount,
@@ -143,6 +146,31 @@ export interface RunFacts {
   /** Review rounds before approval (pipeline), and whether the reviewer approved. */
   reviewRounds?: number;
   approved?: boolean;
+  /** Whether a test in the result fails without its change (see Proof). */
+  proof?: Proof["status"];
+}
+
+/**
+ * Fail-to-pass: code-flow puts a change's tests onto the base code and runs the check there. A
+ * test that fails without the change and passes with it shows the change does something; a
+ * check that passes either way shows nothing about it.
+ */
+export interface Proof {
+  /**
+   * proven: the check fails on the base code with the change's tests (and passes on the change).
+   * unproven: it passes there too, so no test needs the change. unverified: code-flow couldn't
+   * tell (setup failed on the base commit, the test runner didn't start, a timeout…).
+   */
+  status: "proven" | "unproven" | "unverified";
+  command: string;
+  /** The change's test files, fixtures and runner settings that were put onto the base code. */
+  tests: string[];
+  /** proven: how the check failed on the base code (an excerpt); otherwise why it's not proven. */
+  detail: string;
+  /** The base code, and the change whose tests ran on it. */
+  base: string;
+  head: string;
+  at: number;
 }
 
 export interface Artifact {
@@ -236,6 +264,10 @@ export interface Run {
   triage?: { state: "pending" | "approved" | "rejected" | "empty"; at: number; note?: string };
   /** Changes to tests in each result branch that could make the check pass without a fix. */
   integrity?: Record<string, IntegrityIssue[]>;
+  /** Fail-to-pass proof of each result branch whose check passes (see Proof). */
+  proofs?: Record<string, Proof>;
+  /** Prove results fail-to-pass (`prove` in .codeflow/config.json; default on). */
+  prove?: boolean;
   /** Comparable outcomes (see RunFacts). */
   facts?: RunFacts;
   /** Runs started together to compare setups on the same task. */
@@ -325,6 +357,8 @@ export interface CouncilReview {
   summary: string;
   findings: CouncilFinding[];
   reviewers: { agent: AgentId; verdict: string; issues: number }[];
+  /** Does a test in the changes fail without them? Set when the run has a check. */
+  proof?: Proof;
   markdown: string;
   /** Set when you posted it to the pull request. */
   postedTo?: string;
@@ -500,6 +534,14 @@ export class TeamContext {
   private readonly testCounts = new Map<string, { first?: number; last?: number }>();
   /** Why the run's check can't run here (null: it can), settled by its first result. */
   private checkRunsHere?: Promise<string | null>;
+  /** Whether the run's check passed in each worktree, and at which commit. */
+  private readonly lastChecks = new Map<string, { head?: string; ok: boolean }>();
+  /** Proofs made in this attempt, by `base..head`: the same change is proven once. */
+  private readonly proofCache = new Map<string, Promise<Proof>>();
+  /** The checkout proofs run in, at the base code; set up once and reused (see `proofCheckout`). */
+  private proofWorktree?: Promise<{ wt: Worktree; ready: boolean }>;
+  /** Proofs take turns: they share one checkout. */
+  private proofQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     readonly run: Run,
@@ -643,6 +685,11 @@ export class TeamContext {
     return !!this.run.loop.check && !this.run.checkCantRun;
   }
 
+  /** True when results are proven fail-to-pass: there's a check that runs here, and proofs are on. */
+  get proves(): boolean {
+    return this.hasCheck && this.run.prove !== false;
+  }
+
   /** Publish the run's current state (for engine helpers outside the class). */
   publish() {
     this.manager.emitRun(this.run);
@@ -754,6 +801,7 @@ export class TeamContext {
       (recorded) => !recorded.head || !head || recorded.head === head,
     );
     if (doneWhen && !(await this.checkCanRun(wt, result))) return null;
+    if (doneWhen) this.lastChecks.set(wt.name, { head: head ?? result.head, ok: result.ok });
     if (doneWhen && result.tests !== undefined) {
       const counts = this.testCounts.get(wt.name) ?? {};
       counts.first ??= result.tests;
@@ -824,8 +872,131 @@ export class TeamContext {
     }
   }
 
-  /** Run a shell command in a worktree as a visible step (used for checks and setup). */
-  private async command(kind: "check" | "setup", title: string, wt: Worktree, command: string): Promise<CheckResult> {
+  /**
+   * Fail-to-pass proof of the change in `wt`, from `from` (its base) to its current commit: the
+   * change's tests, with their fixtures and the runner's settings, are put onto the base code and
+   * the check runs there. It should fail: a test that passes without the change doesn't show the
+   * change does anything. Meant for a change whose check passes. Recorded on the run by result
+   * branch. Null when there's nothing to prove it with (no check that runs here, or proofs off).
+   * `known` is the check's result on the base code, reused when the change touches no tests.
+   */
+  async prove(wt: Worktree, opts: { from?: string; known?: CheckResult | null } = {}): Promise<Proof | null> {
+    if (!this.proves) return null;
+    this.checkCancelled();
+    const from = opts.from ?? wt.base;
+    const head = this.heads.get(wt.name) ?? (await resolveCommit(wt.path));
+    const key = `${from}..${head}`;
+    let proving = this.proofCache.get(key);
+    const fresh = !proving;
+    if (!proving) {
+      proving = this.remember("proof", `${wt.name}|${key}`, () => this.proveLive(wt, from, head, this.run.loop.check!, opts.known ?? undefined));
+      this.proofCache.set(key, proving);
+      // A proof that was stopped isn't a result: the next call tries again.
+      proving.catch(() => this.proofCache.get(key) === proving && this.proofCache.delete(key));
+    }
+    const proof = await proving;
+    this.run.proofs = { ...this.run.proofs, [wt.branch]: proof };
+    if (fresh) {
+      const what = proof.tests.length ? `this change's tests (${proof.tests.join(", ")})` : "the existing tests";
+      if (proof.status === "proven") this.log(`Proven: with ${what} on the base code, \`${proof.command}\` fails there, so the tests need the change`);
+      else if (proof.status === "unproven") this.log(`Not proven: ${proof.detail}, so no test fails without the change`, "warn");
+      else this.log(`Couldn't prove the change: ${proof.detail}`, "warn");
+    }
+    this.manager.emitRun(this.run);
+    return proof;
+  }
+
+  /**
+   * Prove a result whose check passed at its current commit, or forget an earlier proof of it
+   * (its code changed since, or its check fails now). Returns the proof, if any.
+   */
+  async refreshProof(wt: Worktree): Promise<Proof | null> {
+    const last = this.lastChecks.get(wt.name);
+    if (this.proves && last?.ok && last.head && last.head === this.heads.get(wt.name)) return this.prove(wt);
+    if (this.run.proofs?.[wt.branch]) {
+      const { [wt.branch]: _gone, ...rest } = this.run.proofs;
+      this.run.proofs = Object.keys(rest).length ? rest : undefined;
+    }
+    return null;
+  }
+
+  /** The recorded proof of a result branch, if any. */
+  proofOf(wt: Worktree): Proof | null {
+    return this.run.proofs?.[wt.branch] ?? null;
+  }
+
+  private proveLive(wt: Worktree, from: string, head: string, command: string, known?: CheckResult): Promise<Proof> {
+    const make = (status: Proof["status"], detail: string, tests: string[] = []): Proof => ({ status, command, tests, detail, base: from, head, at: Date.now() });
+    const run = async (): Promise<Proof> => {
+      let tests: string[] = [];
+      try {
+        tests = (await changedFiles(wt.path, from, head)).filter(isTestSide);
+        let result = !tests.length && known ? known : undefined;
+        if (!result) {
+          const checkout = await this.proofCheckout(from);
+          if (!checkout) return make("unverified", "setup failed on the base commit", tests);
+          // Exactly the base code, then the change's version of each test file (or none, if it deleted one).
+          for (const args of [["reset", "-q", "--hard", from], ["clean", "-fdq"]]) {
+            const res = await git(args, checkout.path);
+            if (res.code !== 0) throw new Error(gitError(args, res));
+          }
+          await restorePaths(checkout.path, head, tests);
+          result = await this.command("check", "Proof: tests without the change", checkout, command, (r) => {
+            const outcome = proofOutcome(r);
+            return outcome.status === "proven"
+              ? { ok: true, text: `Fails without the change, as it should (exit code ${r.exitCode})` }
+              : { ok: false, text: outcome.status === "unproven" ? "Passes without the change too: no test needs it" : `Couldn't tell: ${outcome.detail}` };
+          });
+          this.run.usage.checks++;
+        }
+        const { status, detail } = proofOutcome(result);
+        return make(status, detail, tests);
+      } catch (err) {
+        if (this.signal.aborted || err instanceof CancelledError) throw err;
+        return make("unverified", `code-flow couldn't set up the base code: ${(err as Error).message.split("\n")[0]}`, tests);
+      }
+    };
+    // One checkout serves every proof in the run, so they take turns.
+    const queued = this.proofQueue.then(run, run);
+    this.proofQueue = queued.catch(() => undefined);
+    return queued;
+  }
+
+  /** The checkout proofs run in: the base code, set up once like a worktree, then reused. Undefined when setup fails. */
+  private async proofCheckout(base: string): Promise<Worktree | undefined> {
+    const current = await this.proofWorktree?.catch(() => undefined);
+    if (current?.wt.base === base) return current.ready ? current.wt : undefined;
+    const opening = (async () => {
+      const wt: Worktree = { name: "proof", path: join(this.run.worktreeDir, ".proof-check"), branch: "", base };
+      const { warning } = await openDetachedWorktree(this.run.repo, wt.path, base, { signal: this.signal });
+      if (warning) this.log(warning, "warn");
+      if (this.run.loop.copy?.length) await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
+      const ready = !this.run.loop.setup || (await this.command("setup", "Setup proof checkout", wt, this.run.loop.setup)).ok;
+      return { wt, ready };
+    })();
+    this.proofWorktree = opening;
+    const { wt, ready } = await opening;
+    return ready ? wt : undefined;
+  }
+
+  /** Remove the proof checkout; the run's attempt is over. */
+  async closeProofs() {
+    const current = await this.proofWorktree?.catch(() => undefined);
+    this.proofWorktree = undefined;
+    if (current) await removeDetachedWorktree(this.run.repo, current.wt.path).catch(() => undefined);
+  }
+
+  /**
+   * Run a shell command in a worktree as a visible step (used for checks and setup). `describe`
+   * says how the step reads when passing isn't what's wanted (a proof should fail).
+   */
+  private async command(
+    kind: "check" | "setup",
+    title: string,
+    wt: Worktree,
+    command: string,
+    describe?: (result: CheckResult) => { ok: boolean; text: string },
+  ): Promise<CheckResult> {
     this.checkCancelled();
     const step: Step = {
       id: `s${this.run.steps.length + 1}`,
@@ -871,12 +1042,15 @@ export class TeamContext {
       event: { kind: "tool_result", callId: step.id, output: result.output.slice(-8_000) || "(no output)", isError: !result.ok },
     });
     step.endedAt = Date.now();
-    step.status = this.signal.aborted ? this.abortedStatus() : result.ok ? "done" : "failed";
-    step.finalText = result.ok
-      ? `Passed in ${Math.round(result.durationMs / 1000)}s${result.tests !== undefined ? ` (${result.tests} tests)` : ""}`
-      : result.timedOut
-        ? `Timed out after ${this.run.loop.checkTimeoutMin} min`
-        : `Failed (exit code ${result.exitCode})`;
+    const described = describe?.(result);
+    step.status = this.signal.aborted ? this.abortedStatus() : (described?.ok ?? result.ok) ? "done" : "failed";
+    step.finalText =
+      described?.text ??
+      (result.ok
+        ? `Passed in ${Math.round(result.durationMs / 1000)}s${result.tests !== undefined ? ` (${result.tests} tests)` : ""}`
+        : result.timedOut
+          ? `Timed out after ${this.run.loop.checkTimeoutMin} min`
+          : `Failed (exit code ${result.exitCode})`);
     this.manager.emit(this.run, { type: "agent", stepId: step.id, event: { kind: "status", text: step.finalText } });
     this.manager.emit(this.run, { type: "step", step: { ...step } });
     this.checkCancelled();
@@ -1038,6 +1212,7 @@ export class TeamContext {
     else delete integrity[wt.branch];
     this.run.integrity = Object.keys(integrity).length ? integrity : undefined;
     if (issues.length) this.log(`${label}: changes to tests to look at before merging:\n${describeIssues(issues)}`, "warn");
+    await this.refreshProof(wt);
     this.manager.emitRun(this.run);
   }
 
@@ -2231,6 +2406,7 @@ export class RunManager {
       conventions: conventions || undefined,
       lessons: lessons.length ? lessons : undefined,
       learn,
+      prove: config.prove !== false,
       group: input.group,
       app: config.run,
       roles: input.roles,
@@ -2375,6 +2551,7 @@ export class RunManager {
       })
       .then(() => (run.status === "done" || run.status === "interrupted" ? undefined : collectUnfinishedWork(run)))
       .catch(() => undefined)
+      .then(() => ctx.closeProofs())
       .then(() => (run.trigger ? this.toInbox(run) : undefined))
       .catch(() => undefined)
       .finally(() => {
@@ -2604,6 +2781,8 @@ async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
   f.integrity = issues.length ? issues : undefined;
   if (issues.length) ctx.log(`Follow-up ${f.id} (${f.agent}) changed tests:\n${describeIssues(issues)}`, "warn");
   const check = await ctx.check(wt, `Check after follow-up ${f.id}`);
+  // The result changed: prove it again (or drop a proof of code that's no longer there).
+  if (sha) ctx.setFacts({ proof: (await ctx.refreshProof(wt))?.status });
   f.status = outcome.ok ? "done" : "failed";
   f.result = outcome.ok ? outcome.finalText : outcome.error;
   f.checkPassed = check ? check.ok : undefined;

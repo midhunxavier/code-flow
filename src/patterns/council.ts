@@ -1,8 +1,8 @@
 import type { AgentId } from "../adapters/index.js";
-import type { CouncilFinding, Pattern } from "../engine.js";
+import type { CouncilFinding, Pattern, Proof } from "../engine.js";
 import { defaultBranch, mergeBase } from "../github.js";
 import { COUNCIL_SCHEMA, REVIEW_SCHEMA } from "./schemas.js";
-import { fence, jsonInstruction, LETTERS, preamble, READ_ONLY, section } from "./prompts.js";
+import { checkEvidence, fence, jsonInstruction, LETTERS, preamble, proofEvidence, proofLine, READ_ONLY, section } from "./prompts.js";
 
 interface Review {
   verdict: "approve" | "changes_requested";
@@ -54,6 +54,16 @@ export const councilPattern: Pattern = {
         : section("Changes under review", fence(diff, "diff"));
     if (diff === "(no changes)") ctx.log("No diff against the default branch; reviewing the code the task points at");
 
+    // Evidence for every reviewer, when there's a check: does it pass on the changes, and does a
+    // test in them fail without them (their tests put onto the code they started from)?
+    let evidence = "";
+    let proof: Proof | null = null;
+    if (ctx.proves && base && diff !== "(no changes)") {
+      const check = await ctx.check(wt, "Check the changes");
+      proof = check?.ok ? await ctx.prove(wt, { from: base }) : null;
+      evidence = checkEvidence(ctx, check, 3_000) + proofEvidence(proof);
+    }
+
     const shape = '{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}';
     // A reviewer that doesn't finish is left out; the others carry on.
     const reviews = await ctx.parallel(reviewers, async (agent, i) => {
@@ -71,6 +81,7 @@ export const councilPattern: Pattern = {
             preamble("reviewer", agent, `${READ_ONLY} Other reviewers are reviewing the same changes independently.`) +
             section("Task", ctx.task) +
             scope +
+            evidence +
             section(
               "Deliverable",
               "Look for bugs, security problems, missing or weak tests, and anything that doesn't do what the task or description says. " +
@@ -132,19 +143,27 @@ export const councilPattern: Pattern = {
       .map((f) => ({ severity: f.severity, file: f.file, problem: f.problem, fix: f.fix, raisedBy: [...new Set(f.raised_by.map((l) => agentOf[l]!).filter(Boolean))] }))
       .sort((a, b) => b.raisedBy.length - a.raisedBy.length || SEVERITY[a.severity] - SEVERITY[b.severity]);
     ctx.learn(findings);
-    const markdown = renderReview(merged.verdict, merged.summary, findings, done.map((r) => r.agent));
-    ctx.setReview({ verdict: merged.verdict, summary: merged.summary, findings, reviewers: done.map((r) => ({ agent: r.agent, verdict: r.review.verdict, issues: r.review.issues.length })), markdown });
+    const markdown = renderReview(merged.verdict, merged.summary, findings, done.map((r) => r.agent), proof);
+    ctx.setReview({
+      verdict: merged.verdict,
+      summary: merged.summary,
+      findings,
+      reviewers: done.map((r) => ({ agent: r.agent, verdict: r.review.verdict, issues: r.review.issues.length })),
+      proof: proof ?? undefined,
+      markdown,
+    });
+    if (proof) ctx.setFacts({ proof: proof.status });
     ctx.log(`Council: ${merged.verdict === "approve" ? "approve" : "changes requested"} with ${findings.length} finding(s) from ${done.length} reviewer(s)`);
     return markdown;
   },
 };
 
-export function renderReview(verdict: string, summary: string, findings: CouncilFinding[], reviewers: AgentId[]): string {
+export function renderReview(verdict: string, summary: string, findings: CouncilFinding[], reviewers: AgentId[], proof: Proof | null = null): string {
   const head = `**Review council: ${verdict === "approve" ? "Approve" : "Changes requested"}** — ${reviewers.length} reviewer${reviewers.length === 1 ? "" : "s"} (${reviewers.join(", ")})`;
   const list = findings.length
     ? findings
         .map((f, i) => `${i + 1}. **${f.severity}** \`${f.file || "general"}\` — ${f.problem}\n   *Fix:* ${f.fix}\n   *Raised by:* ${f.raisedBy.join(", ")}`)
         .join("\n")
     : "No problems found.";
-  return [head, summary.trim() ? section("Summary", summary) : "", section("Findings", list)].join("\n");
+  return [head, proofLine(proof), summary.trim() ? section("Summary", summary) : "", section("Findings", list)].join("\n");
 }

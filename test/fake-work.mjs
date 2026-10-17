@@ -63,13 +63,20 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     answer = json(instance(schema));
   } else if (prompt.includes('"test_command"')) {
     // A real test: passes once any agent has written its "<vendor>-<id>.txt" implementation file.
-    writeFileSync("spec.test.mjs", [
-      'import { test } from "node:test";',
-      'import assert from "node:assert";',
-      'import { readdirSync } from "node:fs";',
-      'test("feature is implemented", () => assert.ok(readdirSync(".").some((f) => /^(claude|codex|agy)-.*\\.txt$/.test(f))));',
-    ].join("\n") + "\n");
+    // FAKE_TESTS_PASS_FIRST: a test that passes before anything is implemented, until asked again.
+    writeFileSync("spec.test.mjs", process.env.FAKE_TESTS_PASS_FIRST ? passingTest : implementedTest);
     answer = json({ test_command: "node --test spec.test.mjs", test_files: ["spec.test.mjs"] });
+  } else if (write && prompt.includes("Change them so they fail now")) {
+    writeFileSync("spec.test.mjs", implementedTest);
+    answer = "Rewrote the tests so they fail until the feature is implemented.";
+  } else if (write && prompt.includes("a test that fails without your change")) {
+    // Asked to prove the change: a test that fails on the original code (no implementation file
+    // there) and passes with it. FAKE_NO_PROOF: decline; FAKE_PROOF_BREAKS: a test that never passes.
+    if (process.env.FAKE_NO_PROOF) answer = "This change can't be tested that way: it only adds a file.";
+    else {
+      writeFileSync(`proof-${id}.test.mjs`, process.env.FAKE_PROOF_BREAKS ? brokenTest : implementedTest);
+      answer = "Added a test that fails without the change.";
+    }
   } else if (prompt.includes('"verdict": "pass" | "fail"')) {
     answer = json({ verdict: "pass", failures: [] });
   } else if (prompt.includes('"raised_by"')) {
@@ -120,6 +127,12 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
   if (vendor === "codex" && structured) answer = JSON.stringify(structured);
   return { answer, structured };
 }
+
+const testFile = (...body) => ['import { test } from "node:test";', 'import assert from "node:assert";', 'import { readdirSync } from "node:fs";', ...body].join("\n") + "\n";
+/** Passes once any agent has written its "<vendor>-<id>.txt" implementation file. */
+const implementedTest = testFile('test("feature is implemented", () => assert.ok(readdirSync(".").some((f) => /^(claude|codex|agy)-.*\\.txt$/.test(f))));');
+const passingTest = testFile('test("feature is implemented", () => assert.ok(readdirSync(".").length > 0));');
+const brokenTest = testFile('test("feature is implemented", () => assert.fail("never passes"));');
 
 /** FAKE_SLEEP_MS for this vendor (FAKE_SLEEP_VENDOR unset = every vendor), else 0. */
 export function sleepMs(vendor) {

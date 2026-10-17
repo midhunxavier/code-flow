@@ -3,7 +3,7 @@ import { RejectedError, type Pattern, type StepOutcome } from "../engine.js";
 import { changedFiles, hasConflictMarkers } from "../git.js";
 import { describeIssues } from "../integrity.js";
 import { REVIEW_SCHEMA, SUBTASKS_SCHEMA } from "./schemas.js";
-import { checkEvidence, fence, fixUntilGreen, jsonInstruction, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { checkEvidence, fence, fixUntilGreen, jsonInstruction, preamble, proofEvidence, proofLine, proofRule, proveOrAsk, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface Subtask {
   id: string;
@@ -163,6 +163,7 @@ export const supervisorPattern: Pattern = {
         prompt:
           preamble("worker", agent, `${WRITE} Other workers are building other parts in parallel; stay within your subtask.`) +
           section("Overall goal (for context only)", ctx.task) +
+          proofRule(ctx) +
           (contracts ? section("Contracts every part follows", `Other workers rely on these; don't deviate from them.\n${contracts}`) : "") +
           section(`Your subtask: ${sub.title}`, sub.instructions) +
           section("Deliverable", "Implement your subtask, run relevant tests, and summarize what you changed."),
@@ -229,7 +230,10 @@ export const supervisorPattern: Pattern = {
     }
 
     // The merged result is where parts break each other: check it before reviewing.
-    let { check } = await fixUntilGreen(ctx, { agent: supervisor, role: "supervisor", wt: integration, attempts: 2, context: gaps });
+    const integrated = await fixUntilGreen(ctx, { agent: supervisor, role: "supervisor", wt: integration, attempts: 2, context: gaps });
+    // Green isn't enough: a test should fail without the change. The supervisor is asked for one.
+    const proved = await proveOrAsk(ctx, { agent: supervisor, role: "supervisor", wt: integration, check: integrated.check, session: integrated.session, attempts: 2, ask: true, context: gaps });
+    let check = proved.check;
 
     // The supervisor split the work and integrated it; someone else should judge the result.
     const [reviewer = supervisor] = ctx.agents("reviewer");
@@ -258,6 +262,7 @@ export const supervisorPattern: Pattern = {
           gaps +
           section("Combined diff", fence(diff, "diff")) +
           checkEvidence(ctx, check, 3_000) +
+          proofEvidence(round === 1 ? proved.proof : check?.ok ? await ctx.prove(integration) : null) +
           (testChanges.length ? section("Changes to tests (found by code-flow)", `Request changes unless the task requires them:\n${describeIssues(testChanges)}`) : "") +
           jsonInstruction('{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}'),
       });
@@ -292,9 +297,10 @@ export const supervisorPattern: Pattern = {
 
     await ctx.artifact("Integrated result", integration);
     if (check) ctx.setVerdict(check.ok ? "passed" : "failing");
-    ctx.setFacts({ approved: verdict.verdict === "approve" });
+    ctx.setFacts({ approved: verdict.verdict === "approve", proof: ctx.proofOf(integration)?.status });
     return [
       `**Integrated**${check ? (check.ok ? `, and \`${check.command}\` passes` : `, but \`${check.command}\` still fails`) : ""} — branch \`${integration.branch}\``,
+      proofLine(ctx.proofOf(integration)),
       section(
         "Subtasks",
         results.map((r) => `- ${r.sub.title} → ${r.agent}: ${outcome(r)}`).join("\n"),

@@ -46,6 +46,8 @@ src/context.ts           validates and stages task context for agents
 
 Write a `Pattern` (roles, options, `run(ctx)`) in `src/patterns/`, then add it to `src/patterns/index.ts`. The UI builds its form from the pattern definition.
 
+`ctx.artifact()` proves a result whose check passed (fail-to-pass, see `TeamContext.prove`), so a new pattern gets proofs without doing anything. To act on one before publishing, as Pipeline does before review, use `proveOrAsk()` from `src/patterns/prompts.ts`, and `proofEvidence()` to show it to a reviewer or judge.
+
 ### Adding an agent
 
 Implement `AgentAdapter` in `src/adapters/`, then register it in `src/adapters/index.ts`. Add a fake for it in `test/fake-agent.mjs`.

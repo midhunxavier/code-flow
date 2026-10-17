@@ -28,7 +28,7 @@ import {
   selectProject,
 } from "./state.js";
 import { ProjectChip } from "./projects.js";
-import type { AgentEvent, AgentId, Artifact, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
+import type { AgentEvent, AgentId, Artifact, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
 const modelNote = (run: RunSummary | null, id?: AgentId) =>
@@ -772,6 +772,7 @@ function ReviewCard({ run }: { run: RunSummary }) {
           Copy
         </button>
       </div>
+      {review.proof ? <ProofNote proof={review.proof} /> : null}
       {review.summary ? <p>{review.summary}</p> : null}
       {review.findings.length ? (
         <ol class="findings">
@@ -866,6 +867,7 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
         </span>
       </div>
       {run.integrity?.[artifact.branch]?.length ? <IntegrityNote issues={run.integrity[artifact.branch]!} /> : null}
+      {run.proofs?.[artifact.branch] ? <ProofNote proof={run.proofs[artifact.branch]!} /> : null}
       {artifact.stat ? <pre>{artifact.stat}</pre> : <div class="help">No changes</div>}
       {worktree && existsHint(run) ? <WorkspaceTools run={run} worktree={worktree.name} /> : null}
       {panel === "merge" && worktree ? (
@@ -890,6 +892,41 @@ function IntegrityNote({ issues }: { issues: IntegrityIssue[] }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** Fail-to-pass: does a test in this change fail without it? code-flow ran its tests on the base code. */
+function ProofNote({ proof }: { proof: Proof }) {
+  const tests = proof.tests.length ? `this change's tests (${proof.tests.join(", ")})` : "the existing tests";
+  return (
+    <div class={`proof ${proof.status}`} role="note">
+      {proof.status === "proven" ? (
+        <>
+          <b>✓ Proven: a test fails without this change</b>
+          <span class="help">
+            {" "}
+            — <code>{proof.command}</code> fails on the base code with {tests}, and passes with the change.
+          </span>
+          <details>
+            <summary>How it fails without the change</summary>
+            <pre>{proof.detail}</pre>
+          </details>
+        </>
+      ) : proof.status === "unproven" ? (
+        <>
+          <b>⚠ Not proven: no test fails without this change</b>
+          <span class="help">
+            {" "}
+            — <code>{proof.command}</code> passes on the base code too, with {tests}. Check the change is tested before merging.
+          </span>
+        </>
+      ) : (
+        <>
+          <b>Couldn't prove a test fails without this change</b>
+          <span class="help"> — {proof.detail}.</span>
+        </>
+      )}
     </div>
   );
 }

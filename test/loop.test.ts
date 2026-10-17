@@ -158,6 +158,8 @@ test("pipeline fixes a failing check before any review", async () => {
     "Check:failed",
     "Fix failing check (1/2) [codex]:done",
     "Check:done",
+    // The check is the test here: it fails on the base code, so the change is proven.
+    "Proof: tests without the change:done",
     "Review (round 1) [claude]:done",
   ]);
   assert.match(r.summary!, /Approved, and `test/);

@@ -1,8 +1,8 @@
 import type { CheckResult } from "../checks.js";
-import type { Pattern, StepOutcome } from "../engine.js";
+import type { Pattern, Proof, StepOutcome } from "../engine.js";
 import { describeIssues } from "../integrity.js";
 import { REVIEW_SCHEMA } from "./schemas.js";
-import { checkEvidence, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { checkEvidence, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, proofEvidence, proofLine, proofRule, proveOrAsk, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface ReviewVerdict {
   verdict: "approve" | "changes_requested";
@@ -66,6 +66,7 @@ export const pipelinePattern: Pattern = {
         preamble("builder", builder, WRITE) +
         section("Task", ctx.task) +
         section("Plan from the planner", plan.finalText) +
+        proofRule(ctx) +
         section("Deliverable", "Implement the plan, run the relevant tests, then summarize what you changed."),
     });
     await ctx.commit(wt, `${builder}: implement plan`);
@@ -75,13 +76,20 @@ export const pipelinePattern: Pattern = {
     let review: StepOutcome | undefined;
     let fixer = build;
     let check: CheckResult | null = null;
+    let proof: Proof | null = null;
+    let askedForProof = false;
     let reviewRounds = 0;
 
     for (let round = 1; round <= maxRounds; round++) {
       // Every round starts with code-flow running the check; a reviewer never sees red code.
       const fixed = await fixUntilGreen(ctx, { agent: builder, role: "builder", wt, session: fixer, attempts: checkFixes });
-      check = fixed.check;
       fixer = fixed.session ?? fixer;
+      // Green isn't enough: a test should fail without the change. The builder is asked for one once.
+      const proved = await proveOrAsk(ctx, { agent: builder, role: "builder", wt, check: fixed.check, session: fixer, attempts: checkFixes, ask: !askedForProof });
+      askedForProof ||= proved.asked;
+      check = proved.check;
+      proof = proved.proof;
+      fixer = proved.session ?? fixer;
       if (check && !check.ok) {
         ctx.log(`The check still fails after ${checkFixes} fix attempts; stopping before review`, "warn");
         break;
@@ -107,6 +115,7 @@ export const pipelinePattern: Pattern = {
           (round === 1 || !review?.sessionId ? section("Plan", plan.finalText) : "") +
           section("Diff against base", fence(diff, "diff")) +
           checkEvidence(ctx, check) +
+          proofEvidence(proof) +
           (testChanges.length
             ? section(
                 "Changes to tests (found by code-flow)",
@@ -147,7 +156,7 @@ export const pipelinePattern: Pattern = {
     const green = !check || check.ok;
     const approved = green && !!review && (!verdict || verdict.verdict === "approve");
     if (ctx.hasCheck) ctx.setVerdict(green ? "passed" : "failing");
-    ctx.setFacts({ reviewRounds, approved });
+    ctx.setFacts({ reviewRounds, approved, proof: ctx.proofOf(wt)?.status });
     const headline = !green
       ? `Check \`${check!.command}\` still fails after ${checkFixes} fix attempts`
       : approved
@@ -155,6 +164,7 @@ export const pipelinePattern: Pattern = {
         : "Not approved after the last review round";
     return [
       `**${headline}** — branch \`${wt.branch}\``,
+      proofLine(ctx.proofOf(wt)),
       section("Builder summary", fixer.finalText),
       verdict?.issues?.length && !approved
         ? section("Open review issues", verdict.issues.map((i) => `- ${i.problem}`).join("\n"))

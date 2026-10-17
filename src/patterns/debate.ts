@@ -2,7 +2,7 @@ import { adapters } from "../adapters/index.js";
 import type { Pattern, StepOutcome } from "../engine.js";
 import { describeIssues } from "../integrity.js";
 import { REVIEW_SCHEMA } from "./schemas.js";
-import { checkEvidence, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { checkEvidence, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, proofEvidence, proofLine, proofRule, proveOrAsk, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface ReviewVerdict {
   verdict: "approve" | "changes_requested";
@@ -145,10 +145,14 @@ export const debatePattern: Pattern = {
         preamble("builder", builder, WRITE) +
         section("Task", ctx.task) +
         section("Agreed plan", plan.finalText) +
+        proofRule(ctx) +
         section("Deliverable", "Implement the plan, run the relevant tests, then summarize the changes."),
     });
     await ctx.commit(buildWt, `${builder}: implement synthesized plan`);
     let fixed = await fixUntilGreen(ctx, { agent: builder, role: "builder", wt: buildWt, session: build, attempts: 2 });
+    // Green isn't enough: a test should fail without the change. The builder is asked for one.
+    const proved = await proveOrAsk(ctx, { agent: builder, role: "builder", wt: buildWt, check: fixed.check, session: fixed.session ?? build, attempts: 2, ask: true });
+    fixed = { check: proved.check, session: proved.session ?? fixed.session };
     let check = fixed.check;
 
     // The debate settled the design, not the code: a reviewer checks the build against the plan.
@@ -171,6 +175,7 @@ export const debatePattern: Pattern = {
             section("Agreed plan", plan.finalText) +
             section("Diff against base", fence(await ctx.diff(buildWt), "diff")) +
             checkEvidence(ctx, check) +
+            proofEvidence(proved.proof) +
             (testChanges.length ? section("Changes to tests (found by code-flow)", `Request changes unless the task requires them:\n${describeIssues(testChanges)}`) : "") +
             section("Deliverable", "Check that the build does what the plan and task say, and look for bugs, missed edge cases and missing tests. Only request changes for real problems.") +
             jsonInstruction('{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}'),
@@ -197,9 +202,11 @@ export const debatePattern: Pattern = {
     await ctx.artifact("Result", buildWt);
     if (check) ctx.setVerdict(check.ok ? "passed" : "failing");
     if (verdict) ctx.setFacts({ approved: verdict.verdict === "approve", reviewRounds: 1 });
+    ctx.setFacts({ proof: ctx.proofOf(buildWt)?.status });
 
     return [
       `**Built**${check ? (check.ok ? `, and \`${check.command}\` passes` : `, but \`${check.command}\` still fails`) : ""} on branch \`${buildWt.branch}\``,
+      proofLine(ctx.proofOf(buildWt)),
       verdict ? `Review by ${reviewer}: ${verdict.verdict === "approve" ? "approved" : `${verdict.issues.length} issue(s) sent back to the builder`}.` : "",
       section("Synthesized plan", plan.finalText),
       section("Builder summary", build.finalText),

@@ -2,7 +2,7 @@ import { adapters, type AgentId } from "../adapters/index.js";
 import { failureFingerprint, type CheckResult } from "../checks.js";
 import type { Pattern, StepOutcome } from "../engine.js";
 import { describeIssues, issuesKey } from "../integrity.js";
-import { checkSection, preamble, section, WRITE } from "./prompts.js";
+import { checkSection, preamble, proofLine, proofRule, section, WRITE } from "./prompts.js";
 
 /**
  * Loop until green.
@@ -13,6 +13,8 @@ import { checkSection, preamble, section, WRITE } from "./prompts.js";
  * often gets unstuck where the first one keeps repeating itself.
  * A pass only counts if the tests are still the tests: when the change deletes or skips tests
  * or edits what the check runs, the agent is told to undo that and fix the code instead.
+ * And a pass should prove something: when the change's tests pass on the base code too (say the
+ * check passed before anything changed), the agent is asked once for a test that fails without it.
  */
 export const loopPattern: Pattern = {
   id: "loop",
@@ -60,7 +62,9 @@ export const loopPattern: Pattern = {
     let rounds = 0;
     /** Test changes the agent was already told about (it may keep them if the task needs them). */
     let toldAbout = "";
-    let tamperNote = "";
+    /** What the last pass lacked (honest tests, or a test that needs the change), for the next round. */
+    let nudge = "";
+    let askedForProof = false;
     let solvedBy: AgentId | undefined;
     let handoffs = 0;
 
@@ -69,17 +73,18 @@ export const loopPattern: Pattern = {
       const agent = workers[current]!;
       const session = sessions.get(agent);
       const prompt = session
-        ? tamperNote ||
+        ? nudge ||
           "The check still fails after your last change." +
             checkSection(last) +
             section("Next", "Find the root cause and fix it in the code — don't weaken or skip tests. Then summarize what you changed.")
         : preamble("worker", agent, `${WRITE} code-flow runs the check below after every turn you take; the loop ends when it passes.`) +
           section("Task", ctx.task) +
           section("Done when", `\`${ctx.run.loop.check}\` passes. Add or update tests for new behaviour, so passing the check proves the task works.`) +
+          proofRule(ctx) +
           (handover ? section("Handover", handover) : "") +
           checkSection(last) +
-          tamperNote;
-      tamperNote = "";
+          nudge;
+      nudge = "";
 
       const turn = await ctx.ask({ title: `Round ${round}`, role: "workers", agent, mode: "write", cwd: wt, resume: session, prompt });
       sessions.set(agent, turn);
@@ -95,6 +100,19 @@ export const loopPattern: Pattern = {
         const uncounted = baseline.tests === undefined || result.tests === undefined;
         const issues = (await ctx.testChanges(wt)).filter((i) => i.severity === "high" || (uncounted && i.kind === "weakened-test"));
         if (!issues.length) {
+          // The baseline is the check on the base code: reused when the change touches no tests.
+          const proof = await ctx.prove(wt, { known: baseline });
+          if (proof?.status === "unproven" && !askedForProof && round < maxRounds) {
+            askedForProof = true;
+            history[history.length - 1] += " — but no test fails without the change";
+            nudge = section(
+              "The check passes, but nothing proves the change",
+              "code-flow ran this change's tests on the original code, without the change, and they pass there too: nothing shows the change does what the task asks.\n\n" +
+                "Add or update a test that fails without your change and passes with it. If the task can't be tested that way (docs, a pure refactor), change nothing and say why.",
+            );
+            continue;
+          }
+          if (proof?.status === "unproven") ctx.log(`The check passes, but no test fails without the change; review it before merging`, "warn");
           solvedBy = agent;
           break;
         }
@@ -107,7 +125,7 @@ export const loopPattern: Pattern = {
         toldAbout = issuesKey(issues);
         ctx.log(`The check passes, but only after changes to the tests that could hide the failure:\n${describeIssues(issues)}`, "warn");
         history[history.length - 1] += " — but tests were weakened";
-        tamperNote = section(
+        nudge = section(
           "The check passes, but not on evidence",
           "code-flow found these changes to the tests in this branch. They can make the check pass without fixing anything:\n" +
             describeIssues(issues) +
@@ -132,11 +150,12 @@ export const loopPattern: Pattern = {
 
     await ctx.artifact("Result", wt);
     ctx.setVerdict(last.ok ? "passed" : "failing");
-    ctx.setFacts({ solvedBy: last.ok ? solvedBy ?? workers[current] : undefined, handoffs });
+    ctx.setFacts({ solvedBy: last.ok ? solvedBy ?? workers[current] : undefined, handoffs, proof: ctx.proofOf(wt)?.status });
     return [
       last.ok
         ? `**Check passes** after ${rounds} round${rounds === 1 ? "" : "s"} — branch \`${wt.branch}\``
         : `**Check still failing** after ${rounds} rounds — branch \`${wt.branch}\` has the latest attempt`,
+      last.ok ? proofLine(ctx.proofOf(wt)) : "",
       section("Rounds", history.join("\n")),
       last.ok ? "" : section("Last failure", "```\n" + last.output.slice(-1_500).trim() + "\n```"),
     ].join("\n");

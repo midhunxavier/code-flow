@@ -17,7 +17,8 @@ import { gitWithInput } from "./git.js";
  *     "limits": { "maxMinutes": 90, "maxSteps": 60 },
  *     "trust": "standard",
  *     "image": "node:22",                          // Docker image for isolated checks
- *     "learn": true                                // pass on problems reviewers keep raising
+ *     "learn": true,                               // pass on problems reviewers keep raising
+ *     "prove": true                                // prove results fail-to-pass
  *   }
  */
 /** "full": any command, no sandbox, for every agent. Picked per run, never from a repo's config file. */
@@ -35,6 +36,8 @@ export interface RepoConfig {
   image?: string;
   /** Tell agents about problems reviewers raised in more than one earlier run (default on). */
   learn?: boolean;
+  /** Prove each result fail-to-pass: its tests must fail on the base code (default on). */
+  prove?: boolean;
 }
 
 export const CONFIG_PATH = ".codeflow/config.json";
@@ -61,6 +64,7 @@ export async function readRepoConfig(repo: string): Promise<{ config: RepoConfig
     if (["safe", "standard", "trusted"].includes(raw.trust)) config.trust = raw.trust;
     if (typeof raw.image === "string" && /^[\w./:@-]{1,200}$/.test(raw.image.trim())) config.image = raw.image.trim();
     if (typeof raw.learn === "boolean") config.learn = raw.learn;
+    if (typeof raw.prove === "boolean") config.prove = raw.prove;
     return { config, found: true };
   } catch (err) {
     return { config: {}, found: true, error: `${CONFIG_PATH}: ${(err as Error).message}` };

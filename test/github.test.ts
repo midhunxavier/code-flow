@@ -167,6 +167,36 @@ test("start from a PR: a review council reviews its changes; posting is your cal
   assert.equal(run.review?.postedTo, "https://github.com/o/r/pull/1");
 });
 
+test("a review council with a check: reviewers see whether the PR's tests fail without it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codeflow-record-"));
+  process.env.FAKE_RECORD_DIR = dir;
+  let run: Run;
+  try {
+    run = await idle(
+      await manager.start({
+        pattern: findPattern("council")!,
+        task: "Review pull request #1: Add feature",
+        repo,
+        source: { kind: "pr", number: 1 },
+        roles: { reviewers: ["claude", "codex"], chair: ["agy"] },
+        options: {},
+        // Passes on the PR, fails on main: the check itself needs the change.
+        loop: { check: "test -f feature.txt" },
+      }),
+    );
+  } finally {
+    delete process.env.FAKE_RECORD_DIR;
+  }
+  assert.equal(run.status, "done", run.error);
+  assert.deepEqual(run.steps.filter((s) => s.kind === "check").map((s) => `${s.title}:${s.status}`), ["Check the changes:done", "Proof: tests without the change:done"]);
+  assert.equal(run.review?.proof?.status, "proven");
+  assert.equal(run.review?.proof?.base, git("rev-parse", "main"), "proven against the code the PR started from");
+  assert.equal(run.facts?.proof, "proven");
+  const reviewerPrompts = prompts(dir).filter((p) => p.prompt.includes("Other reviewers"));
+  assert.ok(reviewerPrompts.every((p) => p.prompt.includes("## Fail-to-pass: proven (run by code-flow)")), "every reviewer sees the proof");
+  assert.match(run.review!.markdown, /Proven: `test -f feature.txt` fails without the change/);
+});
+
 test("fix failing CI, push to the PR, then follow through on CI and comments — never merging", async () => {
   const mainBefore = originHead("main");
   const dir = mkdtempSync(join(tmpdir(), "codeflow-record-"));
