@@ -28,9 +28,13 @@ import {
   selectProject,
   setSideChat,
   openSide,
+  chatDrafts,
+  takeDrafts,
+  rememberSide,
+  sideMemo,
 } from "./state.js";
 import { ProjectChip } from "./projects.js";
-import type { AgentEvent, AgentId, Artifact, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
+import type { AgentEvent, AgentId, Artifact, Attachment, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
 const modelNote = (run: RunSummary | null, id?: AgentId) =>
@@ -1218,6 +1222,16 @@ function PrPanel({ run, branch }: { run: RunSummary; branch: string }) {
 const existsHint = (run: RunSummary) => !run.archived; // archived runs may have had their worktrees removed
 
 /** Try a result: open its worktree in your tools, or run the app from it. */
+/** An app a run started, as a page of the side panel's Browser (for the run the panel shows). */
+function showInPanel(url: string) {
+  const memo = sideMemo.value;
+  const pages = memo.pages ?? [];
+  const existing = pages.find((p) => p.url === url);
+  const id = existing?.id ?? `p${Date.now().toString(36)}`;
+  rememberSide({ pages: existing ? pages : [...pages, { id, url }], page: id });
+  openSide("browser");
+}
+
 function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }) {
   const base = `/api/runs/${run.id}/worktrees/${encodeURIComponent(worktree)}`;
   const [server, setServer] = useState<{ url: string; status: string; logs: string[]; command: string; exitCode?: number | null } | null>(null);
@@ -1235,10 +1249,12 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
   }, [base]);
   const open = (target: string) =>
     post<{ openedWith: string }>(`${base}/open`, { target }).then((r) => showToast(`Opened in ${r.openedWith}${onPhone ? " on your computer" : ""}`), (e) => showToast(e.message, 5000));
-  /** Start the app; for a locked-down run, only once you've said to run that code here. */
+  /** Start the app; for a locked-down run, only once you've said to run that code here. It opens in the side panel's Browser. */
   const runApp = async () => {
     try {
-      setServer(await post(base + "/serve", { command }));
+      const started = await post<NonNullable<typeof server>>(base + "/serve", { command });
+      setServer(started);
+      if (!onPhone) showInPanel(started.url);
     } catch (e) {
       if (!(e instanceof ApiError) || e.confirm !== "allowUntrusted") return showToast((e as Error).message, 5000);
       if (!confirm(`${e.message}\n\nRun it on this computer anyway?`)) return;
@@ -1270,6 +1286,11 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
           >
             Open {appUrl!.replace("http://", "")} ↗
           </a>
+          {onPhone ? null : (
+            <button class="btn small" title="Show it in the side panel's Browser, where you can annotate it" onClick={() => showInPanel(server.url)}>
+              Show in panel
+            </button>
+          )}
           <button class="btn small" onClick={() => setShowLogs(!showLogs)}>
             {showLogs ? "Hide logs" : "Logs"}
           </button>
@@ -1408,11 +1429,39 @@ function noteStep(note: Note, steps: Step[]): string {
 }
 
 /** While running: message the team. After it finishes: reply to an agent, or the whole team. */
+/** Snapshots waiting to go with a message, each with a way to drop it. */
+export function DraftImages({ images, onRemove }: { images: Attachment[]; onRemove: (i: number) => void }) {
+  if (!images.length) return null;
+  return (
+    <div class="draft-images">
+      {images.map((im, i) => (
+        <span key={i} class="draft-img" title={im.name}>
+          <img src={`data:image/png;base64,${im.data}`} alt={im.name} />
+          <span class="di-name">{im.name}</span>
+          <button type="button" class="icon-btn" aria-label={`Don't send ${im.name}`} onClick={() => onRemove(i)}>
+            <Icon name="close" />
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: Step[]; chat: boolean }) {
   const [text, setText] = useState("");
   const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
+  /** Snapshots that came with pins from the Browser: they go with the reply. */
+  const [images, setImages] = useState<Attachment[]>([]);
   const area = useRef<HTMLTextAreaElement>(null);
+  // Pins sent here from the side panel's Browser land in the box, to add a line to before sending.
+  useEffect(() => {
+    const drafts = takeDrafts(`main:${run.id}`);
+    if (!drafts.length) return;
+    setText((t) => [t.trim(), ...drafts.map((d) => d.text)].filter(Boolean).join("\n\n"));
+    setImages((i) => [...i, ...drafts.flatMap((d) => d.images)]);
+    area.current?.focus();
+  }, [chatDrafts.value, run.id]);
   // The box grows with what you type, up to a limit (then it scrolls).
   useEffect(() => {
     const el = area.current;
@@ -1436,10 +1485,14 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
     if (!text.trim()) return;
     setBusy(true);
     try {
+      const files = images.map(({ name, data }) => ({ name, data }));
       if (running) {
         const note = await post<Note>(`/api/runs/${run.id}/notes`, { text, agent: chosen || undefined });
-        if (note.deliveredTo?.midTurn) showToast(`Sent into ${note.deliveredTo.agent}'s running turn`);
+        if (images.length) showToast("Sent. The snapshots stay here: they go with a reply once the run has finished", 6000);
+        else if (note.deliveredTo?.midTurn) showToast(`Sent into ${note.deliveredTo.agent}'s running turn`);
         else showToast(chosen ? `Queued for ${chosen}'s next turn` : "Queued for the next agent's turn");
+        setText("");
+        return;
       } else if (chosen === "team") {
         const base = run.artifacts[0]?.branch ?? run.baseLabel;
         const { id } = await post<{ id: string }>("/api/runs", {
@@ -1449,7 +1502,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
           roles: run.roles,
           options: run.options,
           baseRef: base === "HEAD" ? "" : base,
-          context: { paths: (run.context?.paths ?? []).map((c) => ({ path: c.path })) },
+          context: { paths: (run.context?.paths ?? []).map((c) => ({ path: c.path })), attachments: files },
           agentSettings: run.agentSettings,
           loop: run.loop,
           approvals: run.approvals,
@@ -1458,10 +1511,11 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
         route.value = { view: "run", id };
       } else {
         const [agent, worktree] = chosen.split("@");
-        await post(`/api/runs/${run.id}/followups`, { kind: "reply", agent, worktree, message: text });
+        await post(`/api/runs/${run.id}/followups`, { kind: "reply", agent, worktree, message: text, attachments: files });
         showToast("Sent — the agent is on it");
       }
       setText("");
+      setImages([]);
     } catch (err) {
       showToast((err as Error).message, 5000);
     } finally {
@@ -1512,6 +1566,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
             ))}
           </div>
         ) : null}
+        <DraftImages images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
         <div class="chatbox">
           <textarea
             ref={area}

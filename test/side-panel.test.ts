@@ -198,3 +198,62 @@ test("/api/shell: room for a new shell comes from the oldest idle one, never a b
 test("/api/serve lists the apps started with Run app", async () => {
   assert.deepEqual((await api("/api/serve")).body, []);
 });
+
+test("/api/preview: a local app through its own port, with the overlay, frameable, and only for requests addressed to it", async () => {
+  const { createServer: createHttp, request } = await import("node:http");
+  const { connect } = await import("node:net");
+  // A stand-in for a dev server: a page that refuses frames, a JSON echo, a redirect, and a WebSocket-ish upgrade that echoes.
+  const app = createHttp((req, res) => {
+    if (req.url === "/echo") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ host: req.headers.host, origin: req.headers.origin ?? null }));
+    if (req.url === "/old") return res.writeHead(302, { location: `http://localhost:${(app.address() as AddressInfo).port}/new` }).end();
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "x-frame-options": "DENY", "content-security-policy": "frame-ancestors 'none'" });
+    res.end("<!doctype html><html><head><title>App</title></head><body>hi</body></html>");
+  });
+  app.on("upgrade", (_req, socket) => {
+    socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
+    socket.on("data", (d) => socket.write(d));
+  });
+  const appPort = await new Promise<number>((r) => app.listen(0, "127.0.0.1", () => r((app.address() as AddressInfo).port)));
+  try {
+    assert.equal((await api("/api/preview", { url: "https://example.com/" })).status, 400, "only apps on this computer");
+    const shown = await api("/api/preview", { url: `http://127.0.0.1:${appPort}/?x=1` });
+    assert.equal(shown.status, 200, JSON.stringify(shown.body));
+    assert.match(shown.body.url, /^http:\/\/127\.0\.0\.1:\d+\/\?x=1$/);
+    assert.notEqual(new URL(shown.body.url).port, String(appPort), "a port of its own: a different origin from the app and from code-flow");
+    assert.equal((await api("/api/preview", { url: `http://127.0.0.1:${appPort}/` })).body.origin, shown.body.origin, "the same app keeps its port");
+
+    const page = await fetch(shown.body.url);
+    const html = await page.text();
+    assert.match(html, /<head><script src="\/__codeflow\/overlay\.js"><\/script><title>/);
+    assert.equal(page.headers.get("x-frame-options"), null);
+    assert.equal(page.headers.get("content-security-policy"), null);
+    const overlay = await (await fetch(`${shown.body.origin}/__codeflow/overlay.js`)).text();
+    assert.match(overlay, new RegExp(`const PARENTS = \\["http://localhost:${new URL(base).port}"`));
+
+    const echo = await (await fetch(`${shown.body.origin}/echo`, { method: "POST", headers: { origin: shown.body.origin } })).json();
+    assert.deepEqual(echo, { host: `127.0.0.1:${appPort}`, origin: `http://127.0.0.1:${appPort}` }, "the app sees its own host and origin");
+    const moved = await fetch(`${shown.body.origin}/old`, { redirect: "manual" });
+    assert.equal(moved.headers.get("location"), `http://localhost:${appPort}/new`, "a redirect to another host is left alone");
+
+    // A request that names another host (DNS rebinding) is refused.
+    const port = Number(new URL(shown.body.origin).port);
+    const status = await new Promise<number>((resolve) => request({ host: "127.0.0.1", port, path: "/", headers: { host: `evil.example:${port}` } }, (r) => resolve(r.statusCode ?? 0)).end());
+    assert.equal(status, 403);
+
+    // WebSockets (hot reload) go through.
+    const echoed = await new Promise<string>((resolve, reject) => {
+      const s = connect(port, "127.0.0.1", () => s.write(`GET /ws HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n`));
+      let seen = "";
+      s.on("data", (d) => {
+        seen += d.toString();
+        if (seen.includes("\r\n\r\n") && !seen.includes("ping")) s.write("ping");
+        if (seen.includes("ping")) (s.end(), resolve(seen));
+      });
+      s.on("error", reject);
+    });
+    assert.match(echoed, /^HTTP\/1\.1 101/);
+    assert.match(echoed, /ping$/);
+  } finally {
+    app.close();
+  }
+});

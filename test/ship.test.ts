@@ -134,6 +134,21 @@ test("a side chat on a run: Ask changes nothing; Change edits the run's worktree
   }
 });
 
+test("files sent with a follow-up go in the worktree's context folder, named in the message, never committed", async () => {
+  const run = await runPattern("pipeline", pipelineRoles);
+  const png = Buffer.from("89504e470d0a1a0a", "hex").toString("base64");
+  await manager.followUp(run.id, { kind: "reply", worktree: "build", agent: "codex", message: "See the screenshot", attachments: [{ name: "pin 1.png", data: png }] });
+  await finished(run);
+  const f = run.followUps.at(-1)!;
+  assert.equal(f.status, "done", f.result);
+  assert.equal(f.files?.length, 1);
+  assert.match(f.files![0]!, /^\.codeflow-context\/messages\/[a-z0-9]+-pin 1\.png$/);
+  assert.match(f.message, /Attached, in this worktree \(not committed\): `\.codeflow-context\/messages\//);
+  const wt = run.worktrees.find((w) => w.name === "build")!;
+  assert.ok(existsSync(join(wt.path, f.files![0]!)));
+  assert.doesNotMatch(git("ls-tree", "-r", "--name-only", run.artifacts[0]!.branch), /codeflow-context/, "not on the branch");
+});
+
 test("a side chat's turn sent while the team works waits for it", async () => {
   process.env.FAKE_SLEEP_VENDOR = "claude";
   process.env.FAKE_SLEEP_MS = "1500";

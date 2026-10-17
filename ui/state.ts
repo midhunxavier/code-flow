@@ -77,6 +77,27 @@ export function setSideChat(key: string | null) {
 }
 /** Text handed to the side chat's composer (from Notes, or a file). */
 export const sideDraft = signal("");
+
+/**
+ * Something to send that came from elsewhere, for a message box to pick up: the Browser's pins (text
+ * and snapshots). `to`: "main:<run>" (the run's own conversation), "side:<chat>", "side:new", or
+ * "composer" (a new run's task).
+ */
+export interface ChatDraft {
+  to: string;
+  text: string;
+  images: Attachment[];
+}
+export const chatDrafts = signal<ChatDraft[]>([]);
+export function draftTo(to: string, text: string, images: Attachment[] = []) {
+  chatDrafts.value = [...chatDrafts.value, { to, text, images }];
+}
+/** The drafts waiting for a message box, taken out of the queue. */
+export function takeDrafts(to: string): ChatDraft[] {
+  const mine = chatDrafts.value.filter((d) => d.to === to);
+  if (mine.length) chatDrafts.value = chatDrafts.value.filter((d) => d.to !== to);
+  return mine;
+}
 /** A file the Files tab should show: set by anything that opens a file (a transcript, a diff). */
 export const sideFile = signal<{ root: string; path: string } | null>(null);
 export function openFile(root: string, path: string) {
@@ -302,7 +323,14 @@ export interface SideMemory {
   shell?: string;
   below?: string;
   split?: boolean;
-  /** The Browser tab's address. */
+  /** The Browser tab's pages (tabs of its own), the one shown, the one beside it to compare, and the width. */
+  pages?: { id: string; url: string }[];
+  page?: string;
+  compare?: string;
+  device?: "phone" | "tablet" | "full";
+  /** Where the Browser's pins went last (see ChatDraft). */
+  sendTo?: string;
+  /** Before pages: the one address the Browser had. */
   url?: string;
   at: number;
 }

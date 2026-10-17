@@ -1,4 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
+import { BrowserTab } from "./browser.js";
 import { ChangesTab } from "./changes.js";
 import { addContext, FileTree } from "./composer.js";
 import { Icon, type IconName } from "./icons.js";
@@ -234,92 +235,6 @@ function FileViewer({ root, path, onClose }: { root: string; path: string; onClo
           {lines.length > MAX_SHOWN_LINES || file.truncated ? <span class="help">… showing the first {Math.min(lines.length, MAX_SHOWN_LINES).toLocaleString()} lines</span> : null}
         </pre>
       ) : null}
-    </>
-  );
-}
-
-// ---------------------------------------------------------------- browser
-/** An address as the browser should load it: with a scheme, and from the phone, on the computer's Wi-Fi address. */
-function address(target: string): string {
-  let next = target.trim();
-  if (!next) return "";
-  if (!/^https?:\/\//i.test(next)) next = /^(localhost|127\.|\[::1\]|\d+\.\d+\.\d+\.\d+)/.test(next) ? `http://${next}` : `https://${next}`;
-  // From the phone, the app is on the computer's Wi-Fi address — reachable if it listens there.
-  if (onPhone) next = next.replace("//localhost:", `//${location.hostname}:`).replace("//127.0.0.1:", `//${location.hostname}:`);
-  return next;
-}
-
-function BrowserTab() {
-  const s = sideScope.value;
-  const [servers, setServers] = useState<Omit<DevServer, "logs">[]>([]);
-  const [nonce, setNonce] = useState(0);
-  useEffect(() => {
-    let alive = true;
-    const poll = () => api<Omit<DevServer, "logs">[]>("/api/serve").then((s) => alive && setServers(s), () => {});
-    poll();
-    const timer = setInterval(poll, 5_000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, []);
-  const running = servers.filter((x) => x.status === "running");
-  // The apps started in the panel's folders come first: a run's own worktrees (every run's sit inside
-  // the repository), or anywhere in the project's repositories.
-  const within = (cwd: string, folder: string) => cwd === folder || cwd.startsWith(`${folder}/`);
-  const folders = s.run ? s.run.worktrees.map((w) => w.path) : placesFor(s).map((p) => p.path);
-  const mine = running.filter((x) => folders.some((f) => within(x.cwd, f)));
-  const apps = [...mine, ...running.filter((x) => !mine.includes(x))];
-  // What you had open here; else the app this run or project started; else what you had open for the run's project.
-  const url = sideMemo.value.url || (mine[0] ? address(mine[0].url) : "") || (s.run ? sideMemory.value[projectKeyOf(s.run)]?.url : "") || "";
-  const [typed, setTyped] = useState(url);
-  useEffect(() => setTyped(url), [url]);
-  const go = (target: string) => {
-    const next = address(target);
-    if (!next) return;
-    rememberSide({ url: next });
-    setTyped(next);
-    setNonce((n) => n + 1);
-  };
-  return (
-    <>
-      <div class="side-toolbar browse-bar">
-        <input
-          type="url"
-          class="field mono"
-          aria-label="Address"
-          placeholder="localhost:3000, or an address…"
-          value={typed}
-          onInput={(e) => setTyped(e.currentTarget.value)}
-          onKeyDown={(e) => e.key === "Enter" && go(typed)}
-        />
-        <button type="button" class="btn ghost small" title="Reload" aria-label="Reload" disabled={!url} onClick={() => setNonce((n) => n + 1)}>
-          <Icon name="refresh" />
-        </button>
-        <a class={`btn ghost small ${url ? "" : "off"}`} href={url || "#"} target="_blank" rel="noreferrer" title="Open in a new tab" aria-label="Open in a new tab" aria-disabled={!url}>
-          <Icon name="external" />
-        </a>
-      </div>
-      {apps.length ? (
-        <div class="browse-apps">
-          <span class="lbl">Running</span>
-          {apps.map((x) => (
-            <button key={x.key} type="button" class="chip-tpl" title={`${x.command} in ${x.cwd}`} aria-pressed={url === address(x.url)} onClick={() => go(x.url)}>
-              {baseName(x.cwd)} · :{x.port}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      <div class="browse">
-        {url ? (
-          <iframe key={`${url}#${nonce}`} src={url} title="Browser" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals" />
-        ) : (
-          <div class="browse-empty">
-            <p>Open the app a run started with <b>Run app</b>, or type an address.</p>
-            <p class="help">Some sites refuse to be shown inside another page; those open in a new tab instead.</p>
-          </div>
-        )}
-      </div>
     </>
   );
 }

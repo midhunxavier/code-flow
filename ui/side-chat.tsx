@@ -3,11 +3,12 @@ import { AgentTag, Markdown } from "./bits.js";
 import { Icon } from "./icons.js";
 import { baseName, post, SHORT, showToast, store, STATUS_TEXT } from "./lib.js";
 import { Menu, MenuItem, MenuTitle, resultWorktree, Strip, type StripItem } from "./panel-bits.js";
-import { AgentPicker, ChatThread, ConversationBar, FollowUpBadges, TurnBody, useRunStream } from "./run.js";
+import { AgentPicker, ChatThread, ConversationBar, DraftImages, FollowUpBadges, TurnBody, useRunStream } from "./run.js";
 import {
   afterStart,
   agents,
   agentSettings,
+  chatDrafts,
   limits,
   patterns,
   projectFor,
@@ -19,10 +20,11 @@ import {
   sideDraft,
   sideMemo,
   sideScope,
+  takeDrafts,
   trust,
   type SideScope,
 } from "./state.js";
-import type { AgentId, FollowUp, RunSummary } from "./types.js";
+import type { AgentId, Attachment, FollowUp, RunSummary } from "./types.js";
 
 /**
  * The side panel's Chat tab. On a run, a side chat works in the run's own worktree: Ask reads it,
@@ -266,7 +268,16 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
   const [agent, setAgent] = useState<AgentId>(chat?.agent ?? savedAgent);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [images, setImages] = useState<Attachment[]>([]);
   const area = useDraft(text, setText);
+  // Pins sent here from the Browser.
+  useEffect(() => {
+    const drafts = takeDrafts(chat ? chat.key : "side:new");
+    if (!drafts.length) return;
+    setText((t) => [t.trim(), ...drafts.map((d) => d.text)].filter(Boolean).join("\n\n"));
+    setImages((i) => [...i, ...drafts.flatMap((d) => d.images)]);
+    area.current?.focus();
+  }, [chatDrafts.value, chat?.key]);
   const wt = chat ? run.worktrees.find((w) => w.name === chat.turns[0]!.worktree) : resultWorktree(run);
   const name = SHORT[agent] ?? agent;
   const send = async () => {
@@ -276,8 +287,9 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
     const id = chat?.chat ?? `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const title = chat?.title ?? (text.trim().split("\n")[0]!.slice(0, 60) || "Side chat");
     try {
-      await post(`/api/runs/${run.id}/followups`, { kind: "side", worktree: wt.name, agent, message: text.trim(), side: { chat: id, mode, title } });
+      await post(`/api/runs/${run.id}/followups`, { kind: "side", worktree: wt.name, agent, message: text.trim(), side: { chat: id, mode, title }, attachments: images.map(({ name, data }) => ({ name, data })) });
       setText("");
+      setImages([]);
       if (!chat) setSideChat(`side:${id}`);
     } catch (err) {
       setError((err as Error).message);
@@ -289,6 +301,7 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
     <div class="convo">
       <div class="convo-inner">
         {error ? <div class="msg err">{error}</div> : null}
+        <DraftImages images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
         <div class="chatbox">
           <textarea
             ref={area}

@@ -15,6 +15,7 @@ import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig } from "./repo-config.js";
 import { openFolder } from "./serve.js";
 import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
+import { Previews } from "./preview.js";
 import { Notes } from "./notes.js";
 import { CODEFLOW_HOME, envNumber, PORT } from "./config.js";
 import { RunManager, UntrustedSourceError, type LoopSettings, type Pattern } from "./engine.js";
@@ -75,6 +76,11 @@ const REMOTE_PORT = envNumber("CODEFLOW_REMOTE_PORT", PORT + 1, { min: 1, max: 6
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
 const HOST = "127.0.0.1";
 const allowedHosts = new Set([`${HOST}:${PORT}`, `localhost:${PORT}`]);
+/** Local apps in the side panel's Browser, each on a port of its own (src/preview.ts). */
+const previews = new Previews(
+  () => [`http://localhost:${PORT}`, `http://${HOST}:${PORT}`],
+  () => [PORT, REMOTE_PORT],
+);
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -910,6 +916,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   // Every app started with "Run app", for the side panel's Browser.
   if (req.method === "GET" && parts[1] === "serve") return send(res, 200, manager.devServers.list());
   // The side panel's Terminal: shells that stay open, fed over POST, streamed over SSE.
+  if (parts[1] === "preview" && req.method === "POST") {
+    const body = await readJson(req);
+    return send(res, 200, await attempt(() => previews.show(String(body.url ?? ""))));
+  }
   if (parts[1] === "shell") {
     const id = parts[2];
     if (!id && req.method === "GET") return send(res, 200, shells.list());
@@ -1018,6 +1028,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
           agent: body.agent,
           message: typeof body.message === "string" ? body.message : undefined,
           mergeFrom: typeof body.mergeFrom === "string" ? body.mergeFrom : undefined,
+          attachments: Array.isArray(body.attachments) ? body.attachments.filter((a: any) => a && typeof a.data === "string").map((a: any) => ({ name: String(a.name ?? "file"), data: a.data })) : undefined,
         }),
       );
       return send(res, 200, { ok: true });
@@ -1260,6 +1271,7 @@ async function stop(reason: string, code = 0) {
     lanServer?.close();
     watcher.stop();
     shells.closeAll();
+    previews.closeAll();
     automationsSaved = automations.stop();
   } catch {
     // still starting up: nothing is listening yet

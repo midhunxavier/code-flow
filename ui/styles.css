@@ -343,8 +343,44 @@
   .browse-bar a.btn.off { opacity: .4; pointer-events: none; }
   .browse-apps { flex: none; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); }
   .browse-apps .chip-tpl[aria-pressed="true"] { border-color: var(--accent-edge); background: var(--accent-soft); color: var(--text); }
-  .browse { flex: 1; min-height: 0; display: flex; flex-direction: column; background: #fff; }
-  .browse iframe { flex: 1; width: 100%; border: 0; }
+  .browse { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--sunken); }
+  .browse.compare { flex-direction: row; gap: 1px; }
+  @container side (max-width: 640px) { .browse.compare { flex-direction: column; } }
+  .browse-page { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+  .browse-frame { flex: 1; min-height: 0; max-width: 100%; margin: 0 auto; display: flex; flex-direction: column; background: #fff; }
+  .browse-frame iframe { flex: 1; width: 100%; border: 0; }
+  .browse-note { margin: 6px 8px; }
+  .browse-tools { flex: none; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  .browse-tools .spacer { flex: 1; }
+  .btn.annotate.on { background: #e8590c; border-color: #e8590c; color: #fff; }
+  .browse-console { flex: none; max-height: 34%; display: flex; flex-direction: column; border-top: 1px solid var(--border); background: var(--raised); }
+  .bc-head { flex: none; display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .bc-head .spacer { flex: 1; }
+  .bc-lines { overflow: auto; padding: 4px 10px 8px; font: 11.5px/1.5 var(--mono); }
+  .bc-line { display: flex; gap: 8px; padding: 3px 0; border-bottom: 1px dashed var(--border); }
+  .bc-level { flex: none; width: 34px; text-transform: uppercase; font-size: 9.5px; letter-spacing: .08em; color: var(--faint); padding-top: 2px; }
+  .bc-line.error .bc-level, .bc-line.network .bc-level { color: var(--err); }
+  .bc-line.warn .bc-level { color: var(--warn); }
+  .bc-text { min-width: 0; white-space: pre-wrap; word-break: break-word; }
+  .pins-tray { flex: none; max-height: 45%; overflow: auto; display: grid; gap: 8px; padding: 10px; border-top: 1px solid var(--border); background: var(--raised); }
+  .pin-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 8px; align-items: start; }
+  .pin-n { width: 20px; height: 20px; border-radius: 50%; background: #e8590c; color: #fff; font: 700 11px var(--sans); display: grid; place-items: center; margin-top: 2px; }
+  .pin-main { min-width: 0; display: grid; gap: 5px; }
+  .pin-what { display: flex; align-items: center; gap: 8px; min-width: 0; font: 11.5px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pin-thumb { height: 28px; max-width: 80px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); flex: none; }
+  .pin-main input.field { padding: 6px 10px; font-size: 13px; }
+  .pin-actions { display: flex; gap: 2px; align-items: center; }
+  .pin-actions .btn.on { background: var(--accent-soft); color: var(--text); }
+  .adjust { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 8px; }
+  .adj { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 6px; align-items: center; font: 10.5px var(--mono); color: var(--faint); }
+  .adj input.field { padding: 3px 8px; font-size: 11.5px; }
+  .pins-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .pins-actions .spacer { flex: 1; }
+  .draft-images { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+  .draft-img { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 3px; border: 1px solid var(--border); border-radius: 10px; background: var(--raised); font-size: 11.5px; color: var(--muted); max-width: 220px; }
+  .draft-img img { height: 28px; width: 40px; object-fit: cover; border-radius: 6px; }
+  .di-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .draft-img .icon-btn { width: 20px; height: 20px; }
   .browse-empty { flex: 1; background: var(--panel); padding: 24px 16px; color: var(--muted); font-size: 13.5px; }
   .browse-empty p { margin: 0 0 8px; }
   /* notes */

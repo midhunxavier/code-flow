@@ -17,7 +17,7 @@ import { CODEFLOW_HOME, MAX_DIFF_CHARS, STEP_IDLE_MS, STEP_TIMEOUT_MS, timerMs }
 import { logWarn } from "./log.js";
 import { cantRunMessage, cantRunReason, runCheck, type CheckResult, type Container } from "./checks.js";
 import { commandExists } from "./adapters/process.js";
-import { contextPrompt, hasStagedFiles, prepareContext, type ContextInput, type RunContext } from "./context.js";
+import { contextPrompt, hasStagedFiles, prepareContext, stageMessageFiles, type ContextInput, type RunContext } from "./context.js";
 import { fitDiff } from "./diff.js";
 import { describeIssues, inspectChanges, unverifiedIssue, type IntegrityIssue } from "./integrity.js";
 import { extractJson, shapeProblem } from "./json.js";
@@ -288,6 +288,8 @@ export interface FollowUp {
   kind: "comments" | "reply" | "resolve-conflicts" | "ci-fix" | "side";
   /** A side chat's turn: its conversation, Ask (read-only) or Change (edits the worktree), and its title. */
   side?: SideTurn;
+  /** Files sent with it (screenshots), relative to the worktree, in its git-excluded context folder. */
+  files?: string[];
   worktree: string;
   agent: AgentId;
   /** What to tell the agent (comments, a reply, CI failures), or the branch to merge for conflicts. */
@@ -1728,26 +1730,34 @@ export class RunManager {
       watch?: string;
       trust?: Trust;
       side?: SideTurn;
+      /** Files to send with it (base64): written into the worktree, never committed. */
+      attachments?: { name: string; data: string }[];
     },
   ) {
     const run = this.require(id);
     const kind = input.kind ?? "comments";
     if (kind === "side" && !input.side) throw new Error("A side chat's turn needs its chat");
     // A side chat's turn can wait for the team: the running execution takes it once its own work is done.
-    const queue = kind === "side" && run.status === "running" && !this.starting.has(id);
+    let queue = kind === "side" && run.status === "running" && !this.starting.has(id);
     if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error(kind === "side" ? "Side chats can start once the run has finished or while it's running" : "Follow-ups can be sent once the run has finished");
     if (!run.worktrees.some((w) => w.name === input.worktree)) throw new Error(`Unknown worktree "${input.worktree}"`);
     if (kind !== "resolve-conflicts" && !input.message?.trim()) throw new Error(kind === "reply" ? "Write a reply" : kind === "side" ? "Write a message" : "Write at least one comment");
     if (kind === "resolve-conflicts" && !input.mergeFrom) throw new Error("Say which branch to merge");
     if (kind === "resolve-conflicts" && !(await validRef(run.repo, input.mergeFrom!))) throw new Error(`"${input.mergeFrom}" isn't a branch in this repository`);
+    const wtPath = run.worktrees.find((w) => w.name === input.worktree)!.path;
+    const files = input.attachments?.length ? await stageMessageFiles(wtPath, Date.now().toString(36), input.attachments) : [];
+    // Writing the files took a moment: whether it waits for the team or starts now is decided after.
+    queue = kind === "side" && run.status === "running" && !this.starting.has(id);
     if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error("Follow-ups can be sent once the run has finished");
+    const message = (input.message?.trim() ?? "") + (files.length ? `\n\nAttached, in this worktree (not committed): ${files.map((f) => `\`${f}\``).join(", ")}` : "");
     run.followUps.push({
       id: `f${run.followUps.length + 1}`,
       kind,
       side: kind === "side" ? input.side : undefined,
       worktree: input.worktree,
       agent: input.agent,
-      message: input.message?.trim() ?? "",
+      message,
+      files: files.length ? files : undefined,
       mergeFrom: input.mergeFrom,
       from: input.from,
       push: input.push,

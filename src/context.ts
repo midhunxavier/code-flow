@@ -116,6 +116,29 @@ export async function prepareContext(repo: string, baseRef: string, input: Conte
   return ctx;
 }
 
+/**
+ * Files sent with a message to a run (the Browser's screenshots, say): written into the worktree's
+ * CONTEXT_DIR, where the agent can open them and nothing is committed. Their paths, relative to it.
+ */
+export async function stageMessageFiles(worktree: string, prefix: string, files: { name: string; data: string }[]): Promise<string[]> {
+  if (files.length > LIMITS.attachments) throw new Error(`Too many attached files (max ${LIMITS.attachments})`);
+  const names = new Set<string>();
+  const paths: string[] = [];
+  let total = 0;
+  for (const f of files) {
+    const data = Buffer.from(String(f.data ?? ""), "base64");
+    if (data.length > LIMITS.fileBytes) throw new Error(`"${f.name}" is larger than ${mb(LIMITS.fileBytes)}`);
+    total += data.length;
+    if (total > LIMITS.totalBytes) throw new Error(`Attached files exceed ${mb(LIMITS.totalBytes)} in total`);
+    const name = uniqueName(`${prefix}-${safeFileName(String(f.name ?? "file"))}`, names);
+    const dir = join(worktree, CONTEXT_DIR, "messages");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, name), data);
+    paths.push(`${CONTEXT_DIR}/messages/${name}`);
+  }
+  return paths;
+}
+
 /** The prompt section every agent gets. Empty when the user gave no context. */
 export function contextPrompt(ctx: RunContext): string {
   if (!ctx.paths.length && !ctx.attachments.length) return "";
