@@ -678,8 +678,9 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
     ...sideChanges.map((side) => ({ at: (side.stepId && data.steps.get(side.stepId)?.startedAt) || side.at, side })),
   ].sort((a, b) => a.at - b.at);
   // The run's last check is the first turn's while nothing that changes the branch came after it (a side Ask doesn't).
-  // A side change still working has already set the run's last check: the first turn's badge isn't its to show.
-  const nothingAfter = followUps.length === 0 && !run.followUps.some((f) => f.side?.mode === "change");
+  // A side change that started (working, or done) is about to set, or has set, the run's last check: the
+  // first turn's badge isn't its to show. One still queued hasn't touched the branch.
+  const nothingAfter = followUps.length === 0 && !run.followUps.some((f) => f.side?.mode === "change" && (f.status !== "pending" || !!f.stepId));
   const agent = Object.values(run.roles).flat()[0];
   return (
     <>
@@ -1513,6 +1514,11 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
         setText("");
         return;
       } else if (chosen === "team") {
+        // A new run starts from the branch as it is now, without the change a side chat is still making.
+        if (sideOnly) {
+          showToast("Wait for the side chat to finish: a new run would start without its change", 6000);
+          return;
+        }
         const base = run.artifacts[0]?.branch ?? run.baseLabel;
         const { id } = await post<{ id: string }>("/api/runs", {
           repo: run.repo,
@@ -1531,7 +1537,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
       } else {
         const [agent, worktree] = chosen.split("@");
         await post(`/api/runs/${run.id}/followups`, { kind: "reply", agent, worktree, message: text, attachments: files });
-        showToast("Sent — the agent is on it");
+        showToast(sideOnly ? "Queued: it goes once the side chat is done" : "Sent — the agent is on it");
       }
       setText("");
       setImages([]);
@@ -1550,14 +1556,18 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
     ? running
       ? `Goes into ${chatName}'s running turn if it takes messages, otherwise it's sent as soon as the turn ends`
       : chosen === "team"
-        ? "Starts again from this result"
-        : `Continues ${chatName}'s session on its branch`
+        ? sideOnly
+          ? "Starts again from this result: wait for the side chat to finish first"
+          : "Starts again from this result"
+        : `Continues ${chatName}'s session on its branch${sideOnly ? ", once the side chat is done" : ""}`
     : running
       ? chosen
         ? `Steered into ${name}'s running turn if it takes messages, otherwise its next turn`
         : "Goes to the next agent that takes a turn"
       : chosen === "team"
-        ? "Starts a new run with the same team, from this result"
+        ? sideOnly
+          ? "Starts a new run with the same team, from this result: wait for the side chat to finish first"
+          : "Starts a new run with the same team, from this result"
         : `Continues ${name}'s session on its branch, in ${worktree}${sideOnly ? ", once the side chat is done" : ""}`;
   const placeholder = chat ? `Message ${chatName}…` : running ? "Message the team…" : chosen === "team" ? "Tell the team what to change…" : `Reply to ${name}…`;
   // In a chat, what you said is already in the thread; only what's still on its way shows here.
@@ -1627,7 +1637,9 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
                         </optgroup>
                       ) : null}
                       <optgroup label="Start again">
-                        <option value="team">Whole team · new run</option>
+                        <option value="team" disabled={sideOnly}>
+                          Whole team · new run{sideOnly ? " (once the side chat is done)" : ""}
+                        </option>
                       </optgroup>
                     </>
                   )}

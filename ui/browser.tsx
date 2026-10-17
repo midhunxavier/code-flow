@@ -50,6 +50,8 @@ interface Pin {
 }
 /** A screenshot of the page from a headless Chrome (snapshot mode), to draw boxes on. */
 interface Snap {
+  /** The address it was taken of (where it ended up is `url`). */
+  asked: string;
   /** PNG data URL. */
   image: string;
   width: number;
@@ -80,11 +82,15 @@ interface PageState {
   showSnap?: boolean;
   snapping?: boolean;
   snapError?: string;
+  /** The latest snapshot asked for: a result for an older one (or for a page you've since left) is dropped. */
+  snapAsk?: number;
 }
 /** Per page (scope|page id): pins and console survive switching tabs and pages. */
 const pages = signal<Record<string, PageState>>({});
 const pageState = (key: string): PageState => pages.value[key] ?? { pins: [], console: [], capturing: 0 };
 const setPage = (key: string, fn: (p: PageState) => PageState) => (pages.value = { ...pages.value, [key]: fn(pageState(key)) });
+/** Back to the live page, and any snapshot still on its way is dropped when it comes. */
+const leaveSnap = (p: PageState): Partial<PageState> => ({ showSnap: false, snapping: false, snapError: undefined, snapAsk: (p.snapAsk ?? 0) + 1 });
 /** How to reach each page's overlay (set while its frame is shown). */
 const overlays = new Map<string, (msg: Record<string, unknown>) => void>();
 
@@ -158,7 +164,9 @@ export function BrowserTab() {
     if (!active) return openPage(url);
     // Where the old address had got to is no longer where the page is: until the new page says
     // (a page that isn't local never does), the address is the one you typed.
-    setPage(`${s.key}|${active.id}`, (p) => ({ ...p, at: undefined }));
+    // A snapshot shown, or still being taken, is of the old address: back to the live page. The last
+    // one stays, for the boxes already drawn on it.
+    setPage(`${s.key}|${active.id}`, (p) => ({ ...p, at: undefined, ...leaveSnap(p) }));
     rememberSide({ pages: list.map((p) => (p.id === active.id ? { ...p, url } : p)) });
     setNonce((n) => n + 1);
   };
@@ -187,17 +195,31 @@ export function BrowserTab() {
   const snapshot = async (full = state?.snap?.full ?? false) => {
     if (!active?.url) return;
     const at = key;
-    // A phone's or a tablet's screen, or the space the page has in the panel.
-    const width = device === "phone" ? 390 : device === "tablet" ? 768 : Math.min(2560, Math.max(320, area.current?.clientWidth || 1280));
-    const height = device === "phone" ? 844 : device === "tablet" ? 1024 : Math.min(1600, Math.max(480, area.current?.clientHeight || 800));
-    setPage(at, (p) => ({ ...p, showSnap: true, snapping: true, snapError: undefined }));
+    const drawn = pageState(at).pins.filter((x) => x.source === "snapshot").length;
+    if (drawn && !confirm(`A new snapshot drops the ${drawn === 1 ? "box" : `${drawn} boxes`} drawn on this one. Take it anyway?`)) return;
+    const asked = pageState(at).at ?? active.url;
+    // A phone's or a tablet's screen, or the space this page has in the panel (half of it, comparing
+    // side by side): the live page, or the snapshot shown in its place.
+    const slot = area.current?.querySelector<HTMLElement>(":scope > .browse-page:not([hidden])") ?? area.current;
+    const width = device === "phone" ? 390 : device === "tablet" ? 768 : Math.min(2560, Math.max(320, slot?.clientWidth || 1280));
+    const height = device === "phone" ? 844 : device === "tablet" ? 1024 : Math.min(1600, Math.max(480, slot?.clientHeight || 800));
+    const ask = (pageState(at).snapAsk ?? 0) + 1;
+    setPage(at, (p) => ({ ...p, showSnap: true, snapping: true, snapError: undefined, snapAsk: ask }));
     try {
-      const shot = await post<Omit<Snap, "full">>("/api/snapshot", { url: pageState(at).at ?? active.url, width, height, full });
+      const shot = await post<Omit<Snap, "full" | "asked">>("/api/snapshot", { url: asked, width, height, full });
       // Boxes drawn on the old snapshot point at its pixels: they go with it.
-      setPage(at, (p) => ({ ...p, snapping: false, snap: { ...shot, image: `data:image/png;base64,${shot.image}`, full }, pins: p.pins.filter((x) => x.source !== "snapshot") }));
+      setPage(at, (p) => (p.snapAsk !== ask ? p : { ...p, snapping: false, snap: { ...shot, image: `data:image/png;base64,${shot.image}`, full, asked }, pins: p.pins.filter((x) => x.source !== "snapshot") }));
     } catch (err) {
-      setPage(at, (p) => ({ ...p, snapping: false, snapError: (err as Error).message }));
+      setPage(at, (p) => (p.snapAsk !== ask ? p : { ...p, snapping: false, snapError: (err as Error).message }));
     }
+  };
+  // The Snapshot button: back to the live page; the snapshot of this address again (or the one on its
+  // way); or a new one.
+  const toggleSnapshot = () => {
+    if (!state) return;
+    if (state.showSnap) return setPage(key, (p) => ({ ...p, showSnap: false }));
+    if (state.snapping || state.snap?.asked === (state.at ?? active?.url)) return setPage(key, (p) => ({ ...p, showSnap: true }));
+    void snapshot();
   };
 
   const items: StripItem[] = list.map((p) => ({ key: p.id, label: shortUrl(pageState(`${s.key}|${p.id}`).at ?? p.url), title: p.url || "New page", below: p.id === second?.id }));
@@ -267,7 +289,10 @@ export function BrowserTab() {
           key={`${active.id}:${active.url}`}
           url={state?.at ?? active.url}
           onGo={go}
-          onReload={() => setNonce((n) => n + 1)}
+          onReload={() => {
+            setPage(key, (p) => ({ ...p, ...leaveSnap(p) }));
+            setNonce((n) => n + 1);
+          }}
           device={device}
           onDevice={(d) => rememberSide({ device: d })}
           mode={mode}
@@ -278,7 +303,7 @@ export function BrowserTab() {
           showConsole={showConsole}
           onConsole={() => setShowConsole(!showConsole)}
           snapshotOn={!!state?.showSnap}
-          onSnapshot={() => (state?.showSnap ? setPage(key, (p) => ({ ...p, showSnap: false })) : state?.snap ? setPage(key, (p) => ({ ...p, showSnap: true })) : void snapshot())}
+          onSnapshot={toggleSnapshot}
         />
       ) : null}
       <div class={`browse ${second ? "compare" : ""}`} ref={area}>
@@ -538,6 +563,9 @@ async function annotatedSnap(snap: Snap, pins: Pin[]): Promise<string | undefine
 function SnapshotView({ pageKey, state, onTake, onLive }: { pageKey: string; state: PageState; onTake: (full: boolean) => void; onLive: () => void }) {
   const stage = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  // A finger scrolls the snapshot; it draws once Draw is on. A mouse or a pen always draws.
+  const [draw, setDraw] = useState(false);
+  const touch = typeof matchMedia === "function" && matchMedia("(any-pointer: coarse)").matches;
   const snap = state.snap;
   /** Where the pointer is on the snapshot, in its own pixels. */
   const at = (e: PointerEvent) => {
@@ -558,10 +586,15 @@ function SnapshotView({ pageKey, state, onTake, onLive }: { pageKey: string; sta
     setDrag(null);
     if (r.w < 6 || r.h < 6) return;
     const image = await cropSnap(snap.image, r);
-    setPage(pageKey, (p) => ({
-      ...p,
-      pins: [...p.pins, { n: (p.pins.at(-1)?.n ?? 0) + 1, id: `snap-${Date.now().toString(36)}`, kind: "box", source: "snapshot", selector: "", text: "", rect: r, url: snap.url, viewport: { w: snap.width, h: snap.height }, image, comment: "" }],
-    }));
+    setPage(pageKey, (p) =>
+      // A new snapshot came while the close-up was made: the box was on the old one.
+      p.snap !== snap
+        ? p
+        : {
+            ...p,
+            pins: [...p.pins, { n: (p.pins.at(-1)?.n ?? 0) + 1, id: `snap-${Date.now().toString(36)}`, kind: "box", source: "snapshot", selector: "", text: "", rect: r, url: snap.url, viewport: { w: snap.width, h: snap.height }, image, comment: "" }],
+          },
+    );
   };
   const boxes = state.pins.filter((p) => p.source === "snapshot");
   return (
@@ -571,6 +604,11 @@ function SnapshotView({ pageKey, state, onTake, onLive }: { pageKey: string; sta
           {state.snapping ? "Taking a snapshot…" : snap ? `Snapshot · ${snap.width}×${snap.height}${snap.full ? " · whole page" : ""}` : "No snapshot yet"}
         </span>
         <span class="spacer" />
+        {touch ? (
+          <button type="button" class={`btn ghost small ${draw ? "on" : ""}`} aria-pressed={draw} title="Draw boxes with your finger (off: it scrolls)" onClick={() => setDraw(!draw)}>
+            Draw
+          </button>
+        ) : null}
         <button type="button" class={`btn ghost small ${snap?.full ? "on" : ""}`} aria-pressed={!!snap?.full} disabled={state.snapping} title="Take it again, as tall as the page" onClick={() => onTake(!snap?.full)}>
           Whole page
         </button>
@@ -584,13 +622,13 @@ function SnapshotView({ pageKey, state, onTake, onLive }: { pageKey: string; sta
       {state.snapError ? <div class="msg err browse-note">{state.snapError}</div> : null}
       {snap ? (
         <div class={`snap-scroll ${state.snapping ? "dim" : ""}`}>
-          <div class="help snap-hint">Drag on the snapshot to box what's wrong.</div>
+          <div class="help snap-hint">{touch && !draw ? "Turn on Draw, then drag on the snapshot to box what's wrong." : "Drag on the snapshot to box what's wrong."}</div>
           <div
-            class="snap-stage"
+            class={`snap-stage ${draw ? "draw" : ""}`}
             ref={stage}
             style={`max-width:${snap.width}px`}
             onPointerDown={(e) => {
-              if (e.button !== 0 || state.snapping) return;
+              if (e.button !== 0 || state.snapping || (e.pointerType === "touch" && !draw)) return;
               e.preventDefault();
               // Keeps the drag going outside the snapshot; a browser that can't capture still draws.
               try {

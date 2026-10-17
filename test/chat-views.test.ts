@@ -195,6 +195,10 @@ test("ChatThread: a side chat's change gets a line where its turn ran; a side As
   assert.deepEqual(queued.keys, ["s1"]);
   assert.equal(badge(queued.all), "check passes");
 
+  // One that's working: the run's check is about to be the change's, so the turn's badge steps aside.
+  const working = thread(chatRun([sideTurn("f1", "change", { status: "pending", stepId: "s2" })]), [step("s1"), step("s2", { role: "side chat", startedAt: 2100, status: "running" })]);
+  assert.equal(badge(working.all), undefined);
+
   // Once it ran, the run's last check is about the change, not the turn.
   const after = thread(chatRun([sideTurn("f1", "change", { stepId: "s2" })]), [step("s1"), step("s2", { role: "side chat", startedAt: 2100 })]);
   assert.deepEqual(after.keys, ["s1", "f1"]);
