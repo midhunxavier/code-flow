@@ -130,6 +130,8 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   await memory.getByLabel(/Memory feedback/).fill("The repository now uses another check.");
   await memory.getByRole("button", { name: "Save memory feedback", exact: true }).click();
   await memory.getByText(/Feedback on this revision: stale/).waitFor();
+  // Deletion is irreversible, so it takes a second, inline confirmation.
+  await memory.getByRole("button", { name: "Delete…", exact: true }).click();
   await memory.getByRole("button", { name: "Delete", exact: true }).click();
   await memory.waitFor({ state: "detached" });
 

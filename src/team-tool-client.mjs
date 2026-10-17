@@ -2,10 +2,17 @@
 // Dependency-free stdio MCP transport. Only the parent-created member capability is used;
 // this process has no file, shell, permission-approval, or identity-selection operations.
 import { createInterface } from "node:readline";
-import { readFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 
 let connection;
-try { connection = process.argv[2] === "--connection" ? JSON.parse(readFileSync(process.argv[3], "utf8")) : undefined; } catch { process.exit(1); }
+try {
+  if (process.argv[2] === "--connection") {
+    connection = JSON.parse(readFileSync(process.argv[3], "utf8"));
+    // Read once, then gone: every CLI on this machine runs as the same user, so a credential
+    // left on disk could be read by another member's shell for as long as the turn lasts.
+    try { unlinkSync(process.argv[3]); } catch { /* already removed */ }
+  }
+} catch { process.exit(1); }
 const endpoint = connection?.endpoint ?? process.env.CODEFLOW_TEAM_ENDPOINT;
 const token = connection?.token ?? process.env.CODEFLOW_TEAM_CAPABILITY;
 delete process.env.CODEFLOW_TEAM_CAPABILITY;
@@ -57,10 +64,15 @@ async function request(message) {
 
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
 let inflight = 0;
+const limit = (id) => send({ jsonrpc: "2.0", id, error: { code: -32600, message: "Request exceeds bridge limits" } });
+/** The id of an envelope too large to parse, so the caller's request still gets its answer instead of hanging. */
+const idOf = (line) => { const match = /"id"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+)/.exec(line.slice(0, 4_096)); try { return match ? JSON.parse(match[1]) : null; } catch { return null; } };
 for await (const line of input) {
-  if (line.length > 64 * 1024 || inflight >= 4) { send({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Request exceeds bridge limits" } }); continue; }
+  if (line.length > 64 * 1024) { limit(idOf(line)); continue; }
   try {
     const message = JSON.parse(line);
+    // Answer with the request's own id: an `id: null` error leaves that request waiting until the CLI's tool timeout.
+    if (inflight >= 4) { limit(message && typeof message === "object" && (typeof message.id === "string" || typeof message.id === "number") ? message.id : null); continue; }
     inflight++;
     void request(message).finally(() => { inflight--; });
   } catch { send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); }

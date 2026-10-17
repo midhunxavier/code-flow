@@ -4,9 +4,11 @@ Recorded 17 October 2026 for the P0–P8 implementation on top of `main` at `8cb
 
 **Decision: keep Auto experimental and opt-in.** All implementation packages are delivered. The evidence supports exercising the feature with bounded budgets; it does not support replacing Supervisor by default. Earlier unsuccessful trials are retained. A successful final trial does not erase them.
 
+**Provenance of this evidence.** The JSON artifact was produced from an uncommitted working tree (`implementation.state`) by an earlier version of the runner than the committed one: its reports carry `pairId: "pair-1"` and, for pair A, `caseId: sum-numbers-v1`, where the committed runner writes a batch-scoped pair ID and the v2 case, and pair C predates the worker-turn attribution fix. The source runs and journals are not committed. The real numbers are therefore historical measurements of the development tree and cannot be regenerated from this repository; a fresh `--fake` run reproduces the 5/2 and 4/1 call counts, and only a new `--real --confirm` batch can produce reproducible real numbers. Per-trial model identity was not recorded (the runner passes provider defaults), and the matched Supervisor runs were pinned to two subtasks, so their 25% coordination share is by construction rather than observed.
+
 ## Verification
 
-- Full automated suite: 397 tests passed, including recovery, storage faults, mailbox ordering, immediate replies, identity isolation, memory trust, live capabilities, legacy compatibility and rollout controls.
+- Full automated suite: 397 tests passed at the time of the trials (416 after the post-delivery review below, 420 after [review 1](dynamic-teams-implementation-review-1.md)), including recovery, storage faults, mailbox ordering, immediate replies, identity isolation, memory trust, live capabilities, legacy compatibility and rollout controls.
 - Browser suite: 17 tests passed, including Auto approval, blockers, inspection and an in-flight goal revision that stops the old team and requires the configured approval for its child.
 - After final trust/diagnostic adjustments: 11 focused composition and rollout-engine tests passed.
 - After correcting worker-turn attribution: 8 evaluation tests passed. Worker answer and repair turns count even without task IDs; coordinator/reviewer turns do not.
@@ -18,7 +20,7 @@ The asynchronous scheduling regression runs a fast dependency, its successor and
 
 Each pair used the same generated repository, base commit, task and verification command: implement `sumNumbers(values)` with finite-number filtering, non-array rejection, empty-input handling, input preservation and `node:test` coverage. Runs used isolated storage and repositories, official signed-in CLIs and a maximum of 12 invocations. The generated task forbids fetching packages, accessing external services or publishing. Plan approval was explicitly disabled by this unattended evaluation harness; interactive approval is covered by the browser and engine tests.
 
-The CLIs were Claude Code `2.1.302` and Codex `0.162.1`. Pair A used Claude as coordinator; pairs B/C used Codex. These are sequential development trials of one small task, with code fixes between them, not independent samples of the final implementation or a representative benchmark.
+The CLIs were Claude Code `2.1.302` and Codex `0.162.1`. Pair A used Claude as coordinator; pairs B/C used Codex. These are development trials of one small task, with code fixes between them, not independent samples of the final implementation or a representative benchmark. They were not sequential: the report timestamps show pair B starting before pair A finished, and between 12:44:56 and 12:46:06 UTC three real runs (A supervisor, B supervisor, C auto) ran at the same time on one machine, so the elapsed times in the table were measured under shared CPU, network and rate-limit contention.
 
 | Pair | Pattern | Result | Calls / coordination | Worker turns | Elapsed | Selected memory | Journal bytes / load |
 |---|---|---|---:|---:|---:|---:|---:|
@@ -54,7 +56,7 @@ Unsupported or unproven capabilities remain visible in the capability inventory.
 
 ## Deterministic workflow and memory evidence
 
-The labeled fake comparison completed and verified both patterns. Auto used five calls, two coordinator calls, one blocking peer question and two worker turns. The question was answered after 796 ms; the observed post-answer delay was 226 ms. That delay is only a counterfactual upper-bound estimate of an avoidable barrier, not a measured speedup. Supervisor used four calls and one coordinator call.
+The labeled fake comparison completed and verified both patterns. Auto used five calls, two coordinator calls, one blocking peer question and two worker turns. The question was answered after 796 ms; the observed post-answer delay was 226 ms. That delay is the event scheduler's own dispatch latency after an answer arrives (every trial ran event-driven, so there was no wave barrier to avoid); it is not a measured speedup. Supervisor used four calls and one coordinator call.
 
 Auto selected one synthetic accepted project memory about dependency-free `node:test`; Supervisor selected none through the new memory layer. This tests retrieval and attribution, not whether a learned memory helps a human. The real pair C selected the same kind of seed. Human usefulness/staleness feedback was zero in these trials. The application supports revision-specific useful/irrelevant/stale/incorrect feedback, exclusion of stale or incorrect revisions, and bounded relevance adjustments.
 
@@ -93,9 +95,9 @@ npm run test:e2e
 npm run typecheck
 npm run build
 npm run evaluate:teams -- --fake --out /tmp/codeflow-team-fixture
-npm run evaluate:teams -- --real --runs 1 --providers codex,claude --max-steps 12 --max-minutes 8 --out /tmp/codeflow-team-real
+npm run evaluate:teams -- --real --confirm --runs 1 --providers codex,claude --max-steps 12 --max-minutes 8 --out /tmp/codeflow-team-real
 ```
 
 Use a fresh output directory for each invocation. `--real` consumes signed-in CLI quota; ordinary tests use fakes. The runner saves immutable measurement reports and source runs under its isolated directory. Optional `--register-home DIR` copies measurement reports into another installation without copying transcripts or changing rollout. Generated fixtures and private CLI transcripts are not committed with this evidence.
 
-The recorded decision selects all three real development comparisons, including the failures, and stays experimental. It was written into an isolated evaluation store and copied into the evidence artifact; the user's normal app configuration was not changed. The app starts at experimental in the absence of a separate explicit decision. Beta/default changes require a written rationale and qualifying real reports through the rollout API/UI; fake runs cannot qualify them. More representative tasks, verified multi-worker runs, meaningful memory feedback and lower observed coordination overhead are needed before promotion.
+The recorded decision selects all three real development comparisons, including the failures, and stays experimental. It was written into an isolated evaluation store and copied into the evidence artifact; the user's normal app configuration was not changed. The app starts at experimental in the absence of a separate explicit decision. Beta/default changes require a written rationale and qualifying real reports through the rollout API/UI; fake runs cannot qualify them, and since review 1 eligibility is judged over every real report in the store, not only the cited ones. The stage is a recorded label shown in Insights and used as a composer default; the only switch that changes whether Auto teams can start is `CODEFLOW_AUTO_TEAM_ENABLED`. More representative tasks, verified multi-worker runs, meaningful memory feedback and lower observed coordination overhead are needed before promotion.

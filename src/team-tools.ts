@@ -45,7 +45,8 @@ export const TEAM_TOOLS: readonly TeamToolDefinition[] = [
 const definitions = new Map(TEAM_TOOLS.map((value) => [value.name, value]));
 const MAX_BODY = 64 * 1024;
 const MAX_RESPONSE = 128 * 1024;
-const MAX_TTL = 2 * 60 * 60_000;
+/** A step may run for up to 24 hours (CODEFLOW_STEP_TIMEOUT_MIN); the capability must outlive it, revocation ends it sooner. */
+const MAX_TTL = 25 * 60 * 60_000;
 type Handler = (request: TeamToolRequest, identity: Readonly<TeamToolIdentity>) => Promise<unknown>;
 interface Grant {
   identity: Readonly<TeamToolIdentity>;
@@ -132,7 +133,8 @@ export class TeamToolBridge {
     server.headersTimeout = 10_000;
     server.maxHeadersCount = 30;
     this.listening = new Promise<string>((resolve, reject) => {
-      server.once("error", reject);
+      // A failed listen (EMFILE, EACCES) must not pin every later turn to that failure.
+      server.once("error", (error) => { this.listening = undefined; this.server = undefined; reject(error); });
       server.listen(0, "127.0.0.1", () => {
         server.unref();
         const address = server.address();
@@ -175,7 +177,7 @@ export class TeamToolBridge {
     } catch (error) {
       // Domain errors are useful, but never include transport credentials in diagnostics.
       const message = error instanceof Error ? error.message : "Team command failed";
-      reply(400, { error: message.replaceAll(token, "[redacted]").slice(0, 1_000) });
+      reply(message.includes("no longer active") ? 403 : 400, { error: message.replaceAll(token, "[redacted]").slice(0, 1_000) });
     } finally { grant.pending--; }
   }
 }

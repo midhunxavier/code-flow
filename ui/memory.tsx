@@ -47,10 +47,11 @@ function MemoryCard({ entry, endpoint, onChanged }: { entry: MemoryEntry; endpoi
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const change = async (op: "approve" | "delete") => {
     setBusy(true);
     setError("");
-    try { await post(`${endpoint}/commands`, { op, id: entry.id, expectedRevision: entry.revision }); await onChanged(); if (op === "delete") showToast("Memory and derived entries removed. Source run transcripts are retained.", 5000); }
+    try { await post(`${endpoint}/commands`, { op, id: entry.id, expectedRevision: entry.revision }); await onChanged(); if (op === "delete") showToast("Memory removed. Entries written with it in context keep their text and its provenance; run transcripts are retained.", 5000); }
     catch (err) { setError((err as Error).message); }
     finally { setBusy(false); }
   };
@@ -73,7 +74,9 @@ function MemoryCard({ entry, endpoint, onChanged }: { entry: MemoryEntry; endpoi
     <div class="memory-actions">
       {entry.status === "proposed" ? <button class="btn small primary" disabled={busy || editing} onClick={() => change("approve")}>{busy ? "Saving…" : "Accept for future runs"}</button> : null}
       {!editing ? <button class="btn small" disabled={busy} onClick={() => setEditing(true)}>Edit</button> : null}
-      <button class="btn small danger" disabled={busy || editing} onClick={() => change("delete")}>Delete</button>
+      {confirmingDelete
+        ? <span class="at-row" role="group" aria-label="Confirm deletion"><span class="help">Delete this knowledge? Its text is erased; entries written with it in context keep theirs.</span><button class="btn small danger" disabled={busy} onClick={() => { setConfirmingDelete(false); void change("delete"); }}>Delete</button><button class="btn small" disabled={busy} onClick={() => setConfirmingDelete(false)}>Keep</button></span>
+        : <button class="btn small danger" disabled={busy || editing} onClick={() => setConfirmingDelete(true)}>Delete…</button>}
     </div>
     {error ? <p class="msg err" role="alert">{error} Refresh to see the latest revision.</p> : null}
   </article>;

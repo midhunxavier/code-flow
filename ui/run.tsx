@@ -28,10 +28,10 @@ import {
   selectProject,
 } from "./state.js";
 import { ProjectChip } from "./projects.js";
-import { AutoTeam } from "./team.js";
+import { AutoTeam, TeamQuestionCard } from "./team.js";
 import { ProjectMemory } from "./memory.js";
 import { reconcileStreamSnapshot, type StreamSnapshot } from "./run-stream.js";
-import { followupMinimumCalls, teamNeedsResume } from "./team-state.js";
+import { followupMinimumCalls, teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
 import type { AgentEvent, AgentId, Artifact, CheckedReview, FindingCheck, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
@@ -221,7 +221,7 @@ export function RunView({ id }: { id: string }) {
   };
   const p = patterns.value.find((x) => x.id === run.pattern);
   const state = runState(run);
-  const awaitingInput = !!run.awaiting || !!run.team?.awaitingRequestId;
+  const awaitingInput = !!run.awaiting || teamAwaitingAnswer(run);
   /** A conversation with one agent (Single agent): the turns are the thread, not a list of steps. */
   const chat = !!p?.chat;
 
@@ -301,6 +301,7 @@ export function RunView({ id }: { id: string }) {
           </div>
 
           {run.awaiting ? <AwaitingCard run={run} /> : null}
+          {teamAwaitingAnswer(run) ? <TeamQuestionCard run={run} /> : null}
           {run.team ? <AutoTeam run={run} /> : null}
           {run.team && run.project ? <ProjectMemory projectId={run.project} repo={run.repo} refreshKey={`${run.status}:${run.team.revision}`} /> : null}
           {run.triage?.state === "pending" && run.status !== "running" ? (
@@ -1531,7 +1532,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
   ];
   const teamAgents = [...new Set(Object.values(run.roles).flat())];
   const coordinator = run.team?.members.find((member) => member.role === "coordinator");
-  const defaultTarget = running ? coordinator ? `member:${coordinator.id}` : "" : run.team ? "team" : writers.at(-1) ? `${writers.at(-1)!.agent}@${writers.at(-1)!.worktree}` : "team";
+  const defaultTarget = running ? coordinator && coordinator.status !== "retired" ? `member:${coordinator.id}` : "" : run.team ? "team" : writers.at(-1) ? `${writers.at(-1)!.agent}@${writers.at(-1)!.worktree}` : "team";
   const targets = running ? run.team ? run.team.members.filter((member) => member.status !== "retired").map((member) => `member:${member.id}`) : teamAgents : ["team", ...writers.map((step) => `${step.agent}@${step.worktree}`)];
   const chosen = target && targets.includes(target) ? target : defaultTarget;
   const memberId = chosen.startsWith("member:") ? chosen.slice(7) : undefined;
@@ -1615,6 +1616,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
   return (
     <div class="convo">
       <div class="convo-inner">
+        {!budgetValid ? <p class="msg err" role="alert">Send is off until the budget below allows {minimumCalls}–200 calls and 1–720 minutes.</p> : null}
         {!running || run.team ? <details class="followup-budget"><summary>{running ? "Goal revision budget" : "New execution budget"} · {followupSteps} calls · {followupMinutes} min</summary><div class="at-row"><label>Maximum calls<input class="field" aria-label="Follow-up maximum calls" type="number" min={minimumCalls} max={200} value={followupSteps} onInput={(event) => setFollowupSteps(Number(event.currentTarget.value))} /></label><label>Maximum minutes<input class="field" aria-label="Follow-up maximum minutes" type="number" min={1} max={720} value={followupMinutes} onInput={(event) => setFollowupMinutes(Number(event.currentTarget.value))} /></label></div><p class="help">This is a new allocation. The result branch, project memory and applicable context are retained. Earlier spend remains in lifetime usage.</p>{!budgetValid ? <p class="msg err">Choose {minimumCalls}–200 calls and 1–720 minutes.</p> : null}</details> : null}
         {running && shownNotes.length ? (
           <div class="notes">
@@ -1685,7 +1687,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
             </button>
           </div>
         </div>
-        {running && run.team ? <div class="goal-revision-action"><button class="btn small" disabled={busy || !text.trim() || !budgetValid} onClick={reviseGoal}>Revise goal</button><span class="help">Uses this message to stop the current execution and build a new team plan from integrated work, with your approval settings. Send keeps it as a member note.</span></div> : null}
+        {running && run.team && !run.awaiting ? <div class="goal-revision-action"><button class="btn small" disabled={busy || !text.trim() || !budgetValid} onClick={reviseGoal}>Revise goal</button><span class="help">Uses this message to stop the current execution and build a new team plan from integrated work, with your approval settings. Send keeps it as a member note.</span></div> : null}
       </div>
     </div>
   );

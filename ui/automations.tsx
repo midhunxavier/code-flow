@@ -7,7 +7,7 @@ import { ago, api, baseName, copy, post, showToast, STATUS_TEXT } from "./lib.js
 import { activeProject, ALL, currentProject, inScope, NONE, patterns, projectFor, projects, route, runs, runState, selectProject } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
 import { ProjectButton } from "./projects.js";
-import { automationNeedsAttention } from "./team-state.js";
+import { automationNeedsAttention, teamAwaitingAnswer } from "./team-state.js";
 
 /** The project an automation's runs go in: the one it was saved with, or (deleted since) its repo's. */
 const automationProject = (run: { project?: string; repo: string }) =>
@@ -161,7 +161,7 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
       </div>
       {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
       {run.team ? <div class="help">Team: {run.team.members.length} members · {run.team.tasks.filter((task) => task.status === "completed").length}/{run.team.tasks.length} tasks completed · {run.team.metrics.invocations} calls</div> : null}
-      {run.team?.awaitingRequestId ? <div class="at-notice"><b>The team needs your answer</b><p>{run.team.messages.find((message) => message.id === run.team!.awaitingRequestId)?.body}</p><a class="btn small primary" href={`#/run/${run.id}`}>Answer team question</a></div> : run.team?.status === "blocked" ? <div class="at-notice"><p>{run.team.gaps.join(" ")}</p><a class="btn small" href={`#/run/${run.id}`}>Continue team work</a></div> : null}
+      {teamAwaitingAnswer(run) ? <div class="at-notice"><b>The team needs your answer</b><p>{run.team?.messages.find((message) => message.id === run.team!.awaitingRequestId)?.body}</p><a class="btn small primary" href={`#/run/${run.id}`}>Answer team question</a></div> : run.team?.status === "blocked" ? <div class="at-notice"><p>{run.team.gaps.join(" ")}</p><a class="btn small" href={`#/run/${run.id}`}>Continue team work</a></div> : null}
       {run.review ? <div class="help">Review: {run.review.verdict === "approve" ? "approve" : `${run.review.findings.length} findings`}</div> : null}
       {changed.map((a) => (
         <pre key={a.branch} class="stat">

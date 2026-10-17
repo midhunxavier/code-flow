@@ -190,7 +190,11 @@ test("a run's stream: its history in order with ids, before any live event, and 
   const id = started.body.id;
   // Connected while it runs: history and live events interleave on the server, never on the wire.
   const events = await readEvents(`${a.base}/api/runs/${id}/events`, bearer, (e) => e.some((x) => x.data.type === "run" && x.data.run.endedAt));
-  assert.deepEqual(events[0]!.data, { type: "hello", epoch: events[1]!.id!.split(":")[0], resumed: false });
+  // A fresh connection also gets the snapshot: the client never depends on the event log holding the latest state.
+  const hello = events[0]!.data;
+  assert.deepEqual({ type: hello.type, epoch: hello.epoch, resumed: hello.resumed }, { type: "hello", epoch: events[1]!.id!.split(":")[0], resumed: false });
+  assert.equal(hello.snapshot?.run?.id, id);
+  assert.ok(Array.isArray(hello.snapshot?.steps) && Number.isInteger(hello.snapshot?.seq));
   const body = events.slice(1);
   const seqs = body.map(seqOf);
   assert.ok(seqs.every((s, i) => i === 0 || s > seqs[i - 1]!), `strictly increasing: ${seqs.join(",")}`);

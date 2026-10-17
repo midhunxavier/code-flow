@@ -184,7 +184,7 @@ export function Composer() {
         {p ? <Team p={p} roles={roles} /> : null}
         {p && CHECKPOINTS[p.id] && (p.id !== "debate" || roles.builder?.length) ? (
           <label class="checkpoint">
-            <input type="checkbox" checked={planApprovalFor(p.id)} onChange={(e) => setApprovePlan(e.currentTarget.checked)} />
+            <input type="checkbox" checked={planApprovalFor(p.id)} onChange={(e) => setApprovePlan(e.currentTarget.checked, p.id)} />
             <span>
               <b>Let me approve {CHECKPOINTS[p.id]}</b> before agents build — the run pauses (and its time budget with it) until you approve, ask for changes, or reject.
             </span>
@@ -359,6 +359,8 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
   for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return `Pick an agent for ${role.label}`;
   if (p.id === "race" && (roles.contestants?.length ?? 0) < 2) return "A race needs at least two contestants";
   if (p.id === "debate" && (roles.debaters?.length ?? 0) < 2) return "A debate needs at least two debaters";
+  if (p.id === "auto-team" && !(roles.pool?.length)) return "Keep at least one provider in the pool";
+  if (p.id === "auto-team" && limits.value.maxSteps < 4) return "An Auto team needs at least 4 steps: planning, work, review and recovery";
   if (p.requiresCheck && !checkCmd.value.trim()) return `${p.name} needs a “Done when” command, e.g. npm test`;
   // An Auto pool is permission to choose from these providers; availability is checked by
   // the coordinator before building its roster, so one signed-out candidate needn't block it.

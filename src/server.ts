@@ -38,6 +38,7 @@ import { changeRemote, isOwnAddress, lanAddresses, loadRemote, renderRemote, sav
 import { projectOf, Projects } from "./projects.js";
 import { memoryStore, MemoryConflictError, type MemoryAuthority, type MemoryEntry } from "./memory.js";
 import { adapterTeamCapabilities } from "./adapters/team-tools.js";
+import { teamToolBridge } from "./team-tools.js";
 import { teamEvaluationStore, buildTeamEvaluation, assessTeamRollout } from "./team-evaluation.js";
 import type { Run, RunEvent, RunSummary, StartRunInput } from "./engine.js";
 
@@ -666,8 +667,9 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, runId: st
     const current = manager.get(runId)!;
     const { steps, ...run } = current;
     // An event may have reached a client before a crash lost its best-effort log write.
-    // Refresh control state even if that sequence is already in the client's seen set.
-    stream.send({ type: "hello", epoch, resumed: after !== undefined, ...(after !== undefined ? { snapshot: { run, steps, seq: newest } } : {}) });
+    // The snapshot is the control state as of `newest`, whether or not the client resumes:
+    // a fresh connection then never depends on the event log holding the latest state.
+    stream.send({ type: "hello", epoch, resumed: after !== undefined, snapshot: { run, steps, seq: newest } });
     for (const event of history) deliver(event);
   } finally {
     const live = waiting.sort((a, b) => a.seq - b.seq);
@@ -863,14 +865,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
             else {
               const patch: Parameters<typeof memoryStore.revise>[2] = {};
               for (const key of ["title", "body", "paths", "tags", "applicability"] as const) if (key in body) patch[key] = body[key];
-              entry = await memoryStore.revise(existing.id, body.expectedRevision, patch, authority);
+              // Saving an edit never accepts a proposal by itself; `accept: true` says so explicitly.
+              entry = await memoryStore.revise(existing.id, body.expectedRevision, patch, authority, { accept: body.accept === true });
             }
           }
           return send(res, body.op === "create" ? 201 : 200, entry);
         } catch (error) {
           if (error instanceof HttpError) throw error;
           if (error instanceof MemoryConflictError) throw new HttpError(409, error.message);
-          throw new HttpError(400, (error as Error).message);
+          const message = (error as Error).message;
+          // A store that cannot be read or written is the server's fault, not the request's.
+          if (/^Memory store cannot be read|^Memory storage limit/.test(message)) throw new HttpError(500, message);
+          throw new HttpError(400, message);
         }
       }
       throw new HttpError(404, "Unknown project memory route");
@@ -1348,6 +1354,7 @@ async function stop(reason: string, code = 0) {
     // still starting up: nothing is listening yet
   }
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));
+  await teamToolBridge.close().catch(() => undefined);
   await automationsSaved;
   process.exit(code);
 }

@@ -13,8 +13,13 @@ export function teamNeedsResume(run: { status: string; team?: Pick<TeamState, "s
   return run.status === "stopped" && run.team?.status === "blocked" && run.patternDone !== true;
 }
 
-export function automationNeedsAttention(run: { archived?: boolean; trigger?: unknown; triage?: { state: string }; team?: Pick<TeamState, "awaitingRequestId" | "status"> }): boolean {
-  return !run.archived && (run.triage?.state === "pending" || !!run.trigger && (!!run.team?.awaitingRequestId || run.team?.status === "blocked"));
+/** The server accepts an answer only while the run is running; after a crash the flag is informational until Resume. */
+export function teamAwaitingAnswer(run: { status: string; team?: Pick<TeamState, "awaitingRequestId"> }): boolean {
+  return run.status === "running" && !!run.team?.awaitingRequestId;
+}
+
+export function automationNeedsAttention(run: { archived?: boolean; status: string; trigger?: unknown; triage?: { state: string }; team?: Pick<TeamState, "awaitingRequestId" | "status"> }): boolean {
+  return !run.archived && (run.triage?.state === "pending" || !!run.trigger && (teamAwaitingAnswer(run) || run.team?.status === "blocked"));
 }
 
 /** A task can wait on a specific answer, another task, or both. */
@@ -36,12 +41,15 @@ export function taskBlockers(team: TeamState, task: TeamTask): string[] {
 }
 
 /** Never present assigned work or a submitted result as verified evidence. */
-export function requirementProgress(team: TeamState, requirementId: string, runStatus = "done"): "unassigned" | "in_progress" | "awaiting_verification" | "verified" {
+export function requirementProgress(team: TeamState, requirementId: string, runStatus = "done"): "unassigned" | "in_progress" | "awaiting_verification" | "reviewed_unchecked" | "verified" {
   const tasks = team.tasks.filter((task) => task.requirements.includes(requirementId));
   if (!tasks.length) return "unassigned";
   if (!tasks.every((task) => task.status === "completed" && !task.evidenceStale)) return "in_progress";
   const proof = team.verification;
-  return runStatus === "done" && team.status === "completed" && proof?.approved && proof.reviewed && (proof.check === "passed" || proof.check === "not_required") && !team.gaps.length ? "verified" : "awaiting_verification";
+  const complete = runStatus === "done" && team.status === "completed" && !!proof?.approved && proof.reviewed && !team.gaps.length;
+  if (!complete) return "awaiting_verification";
+  // A finished, reviewed result in a repository without a runnable check is complete but never "verified".
+  return proof.check === "passed" || proof.check === "not_required" ? "verified" : "reviewed_unchecked";
 }
 
 export function memberProgress(team: TeamState, member: TeamMember): string {

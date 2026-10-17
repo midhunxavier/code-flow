@@ -32,7 +32,7 @@ import {
   type RunFilter,
 } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
-import { teamNeedsResume } from "./team-state.js";
+import { teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
 
 const STATUS_FILTERS: [RunFilter["status"], string][] = [
   ["all", "All"],
@@ -47,7 +47,7 @@ const PER_PROJECT = 5;
 
 /** What a run's dot means, in words: the dot alone says nothing to a screen reader. */
 const statusText = (r: RunSummary) =>
-  r.awaiting || r.team?.awaitingRequestId
+  r.awaiting || teamAwaitingAnswer(r)
     ? "Waiting for you"
     : teamNeedsResume(r) ? "Unresolved work" : r.triage?.state === "pending"
       ? "In your inbox"

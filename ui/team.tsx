@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { AgentTag, Markdown } from "./bits.js";
 import { duration, fmtCost, fmtTokens, post } from "./lib.js";
-import { memberProgress, requirementProgress, taskBlockers, teamNeedsResume } from "./team-state.js";
+import { memberProgress, requirementProgress, taskBlockers, teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
 import { MemoryFeedback } from "./memory.js";
 import { TeamCapabilities, TeamRunMetrics } from "./team-evaluation.js";
 import type { Note, RunSummary, TeamMessage, TeamState } from "./types.js";
@@ -10,7 +10,7 @@ const STATUS: Record<TeamState["status"], string> = {
   planning: "Building the team", awaiting_approval: "Plan ready for approval", running: "Working", blocked: "Unresolved work", verifying: "Verifying the result", completed: "Finished",
 };
 const TASK_STATUS = { pending: "Planned", running: "Working", needs_info: "Waiting for information", submitted: "Ready for verification", completed: "Complete", failed: "Needs attention" };
-const COVERAGE = { unassigned: "Not assigned", in_progress: "In progress", awaiting_verification: "Awaiting verification", verified: "Verified" };
+const COVERAGE = { unassigned: "Not assigned", in_progress: "In progress", awaiting_verification: "Awaiting verification", reviewed_unchecked: "Reviewed · no check ran", verified: "Verified" };
 
 /** Team-owned context and progress, kept current by the run's normal snapshot stream. */
 export function AutoTeam({ run }: { run: RunSummary }) {
@@ -24,7 +24,7 @@ export function AutoTeam({ run }: { run: RunSummary }) {
     <section class="auto-team" aria-label="Auto team">
       <div class="at-head">
         <div><h3>Team and workflow</h3><span class="help">Revision {team.revision} · {team.scheduler === "event" ? "Ready work starts when dependencies resolve" : team.wave ? `${team.wave} waves so far · limit ${team.maxWaves} per execution` : "Before the first wave"}</span></div>
-        <span class={`badge ${team.gaps.length || team.status === "blocked" ? "warn" : ""}`}>{team.awaitingRequestId ? "Waiting for your answer" : STATUS[team.status]}</span>
+        <span class={`badge ${team.gaps.length || team.status === "blocked" ? "warn" : ""}`}>{teamAwaitingAnswer(run) ? "Waiting for your answer" : STATUS[team.status]}</span>
       </div>
       <TeamRunMetrics runId={run.id} running={run.status === "running"} />
       <TeamCapabilities providers={[...new Set(team.members.map((member) => member.provider))]} />
@@ -79,7 +79,7 @@ export function AutoTeam({ run }: { run: RunSummary }) {
           <div class="help">{message.origin === "user" ? "From you" : "From a team member"}{message.blocking ? message.status === "open" ? " · blocks dependent work" : " · blocker resolved" : ""}</div>
           <div class="help">{message.createdAt ? new Date(message.createdAt).toLocaleTimeString() : ""}{message.delivery ? ` · ${message.delivery.status === "steered" ? "delivered during a turn" : message.delivery.status === "context" ? "included in member context" : "queued for the next turn"}` : ""}{message.originalRecipient ? ` · routed from ${name(message.originalRecipient)}` : ""}{message.deadlineAt && message.status === "open" ? ` · answer due ${new Date(message.deadlineAt).toLocaleTimeString()}` : ""}</div>
           {message.evidence.length ? <details><summary>Evidence</summary><ul>{message.evidence.map((item, i) => <li key={i}>{item}</li>)}</ul></details> : null}
-          {message.kind === "question" && message.recipient === "user" && message.status === "open" ? <QuestionReply run={run} message={message} /> : null}
+          {message.kind === "question" && message.recipient === "user" && message.status === "open" ? (teamAwaitingAnswer(run) && team.awaitingRequestId === message.id ? <p class="help">Answer it in the card under the run header.</p> : <QuestionReply run={run} message={message} />) : null}
         </article>)}
       </div></div> : null}
       {team.strategyInstances?.length ? <details class="at-section"><summary>Reusable workflow steps</summary><ul>{team.strategyInstances.map((strategy) => <li key={strategy.id}>{strategy.strategy} · revision {strategy.revision} · {strategy.taskIds.map((id) => team.tasks.find((task) => task.id === id)?.title ?? id).join(" → ")}</li>)}</ul></details> : null}
@@ -96,7 +96,21 @@ export function AutoTeam({ run }: { run: RunSummary }) {
   );
 }
 
-function QuestionReply({ run, message }: { run: RunSummary; message: TeamMessage }) {
+/** The one thing a waiting team needs from you, shown under the run header like a plan approval, not at the end of the message list. */
+export function TeamQuestionCard({ run }: { run: RunSummary }) {
+  const team = run.team;
+  const message = team?.messages.find((item) => item.id === team.awaitingRequestId);
+  if (!team || !message) return null;
+  const sender = team.members.find((member) => member.id === message.sender);
+  const task = team.tasks.find((item) => item.id === message.taskId);
+  return <section class="at-section at-notice" aria-label="The team needs your answer">
+    <div class="at-row"><b>The team needs your answer</b><span class="help">{sender?.name ?? message.sender}{task ? ` · ${task.title}` : ""}</span></div>
+    <Markdown text={message.body} />
+    <QuestionReply run={run} message={message} />
+  </section>;
+}
+
+export function QuestionReply({ run, message }: { run: RunSummary; message: TeamMessage }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -110,6 +124,7 @@ function QuestionReply({ run, message }: { run: RunSummary; message: TeamMessage
     finally { setBusy(false); }
   };
   if (sent) return <p class="help" role="status">Answer sent.</p>;
-  if (run.status !== "running") return <p class="help">Resume the run to answer this question.</p>;
-  return <div class="at-reply"><textarea class="field" aria-label={`Answer ${message.body}`} placeholder="Your answer…" rows={2} value={text} onInput={(event) => setText(event.currentTarget.value)} /><button class="btn primary small" disabled={!text.trim() || busy} onClick={answer}>{busy ? "Sending…" : "Send answer"}</button>{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
+  if (run.status !== "running") return <p class="help">Press ▶ Resume in the header to continue the run, then answer here.</p>;
+  const field = `team-answer-${message.id}`;
+  return <div class="at-reply"><label class="lbl" for={field}>Your answer</label><textarea class="field" id={field} placeholder="Your answer…" rows={2} value={text} onInput={(event) => setText(event.currentTarget.value)} /><button class="btn primary small" disabled={!text.trim() || busy} onClick={answer}>{busy ? "Sending…" : "Send answer"}</button>{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
 }

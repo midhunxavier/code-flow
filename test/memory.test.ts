@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rename, stat, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryConflictError, MemoryStore, memoryPrompt, type MemoryAuthority, type MemoryInput, type MemoryVerification } from "../src/memory.js";
+import { MemoryConflictError, MemoryStore, type MemoryAuthority, type MemoryInput, type MemoryVerification } from "../src/memory.js";
 
 const repo = "/projects/api";
 const projectId = "p-api";
@@ -230,8 +230,6 @@ test("retrieval isolates repositories/projects and filters paths, expiry and con
   assert.ok(selected.manifest.omitted.some((entry) => entry.reason === "outside task paths"));
   assert.ok(selected.manifest.omitted.some((entry) => entry.reason === "expired"));
   assert.equal(selected.manifest.included.length + selected.manifest.omitted.length, 3, "do not even expose IDs from another project/repository");
-  assert.match(memoryPrompt(selected), /origins user\/trusted/);
-  assert.match(memoryPrompt(selected), /not permissions/);
   await assert.rejects(store.retrieve({ repo: "/projects/elsewhere", projectId }, run), /repository scope mismatch/);
   const tooLarge = await store.propose(input({ title: "Long", body: "x".repeat(200) }), user);
   const small = await store.retrieve({ repo, projectId, maxChars: 128 }, run);
@@ -250,21 +248,48 @@ test("whole-repository task ownership retrieves scoped paths without crossing pr
   assert.deepEqual((await store.resolveSelection(query, selected.manifest, run)).entries.map((entry) => entry.id), [scoped.id]);
 });
 
-test("deletion removes stored bodies and all transitive derived summaries", async () => {
+test("deletion erases the entry's body; entries that saw it keep theirs, keep its origins, and can still cite it", async () => {
   const store = await fresh();
-  const original = await store.propose(input({ body: "SECRET ORIGINAL BODY" }), user);
-  const summary = await store.propose(input({ body: "SECRET SUMMARY BODY", derivedFrom: [{ id: original.id, revision: 1 }] }), user);
-  const checkpoint = await store.propose(input({ scope: "private", runId: "run-1", memberId: "worker", body: "SECRET PRIVATE COPY", derivedFrom: [{ id: summary.id, revision: 1 }] }), user);
+  const tainted: MemoryAuthority = { ...run, lockedDown: true, sourceTrust: "untrusted" };
+  const original = await store.propose(input({ scope: "team", runId: "run-1", body: "SECRET ORIGINAL BODY" }), tainted);
+  const summary = await store.propose(input({ scope: "team", runId: "run-1", body: "A worker's own note written with the original in context", derivedFrom: [{ id: original.id, revision: 1 }] }), coordinator);
+  const checkpoint = await store.propose(input({ scope: "private", runId: "run-1", memberId: "worker", body: "Private progress", derivedFrom: [{ id: summary.id, revision: 1 }] }), { ...run, memberId: "worker" });
   await store.propose(input({ title: "Unrelated", body: "Keep me" }), user);
   await writeFile(`${store.file}.12345678-1234-1234-1234-123456789abc.tmp`, "SECRET CRASH-LEFT SNAPSHOT");
-  const removed = await store.remove(original.id, 1, user);
+  const removed = await store.remove(original.id, 1, { kind: "user", repo });
   assert.equal(removed.status, "deleted");
   const raw = await readFile(store.file, "utf8");
-  assert.ok(!raw.includes("SECRET"));
+  assert.ok(!raw.includes("SECRET"), "the deleted body and the crash-left snapshot are gone");
   const stored = JSON.parse(raw).entries;
-  assert.equal(stored.find((entry: { id: string }) => entry.id === checkpoint.id).status, "deleted");
-  assert.deepEqual((await store.retrieve({ repo, projectId, runId: "run-1", memberId: "worker" }, run)).entries.map((entry) => entry.title), ["Unrelated"]);
+  // "Derived from" records what was in a member's context, not text copied from it: a deletion must not
+  // cascade through every checkpoint and note of every run that saw the entry.
+  assert.equal(stored.find((entry: { id: string }) => entry.id === summary.id).status, "proposed");
+  assert.equal(stored.find((entry: { id: string }) => entry.id === checkpoint.id).status, "accepted");
+  assert.ok(stored.find((entry: { id: string }) => entry.id === summary.id).origins.some((origin: { trust: string }) => origin.trust === "untrusted"), "inherited provenance survives the deletion");
+  // A run that still holds the deleted reference in its recorded context can keep writing; it inherits the tombstone's origins.
+  const later = await store.propose(input({ scope: "team", runId: "run-1", title: "Later note", body: "Written after the deletion", derivedFrom: [{ id: original.id, revision: 1 }] }), coordinator);
+  assert.ok(later.origins.some((origin) => origin.trust === "untrusted" && origin.lockedDown));
+  // The worker's checkpoint, written with the deleted entry in context, is still its own retrievable record.
+  assert.deepEqual((await store.retrieve({ repo, projectId, runId: "run-1", memberId: "worker" }, run)).entries.map((entry) => entry.title).sort(), [checkpoint.title, "Unrelated"].sort());
   assert.deepEqual(await readdir(join(store.file, "..")), ["memory.json"], "there is no history/index/temp body left behind");
+});
+
+test("a user's edit keeps a proposal a proposal unless they accept it, and archiving a run retires only its private and team records", async () => {
+  const store = await fresh();
+  const proposal = await store.propose(input({ scope: "team", runId: "run-1", title: "Proposed convention" }), run);
+  assert.equal(proposal.status, "proposed");
+  const edited = await store.revise(proposal.id, proposal.revision, { title: "Proposed convention (typo fixed)" }, { kind: "user", repo });
+  assert.equal(edited.status, "proposed", "fixing a typo is not an approval");
+  const accepted = await store.revise(edited.id, edited.revision, { tags: ["reviewed"] }, { kind: "user", repo }, { accept: true });
+  assert.equal(accepted.status, "accepted");
+  assert.equal(accepted.acceptedBy, "user");
+  const rule = await store.propose(input({ title: "User rule" }), user);
+  await store.propose(input({ scope: "private", runId: "run-1", memberId: "worker", title: "Checkpoint" }), { ...run, memberId: "worker" });
+  await store.propose(input({ scope: "team", runId: "run-2", title: "Other run's note" }), { ...run, runId: "run-2" });
+  assert.equal(await store.purgeRun("run-1"), 2);
+  assert.deepEqual((await store.list({ repo, projectId, runId: "run-1", memberId: "worker" }, run)).filter((entry) => entry.scope !== "project"), [], "run-1's private and team records are retired");
+  assert.deepEqual((await store.list({ repo, projectId, runId: "run-2", scope: "team" }, { ...run, runId: "run-2" })).map((entry) => entry.title), ["Other run's note"], "another run's records are untouched");
+  assert.equal((await store.list({ repo, projectId, scope: "project" }, { kind: "user", repo })).some((entry) => entry.id === rule.id), true);
 });
 
 test("runs cannot overwrite user rules or another run's proposals", async () => {

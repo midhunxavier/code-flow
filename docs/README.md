@@ -11,5 +11,7 @@
 - [Architecture and development](architecture.md): the code layout, adding patterns and agents, the dev server, tests, what's next.
 - [Dynamic teams implementation plan](dynamic-teams-implementation-plan.md): architecture, completed P0–P8 packages, and evaluation gates.
 - [Dynamic team implementation evidence](dynamic-teams-evaluation.md): automated checks, real CLI trials, comparison measurements and the rollout decision.
+- [Review 1 of the implementation](dynamic-teams-implementation-review-1.md): what was fixed, what remains open, and what to avoid.
+- [Review 0 of the plan](dynamic-teams-plan-review-0.md): the original plan review that re-sequenced the work.
 
 Back to the [README](../README.md).

@@ -159,7 +159,7 @@ const STATUS: Record<string, string> = {
 };
 
 function badge(run: RunSummary): string {
-  if (run.awaiting || run.team?.awaitingRequestId) return `<span class="b warn">Waiting for you</span>`;
+  if (run.awaiting || (run.status === "running" && run.team?.awaitingRequestId)) return `<span class="b warn">Waiting for you</span>`;
   if (run.team?.status === "blocked") return `<span class="b warn">Team needs attention</span>`;
   if (run.triage?.state === "pending") return `<span class="b warn">In your inbox</span>`;
   const watch = Object.values(run.watches ?? {}).find((w) => w.state === "needs-you");
@@ -203,7 +203,7 @@ li{margin:4px 0}.foot{font-size:12px;color:var(--muted);margin-top:24px}
 export function renderRemote(manager: RunManager, projects: Project[], base: string, path: string): string | null {
   if (path === "" || path === "/") {
     const runs = manager.list().filter((r) => !r.archived);
-    const needs = runs.filter((r) => r.awaiting || r.team?.awaitingRequestId || r.team?.status === "blocked" || r.triage?.state === "pending" || Object.values(r.watches ?? {}).some((w) => w.state === "needs-you") || (r.status !== "running" && !r.seen));
+    const needs = runs.filter((r) => r.awaiting || (r.status === "running" && r.team?.awaitingRequestId) || r.team?.status === "blocked" || r.triage?.state === "pending" || Object.values(r.watches ?? {}).some((w) => w.state === "needs-you") || (r.status !== "running" && !r.seen));
     const running = runs.filter((r) => r.status === "running" && !needs.includes(r));
     const recent = runs.filter((r) => !needs.includes(r) && !running.includes(r)).slice(0, 15);
     const card = (r: RunSummary) =>

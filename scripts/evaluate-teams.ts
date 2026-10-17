@@ -8,12 +8,12 @@ import { fileURLToPath } from "node:url";
 
 const argv = process.argv.slice(2);
 if (argv.includes("--help")) {
-  process.stdout.write("Usage: npm run evaluate:teams -- [--fake | --real] [--runs 1] [--providers claude,codex] [--max-steps 12] [--max-minutes 5] [--out DIR] [--register-home DIR]\nEach run is one matched Auto/Supervisor pair in an isolated generated repository. --real uses the official signed-in CLIs and consumes subscription quota. Defaults to fake. Results, repositories and CLI versions remain local in DIR. --register-home explicitly copies only measurement reports into another code-flow installation; it never changes rollout.\n");
+  process.stdout.write("Usage: npm run evaluate:teams -- [--fake | --real --confirm] [--runs 1] [--providers claude,codex] [--max-steps 12] [--max-minutes 5] [--out DIR] [--register-home DIR]\nEach run is one matched Auto/Supervisor pair in an isolated generated repository. --real uses the official signed-in CLIs and consumes subscription quota (up to runs × 2 × max-steps invocations), so it also needs --confirm. Defaults to fake. Results, repositories and CLI versions remain local in DIR. --register-home explicitly copies only measurement reports into another code-flow installation; it never changes rollout.\n");
   process.exit(0);
 }
 const option = (name: string, fallback: string) => { const index = argv.indexOf(name); if (index < 0) return fallback; if (!argv[index + 1] || argv[index + 1]!.startsWith("--")) throw new Error(`Missing ${name} value`); return argv[index + 1]!; };
 const numberOption = (name: string, fallback: number, min: number, max: number) => { const value = Number(option(name, String(fallback))); if (!Number.isFinite(value) || value < min || value > max) throw new Error(`${name} must be between ${min} and ${max}`); return value; };
-const allowed = new Set(["--fake", "--real", "--runs", "--providers", "--max-steps", "--max-minutes", "--out", "--register-home"]);
+const allowed = new Set(["--fake", "--real", "--confirm", "--runs", "--providers", "--max-steps", "--max-minutes", "--out", "--register-home"]);
 for (const argument of argv.filter((value) => value.startsWith("--"))) if (!allowed.has(argument)) throw new Error(`Unknown option ${argument}`);
 if (argv.includes("--real") && argv.includes("--fake")) throw new Error("Choose --real or --fake");
 const mode = argv.includes("--real") ? "real" : "fake";
@@ -21,10 +21,13 @@ const runs = numberOption("--runs", 1, 1, 50);
 const maxSteps = numberOption("--max-steps", 12, 4, 40);
 const maxMinutes = numberOption("--max-minutes", 5, .1, 30);
 if (!Number.isInteger(runs) || !Number.isInteger(maxSteps)) throw new Error("--runs and --max-steps must be integers");
+// Spending is bounded but real: say how much before anyone can start it by accident.
+if (mode === "real" && !argv.includes("--confirm")) throw new Error(`--real spends signed-in CLI quota: up to ${runs * 2 * maxSteps} invocations across ${runs} matched pair(s). Add --confirm to proceed.`);
 const providers = [...new Set(option("--providers", "claude,codex").split(","))];
 if (!providers.length || providers.some((id) => !["claude", "codex", "agy"].includes(id))) throw new Error("Providers must be claude,codex,agy");
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const output = resolve(option("--out", await mkdtemp(join(tmpdir(), `codeflow-team-${mode}-evaluation-`))));
+// Only make a temporary directory when none was given; an eager default leaves an empty one behind on every run.
+const output = resolve(argv.includes("--out") ? option("--out", "") : await mkdtemp(join(tmpdir(), `codeflow-team-${mode}-evaluation-`)));
 const registerHome = argv.includes("--register-home") ? resolve(option("--register-home", "")) : undefined;
 await mkdir(output, { recursive: true });
 // Must precede dynamic imports: run storage is deliberately separate from the user's app.
@@ -47,7 +50,15 @@ const ids = providers as AgentId[];
 const versions: Record<string, string> = {};
 for (const id of ids) versions[id] = execFileSync(id, ["--version"], { encoding: "utf8", timeout: 15_000, maxBuffer: 64_000 }).trim().slice(0, 1000) || "version not reported";
 if (mode === "real" && Object.values(versions).some((version) => /fake/i.test(version))) throw new Error("A fake CLI cannot produce real evaluation evidence");
-await writeFile(join(output, "configuration.json"), JSON.stringify({ version: 1, mode, runs, providers, maxSteps, maxMinutes, registerHome, cliVersions: versions, seededMemory: "Synthetic accepted repository rule: use dependency-free node:test; no usefulness claim", at: new Date().toISOString() }, null, 2));
+// Everything a reader needs to interpret the numbers: the settings that differ from the app's defaults are recorded, not implied.
+const settings = {
+  approvals: { plan: false },
+  autoTeam: { maxWaves: 4, maxRepairs: 1, eventDriven: true },
+  supervisor: { maxSubtasks: 2 },
+  models: "provider defaults; no agentSettings or roleSettings are passed",
+  loop: { check: "node --test", maxSteps, maxMinutes, maxInvocations: maxSteps },
+};
+await writeFile(join(output, "configuration.json"), JSON.stringify({ version: 1, mode, runs, providers, maxSteps, maxMinutes, registerHome, cliVersions: versions, settings, seededMemory: "Synthetic accepted repository rule: use dependency-free node:test; no usefulness claim", at: new Date().toISOString() }, null, 2));
 const evaluations = new TeamEvaluationStore(join(output, "reports"));
 const appEvaluations = new TeamEvaluationStore(join(process.env.CODEFLOW_HOME, "team-evaluations"));
 const registration = registerHome ? new TeamEvaluationStore(join(registerHome, "team-evaluations")) : undefined;

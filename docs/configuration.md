@@ -103,7 +103,7 @@ The processes code-flow starts (agent CLIs, checks, setup, **Run app**, `gh`, `g
 
 ## Dynamic teams
 
-`CODEFLOW_AUTO_TEAM_ENABLED=false` disables new Auto team runs while preserving saved-run viewing and recovery. Auto remains opt-in; the rollout record and evaluation evidence are shown in Insights. Existing runs without the `eventDriven` option retain dependency-wave replay; newly created Auto runs default it on.
+`CODEFLOW_AUTO_TEAM_ENABLED=false` disables new Auto team runs while preserving saved-run viewing and recovery. Auto remains opt-in; the rollout record and evaluation evidence are shown in Insights. The recorded stage is informational (and a composer default when set to `default`); only `CODEFLOW_AUTO_TEAM_ENABLED` changes whether new Auto runs can start. Existing runs without the `eventDriven` option retain dependency-wave replay; newly created Auto runs default it on.
 
 The authenticated run API accepts `loop.maxInvocations` as an additional per-allocation ceiling on actual CLI launches, including retries. Auto already caps launches with its step budget. Follow-up requests can specify `budget: { maxSteps, maxInvocations, maxMinutes }`; the UI exposes this fresh allocation and retains lifetime usage.
 

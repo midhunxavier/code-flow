@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { automationNeedsAttention, defaultPlanApproval, followupMinimumCalls, memberProgress, requirementProgress, taskBlockers, teamNeedsResume } from "../ui/team-state.js";
+import { automationNeedsAttention, defaultPlanApproval, followupMinimumCalls, memberProgress, requirementProgress, taskBlockers, teamAwaitingAnswer, teamNeedsResume } from "../ui/team-state.js";
 import type { TeamState } from "../src/teams.js";
 import { reconcileStreamSnapshot } from "../ui/run-stream.js";
 import type { RunSummary, Step } from "../ui/types.js";
@@ -88,11 +88,15 @@ test("blocked Auto work is resumable without treating a stopped legacy run as a 
 });
 
 test("automation inbox includes live team questions and unresolved work without including unrelated chats", () => {
-  assert.equal(automationNeedsAttention({ trigger: {}, team: { status: "blocked", awaitingRequestId: "q1" } }), true);
-  assert.equal(automationNeedsAttention({ trigger: {}, team: { status: "blocked" } }), true);
-  assert.equal(automationNeedsAttention({ team: { status: "blocked", awaitingRequestId: "q1" } }), false);
-  assert.equal(automationNeedsAttention({ triage: { state: "pending" } }), true);
-  assert.equal(automationNeedsAttention({ archived: true, triage: { state: "pending" }, trigger: {} }), false);
+  assert.equal(automationNeedsAttention({ status: "running", trigger: {}, team: { status: "running", awaitingRequestId: "q1" } }), true);
+  assert.equal(automationNeedsAttention({ status: "stopped", trigger: {}, team: { status: "blocked" } }), true);
+  assert.equal(automationNeedsAttention({ status: "running", team: { status: "blocked", awaitingRequestId: "q1" } }), false);
+  assert.equal(automationNeedsAttention({ status: "done", triage: { state: "pending" } }), true);
+  assert.equal(automationNeedsAttention({ status: "done", archived: true, triage: { state: "pending" }, trigger: {} }), false);
+  // After a crash the flag may linger on an interrupted run, but nobody can answer until Resume.
+  assert.equal(automationNeedsAttention({ status: "interrupted", trigger: {}, team: { status: "running", awaitingRequestId: "q1" } }), false);
+  assert.equal(teamAwaitingAnswer({ status: "interrupted", team: { awaitingRequestId: "q1" } }), false);
+  assert.equal(teamAwaitingAnswer({ status: "running", team: { awaitingRequestId: "q1" } }), true);
 });
 
 test("reconnect replaces stale metadata and lets reused event numbers through without discarding transcripts", () => {
@@ -107,4 +111,14 @@ test("reconnect replaces stale metadata and lets reused event numbers through wi
   assert.equal(next.seen.has(9), false, "an unpersisted event number may be reused after restart");
   assert.equal(next.seen.has(7), true, "already consumed persisted events are still deduplicated");
   assert.equal(next.events, history, "transcript history survives reconnect");
+});
+
+test("coverage reports a complete, reviewed result without a runnable check as unchecked, never verified", () => {
+  const team = fixture();
+  team.tasks.forEach((task) => { task.status = "completed"; });
+  team.status = "completed";
+  team.verification = { head: "abc", reviewed: true, approved: true, check: "unknown" };
+  assert.equal(requirementProgress(team, "r1"), "reviewed_unchecked");
+  team.verification.check = "not_required";
+  assert.equal(requirementProgress(team, "r1"), "verified");
 });

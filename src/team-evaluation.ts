@@ -109,7 +109,7 @@ export function buildTeamEvaluation(run: Run, options: { mode?: EvaluationMode; 
       elapsedMs: run.endedAt === undefined ? undefined : Math.max(0, run.endedAt - run.createdAt),
       activeWorkMs: intervalDuration(run.steps.flatMap((step) => interval(step.startedAt, step.endedAt))),
       coordinatorMs: turns.some(coordinator) ? turns.filter(coordinator).reduce((sum, step) => sum + (finite(step.endedAt) ? Math.max(0, step.endedAt - step.startedAt) : 0), 0) : undefined,
-      reportedTokens: usage.length ? usage.reduce((sum, step) => sum + step.usage!.inputTokens + step.usage!.outputTokens, 0) : undefined,
+      reportedTokens: usage.length ? usage.reduce((sum, step) => sum + step.usage!.inputTokens + (step.usage!.cacheReadTokens ?? 0) + step.usage!.outputTokens, 0) : undefined,
       reportedApiCostUsd: usage.some((step) => step.usage!.costUsd > 0) ? usage.reduce((sum, step) => sum + step.usage!.costUsd, 0) : undefined,
       tokenReportingTurns: usage.length,
       questions: team?.metrics.questionCount ?? 0, peerQuestions: peer.length, blockedTurns: team?.metrics.blockedTurns ?? 0,
@@ -117,7 +117,7 @@ export function buildTeamEvaluation(run: Run, options: { mode?: EvaluationMode; 
       peerWaitingMs: peerIntervals.length ? peerIntervals.reduce((sum, [a, b]) => sum + b - a, 0) : peer.length ? undefined : 0,
       peerWaitingWallMs: peerIntervals.length ? intervalDuration(peerIntervals) : peer.length ? undefined : 0,
       avoidableBarrierEstimateMs: barriers.length ? intervalDuration(barriers) : peer.length ? undefined : 0,
-      timedPeerQuestions: peerIntervals.length, repairTurns: turns.filter((step) => /repair|fix/i.test(step.title)).length,
+      timedPeerQuestions: peerIntervals.length, repairTurns: turns.filter((step) => !step.taskId && /repair|fix/i.test(step.title)).length, // engine-titled repair/fix steps, never model-titled task names
       selectedMemories: run.memoryManifest?.included.length ?? 0, omittedMemories: run.memoryManifest?.omitted.length ?? 0,
       coordinatorRevisions: team?.metrics.revisions ?? 0,
       approvals: approvalAnswers ? { approved: approvalAnswers.filter((answer) => answer.decision === "approve").length, revised: approvalAnswers.filter((answer) => answer.decision === "revise").length, rejected: approvalAnswers.filter((answer) => answer.decision === "reject").length, withReason: approvalAnswers.filter((answer) => !!answer.note?.trim()).length } : undefined,
@@ -200,9 +200,13 @@ export class TeamEvaluationStore {
     const operation = this.queue.then(async () => {
       const all = await this.list(); const ids = [...new Set(input.evaluationIds)];
       if (ids.some((id) => !all.some((report) => report.id === id))) throw new Error("Unknown evaluation report");
-      const selected = all.filter((report) => ids.includes(report.id)); const assessment = assessTeamRollout(selected);
+      const selected = all.filter((report) => ids.includes(report.id));
+      // Promotion is judged on every real report, not on the ones a caller chose to cite.
+      const assessment = assessTeamRollout(all);
       if (input.stage === "beta" && !assessment.eligibleBeta) throw new Error("Beta needs a verified real Auto result and a matched Supervisor comparison with CLI versions and no verification regression");
       if (input.stage === "default" && !assessment.eligibleDefault) throw new Error(`Default rollout is not supported: ${assessment.blockers.join(" ")}`);
+      // The evidence permits it; the decision must still say which reports it rests on.
+      if (input.stage !== "experimental" && !selected.length) throw new Error("Cite the evaluation reports the decision rests on");
       const decision: RolloutDecision = { at: Date.now(), stage: input.stage, rationale: input.rationale.trim(), evaluationIds: ids };
       await this.write(`decision-${decision.at}-${randomBytes(4).toString("hex")}.json`, decision);
       await this.write("rollout.json", decision); return this.rollout();

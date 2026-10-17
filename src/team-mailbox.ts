@@ -50,19 +50,29 @@ export function mailboxCommandProblem(command: TeamMailboxCommand): string | und
 
 /** Pure, atomic logical transaction. Caller must persist command + receipt before publishing state. */
 export function applyMailboxCommand(input: TeamState, command: TeamMailboxCommand, authority: TeamMailboxAuthority, now: number): { state: TeamState; receipt: TeamCommandReceipt } {
+  const state = structuredClone(input);
+  return { state, receipt: applyMailboxCommandInPlace(state, command, authority, now) };
+}
+
+/**
+ * The same transaction applied to `state` in place, for callers that replay a batch of recorded
+ * commands onto one clone (every live tool call rebuilds its view that way, so a chatty turn
+ * must not pay a full state copy per earlier command). Idempotent per operationId; validation
+ * errors throw before anything changes.
+ */
+export function applyMailboxCommandInPlace(state: TeamState, command: TeamMailboxCommand, authority: TeamMailboxAuthority, now: number): TeamCommandReceipt {
   const problem = mailboxCommandProblem(command); if (problem) throw new Error(problem);
   const { stepId: _physicalStep, ...logicalAuthority } = authority;
   const fingerprint = createHash("sha256").update(stable({ command, authority: logicalAuthority })).digest("hex");
-  const previous = input.commandReceipts?.find((r) => r.operationId === command.operationId);
+  const previous = state.commandReceipts?.find((r) => r.operationId === command.operationId);
   if (previous) {
     if (previous.fingerprint !== fingerprint) throw new Error("operationId was already used for different collaboration content");
-    return { state: input, receipt: previous };
+    return previous;
   }
-  if ((input.commandReceipts?.length ?? 0) >= 4096) throw new Error("Run collaboration command limit reached");
-  const state = structuredClone(input);
+  if ((state.commandReceipts?.length ?? 0) >= 4096) throw new Error("Run collaboration command limit reached");
   state.commandReceipts ??= []; state.waits ??= [];
   const receipt: TeamCommandReceipt = { operationId: command.operationId, fingerprint, status: "accepted" };
-  const done = () => { state.commandReceipts!.push(receipt); return { state, receipt }; };
+  const done = () => { state.commandReceipts!.push(receipt); return receipt; };
   const stale = (reason: string) => { receipt.status = "stale"; receipt.reason = reason; return done(); };
   const member = state.members.find((m) => m.id === authority.memberId);
   const task = state.tasks.find((t) => t.id === authority.taskId);

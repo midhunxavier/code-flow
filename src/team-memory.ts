@@ -72,12 +72,13 @@ export async function proposeProjectMemories(run: MemoryRun, findings: ProjectMe
   const store = options.store ?? memoryStore;
   const authority = memoryAuthorityForRun(run, memberId);
   const branch = options.branch ?? run.worktrees.find((tree) => tree.name === "integrated")?.branch ?? run.worktrees.find((tree) => tree.name === "integration")?.branch ?? `${run.branchPrefix}/integrated`;
-  // Preserve the union of knowledge actually shown to this run. A summarizer's omission of
-  // source IDs must never erase untrusted origins. No memory bodies go into the run journal.
-  const selected = run.memoryManifest?.included.map(({ id, revision }) => ({ id, revision })) ?? [];
+  // Provenance is what the producing task actually saw: the caller passes those journaled
+  // references, bounded per task. Only a caller without them falls back to the run-wide union,
+  // which a long run with many memories could grow past the reference limit.
+  const shown = run.memoryManifest?.included.map(({ id, revision }) => ({ id, revision })) ?? [];
   const created: MemoryEntry[] = [];
   for (const [index, finding] of findings.slice(0, 32).entries()) {
-    const refs = [...new Map([...selected, ...(finding.derivedFrom ?? [])].map((ref) => [`${ref.id}@${ref.revision}`, ref])).values()];
+    const refs = [...new Map((finding.derivedFrom ?? shown).map((ref) => [`${ref.id}@${ref.revision}`, ref])).values()];
     created.push(await store.propose({
       scope: "project", repo: run.repo, projectId: run.project, runId: run.id, memberId,
       title: finding.title, body: finding.body, paths: finding.paths,

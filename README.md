@@ -25,7 +25,7 @@
 
 ---
 
-Choose **Auto team** to have code-flow propose a team and workflow from your task, or pick a manual pattern (plan → build → review, a race, a debate, a supervisor with workers…). Watch individual members work, exchange questions, and retain private, team and project knowledge. code-flow runs the official CLIs on your own logins and works in git worktrees so your checkout stays untouched. Results include checks, independent review and any unresolved gaps.
+You pick how the agents work together (plan → build → review, a race, a debate, a supervisor with workers…), assign an agent to each role, and watch them work live in your browser. An experimental, opt-in **Auto team** lets code-flow propose the team and workflow from your task instead. code-flow runs the official CLIs on your own logins, does all the work in git worktrees so your checkout is never touched, and only calls a result done when your tests pass.
 
 ## Quickstart
 
@@ -42,8 +42,8 @@ Open **http://localhost:4317**, choose a repository, describe the task, pick a t
 
 ## Highlights
 
-- **Dynamic teams and manual patterns.** [Auto team](docs/auto-team.md) proposes members, dependencies and acceptance criteria, asks for plan approval, then adapts within your limits. Manual patterns include Plan → Build → Review and a Best-of-N race judged blind, with a model and effort per role.
-- **Communication and memory.** Members ask addressed questions, yield when blocked, and resume with answers and checkpoints. Private progress stays scoped to its member; accepted team contracts and reviewed project knowledge supply shared context.
+- **A team, not one agent.** Seven patterns, from Plan → Build → Review to a Best-of-N race judged blind, with any agent in any role and a model and effort per role. Having a different vendor review or judge catches what a model misses in its own work.
+- **Auto team (experimental, opt-in).** [Auto team](docs/auto-team.md) proposes members, tasks and acceptance criteria, asks for plan approval, then adapts within your limits. Members ask each other addressed questions and keep private, team and project memory. It is kept opt-in until its [measured evidence](docs/dynamic-teams-evaluation.md) supports more.
 - **Your subscriptions, their official CLIs.** code-flow launches `claude`, `codex` and `agy` headless, as they ship. It never reads or stores credentials.
 - **Your checkout stays untouched.** Every run works in git worktrees. Results are branches: review them line by line, send comments back to the agent, merge safely, or open a PR.
 - **Done means the check passes, and proves something.** code-flow runs your test command itself after every change, feeds failures back, and flags edits that make tests pass without fixing anything. Then it runs the result's tests on the original code: at least one should fail there, or nothing shows the change works, and the agent is asked for a test that does. Reviewers show the bugs they report with a test that code-flow runs, so a false alarm doesn't cost a fix round.

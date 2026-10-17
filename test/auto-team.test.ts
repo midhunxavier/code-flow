@@ -328,3 +328,30 @@ test("a resumed event task reconciles its captured input instead of a newer peer
     assert.equal(run.team!.verification!.approved, true);
   } finally { TeamContext.prototype.merge = merge; }
 });
+
+test("Auto team without a runnable check finishes reviewed but unverified, instead of blocking on every Resume", async () => {
+  const { run } = await finish("Implement the sample", { loop: { maxSteps: 20 } });
+  assert.equal(run.status, "done", run.error);
+  assert.equal(run.team!.status, "completed", JSON.stringify(run.team!.gaps));
+  assert.deepEqual(run.team!.gaps, []);
+  assert.equal(run.team!.verification!.check, "unknown");
+  assert.equal(run.team!.verification!.reviewed, true);
+  assert.equal(run.team!.verification!.approved, true);
+  assert.equal(run.verdict, undefined, "no check ran, so there is no pass/fail verdict");
+  assert.ok(run.team!.tasks.every((task) => task.status === "completed"));
+  assert.match(run.summary ?? "", /unverified: no runnable check/);
+  // Unverified work stays a proposal: nothing is accepted into team knowledge beyond the plan's contracts.
+  const entries = await memoryStore.list({ repo: run.repo, runId: run.id, scope: "team" }, { kind: "user", repo: run.repo });
+  assert.ok(entries.length > 0);
+  assert.ok(entries.filter((entry) => !entry.title.startsWith("Accepted team contract")).every((entry) => entry.status !== "accepted"), JSON.stringify(entries.map((e) => [e.title, e.status])));
+});
+
+test("Auto team stops asking the coordinator once a revision changes nothing", async () => {
+  // AUTO-FAILURE makes every worker turn fail; the fake coordinator then retries within maxRepairs and finally returns an empty patch.
+  const { run } = await finish("AUTO-FAILURE Implement the sample", { options: { maxRepairs: 1 } });
+  assert.equal(run.status, "stopped", run.error);
+  assert.equal(run.team!.status, "blocked");
+  const revisions = run.steps.filter((s) => s.title.startsWith("Revise workflow"));
+  assert.ok(revisions.length >= 1 && revisions.length <= 2, `coordinator revisions: ${revisions.length}`);
+  assert.ok(run.team!.metrics.coordinatorInvocations < run.team!.coordinationLimit + 1, "a no-op revision must not exhaust the coordination budget");
+});

@@ -65,8 +65,8 @@ import { projectOf, type Project, type Projects } from "./projects.js";
 import { exhausted } from "./routing.js";
 import { rankAgents } from "./stats.js";
 import type { TeamState, TeamInventory, TeamContextManifest, TeamCommandReceipt, TeamMessage } from "./teams.js";
-import { memoryStore, type MemorySelection } from "./memory.js";
-import { applyMailboxCommand, applyMailboxProjection, type TeamMailboxCommand, type TeamMailboxAuthority } from "./team-mailbox.js";
+import { memoryStore, type MemoryRef, type MemorySelection } from "./memory.js";
+import { applyMailboxCommand, applyMailboxCommandInPlace, applyMailboxProjection, type TeamMailboxCommand, type TeamMailboxAuthority } from "./team-mailbox.js";
 import { teamToolBridge, type TeamToolIdentity, type TeamToolRequest } from "./team-tools.js";
 import { autoTeamEnabled } from "./config.js";
 import type { ReplayMeasurement } from "./team-evaluation.js";
@@ -648,6 +648,9 @@ export class RejectedError extends Error {}
 
 export class JournalPersistenceError extends Error {}
 
+/** Collaboration tool calls one member turn may make: a looping member cannot fill the run's command log. */
+const TEAM_TOOL_CALLS_PER_TURN = 256;
+
 export class CancelledError extends Error {
   constructor() {
     super("Run cancelled");
@@ -672,6 +675,7 @@ export class TeamContext {
   private readonly activeMembers = new Set<string>();
   private readonly activeWorkspaces = new Set<string>();
   private readonly activeSessions = new Set<string>();
+  private readonly toolCallsByAttempt = new Map<string, number>();
   /** True while re-running already-journaled steps after a resume. */
   private replaying: boolean;
   /**
@@ -868,10 +872,17 @@ export class TeamContext {
     return this.heads.get(wt.name) ?? wt.base;
   }
 
-  async teamInventory(): Promise<TeamInventory> {
+  /**
+   * Provider availability, quota and model catalogs. Pass the planning inventory on later
+   * observations: availability and quota are read again, while the catalogs (a CLI call per
+   * provider, and a network fetch for agy) are reused rather than probed at every event.
+   */
+  async teamInventory(previous?: TeamInventory): Promise<TeamInventory> {
     const availability = await agentAvailability();
     const catalogs = await Promise.all(availability.map(async ({ id, available }) => {
       if (!available) return undefined;
+      const known = previous?.providers.find((p) => p.id === id);
+      if (known?.models) return { models: known.models, efforts: known.efforts };
       try { return await agentCatalog(id); } catch { return undefined; }
     }));
     return {
@@ -893,7 +904,8 @@ export class TeamContext {
 
   private rebuildingMemoryManifest = false;
 
-  async projectMemory(memberId?: string, taskId?: string, paths?: string[]): Promise<MemorySelection> {
+  /** `recorded` is the journaled selection: the provenance a write made from this context should cite, stable across replays. */
+  async projectMemory(memberId?: string, taskId?: string, paths?: string[]): Promise<MemorySelection & { recorded: MemoryRef[] }> {
     if (!this.rebuildingMemoryManifest) {
       this.rebuildingMemoryManifest = true;
       // A loaded projection contains later turns too. Rebuild in replay order so an early
@@ -911,7 +923,7 @@ export class TeamContext {
     // deleted; an actual new prompt gets only exact, currently applicable body revisions.
     this.run.memoryManifest = { included: refs([...previous.included, ...manifest.included]), omitted: refs([...previous.omitted, ...selection.manifest.omitted]) };
     this.publish();
-    return selection;
+    return { ...selection, recorded: manifest.included.map(({ id, revision }) => ({ id, revision })) };
   }
 
   /** Serialize external acknowledgements with scheduler boundaries, without holding an agent slot. */
@@ -940,15 +952,26 @@ export class TeamContext {
   }
 
   private durableMailboxProjection(state: TeamState, entry: { command: TeamMailboxCommand; authority: TeamMailboxAuthority; at: number; receipt?: TeamCommandReceipt }): TeamState {
-    // Rejection at acceptance time is permanent. A later roster change cannot authorize it.
-    if (entry.receipt?.status === "stale") return state.commandReceipts?.some((receipt) => receipt.operationId === entry.receipt!.operationId) ? state : { ...state, commandReceipts: [...(state.commandReceipts ?? []), entry.receipt] };
-    return applyMailboxCommand(state, entry.command, entry.authority, entry.at).state;
+    const next = structuredClone(state);
+    this.applyDurableEntry(next, entry);
+    return next;
+  }
+
+  /** Apply one journaled command to `state` in place. A rejection at acceptance time is permanent: a later roster change cannot authorize it. */
+  private applyDurableEntry(state: TeamState, entry: { command: TeamMailboxCommand; authority: TeamMailboxAuthority; at: number; receipt?: TeamCommandReceipt }): void {
+    if (entry.receipt?.status === "stale") {
+      if (!state.commandReceipts?.some((receipt) => receipt.operationId === entry.receipt!.operationId)) (state.commandReceipts ??= []).push(entry.receipt);
+      return;
+    }
+    applyMailboxCommandInPlace(state, entry.command, entry.authority, entry.at);
   }
 
   private mailboxOverlay(): TeamState {
     if (!this.run.team) throw new Error("This run has no active team");
-    let state = structuredClone(this.run.team);
-    for (const [, value] of this.pendingTeamCommands()) state = this.durableMailboxProjection(state, value);
+    // One clone, then every undrained command in place: the cost of a call grows with the
+    // number of pending commands, not with their square.
+    const state = structuredClone(this.run.team);
+    for (const [, entry] of this.pendingTeamCommands()) this.applyDurableEntry(state, entry);
     return state;
   }
 
@@ -1006,6 +1029,9 @@ export class TeamContext {
     return this.queueTeamCommand(async () => {
     this.checkCancelled();
     if (!isActive()) throw new Error("The member capability is no longer active");
+    const used = (this.toolCallsByAttempt.get(identity.attemptId) ?? 0) + 1;
+    if (used > TEAM_TOOL_CALLS_PER_TURN) throw new Error(`This turn has used its ${TEAM_TOOL_CALLS_PER_TURN} collaboration tool calls; finish with your structured outcome`);
+    this.toolCallsByAttempt.set(identity.attemptId, used);
     const args = request.arguments;
     const authority = memoryAuthorityForRun(this.run, identity.memberId);
     if (request.name === "read_memory") {
@@ -2366,6 +2392,7 @@ export class RunManager {
         run.seen = false;
         // Nobody can answer a checkpoint now; resuming asks again.
         run.awaiting = undefined;
+        if (run.team?.awaitingRequestId) run.team.awaitingRequestId = undefined;
       }
       // No step is still running in a run that isn't, whatever left it open (a crash, an error
       // an older code-flow didn't catch).
@@ -2513,10 +2540,12 @@ export class RunManager {
     this.devServers.stopMatching(`${id}/`);
     if (!opts.cleanup) return { removed: [], deletedBranches: [] };
     const result = await removeWorktrees(run.repo, run.worktrees, !!opts.deleteBranches);
+    // Private checkpoints and team records served this run only; project knowledge stays.
+    const retired = await memoryStore.purgeRun(run.id).catch((err: Error) => { logWarn(`Couldn't retire run memory for ${run.id}: ${err.message}`); return 0; });
     this.emit(run, {
       type: "log",
       level: "info",
-      text: `Archived: removed ${result.removed.length} worktree(s)${result.deletedBranches.length ? ` and ${result.deletedBranches.length} branch(es)` : "; branches kept"}`,
+      text: `Archived: removed ${result.removed.length} worktree(s)${result.deletedBranches.length ? ` and ${result.deletedBranches.length} branch(es)` : "; branches kept"}${retired ? `; retired ${retired} private/team memory record(s)` : ""}`,
     });
     if (result.failed.length) this.emit(run, { type: "log", level: "warn", text: `Couldn't remove: ${result.failed.join("; ")}` });
     return result;

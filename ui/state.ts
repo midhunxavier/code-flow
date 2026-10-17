@@ -1,7 +1,7 @@
 import { computed, signal } from "@preact/signals";
 import { api, ApiError, post, store } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
-import { defaultPlanApproval } from "./team-state.js";
+import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
 import type { TeamRollout } from "../src/team-evaluation.js";
 import type {
   AgentId,
@@ -293,17 +293,23 @@ export async function loadHealth() {
   gitHealth.value = git.status === "fulfilled" ? git.value : null;
 }
 
-/** "Let me approve the plan before agents build" (patterns that have a plan step). */
-export const approvePlan = signal(store.get("approvePlan") === "1");
-const approvalChosen = signal(store.get("approvePlan") !== null);
-export function setApprovePlan(on: boolean) {
-  approvalChosen.value = true;
-  approvePlan.value = on;
-  store.set("approvePlan", on ? "1" : "0");
+/**
+ * "Let me approve the plan before agents build" (patterns that have a plan step). The choice is
+ * remembered per pattern: unticking it for Plan → Build → Review must not silently dispatch an
+ * Auto team without its approval checkpoint. Older installs stored one shared choice; it still
+ * applies to the manual patterns.
+ */
+const approvalChoices = signal<Record<string, boolean>>(store.json<Record<string, boolean>>("approvePlanByPattern", {}));
+const legacyApproval = store.get("approvePlan");
+export function setApprovePlan(on: boolean, patternId: string) {
+  approvalChoices.value = { ...approvalChoices.value, [patternId]: on };
+  store.set("approvePlanByPattern", JSON.stringify(approvalChoices.value));
 }
-/** New Auto teams pause before dispatch unless the user has chosen otherwise. */
+/** New Auto teams pause before dispatch unless the user has chosen otherwise for Auto team itself. */
 export function planApprovalFor(patternId: string): boolean {
-  return defaultPlanApproval(patternId, approvalChosen.value ? approvePlan.value : undefined);
+  const chosen = approvalChoices.value[patternId];
+  if (chosen !== undefined) return chosen;
+  return defaultPlanApproval(patternId, patternId !== "auto-team" && legacyApproval !== null ? legacyApproval === "1" : undefined);
 }
 /** Patterns with a plan checkpoint, and what you approve there. */
 export const CHECKPOINTS: Record<string, string> = { pipeline: "the plan", debate: "the plan", supervisor: "the subtasks", tdd: "the tests", "auto-team": "the team and plan" };
@@ -393,8 +399,10 @@ export async function loadCheck() {
   try {
     const d = await api<{ command: string | null; source?: string; setup?: string }>(`/api/check?repo=${encodeURIComponent(r)}`);
     if (repo.value !== r) return;
-    if (detectSetup && d.setup) setupCmd.value = d.setup;
-    if (saved !== null || config.check) return;
+    // A late result fills only fields nobody touched during the lookup: it must neither replace
+    // what you typed meanwhile nor land in the input while you are typing into it.
+    if (detectSetup && d.setup && !setupCmd.value && store.get(`setup:${r}`) === null) setupCmd.value = d.setup;
+    if (saved !== null || config.check || store.get(`check:${r}`) !== null || checkCmd.value) return;
     checkCmd.value = d.command ?? "";
     checkHint.value = d.command ? `Detected from ${d.source}${d.setup ? `; each worktree is set up with “${d.setup}” (Settings)` : ""}.` : "No test command found in this repo.";
   } catch {
@@ -412,7 +420,7 @@ export async function loadModels() {
 
 // ---------------------------------------------------------------- runs
 /** A run needs you when it finished and you haven't looked, or it was interrupted. */
-export const needsYou = (r: RunSummary) => !r.archived && (!!r.awaiting || !!r.team?.awaitingRequestId || (r.status !== "running" && (r.status === "interrupted" || !r.seen)));
+export const needsYou = (r: RunSummary) => !r.archived && (!!r.awaiting || teamAwaitingAnswer(r) || (r.status !== "running" && (r.status === "interrupted" || !r.seen)));
 /**
  * A finished run whose result fails its check is a warning, not a success; so is one whose check
  * couldn't run here at all ("unchecked": nobody knows whether it works).
@@ -432,18 +440,27 @@ export function upsertRun(run: RunSummary) {
  * (a list fetched while the stream moved on) never replaces a newer one.
  */
 const feed = { epoch: "", seq: 0, runSeq: new Map<string, number>() };
+/**
+ * The run view's own stream numbers events with the manager's global counter, which is far
+ * larger than the sidebar feed's per-start counter. Each stream keeps its own gate: mixing them
+ * in one map made every later sidebar snapshot of an opened run look stale, so that run stopped
+ * updating in the list and never announced that it needed you.
+ */
+const viewSeq = new Map<string, number>();
 /** Called when a run finishes, pauses for you, or a PR watch hands it back (see watchAllRuns). */
 let onFinished: ((run: RunSummary) => void) | undefined;
 
 /**
  * A run snapshot from a run's own stream (the run view): it updates the list only when it's newer
- * than what the list shows. That stream replays a run's history first, and an old "running"
- * snapshot in the list would make the next refresh announce a finish that happened long ago.
+ * than what that stream already showed. The stream replays a run's history first, and an old
+ * "running" snapshot must never replace a newer one.
  */
 export function upsertRunFrom(run: RunSummary, seq: number, authoritative = false) {
-  if (!authoritative && seq <= (feed.runSeq.get(run.id) ?? 0)) return;
-  feed.runSeq.set(run.id, seq);
+  if (!authoritative && seq <= (viewSeq.get(run.id) ?? 0)) return;
+  viewSeq.set(run.id, seq);
+  const before = runs.value.get(run.id);
   upsertRun(run);
+  noticeChange(before, run);
 }
 
 /** Tell `onFinished` about what changed between two snapshots of a run. */
@@ -451,7 +468,7 @@ function noticeChange(before: RunSummary | undefined, run: RunSummary) {
   if (!onFinished) return;
   if (before?.status === "running" && run.status !== "running") onFinished(run);
   else if (run.awaiting && !before?.awaiting) onFinished(run); // paused for your decision
-  else if (run.team?.awaitingRequestId && run.team.awaitingRequestId !== before?.team?.awaitingRequestId) onFinished(run);
+  else if (teamAwaitingAnswer(run) && run.team!.awaitingRequestId !== before?.team?.awaitingRequestId) onFinished(run);
   else if (watchNeedingYou(run) && !watchNeedingYou(before)) onFinished(run); // a PR watch handed back to you
 }
 
