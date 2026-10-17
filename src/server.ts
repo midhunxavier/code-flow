@@ -14,7 +14,7 @@ import { listTree, readRepoFile, searchFiles } from "./repo-tree.js";
 import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig } from "./repo-config.js";
 import { openFolder } from "./serve.js";
-import { Shells, type ShellEvent } from "./shell.js";
+import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
 import { Notes } from "./notes.js";
 import { CODEFLOW_HOME, envNumber, PORT } from "./config.js";
 import { RunManager, UntrustedSourceError, type LoopSettings, type Pattern } from "./engine.js";
@@ -36,7 +36,7 @@ import { PrWatcher } from "./watch.js";
 import { Automations, describeSchedule, readWebhook, validateSchedule } from "./automation.js";
 import { changeRemote, isOwnAddress, lanAddresses, loadRemote, renderRemote, saveRemote, tokenMatches, type RemoteSettings } from "./remote.js";
 import { projectOf, Projects } from "./projects.js";
-import type { Run, RunEvent, RunSummary, StartRunInput } from "./engine.js";
+import type { Run, RunEvent, RunSummary, SideTurn, StartRunInput } from "./engine.js";
 
 // One server per CODEFLOW_HOME (waits for one that is still shutting down).
 const releaseLock = await acquireLock().catch((err: Error) => {
@@ -290,6 +290,16 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string): P
 }
 
 /** { kind: "issue" | "pr", number, ciLogs? } or { kind: "alert", tool, number, numbers? } — where a run starts from on GitHub. */
+/** A side chat's turn as the UI sends it: which chat (an id it made up), Ask or Change, and a title. */
+function sideTurn(input: unknown): SideTurn {
+  const v = (input ?? {}) as Record<string, unknown>;
+  const chat = typeof v.chat === "string" ? v.chat : "";
+  if (!/^[a-z0-9-]{1,40}$/.test(chat)) throw new HttpError(400, "A side chat needs an id: up to 40 lowercase letters, digits or dashes");
+  if (v.mode !== "ask" && v.mode !== "change") throw new HttpError(400, 'A side chat is "ask" or "change"');
+  const title = typeof v.title === "string" ? v.title.replace(/\s+/g, " ").trim().slice(0, 80) : "";
+  return { chat, mode: v.mode, title: title || "Side chat" };
+}
+
 function validateSource(input: unknown): SourceInput | undefined {
   if (!input || typeof input !== "object") return undefined;
   const raw = input as Record<string, unknown>;
@@ -913,7 +923,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         throw new HttpError(400, "The terminal opens in a git repository or one of its worktrees");
       });
       manager.noteActivity(); // commands run on this machine, like Run app
-      return send(res, 201, shells.open(cwd));
+      try {
+        return send(res, 201, shells.open(cwd));
+      } catch (err) {
+        if (err instanceof ShellLimitError) throw new HttpError(409, err.message);
+        throw err;
+      }
     }
     if (id && !shells.get(id)) throw new HttpError(404, "That terminal is gone (code-flow restarted?)");
     if (id && req.method === "GET" && parts[3] === "events") {
@@ -994,9 +1009,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "POST" && parts[3] === "followups") {
       const body = await readJson(req);
       if (!isAgentId(body.agent)) throw new HttpError(400, "Pick an agent");
+      const side = body.kind === "side" ? sideTurn(body.side) : undefined;
       await attempt(() =>
         manager.followUp(run.id, {
-          kind: body.kind === "resolve-conflicts" ? "resolve-conflicts" : body.kind === "reply" ? "reply" : "comments",
+          kind: side ? "side" : body.kind === "resolve-conflicts" ? "resolve-conflicts" : body.kind === "reply" ? "reply" : "comments",
+          side,
           worktree: String(body.worktree ?? ""),
           agent: body.agent,
           message: typeof body.message === "string" ? body.message : undefined,

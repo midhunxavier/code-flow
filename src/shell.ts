@@ -37,6 +37,9 @@ const MARKER = new RegExp(`${MARK}(\\d+)${MARK}([^${MARK}]*)${MARK}\\n?`);
 const HISTORY_BYTES = 256 * 1024;
 export const MAX_SHELLS = 12;
 
+/** Every shell is busy and there's no room for another. */
+export class ShellLimitError extends Error {}
+
 interface Shell extends ShellInfo {
   child: ChildProcess;
   history: ShellEvent[];
@@ -71,8 +74,12 @@ export class Shells {
 
   open(cwd: string): ShellInfo {
     if (this.shells.size >= MAX_SHELLS) {
-      const spare = [...this.shells.values()].find((s) => s.status === "exited") ?? [...this.shells.values()].sort((a, b) => a.startedAt - b.startedAt)[0];
-      if (spare) this.close(spare.id);
+      // Make room with a shell that's done, else the oldest one waiting for a command; never one
+      // that's running something.
+      const byAge = [...this.shells.values()].sort((a, b) => a.startedAt - b.startedAt);
+      const spare = byAge.find((s) => s.status === "exited") ?? byAge.find((s) => !s.busy);
+      if (!spare) throw new ShellLimitError(`${MAX_SHELLS} terminals are open and each is running something: stop or close one first`);
+      this.close(spare.id);
     }
     const program = shellProgram();
     const child = spawn(program, [], {

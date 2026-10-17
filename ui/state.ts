@@ -60,10 +60,20 @@ export function setSideWidth(px: number) {
   sideWidth.value = Math.min(Math.max(Math.round(px), 300), 900);
   store.set("sideWidth", String(sideWidth.value));
 }
-/** The chat shown in the side panel for what it's looking at: a Single-agent run, or none (a fresh chat). */
+/**
+ * The chat shown in the side panel for what it's looking at: a run's side chat ("side:<chat>"), a
+ * Single-agent run (its id), a new separate chat ("solo"), or null for a new chat.
+ */
 export const sideChat = computed(() => sideMemo.value.chat || null);
-export function setSideChat(id: string | null) {
-  rememberSide({ chat: id ?? "" });
+export function setSideChat(key: string | null) {
+  const m = sideMemo.value;
+  const run = key && !key.startsWith("side:") && key !== "solo";
+  // A chat you open here gets a place in the strip; a side chat you go back to comes back to it.
+  rememberSide({
+    chat: key ?? "",
+    chats: run && !(m.chats ?? []).includes(key) ? [...(m.chats ?? []), key] : m.chats,
+    closed: key?.startsWith("side:") ? m.closed?.filter((k) => k !== key) : m.closed,
+  });
 }
 /** Text handed to the side chat's composer (from Notes, or a file). */
 export const sideDraft = signal("");
@@ -277,11 +287,21 @@ export function pinSide(on: boolean) {
 /** What the panel remembers per scope, so going back to a run brings back its panel. */
 export interface SideMemory {
   tab?: SideTab;
-  /** The side chat's run id; "" for a new chat. */
+  /** The chat shown (see `sideChat`); "" for a new chat. */
   chat?: string;
-  /** The folder the Files and Terminal tabs show. */
+  /** Chats (Single-agent runs) open in the strip, in order. */
+  chats?: string[];
+  /** Side chats whose pill you closed (they stay in the list of all chats). */
+  closed?: string[];
+  /** Per chat, how many of its turns had finished when you last looked: more is a new reply. */
+  seen?: Record<string, number>;
+  /** The folder the Files tab shows. */
   files?: string;
-  terminal?: string;
+  /** Terminals open in the strip, the one shown, and with the panel split, the one below. */
+  shells?: string[];
+  shell?: string;
+  below?: string;
+  split?: boolean;
   /** The Browser tab's address. */
   url?: string;
   at: number;

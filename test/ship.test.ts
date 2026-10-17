@@ -1,7 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,6 +100,57 @@ test("the last step's diff is the branch's latest commit only", async () => {
   const last = (await manager.diff(run.id, branch, true)).map((f) => f.path);
   assert.equal(whole.length, built.length + last.length, `the follow-up's commit added files of its own: ${whole} vs ${last}`);
   assert.ok(last.length > 0 && last.every((p) => !built.some((f) => f.path === p)), "only what the follow-up changed");
+});
+
+test("a side chat on a run: Ask changes nothing; Change edits the run's worktree and continues the chat", async () => {
+  const run = await runPattern("pipeline", pipelineRoles);
+  const branch = run.artifacts[0]!.branch;
+  const head = git("rev-parse", branch).trim();
+  const record = mkdtempSync(join(tmpdir(), "codeflow-side-record-"));
+  process.env.FAKE_RECORD_DIR = record;
+  try {
+    await manager.followUp(run.id, { kind: "side", worktree: "build", agent: "claude", message: "What does it do?", side: { chat: "c1", mode: "ask", title: "What does it do?" } });
+    await finished(run);
+    const ask = run.followUps.at(-1)!;
+    assert.equal(ask.status, "done", ask.result);
+    assert.equal(git("rev-parse", branch).trim(), head, "Ask committed nothing");
+    const askStep = run.steps.find((s) => s.id === ask.stepId)!;
+    assert.deepEqual([askStep.mode, askStep.role, askStep.title], ["read", "side chat", "Side chat: What does it do?"]);
+
+    await manager.followUp(run.id, { kind: "side", worktree: "build", agent: "claude", message: "Write it down", side: { chat: "c1", mode: "change", title: "What does it do?" } });
+    await finished(run);
+    const change = run.followUps.at(-1)!;
+    assert.equal(change.status, "done", change.result);
+    assert.equal(git("log", "-1", "--format=%s", branch).trim(), `claude: side chat · What does it do? (${change.id})`);
+    assert.equal(run.steps.find((s) => s.id === change.stepId)!.mode, "write");
+    const calls = readdirSync(record).map((f) => JSON.parse(readFileSync(join(record, f), "utf8")) as { args: string[]; prompt: string });
+    const resumed = calls.find((c) => c.prompt.includes("Write it down"))!;
+    assert.equal(resumed.args[resumed.args.indexOf("--resume") + 1], askStep.sessionId, "the chat continues its own conversation");
+    assert.match(calls.find((c) => c.prompt.includes("What does it do?"))!.prompt, /The task:\nShip it/, "its first turn gets the run's task");
+    assert.match(run.summary!, /claude made a change from the side chat "What does it do\?" in build/);
+    assert.doesNotMatch(run.summary!, /What does it do\?" in build[\s\S]*What does it do\?" in build/, "the question itself isn't in the summary");
+  } finally {
+    delete process.env.FAKE_RECORD_DIR;
+  }
+});
+
+test("a side chat's turn sent while the team works waits for it", async () => {
+  process.env.FAKE_SLEEP_VENDOR = "claude";
+  process.env.FAKE_SLEEP_MS = "1500";
+  try {
+    const run = await manager.start({ pattern: findPattern("pipeline")!, task: "Ship it", repo, roles: pipelineRoles, options: {} });
+    for (let i = 0; i < 200 && !run.worktrees.some((w) => w.name === "build"); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(run.status, "running", "the reviewer is still working");
+    await manager.followUp(run.id, { kind: "side", worktree: "build", agent: "codex", message: "Any edge cases?", side: { chat: "c2", mode: "ask", title: "Edge cases" } });
+    assert.equal(run.followUps.at(-1)!.status, "pending", "queued behind the team");
+    await finished(run);
+    assert.equal(run.status, "done", run.error);
+    assert.equal(run.followUps.at(-1)!.status, "done");
+    await assert.rejects(manager.followUp(run.id, { kind: "side", worktree: "build", agent: "codex", message: "x" }), /needs its chat/);
+  } finally {
+    delete process.env.FAKE_SLEEP_VENDOR;
+    delete process.env.FAKE_SLEEP_MS;
+  }
 });
 
 test("review comments go back to the agent as a follow-up in the same run", async () => {

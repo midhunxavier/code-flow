@@ -285,7 +285,9 @@ export interface ApprovalAnswer {
 
 export interface FollowUp {
   id: string;
-  kind: "comments" | "reply" | "resolve-conflicts" | "ci-fix";
+  kind: "comments" | "reply" | "resolve-conflicts" | "ci-fix" | "side";
+  /** A side chat's turn: its conversation, Ask (read-only) or Change (edits the worktree), and its title. */
+  side?: SideTurn;
   worktree: string;
   agent: AgentId;
   /** What to tell the agent (comments, a reply, CI failures), or the branch to merge for conflicts. */
@@ -309,6 +311,13 @@ export interface FollowUp {
   pushed?: string;
   pushError?: string;
   at: number;
+}
+
+/** A turn of a side chat on a run: a conversation of its own, in the run's worktree. */
+export interface SideTurn {
+  chat: string;
+  mode: "ask" | "change";
+  title: string;
 }
 
 export interface CouncilFinding {
@@ -1718,19 +1727,24 @@ export class RunManager {
       push?: string;
       watch?: string;
       trust?: Trust;
+      side?: SideTurn;
     },
   ) {
     const run = this.require(id);
-    if (run.status !== "done" || this.starting.has(id)) throw new Error("Follow-ups can be sent once the run has finished");
-    if (!run.worktrees.some((w) => w.name === input.worktree)) throw new Error(`Unknown worktree "${input.worktree}"`);
     const kind = input.kind ?? "comments";
-    if (kind !== "resolve-conflicts" && !input.message?.trim()) throw new Error(kind === "reply" ? "Write a reply" : "Write at least one comment");
+    if (kind === "side" && !input.side) throw new Error("A side chat's turn needs its chat");
+    // A side chat's turn can wait for the team: the running execution takes it once its own work is done.
+    const queue = kind === "side" && run.status === "running" && !this.starting.has(id);
+    if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error(kind === "side" ? "Side chats can start once the run has finished or while it's running" : "Follow-ups can be sent once the run has finished");
+    if (!run.worktrees.some((w) => w.name === input.worktree)) throw new Error(`Unknown worktree "${input.worktree}"`);
+    if (kind !== "resolve-conflicts" && !input.message?.trim()) throw new Error(kind === "reply" ? "Write a reply" : kind === "side" ? "Write a message" : "Write at least one comment");
     if (kind === "resolve-conflicts" && !input.mergeFrom) throw new Error("Say which branch to merge");
     if (kind === "resolve-conflicts" && !(await validRef(run.repo, input.mergeFrom!))) throw new Error(`"${input.mergeFrom}" isn't a branch in this repository`);
-    if (run.status !== "done" || this.starting.has(id)) throw new Error("Follow-ups can be sent once the run has finished");
+    if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error("Follow-ups can be sent once the run has finished");
     run.followUps.push({
       id: `f${run.followUps.length + 1}`,
       kind,
+      side: kind === "side" ? input.side : undefined,
       worktree: input.worktree,
       agent: input.agent,
       message: input.message?.trim() ?? "",
@@ -1742,6 +1756,10 @@ export class RunManager {
       status: "pending",
       at: Date.now(),
     });
+    if (queue) {
+      this.emitRun(run);
+      return run;
+    }
     return this.resume(id);
   }
 
@@ -2523,12 +2541,14 @@ async function runFollowUps(ctx: TeamContext, run: Run, chat = false) {
   // should say what happened after the run.
   const lastChecked = [...run.followUps].reverse().find((f) => f.status === "done" && f.checkPassed !== undefined);
   if (lastChecked) ctx.setVerdict(lastChecked.checkPassed ? "passed" : "failing");
-  const finished = run.followUps.filter((f) => f.status !== "pending");
+  const finished = run.followUps.filter((f) => f.status !== "pending" && f.side?.mode !== "ask");
   if (finished.length) {
     run.summary += `\n\n## Follow-ups\n${finished
       .map((f) => {
         const what =
-          f.kind === "resolve-conflicts"
+          f.side
+            ? `made a change from the side chat "${f.side.title}"`
+            : f.kind === "resolve-conflicts"
             ? `resolved conflicts with \`${f.mergeFrom}\``
             : f.kind === "reply"
               ? "followed up on your reply"
@@ -2547,6 +2567,7 @@ async function runFollowUps(ctx: TeamContext, run: Run, chat = false) {
 }
 
 async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
+  if (f.side) return runSideTurn(ctx, run, f, f.side);
   const wt = await ctx.worktree(f.worktree);
   const before = await ctx.remember("head", `before ${f.id}`, () => resolveCommit(wt.path));
   if (f.kind === "resolve-conflicts" && f.mergeFrom) {
@@ -2643,6 +2664,66 @@ async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
   }
   const artifact = run.artifacts.find((a) => a.branch === wt.branch);
   if (artifact) await ctx.artifact(artifact.label, wt);
+  ctx.publish();
+}
+
+/**
+ * A side chat's turn, in the run's worktree: Ask reads it and changes nothing; Change edits it and
+ * is committed and checked like a reply, so its work lands on the run's branch. Each side chat
+ * continues its own conversation, never the team's.
+ */
+async function runSideTurn(ctx: TeamContext, run: Run, f: FollowUp, side: SideTurn) {
+  const wt = await ctx.worktree(f.worktree);
+  const change = side.mode === "change";
+  const before = change ? await ctx.remember("head", `before ${f.id}`, () => resolveCommit(wt.path)) : undefined;
+  const earlier = run.followUps.filter((x) => x.side?.chat === side.chat && x.id !== f.id && x.status === "done" && x.stepId);
+  const previous = earlier
+    .map((x) => run.steps.find((s) => s.id === x.stepId))
+    .reverse()
+    .find((s) => s?.agent === f.agent && s.sessionId);
+  const artifact = run.artifacts.find((a) => a.branch === wt.branch);
+  const context = previous
+    ? ""
+    : [
+        "You're helping with a coding task that other agents worked on, in its git worktree.",
+        `The task:\n${ctx.task}`,
+        run.patternSummary ? `What the team reported:\n${run.patternSummary.slice(0, 4000)}` : "",
+        artifact?.stat ? `What changed on this branch (git diff --stat):\n${artifact.stat}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n") + "\n\n";
+  const outcome = await ctx.ask({
+    title: `Side chat: ${side.title}`,
+    identity: `follow-up ${f.id}`,
+    role: "side chat",
+    agent: f.agent,
+    mode: change ? "write" : "read",
+    cwd: wt,
+    allowFailure: true,
+    trust: f.trust,
+    onStart: (stepId) => {
+      f.stepId = stepId;
+      ctx.publish();
+    },
+    resume: previous ? { ok: true, finalText: previous.finalText ?? "", sessionId: previous.sessionId, stepId: previous.id, agent: f.agent } : undefined,
+    prompt:
+      context +
+      (change
+        ? `The user asks for a change:\n\n${f.message}\n\nMake it in this worktree, run the relevant tests, and summarize what you changed. Don't commit; code-flow does.`
+        : `The user asks:\n\n${f.message}\n\nAnswer from the code in this worktree. Don't change any files.`),
+  });
+  f.stepId = outcome.stepId; // also when the turn was replayed
+  if (change) {
+    const sha = await ctx.commit(wt, `${f.agent}: side chat · ${side.title} (${f.id})`);
+    const issues = sha ? await ctx.testChanges(wt, before) : [];
+    f.integrity = issues.length ? issues : undefined;
+    if (issues.length) ctx.log(`Side chat ${f.id} (${f.agent}) changed tests:\n${describeIssues(issues)}`, "warn");
+    const check = await ctx.check(wt, `Check after side chat ${f.id}`);
+    f.checkPassed = check ? check.ok : undefined;
+    if (artifact) await ctx.artifact(artifact.label, wt);
+  }
+  f.status = outcome.ok ? "done" : "failed";
+  f.result = outcome.ok ? outcome.finalText : outcome.error;
   ctx.publish();
 }
 

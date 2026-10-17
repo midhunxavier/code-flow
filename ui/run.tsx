@@ -26,6 +26,8 @@ import {
   upsertRunFrom,
   projectFor,
   selectProject,
+  setSideChat,
+  openSide,
 } from "./state.js";
 import { ProjectChip } from "./projects.js";
 import type { AgentEvent, AgentId, Artifact, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
@@ -194,7 +196,9 @@ export function RunView({ id }: { id: string }) {
         </div>
       </div>
     );
-  const steps = [...data.current.steps.values()];
+  // Side chats' turns (and the checks after them) are in the side panel; the timeline is the team's work.
+  const sideSteps = sideStepIds(run);
+  const steps = [...data.current.steps.values()].filter((s) => !sideSteps.has(s.id) && !/^Check after side chat /.test(s.title));
   const current = selected === "" ? null : selected && data.current.steps.has(selected) ? selected : steps.at(-1)?.id ?? null;
   const finished = run.status !== "running";
   const showWork = workOpen ?? !finished;
@@ -562,6 +566,8 @@ function FollowUpThread({ run, data }: { run: RunSummary; data: RunData }) {
   return (
     <>
       {run.followUps.map((f) => {
+        // A side chat lives in the side panel; a change it made gets a line here, so the history is whole.
+        if (f.side) return f.side.mode === "change" && f.status !== "pending" ? <SideNote key={f.id} f={f} /> : null;
         const step = f.stepId ? data.steps.get(f.stepId) : undefined;
         return (
           <div key={f.id} class="fu">
@@ -594,8 +600,28 @@ function FollowUpThread({ run, data }: { run: RunSummary; data: RunData }) {
   );
 }
 
+/** A change a side chat made on the run's branch, as one line in the run's thread. */
+function SideNote({ f }: { f: FollowUp }) {
+  return (
+    <div class="fu-sent help side-note">
+      <AgentTag id={f.agent} /> {f.status === "done" ? "changed" : "tried to change"} {f.worktree} from the side chat{" "}
+      <button
+        type="button"
+        class="link"
+        onClick={() => {
+          setSideChat(`side:${f.side!.chat}`);
+          openSide("chat");
+        }}
+      >
+        “{f.side!.title}”
+      </button>
+      <FollowUpBadges f={f} />
+    </div>
+  );
+}
+
 /** How a follow-up went: still working, didn't finish, pushed, the check, test changes. */
-function FollowUpBadges({ f }: { f: FollowUp }) {
+export function FollowUpBadges({ f }: { f: FollowUp }) {
   return (
     <>
       {f.status === "pending" ? <span class="fu-live">working…</span> : f.status === "failed" ? <span class="err">✕ didn't finish</span> : null}
@@ -614,7 +640,7 @@ function FollowUpBadges({ f }: { f: FollowUp }) {
  * An agent's turn in the thread: its live transcript while it works, then its answer, with the
  * work (tool calls, thinking) folded away behind "Show work".
  */
-function TurnBody({ run, step, data, answer }: { run: RunSummary; step: Step; data: RunData; answer?: string }) {
+export function TurnBody({ run, step, data, answer }: { run: RunSummary; step: Step; data: RunData; answer?: string }) {
   const [open, setOpen] = useState(false);
   const version = data.events.get(step.id)?.length ?? 0;
   if (step.status === "running") return <Transcript run={run} step={step} data={data} version={version} />;
@@ -638,9 +664,11 @@ function TurnBody({ run, step, data, answer }: { run: RunSummary; step: Step; da
  * failed before the agent started) keeps its place, with what happened to it.
  */
 export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[]; data: RunData }) {
-  const byStep = new Map(run.followUps.filter((f) => f.stepId).map((f) => [f.stepId!, f]));
-  const turns = steps.filter((s) => (s.kind ?? "agent") === "agent");
-  const stepless = run.followUps.filter((f) => !f.stepId || !data.steps.has(f.stepId));
+  const followUps = run.followUps.filter((f) => !f.side); // side chats show in the side panel
+  const byStep = new Map(followUps.filter((f) => f.stepId).map((f) => [f.stepId!, f]));
+  const sideSteps = sideStepIds(run);
+  const turns = steps.filter((s) => (s.kind ?? "agent") === "agent" && !sideSteps.has(s.id));
+  const stepless = followUps.filter((f) => !f.stepId || !data.steps.has(f.stepId));
   const thread: { at: number; step?: Step; followUp?: FollowUp }[] = [
     ...turns.map((step) => ({ at: step.startedAt, step })),
     ...stepless.map((followUp) => ({ at: followUp.at, followUp })),
@@ -713,8 +741,13 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
   );
 }
 
+/** The steps that answered side chats: they show in the side panel, not in the run's thread. */
+export const sideStepIds = (run: RunSummary) => new Set(run.followUps.filter((f) => f.side && f.stepId).map((f) => f.stepId!));
+
 const followUpLabel = (f: FollowUp) =>
-  f.kind === "resolve-conflicts"
+  f.side
+    ? "side chat"
+    : f.kind === "resolve-conflicts"
     ? `resolve conflicts with ${f.mergeFrom}`
     : f.kind === "reply"
       ? "your reply"

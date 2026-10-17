@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { commentsMessage, FileDiff, lastWriter, type Comment } from "./review.js";
 import { AgentPicker } from "./run.js";
 import { api, enc, post, showToast, store } from "./lib.js";
@@ -32,10 +32,17 @@ export function ChangesTab({ run }: { run: RunSummary }) {
 
   // New commits (a follow-up, a fix) change the diff: reload when the run moves on.
   const moved = `${run.status}|${run.followUps.map((f) => f.status).join()}|${run.artifacts.map((a) => a.stat).join()}`;
+  // Another branch or view: its files, not the last ones, once they've loaded.
+  const view = `${branch}|${last}`;
+  const loaded = useRef(view);
   useEffect(() => {
     if (!branch) return;
     let alive = true;
     setError("");
+    if (loaded.current !== view) {
+      loaded.current = view;
+      setFiles(null);
+    }
     api<DiffFile[]>(`/api/runs/${enc(run.id)}/diff?branch=${enc(branch)}${last ? "&last=1" : ""}`).then(
       (d) => alive && setFiles(d),
       (e) => alive && setError((e as Error).message),

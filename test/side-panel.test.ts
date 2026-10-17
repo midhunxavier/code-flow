@@ -177,6 +177,24 @@ test("/api/shell: a failing command reports its exit code, and the shell lives o
   await api(`/api/shell/${id}`, undefined, "DELETE");
 });
 
+test("/api/shell: room for a new shell comes from the oldest idle one, never a busy one; all busy is refused", async () => {
+  for (const s of (await api("/api/shell")).body) await api(`/api/shell/${s.id}`, undefined, "DELETE");
+  const ids: string[] = [];
+  for (let i = 0; i < 12; i++) ids.push((await api("/api/shell", { cwd: repo })).body.id);
+  await api(`/api/shell/${ids[0]}/input`, { text: "sleep 30" });
+  const thirteenth = await api("/api/shell", { cwd: repo });
+  assert.equal(thirteenth.status, 201);
+  let listed: string[] = (await api("/api/shell")).body.map((s: { id: string }) => s.id);
+  assert.ok(listed.includes(ids[0]!), "the busy shell stays");
+  assert.ok(!listed.includes(ids[1]!), "the oldest idle shell made room");
+  for (const id of listed) if (id !== ids[0]) await api(`/api/shell/${id}/input`, { text: "sleep 30" });
+  const full = await api("/api/shell", { cwd: repo });
+  assert.equal(full.status, 409);
+  assert.match(full.body.error, /12 terminals are open and each is running something/);
+  listed = (await api("/api/shell")).body.map((s: { id: string }) => s.id);
+  for (const id of listed) await api(`/api/shell/${id}`, undefined, "DELETE");
+});
+
 test("/api/serve lists the apps started with Run app", async () => {
   assert.deepEqual((await api("/api/serve")).body, []);
 });

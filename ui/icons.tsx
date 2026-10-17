@@ -26,6 +26,7 @@ const PATHS = {
   panel: "M4 5h16v14H4zM15 5v14",
   pin: "M9 3h6M10 3v6l-4 5h12l-4-5V3M12 14v7",
   diff: "M12 4v8M8 8h8M8 18h8",
+  split: "M4 5h16v14H4zM4 12h16",
   close: "M6 6l12 12M18 6L6 18",
   external: "M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5",
   refresh: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5",
