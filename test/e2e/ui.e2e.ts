@@ -382,7 +382,7 @@ test("sign-in: the first browser claims code-flow; once agents have run, others 
   await other.getByText("Open code-flow from its link").waitFor();
   await other.goto(`${BASE}/?token=${TOKEN}`);
   await other.waitForURL(`${BASE}/`);
-  await other.getByRole("button", { name: /New run/ }).waitFor();
+  await other.getByRole("button", { name: "New run", exact: true }).waitFor();
   await stranger.close();
 });
 
