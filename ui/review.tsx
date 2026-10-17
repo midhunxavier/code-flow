@@ -1,10 +1,11 @@
+import { signal } from "@preact/signals";
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { AgentPicker } from "./run.js";
 import { api, enc, post, showToast, store } from "./lib.js";
 import { route, runs } from "./state.js";
 import type { AgentId, DiffFile, Run } from "./types.js";
 
-interface Comment {
+export interface Comment {
   file: string;
   side: "old" | "new";
   line: number;
@@ -19,6 +20,38 @@ interface Row {
   new?: number;
 }
 
+/**
+ * Line comments not sent yet, per run and branch ("comments:<run>:<branch>"). The Review page and the
+ * side panel's Changes tab can be open at once, so both read and change this one copy: a comment sent
+ * from one is gone from the other, and one added in either is kept. localStorage holds them across
+ * visits, and brings in what another window (a popped-out panel) changed.
+ */
+const drafts = new Map<string, Comment[]>();
+const draftsChanged = signal(0);
+const cachedDrafts = (key: string): Comment[] => {
+  if (!drafts.has(key)) drafts.set(key, store.json<Comment[]>(key, []));
+  return drafts.get(key)!;
+};
+/** The comments not sent yet on a run's branch; a component that reads them re-renders when they change. */
+export function commentDrafts(key: string): Comment[] {
+  void draftsChanged.value;
+  return cachedDrafts(key);
+}
+/** Change them from what they are now (not from what a view last showed). */
+export function changeCommentDrafts(key: string, change: (comments: Comment[]) => Comment[]) {
+  const next = change(cachedDrafts(key));
+  drafts.set(key, next);
+  store.set(key, JSON.stringify(next));
+  draftsChanged.value++;
+}
+window.addEventListener("storage", (e) => {
+  if (e.key !== null && !e.key.startsWith("comments:")) return;
+  // Read again on next use; no key means the whole storage was cleared.
+  if (e.key === null) drafts.clear();
+  else drafts.delete(e.key);
+  draftsChanged.value++;
+});
+
 /** Review a result branch file by file; line comments go back to an agent as a follow-up. */
 export function Review({ id, branch }: { id: string; branch: string }) {
   const summary = runs.value.get(id);
@@ -28,15 +61,11 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   const [error, setError] = useState("");
   const [runError, setRunError] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  const [comments, setCommentsState] = useState<Comment[]>(() => store.json(draftKey, []));
+  // Shared with the side panel's Changes tab, which can be open next to this page.
+  const comments = commentDrafts(draftKey);
   const [general, setGeneral] = useState(() => store.get(`${draftKey}:general`) ?? "");
   const [agent, setAgent] = useState<AgentId | null>(null);
   const [sending, setSending] = useState(false);
-
-  const setComments = (next: Comment[]) => {
-    setCommentsState(next);
-    store.set(draftKey, JSON.stringify(next)); // drafts survive navigating away
-  };
 
   useEffect(() => {
     api<DiffFile[]>(`/api/runs/${id}/diff?branch=${enc(branch)}`).then(
@@ -52,10 +81,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
 
   const worktree = ((run ?? summary)?.worktrees ?? []).find((w) => w.branch === branch);
   // Default to the agent that last wrote code in this worktree.
-  const defaultAgent = useMemo(
-    () => [...(run?.steps ?? [])].reverse().find((s) => (s.kind ?? "agent") === "agent" && s.worktree === worktree?.name && s.mode === "write")?.agent,
-    [run, worktree?.name],
-  );
+  const defaultAgent = useMemo(() => lastWriter(run, worktree?.name), [run, worktree?.name]);
   const target: AgentId = agent ?? defaultAgent ?? "claude";
   const file = files?.find((f) => f.path === selected);
   const totals = files?.reduce((t, f) => ({ add: t.add + f.additions, del: t.del + f.deletions }), { add: 0, del: 0 });
@@ -64,13 +90,10 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   const send = async () => {
     if (!worktree) return;
     setSending(true);
-    const lines = comments.map(
-      (c, i) => `${i + 1}. ${c.file}:${c.line}${c.side === "old" ? " (a removed line)" : ""} — \`${c.code.trim().slice(0, 140)}\`\n   ${c.text.trim()}`,
-    );
-    const message = [lines.join("\n"), general.trim() ? `General: ${general.trim()}` : ""].filter(Boolean).join("\n\n");
+    const message = commentsMessage(comments, general);
     try {
       await post(`/api/runs/${id}/followups`, { kind: "comments", worktree: worktree.name, agent: target, message });
-      setComments([]);
+      changeCommentDrafts(draftKey, () => []);
       store.set(`${draftKey}:general`, "");
       showToast("Sent — the agent is working on your comments");
       route.value = { view: "run", id };
@@ -150,8 +173,8 @@ export function Review({ id, branch }: { id: string; branch: string }) {
               key={file.path}
               file={file}
               comments={comments.filter((c) => c.file === file.path)}
-              onAdd={(c) => setComments([...comments, c])}
-              onRemove={(c) => setComments(comments.filter((x) => x !== c))}
+              onAdd={(c) => changeCommentDrafts(draftKey, (now) => [...now, c])}
+              onRemove={(c) => changeCommentDrafts(draftKey, (now) => now.filter((x) => x !== c))}
             />
           ) : files ? null : (
             <div class="tree-empty">Loading diff…</div>
@@ -162,7 +185,17 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   );
 }
 
-function FileDiff({ file, comments, onAdd, onRemove }: { file: DiffFile; comments: Comment[]; onAdd: (c: Comment) => void; onRemove: (c: Comment) => void }) {
+/** The agent that last wrote code in a worktree: who line comments go to unless you pick someone else. */
+export const lastWriter = (run: Run | null, worktree?: string): AgentId | undefined =>
+  [...(run?.steps ?? [])].reverse().find((s) => (s.kind ?? "agent") === "agent" && s.worktree === worktree && s.mode === "write")?.agent;
+
+/** Line comments (and an overall one) as the follow-up message the agent gets. */
+export function commentsMessage(comments: Comment[], general = ""): string {
+  const lines = comments.map((c, i) => `${i + 1}. ${c.file}:${c.line}${c.side === "old" ? " (a removed line)" : ""} — \`${c.code.trim().slice(0, 140)}\`\n   ${c.text.trim()}`);
+  return [lines.join("\n"), general.trim() ? `General: ${general.trim()}` : ""].filter(Boolean).join("\n\n");
+}
+
+export function FileDiff({ file, comments, onAdd, onRemove }: { file: DiffFile; comments: Comment[]; onAdd: (c: Comment) => void; onRemove: (c: Comment) => void }) {
   const rows = useMemo(() => parsePatch(file.patch), [file.patch]);
   const [editing, setEditing] = useState<{ side: "old" | "new"; line: number; code: string } | null>(null);
   const [text, setText] = useState("");

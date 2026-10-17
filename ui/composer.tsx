@@ -50,6 +50,8 @@ import {
   afterStart,
   loadProjects,
   target,
+  chatDrafts,
+  takeDrafts,
   type RoleValue,
 } from "./state.js";
 import { ProjectButton, ProjectNote } from "./projects.js";
@@ -68,6 +70,13 @@ export function Composer() {
   const p = pattern.value;
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
+  // Pins sent from the side panel's Browser: their text joins the task, their snapshots its attachments.
+  useEffect(() => {
+    const drafts = takeDrafts("composer");
+    if (!drafts.length) return;
+    setTask([task.value.trim(), ...drafts.map((d) => d.text)].filter(Boolean).join("\n\n"));
+    attachments.value = [...attachments.value, ...drafts.flatMap((d) => d.images)];
+  }, [chatDrafts.value]);
   const roles = rolesFor(p);
   const problem = startProblem(p, roles);
 

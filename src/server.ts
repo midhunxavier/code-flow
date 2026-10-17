@@ -14,7 +14,9 @@ import { listTree, readRepoFile, searchFiles } from "./repo-tree.js";
 import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig } from "./repo-config.js";
 import { openFolder } from "./serve.js";
-import { Shells, type ShellEvent } from "./shell.js";
+import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
+import { Previews } from "./preview.js";
+import { SnapshotError, takeSnapshot } from "./snapshot.js";
 import { Notes } from "./notes.js";
 import { CODEFLOW_HOME, envNumber, PORT } from "./config.js";
 import { RunManager, UntrustedSourceError, type LoopSettings, type Pattern } from "./engine.js";
@@ -36,7 +38,7 @@ import { PrWatcher } from "./watch.js";
 import { Automations, describeSchedule, readWebhook, validateSchedule } from "./automation.js";
 import { changeRemote, isOwnAddress, lanAddresses, loadRemote, renderRemote, saveRemote, tokenMatches, type RemoteSettings } from "./remote.js";
 import { projectOf, Projects } from "./projects.js";
-import type { Run, RunEvent, RunSummary, StartRunInput } from "./engine.js";
+import type { Run, RunEvent, RunSummary, SideTurn, StartRunInput } from "./engine.js";
 
 // One server per CODEFLOW_HOME (waits for one that is still shutting down).
 const releaseLock = await acquireLock().catch((err: Error) => {
@@ -75,6 +77,11 @@ const REMOTE_PORT = envNumber("CODEFLOW_REMOTE_PORT", PORT + 1, { min: 1, max: 6
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
 const HOST = "127.0.0.1";
 const allowedHosts = new Set([`${HOST}:${PORT}`, `localhost:${PORT}`]);
+/** Local apps in the side panel's Browser, each on a port of its own (src/preview.ts). */
+const previews = new Previews(
+  () => [`http://localhost:${PORT}`, `http://${HOST}:${PORT}`],
+  () => [PORT, REMOTE_PORT],
+);
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -134,6 +141,13 @@ const auth = {
 };
 manager.onActivity(() => (auth.claimable = false));
 const COOKIE = "codeflow_session";
+/**
+ * Room for a big Cookie header. Cookies ignore ports, so every app on this host name (one in the
+ * Browser's preview too) adds to what the browser sends code-flow; Chrome keeps up to 180 of 4 KB
+ * each. With Node's default (16 KB), a page that filled the jar would lock you out of code-flow,
+ * the ?token= link included, until you cleared the site's data.
+ */
+const MAX_HEADER_SIZE = 1024 * 1024;
 
 /**
  * Only a browser on this machine may claim the session. The Host header alone doesn't say so:
@@ -151,19 +165,24 @@ function sessionCookie(): string {
   return `${COOKIE}=${auth.token}; HttpOnly; SameSite=Strict; Path=/`;
 }
 
-function readCookie(req: IncomingMessage, name: string): string | undefined {
-  const cookie = String(req.headers.cookie ?? "")
+/**
+ * Every value a cookie has in the request. Cookies ignore ports, so a page on another port of this
+ * host (an app in the Browser's preview, say) can set one of the same name with a narrower path,
+ * which the browser sends first; it can't replace ours (HttpOnly), so ours is still among them.
+ */
+function readCookies(req: IncomingMessage, name: string): string[] {
+  return String(req.headers.cookie ?? "")
     .split(";")
     .map((c) => c.trim())
-    .find((c) => c.startsWith(`${name}=`));
-  return cookie?.slice(name.length + 1);
+    .filter((c) => c.startsWith(`${name}=`))
+    .map((c) => c.slice(name.length + 1))
+    .filter(Boolean);
 }
 
 function signedIn(req: IncomingMessage): boolean {
   const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
   if (bearer && tokenMatches(bearer, auth.token)) return true;
-  const cookie = readCookie(req, COOKIE);
-  return !!cookie && tokenMatches(cookie, auth.token);
+  return readCookies(req, COOKIE).some((cookie) => tokenMatches(cookie, auth.token));
 }
 
 /**
@@ -183,8 +202,7 @@ function phoneCookie(): string {
 }
 
 function phoneSignedIn(req: IncomingMessage): boolean {
-  const cookie = readCookie(req, PHONE_COOKIE);
-  return phoneControl() && !!cookie && tokenMatches(cookie, remote.controlToken);
+  return phoneControl() && readCookies(req, PHONE_COOKIE).some((cookie) => tokenMatches(cookie, remote.controlToken));
 }
 
 /**
@@ -290,6 +308,16 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string): P
 }
 
 /** { kind: "issue" | "pr", number, ciLogs? } or { kind: "alert", tool, number, numbers? } — where a run starts from on GitHub. */
+/** A side chat's turn as the UI sends it: which chat (an id it made up), Ask or Change, and a title. */
+function sideTurn(input: unknown): SideTurn {
+  const v = (input ?? {}) as Record<string, unknown>;
+  const chat = typeof v.chat === "string" ? v.chat : "";
+  if (!/^[a-z0-9-]{1,40}$/.test(chat)) throw new HttpError(400, "A side chat needs an id: up to 40 lowercase letters, digits or dashes");
+  if (v.mode !== "ask" && v.mode !== "change") throw new HttpError(400, 'A side chat is "ask" or "change"');
+  const title = typeof v.title === "string" ? v.title.replace(/\s+/g, " ").trim().slice(0, 80) : "";
+  return { chat, mode: v.mode, title: title || "Side chat" };
+}
+
 function validateSource(input: unknown): SourceInput | undefined {
   if (!input || typeof input !== "object") return undefined;
   const raw = input as Record<string, unknown>;
@@ -555,7 +583,7 @@ const LAN_ALLOW_LOCAL = process.env.CODEFLOW_LAN_ALLOW_LOCAL === "1";
 function syncLanServer(signOut = false): Promise<void> {
   if (remote.enabled && remote.lan && !lanServer) {
     lanError = undefined;
-    const server = createServer(listener("lan"));
+    const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("lan"));
     server.on("connection", (socket) => {
       if (!LAN_ALLOW_LOCAL && isOwnAddress(socket.remoteAddress)) socket.destroy();
     });
@@ -767,7 +795,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, health);
   }
   if (req.method === "GET" && parts[1] === "health") {
-    return send(res, 200, { busy: manager.busy, writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length });
+    // interactiveTerminal: false when there's no python3 for the Terminal's pseudo-terminal (src/shell.ts).
+    return send(res, 200, { busy: manager.busy, writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length, interactiveTerminal: await shells.interactive() });
   }
   if (req.method === "GET" && parts[1] === "stats") {
     const since = Number(url.searchParams.get("since")) || undefined;
@@ -900,6 +929,21 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   // Every app started with "Run app", for the side panel's Browser.
   if (req.method === "GET" && parts[1] === "serve") return send(res, 200, manager.devServers.list());
   // The side panel's Terminal: shells that stay open, fed over POST, streamed over SSE.
+  if (parts[1] === "preview" && req.method === "POST") {
+    const body = await readJson(req);
+    // On the host name this page was opened with (checkOrigin allows only code-flow's own), so the app is same-site with it.
+    return send(res, 200, await attempt(() => previews.show(String(body.url ?? ""), req.headers.host)));
+  }
+  // Snapshot mode: a screenshot of any page, in a headless Chrome of its own (src/snapshot.ts).
+  if (parts[1] === "snapshot" && req.method === "POST") {
+    const body = await readJson(req);
+    try {
+      return send(res, 200, await takeSnapshot({ url: String(body.url ?? ""), width: Number(body.width), height: body.height === undefined ? undefined : Number(body.height), full: body.full === true }));
+    } catch (err) {
+      if (err instanceof SnapshotError) throw new HttpError(err.status, err.message);
+      throw err;
+    }
+  }
   if (parts[1] === "shell") {
     const id = parts[2];
     if (!id && req.method === "GET") return send(res, 200, shells.list());
@@ -913,7 +957,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         throw new HttpError(400, "The terminal opens in a git repository or one of its worktrees");
       });
       manager.noteActivity(); // commands run on this machine, like Run app
-      return send(res, 201, shells.open(cwd));
+      try {
+        // `pty`: a real terminal of `cols` × `rows` (line-based, `interactive: false`, without python3).
+        return send(res, 201, await shells.open(cwd, { pty: body.pty === true, cols: body.cols, rows: body.rows }));
+      } catch (err) {
+        if (err instanceof ShellLimitError) throw new HttpError(409, err.message);
+        throw err;
+      }
     }
     if (id && !shells.get(id)) throw new HttpError(404, "That terminal is gone (code-flow restarted?)");
     if (id && req.method === "GET" && parts[3] === "events") {
@@ -926,8 +976,25 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (id && req.method === "GET") return send(res, 200, shells.get(id));
     if (id && req.method === "POST" && parts[3] === "input") {
       const body = await readJson(req);
+      // An interactive shell takes keystrokes as typed (`data`: a paste, an arrow key's escape
+      // sequence) or bytes (`binary`, one per character: xterm's mouse reports, which aren't
+      // UTF-8); `text` is a whole command, sent with Enter, for either kind.
+      const keys = typeof body.binary === "string" ? body.binary : body.data;
+      if (typeof keys === "string" && shells.get(id)?.interactive) {
+        if (keys.length > 1_000_000) throw new HttpError(413, "That paste is too long");
+        if (!shells.type(id, keys, typeof body.binary === "string" ? "latin1" : "utf8")) throw new HttpError(409, "That shell has exited; open a new one");
+        return send(res, 200, shells.get(id));
+      }
       if (typeof body.text !== "string" || body.text.length > 20_000) throw new HttpError(400, "Send a command");
       if (!shells.write(id, body.text)) throw new HttpError(409, "That shell has exited; open a new one");
+      return send(res, 200, shells.get(id));
+    }
+    if (id && req.method === "POST" && parts[3] === "resize") {
+      const body = await readJson(req);
+      const [cols, rows] = [Number(body.cols), Number(body.rows)];
+      if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) throw new HttpError(400, "Send the size as whole numbers: cols and rows");
+      if (!shells.get(id)?.interactive) throw new HttpError(409, "Only an interactive terminal has a size");
+      if (!shells.resize(id, cols, rows)) throw new HttpError(409, "That shell has exited; open a new one");
       return send(res, 200, shells.get(id));
     }
     if (id && req.method === "DELETE") return send(res, 200, { closed: shells.close(id) });
@@ -989,18 +1056,21 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       return send(res, 200, { archived: true, ...result });
     }
     if (req.method === "GET" && parts[3] === "diff") {
-      return send(res, 200, await attempt(() => manager.diff(run.id, url.searchParams.get("branch") ?? "")));
+      return send(res, 200, await attempt(() => manager.diff(run.id, url.searchParams.get("branch") ?? "", url.searchParams.get("last") === "1")));
     }
     if (req.method === "POST" && parts[3] === "followups") {
       const body = await readJson(req);
       if (!isAgentId(body.agent)) throw new HttpError(400, "Pick an agent");
+      const side = body.kind === "side" ? sideTurn(body.side) : undefined;
       await attempt(() =>
         manager.followUp(run.id, {
-          kind: body.kind === "resolve-conflicts" ? "resolve-conflicts" : body.kind === "reply" ? "reply" : "comments",
+          kind: side ? "side" : body.kind === "resolve-conflicts" ? "resolve-conflicts" : body.kind === "reply" ? "reply" : "comments",
+          side,
           worktree: String(body.worktree ?? ""),
           agent: body.agent,
           message: typeof body.message === "string" ? body.message : undefined,
           mergeFrom: typeof body.mergeFrom === "string" ? body.mergeFrom : undefined,
+          attachments: Array.isArray(body.attachments) ? body.attachments.filter((a: any) => a && typeof a.data === "string").map((a: any) => ({ name: String(a.name ?? "file"), data: a.data })) : undefined,
         }),
       );
       return send(res, 200, { ok: true });
@@ -1124,7 +1194,7 @@ function listener(via: Via) {
   };
 }
 
-const server = createServer(listener("local")).listen(PORT, HOST, async () => {
+const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("local")).listen(PORT, HOST, async () => {
   const agents = await agentAvailability();
   const runs = manager.list();
   console.log(`code-flow running at http://localhost:${PORT}  (${runs.length} runs loaded from ${CODEFLOW_HOME})`);
@@ -1243,6 +1313,7 @@ async function stop(reason: string, code = 0) {
     lanServer?.close();
     watcher.stop();
     shells.closeAll();
+    previews.closeAll();
     automationsSaved = automations.stop();
   } catch {
     // still starting up: nothing is listening yet

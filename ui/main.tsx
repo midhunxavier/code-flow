@@ -4,24 +4,7 @@ import { useEffect, useState } from "preact/hooks";
 import { App, notifyFinished } from "./app.js";
 import logo from "./brand/vibesboard-mark.png";
 import { api, showToast, store } from "./lib.js";
-import { agents, loadHealth, loadModels, loadProjects, patterns, refreshRuns, route, setRepo, templates, watchAllRuns, type Route } from "./state.js";
-
-/** The current view lives in the URL hash, so reload, back/forward and links work. */
-function routeFromHash(): Route {
-  const [view, id, ...rest] = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
-  if (view === "run" && id) return { view: "run", id };
-  if (view === "review" && id && rest.length) return { view: "review", id, branch: rest.join("/") };
-  if (view === "automations") return { view: "automations" };
-  if (view === "insights") return { view: "insights", group: id || undefined };
-  return { view: "composer" };
-}
-function hashFor(r: Route): string {
-  if (r.view === "run") return `#/run/${encodeURIComponent(r.id)}`;
-  if (r.view === "automations") return "#/automations";
-  if (r.view === "insights") return r.group ? `#/insights/${encodeURIComponent(r.group)}` : "#/insights";
-  if (r.view === "review") return `#/review/${encodeURIComponent(r.id)}/${r.branch.split("/").map(encodeURIComponent).join("/")}`;
-  return "#/";
-}
+import { agents, hashFor, listenForHandOffs, loadHealth, loadModels, loadProjects, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
 // The tab icon: the vibesboard mark, like the top bar.
 const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/png", href: logo });
@@ -67,11 +50,14 @@ async function boot() {
   route.value = routeFromHash();
   effect(() => {
     const hash = hashFor(route.value);
-    if (location.hash !== hash) history.pushState(null, "", hash);
+    // Opened at a bare `/` (the startup link lands there), the composer needs no "#/" of its own:
+    // pushing one would make Back return to `/`, which pushes it again, so Back could never leave.
+    if (location.hash !== hash && !(hash === "#/" && !location.hash)) history.pushState(null, "", hash);
   });
   window.addEventListener("popstate", () => (route.value = routeFromHash()));
   window.addEventListener("hashchange", () => (route.value = routeFromHash()));
   render(<App />, root);
+  listenForHandOffs();
   void loadModels();
   void loadHealth();
   api("/api/templates").then(
