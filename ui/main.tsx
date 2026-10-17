@@ -50,7 +50,9 @@ async function boot() {
   route.value = routeFromHash();
   effect(() => {
     const hash = hashFor(route.value);
-    if (location.hash !== hash) history.pushState(null, "", hash);
+    // Opened at a bare `/` (the startup link lands there), the composer needs no "#/" of its own:
+    // pushing one would make Back return to `/`, which pushes it again, so Back could never leave.
+    if (location.hash !== hash && !(hash === "#/" && !location.hash)) history.pushState(null, "", hash);
   });
   window.addEventListener("popstate", () => (route.value = routeFromHash()));
   window.addEventListener("hashchange", () => (route.value = routeFromHash()));

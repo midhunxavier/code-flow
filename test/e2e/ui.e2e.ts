@@ -546,8 +546,9 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
   await page.goto(`${BASE}/?token=${TOKEN}`); // signed in even when this test runs on its own
   const remembered = await page.evaluate(() => localStorage.getItem("repo"));
   await page.evaluate(() => localStorage.removeItem("repo"));
-  await page.goto(`${BASE}/#/run/${created.id}`);
-  await page.reload();
+  // A new page, not a hash change: a hash-only goto can return on the old page's own history push,
+  // and a reload then reloads that instead.
+  await page.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
   const toggle = page.getByRole("button", { name: "Side panel", exact: true });
   if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
   const side = page.getByRole("complementary", { name: "Side panel" });
