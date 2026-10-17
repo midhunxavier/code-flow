@@ -184,9 +184,9 @@ test("a page that can't be reached, an alert(), and a Chrome that dies each end 
       const started = Date.now();
       await assert.rejects(takeSnapshot({ url: "https://example.com/", width: 800 }), (e: unknown) => e instanceof SnapshotError && e.status === 502 && /exit 3/.test(e.message));
       assert.ok(Date.now() - started < 10_000, `said so at once: ${Date.now() - started}ms`);
-      // A file that isn't a program this computer can run: spawn itself throws.
+      // A file that isn't a program: spawn throws on macOS; Linux runs it with /bin/sh, which fails.
       writeFileSync(fake, "garbage, not a program\n");
-      await assert.rejects(takeSnapshot({ url: "https://example.com/", width: 800 }), (e: unknown) => e instanceof SnapshotError && e.status === 502 && /Couldn't start/.test(e.message));
+      await assert.rejects(takeSnapshot({ url: "https://example.com/", width: 800 }), (e: unknown) => e instanceof SnapshotError && e.status === 502 && /Couldn't start|exit 127/.test(e.message));
     } finally {
       delete process.env.CODEFLOW_CHROME;
     }
@@ -200,24 +200,35 @@ test("a page that can't be reached, an alert(), and a Chrome that dies each end 
 });
 
 test("a page whose renderer crashes ends the snapshot at once, not at the timeout", { skip: (noChrome || process.platform === "win32") && "needs Chrome, and ps" }, async () => {
-  // An image that never comes keeps the page loading, so there's time to kill its renderer.
+  // An image that never comes keeps the page loading; once the page asks for it, its renderer is there.
+  let asked = false;
   const { server, url } = await serve((req, res) => {
-    if (req.url !== "/never.png") res.writeHead(200, { "content-type": "text/html" }).end('<title>x</title><img src="/never.png">');
+    if (req.url === "/never.png") asked = true;
+    else res.writeHead(200, { "content-type": "text/html" }).end('<title>x</title><img src="/never.png">');
   });
   try {
     const started = Date.now();
     const shot = takeSnapshot({ url, width: 800 });
-    let killed = 0;
-    for (let i = 0; i < 50 && !killed; i++) {
-      await new Promise((r) => setTimeout(r, 200));
-      for (const line of execFileSync("ps", ["-axo", "pid=,command="]).toString().split("\n")) {
-        if (line.includes(temp) && line.includes("--type=renderer")) {
-          process.kill(Number(line.trim().split(" ")[0]), "SIGKILL");
-          killed++;
-        }
-      }
-    }
-    assert.ok(killed, "found the page's renderer");
+    for (let i = 0; i < 100 && !asked; i++) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(asked, "the page loaded far enough to ask for its image");
+    // Every renderer of the Chrome this snapshot started (its profile is in this test's temp folder),
+    // found by ancestry: on Linux they're forked from Chrome's zygote and don't name the profile.
+    const procs = execFileSync("ps", ["-axo", "pid=,ppid=,command="])
+      .toString()
+      .split("\n")
+      .map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/))
+      .filter((m): m is RegExpMatchArray => !!m)
+      .map((m) => ({ pid: Number(m[1]), ppid: Number(m[2]), command: m[3]! }));
+    const browser = procs.find((p) => p.command.includes(temp) && p.command.includes("--remote-debugging-pipe") && !p.command.includes("--type="));
+    assert.ok(browser, "found the snapshot's Chrome");
+    const parent = new Map(procs.map((p) => [p.pid, p.ppid]));
+    const under = (pid: number) => {
+      for (let at = parent.get(pid); at && at > 1; at = parent.get(at)) if (at === browser.pid) return true;
+      return false;
+    };
+    const renderers = procs.filter((p) => p.command.includes("--type=renderer") && under(p.pid));
+    assert.ok(renderers.length, "found its renderers");
+    for (const r of renderers) process.kill(r.pid, "SIGKILL");
     await assert.rejects(shot, (e: unknown) => e instanceof SnapshotError && e.status === 502 && /crashed/.test(e.message));
     assert.ok(Date.now() - started < 20_000, `said so at once: ${Date.now() - started}ms`);
   } finally {

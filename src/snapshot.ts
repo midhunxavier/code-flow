@@ -248,12 +248,17 @@ async function drive(cdp: DevTools, url: string, width: number, height: number, 
   crash.catch(() => undefined);
   const step = <T>(work: Promise<T>): Promise<T> => Promise.race([work, crash]);
   const page = (method: string, params: Record<string, unknown> = {}) => step(cdp.send(method, params, sessionId));
+  const onCrash = () => crashed(new SnapshotError(`The page crashed while it was being snapshotted: ${url}`, 502));
   cdp.on((msg) => {
+    // Chrome says so to the browser (with target discovery on) and, with Inspector on, in the page's session.
+    if (msg.method === "Target.targetCrashed" && msg.params?.targetId === targetId) return onCrash();
     if (msg.sessionId !== sessionId) return;
     // An alert() or confirm() holds the page until someone answers it: answer OK, as a visitor would.
     if (msg.method === "Page.javascriptDialogOpening") void cdp.send("Page.handleJavaScriptDialog", { accept: true }, sessionId).catch(() => undefined);
-    if (msg.method === "Inspector.targetCrashed") crashed(new SnapshotError(`The page crashed while it was being snapshotted: ${url}`, 502));
+    if (msg.method === "Inspector.targetCrashed") onCrash();
   });
+  await cdp.send("Target.setDiscoverTargets", { discover: true }).catch(() => undefined);
+  await page("Inspector.enable").catch(() => undefined);
   await page("Page.enable");
   await page("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 600 });
   const loaded = cdp.waitFor("Page.loadEventFired", sessionId, LOAD_TIMEOUT_MS);

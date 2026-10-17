@@ -201,7 +201,17 @@ test("/api/shell: room for a new shell comes from the oldest idle one, never a b
 });
 
 /** Everything an interactive shell has shown: its replayed history, then what streamed after. */
-const shown = (events: any[], hello: any) => [...(hello?.history ?? []), ...events].filter((e) => e.type === "output").map((e) => e.text).join("");
+/**
+ * What the terminal printed. Bash with readline turns bracketed paste on at each prompt and off
+ * before running the line (`ESC[?2004h` / `ESC[?2004l` and a carriage return, on Ubuntu's bash):
+ * those go, so a command's output follows the line it was typed on.
+ */
+const shown = (events: any[], hello: any) =>
+  [...(hello?.history ?? []), ...events]
+    .filter((e) => e.type === "output")
+    .map((e) => e.text)
+    .join("")
+    .replace(/\x1b\[\?2004[hl]\r?/g, "");
 const gone = (pid: number) => {
   try {
     process.kill(pid, 0);
