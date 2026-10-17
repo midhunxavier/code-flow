@@ -215,6 +215,32 @@ test("single agent: the result's proof is reported, and nobody is asked for a te
   assert.match(r.summary!, /⚠ Not proven/);
 });
 
+test("a package the change adds is installed on the base code too, so its absence can't pass for a proof", async () => {
+  // `node install.mjs` stands in for `npm ci`: it installs what package.json lists.
+  const install = [
+    'import { mkdirSync, readFileSync, writeFileSync } from "node:fs";',
+    'for (const name of Object.keys(JSON.parse(readFileSync("package.json", "utf8")).dependencies ?? {})) {',
+    "  mkdirSync(`node_modules/${name}`, { recursive: true });",
+    '  writeFileSync(`node_modules/${name}/package.json`, JSON.stringify({ name, type: "module", main: "index.js" }));',
+    '  writeFileSync(`node_modules/${name}/index.js`, "export default (s, n) => s.padStart(n);\\n");',
+    "}",
+  ].join("\n");
+  const deps = newRepo({ "package.json": JSON.stringify({ name: "deps", type: "module", dependencies: {} }), "install.mjs": install, ".gitignore": "node_modules/\n" });
+  const r = await withEnv({ FAKE_ADDS_DEP: "1" }, () => run("solo", { agent: ["claude"] }, { loop: { check: "node --test", setup: "node install.mjs" } }, deps));
+  assert.equal(r.status, "done", r.error);
+  assert.equal(r.verdict, "passed");
+  assert.deepEqual(titles(r).slice(2), [
+    "Check:done",
+    "Setup proof checkout:done",
+    "Setup proof checkout (the change's dependencies):done",
+    // With pad-fake installed, its test passes on the base code: nothing needs the change.
+    "Proof: tests without the change:failed",
+  ]);
+  const proof = proofOf(r)!;
+  assert.equal(proof.status, "unproven", proof.detail);
+  assert.deepEqual(proof.tests, ["pad.test.mjs"]);
+});
+
 test('"prove": false in .codeflow/config.json turns proofs off', async () => {
   const off = newRepo({ ".codeflow/config.json": JSON.stringify({ prove: false }) });
   const r = await run("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] }, { loop: { check: "node --test" } }, off);

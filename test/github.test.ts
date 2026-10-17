@@ -161,7 +161,7 @@ test("start from a PR: a review council reviews its changes; posting is your cal
     review.findings.map((f) => [f.severity, f.problem, f.raisedBy]),
     [
       ["high", "Off-by-one in the loop", ["claude", "codex"]],
-      ["high", "No check for empty input", ["claude"]],
+      ["medium", "No check for empty input", ["claude"]],
       ["low", "Typo", ["claude", "codex"]],
     ],
     "severity ranks first, then agreement: a low finding two reviewers raised doesn't outrank a high one",

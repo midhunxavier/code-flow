@@ -228,6 +228,30 @@ test("review council: findings rank by severity, then by a confirming test, then
   assert.match(review.markdown, /\*Checked by code-flow:\* ✗ not confirmed: its test passes \(a false alarm\)/);
 });
 
+test("review council: the verdict goes by what blocks, not by the chair's word", async () => {
+  const council = { reviewers: ["claude", "codex"], chair: ["agy"] };
+  // The chair approves, but a test confirms one bug and a medium finding stands.
+  const approved = await withEnv({ FAKE_REPRO: "council", FAKE_CHAIR_VERDICT: "approve" }, () => run("council", council, { loop: { check: "node --test" } }));
+  assert.equal(approved.status, "done", approved.error);
+  assert.equal(approved.review?.verdict, "changes_requested");
+  assert.match(approved.review!.markdown, /^\*\*Review council: Changes requested\*\*/);
+  assert.match(await log(approved), /The chair approved, but 2 findings block once code-flow has run their tests, so the review says Changes requested/);
+
+  // The chair requests changes over a false alarm and a suggestion: nothing blocks.
+  const rejected = await withEnv({ FAKE_REPRO: "council-false-alarms" }, () => run("council", council, { loop: { check: "node --test" } }));
+  assert.equal(rejected.status, "done", rejected.error);
+  assert.equal(rejected.review?.verdict, "approve");
+  assert.deepEqual(
+    rejected.review!.findings.map((f) => [f.severity, f.check?.status]),
+    [
+      ["high", "refuted"],
+      ["low", "unconfirmed"],
+    ],
+  );
+  assert.match(rejected.review!.markdown, /^\*\*Review council: Approve\*\*/);
+  assert.match(await log(rejected), /The chair requested changes, but no finding blocks once code-flow has run their tests, so the review says Approve/);
+});
+
 test("resume: a reviewer's test is replayed from the journal, not run again", async () => {
   // Stops before the builder answers the review (the fifth agent turn), after the test ran.
   const stopped = await withEnv({ FAKE_REPRO: "fails" }, () => run("pipeline", pipeline, { loop: { check: "node --test", maxSteps: 4 } }));

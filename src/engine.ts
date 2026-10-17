@@ -1023,13 +1023,21 @@ export class TeamContext {
     const run = async (): Promise<Proof> => {
       let tests: string[] = [];
       try {
-        tests = (await changedFiles(wt.path, from, head)).filter(isTestSide);
+        const changed = await changedFiles(wt.path, from, head);
+        tests = changed.filter(isTestSide);
         let result = !tests.length && known ? known : undefined;
         if (!result) {
           // Exactly the base code, then the change's version of each test file (or none, if it deleted one).
           const checkout = await this.scratchAt("proof", from);
           if (!checkout) return make("unverified", "setup failed on the base commit", tests);
-          await restorePaths(checkout.path, head, tests);
+          // The tests may need a package only the change adds: its dependency files come along and
+          // are installed, or the missing package would make the tests fail as if they needed the
+          // change's code.
+          const deps = changed.filter((f) => DEPENDENCY_FILE.test(f) && !isTestSide(f));
+          await restorePaths(checkout.path, head, [...tests, ...deps]);
+          if (deps.length && this.run.loop.setup && !(await this.setupScratch("proof", checkout, head, "Setup proof checkout (the change's dependencies)"))) {
+            return make("unverified", `setup failed on the base code with the change's dependencies (${deps.join(", ")})`, tests);
+          }
           result = await this.command("check", "Proof: tests without the change", checkout, command, (r) => {
             const outcome = proofOutcome(r);
             return outcome.status === "proven"
@@ -1163,6 +1171,17 @@ export class TeamContext {
       current.setupAt = commit;
     }
     return current.ready ? wt : undefined;
+  }
+
+  /**
+   * Run setup in a scratch checkout whose dependency files now come from `commit`, and remember
+   * that: the next `scratchAt` sets it up again for the commit it moves to. False when setup fails.
+   */
+  private async setupScratch(kind: Scratch, wt: Worktree, commit: string, title: string): Promise<boolean> {
+    const ok = (await this.command("setup", title, wt, this.run.loop.setup!)).ok;
+    const current = await this.scratch.get(kind)?.catch(() => undefined);
+    if (current) Object.assign(current, { setupAt: commit, ready: ok });
+    return ok;
   }
 
   /** Remove the scratch checkouts; the run's attempt is over. */

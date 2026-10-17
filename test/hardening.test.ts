@@ -420,6 +420,12 @@ test("test counts are read from each runner's summary", () => {
   assert.equal(countTests(" Test Files  2 passed (2)\n      Tests  2 failed | 10 passed (12)"), 12);
   assert.equal(countTests("test result: ok. 4 passed; 0 failed; 1 ignored\ntest result: ok. 2 passed; 1 failed; 0 ignored"), 7);
   assert.equal(countTests("========= 2 failed, 10 passed, 1 skipped in 0.12s ========="), 12);
+  // pytest errors ran and didn't pass; -q prints the summary without the bars.
+  assert.equal(countTests("========= 9 passed, 1 error in 0.12s ========="), 10, "an error is a test that ran");
+  assert.equal(countTests("Interrupted: 1 error during collection\n1 error in 0.07s"), 1, "a summary of only errors");
+  assert.equal(countTests("ERROR test_z.py::test_d - RuntimeError\n1 failed, 1 passed, 1 error in 0.04s"), 3, "pytest -q");
+  assert.equal(countTests("2 passed, 1 warning in 0.01s"), 2);
+  assert.equal(countTests("============ no tests ran in 0.01s ============"), undefined);
   assert.equal(countTests("  10 passing (20ms)\n  2 failing\n"), 12);
   assert.equal(countTests("--- PASS: TestA (0.00s)\n--- FAIL: TestB (0.00s)\n"), 2);
   assert.equal(countTests("no summary here"), undefined);
@@ -432,6 +438,8 @@ test("failing tests are read from each runner's summary too", () => {
   assert.equal(failed(" Test Files  2 passed (2)\n      Tests  2 failed | 10 passed (12)"), 2);
   assert.equal(failed("test result: FAILED. 4 passed; 2 failed; 1 ignored\ntest result: ok. 2 passed; 1 failed; 0 ignored"), 3);
   assert.equal(failed("========= 2 failed, 10 passed, 1 skipped, 1 error in 0.12s ========="), 3, "a pytest error didn't pass either");
+  assert.equal(failed("1 failed, 1 passed, 1 error in 0.04s"), 2, "pytest -q");
+  assert.equal(failed("1 error in 0.07s"), 1);
   assert.equal(failed("  10 passing (20ms)\n  2 failing\n"), 2);
   assert.equal(failed("--- PASS: TestA (0.00s)\n--- FAIL: TestB (0.00s)\n"), 1);
   assert.deepEqual(testCounts("no summary here"), {});

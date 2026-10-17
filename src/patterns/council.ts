@@ -1,5 +1,5 @@
 import type { AgentId } from "../adapters/index.js";
-import type { CouncilFinding, FindingCheck, Pattern, Proof, Repro } from "../engine.js";
+import { blocks, type CouncilFinding, type FindingCheck, type Pattern, type Proof, type Repro } from "../engine.js";
 import { defaultBranch, mergeBase } from "../github.js";
 import { checkIssues, checkMark, CONFIRMATION, REVIEW_SHAPE, reproRule, severityOf, type ReviewVerdict } from "./findings.js";
 import { COUNCIL_SCHEMA, REVIEW_SCHEMA } from "./schemas.js";
@@ -170,9 +170,22 @@ export const councilPattern: Pattern = {
       );
     // Recurring problems are passed on to later runs; false alarms aren't problems.
     ctx.learn(findings.filter((f) => f.check?.status !== "refuted"));
-    const markdown = renderReview(merged.verdict, merged.summary, findings, done.map((r) => r.agent), proof);
+    // The verdict goes by what blocks once code-flow has run the findings' tests, as in the other
+    // patterns, not by the chair's word: a confirmed bug isn't approved, and false alarms and
+    // suggestions alone don't request changes.
+    const blocking = findings.filter((f) => blocks(f.severity, f.check?.status ?? "unconfirmed"));
+    const verdict = blocking.length ? "changes_requested" : "approve";
+    if (verdict !== merged.verdict) {
+      ctx.log(
+        `The chair ${merged.verdict === "approve" ? "approved" : "requested changes"}, but ` +
+          (blocking.length ? `${blocking.length} finding${blocking.length === 1 ? "" : "s"} block${blocking.length === 1 ? "s" : ""}` : "no finding blocks") +
+          ` once code-flow has run their tests, so the review says ${verdict === "approve" ? "Approve" : "Changes requested"}`,
+        "warn",
+      );
+    }
+    const markdown = renderReview(verdict, merged.summary, findings, done.map((r) => r.agent), proof);
     ctx.setReview({
-      verdict: merged.verdict,
+      verdict,
       summary: merged.summary,
       findings,
       reviewers: done.map((r) => ({ agent: r.agent, verdict: r.review.verdict, issues: r.review.issues.length })),
@@ -180,7 +193,7 @@ export const councilPattern: Pattern = {
       markdown,
     });
     if (proof) ctx.setFacts({ proof: proof.status });
-    ctx.log(`Council: ${merged.verdict === "approve" ? "approve" : "changes requested"} with ${findings.length} finding(s) from ${done.length} reviewer(s)`);
+    ctx.log(`Council: ${verdict === "approve" ? "approve" : "changes requested"} with ${findings.length} finding(s) from ${done.length} reviewer(s)`);
     return markdown;
   },
 };

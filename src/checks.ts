@@ -236,11 +236,13 @@ export function testCounts(output: string): { tests?: number; failed?: number } 
   // cargo: "test result: ok. 10 passed; 0 failed; 1 ignored" (one line per test binary)
   const cargo = [...tail.matchAll(/test result: \w+\. (\d+) passed; (\d+) failed/g)];
   if (cargo.length) return counts(cargo.reduce((sum, m) => sum + n(m[1]), 0), cargo.reduce((sum, m) => sum + n(m[2]), 0));
-  // pytest: "===== 2 failed, 10 passed, 1 skipped, 1 error in 0.12s =====" (an error is a test that didn't pass either)
-  const pytest = last(/^=+ (.*\d+ (?:passed|failed).*) in [\d.]+s/gm);
+  // pytest: "===== 2 failed, 10 passed, 1 skipped, 1 error in 0.12s =====", or the same without the
+  // bars under -q. An error (in a fixture, or a module that doesn't import) is a test that ran
+  // and didn't pass, so "9 passed, 1 error" is 10 tests, and "1 error in 0.07s" is a summary too.
+  const pytest = [...tail.matchAll(/^=*\s*(\d+ [a-z]+(?:, \d+ [a-z]+)*) in [\d.]+s\b/gm)].filter((m) => /\d+ (?:passed|failed|errors?)\b/.test(m[1]!)).pop();
   if (pytest) {
-    const failed = n(pytest[1]!.match(/(\d+) failed/)?.[1]);
-    return { tests: n(pytest[1]!.match(/(\d+) passed/)?.[1]) + failed, failed: failed + n(pytest[1]!.match(/(\d+) errors?\b/)?.[1]) };
+    const failed = n(pytest[1]!.match(/(\d+) failed/)?.[1]) + n(pytest[1]!.match(/(\d+) errors?\b/)?.[1]);
+    return counts(n(pytest[1]!.match(/(\d+) passed/)?.[1]), failed);
   }
   // Mocha: "  10 passing" / "  2 failing"
   const mocha = last(/^\s+(\d+) passing/gm);

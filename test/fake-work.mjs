@@ -1,7 +1,7 @@
 // What a fake agent does with a prompt, whichever way it was asked (one-shot CLI or Codex's
 // app-server): its side effects in the working directory, then its answer. Answers the structured
 // prompts the patterns send, so workflows can be exercised end to end.
-import { writeFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
@@ -82,11 +82,18 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
   } else if (prompt.includes('"raised_by"')) {
     // Review council chair: merge the reviewers' findings, out of order (code-flow ranks them).
     // FAKE_REPRO: findings that came with tests, one that fails (raised by one reviewer) and one
-    // that passes (raised by both).
+    // that passes (raised by both); "council-false-alarms": only a false alarm and a suggestion.
+    // FAKE_CHAIR_VERDICT: the chair's verdict word, whatever the findings say.
+    const falseAlarms = process.env.FAKE_REPRO === "council-false-alarms";
     answer = json({
-      verdict: "changes_requested",
+      verdict: process.env.FAKE_CHAIR_VERDICT ?? "changes_requested",
       summary: "Two reviewers found the same off-by-one.",
-      findings: process.env.FAKE_REPRO
+      findings: falseAlarms
+        ? [
+            { severity: "low", file: "README.md", problem: "Typo", fix: "Fix the typo", raised_by: ["B"], repro: noRepro },
+            { severity: "high", file: "feature.txt", problem: "Missing null check", fix: "Check for null", raised_by: ["A", "B"], repro: passingRepro },
+          ]
+        : process.env.FAKE_REPRO
         ? [
             { severity: "low", file: "README.md", problem: "Typo", fix: "Fix the typo", raised_by: ["B"], repro: noRepro },
             { severity: "medium", file: "feature.txt", problem: "No docs for the feature", fix: "Document it", raised_by: ["A", "B"], repro: noRepro },
@@ -95,7 +102,7 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
           ]
         : [
             { severity: "low", file: "README.md", problem: "Typo", fix: "Fix the typo", raised_by: ["A", "B"], repro: noRepro },
-            { severity: "high", file: "feature.txt", problem: "No check for empty input", fix: "Return early when n is 0", raised_by: ["A"], repro: noRepro },
+            { severity: "medium", file: "feature.txt", problem: "No check for empty input", fix: "Return early when n is 0", raised_by: ["A"], repro: noRepro },
             { severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use < instead of <=", raised_by: ["A", "B"], repro: noRepro },
           ],
     });
@@ -149,6 +156,15 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     // A change that makes things worse: see FAILING_CHECK in the loop tests.
     writeFileSync(`broken-${vendor}-${id}.txt`, `${vendor} broke something\n`);
     answer = `Tried something else as ${vendor}.`;
+  } else if (write && process.env.FAKE_ADDS_DEP) {
+    // A change that adds a package and a test that uses it, installed the way `npm install` would
+    // (node_modules is gitignored). The test passes without the change's own code.
+    const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+    writeFileSync("package.json", JSON.stringify({ ...pkg, dependencies: { ...pkg.dependencies, "pad-fake": "1.0.0" } }, null, 2) + "\n");
+    execFileSync(process.execPath, ["install.mjs"]);
+    writeFileSync("pad.test.mjs", 'import { test } from "node:test";\nimport assert from "node:assert";\nimport pad from "pad-fake";\ntest("pads", () => assert.equal(pad("a", 3), "  a"));\n');
+    writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
+    answer = `Added pad-fake and a test for it as ${vendor}.`;
   } else if (write && process.env.FAKE_NOOP_VENDOR === vendor) {
     answer = `${vendor} looked around but changed nothing.\nIt would need network access to go further.`;
   } else if (write) {
