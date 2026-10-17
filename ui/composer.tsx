@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
-import { api, ApiError, enc, fmtSize, FLOWS, post, readBase64, SHORT, store } from "./lib.js";
+import { api, ApiError, baseName, enc, fmtSize, FLOWS, post, readBase64, SHORT, store } from "./lib.js";
 import { useDialog } from "./app.js";
 import {
   agents,
@@ -30,6 +30,7 @@ import {
   pickerOpen,
   refreshRuns,
   repo,
+  repoChecking,
   repoError,
   repoInfo,
   rolesFor,
@@ -51,7 +52,7 @@ import {
   target,
   type RoleValue,
 } from "./state.js";
-import { ProjectNote } from "./projects.js";
+import { ProjectButton, ProjectNote } from "./projects.js";
 import { SourceChip, Templates } from "./github.js";
 import { SaveAutomationDialog } from "./automations.js";
 import { Icon } from "./icons.js";
@@ -128,6 +129,10 @@ export function Composer() {
       <div class="eyebrow">New run</div>
       <h1>What should the team build?</h1>
       <p class="lede">Describe the task, add the files that matter, and pick how your agents work together.</p>
+      <div class="where" role="group" aria-label="Where the run works">
+        <ProjectButton composer />
+        <RepoButton />
+      </div>
       {!repoInfo.value ? (
         <div class={`banner ${repoError.value ? "bad" : ""}`}>
           <p>
@@ -223,6 +228,19 @@ export function Composer() {
         />
       ) : null}
     </div>
+  );
+}
+
+/** The repository (and its current branch) the run works in. */
+function RepoButton() {
+  const info = repoInfo.value;
+  return (
+    <button type="button" class={`repo-btn ${info ? "" : "empty"} ${repoError.value ? "bad" : ""}`} title={info ? info.repo : "Choose repository"} onClick={() => (pickerOpen.value = true)}>
+      <Icon name="folder" />
+      <span class="name">{info ? baseName(info.repo) : repoChecking.value ? "Checking…" : repoError.value || "Choose repository…"}</span>
+      {info ? <span class="branch">{info.current || "detached"}</span> : null}
+      <Icon name="chevron" class="caret" />
+    </button>
   );
 }
 

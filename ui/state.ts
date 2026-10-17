@@ -117,6 +117,12 @@ export const projects = signal<Project[]>([]);
 export const currentProject = signal(store.get("project") ?? ALL);
 export const activeProject = computed(() => projects.value.find((p) => p.id === currentProject.value));
 export const projectsOpen = signal(false);
+/** The Projects dialog opens straight on this project's editor ("new" for a new one), not on the list. */
+export const projectEdit = signal<string | null>(null);
+export function editProject(id: string) {
+  projectEdit.value = id;
+  projectsOpen.value = true;
+}
 
 export async function loadProjects() {
   try {
@@ -513,6 +519,21 @@ export function matchesFilter(r: RunSummary, f = runFilter.value): boolean {
   return q.split(/\s+/).every((word) => hay.includes(word));
 }
 export const isFlagged = flagged;
+
+/**
+ * How the sidebar lists runs: under their projects or by status, whether archived runs show,
+ * and which project groups you folded. Remembered, like the filters.
+ */
+export interface RailView {
+  group: "project" | "status";
+  archived: boolean;
+  collapsed: string[];
+}
+export const railView = signal<RailView>({ group: "project", archived: false, collapsed: [], ...store.json<Partial<RailView>>("railView", {}) });
+export function setRailView(patch: Partial<RailView>) {
+  railView.value = { ...railView.value, ...patch };
+  store.set("railView", JSON.stringify(railView.value));
+}
 
 const fetchedFor = new Set<string>();
 

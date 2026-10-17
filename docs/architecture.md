@@ -4,7 +4,7 @@
 
 ```
 ui/*.tsx                 UI: Preact + TypeScript, compiled against the server's own types
-                         (app: shell and sidebar · composer · run: the run thread · review · insights · automations · projects
+                         (app: shell and top bar · rail: the sidebar · composer · run: the run thread · review · insights · automations · projects
                           · side: the side panel's chat, files, terminal, browser and notes)
 ui/bits.tsx              small shared pieces: agent tags, the Markdown renderer, QR codes
 ui/styles.css, ui/fonts  the stylesheet and its fonts (Manrope, Roboto Mono; licences included)

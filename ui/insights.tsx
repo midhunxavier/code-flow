@@ -3,6 +3,7 @@ import { AgentTag } from "./bits.js";
 import { api, baseName, duration, fmtCost, fmtSize, fmtTokens, pct, post, showToast, STATUS_TEXT } from "./lib.js";
 import { activeProject, currentProject, NONE, patterns, repo, route, runState } from "./state.js";
 import type { AgentId, Stats } from "./types.js";
+import { ProjectButton } from "./projects.js";
 
 const patternName = (id: string) => patterns.value.find((p) => p.id === id)?.name ?? id;
 const PERIODS = { "7": 7, "30": 30, all: 0 } as const;
@@ -55,6 +56,7 @@ export function InsightsView({ group }: { group?: string }) {
     <div class="insights">
       <div class="ins-head">
         <h1>Insights</h1>
+        <ProjectButton />
         <div class="segmented" role="group" aria-label="Which runs">
           {inProject ? (
             <button class={scope === "project" ? "on" : ""} aria-pressed={scope === "project"} title="Runs in this project" onClick={() => setScope("project")}>

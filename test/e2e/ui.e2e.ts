@@ -122,7 +122,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   await page.getByText("✓ This folder is a git repository").waitFor();
   await page.unroute(/\/api\/fs\b/);
   await page.getByRole("button", { name: "Use this folder" }).click();
-  await page.locator(".repo-btn .name", { hasText: repo.split("/").pop()! }).waitFor();
+  await page.locator(".repo-btn:not(.project-btn) .name", { hasText: repo.split("/").pop()! }).waitFor();
   // The check is detected after the repo is chosen (two more requests): wait for it, don't race it.
   await page
     .waitForFunction(() => (document.querySelector("#checkCmd") as HTMLInputElement | null)?.value === "npm test", undefined, { timeout: 10_000 })
@@ -239,7 +239,7 @@ test("automations: a webhook starts a run, it waits in the inbox, you approve it
   await page.goto(`${BASE}/#/automations`);
   const item = page.locator(".inbox-item", { hasText: "E2E: automated chore" });
   await item.waitFor({ timeout: 30_000 });
-  assert.match(await page.locator(".auto-btn .count").innerText(), /^\d+$/, "the inbox count shows in the top bar");
+  assert.match(await page.locator(".auto-nav .count").innerText(), /^\d+$/, "the inbox count shows in the sidebar");
   await item.getByRole("button", { name: "✓ Approve" }).click();
   await item.waitFor({ state: "detached" });
   assert.equal((await api(`/api/runs/${run}`)).triage.state, "approved");
@@ -382,7 +382,7 @@ test("sign-in: the first browser claims code-flow; once agents have run, others 
   await other.getByText("Open code-flow from its link").waitFor();
   await other.goto(`${BASE}/?token=${TOKEN}`);
   await other.waitForURL(`${BASE}/`);
-  await other.getByRole("button", { name: /New run/ }).waitFor();
+  await other.getByRole("button", { name: "New run", exact: true }).waitFor();
   await stranger.close();
 });
 
@@ -412,23 +412,23 @@ test("supervisor: the reviewer defaults to a different vendor than the superviso
   assert.deepEqual(await pressed("Reviewer"), ["Skip"]);
 });
 
-test("projects: the first run made one; a new project scopes the sidebar and new runs; a run moves back", async () => {
+test("projects: the first run made one; the sidebar lists runs under their projects; a run moves back", async () => {
   const projects = () => fetch(`${BASE}/api/projects`, { headers: bearer }).then((r) => r.json() as Promise<{ id: string; name: string; repos: string[] }[]>);
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: repo }).toString().trim();
   const [own, ...others] = await projects();
   assert.deepEqual([own!.name, own!.repos, others.length], [root.split("/").pop(), [root], 0], "one project, named after the repo and holding it");
 
   await page.goto(BASE);
-  await page.locator(".project-btn", { hasText: "All projects" }).waitFor();
+  const rail = page.locator(".rail");
+  const group = (name: string) => rail.getByRole("group", { name, exact: true });
+  await group(own!.name).locator(".run-item").first().waitFor(); // earlier runs, under the repo's project
   // The repo you last used comes back after the page loads: a new project starts with it.
-  await page.locator(".repo-btn:not(.project-btn) .name", { hasText: own!.name }).waitFor();
-  await page.locator(".project-btn").click();
-  await page.getByRole("button", { name: "New project" }).click();
+  await page.locator(".where .repo-btn:not(.project-btn) .name", { hasText: own!.name }).waitFor();
+  await rail.getByRole("button", { name: "New project" }).click();
   await page.locator("#project-name").fill("E2E side");
   assert.equal(await page.locator(".project-repos .dir").count(), 1, "starts with the repo you're in");
   await page.getByRole("button", { name: "Create project" }).click();
-  await page.locator(".project-btn", { hasText: "E2E side" }).waitFor();
-  await page.locator(".rail-empty", { hasText: "No runs in E2E side yet" }).waitFor();
+  await page.locator(".where .project-btn", { hasText: "E2E side" }).waitFor(); // new runs start in it
 
   await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from earlier tests: the run mustn't wait for approval
@@ -436,26 +436,37 @@ test("projects: the first run made one; a new project scopes the sidebar and new
   await page.getByRole("button", { name: /^Start run/ }).click();
   await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
   await page.locator(".project-chip", { hasText: "E2E side" }).waitFor();
-  assert.deepEqual(await page.locator(".rail .run-item .t").allInnerTexts(), ["E2E: in the side project"], "the sidebar shows this project's runs");
+  await page.locator(".crumbs-bar .crumb", { hasText: "E2E side" }).waitFor();
+  await group("E2E side").locator(".run-item", { hasText: "E2E: in the side project" }).waitFor(); // seen once you look at it: under its project, not "Needs you"
+  assert.deepEqual(await group("E2E side").locator(".run-item .t").allInnerTexts(), ["E2E: in the side project"], "the project lists its runs");
+  assert.ok(await group(own!.name).locator(".run-item").count(), "and the other project's runs stay in view");
 
   // Move it back to the repo's own project.
   await page.locator(".project-chip").click();
   await page.locator(".move-choice").filter({ has: page.locator(".dn", { hasText: new RegExp(`^${own!.name}`) }) }).locator("input").check();
   await page.getByRole("button", { name: "Move", exact: true }).click();
   await page.locator(".project-chip", { hasText: own!.name }).waitFor();
-  await page.locator(".rail-empty", { hasText: "No runs in E2E side yet" }).waitFor();
+  await group(own!.name).locator(".run-item", { hasText: "E2E: in the side project" }).waitFor();
   const runId = decodeURIComponent(page.url().split("#/run/")[1]!);
   const run = await fetch(`${BASE}/api/runs/${runId}`, { headers: bearer }).then((r) => r.json());
   assert.equal(run.project, own!.id);
 
-  await page.locator(".project-btn").click();
+  // E2E side has nothing to list now: it folds into "more projects", and its menu edits it.
+  await rail.getByRole("button", { name: /^\d+ more projects?$/ }).click();
+  await group("E2E side").getByRole("button", { name: "Edit E2E side" }).click();
+  await page.getByRole("heading", { name: "Edit E2E side" }).waitFor();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await page.locator("dialog[open]").waitFor({ state: "detached" });
+
+  // Back to every project for the tests that follow: new runs go in their repo's project.
+  await page.goto(BASE);
+  await page.locator(".where .project-btn").click();
   await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
-  await page.locator(".rail .run-item").nth(1).waitFor(); // every project's runs again
 });
 
 test("side panel: chat with one agent, read a file, run a command, keep a note", async () => {
   await page.goto(BASE);
-  await page.locator(".repo-btn .name", { hasText: repo.split("/").pop()! }).waitFor(); // the remembered repo is loaded after the page
+  await page.locator(".repo-btn:not(.project-btn) .name", { hasText: repo.split("/").pop()! }).waitFor(); // the remembered repo is loaded after the page
   const toggle = page.getByRole("button", { name: "Side panel", exact: true });
   if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
   const side = page.getByRole("complementary", { name: "Side panel" });
@@ -536,7 +547,7 @@ test("projects: the Automations page and its inbox follow the project you're in;
   assert.deepEqual(await page.locator(".auto-row b").allInnerTexts(), ["E2E side hook"], "only this project's automations");
   await page.locator(".automations .rail-hint", { hasText: `${pending - 1} in other projects need${pending === 2 ? "s" : ""} you` }).waitFor();
   await page.locator(".automations .rail-hint", { hasText: `${total - 1} more in other projects` }).waitFor();
-  assert.equal(await page.locator(".auto-btn .count").innerText(), String(pending), "the top bar still counts every project's results");
+  assert.equal(await page.locator(".auto-nav .count").innerText(), String(pending), "the sidebar still counts every project's results");
 
   // The read-only phone view lists each project's runs under its name.
   const remote = await api("/api/remote", { enabled: true });
