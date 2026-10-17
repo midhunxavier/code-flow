@@ -199,6 +199,10 @@ test("ChatThread: a side chat's change gets a line where its turn ran; a side As
   const working = thread(chatRun([sideTurn("f1", "change", { status: "pending", stepId: "s2" })]), [step("s1"), step("s2", { role: "side chat", startedAt: 2100, status: "running" })]);
   assert.equal(badge(working.all), undefined);
 
+  // One that ended before its turn started (the run was stopped while it waited): the branch is the turn's.
+  const never = thread(chatRun([sideTurn("f1", "change", { status: "failed" })]), [step("s1")]);
+  assert.equal(badge(never.all), "check passes");
+
   // Once it ran, the run's last check is about the change, not the turn.
   const after = thread(chatRun([sideTurn("f1", "change", { stepId: "s2" })]), [step("s1"), step("s2", { role: "side chat", startedAt: 2100 })]);
   assert.deepEqual(after.keys, ["s1", "f1"]);

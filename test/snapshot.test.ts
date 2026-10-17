@@ -3,6 +3,7 @@
 // skipped without one.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -127,6 +128,17 @@ test("a whole-page snapshot at phone width of a page made for desktops is the zo
   } finally {
     server.close();
   }
+  // Zoomed in, the visible width is a fraction of a CSS pixel: the size reported is the picture's own.
+  const zoomed = await page(`<html><head><meta name="viewport" content="width=device-width, initial-scale=1.5"></head><body style="margin:0"><div style="height:2000px;background:#f00"></div></body></html>`);
+  try {
+    for (const full of [false, true]) {
+      const shot = await takeSnapshot({ url: zoomed.url, width: 412, height: 800, full });
+      const png = decode(shot.image);
+      assert.deepEqual([png.width, png.height], [shot.width, shot.height], `full: ${full}`);
+    }
+  } finally {
+    zoomed.server.close();
+  }
 });
 
 test("snapshots take turns: one Chrome at a time", { skip: noChrome }, async () => {
@@ -172,6 +184,9 @@ test("a page that can't be reached, an alert(), and a Chrome that dies each end 
       const started = Date.now();
       await assert.rejects(takeSnapshot({ url: "https://example.com/", width: 800 }), (e: unknown) => e instanceof SnapshotError && e.status === 502 && /exit 3/.test(e.message));
       assert.ok(Date.now() - started < 10_000, `said so at once: ${Date.now() - started}ms`);
+      // A file that isn't a program this computer can run: spawn itself throws.
+      writeFileSync(fake, "garbage, not a program\n");
+      await assert.rejects(takeSnapshot({ url: "https://example.com/", width: 800 }), (e: unknown) => e instanceof SnapshotError && e.status === 502 && /Couldn't start/.test(e.message));
     } finally {
       delete process.env.CODEFLOW_CHROME;
     }
@@ -181,6 +196,33 @@ test("a page that can't be reached, an alert(), and a Chrome that dies each end 
     assert.equal((await takeSnapshot({ url: again.url, width: 600 })).title, "Again");
   } finally {
     again.server.close();
+  }
+});
+
+test("a page whose renderer crashes ends the snapshot at once, not at the timeout", { skip: (noChrome || process.platform === "win32") && "needs Chrome, and ps" }, async () => {
+  // An image that never comes keeps the page loading, so there's time to kill its renderer.
+  const { server, url } = await serve((req, res) => {
+    if (req.url !== "/never.png") res.writeHead(200, { "content-type": "text/html" }).end('<title>x</title><img src="/never.png">');
+  });
+  try {
+    const started = Date.now();
+    const shot = takeSnapshot({ url, width: 800 });
+    let killed = 0;
+    for (let i = 0; i < 50 && !killed; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      for (const line of execFileSync("ps", ["-axo", "pid=,command="]).toString().split("\n")) {
+        if (line.includes(temp) && line.includes("--type=renderer")) {
+          process.kill(Number(line.trim().split(" ")[0]), "SIGKILL");
+          killed++;
+        }
+      }
+    }
+    assert.ok(killed, "found the page's renderer");
+    await assert.rejects(shot, (e: unknown) => e instanceof SnapshotError && e.status === 502 && /crashed/.test(e.message));
+    assert.ok(Date.now() - started < 20_000, `said so at once: ${Date.now() - started}ms`);
+  } finally {
+    server.closeAllConnections();
+    server.close();
   }
 });
 

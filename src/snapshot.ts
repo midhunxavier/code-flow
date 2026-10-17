@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -130,9 +130,9 @@ export async function takeSnapshot(request: SnapshotRequest): Promise<Snapshot> 
   return next;
 }
 
-async function capture(chrome: string, url: string, width: number, height: number, full: boolean): Promise<Snapshot> {
-  const profile = await mkdtemp(join(tmpdir(), "codeflow-snapshot-"));
-  const child = spawn(
+/** A headless Chrome with a fresh profile, driven over its DevTools pipe. */
+function launch(chrome: string, profile: string, width: number, height: number): ChildProcess {
+  return spawn(
     chrome,
     [
       "--headless=new",
@@ -157,9 +157,30 @@ async function capture(chrome: string, url: string, width: number, height: numbe
     // fd 3 is what Chrome reads commands from, fd 4 where it answers.
     { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], detached: true, env: childEnv() },
   );
+}
+
+async function capture(chrome: string, url: string, width: number, height: number, full: boolean): Promise<Snapshot> {
+  const profile = await mkdtemp(join(tmpdir(), "codeflow-snapshot-"));
+  const cantStart = async (code?: string) => {
+    await rm(profile, { recursive: true, force: true }).catch(() => undefined);
+    return new SnapshotError(`Couldn't start ${chrome}${code ? `: ${code}` : ""}`, 502);
+  };
+  let child: ChildProcess;
+  try {
+    child = launch(chrome, profile, width, height);
+  } catch (err) {
+    // Not a program this computer can run (no #! line, another architecture): spawn throws.
+    throw await cantStart((err as NodeJS.ErrnoException).code ?? (err as Error).message);
+  }
+  if (!child.stdio[3] || !child.stdio[4] || !child.stderr) {
+    // Out of file descriptors, say: there's a child object but no process and no pipes.
+    let code: string | undefined;
+    await within(new Promise<void>((resolve) => child.once("error", (err: NodeJS.ErrnoException) => ((code = err.code), resolve()))), 500);
+    throw await cantStart(code);
+  }
   trackGroup(child.pid);
   let stderr = "";
-  child.stderr!.on("data", (d: Buffer) => (stderr = (stderr + d.toString()).slice(-2_000)));
+  child.stderr.on("data", (d: Buffer) => (stderr = (stderr + d.toString()).slice(-2_000)));
   const cdp = new DevTools(child.stdio[3] as Writable, child.stdio[4] as Readable);
   const gone = new Promise<void>((resolve) => {
     child.once("exit", () => resolve());
@@ -220,10 +241,18 @@ async function within(promise: Promise<unknown>, ms: number) {
 async function drive(cdp: DevTools, url: string, width: number, height: number, full: boolean): Promise<Snapshot> {
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
-  const page = (method: string, params: Record<string, unknown> = {}) => cdp.send(method, params, sessionId);
-  // An alert() or confirm() holds the page until someone answers it: answer OK, as a visitor would.
+  // The page's renderer can die (out of memory, say) while Chrome itself stays up: nothing it was
+  // asked would ever be answered, so every step gives up as soon as Chrome says so.
+  let crashed: (err: Error) => void = () => undefined;
+  const crash = new Promise<never>((_, reject) => (crashed = reject));
+  crash.catch(() => undefined);
+  const step = <T>(work: Promise<T>): Promise<T> => Promise.race([work, crash]);
+  const page = (method: string, params: Record<string, unknown> = {}) => step(cdp.send(method, params, sessionId));
   cdp.on((msg) => {
-    if (msg.method === "Page.javascriptDialogOpening" && msg.sessionId === sessionId) void page("Page.handleJavaScriptDialog", { accept: true }).catch(() => undefined);
+    if (msg.sessionId !== sessionId) return;
+    // An alert() or confirm() holds the page until someone answers it: answer OK, as a visitor would.
+    if (msg.method === "Page.javascriptDialogOpening") void cdp.send("Page.handleJavaScriptDialog", { accept: true }, sessionId).catch(() => undefined);
+    if (msg.method === "Inspector.targetCrashed") crashed(new SnapshotError(`The page crashed while it was being snapshotted: ${url}`, 502));
   });
   await page("Page.enable");
   await page("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 600 });
@@ -231,27 +260,33 @@ async function drive(cdp: DevTools, url: string, width: number, height: number, 
   const nav = await page("Page.navigate", { url });
   if (nav.errorText) throw new SnapshotError(`Couldn't open ${url}: ${nav.errorText}`, 502);
   // A page that never finishes loading (a stream, a stuck request) is still shown as it is by then.
-  await loaded;
-  await delay(SETTLE_MS);
+  await step(loaded);
+  await step(delay(SETTLE_MS));
   const { result } = await page("Runtime.evaluate", { expression: "JSON.stringify({ url: location.href, title: document.title })", returnByValue: true });
   const info = JSON.parse(String(result?.value ?? "{}")) as { url?: string; title?: string };
+  let shot: { data: string };
   if (!full) {
-    const shot = await page("Page.captureScreenshot", { format: "png" });
-    return { image: shot.data, width, height, url: info.url || url, title: info.title ?? "" };
+    shot = await page("Page.captureScreenshot", { format: "png" });
+  } else {
+    // The whole page, at the zoom it's shown at: a phone-width page without a viewport tag is laid out
+    // wider (980px) and zoomed out to fit, so the clip is in the page's CSS pixels at that scale.
+    const metrics = await page("Page.getLayoutMetrics");
+    const view = metrics.cssVisualViewport ?? {};
+    const scale = view.scale > 0 ? (view.scale as number) : 1;
+    const cssWidth = (view.clientWidth as number) || width / scale;
+    const cssHeight = Math.min(Math.max(metrics.cssContentSize?.height ?? 0, (view.clientHeight as number) || height / scale), MAX_HEIGHT / scale);
+    shot = await page("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip: { x: 0, y: 0, width: cssWidth, height: cssHeight, scale } });
   }
-  // The whole page, at the zoom it's shown at: a phone-width page without a viewport tag is laid out
-  // wider (980px) and zoomed out to fit, so the clip is in the page's CSS pixels at that scale.
-  const metrics = await page("Page.getLayoutMetrics");
-  const view = metrics.cssVisualViewport ?? {};
-  const scale = view.scale > 0 ? (view.scale as number) : 1;
-  const cssWidth = (view.clientWidth as number) || width / scale;
-  const cssHeight = Math.min(Math.max(metrics.cssContentSize?.height ?? 0, (view.clientHeight as number) || height / scale), MAX_HEIGHT / scale);
-  const shot = await page("Page.captureScreenshot", {
-    format: "png",
-    captureBeyondViewport: true,
-    clip: { x: 0, y: 0, width: cssWidth, height: cssHeight, scale },
-  });
-  return { image: shot.data, width: Math.round(cssWidth * scale), height: Math.round(cssHeight * scale), url: info.url || url, title: info.title ?? "" };
+  // The size the picture really is (Chrome rounds a clip to whole pixels), since boxes are drawn in its pixels.
+  const size = pngSize(shot.data);
+  return { image: shot.data, width: size?.width ?? width, height: size?.height ?? height, url: info.url || url, title: info.title ?? "" };
+}
+
+/** A PNG's width and height, from its header. */
+export function pngSize(base64: string): { width: number; height: number } | undefined {
+  const head = Buffer.from(base64.slice(0, 32), "base64");
+  if (head.length < 24 || head.toString("latin1", 12, 16) !== "IHDR") return undefined;
+  return { width: head.readUInt32BE(16), height: head.readUInt32BE(20) };
 }
 
 /** Chrome's DevTools protocol over its pipe: JSON messages, each ended by a NUL byte. */

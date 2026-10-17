@@ -678,9 +678,10 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
     ...sideChanges.map((side) => ({ at: (side.stepId && data.steps.get(side.stepId)?.startedAt) || side.at, side })),
   ].sort((a, b) => a.at - b.at);
   // The run's last check is the first turn's while nothing that changes the branch came after it (a side Ask doesn't).
-  // A side change that started (working, or done) is about to set, or has set, the run's last check: the
-  // first turn's badge isn't its to show. One still queued hasn't touched the branch.
-  const nothingAfter = followUps.length === 0 && !run.followUps.some((f) => f.side?.mode === "change" && (f.status !== "pending" || !!f.stepId));
+  // A side change that started (working, done, or failed after its turn) is about to set, or has set, the
+  // run's last check: the first turn's badge isn't its to show. One that never started (still queued, or
+  // ended before its turn) hasn't touched the branch.
+  const nothingAfter = followUps.length === 0 && !run.followUps.some((f) => f.side?.mode === "change" && !!f.stepId);
   const agent = Object.values(run.roles).flat()[0];
   return (
     <>
@@ -1489,6 +1490,10 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
   // message for the team, which no side turn would take.
   const pending = run.followUps.filter((f) => f.status === "pending");
   const sideOnly = run.status === "running" && !!run.patternDone && pending.length > 0 && pending.every((f) => f.side);
+  // A new run starts from the result's branch as it is now: it would miss a side Change still to land
+  // there. (An Ask changes nothing, and a change on another branch never reaches the new run anyway.)
+  const resultBranch = run.artifacts[0]?.branch;
+  const waitForSide = sideOnly && !!resultBranch && pending.some((f) => f.side?.mode === "change" && run.worktrees.find((w) => w.name === f.worktree)?.branch === resultBranch);
   const running = run.status === "running" && !sideOnly;
   // Who you can talk to after the run: each agent that wrote code, in its worktree.
   const writers = [
@@ -1514,8 +1519,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
         setText("");
         return;
       } else if (chosen === "team") {
-        // A new run starts from the branch as it is now, without the change a side chat is still making.
-        if (sideOnly) {
+        if (waitForSide) {
           showToast("Wait for the side chat to finish: a new run would start without its change", 6000);
           return;
         }
@@ -1556,7 +1560,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
     ? running
       ? `Goes into ${chatName}'s running turn if it takes messages, otherwise it's sent as soon as the turn ends`
       : chosen === "team"
-        ? sideOnly
+        ? waitForSide
           ? "Starts again from this result: wait for the side chat to finish first"
           : "Starts again from this result"
         : `Continues ${chatName}'s session on its branch${sideOnly ? ", once the side chat is done" : ""}`
@@ -1565,7 +1569,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
         ? `Steered into ${name}'s running turn if it takes messages, otherwise its next turn`
         : "Goes to the next agent that takes a turn"
       : chosen === "team"
-        ? sideOnly
+        ? waitForSide
           ? "Starts a new run with the same team, from this result: wait for the side chat to finish first"
           : "Starts a new run with the same team, from this result"
         : `Continues ${name}'s session on its branch, in ${worktree}${sideOnly ? ", once the side chat is done" : ""}`;
@@ -1637,8 +1641,8 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
                         </optgroup>
                       ) : null}
                       <optgroup label="Start again">
-                        <option value="team" disabled={sideOnly}>
-                          Whole team · new run{sideOnly ? " (once the side chat is done)" : ""}
+                        <option value="team" disabled={waitForSide}>
+                          Whole team · new run{waitForSide ? " (once the side chat is done)" : ""}
                         </option>
                       </optgroup>
                     </>
