@@ -783,7 +783,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, health);
   }
   if (req.method === "GET" && parts[1] === "health") {
-    return send(res, 200, { busy: manager.busy, writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length });
+    // interactiveTerminal: false when there's no python3 for the Terminal's pseudo-terminal (src/shell.ts).
+    return send(res, 200, { busy: manager.busy, writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length, interactiveTerminal: await shells.interactive() });
   }
   if (req.method === "GET" && parts[1] === "stats") {
     const since = Number(url.searchParams.get("since")) || undefined;
@@ -934,7 +935,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       });
       manager.noteActivity(); // commands run on this machine, like Run app
       try {
-        return send(res, 201, shells.open(cwd));
+        // `pty`: a real terminal of `cols` × `rows` (line-based, `interactive: false`, without python3).
+        return send(res, 201, await shells.open(cwd, { pty: body.pty === true, cols: body.cols, rows: body.rows }));
       } catch (err) {
         if (err instanceof ShellLimitError) throw new HttpError(409, err.message);
         throw err;
@@ -951,8 +953,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (id && req.method === "GET") return send(res, 200, shells.get(id));
     if (id && req.method === "POST" && parts[3] === "input") {
       const body = await readJson(req);
+      // An interactive shell takes keystrokes as typed (`data`: a paste, an arrow key's escape
+      // sequence); `text` is a whole command, sent with Enter, for either kind.
+      if (typeof body.data === "string" && shells.get(id)?.interactive) {
+        if (body.data.length > 1_000_000) throw new HttpError(413, "That paste is too long");
+        if (!shells.type(id, body.data)) throw new HttpError(409, "That shell has exited; open a new one");
+        return send(res, 200, shells.get(id));
+      }
       if (typeof body.text !== "string" || body.text.length > 20_000) throw new HttpError(400, "Send a command");
       if (!shells.write(id, body.text)) throw new HttpError(409, "That shell has exited; open a new one");
+      return send(res, 200, shells.get(id));
+    }
+    if (id && req.method === "POST" && parts[3] === "resize") {
+      const body = await readJson(req);
+      const [cols, rows] = [Number(body.cols), Number(body.rows)];
+      if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) throw new HttpError(400, "Send the size as whole numbers: cols and rows");
+      if (!shells.get(id)?.interactive) throw new HttpError(409, "Only an interactive terminal has a size");
+      if (!shells.resize(id, cols, rows)) throw new HttpError(409, "That shell has exited; open a new one");
       return send(res, 200, shells.get(id));
     }
     if (id && req.method === "DELETE") return send(res, 200, { closed: shells.close(id) });

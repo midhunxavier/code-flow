@@ -1,7 +1,8 @@
 // The side panel's server side: reading a file from the Files tab, notes that persist, the
 // Terminal's shells (a command's output streams back, `cd` sticks, the exit code is reported,
-// a closed shell is gone) and the list of running apps for the Browser tab. A real server on a
-// free port with fake agents; never ports 4317/4318.
+// a closed shell is gone; an interactive one in a pseudo-terminal takes keystrokes, has a size,
+// replays its history and closes everything it started) and the list of running apps for the
+// Browser tab. A real server on a free port with fake agents; never ports 4317/4318.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
@@ -45,10 +46,13 @@ before(async () => {
   git("add", ".");
   git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
   home = mkdtempSync(join(tmpdir(), "codeflow-side-home-"));
+  // The terminals' login shell is bash with a home of its own: nobody's dotfiles, a known prompt.
+  const shellHome = mkdtempSync(join(tmpdir(), "codeflow-side-user-"));
+  writeFileSync(join(shellHome, ".bash_profile"), "PS1='pty$ '\n");
   const port = await freePort();
   child = spawn(join(root, "node_modules/.bin/tsx"), ["src/server.ts"], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`, CODEFLOW_TOKEN: TOKEN },
+    env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`, CODEFLOW_TOKEN: TOKEN, SHELL: "/bin/bash", HOME: shellHome, BASH_SILENCE_DEPRECATION_WARNING: "1" },
     stdio: process.env.SIDE_DEBUG ? "inherit" : "ignore",
   });
   base = `http://localhost:${port}`;
@@ -67,7 +71,7 @@ const api = async (path: string, body?: unknown, method = body === undefined ? "
 };
 
 /** Read a shell's stream until `until` says the events seen so far are enough (or time runs out). */
-async function streamShell(id: string, until: (events: any[]) => boolean, timeoutMs = 10_000): Promise<{ hello: any; events: any[] }> {
+async function streamShell(id: string, until: (events: any[], hello: any) => boolean, timeoutMs = 10_000): Promise<{ hello: any; events: any[] }> {
   const res = await fetch(`${base}/api/shell/${id}/events`, { headers: bearer });
   assert.equal(res.status, 200);
   const reader = res.body!.getReader();
@@ -90,7 +94,7 @@ async function streamShell(id: string, until: (events: any[]) => boolean, timeou
       if (event.type === "hello") hello = event;
       else events.push(event);
     }
-    if (hello && until(events)) break;
+    if (hello && until(events, hello)) break;
   }
   await reader.cancel().catch(() => {});
   return { hello, events };
@@ -193,6 +197,103 @@ test("/api/shell: room for a new shell comes from the oldest idle one, never a b
   assert.match(full.body.error, /12 terminals are open and each is running something/);
   listed = (await api("/api/shell")).body.map((s: { id: string }) => s.id);
   for (const id of listed) await api(`/api/shell/${id}`, undefined, "DELETE");
+});
+
+/** Everything an interactive shell has shown: its replayed history, then what streamed after. */
+const shown = (events: any[], hello: any) => [...(hello?.history ?? []), ...events].filter((e) => e.type === "output").map((e) => e.text).join("");
+const gone = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch {
+    return true;
+  }
+};
+
+test("/api/shell with pty: a real terminal takes keystrokes, has the size you set, replays its history and closes everything it started", async () => {
+  const opened = await api("/api/shell", { cwd: repo, pty: true, cols: 100, rows: 30 });
+  assert.equal(opened.status, 201);
+  const { id } = opened.body;
+  assert.equal(opened.body.interactive, true, "python3 is there, so the terminal is a real one");
+  assert.deepEqual([opened.body.cols, opened.body.rows], [100, 30]);
+  assert.equal((await api("/api/health")).body.interactiveTerminal, true);
+  const typed = (data: string) => api(`/api/shell/${id}/input`, { data });
+
+  // Keystrokes are echoed by the terminal, and the command's output follows.
+  assert.equal((await typed("echo hi-$((40+2)) h\u00e9llo\r")).status, 200);
+  let seen = await streamShell(id, (evs, hello) => /hi-42 h\u00e9llo\r\n/.test(shown(evs, hello)));
+  assert.match(shown(seen.events, seen.hello), /echo hi-\$\(\(40\+2\)\) h\u00e9llo/, "the typed line is echoed");
+  assert.match(shown(seen.events, seen.hello), /\r\nhi-42 h\u00e9llo\r\n/, "UTF-8 comes through whole");
+
+  // A resize reaches the programs in the terminal.
+  assert.equal((await api(`/api/shell/${id}/resize`, { cols: 91, rows: 27 })).status, 200);
+  assert.equal((await api(`/api/shell/${id}/resize`, { cols: "wide", rows: 27 })).status, 400);
+  await typed("stty size\r");
+  seen = await streamShell(id, (evs, hello) => /\r\n27 91\r\n/.test(shown(evs, hello)));
+  assert.match(shown(seen.events, seen.hello), /\r\n27 91\r\n/, "stty sees the new size");
+  assert.deepEqual([(await api(`/api/shell/${id}`)).body.cols, (await api(`/api/shell/${id}`)).body.rows], [91, 27]);
+
+  // A client that connects again gets what the terminal showed so far.
+  const again = await streamShell(id, () => true);
+  assert.equal(again.hello.shell.interactive, true);
+  assert.match(shown([], again.hello), /hi-42 h\u00e9llo[\s\S]*27 91/, "the history is replayed on reconnect");
+
+  // A program in the foreground makes it busy; closing it ends the job in the background and the
+  // one in the foreground, even though that one ignores the hang-up (and SIGTERM).
+  await typed("sleep 301 & echo bg=$!\r");
+  await typed("sh -c 'trap \"\" HUP TERM; echo fg=$$; exec sleep 300'\r");
+  seen = await streamShell(id, (evs, hello) => /fg=\d+\r\n/.test(shown(evs, hello)) && /bg=\d+\r\n/.test(shown(evs, hello)));
+  const pids = ["bg", "fg"].map((k) => Number(shown(seen.events, seen.hello).match(new RegExp(`${k}=(\\d+)`))?.[1]));
+  assert.ok(pids.every((p) => p > 1), `found both jobs: ${pids}`);
+  let info: any;
+  for (let i = 0; i < 50 && !(info?.busy && info?.running); i++) {
+    info = (await api(`/api/shell/${id}`)).body;
+    if (!(info.busy && info.running)) await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.equal(info.busy, true, "busy while sleep is in the foreground");
+  assert.equal(info.running, "sleep");
+  assert.ok(pids.every((p) => !gone(p)), "both jobs are running");
+
+  assert.deepEqual((await api(`/api/shell/${id}`, undefined, "DELETE")).body, { closed: true });
+  for (let i = 0; i < 60 && !pids.every(gone); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.ok(pids.every(gone), `closing the terminal ended both jobs: ${pids.filter((p) => !gone(p))} still running`);
+  assert.equal((await api(`/api/shell/${id}`)).status, 404);
+});
+
+test("/api/shell with pty: `exit` ends it with the shell's exit code, and a command can still be sent as text", async () => {
+  const { id } = (await api("/api/shell", { cwd: repo, pty: true })).body;
+  assert.equal((await api(`/api/shell/${id}/input`, { text: "cd src && echo in-$(basename $PWD)" })).status, 200, "text is a command, sent with Enter");
+  await api(`/api/shell/${id}/input`, { data: "exit 4\r" });
+  const { hello, events } = await streamShell(id, (evs, h) => [...h.history, ...evs].some((e: any) => e.type === "exit"));
+  assert.match(shown(events, hello), /\r\nin-src\r\n/);
+  assert.deepEqual([...hello.history, ...events].find((e) => e.type === "exit"), { type: "exit", code: 4 });
+  assert.equal((await api(`/api/shell/${id}/input`, { data: "x" })).status, 409, "an exited terminal takes no more keys");
+  assert.equal((await api(`/api/shell/${id}/resize`, { cols: 80, rows: 24 })).status, 409);
+  await api(`/api/shell/${id}`, undefined, "DELETE");
+});
+
+test("without python3, a terminal asked for as interactive is the line-based shell, and says so", async () => {
+  // In this process: the processes it tracks go to a home of its own, not the server's.
+  process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-side-nopty-"));
+  const { Shells } = await import("../src/shell.js");
+  const shells = new Shells({ python: join(home, "no-python3-here") });
+  try {
+    assert.equal(await shells.interactive(), false);
+    const sh = await shells.open(repo, { pty: true, cols: 120, rows: 40 });
+    assert.equal(sh.interactive, false);
+    assert.equal(sh.cols, undefined);
+    assert.equal(shells.resize(sh.id, 100, 30), false, "a line-based shell has no size");
+    assert.equal(shells.type(sh.id, "ls\r"), false, "nor keystrokes");
+    const done = new Promise<any[]>((resolve) => {
+      const seen: any[] = [];
+      shells.subscribe(sh.id, (e) => (seen.push(e), e.type === "done" && resolve(seen)));
+    });
+    assert.ok(shells.write(sh.id, "echo still-works"));
+    const seen = await done;
+    assert.match(seen.filter((e) => e.type === "output").map((e) => e.text).join(""), /still-works\n/);
+  } finally {
+    shells.closeAll();
+  }
 });
 
 test("/api/serve lists the apps started with Run app", async () => {

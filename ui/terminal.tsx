@@ -1,6 +1,8 @@
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
-import { api, baseName, enc, post, showToast, store } from "./lib.js";
+import { api, baseName, copy, enc, post, showToast, store } from "./lib.js";
 import { defaultPlace, Menu, MenuItem, MenuTitle, placeName, placesFor, Strip, type StripItem } from "./panel-bits.js";
 import { rememberSide, sideMemo, sideScope } from "./state.js";
 import type { DevServer, ShellEvent, ShellInfo } from "./types.js";
@@ -41,7 +43,11 @@ export function TerminalTab() {
 
   const create = async (cwd: string): Promise<string | undefined> => {
     try {
-      const sh = await post<ShellInfo>("/api/shell", { cwd });
+      // A real terminal (the server falls back to a line-based shell without python3), about the
+      // size of the pane; the terminal fits itself exactly once it's drawn.
+      const box = panes.current?.getBoundingClientRect();
+      const size = box?.width ? { cols: Math.floor((box.width - 16) / 7.2), rows: Math.floor(((memo.split ? box.height / 2 : box.height) - 36) / 15) } : {};
+      const sh = await post<ShellInfo>("/api/shell", { cwd, pty: true, ...size });
       setList((l) => [...(l ?? []).filter((x) => x.id !== sh.id), sh]);
       void refresh(); // a shell may have closed to make room
       return sh.id;
@@ -75,7 +81,7 @@ export function TerminalTab() {
 
   const close = async (k: string) => {
     const shell = list?.find((x) => x.id === k);
-    if (shell?.busy && !confirm(`Stop what's running in ${placeName(shell.cwd, places)} and close it?`)) return;
+    if (shell?.busy && !confirm(`Stop ${shell.running ?? "what's running"} in ${placeName(shell.cwd, places)} and close it?`)) return;
     if (!k.startsWith(APP)) await api(`/api/shell/${k}`, { method: "DELETE" }).catch(() => {});
     const rest = open.filter((x) => x !== k);
     rememberSide({ shells: rest, shell: top === k ? rest.find((x) => x !== bottom) ?? rest[0] : top, below: bottom === k ? undefined : bottom });
@@ -121,7 +127,7 @@ export function TerminalTab() {
       label: placeName(sh.cwd, places),
       title: sh.cwd,
       state: sh.busy ? "working" : undefined,
-      note: sh.status === "exited" ? "exited" : undefined,
+      note: sh.status === "exited" ? "exited" : sh.running,
       below: k === bottom,
     };
   });
@@ -131,6 +137,8 @@ export function TerminalTab() {
       <div class="side-empty help">{places.length ? (list ? "Opening a shell…" : "Loading…") : "Choose a repository first."}</div>
     ) : k.startsWith(APP) ? (
       <AppLog key={k} appKey={k.slice(APP.length)} split={!!bottom} focused={focus === where} onFocus={() => setFocus(where)} />
+    ) : list?.find((x) => x.id === k)?.interactive ? (
+      <TermView key={k} id={k} places={places} split={!!bottom} focused={focus === where} onFocus={() => setFocus(where)} onReplace={(cwd) => void replace(k, cwd)} />
     ) : (
       <ShellView key={k} id={k} places={places} split={!!bottom} focused={focus === where} onFocus={() => setFocus(where)} onReplace={(cwd) => void replace(k, cwd)} />
     );
@@ -187,11 +195,233 @@ export function TerminalTab() {
   );
 }
 
-// ---------------------------------------------------------------- one shell
+// ---------------------------------------------------------------- one terminal
+type ViewProps = { id: string; places: ReturnType<typeof placesFor>; split: boolean; focused: boolean; onFocus: () => void; onReplace: (cwd: string) => void };
+type Hello = { type: "hello"; shell: ShellInfo; history: ShellEvent[] };
+
+/** Typed into a terminal's own screen, dimmed: a note from code-flow, not the shell's output. */
+const note = (text: string) => `\r\n\x1b[2m[${text}]\x1b[0m\r\n`;
+const exitNote = (code: number | null) => note(`shell exited${code === null ? "" : ` with ${code}`} — Restart opens a new one`);
+const GONE = "This terminal is gone (code-flow restarted?). Restart opens a new one in the same folder.";
+
+/**
+ * A real terminal (xterm): keystrokes go to the shell as typed, a few milliseconds' worth per
+ * request and in order; it fits its pane and tells the shell its size. It reattaches after a
+ * reload with what the terminal showed so far; Stop and Restart open a new one in the same folder.
+ */
+function TermView({ id, places, split, focused, onFocus, onReplace }: ViewProps) {
+  const [shell, setShell] = useState<ShellInfo | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const term = useRef<Terminal>();
+  const focusRef = useRef(onFocus);
+  focusRef.current = onFocus;
+  const focusedRef = useRef(focused);
+  focusedRef.current = focused;
+  /** The pane you're working in takes the keyboard after you act in the side panel (Split, a pick in the strip, the Terminal tab), never from elsewhere on the page. */
+  const takeKeys = () => {
+    const active = document.activeElement;
+    if (active && active !== document.body && box.current?.closest(".side")?.contains(active)) term.current?.focus();
+  };
+  useEffect(() => {
+    if (focused) takeKeys();
+  }, [focused]);
+
+  useEffect(() => {
+    const el = box.current!;
+    const t = new Terminal({ fontFamily: TERM_FONT, fontSize: 12, lineHeight: 1.2, cursorBlink: true, scrollback: 5_000, theme: termTheme(), allowProposedApi: false });
+    const fit = new FitAddon();
+    t.loadAddon(fit);
+    t.open(el);
+    term.current = t;
+    let closed = false;
+    let exited = false;
+    let replaying = false; // xterm answers queries in replayed output: those answers aren't keystrokes
+
+    // Keystrokes: ~16 ms of them per request, one request at a time, so they arrive in order.
+    let queued = "";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let sending = false;
+    const flush = async () => {
+      timer = undefined;
+      if (sending || !queued || closed) return;
+      const data = queued;
+      queued = "";
+      sending = true;
+      try {
+        await post(`/api/shell/${enc(id)}/input`, { data });
+      } catch (err) {
+        if (!exited && !closed) showToast((err as Error).message, 4000);
+      } finally {
+        sending = false;
+        if (queued) void flush();
+      }
+    };
+    t.onData((data) => {
+      if (replaying || exited) return;
+      queued += data;
+      timer ??= setTimeout(() => void flush(), 16);
+    });
+
+    // Copy and paste with Ctrl+Shift+C / Ctrl+Shift+V too (Ctrl+C is the shell's); ⌘C/⌘V work as they are.
+    t.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown" || !e.ctrlKey || !e.shiftKey || e.metaKey) return true;
+      if (e.code === "KeyC") {
+        if (t.hasSelection()) void copy(t.getSelection());
+        e.preventDefault();
+        return false;
+      }
+      return e.code !== "KeyV"; // the browser pastes, and xterm takes the paste
+    });
+    t.textarea?.addEventListener("focus", () => focusRef.current());
+
+    // The size: fit the pane, then tell the shell (programs in it redraw).
+    let size = "";
+    let sizeTimer: ReturnType<typeof setTimeout> | undefined;
+    const sendSize = () => {
+      const next = `${t.cols}x${t.rows}`;
+      if (next === size || exited || closed) return;
+      size = next;
+      post(`/api/shell/${enc(id)}/resize`, { cols: t.cols, rows: t.rows }).catch(() => {});
+    };
+    t.onResize(() => {
+      clearTimeout(sizeTimer);
+      sizeTimer = setTimeout(sendSize, 80);
+    });
+    const refit = () => {
+      // A hidden tab or a closed panel has no size: fit when it's shown again.
+      if (replaying || el.clientWidth < 20 || el.clientHeight < 20) return;
+      try {
+        fit.fit();
+      } catch {
+        // not laid out yet
+      }
+    };
+    const resized = new ResizeObserver(refit);
+    resized.observe(el);
+    refit();
+
+    // Light or dark, as the app is.
+    const scheme = matchMedia("(prefers-color-scheme: dark)");
+    const retheme = () => (t.options.theme = termTheme());
+    scheme.addEventListener("change", retheme);
+
+    const source = new EventSource(`/api/shell/${enc(id)}/events`);
+    source.onmessage = (msg) => {
+      const ev = JSON.parse(msg.data) as ShellEvent | Hello;
+      if (ev.type === "hello") {
+        // (Re)connected: draw what the terminal showed so far, from a clean screen.
+        setShell(ev.shell);
+        exited = ev.shell.status === "exited";
+        t.options.disableStdin = exited;
+        size = `${ev.shell.cols}x${ev.shell.rows}`;
+        t.reset();
+        // Replay at the size the shell has (what its output was drawn for), then fit the pane.
+        if (ev.shell.cols && ev.shell.rows) t.resize(ev.shell.cols, ev.shell.rows);
+        replaying = true;
+        t.write(ev.history.map((e) => (e.type === "output" ? e.text : e.type === "exit" ? exitNote(e.code) : "")).join(""), () => {
+          replaying = false;
+          refit();
+          sendSize();
+        });
+        return;
+      }
+      if (ev.type === "output") t.write(ev.text);
+      else if (ev.type === "busy") setShell((cur) => (cur ? { ...cur, busy: ev.busy, running: ev.running } : cur));
+      else if (ev.type === "exit") {
+        exited = true;
+        t.options.disableStdin = true;
+        t.write(exitNote(ev.code));
+        setShell((cur) => (cur ? { ...cur, status: "exited", exitCode: ev.code, busy: false, running: undefined } : cur));
+      }
+    };
+    // The stream closed for good: the shell is gone (code-flow restarted).
+    source.onerror = () => {
+      if (source.readyState !== EventSource.CLOSED || closed) return;
+      exited = true;
+      t.options.disableStdin = true;
+      t.write(note(GONE));
+    };
+    if (focusedRef.current) takeKeys();
+    return () => {
+      closed = true;
+      source.close();
+      resized.disconnect();
+      scheme.removeEventListener("change", retheme);
+      clearTimeout(timer);
+      clearTimeout(sizeTimer);
+      term.current = undefined;
+      t.dispose();
+    };
+  }, [id]);
+
+  return (
+    <div class={`term-pane ${focused && split ? "focused" : ""}`} onMouseDown={onFocus}>
+      <ShellHead shell={shell} places={places} onClear={() => term.current?.clear()} onRestart={() => shell && onReplace(shell.cwd)} />
+      <div class="term-x" ref={box} />
+    </div>
+  );
+}
+
+/** A terminal's name, Clear, and Stop (while something runs) or Restart: both open a new shell in the same folder. */
+function ShellHead({ shell, places, onClear, onRestart }: { shell: ShellInfo | null; places: ReturnType<typeof placesFor>; onClear: () => void; onRestart: () => void }) {
+  const where = shell ? placeName(shell.cwd, places) : "";
+  const stop = shell?.busy && shell.status === "running";
+  return (
+    <div class="term-head">
+      <span class="th-name" title={shell?.cwd}>
+        {where || "…"}
+      </span>
+      {stop && shell.running ? <span class="th-running">{shell.running}</span> : null}
+      <button type="button" class="btn ghost small" title="Clear the output" onClick={onClear}>
+        Clear
+      </button>
+      <button
+        type="button"
+        class={`btn ghost small ${stop ? "danger" : ""}`}
+        title={stop ? `Stop ${shell.running ?? "what's running"} (a new shell opens in the same folder)${shell.interactive ? "; Ctrl-C in the terminal stops just the command" : ""}` : "Start a new shell in this folder"}
+        disabled={!shell}
+        onClick={onRestart}
+      >
+        <Icon name={stop ? "stop" : "refresh"} /> {stop ? "Stop" : "Restart"}
+      </button>
+    </div>
+  );
+}
+
+/** System monospace fonts first: they have the box-drawing and other symbols full-screen programs draw with. */
+const TERM_FONT = 'Menlo, "SF Mono", Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", "Roboto Mono", monospace';
+
+/** The terminal's colours from the app's own (light or dark), with ANSI colours readable on each. */
+function termTheme(): ITheme {
+  const css = getComputedStyle(document.documentElement);
+  const v = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const base = { background: v("--sunken", dark ? "#0d1514" : "#eef1ed"), foreground: v("--text", dark ? "#f5f8f7" : "#222f30"), cursor: v("--accent-edge", "#86c24e") };
+  return dark
+    ? {
+        ...base,
+        cursorAccent: base.background,
+        selectionBackground: "#a7e26e4d",
+        black: "#1b2627", red: "#f2786a", green: "#6fd39a", yellow: "#e2a64b", blue: "#6aa8f0", magenta: "#c792ea", cyan: "#5fd0d0", white: "#c9cbbe",
+        brightBlack: "#849495", brightRed: "#ff9a8e", brightGreen: "#a7e26e", brightYellow: "#f2c46d", brightBlue: "#8fc0ff", brightMagenta: "#dbb0f5", brightCyan: "#8ae6e6", brightWhite: "#f5f8f7",
+      }
+    : {
+        ...base,
+        cursorAccent: base.background,
+        selectionBackground: "#86c24e59",
+        black: "#222f30", red: "#c73a2e", green: "#2f8a57", yellow: "#a86200", blue: "#2b6cb0", magenta: "#8e44ad", cyan: "#13808a", white: "#c9cfc9",
+        brightBlack: "#6f7f80", brightRed: "#e0544a", brightGreen: "#3f6f12", brightYellow: "#c27c0e", brightBlue: "#3b82c4", brightMagenta: "#a35bc4", brightCyan: "#1a9aa6", brightWhite: "#fdfdfc",
+      };
+}
+
+// ---------------------------------------------------------------- a line-based shell
 type Line = ShellEvent;
 
-/** A shell's output and its command line. It reattaches after a reload; Stop and Restart open a new one in the same folder. */
-function ShellView({ id, places, split, focused, onFocus, onReplace }: { id: string; places: ReturnType<typeof placesFor>; split: boolean; focused: boolean; onFocus: () => void; onReplace: (cwd: string) => void }) {
+/**
+ * Without python3 there's no pseudo-terminal: a shell's output and a command line. It reattaches
+ * after a reload; Stop and Restart open a new one in the same folder.
+ */
+function ShellView({ id, places, split, focused, onFocus, onReplace }: ViewProps) {
   const [shell, setShell] = useState<ShellInfo | null>(null);
   const [lines, setLines] = useState<Line[]>([]);
   const [command, setCommand] = useState("");
@@ -205,12 +435,13 @@ function ShellView({ id, places, split, focused, onFocus, onReplace }: { id: str
     let closed = false;
     const source = new EventSource(`/api/shell/${enc(id)}/events`);
     source.onmessage = (msg) => {
-      const ev = JSON.parse(msg.data) as ShellEvent | { type: "hello"; shell: ShellInfo; history: ShellEvent[] };
+      const ev = JSON.parse(msg.data) as ShellEvent | Hello;
       if (ev.type === "hello") {
         setShell(ev.shell);
         setLines(ev.history);
         return;
       }
+      if (ev.type === "busy") return;
       setLines((l) => append(l, ev));
       if (ev.type === "done") setShell((cur) => (cur ? { ...cur, busy: false, cwd: ev.cwd } : cur));
       else if (ev.type === "exit") setShell((cur) => (cur ? { ...cur, status: "exited", exitCode: ev.code, busy: false } : cur));
@@ -219,7 +450,7 @@ function ShellView({ id, places, split, focused, onFocus, onReplace }: { id: str
     // The stream closed for good: the shell is gone (code-flow restarted).
     source.onerror = () => {
       if (source.readyState !== EventSource.CLOSED || closed) return;
-      setError("This terminal is gone (code-flow restarted?). Restart opens a new one in the same folder.");
+      setError(GONE);
     };
     return () => {
       closed = true;
@@ -248,24 +479,13 @@ function ShellView({ id, places, split, focused, onFocus, onReplace }: { id: str
     }
   };
   const restart = () => shell && onReplace(shell.cwd);
-  const where = shell ? placeName(shell.cwd, places) : "";
   return (
     <div class={`term-pane ${focused && split ? "focused" : ""}`} onMouseDown={onFocus}>
-      <div class="term-head">
-        <span class="th-name" title={shell?.cwd}>
-          {where || "…"}
-        </span>
-        <button type="button" class="btn ghost small" title="Clear the output" onClick={() => setLines([])}>
-          Clear
-        </button>
-        <button type="button" class={`btn ghost small ${shell?.busy ? "danger" : ""}`} title={shell?.busy ? "Stop what's running (a new shell opens in the same folder)" : "Start a new shell in this folder"} disabled={!shell} onClick={restart}>
-          <Icon name={shell?.busy ? "stop" : "refresh"} /> {shell?.busy ? "Stop" : "Restart"}
-        </button>
-      </div>
+      <ShellHead shell={shell} places={places} onClear={() => setLines([])} onRestart={restart} />
       <div class="term" onClick={(e) => (e.target as HTMLElement).closest("pre") && !window.getSelection()?.toString() && input.current?.focus()}>
         <pre class="term-out" ref={out} aria-live="polite" aria-label="Terminal output">
           {!lines.length ? (
-            <span class="help">{error || (shell ? `${shell.shell} in ${shell.cwd}. Commands run here, not in an interactive terminal: no pagers or full-screen programs.` : "Connecting…")}</span>
+            <span class="help">{error || (shell ? `${shell.shell} in ${shell.cwd}. code-flow found no python3 for a real terminal, so commands run one at a time: no pagers, prompts or full-screen programs.` : "Connecting…")}</span>
           ) : null}
           {lines.map((l, i) =>
             l.type === "input" ? (
@@ -278,9 +498,9 @@ function ShellView({ id, places, split, focused, onFocus, onReplace }: { id: str
               l.code ? (
                 <span key={i} class="exit">{`exit ${l.code}\n`}</span>
               ) : null
-            ) : (
+            ) : l.type === "exit" ? (
               <span key={i} class="exit">{`\n[shell exited${l.code === null ? "" : ` with ${l.code}`} — Restart opens a new one]\n`}</span>
-            ),
+            ) : null,
           )}
           {error && lines.length ? <span class="exit">{`\n${error}\n`}</span> : null}
         </pre>

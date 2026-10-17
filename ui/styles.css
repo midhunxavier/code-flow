@@ -1071,6 +1071,12 @@
   .term-pane .term { flex: 1; min-height: 0; }
   .term-divider { flex: none; height: 7px; cursor: row-resize; background: var(--panel); border-block: 1px solid var(--border); }
   .term-divider:hover { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+  /* A real terminal (xterm, its own stylesheet inlined before this one): it fills the pane */
+  .term-x { flex: 1; min-height: 0; min-width: 0; position: relative; overflow: hidden; background: var(--sunken); }
+  .term-x .xterm { height: 100%; padding: 6px 2px 0 10px; }
+  .term-x .xterm:focus, .term-x .xterm.focus { outline: none; }
+  .term-x .xterm .xterm-viewport { background-color: transparent; } /* xterm's is black; the theme colours the rest */
+  .th-running { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 9.5px var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--accent-ink); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 999px; padding: 2px 8px; }
 
   /* The side panel in a window of its own */
   .popped { flex: 1; min-height: 0; display: flex; }

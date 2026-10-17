@@ -487,17 +487,18 @@ test("side panel: chat with one agent, read a file, run a command, keep a note",
   await side.getByRole("button", { name: "Back to the files" }).click();
   await side.locator(".node", { hasText: "check.mjs" }).waitFor();
 
-  // Terminal: the shell keeps its folder between commands and reports exit codes.
+  // Terminal: a real terminal (python3 is there); keystrokes reach the shell, which keeps its folder between commands.
   await side.getByRole("tab", { name: "Terminal" }).click();
-  const command = side.getByLabel("Command");
-  await command.waitFor();
-  await command.fill("mkdir -p sub && cd sub && echo side-$((20+22))");
-  await command.press("Enter");
-  await side.locator(".term-out").getByText("side-42").waitFor({ timeout: 10_000 });
-  await command.fill("basename \"$PWD\"; false");
-  await command.press("Enter");
-  await side.locator(".term-out").getByText("exit 1").waitFor({ timeout: 10_000 });
-  assert.match(await side.locator(".term-out").innerText(), /\nsub\n/, "`cd` held for the next command");
+  const screen = side.locator("#side-pane-terminal .term-x .xterm-rows");
+  await screen.waitFor();
+  await side.locator("#side-pane-terminal .term-x .xterm").click();
+  await page.keyboard.type("mkdir -p sub && cd sub && echo side-$((20+22))");
+  await page.keyboard.press("Enter");
+  await screen.getByText("side-42").waitFor({ timeout: 15_000 });
+  await page.keyboard.type("basename \"$PWD\"; false; echo code-$?");
+  await page.keyboard.press("Enter");
+  await screen.getByText("code-1").waitFor({ timeout: 10_000 });
+  assert.match(await screen.innerText(), /(^|\n)sub\s*\n/, "`cd` held for the next command");
 
   // Notes: saved as you type, on the server.
   await side.getByRole("tab", { name: "Notes" }).click();
