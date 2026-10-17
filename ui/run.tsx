@@ -23,7 +23,6 @@ import {
   setTask,
   setupCmd,
   source,
-  upsertRunFrom,
   projectFor,
   selectProject,
   setSideChat,
@@ -108,8 +107,9 @@ export function useRunStream(id: string, onStep?: (step: Step) => void) {
       if (ev.type === "run") {
         if (ev.seq < d.runSeq) return;
         d.runSeq = ev.seq;
+        // The run list is the global feed's (watchAllRuns): this stream numbers its events differently,
+        // and its replayed history would put old snapshots over newer ones there.
         setRun(ev.run);
-        upsertRunFrom(ev.run, ev.seq);
       } else if (ev.type === "step") {
         if (ev.seq < (d.stepSeq.get(ev.step.id) ?? 0)) return;
         d.stepSeq.set(ev.step.id, ev.seq);

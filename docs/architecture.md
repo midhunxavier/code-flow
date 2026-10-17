@@ -5,7 +5,8 @@
 ```
 ui/*.tsx                 UI: Preact + TypeScript, compiled against the server's own types
                          (app: shell and top bar · rail: the sidebar · composer · run: the run thread · review · insights · automations · projects
-                          · side: the side panel's chat, files, terminal, browser and notes)
+                          · project: a project's page · side: the side panel, its files and notes · side-chat, changes, terminal, browser: its other tabs
+                          · panel-bits: what the tabs share (folders, the strip of open sessions, menus))
 ui/bits.tsx              small shared pieces: agent tags, the Markdown renderer, QR codes
 ui/styles.css, ui/fonts  the stylesheet and its fonts (Manrope, Roboto Mono; licences included)
 scripts/build-ui.mjs     bundles the UI, fonts and images into one self-contained public/index.html (npm start builds it)
@@ -34,6 +35,7 @@ src/adapters/*.ts        AgentAdapter per CLI → normalized AgentEvent stream
 src/git.ts               every git call (bounded, never prompts), worktrees with their submodules, branches, commits, diffs, merges
 src/repo-tree.ts         file tree, search and file contents for the Files tab
 src/shell.ts             the side panel's Terminal: shells kept open between commands, with a marker after each
+src/preview.ts           the side panel's Browser: a proxy per local app, on a port of its own, that adds the overlay (src/preview-overlay.js: pick, box, console, adjust)
 src/notes.ts             the side panel's Notes, ~/.codeflow/notes.json
 src/context.ts           validates and stages task context for agents
 ```
@@ -90,7 +92,7 @@ Reliability has tests of its own:
 - `test/foundation.test.ts`: the child environment, numeric settings, bounded git, the repo lock, and orphaned processes reaped at the next start;
 - `test/store-reliability.test.ts`: a failed write can't corrupt the next line of a run log; the server lock is taken over from a reused pid or a previous boot, and of several servers starting at once exactly one gets it;
 - `test/git-reliability.test.ts`: worktrees get their submodules (nested, in parallel, or a warning when one can't be cloned), and the Files tab's git calls;
-- `test/side-panel.test.ts`: the side panel's server side: reading a file (and never one outside the repo), notes that persist, shells whose `cd` holds between commands and whose exit codes come back, and the list of running apps;
+- `test/side-panel.test.ts`: the side panel's server side: reading a file (and never one outside the repo), notes that persist, shells whose `cd` holds between commands and whose exit codes come back, a new shell never closing a busy one, the list of running apps, and the browser's preview proxy (the overlay added, frames allowed, the app's own host and origin, WebSockets, and the Host check);
 - `test/engine-reliability.test.ts`: parallel branches that stop together, steps that always end, read-only that fails closed, worktrees set up again after an interrupted setup, retries that continue instead of redoing, dead sessions, usage limits with reset times, lockdown without network, and unique run ids;
 - `test/adapters-reliability.test.ts` and `test/health-routing.test.ts`: the stall watchdog, the grace after a result, crashes mid-stream, dead sessions, unknown flags, huge lines, typed errors, Health's flag checks, and Auto skipping a signed-out CLI. The fakes simulate these with `FAKE_SLEEP_VENDOR`, `FAKE_HANG_AFTER_RESULT_VENDOR`, `FAKE_CRASH_VENDOR`, `FAKE_UNKNOWN_FLAG`, `FAKE_HUGE_LINE_MB`, `FAKE_CLAUDE_RESETS_AT`, and for app-server `FAKE_CODEX_SLOW_INIT_MS`, `FAKE_CODEX_INIT_CRASH`, `FAKE_CODEX_HANG_METHOD` and `FAKE_CODEX_SERVER_REQUEST`.
 

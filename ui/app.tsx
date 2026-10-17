@@ -36,10 +36,43 @@ import {
   runs,
   waitingCount,
   watchNeedingYou,
+  poppedScope,
+  sideTab,
+  type SideTab,
 } from "./state.js";
 import type { DirListing, RunSummary } from "./types.js";
 
 export function App() {
+  if (route.value.view === "side") return <PoppedSide tab={route.value.tab} scope={route.value.scope} />;
+  return <MainApp />;
+}
+
+/** The side panel in a window of its own: one run's or project's, whatever the main window shows. */
+function PoppedSide({ tab, scope }: { tab: SideTab; scope: string }) {
+  poppedScope.value = scope;
+  useEffect(() => {
+    sideTab.value = tab;
+    sideOpen.value = true;
+  }, []);
+  useEffect(() => {
+    document.title = `code-flow · ${tab}`;
+  }, [tab]);
+  return (
+    <div class="popped">
+      <SidePanel popped />
+      <div class="sr-only" role="status" aria-live="polite">
+        {announcement.value}
+      </div>
+      {toast.value ? (
+        <div class="toast" role="status" key={toast.value.id}>
+          {toast.value.text}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MainApp() {
   useEffect(() => {
     document.title = waitingCount.value ? `(${waitingCount.value}) code-flow` : "code-flow";
   }, [waitingCount.value]);
@@ -178,6 +211,7 @@ export function Bell() {
 }
 
 export function notifyFinished(run: RunSummary) {
+  if (route.value.view === "side") return; // a popped-out panel: the main window says it
   const viewing = route.value.view === "run" && route.value.id === run.id;
   const verbs: Record<string, string> = {
     done: run.verdict === "failing" ? "finished, but its check fails" : run.checkCantRun ? "finished, but its check couldn't run" : "finished",

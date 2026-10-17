@@ -25,6 +25,8 @@ export type Route =
   | { view: "automations" }
   | { view: "insights"; group?: string }
   | { view: "project"; id: string }
+  /** The side panel on its own, in a window of its own (popped out), for one scope. */
+  | { view: "side"; tab: SideTab; scope: string }
   | { view: "run"; id: string }
   | { view: "review"; id: string; branch: string };
 export const route = signal<Route>({ view: "composer" });
@@ -288,7 +290,24 @@ const followed = computed<SideScope>(() => {
   const run = r.view === "run" || r.view === "review" ? runs.value.get(r.id) : undefined;
   return run ? runScope(run) : projectScope(target.value.project, repo.value);
 });
+/** In a side panel popped out into its own window: the scope it shows (never the route's, never saved). */
+export const poppedScope = signal<string | null>(null);
+function scopeFromKey(key: string): SideScope | undefined {
+  if (key.startsWith("run:")) {
+    const run = runs.value.get(key.slice(4));
+    return run ? runScope(run, true) : undefined;
+  }
+  if (key.startsWith("project:")) {
+    const p = projects.value.find((x) => x.id === key.slice(8));
+    return p ? projectScope(p, p.repos.includes(repo.value) ? repo.value : p.repos.length ? lastRepo(p) : "", true) : undefined;
+  }
+  return key.startsWith("repo:") ? projectScope(undefined, key.slice(5), true) : undefined;
+}
+
 export const sideScope = computed<SideScope>(() => {
+  const popped = poppedScope.value;
+  // Until its run or project has loaded, a popped-out panel waits on its key.
+  if (popped) return scopeFromKey(popped) ?? { key: popped, kind: "project", repo: "", pinned: true };
   const pin = sidePin.value;
   if (pin?.kind === "run") {
     // A run that isn't loaded (yet, or any more) can't be shown: follow until it is.
@@ -344,6 +363,17 @@ export function rememberSide(patch: Omit<Partial<SideMemory>, "at">, key = sideS
   sideMemory.value = all;
   store.set("sideMemory", JSON.stringify(all));
 }
+// Another window (a popped-out panel) changed the memory: take it, so neither writes over the other.
+window.addEventListener("storage", (e) => {
+  if (e.key === "sideMemory" && e.newValue) {
+    try {
+      sideMemory.value = JSON.parse(e.newValue);
+    } catch {
+      // a half-written value: the next change brings a whole one
+    }
+  }
+});
+
 /** The scope changed: show the tab you last had open there, if any. */
 export function restoreSideTab() {
   const tab = sideMemo.value.tab;
@@ -565,11 +595,6 @@ let onFinished: ((run: RunSummary) => void) | undefined;
  * than what the list shows. That stream replays a run's history first, and an old "running"
  * snapshot in the list would make the next refresh announce a finish that happened long ago.
  */
-export function upsertRunFrom(run: RunSummary, seq: number) {
-  if (seq <= (feed.runSeq.get(run.id) ?? 0)) return;
-  feed.runSeq.set(run.id, seq);
-  upsertRun(run);
-}
 
 /** Tell `onFinished` about what changed between two snapshots of a run. */
 function noticeChange(before: RunSummary | undefined, run: RunSummary) {
@@ -772,3 +797,4 @@ export function applyTemplate(t: Template, pick?: SourcePick) {
 }
 
 export const markSeen = (id: string) => post(`/api/runs/${id}/seen`).catch(() => {});
+

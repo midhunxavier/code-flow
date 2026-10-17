@@ -1071,3 +1071,7 @@
   .term-pane .term { flex: 1; min-height: 0; }
   .term-divider { flex: none; height: 7px; cursor: row-resize; background: var(--panel); border-block: 1px solid var(--border); }
   .term-divider:hover { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+
+  /* The side panel in a window of its own */
+  .popped { flex: 1; min-height: 0; display: flex; }
+  .side.popped { display: flex; flex: 1; position: static; width: auto; transform: none; box-shadow: none; border-left: 0; z-index: auto; }

@@ -48,7 +48,7 @@ const TABS: Record<SideTab, { label: string; icon: IconName; title: string }> = 
   notes: { label: "Notes", icon: "note", title: "Your scratchpad for this repository" },
 };
 
-export function SidePanel() {
+export function SidePanel({ popped = false }: { popped?: boolean }) {
   const run = sideScope.value.run;
   // Changes are a run's: the tab is there while the panel shows one.
   const tabs = SIDE_TABS.filter((t) => t !== "changes" || run);
@@ -83,9 +83,9 @@ export function SidePanel() {
     notes: () => <NotesTab />,
   };
   return (
-    <aside class={`side ${sideOpen.value ? "open" : ""}`} aria-label="Side panel" aria-hidden={!sideOpen.value}>
-      <div class={`side-handle ${dragging ? "dragging" : ""}`} role="separator" aria-orientation="vertical" aria-label="Resize the side panel" title="Drag to resize" onPointerDown={startDrag} />
-      <ScopeHeader />
+    <aside class={`side ${sideOpen.value ? "open" : ""} ${popped ? "popped" : ""}`} aria-label="Side panel" aria-hidden={!sideOpen.value}>
+      {popped ? null : <div class={`side-handle ${dragging ? "dragging" : ""}`} role="separator" aria-orientation="vertical" aria-label="Resize the side panel" title="Drag to resize" onPointerDown={startDrag} />}
+      <ScopeHeader popped={popped} />
       <div class="side-tabs" role="tablist" aria-label="Side panel tabs">
         {tabs.map((t) => (
           <button key={t} type="button" role="tab" id={`side-tab-${t}`} aria-selected={t === tab} aria-controls={`side-pane-${t}`} class={`side-tab ${t === tab ? "on" : ""}`} aria-label={TABS[t].label} title={TABS[t].title} onClick={() => openSide(t)}>
@@ -107,16 +107,22 @@ export function SidePanel() {
 
 // ---------------------------------------------------------------- what the panel is about
 /** The project and run the panel is showing, and the pin that keeps it there while you open others. */
-function ScopeHeader() {
+function ScopeHeader({ popped }: { popped: boolean }) {
   const s = sideScope.value;
+  /** This tab in a window of its own, fixed to what the panel shows now; the panel here closes. */
+  const popOut = () => {
+    const url = `${location.origin}${location.pathname}#/side/${sideTab.value}/${encodeURIComponent(s.key)}`;
+    if (window.open(url, `codeflow-side-${s.key}`, "popup,width=560,height=860")) closeSide();
+    else showToast("The browser blocked the window: allow pop-ups for code-flow", 5000);
+  };
   const thing = s.run ? "run" : "project";
   const where = s.project?.name ?? (s.repo ? baseName(s.repo) : "");
   const task = s.run ? s.run.task.split("\n")[0] || "(no task)" : "";
   return (
     <div class={`side-scope ${s.pinned ? "pinned" : ""}`}>
-      <span class="scope-state" title={s.pinned ? `The panel stays on this ${thing} while you open others` : "The panel follows what you open"}>
-        {s.pinned ? <Icon name="pin" /> : <span class="scope-dot" aria-hidden="true" />}
-        {s.pinned ? "Pinned" : "Following"}
+      <span class="scope-state" title={popped ? `This window shows one ${thing}` : s.pinned ? `The panel stays on this ${thing} while you open others` : "The panel follows what you open"}>
+        {popped ? <Icon name="external" /> : s.pinned ? <Icon name="pin" /> : <span class="scope-dot" aria-hidden="true" />}
+        {popped ? "Own window" : s.pinned ? "Pinned" : "Following"}
       </span>
       <span class="scope-crumbs" title={[where, s.repo, task].filter(Boolean).join("\n")}>
         {where ? <span class="sc-where">{where}</span> : <span class="help">No repository chosen</span>}
@@ -139,7 +145,7 @@ function ScopeHeader() {
           </>
         ) : null}
       </span>
-      {s.pinned ? (
+      {popped ? null : s.pinned ? (
         <button type="button" class="btn ghost small" title="Follow what you open again" onClick={() => pinSide(false)}>
           Follow
         </button>
@@ -148,9 +154,16 @@ function ScopeHeader() {
           <Icon name="pin" />
         </button>
       )}
-      <button type="button" class="icon-btn" aria-label="Close side panel" title="Close (\)" onClick={closeSide}>
-        <Icon name="close" />
-      </button>
+      {popped || onPhone ? null : (
+        <button type="button" class="icon-btn" aria-label="Open in its own window" title="Open this tab in a window of its own, for this run or project" disabled={!s.repo} onClick={popOut}>
+          <Icon name="external" />
+        </button>
+      )}
+      {popped ? null : (
+        <button type="button" class="icon-btn" aria-label="Close side panel" title="Close (\)" onClick={closeSide}>
+          <Icon name="close" />
+        </button>
+      )}
     </div>
   );
 }

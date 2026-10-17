@@ -616,6 +616,65 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
   await page.reload();
 });
 
+test("side panel browser: a run's app through the preview, annotated, sent to the main chat; a panel in its own window", async () => {
+  const api = (path: string, body?: unknown) =>
+    fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+  const created = await api("/api/runs", { repo, task: "E2E: a run with an app", pattern: "pipeline", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["codex"] }, options: {} });
+  let run = await api(`/api/runs/${created.id}`);
+  for (let i = 0; i < 150 && run.status === "running"; i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    run = await api(`/api/runs/${created.id}`);
+  }
+  assert.equal(run.status, "done");
+  const wt = run.worktrees.find((w: { path: string }) => w.path === run.artifacts[0].path);
+  const appFile = join(mkdtempSync(join(tmpdir(), "codeflow-e2e-app-")), "app.cjs");
+  writeFileSync(
+    appFile,
+    `require("http").createServer((q, r) => { if (q.url.startsWith("/api")) { r.writeHead(500); return r.end(); } r.writeHead(200, { "content-type": "text/html", "x-frame-options": "DENY" }); r.end('<html><head><title>E2E app</title></head><body><header><button class="theme-toggle">Theme</button></header><script>console.error("E2E boom"); fetch("/api/x")</script></body></html>'); }).listen(process.env.PORT, "127.0.0.1");`,
+  );
+  const app = await api(`/api/runs/${created.id}/worktrees/${wt.name}/serve`, { command: `node ${JSON.stringify(appFile)}` });
+  assert.equal(app.status, "running", JSON.stringify(app));
+
+  await page.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
+  const toggle = page.getByRole("button", { name: "Side panel", exact: true });
+  if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
+  const side = page.getByRole("complementary", { name: "Side panel" });
+  await side.getByRole("tab", { name: "Browser" }).click();
+  const frame = side.locator("#side-pane-browser iframe");
+  await frame.waitFor();
+  assert.match((await frame.getAttribute("src"))!, /^http:\/\/127\.0\.0\.1:\d+\//, "the app is shown through the preview");
+  await side.getByRole("button", { name: /^Console · 2$/ }).waitFor({ timeout: 15_000 });
+
+  // Pick the button, say what's wrong, and put it in the run's main chat.
+  await side.getByRole("button", { name: "Pick", exact: true }).click();
+  await side.frameLocator("#side-pane-browser iframe").locator("button.theme-toggle").click();
+  await side.locator(".pins-tray .pin-row").waitFor({ timeout: 15_000 });
+  await side.getByLabel("What about pin 1?").fill("E2E: the toggle is hard to see");
+  await side.getByRole("button", { name: "Add to main chat" }).click();
+  const box = page.locator(".runview .chatbox textarea");
+  await page.locator(".runview .draft-img").waitFor();
+  const text = await box.inputValue();
+  assert.match(text, /header > button\.theme-toggle`?: E2E: the toggle is hard to see/);
+  await page.locator(".runview .chatbox .send").click();
+  for (let i = 0; i < 150; i++) {
+    run = await api(`/api/runs/${created.id}`);
+    if (run.followUps.at(-1)?.status === "done") break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  const reply = run.followUps.at(-1);
+  assert.equal(reply.kind, "reply");
+  assert.equal(reply.files.length, 1, "the snapshot went with the reply");
+  await fetch(`${BASE}/api/runs/${created.id}/worktrees/${wt.name}/serve`, { method: "DELETE", headers: bearer });
+
+  // The panel in a window of its own, for this run.
+  const popped = await browser.newPage({ viewport: { width: 560, height: 860 } });
+  await popped.goto(`${BASE}/?token=${TOKEN}#/side/chat/${encodeURIComponent(`run:${created.id}`)}`);
+  await popped.locator(".side-scope", { hasText: "E2E: a run with an app" }).waitFor();
+  assert.match(await popped.locator(".scope-state").innerText(), /own window/i);
+  assert.equal(await popped.locator(".rail").count(), 0, "just the panel");
+  await popped.close();
+});
+
 test("projects: the Automations page and its inbox follow the project you're in; the phone view lists runs by project", async () => {
   const api = (path: string, body?: unknown) =>
     fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
