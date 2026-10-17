@@ -57,7 +57,7 @@ Per provider in **Settings → Models & effort**, and per role right under each 
 
 ## Health
 
-Click the agent names in the top bar to see, for each CLI, whether it's installed, its version, and whether it's signed in. It uses `claude auth status`, `codex login status`, and for agy whether it can list models; credentials are never read. Claude's 5-hour and 7-day usage windows are shown from its own reports, with how to fix anything that's wrong. A run won't start with an agent that's signed out, and Auto skips an agent that turned out to be signed out for 15 minutes. If agy can't reach its servers, its sign-in shows as unknown rather than signed out.
+Click the agent dots at the bottom of the sidebar to see, for each CLI, whether it's installed, its version, and whether it's signed in. It uses `claude auth status`, `codex login status`, and for agy whether it can list models; credentials are never read. Claude's 5-hour and 7-day usage windows are shown from its own reports, with how to fix anything that's wrong. A run won't start with an agent that's signed out, and Auto skips an agent that turned out to be signed out for 15 minutes. If agy can't reach its servers, its sign-in shows as unknown rather than signed out.
 
 Health also checks that each installed CLI still accepts the flags and subcommands code-flow passes (from its `--help`), and warns when one is missing: after a CLI update, that's the difference between "healthy" and every step failing on an unknown option. It also checks for git 2.38 or newer, which Merge needs.
 

@@ -28,6 +28,10 @@ const PATHS = {
   external: "M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5",
   refresh: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5",
   stop: "M7 7h10v10H7z",
+  more: `${circle(5, 12, 1)}${circle(12, 12, 1)}${circle(19, 12, 1)}`,
+  archive: "M4 5h16v4H4zM5 9v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4",
+  sliders: `M4 7h9M17 7h3M4 17h3M11 17h9${circle(15, 7, 2)}${circle(9, 17, 2)}`,
+  keyboard: "M4 6h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1zM7 10h.01M11 10h.01M15 10h.01M8 14h8",
 } as const;
 
 export type IconName = keyof typeof PATHS;

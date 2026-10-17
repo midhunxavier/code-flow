@@ -6,6 +6,7 @@ import { Icon } from "./icons.js";
 import { ago, api, baseName, copy, post, showToast, STATUS_TEXT } from "./lib.js";
 import { activeProject, ALL, currentProject, inScope, NONE, patterns, projectFor, projects, route, runs, runState, selectProject } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
+import { ProjectButton } from "./projects.js";
 
 /** The project an automation's runs go in: the one it was saved with, or (deleted since) its repo's. */
 const automationProject = (run: { project?: string; repo: string }) =>
@@ -83,7 +84,10 @@ export function AutomationsView() {
   const here = activeProject.value ? ` in ${activeProject.value.name}` : scoped ? " without a project" : "";
   return (
     <div class="composer automations">
-      <h1>Automations</h1>
+      <div class="page-head">
+        <h1>Automations</h1>
+        <ProjectButton />
+      </div>
       <p class="lede">
         Runs that start on a schedule or from a webhook. Their results wait in the inbox for you: approve, ask for changes, or reject. Nothing is ever merged automatically.
       </p>

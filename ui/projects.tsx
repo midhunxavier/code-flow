@@ -13,6 +13,7 @@ import {
   pickerChoose,
   pickerOpen,
   projectFor,
+  projectEdit,
   projects,
   projectsOpen,
   repo,
@@ -28,13 +29,17 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 /** Shortened from the left: the end of a path tells repos apart. The marks keep its slashes where they belong. */
 const Tail = ({ text }: { text: string }) => <span class="pr-path">{`\u200E${text}\u200E`}</span>;
 
-/** The project switcher in the top bar. */
-export function ProjectButton() {
+/**
+ * The project picker, where its choice is used: in the composer it names the project the run
+ * goes in (the repo's own, while you haven't picked one); on Insights and Automations, what they show.
+ */
+export function ProjectButton({ composer = false }: { composer?: boolean }) {
   const p = activeProject.value;
+  const label = composer ? (p ?? target.value.project)?.name ?? "New project" : p ? p.name : currentProject.value === NONE ? "No project" : "All projects";
   return (
-    <button class="repo-btn project-btn" title="Projects: switch, create or edit (p)" onClick={() => (projectsOpen.value = true)}>
+    <button type="button" class="repo-btn project-btn" title="Projects: switch, create or edit (p)" onClick={() => (projectsOpen.value = true)}>
       <Icon name="project" />
-      <span class="name">{p ? p.name : currentProject.value === NONE ? "No project" : "All projects"}</span>
+      <span class="name">{label}</span>
       <Icon name="chevron" class="caret" />
     </button>
   );
@@ -42,8 +47,15 @@ export function ProjectButton() {
 
 /** Switch projects, and create, rename, re-scope or delete them. */
 export function ProjectsDialog() {
-  const ref = useDialog(true, () => (projectsOpen.value = false));
-  const [editing, setEditing] = useState<Project | "new" | null>(null);
+  const close = () => {
+    projectsOpen.value = false;
+    projectEdit.value = null;
+  };
+  const ref = useDialog(true, close);
+  // Opened from a project's menu in the sidebar (or its "new project" button): straight to the editor, and done when it is.
+  const [direct] = useState<Project | "new" | null>(() => (projectEdit.value === "new" ? "new" : projects.value.find((p) => p.id === projectEdit.value) ?? null));
+  const [editing, setEditing] = useState<Project | "new" | null>(direct);
+  const doneEditing = () => (direct ? close() : setEditing(null));
   const all = [...runs.value.values()];
   const counts = (scope: string) => {
     const list = all.filter((r) => inScope(r, scope));
@@ -51,7 +63,7 @@ export function ProjectsDialog() {
   };
   const choose = (id: string) => {
     selectProject(id);
-    projectsOpen.value = false;
+    close();
   };
   const row = (id: string, name: string, detail: string, p?: Project) => {
     const c = counts(id);
@@ -85,15 +97,15 @@ export function ProjectsDialog() {
     <dialog class="picker small-dialog projects-dialog" ref={ref} aria-labelledby="projects-title">
       <div class="picker-inner">
         {editing ? (
-          <ProjectEditor key={editing === "new" ? "new" : editing.id} project={editing === "new" ? undefined : editing} onDone={() => setEditing(null)} />
+          <ProjectEditor key={editing === "new" ? "new" : editing.id} project={editing === "new" ? undefined : editing} onDone={doneEditing} onCreated={close} />
         ) : (
           <>
             <div class="picker-head">
               <h3 id="projects-title">Projects</h3>
-              <div class="help">A project groups the runs in its repositories. The sidebar shows the project you pick, and new runs start in it.</div>
+              <div class="help">A project groups the runs in its repositories. New runs start in the project you pick, and Insights and Automations show it.</div>
             </div>
             <div class="picker-list" role="list">
-              {row(ALL, "All projects", "every run")}
+              {row(ALL, "All projects", "new runs go in their repository's project")}
               {byName(projects.value).map((p) => row(p.id, p.name, reposText(p), p))}
               {orphans.runs || orphans.archived ? row(NONE, "No project", "runs whose project was deleted") : null}
             </div>
@@ -102,7 +114,7 @@ export function ProjectsDialog() {
               <button class="btn" type="button" onClick={() => setEditing("new")}>
                 <Icon name="plus" /> New project
               </button>
-              <button class="btn primary" type="button" onClick={() => (projectsOpen.value = false)}>
+              <button class="btn primary" type="button" onClick={close}>
                 Done
               </button>
             </div>
@@ -113,7 +125,7 @@ export function ProjectsDialog() {
   );
 }
 
-function ProjectEditor({ project, onDone }: { project?: Project; onDone: () => void }) {
+function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDone: () => void; onCreated: () => void }) {
   const [name, setName] = useState(project?.name ?? "");
   // The form replaces the list inside an open dialog, so autofocus alone wouldn't reach it.
   const nameField = useRef<HTMLInputElement>(null);
@@ -133,7 +145,7 @@ function ProjectEditor({ project, onDone }: { project?: Project; onDone: () => v
       await loadProjects();
       if (project) return onDone();
       selectProject(saved.id);
-      projectsOpen.value = false;
+      onCreated();
       showToast(`Created the project ${saved.name}`);
     } catch (err) {
       setError((err as Error).message);

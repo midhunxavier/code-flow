@@ -4,7 +4,7 @@
 
 - Node 20+ (`npm start` and `npm run dev` stop with a clear message on an older Node).
 - git 2.38 or newer: **Merge** relies on `git merge-tree --write-tree`, which 2.38 added. Check yours with `git --version`.
-- At least one of `claude`, `codex` and `agy` installed and signed in. Run each CLI once interactively first. The top bar shows which agents code-flow found.
+- At least one of `claude`, `codex` and `agy` installed and signed in. Run each CLI once interactively first. The dots at the bottom of the sidebar show which agents code-flow found.
 
 ## Install and run
 
@@ -25,7 +25,7 @@ The session token exists only in the server's memory, so the agents code-flow ru
 
 ![The composer: a task, the Plan → Build → Review pattern, and a team with a model and effort for each role (demo data)](images/composer-light.png)
 
-1. Click the **repository button** in the top bar to choose a repo. The folder browser is served by the local server, because browsers don't expose absolute paths. It marks git repos and remembers recent ones.
+1. Click the **repository button** under the composer's title to choose a repo. The folder browser is served by the local server, because browsers don't expose absolute paths. It marks git repos and remembers recent ones.
 2. Describe the task. Drag files from the **Files** panel, or from Finder, onto the task box to give the agents context.
 3. Pick how the agents work together, and click an agent for each role. Under each role you can set that agent's model and effort for the role. The sentence under the team, such as *"Claude plans → Codex builds → Claude reviews"*, shows what will happen.
 4. Optionally open **Settings** to pick the base branch, the result branch name, rounds, limits, permissions, and the default model and effort per provider.

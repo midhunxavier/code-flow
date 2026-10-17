@@ -5,32 +5,20 @@ import { RunView } from "./run.js";
 import { Review } from "./review.js";
 import { GitHubPicker } from "./github.js";
 import { SweepDialog } from "./sweeps.js";
-import { AutomationsView, inbox } from "./automations.js";
+import { AutomationsView } from "./automations.js";
 import { InsightsView } from "./insights.js";
-import { ProjectButton, ProjectsDialog } from "./projects.js";
+import { ProjectsDialog } from "./projects.js";
+import { Rail } from "./rail.js";
 import { Icon } from "./icons.js";
 import logo from "./brand/vibesboard-mark.png";
-import { ago, api, baseName, fmtCost, fmtTokens, showToast, STATUS_TEXT, store, toast } from "./lib.js";
+import { api, showToast, store, toast } from "./lib.js";
 import {
-  ALL,
-  NONE,
-  activeProject,
-  currentProject,
-  inScope,
   pickRepo,
   pickerChoose,
   projectFor,
   projectsOpen,
-  selectProject,
-  agents,
   announcement,
-  filterActive,
-  isFlagged,
-  matchesFilter,
-  runFilter,
-  setRunFilter,
   shortcutsOpen,
-  type RunFilter,
   closeSide,
   openSide,
   sideOpen,
@@ -39,18 +27,12 @@ import {
   health,
   healthOpen,
   loadHealth,
-  needsYou,
-  patterns,
   pickerOpen,
   railOpen,
   recentRepos,
   repo,
-  repoChecking,
-  repoError,
-  repoInfo,
   route,
   runs,
-  runState,
   waitingCount,
   watchNeedingYou,
 } from "./state.js";
@@ -111,7 +93,6 @@ export function App() {
 
 // ---------------------------------------------------------------- top bar
 function TopBar() {
-  const info = repoInfo.value;
   return (
     <header class="topbar">
       <button class="btn ghost menu-btn" aria-label="Show runs" onClick={() => (railOpen.value = !railOpen.value)}>
@@ -121,48 +102,7 @@ function TopBar() {
         <img class="brand-mark" src={logo} alt="" width={28} height={28} />
         <span class="brand-name">code-flow</span>
       </span>
-      <ProjectButton />
-      <button
-        class={`repo-btn ${info ? "" : "empty"} ${repoError.value ? "bad" : ""}`}
-        title={info ? info.repo : "Choose repository"}
-        onClick={() => (pickerOpen.value = true)}
-      >
-        <Icon name="folder" />
-        <span class="name">{info ? baseName(info.repo) : repoChecking.value ? "Checking…" : repoError.value || "Choose repository…"}</span>
-        {info ? <span class="branch">{info.current || "detached"}</span> : null}
-        <Icon name="chevron" class="caret" />
-      </button>
-      <span class="spacer" />
-      <button
-        class="btn ghost auto-btn"
-        aria-pressed={route.value.view === "insights"}
-        title="What runs cost and how they went, per agent and pattern; comparisons; disk use (i)"
-        onClick={() => (route.value = { view: "insights" })}
-      >
-        <Icon name="chart" /> <span class="label">Insights</span>
-      </button>
-      <button
-        class="btn ghost auto-btn"
-        aria-pressed={route.value.view === "automations"}
-        title="Scheduled and webhook runs, their inbox, and the phone view"
-        onClick={() => (route.value = { view: "automations" })}
-      >
-        <Icon name="clock" /> <span class="label">Automations</span>
-        {inbox().length ? <span class="count">{inbox().length}</span> : null}
-      </button>
-      <button class="agent-status" title="Health: install, sign-in and quota for each CLI" onClick={() => (healthOpen.value = true)}>
-        {agents.value.map((a) => {
-          const h = health.value?.find((x) => x.id === a.id);
-          const problem = !a.available || h?.signedIn === false;
-          return (
-            <span key={a.id} class={`agent ${a.id} ${a.available ? "" : "off"} ${problem ? "problem" : ""}`}>
-              {a.displayName}
-              {h?.signedIn === false ? " ⚠" : ""}
-            </span>
-          );
-        })}
-      </button>
-      <Bell />
+      <Crumbs />
       <button
         class="btn ghost side-btn"
         aria-pressed={sideOpen.value}
@@ -176,14 +116,49 @@ function TopBar() {
   );
 }
 
+/** Where you are: the page, or the run and the project it's in. */
+function Crumbs() {
+  const r = route.value;
+  const run = "id" in r ? runs.value.get(r.id) : undefined;
+  const page = r.view === "composer" ? "New run" : r.view === "insights" ? "Insights" : r.view === "automations" ? "Automations" : "";
+  const project = run ? projectFor(run) : undefined;
+  return (
+    <nav class="crumbs-bar" aria-label="Where you are">
+      {page ? <span class="crumb here">{page}</span> : null}
+      {run ? (
+        <>
+          <span class="crumb" title={run.repo}>
+            <Icon name="project" /> {project?.name ?? "No project"}
+          </span>
+          <span class="sep" aria-hidden="true">
+            ›
+          </span>
+          <span class={`crumb ${r.view === "run" ? "here" : ""}`} title={run.task}>
+            {run.task.split("\n")[0] || "(no task)"}
+          </span>
+          {r.view === "review" ? (
+            <>
+              <span class="sep" aria-hidden="true">
+                ›
+              </span>
+              <span class="crumb here">Review</span>
+            </>
+          ) : null}
+        </>
+      ) : null}
+    </nav>
+  );
+}
+
 // ---------------------------------------------------------------- notifications
 const canNotify = () => "Notification" in window && Notification.permission === "granted" && store.get("notify") !== "0";
 
-function Bell() {
+export function Bell() {
   const [on, setOn] = useState(canNotify());
   return (
     <button
-      class="btn ghost bell"
+      class="btn ghost foot-btn bell"
+      aria-label="Notifications"
       aria-pressed={on}
       title={on ? "Notifications on — click to turn off" : "Notify me when a run finishes or needs me"}
       onClick={async () => {
@@ -234,203 +209,13 @@ export function notifyFinished(run: RunSummary) {
   };
 }
 
-// ---------------------------------------------------------------- sidebar
-const STATUS_FILTERS: [RunFilter["status"], string][] = [
-  ["all", "All"],
-  ["attention", "Needs you"],
-  ["running", "Running"],
-  ["passed", "Passed"],
-  ["failing", "Failing"],
-  ["flagged", "Tests changed"],
-];
-
-function Rail() {
-  const [showArchived, setShowArchived] = useState(false);
-  const [showFilters, setShowFilters] = useState(false);
-  const all = [...runs.value.values()].sort((a, b) => b.createdAt - a.createdAt);
-  const filtering = filterActive.value;
-  const f = runFilter.value;
-  // The project you're in, except while you search: then every project, so nothing is out of reach.
-  const searching = !!f.q.trim();
-  const scoped = currentProject.value !== ALL && !searching;
-  const shown = scoped ? all.filter((r) => inScope(r)) : all;
-  const list = shown.filter((r) => matchesFilter(r));
-  const elsewhere = scoped ? all.filter((r) => needsYou(r) && !inScope(r)).length : 0;
-  const project = activeProject.value;
-  const current = "id" in route.value ? route.value.id : undefined;
-  const groups: [string, RunSummary[], boolean][] = [
-    ["Needs you", list.filter(needsYou), true],
-    ["Running", list.filter((r) => r.status === "running"), false],
-    ["Recent", list.filter((r) => !r.archived && r.status !== "running" && !needsYou(r)), false],
-  ];
-  const archived = list.filter((r) => r.archived);
-  const open = (id: string) => {
-    route.value = { view: "run", id };
-    railOpen.value = false;
-  };
-  const item = (r: RunSummary) => {
-    const tokens = (r.usage?.inputTokens ?? 0) + (r.usage?.outputTokens ?? 0);
-    return (
-      <button
-        key={r.id}
-        type="button"
-        class={`run-item ${current === r.id ? "active" : ""} ${needsYou(r) ? "unseen" : ""} ${r.archived ? "archived" : ""}`}
-        title={r.task}
-        aria-current={current === r.id ? "page" : undefined}
-        onClick={() => open(r.id)}
-      >
-        <span class={`dot ${runState(r)}`} aria-hidden="true" />
-        <span class="t">
-          {r.trigger ? (r.trigger.via === "sweep" ? "▤ " : "⏱ ") : ""}
-          {r.group ? "⚖ " : ""}
-          {r.task.split("\n")[0] || "(no task)"}
-        </span>
-        <span class="s">
-          {r.awaiting ? "Waiting for you" : r.triage?.state === "pending" ? "In your inbox" : runState(r) === "failing" ? "Check failing" : runState(r) === "unchecked" ? "Check can't run" : STATUS_TEXT[r.status] ?? r.status}
-          {isFlagged(r) ? <span class="flag" title="Tests were changed in ways that could hide failures"> · ⚠ tests</span> : null} ·{" "}
-          {patterns.value.find((p) => p.id === r.pattern)?.name ?? r.pattern}
-          {where(r) ? ` · ${where(r)}` : ""} · {ago(r.createdAt)}
-          {tokens ? ` · ${fmtTokens(tokens)} tok` : ""}
-          {r.usage?.costUsd ? ` · ${fmtCost(r.usage.costUsd)}` : ""}
-        </span>
-      </button>
-    );
-  };
-  /** Where a run is: its project when every project is listed, its repo when the project has several. */
-  const where = (r: RunSummary) => {
-    const p = projectFor(r);
-    if (!scoped) return p?.name ?? baseName(r.repo);
-    return p && p.repos.length > 1 ? baseName(r.repo) : "";
-  };
-  const empty = !groups.some(([, l]) => l.length) && !archived.length;
-  return (
-    <nav class={`rail ${railOpen.value ? "open" : ""}`} aria-label="Runs">
-      <button
-        class="btn primary new-run"
-        title="New run (n)"
-        onClick={() => {
-          route.value = { view: "composer" };
-          railOpen.value = false;
-        }}
-      >
-        <Icon name="plus" /> New run
-      </button>
-      <div class="rail-search">
-        <input
-          id="run-search"
-          class="field"
-          type="search"
-          placeholder="Search runs"
-          aria-label="Search runs (press / to focus)"
-          value={f.q}
-          onInput={(e) => setRunFilter({ q: e.currentTarget.value })}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              setRunFilter({ q: "" });
-              e.currentTarget.blur();
-            } else if (e.key === "ArrowDown" || e.key === "Enter") {
-              e.preventDefault();
-              (document.querySelector(".rail .run-item") as HTMLButtonElement | null)?.[e.key === "Enter" ? "click" : "focus"]();
-            }
-          }}
-        />
-        <button
-          type="button"
-          class={`btn ghost small ${filtering && !f.q ? "on" : ""}`}
-          aria-expanded={showFilters}
-          aria-controls="rail-filters"
-          title="Filter runs"
-          onClick={() => setShowFilters(!showFilters)}
-        >
-          <Icon name="filter" /> Filter
-        </button>
-      </div>
-      {showFilters ? (
-        <div class="rail-filters" id="rail-filters">
-          <div class="chips" role="group" aria-label="Status">
-            {STATUS_FILTERS.map(([id, label]) => (
-              <button key={id} type="button" class="chip-tpl" aria-pressed={f.status === id} onClick={() => setRunFilter({ status: id })}>
-                {label}
-              </button>
-            ))}
-          </div>
-          <select class="field" aria-label="Pattern" value={f.pattern} onChange={(e) => setRunFilter({ pattern: e.currentTarget.value })}>
-            <option value="">Any pattern</option>
-            {patterns.value.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <select class="field" aria-label="Agent" value={f.agent} onChange={(e) => setRunFilter({ agent: e.currentTarget.value })}>
-            <option value="">Any agent</option>
-            {agents.value.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.displayName}
-              </option>
-            ))}
-          </select>
-          <label class="check">
-            <input type="checkbox" checked={f.thisRepo} onChange={(e) => setRunFilter({ thisRepo: e.currentTarget.checked })} /> only {repo.value ? baseName(repo.value) : "the selected repository"}
-          </label>
-        </div>
-      ) : null}
-      {elsewhere ? (
-        <div class="rail-hint elsewhere">
-          {elsewhere} in other projects need{elsewhere === 1 ? "s" : ""} you
-          <button type="button" onClick={() => selectProject(ALL)}>
-            show all
-          </button>
-        </div>
-      ) : null}
-      {filtering ? (
-        <div class="rail-hint">
-          {list.length} of {shown.length} runs{searching && currentProject.value !== ALL ? " · in every project" : ""}
-          <button type="button" onClick={() => setRunFilter({ q: "", status: "all", pattern: "", agent: "", thisRepo: false })}>
-            clear
-          </button>
-        </div>
-      ) : null}
-      {groups.map(([title, items, counted]) =>
-        items.length ? (
-          <section key={title} aria-label={title}>
-            <div class="rail-title rail-section">
-              {title}
-              {counted ? <span class="count">{items.length}</span> : null}
-            </div>
-            {items.map(item)}
-          </section>
-        ) : null,
-      )}
-      {archived.length ? (
-        <section aria-label="Archived">
-          <div class="rail-title rail-section">
-            Archived ({archived.length})
-            {filtering ? null : (
-              <button type="button" aria-expanded={showArchived} onClick={() => setShowArchived(!showArchived)}>
-                {showArchived ? "hide" : "show"}
-              </button>
-            )}
-          </div>
-          {showArchived || filtering ? archived.map(item) : null}
-        </section>
-      ) : null}
-      {empty ? (
-        <div class="rail-empty">
-          {filtering ? "No runs match" : project ? `No runs in ${project.name} yet — start one on the right` : currentProject.value === NONE ? "No runs without a project" : "No runs yet — start one on the right"}
-        </div>
-      ) : null}
-    </nav>
-  );
-}
-
 // ---------------------------------------------------------------- keyboard
 const SHORTCUTS: [string, string][] = [
   ["/", "Search runs"],
   ["j / k", "Next / previous run in the list"],
   ["[ / ]", "Previous / next step of the open run"],
   ["n", "New run"],
-  ["p", "Switch project"],
+  ["p", "Pick the project for new runs, Insights and Automations"],
   ["i", "Insights"],
   ["a", "Automations"],
   ["⌘↵", "Start the run, or send what you typed"],

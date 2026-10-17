@@ -6,7 +6,7 @@ Set up a run in the composer (task, team, check, settings), then choose **Save a
 
 An automation's runs start in the [project](runs.md#projects) you were in when you saved it (from *All projects*, in its repository's project). If that project is deleted later, they start in the repository's project. Turning it off and on, or making a new webhook secret, keeps its project.
 
-The **Automations** page follows the project you're in, like the sidebar does. It lists that project's automations and the results waiting for you there. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The count on the **Automations** button in the top bar always counts every project's results, so nothing waiting for you is out of sight.
+The **Automations** page follows the project you're in (the project button next to its title picks it). It lists that project's automations and the results waiting for you there. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The count on **Automations** in the sidebar always counts every project's results, so nothing waiting for you is out of sight.
 
 ## When it runs
 
@@ -48,7 +48,7 @@ code-flow answers `202` at once (GitHub gives up on a delivery after 10 seconds)
 
 ## The inbox
 
-Automation and sweep results wait on the Automations page (with a count in the top bar) and under *Needs you*, in their run's project:
+Automation and sweep results wait on the Automations page (with a count in the sidebar) and under *Needs you* at the top of the sidebar:
 
 - **Approve:** keeps the result. **Approve & open PR** also pushes the branch and opens a pull request. For a run that started from a pull request (a Dependabot PR, say), **Approve & push to PR #N** pushes the fix to that PR instead.
 - **Revise:** your note goes to the agent that wrote the code, in its own session. The result comes back to the inbox.
