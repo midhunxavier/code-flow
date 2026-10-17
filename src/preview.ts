@@ -115,6 +115,7 @@ export class Previews {
     const server = createServer((req, res) => {
       const own = ownHost(req, server);
       if (!own) return refuse(res, 403, "Bad Host header");
+      if (!ownOrigin(req, server)) return refuse(res, 403, "Requests from other sites don't reach the app through its preview");
       if (req.url?.startsWith(OVERLAY_PATH)) {
         res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
         return res.end(overlaySource.replace("__PARENTS__", JSON.stringify(this.parents())));
@@ -173,7 +174,7 @@ export class Previews {
     // Hot reload and other WebSockets: the handshake goes through with the app's own host and origin, then bytes both ways.
     server.on("upgrade", (req, socket, head) => {
       const own = ownHost(req, server);
-      if (!own) return socket.destroy();
+      if (!own || !ownOrigin(req, server)) return socket.destroy();
       const up = connect(target.port, upstreamHost, () => {
         const headers = forwardHeaders(req, target, targetOrigin, own);
         const lines = [`${req.method} ${req.url} HTTP/1.1`, ...Object.entries(headers).flatMap(([k, v]) => (Array.isArray(v) ? v.map((x) => `${k}: ${x}`) : v === undefined ? [] : [`${k}: ${v}`]))];
@@ -208,10 +209,24 @@ function ownHost(req: IncomingMessage, server: Server): string | undefined {
   return host === `127.0.0.1:${port}` || host === `localhost:${port}` ? host : undefined;
 }
 
+/**
+ * A request the preview takes: one with no Origin (a navigation, a plain GET), an opaque one
+ * ("null", passed on as it is), or the preview's own (either host name). Another site's page that
+ * found the port gets nothing: its Origin would be made the app's own below, and the app's CSRF
+ * and WebSocket origin checks would let it through.
+ */
+function ownOrigin(req: IncomingMessage, server: Server): boolean {
+  const origin = req.headers.origin;
+  if (origin === undefined || origin === "null") return true;
+  const port = (server.address() as AddressInfo | null)?.port;
+  return origin === `http://127.0.0.1:${port}` || origin === `http://localhost:${port}`;
+}
+
 /** The request's headers as the app expects them: its own host, its own origin where the page's was, and none of code-flow's cookies. */
 function forwardHeaders(req: IncomingMessage, target: PreviewTarget, targetOrigin: string, own: string): OutgoingHttpHeaders {
   const headers: OutgoingHttpHeaders = { ...req.headers, host: `${target.hostname}:${target.port}` };
-  if (typeof headers.origin === "string") headers.origin = targetOrigin;
+  // The preview's own origin (ownOrigin let nothing else through but "null", which stays as it is).
+  if (typeof headers.origin === "string" && headers.origin !== "null") headers.origin = targetOrigin;
   if (typeof headers.referer === "string") headers.referer = headers.referer.replace(`http://${own}`, targetOrigin);
   const cookies = String(req.headers.cookie ?? "")
     .split(";")

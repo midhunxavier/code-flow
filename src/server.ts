@@ -158,19 +158,24 @@ function sessionCookie(): string {
   return `${COOKIE}=${auth.token}; HttpOnly; SameSite=Strict; Path=/`;
 }
 
-function readCookie(req: IncomingMessage, name: string): string | undefined {
-  const cookie = String(req.headers.cookie ?? "")
+/**
+ * Every value a cookie has in the request. Cookies ignore ports, so a page on another port of this
+ * host (an app in the Browser's preview, say) can set one of the same name with a narrower path,
+ * which the browser sends first; it can't replace ours (HttpOnly), so ours is still among them.
+ */
+function readCookies(req: IncomingMessage, name: string): string[] {
+  return String(req.headers.cookie ?? "")
     .split(";")
     .map((c) => c.trim())
-    .find((c) => c.startsWith(`${name}=`));
-  return cookie?.slice(name.length + 1);
+    .filter((c) => c.startsWith(`${name}=`))
+    .map((c) => c.slice(name.length + 1))
+    .filter(Boolean);
 }
 
 function signedIn(req: IncomingMessage): boolean {
   const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
   if (bearer && tokenMatches(bearer, auth.token)) return true;
-  const cookie = readCookie(req, COOKIE);
-  return !!cookie && tokenMatches(cookie, auth.token);
+  return readCookies(req, COOKIE).some((cookie) => tokenMatches(cookie, auth.token));
 }
 
 /**
@@ -190,8 +195,7 @@ function phoneCookie(): string {
 }
 
 function phoneSignedIn(req: IncomingMessage): boolean {
-  const cookie = readCookie(req, PHONE_COOKIE);
-  return phoneControl() && !!cookie && tokenMatches(cookie, remote.controlToken);
+  return phoneControl() && readCookies(req, PHONE_COOKIE).some((cookie) => tokenMatches(cookie, remote.controlToken));
 }
 
 /**

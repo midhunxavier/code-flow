@@ -150,6 +150,14 @@ test("only a browser on this machine claims the session: not one through a tunne
   assert.match(local.headers.get("set-cookie") ?? "", /^codeflow_session=/);
 });
 
+test("a cookie of the same name a page on another port set (a narrower path, so sent first) doesn't sign you out", async () => {
+  // Cookies ignore ports: an app in the Browser's preview can set one, though not replace the real one.
+  const shadowed = await fetch(`${a.base}/api/patterns`, { headers: { cookie: `codeflow_session=planted; codeflow_session=${TOKEN}` } });
+  assert.equal(shadowed.status, 200);
+  assert.equal((await fetch(`${a.base}/api/patterns`, { headers: { cookie: "codeflow_session=planted" } })).status, 401, "a planted one alone signs nobody in");
+  assert.equal((await fetch(`${a.base}/api/patterns`, { headers: { cookie: "codeflow_session=" } })).status, 401);
+});
+
 test("/api/events: a hello with the server's epoch and every run, ids on every event, and a reconnect gets only what it missed", async () => {
   const first = await readEvents(`${a.base}/api/events`, bearer, (e) => e.length >= 1);
   const hello = first[0]!.data;

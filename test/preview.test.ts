@@ -178,6 +178,22 @@ test("code-flow's own cookies never reach the app, and the app can't set them", 
   assert.equal(seen.cookie, undefined, "no cookie header left at all");
 });
 
+test("another site's page that finds the preview's port gets nothing: its Origin is refused; the preview's own becomes the app's", async () => {
+  assert.equal((await get(port, "/cookies", { origin: "https://evil.example" })).status, 403);
+  assert.equal((await get(port, "/cookies", { origin: "http://127.0.0.1:1" })).status, 403, "nor another local one");
+  assert.equal((await get(port, "/cookies", { origin: `http://localhost:${port}` })).status, 200);
+  assert.equal(seen.origin, `http://127.0.0.1:${appPort}`, "the preview's own origin is passed on as the app's");
+  assert.equal((await get(port, "/cookies", { origin: "null" })).status, 200);
+  assert.equal(seen.origin, "null", "an opaque one stays as it is: never the app's own");
+  // Nor a WebSocket: it never reaches the app.
+  const known = appSockets.length;
+  const socket = connect(port, "127.0.0.1");
+  socket.on("error", () => {});
+  socket.write(`GET /ws HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nOrigin: https://evil.example\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n`);
+  await within(new Promise<void>((r) => socket.once("close", () => r())), "the upgrade is closed");
+  assert.equal(appSockets.length, known, "the app never saw it");
+});
+
 // ------------------------------------------------------------ compressed pages
 test("a page sent compressed anyway is decompressed for the overlay; an encoding it can't read passes through as it came", async () => {
   const gz = await get(port, "/gz");
