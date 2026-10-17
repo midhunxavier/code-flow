@@ -116,34 +116,29 @@ function TopBar() {
   );
 }
 
-/** Where you are: the page, or the run and the project it's in. */
+/** On a run or its review: the project it's in and the run. Other pages carry their own heading. */
 function Crumbs() {
   const r = route.value;
   const run = "id" in r ? runs.value.get(r.id) : undefined;
-  const page = r.view === "composer" ? "New run" : r.view === "insights" ? "Insights" : r.view === "automations" ? "Automations" : "";
-  const project = run ? projectFor(run) : undefined;
+  if (!run) return <span class="spacer" />;
+  const project = projectFor(run);
   return (
     <nav class="crumbs-bar" aria-label="Where you are">
-      {page ? <span class="crumb here">{page}</span> : null}
-      {run ? (
+      <span class="crumb" title={run.repo}>
+        <Icon name="project" /> {project?.name ?? "No project"}
+      </span>
+      <span class="sep" aria-hidden="true">
+        ›
+      </span>
+      <span class={`crumb ${r.view === "run" ? "here" : ""}`} title={run.task}>
+        {run.task.split("\n")[0] || "(no task)"}
+      </span>
+      {r.view === "review" ? (
         <>
-          <span class="crumb" title={run.repo}>
-            <Icon name="project" /> {project?.name ?? "No project"}
-          </span>
           <span class="sep" aria-hidden="true">
             ›
           </span>
-          <span class={`crumb ${r.view === "run" ? "here" : ""}`} title={run.task}>
-            {run.task.split("\n")[0] || "(no task)"}
-          </span>
-          {r.view === "review" ? (
-            <>
-              <span class="sep" aria-hidden="true">
-                ›
-              </span>
-              <span class="crumb here">Review</span>
-            </>
-          ) : null}
+          <span class="crumb here">Review</span>
         </>
       ) : null}
     </nav>
