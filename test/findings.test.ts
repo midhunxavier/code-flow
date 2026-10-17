@@ -1,7 +1,7 @@
 import { test, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,7 @@ process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-findings-home-"
 const { RunManager, blocks, reproProblem } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
 const { reproOutcome } = await import("../src/checks.js");
+const { writeFileInside } = await import("../src/fs.js");
 type Run = import("../src/engine.js").Run;
 type CheckResult = import("../src/checks.js").CheckResult;
 
@@ -226,6 +227,45 @@ test("review council: findings rank by severity, then by a confirming test, then
   assert.match(chair, /"checked_by_code_flow": "false alarm: `node --test` passes with its test on this code"/);
   assert.match(review.markdown, /Off-by-one in the loop[^\n]*\n[^\n]*\n[^\n]*\n {3}\*Checked by code-flow:\* ✓ confirmed: its test fails/);
   assert.match(review.markdown, /\*Checked by code-flow:\* ✗ not confirmed: its test passes \(a false alarm\)/);
+});
+
+test("a reviewer's test isn't written through a symbolic link in the code under review", async () => {
+  // The code has a tracked `linked` symlink to a folder outside the repo, as a fork's PR could.
+  const outside = mkdtempSync(join(tmpdir(), "codeflow-findings-outside-"));
+  const linkedRepo = mkdtempSync(join(tmpdir(), "codeflow-findings-linked-"));
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: linkedRepo });
+  git("init", "-q");
+  writeFileSync(join(linkedRepo, "README.md"), "linked\n");
+  symlinkSync(outside, join(linkedRepo, "linked"));
+  git("add", ".");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+
+  const r = await withEnv({ FAKE_REPRO: "symlink" }, () => run("pipeline", pipeline, { repo: linkedRepo, loop: { check: "node --test" }, options: { maxRounds: 1 } }));
+  assert.equal(r.status, "done", r.error);
+  assert.deepEqual(readdirSync(outside), [], "nothing was written outside the checkout");
+  const [finding] = r.findings![r.artifacts[0]!.branch]!.findings;
+  assert.equal(finding!.check.status, "unconfirmed");
+  assert.match(finding!.check.detail, /code-flow didn't write the reviewer's test: `linked\/.codeflow\/config.test.mjs` goes through a symbolic link \(`linked`\)/);
+  assert.ok(!r.steps.some((s) => s.title.startsWith("Reviewer's test")), "the test never ran");
+});
+
+test("files from an agent are written inside the checkout only, never through a link", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codeflow-inside-"));
+  const outside = mkdtempSync(join(tmpdir(), "codeflow-outside-"));
+  writeFileSync(join(outside, "target.txt"), "mine\n");
+  symlinkSync(outside, join(root, "tests"));
+  symlinkSync(join(outside, "target.txt"), join(root, "a.test.mjs"));
+  writeFileSync(join(root, "notes"), "a file\n");
+
+  assert.match((await writeFileInside(root, "tests/.codeflow/config.json", "{}"))!, /goes through a symbolic link \(`tests`\)/);
+  assert.match((await writeFileInside(root, "a.test.mjs", "x"))!, /is a symbolic link/);
+  assert.match((await writeFileInside(root, "notes/b.test.mjs", "x"))!, /`notes`, which isn't a folder/);
+  assert.match((await writeFileInside(root, "../escape.test.mjs", "x"))!, /isn't a path inside the checkout/);
+  assert.deepEqual(readdirSync(outside), ["target.txt"]);
+  assert.equal(readFileSync(join(outside, "target.txt"), "utf8"), "mine\n");
+
+  assert.equal(await writeFileInside(root, "spec/deep/c.test.mjs", "ok\n"), undefined);
+  assert.equal(readFileSync(join(root, "spec/deep/c.test.mjs"), "utf8"), "ok\n");
 });
 
 test("review council: the verdict goes by what blocks, not by the chair's word", async () => {

@@ -19,6 +19,7 @@ import { cantRunMessage, cantRunReason, isPlainTestCommand, proofOutcome, reproO
 import { commandExists } from "./adapters/process.js";
 import { contextPrompt, hasStagedFiles, prepareContext, type ContextInput, type RunContext } from "./context.js";
 import { fitDiff } from "./diff.js";
+import { writeFileInside } from "./fs.js";
 import { describeIssues, inspectChanges, isTestFile, isTestSide, unverifiedIssue, type IntegrityIssue } from "./integrity.js";
 import { extractJson, shapeProblem } from "./json.js";
 import { readConventions, recordFindings, recurringLessons } from "./learnings.js";
@@ -1106,8 +1107,10 @@ export class TeamContext {
         const checkout = await this.scratchAt("repro", head);
         if (!checkout) return make("unverified", "setup failed on the result's code");
         if (repro.path) {
-          await mkdir(dirname(join(checkout.path, repro.path)), { recursive: true });
-          await writeFile(join(checkout.path, repro.path), repro.contents);
+          // The result's code may come from someone else (a PR): its symlinks mustn't take the
+          // reviewer's file outside the checkout, where nothing sandboxes code-flow's own writes.
+          const refused = await writeFileInside(checkout.path, repro.path, repro.contents);
+          if (refused) return make("unconfirmed", `code-flow didn't write the reviewer's test: ${refused}`);
         }
         const result = await this.command("check", title, checkout, repro.command, (r) => {
           const outcome = reproOutcome(r);

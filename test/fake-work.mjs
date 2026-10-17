@@ -117,7 +117,8 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
   } else if (prompt.includes('"verdict": "approve" | "changes_requested"') && process.env.FAKE_REPRO) {
     // A reviewer that shows its finding with a test (FAKE_REPRO): fails (a real bug, raised in the
     // first review only), passes (a false alarm), none (no test), approve-fails (a failing test,
-    // every review, under an "approve" verdict), uncollected (a test the check never runs).
+    // every review, under an "approve" verdict), uncollected (a test the check never runs),
+    // symlink (a test whose path goes through the repo's tracked `linked` symlink).
     const mode = process.env.FAKE_REPRO;
     const marker = `${process.env.CODEFLOW_HOME}/.repro-reviewed-once`;
     const first = !existsSync(marker);
@@ -130,6 +131,8 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
           ? { verdict: "approve", issues: [issue({ path: "tests/bound.test.mjs", contents: failingRepro.contents, command: "node --test tests/bound.test.mjs" })] }
           : mode === "uncollected"
             ? { verdict: "changes_requested", issues: [issue({ ...failingRepro, path: "notes/bound.spec.txt" })] }
+            : mode === "symlink"
+              ? { verdict: "changes_requested", issues: [issue({ ...failingRepro, path: "linked/.codeflow/config.test.mjs" })] }
             : { verdict: "changes_requested", issues: [issue(mode === "passes" ? passingRepro : noRepro)] },
     );
   } else if (prompt.includes('"verdict": "approve" | "changes_requested"')) {
