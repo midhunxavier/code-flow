@@ -79,7 +79,9 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   await page.locator(".note-chip", { hasText: "queued for builder-two" }).waitFor();
   await page.getByRole("button", { name: "✓ Approve", exact: true }).click();
   await page.getByPlaceholder("Your answer…").waitFor({ timeout: 30_000 });
-  assert.ok(await page.locator(".rail").getByText("Waiting for you").count());
+  // The question is published before the scheduler finishes independent work and
+  // marks the run as awaiting user input. Wait for that later sidebar snapshot.
+  await page.locator(".rail .run-item.active").getByText("Waiting for you").first().waitFor({ state: "attached", timeout: 30_000 });
   await page.getByPlaceholder("Your answer…").fill("Empty input is valid; add a test.");
   await page.getByRole("button", { name: "Send answer", exact: true }).click();
   await page.locator(".auto-team .at-head .badge").getByText("Finished", { exact: true }).waitFor({ timeout: 40_000 }).catch(async (error: Error) => { const run = await read(); throw new Error(`${error.message}\n${JSON.stringify({ status: run.status, error: run.error, gaps: run.team?.gaps, verification: run.team?.verification })}`); });

@@ -75,6 +75,7 @@ A second review covered the complete implementation and fixed the following issu
 - Malformed JSON-RPC envelopes no longer crash the MCP client.
 - Interrupting the evaluation runner stops the whole batch, including a signal during run preparation. Separate batches use unique pair IDs. Beta eligibility requires the verified Auto result to belong to the matched comparison, and multi-worker measurements count workers that actually executed.
 - The capability panel clears stale errors when reopened after a successful retry.
+- The browser test waits for the active run's waiting status after its question appears; those are separate scheduler snapshots, which exposed a timing race on Linux CI.
 
 Every fix has regression coverage. Final post-review validation is recorded below after the complete test and browser runs. The real measurements above remain the original immutable development-trial evidence; this review did not relabel or overwrite those trials.
 
