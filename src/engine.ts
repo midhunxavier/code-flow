@@ -1780,8 +1780,10 @@ export class RunManager {
     const run = this.require(id);
     const kind = input.kind ?? "comments";
     if (kind === "side" && !input.side) throw new Error("A side chat's turn needs its chat");
-    // A side chat's turn can wait for the team: the running execution takes it once its own work is done.
-    let queue = kind === "side" && run.status === "running" && !this.starting.has(id);
+    // A side chat's turn can wait for the team, and anything can wait for follow-ups once the team is
+    // done (a reply sent while a side chat works): the running execution takes it after its own work.
+    const waits = () => run.status === "running" && !this.starting.has(id) && (kind === "side" || !!run.patternDone);
+    let queue = waits();
     if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error(kind === "side" ? "Side chats can start once the run has finished or while it's running" : "Follow-ups can be sent once the run has finished");
     if (!run.worktrees.some((w) => w.name === input.worktree)) throw new Error(`Unknown worktree "${input.worktree}"`);
     if (kind !== "resolve-conflicts" && !input.message?.trim()) throw new Error(kind === "reply" ? "Write a reply" : kind === "side" ? "Write a message" : "Write at least one comment");
@@ -1791,7 +1793,7 @@ export class RunManager {
     // cleaned up), and the turn re-attaches it first. The turn copies them in.
     const files = input.attachments?.length ? await stageMessageFiles(join(run.worktreeDir, STAGE_DIR), Date.now().toString(36), input.attachments) : [];
     // Writing the files took a moment: whether it waits for the team or starts now is decided after.
-    queue = kind === "side" && run.status === "running" && !this.starting.has(id);
+    queue = waits();
     if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error("Follow-ups can be sent once the run has finished");
     const message = (input.message?.trim() ?? "") + (files.length ? `\n\nAttached, in this worktree (not committed): ${files.map((f) => `\`${f}\``).join(", ")}` : "");
     run.followUps.push({
@@ -2601,8 +2603,10 @@ async function runFollowUps(ctx: TeamContext, run: Run, chat = false) {
   // The latest follow-up's check is the current truth about the result (one whose turn failed
   // still committed what it did, and checked that), and the summary should say what happened
   // after the run.
-  const lastChecked = [...run.followUps].reverse().find((f) => f.status !== "pending" && f.checkPassed !== undefined);
-  if (lastChecked) ctx.setVerdict(lastChecked.checkPassed ? "passed" : "failing");
+  const lastChecked = [...run.followUps].reverse().find((f) => f.status !== "pending" && (f.checkPassed !== undefined || f.commit));
+  if (lastChecked?.checkPassed !== undefined) ctx.setVerdict(lastChecked.checkPassed ? "passed" : "failing");
+  // The latest change committed code its check couldn't judge (it couldn't run): an earlier verdict says nothing about it.
+  else if (lastChecked) run.verdict = undefined;
   // A side chat is mentioned only for a change it committed: a question, or a change that came to nothing, isn't news here.
   const finished = run.followUps.filter((f) => f.status !== "pending" && (!f.side || f.commit));
   if (finished.length) {
@@ -2692,6 +2696,7 @@ async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
           ? `${f.agent}: fix failing CI (${f.id})`
           : `${f.agent}: address review comments (${f.id})`,
   );
+  f.commit = sha ?? undefined;
   // A merge brings in someone else's test changes; anything else is this agent's.
   const issues = sha && f.kind !== "resolve-conflicts" ? await ctx.testChanges(wt, before) : [];
   f.integrity = issues.length ? issues : undefined;

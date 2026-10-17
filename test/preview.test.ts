@@ -108,6 +108,8 @@ after(() => {
 test("injectOverlay: after the doctype, comments and the <html> and <head> tags, never before the doctype or inside <header>", () => {
   // No <html> or <head> (both optional): after the doctype, so the page stays in standards mode.
   assert.equal(injectOverlay("<!doctype html><title>x</title><body>hi"), `<!doctype html>${TAG}<title>x</title><body>hi`);
+  // Legacy XHTML: an XML declaration first, then the doctype; the page stays in standards mode.
+  assert.equal(injectOverlay(`<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html><html><head><title>x</title>`), `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html><html><head>${TAG}<title>x</title>`);
   assert.equal(
     injectOverlay(`\uFEFF<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">`),
     `\uFEFF<!DOCTYPE html>\n<html lang="en">\n<head>\n  ${TAG}<meta charset="utf-8">`,

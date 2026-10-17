@@ -156,6 +156,25 @@ test("files sent with a follow-up go in the worktree's context folder, named in 
   assert.doesNotMatch(git("ls-tree", "-r", "--name-only", run.artifacts[0]!.branch), /codeflow-context/, "not on the branch");
 });
 
+test("a reply sent while only a side chat works waits for it, then runs in the team's session", async () => {
+  const run = await runPattern("pipeline", pipelineRoles);
+  process.env.FAKE_SLEEP_VENDOR = "claude";
+  process.env.FAKE_SLEEP_MS = "1200";
+  try {
+    await manager.followUp(run.id, { kind: "side", worktree: "build", agent: "claude", message: "Take a look", side: { chat: "c-wait", mode: "ask", title: "Take a look" } });
+    assert.equal(run.status, "running", "the side chat is working");
+    // On main this threw "Follow-ups can be sent once the run has finished".
+    await manager.followUp(run.id, { kind: "reply", worktree: "build", agent: "codex", message: "Also handle empty input" });
+    assert.equal(run.followUps.at(-1)!.status, "pending", "queued behind the side chat");
+    await finished(run);
+    assert.equal(run.status, "done", run.error);
+    assert.deepEqual(run.followUps.slice(-2).map((f) => [f.kind, f.status]), [["side", "done"], ["reply", "done"]]);
+  } finally {
+    delete process.env.FAKE_SLEEP_VENDOR;
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});
+
 test("a side chat's turn sent while the team works waits for it", async () => {
   process.env.FAKE_SLEEP_VENDOR = "claude";
   process.env.FAKE_SLEEP_MS = "1500";

@@ -421,7 +421,7 @@ test("/api/preview: a local app through its own port, with the overlay, frameabl
     assert.equal((await api("/api/preview", { url: "https://example.com/" })).status, 400, "only apps on this computer");
     const shown = await api("/api/preview", { url: `http://127.0.0.1:${appPort}/?x=1` });
     assert.equal(shown.status, 200, JSON.stringify(shown.body));
-    assert.match(shown.body.url, /^http:\/\/127\.0\.0\.1:\d+\/\?x=1$/);
+    assert.match(shown.body.url, /^http:\/\/localhost:\d+\/\?x=1$/, "the host you opened code-flow with, so the preview is same-site");
     assert.notEqual(new URL(shown.body.url).port, String(appPort), "a port of its own: a different origin from the app and from code-flow");
     assert.equal((await api("/api/preview", { url: `http://127.0.0.1:${appPort}/` })).body.origin, shown.body.origin, "the same app keeps its port");
 
@@ -429,7 +429,9 @@ test("/api/preview: a local app through its own port, with the overlay, frameabl
     const html = await page.text();
     assert.match(html, /<head><script src="\/__codeflow\/overlay\.js"><\/script><title>/);
     assert.equal(page.headers.get("x-frame-options"), null);
-    assert.equal(page.headers.get("content-security-policy"), null);
+    const csp = page.headers.get("content-security-policy") ?? "";
+    assert.match(csp, /frame-ancestors 'self' http:\/\/localhost:\d+/, "frameable by code-flow");
+    assert.doesNotMatch(csp, /'none'/, "and not refused outright");
     const overlay = await (await fetch(`${shown.body.origin}/__codeflow/overlay.js`)).text();
     assert.match(overlay, new RegExp(`const PARENTS = \\["http://localhost:${new URL(base).port}"`));
 

@@ -487,7 +487,7 @@ export function destinations(s: SideScope): { key: string; label: string; sub: s
  * be on different pages of the app, so each says where it was when that isn't the first one's.
  * Snapshot names carry the batch: a second lot added to the same message box starts at 1 again.
  */
-export function pinsMessage(pins: Pin[], console: ConsoleLine[], batch: number): { text: string; images: Attachment[] } {
+export function pinsMessage(pins: Pin[], console: ConsoleLine[], batch: string | number): { text: string; images: Attachment[] } {
   const url = pins[0]?.url ?? "";
   const snapshot = (p: Pin) => `pin-${batch}-${p.n}.png`;
   const lines = pins.map((p) => {
@@ -511,8 +511,8 @@ export function pinsMessage(pins: Pin[], console: ConsoleLine[], batch: number):
     });
   return { text, images };
 }
-/** How many lots of pins this window has sent: each one's snapshots get names of their own. */
-let batches = 0;
+/** A name for one lot of pins, so its snapshots' names don't repeat, whichever window (a popped-out panel) sent it. */
+const batchName = () => Date.now().toString(36).slice(-6);
 
 function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey: string; state: PageState; onSent: () => void }) {
   const [adjusting, setAdjusting] = useState<number | null>(null);
@@ -528,7 +528,7 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
     setPage(pageKey, (p) => ({ ...p, pins: p.pins.filter((x) => x.n !== pin.n) }));
   };
   const sendTo = (to: string) => {
-    const { text, images } = pinsMessage(state.pins, withConsole ? errors : [], ++batches);
+    const { text, images } = pinsMessage(state.pins, withConsole ? errors : [], batchName());
     const draft = { to, text, images };
     rememberSide({ sendTo: to });
     for (const p of state.pins) if (!p.gone) overlays.get(pageKey)?.({ type: "reset", id: p.id });

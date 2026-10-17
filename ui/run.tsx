@@ -678,7 +678,8 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
     ...sideChanges.map((side) => ({ at: (side.stepId && data.steps.get(side.stepId)?.startedAt) || side.at, side })),
   ].sort((a, b) => a.at - b.at);
   // The run's last check is the first turn's while nothing that changes the branch came after it (a side Ask doesn't).
-  const nothingAfter = followUps.length === 0 && sideChanges.length === 0;
+  // A side change still working has already set the run's last check: the first turn's badge isn't its to show.
+  const nothingAfter = followUps.length === 0 && !run.followUps.some((f) => f.side?.mode === "change");
   const agent = Object.values(run.roles).flat()[0];
   return (
     <>
@@ -1483,7 +1484,11 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
     // In a hidden tab the box measures 0: leave it at its natural height rather than shrink it to nothing.
     if (el.scrollHeight) el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [text]);
-  const running = run.status === "running";
+  // Only side chats working (the team is done): what you send here is a reply that waits for them, not a
+  // message for the team, which no side turn would take.
+  const pending = run.followUps.filter((f) => f.status === "pending");
+  const sideOnly = run.status === "running" && !!run.patternDone && pending.length > 0 && pending.every((f) => f.side);
+  const running = run.status === "running" && !sideOnly;
   // Who you can talk to after the run: each agent that wrote code, in its worktree.
   const writers = [
     ...new Map(
@@ -1493,7 +1498,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
   const teamAgents = [...new Set(Object.values(run.roles).flat())];
   const defaultTarget = running ? "" : writers.at(-1) ? `${writers.at(-1)!.agent}@${writers.at(-1)!.worktree}` : "team";
   const chosen = target || defaultTarget;
-  if (!running && run.status !== "done") return null;
+  if (!running && !sideOnly && run.status !== "done") return null;
 
   const send = async () => {
     if (!text.trim()) return;
@@ -1553,7 +1558,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
         : "Goes to the next agent that takes a turn"
       : chosen === "team"
         ? "Starts a new run with the same team, from this result"
-        : `Continues ${name}'s session on its branch, in ${worktree}`;
+        : `Continues ${name}'s session on its branch, in ${worktree}${sideOnly ? ", once the side chat is done" : ""}`;
   const placeholder = chat ? `Message ${chatName}…` : running ? "Message the team…" : chosen === "team" ? "Tell the team what to change…" : `Reply to ${name}…`;
   // In a chat, what you said is already in the thread; only what's still on its way shows here.
   const liveSteps = new Set(steps.filter((s) => s.status === "running").map((s) => s.id));

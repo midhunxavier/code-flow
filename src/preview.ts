@@ -265,7 +265,7 @@ function framedDirectives(policy: string, nonce: string): string {
  * page would be laid out in quirks mode), and a <head> tag after anything else is inside
  * something (a comment, a script) or ignored by browsers.
  */
-const LEAD = /^\uFEFF?(?:\s|<!--[\s\S]*?-->|<!doctype[^>]*>|<html(?:[\s/][^>]*)?>|<head(?:[\s/][^>]*)?>)*/i;
+const LEAD = /^\uFEFF?(?:\s|<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!doctype[^>]*>|<html(?:[\s/][^>]*)?>|<head(?:[\s/][^>]*)?>)*/i;
 
 /** The overlay script, first thing in <head> (where the browser puts it, when the page leaves the tag out). */
 export function injectOverlay(page: string, nonce?: string): string {
