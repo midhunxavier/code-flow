@@ -28,7 +28,7 @@ import {
   selectProject,
 } from "./state.js";
 import { ProjectChip } from "./projects.js";
-import type { AgentEvent, AgentId, Artifact, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
+import type { AgentEvent, AgentId, Artifact, CheckedReview, FindingCheck, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
 const modelNote = (run: RunSummary | null, id?: AgentId) =>
@@ -724,7 +724,7 @@ const followUpLabel = (f: FollowUp) =>
           ? `comments from ${f.from}`
           : "review comments";
 
-/** A review council's result: findings ranked by how many reviewers agree, and a post button. */
+/** A review council's result: findings ranked by severity, then by whether a test confirms them, then by agreement; and a post button. */
 function ReviewCard({ run }: { run: RunSummary }) {
   const review = run.review!;
   const [busy, setBusy] = useState(false);
@@ -782,6 +782,7 @@ function ReviewCard({ run }: { run: RunSummary }) {
                 <span class={`sev ${f.severity}`}>{f.severity}</span> <code>{f.file || "general"}</code> {f.problem}
               </div>
               <div class="help">Fix: {f.fix}</div>
+              <CheckNote severity={f.severity} check={f.check} />
               <div class="raised">
                 {f.raisedBy.length > 1 ? <b>{f.raisedBy.length} reviewers agree · </b> : null}
                 {f.raisedBy.map((a) => (
@@ -868,6 +869,7 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
       </div>
       {run.integrity?.[artifact.branch]?.length ? <IntegrityNote issues={run.integrity[artifact.branch]!} /> : null}
       {run.proofs?.[artifact.branch] ? <ProofNote proof={run.proofs[artifact.branch]!} /> : null}
+      {run.findings?.[artifact.branch]?.findings.length ? <FindingsNote review={run.findings[artifact.branch]!} /> : null}
       {artifact.stat ? <pre>{artifact.stat}</pre> : <div class="help">No changes</div>}
       {worktree && existsHint(run) ? <WorkspaceTools run={run} worktree={worktree.name} /> : null}
       {panel === "merge" && worktree ? (
@@ -927,6 +929,85 @@ function ProofNote({ proof }: { proof: Proof }) {
           <span class="help"> — {proof.detail}.</span>
         </>
       )}
+    </div>
+  );
+}
+
+/** The latest review of a result: its findings, which block approval, and what code-flow found running the reviewer's tests. */
+function FindingsNote({ review }: { review: CheckedReview }) {
+  const blocking = review.findings.filter((f) => f.blocking).length;
+  return (
+    <div class={`review-findings${blocking ? " blocking" : ""}`} role="note">
+      <b>{blocking ? `⚠ ${blocking} review finding${blocking === 1 ? " blocks" : "s block"} approval` : "✓ No review finding blocks approval"}</b>
+      <span class="help">
+        {" "}
+        — <AgentTag id={review.reviewer} /> {review.round > 1 ? `round ${review.round}` : "review"}. High and medium findings block; a high one (a bug) only when its test fails.
+      </span>
+      <ol class="findings">
+        {review.findings.map((f, i) => (
+          <li key={i} class={`sev-${f.severity}`}>
+            <div>
+              <span class={`sev ${f.severity}`}>{f.severity}</span> <code>{f.file || "general"}</code> {f.problem}{" "}
+              {f.blocking ? <span class="badge warn">blocks</span> : f.severity === "low" ? <span class="help">suggestion</span> : null}
+            </div>
+            {f.fix ? <div class="help">Fix: {f.fix}</div> : null}
+            <CheckNote severity={f.severity} check={f.check} />
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+/** What code-flow found running a finding's repro: confirmed (with how it fails), a false alarm, or not shown by a test. */
+function CheckNote({ severity, check }: { severity: string; check?: FindingCheck }) {
+  if (!check) return null;
+  const test = check.path ? <code>{check.path}</code> : "test";
+  if (check.status === "confirmed") {
+    return (
+      <div class="finding-check confirmed">
+        <b>✓ Confirmed</b>
+        <span class="help">
+          {" "}
+          — the reviewer's {test} fails with <code>{check.command}</code>.
+        </span>
+        <details>
+          <summary>How it fails</summary>
+          <pre>{check.detail}</pre>
+        </details>
+        {check.contents ? (
+          <details>
+            <summary>The reviewer's test</summary>
+            <pre>{check.contents}</pre>
+          </details>
+        ) : null}
+      </div>
+    );
+  }
+  if (check.status === "refuted") {
+    return (
+      <div class="finding-check refuted">
+        <b>✗ Not confirmed</b>
+        <span class="help">
+          {" "}
+          — the reviewer's {test} passes with <code>{check.command}</code>: a false alarm.
+        </span>
+      </div>
+    );
+  }
+  if (severity === "low") return null;
+  if (check.status === "unverified") {
+    return (
+      <div class="finding-check unverified">
+        <b>Couldn't run the reviewer's test</b>
+        <span class="help"> — {check.detail}.</span>
+      </div>
+    );
+  }
+  return (
+    <div class="finding-check unconfirmed">
+      <b>{severity === "high" ? "⚠ Unconfirmed" : "Not shown by a test"}</b>
+      <span class="help"> — {check.detail}.</span>
     </div>
   );
 }

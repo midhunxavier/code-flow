@@ -1,20 +1,16 @@
 import { adapters } from "../adapters/index.js";
-import type { Pattern, StepOutcome } from "../engine.js";
+import type { Pattern, ReviewFinding, StepOutcome } from "../engine.js";
 import { describeIssues } from "../integrity.js";
+import { approves, checkReview, findingsForBuilder, findingsLine, REVIEW_SHAPE, reproRule, type ReviewVerdict } from "./findings.js";
 import { REVIEW_SCHEMA } from "./schemas.js";
 import { checkEvidence, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, proofEvidence, proofLine, proofRule, proveOrAsk, READ_ONLY, section, WRITE } from "./prompts.js";
-
-interface ReviewVerdict {
-  verdict: "approve" | "changes_requested";
-  issues: { severity: string; file: string; problem: string; fix: string }[];
-}
 
 /**
  * Debate → Synthesize → Build.
  * Debaters propose designs independently, then read each other's proposals and revise
  * (critique rounds). A synthesizer merges the final positions into one plan, an optional
  * builder implements it, and an optional reviewer checks the build against the plan (one round
- * of fixes).
+ * of fixes, for the findings that block once code-flow has run the reviewer's tests).
  */
 export const debatePattern: Pattern = {
   id: "debate",
@@ -158,6 +154,7 @@ export const debatePattern: Pattern = {
     // The debate settled the design, not the code: a reviewer checks the build against the plan.
     const [reviewer] = ctx.agents("reviewer");
     let verdict: ReviewVerdict | undefined;
+    let findings: ReviewFinding[] = [];
     if (reviewer && (!check || check.ok)) {
       const testChanges = await ctx.testChanges(buildWt);
       verdict = (
@@ -176,14 +173,14 @@ export const debatePattern: Pattern = {
             section("Diff against base", fence(await ctx.diff(buildWt), "diff")) +
             checkEvidence(ctx, check) +
             proofEvidence(proved.proof) +
-            (testChanges.length ? section("Changes to tests (found by code-flow)", `Request changes unless the task requires them:\n${describeIssues(testChanges)}`) : "") +
-            section("Deliverable", "Check that the build does what the plan and task say, and look for bugs, missed edge cases and missing tests. Only request changes for real problems.") +
-            jsonInstruction('{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}'),
+            (testChanges.length ? section("Changes to tests (found by code-flow)", `Raise each as a medium issue unless the task requires it:\n${describeIssues(testChanges)}`) : "") +
+            section("Deliverable", "Check that the build does what the plan and task say, and look for bugs, missed edge cases and missing tests. Only raise real problems.") +
+            reproRule(ctx) +
+            jsonInstruction(REVIEW_SHAPE),
         })
       ).value;
-      ctx.log(`Review: ${verdict.verdict} (${verdict.issues.length} issues)`);
-      if (verdict.verdict === "changes_requested" && verdict.issues.length) {
-        ctx.learn(verdict.issues);
+      findings = await checkReview(ctx, buildWt, { label: "Review", reviewer, round: 1, review: verdict });
+      if (!approves(findings)) {
         const session = await ctx.ask({
           title: "Address review",
           role: "builder",
@@ -191,7 +188,7 @@ export const debatePattern: Pattern = {
           mode: "write",
           cwd: buildWt,
           resume: fixed.session ?? build,
-          prompt: `The ${reviewer} reviewer requested changes. Address each issue, re-run tests, and summarize the fixes.\n${fence(JSON.stringify(verdict.issues, null, 2), "json")}`,
+          prompt: findingsForBuilder(reviewer, findings),
         });
         await ctx.commit(buildWt, `${builder}: address review`);
         fixed = await fixUntilGreen(ctx, { agent: builder, role: "builder", wt: buildWt, session, attempts: 2 });
@@ -201,13 +198,17 @@ export const debatePattern: Pattern = {
 
     await ctx.artifact("Result", buildWt);
     if (check) ctx.setVerdict(check.ok ? "passed" : "failing");
-    if (verdict) ctx.setFacts({ approved: verdict.verdict === "approve", reviewRounds: 1 });
+    // Findings that blocked went back to the builder, but nobody reviewed its fixes.
+    if (verdict) ctx.setFacts({ approved: approves(findings), reviewRounds: 1 });
     ctx.setFacts({ proof: ctx.proofOf(buildWt)?.status });
 
     return [
       `**Built**${check ? (check.ok ? `, and \`${check.command}\` passes` : `, but \`${check.command}\` still fails`) : ""} on branch \`${buildWt.branch}\``,
       proofLine(ctx.proofOf(buildWt)),
-      verdict ? `Review by ${reviewer}: ${verdict.verdict === "approve" ? "approved" : `${verdict.issues.length} issue(s) sent back to the builder`}.` : "",
+      verdict
+        ? `Review by ${reviewer}: ${approves(findings) ? "approved" : `${findings.filter((f) => f.blocking).length} blocking finding(s) sent back to the builder, not re-reviewed`}.`
+        : "",
+      verdict ? findingsLine(findings) : "",
       section("Synthesized plan", plan.finalText),
       section("Builder summary", build.finalText),
     ].join("\n");

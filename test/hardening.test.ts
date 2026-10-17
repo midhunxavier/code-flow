@@ -237,7 +237,7 @@ test("supervisor reviewing its own integration: its fixes aren't re-reviewed, an
     run.steps.filter((s) => /^(Integration review|Fix integration issues)/.test(s.title)).map((s) => s.title),
     ["Integration review", "Fix integration issues"],
   );
-  assert.match(run.summary!, /claude: changes_requested — 1 issues, fixed by the supervisor, not re-reviewed/);
+  assert.match(run.summary!, /claude: findings block approval — 1 issues, 1 blocking, fixed by the supervisor, not re-reviewed/);
   assert.match(await logs(manager, run), /No separate reviewer: the supervisor reviews its own integration/);
 });
 

@@ -1,35 +1,32 @@
 import type { AgentId } from "../adapters/index.js";
-import type { CouncilFinding, Pattern, Proof } from "../engine.js";
+import type { CouncilFinding, FindingCheck, Pattern, Proof, Repro } from "../engine.js";
 import { defaultBranch, mergeBase } from "../github.js";
+import { checkIssues, checkMark, CONFIRMATION, REVIEW_SHAPE, reproRule, severityOf, type ReviewVerdict } from "./findings.js";
 import { COUNCIL_SCHEMA, REVIEW_SCHEMA } from "./schemas.js";
 import { checkEvidence, fence, jsonInstruction, LETTERS, preamble, proofEvidence, proofLine, READ_ONLY, section } from "./prompts.js";
-
-interface Review {
-  verdict: "approve" | "changes_requested";
-  issues: { severity: "high" | "medium" | "low"; file: string; problem: string; fix: string }[];
-}
 
 interface Merged {
   verdict: "approve" | "changes_requested";
   summary: string;
-  findings: { severity: "high" | "medium" | "low"; file: string; problem: string; fix: string; raised_by: string[] }[];
+  findings: { severity: "high" | "medium" | "low"; file: string; problem: string; fix: string; raised_by: string[]; repro?: Repro }[];
 }
 
 const SEVERITY = { high: 0, medium: 1, low: 2 } as const;
 
 /**
  * Review council.
- * Several agents review the same changes independently and read-only; a chair merges their
- * reviews into one, ranking problems several reviewers found first. Reviewers are anonymous
- * to the chair ("Reviewer A/B/…") so it can't favour its own vendor. Nothing is changed or
- * posted: you decide whether to post the review to the pull request.
+ * Several agents review the same changes independently and read-only; code-flow runs the tests
+ * they show their findings with, and a chair merges their reviews into one. Findings rank by
+ * severity, then by whether a test confirms them, then by how many reviewers raised them.
+ * Reviewers are anonymous to the chair ("Reviewer A/B/…") so it can't favour its own vendor.
+ * Nothing is changed or posted: you decide whether to post the review to the pull request.
  */
 export const councilPattern: Pattern = {
   id: "council",
   name: "Review council",
   summary: "Several agents review the same changes on their own; a chair merges what they found.",
   description:
-    "Use to review a pull request or a branch before merging: different models catch different problems, and issues several reviewers agree on rank first. Read-only — nothing is changed.",
+    "Use to review a pull request or a branch before merging: different models catch different problems, code-flow runs the tests reviewers show bugs with, and the worst confirmed problems rank first. Read-only — nothing is changed.",
   roles: [
     { id: "reviewers", label: "Reviewers", description: "Each reviews the changes on its own, read-only", multiple: true, default: ["claude", "codex", "agy"] },
     { id: "chair", label: "Chair", description: "Merges the reviews into one, noting where reviewers agree", default: ["claude"] },
@@ -64,12 +61,11 @@ export const councilPattern: Pattern = {
       evidence = checkEvidence(ctx, check, 3_000) + proofEvidence(proof);
     }
 
-    const shape = '{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}';
     // A reviewer that doesn't finish is left out; the others carry on.
     const reviews = await ctx.parallel(reviewers, async (agent, i) => {
       const label = LETTERS[i]!;
       const outcome = await ctx
-        .decide<Review>({
+        .decide<ReviewVerdict>({
           title: `Review ${label}`,
           schema: REVIEW_SCHEMA,
           what: "review",
@@ -87,7 +83,8 @@ export const councilPattern: Pattern = {
               "Look for bugs, security problems, missing or weak tests, and anything that doesn't do what the task or description says. " +
                 "Read the surrounding code where you need to. Report real problems only — not style preferences — with the file and a concrete fix.",
             ) +
-            jsonInstruction(shape),
+            reproRule(ctx) +
+            jsonInstruction(REVIEW_SHAPE),
         })
         .catch((err: Error) => {
           if (ctx.signal.aborted) throw err;
@@ -96,13 +93,22 @@ export const councilPattern: Pattern = {
         });
       return outcome ? { label, agent, review: outcome.value } : undefined;
     });
-    const done = reviews.filter((r): r is { label: string; agent: AgentId; review: Review } => !!r);
+    const done = reviews.filter((r): r is { label: string; agent: AgentId; review: ReviewVerdict } => !!r);
     if (!done.length) throw new Error("No reviewer finished");
+
+    // Each reviewer's tests run before the reviews are merged, one reviewer after another: the
+    // chair sees which findings a test confirms. The same test on the same code runs once.
+    const checked: FindingCheck[][] = [];
+    for (const r of done) checked.push(await checkIssues(ctx, wt, r.review.issues, `Reviewer ${r.label}'s test`));
 
     let merged: Merged;
     if (done.length === 1) {
       const only = done[0]!;
-      merged = { verdict: only.review.verdict, summary: "", findings: only.review.issues.map((i) => ({ ...i, raised_by: [only.label] })) };
+      merged = {
+        verdict: only.review.verdict,
+        summary: "",
+        findings: only.review.issues.map((i) => ({ ...i, severity: severityOf(i.severity), raised_by: [only.label] })),
+      };
     } else {
       const chair = ctx.agent("chair");
       const letters = done.map((r) => r.label);
@@ -123,26 +129,47 @@ export const councilPattern: Pattern = {
           section("Task", ctx.task) +
           section(
             "Reviews",
-            done.map((r) => `### Reviewer ${r.label}: ${r.review.verdict}\n${fence(JSON.stringify(r.review.issues, null, 2), "json")}`).join("\n\n"),
+            done
+              .map((r, n) => {
+                const issues = r.review.issues.map((issue, i) => ({ ...issue, checked_by_code_flow: checkNote(issue.severity, checked[n]![i]!) }));
+                return `### Reviewer ${r.label}: ${r.review.verdict}\n${fence(JSON.stringify(issues, null, 2), "json")}`;
+              })
+              .join("\n\n"),
           ) +
           section(
             "Deliverable",
             "Merge these into one review. Combine findings that describe the same problem and list every reviewer who raised it. " +
-              "Check doubtful findings against the code and drop the ones that are wrong. Request changes if any real high or medium problem remains. " +
-              "Write a short summary for the author.",
+              "`checked_by_code_flow` says what code-flow found running a finding's `repro` on the code: a high-severity finding whose test passes is a false alarm, and one without a test is unconfirmed. " +
+              "Check doubtful findings against the code and drop the ones that are wrong. Keep each finding's `repro` as it is (the confirmed one, if several reviewers gave one); use \"\" fields when none did. " +
+              "Request changes if a confirmed high-severity problem or a real medium one remains. Write a short summary for the author.",
           ) +
           jsonInstruction(
-            '{"verdict": "approve" | "changes_requested", "summary": "...", "findings": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "...", "raised_by": ["A", "B"]}]}',
+            '{"verdict": "approve" | "changes_requested", "summary": "...", "findings": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "...", "raised_by": ["A", "B"], "repro": {"path": "", "contents": "", "command": ""}}]}',
           ),
       });
       merged = value;
     }
 
     const agentOf = Object.fromEntries(done.map((r) => [r.label, r.agent]));
+    // The merged findings' tests: what already ran is reused, a test the chair changed runs now.
+    const checks = await checkIssues(ctx, wt, merged.findings, "Merged finding's test");
     const findings: CouncilFinding[] = merged.findings
-      .map((f) => ({ severity: f.severity, file: f.file, problem: f.problem, fix: f.fix, raisedBy: [...new Set(f.raised_by.map((l) => agentOf[l]!).filter(Boolean))] }))
-      .sort((a, b) => b.raisedBy.length - a.raisedBy.length || SEVERITY[a.severity] - SEVERITY[b.severity]);
-    ctx.learn(findings);
+      .map((f, i) => ({
+        severity: severityOf(f.severity),
+        file: f.file,
+        problem: f.problem,
+        fix: f.fix,
+        raisedBy: [...new Set(f.raised_by.map((l) => agentOf[l]!).filter(Boolean))],
+        check: checks[i]!,
+      }))
+      .sort(
+        (a, b) =>
+          SEVERITY[a.severity] - SEVERITY[b.severity] ||
+          CONFIRMATION[a.check.status] - CONFIRMATION[b.check.status] ||
+          b.raisedBy.length - a.raisedBy.length,
+      );
+    // Recurring problems are passed on to later runs; false alarms aren't problems.
+    ctx.learn(findings.filter((f) => f.check?.status !== "refuted"));
     const markdown = renderReview(merged.verdict, merged.summary, findings, done.map((r) => r.agent), proof);
     ctx.setReview({
       verdict: merged.verdict,
@@ -158,11 +185,23 @@ export const councilPattern: Pattern = {
   },
 };
 
+/** What code-flow found running a finding's test, for the chair. */
+function checkNote(severity: string, check: FindingCheck): string {
+  if (check.status === "confirmed") return `confirmed: \`${check.command}\` fails with its test on this code`;
+  if (check.status === "refuted") return `false alarm: \`${check.command}\` passes with its test on this code`;
+  if (severityOf(severity) === "low") return "a suggestion: not checked";
+  return check.status === "unverified" ? `couldn't run its test: ${check.detail}` : `unconfirmed: ${check.detail}`;
+}
+
 export function renderReview(verdict: string, summary: string, findings: CouncilFinding[], reviewers: AgentId[], proof: Proof | null = null): string {
   const head = `**Review council: ${verdict === "approve" ? "Approve" : "Changes requested"}** — ${reviewers.length} reviewer${reviewers.length === 1 ? "" : "s"} (${reviewers.join(", ")})`;
   const list = findings.length
     ? findings
-        .map((f, i) => `${i + 1}. **${f.severity}** \`${f.file || "general"}\` — ${f.problem}\n   *Fix:* ${f.fix}\n   *Raised by:* ${f.raisedBy.join(", ")}`)
+        .map(
+          (f, i) =>
+            `${i + 1}. **${f.severity}** \`${f.file || "general"}\` — ${f.problem}\n   *Fix:* ${f.fix}\n   *Raised by:* ${f.raisedBy.join(", ")}` +
+            (f.check ? `\n   *Checked by code-flow:* ${checkMark(f)}` : ""),
+        )
         .join("\n")
     : "No problems found.";
   return [head, proofLine(proof), summary.trim() ? section("Summary", summary) : "", section("Findings", list)].join("\n");

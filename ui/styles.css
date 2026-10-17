@@ -835,6 +835,16 @@
   .proof details { margin-top: 6px; }
   .proof summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   .proof pre { margin: 6px 0 0; max-height: 220px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .review-findings { margin-top: 8px; padding: 10px 14px; border-radius: 14px; font-size: 13px; background: var(--bg); border: 1px solid var(--border); }
+  .review-findings.blocking { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+  .review-findings .findings { margin-top: 8px; }
+  .finding-check { font-size: 12px; }
+  .finding-check.confirmed > b { color: var(--err); }
+  .finding-check.refuted > b { color: var(--ok); }
+  .finding-check.unconfirmed > b { color: var(--warn); }
+  .finding-check details { margin-top: 4px; }
+  .finding-check summary { cursor: pointer; color: var(--muted); }
+  .finding-check pre { margin: 4px 0 0; max-height: 220px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .failures { padding: 12px 16px 0; display: grid; gap: 4px; }
   .failure { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; text-align: left; border: 1px solid var(--border); background: var(--bg); border-radius: 12px; padding: 7px 11px; font-size: 13px; }
   .failure:hover { border-color: var(--err); }

@@ -1,7 +1,8 @@
 import { adapters, isAgentId, type AgentId } from "../adapters/index.js";
-import { RejectedError, type Pattern, type StepOutcome } from "../engine.js";
+import { RejectedError, type Pattern, type ReviewFinding, type StepOutcome } from "../engine.js";
 import { changedFiles, hasConflictMarkers } from "../git.js";
 import { describeIssues } from "../integrity.js";
+import { approves, builderReply, checkReview, findingsForBuilder, findingsLine, REVIEW_SHAPE, reproRule, type ReviewVerdict } from "./findings.js";
 import { REVIEW_SCHEMA, SUBTASKS_SCHEMA } from "./schemas.js";
 import { checkEvidence, fence, fixUntilGreen, jsonInstruction, preamble, proofEvidence, proofLine, proofRule, proveOrAsk, READ_ONLY, section, WRITE } from "./prompts.js";
 
@@ -20,19 +21,14 @@ interface Split {
 const SPLIT_SHAPE =
   '{"contracts": "interfaces, names and data shapes every part must use", "subtasks": [{"id": "short-kebab-id", "title": "...", "instructions": "...", "agent": "claude|codex|agy"}]}';
 
-interface Review {
-  verdict: "approve" | "changes_requested";
-  issues: { severity: string; file: string; problem: string; fix: string }[];
-}
-
 /**
  * Supervisor → Workers → Integrate.
  * A supervisor splits the task into independent subtasks and assigns each to a worker
  * (playing to each vendor's strengths). Workers run in parallel in separate worktrees;
  * their branches are merged into an integration branch, and the supervisor resolves any
  * conflicts. The combined result is reviewed by a separate reviewer (the supervisor only
- * reviews its own integration when no reviewer is set), the supervisor fixes what it finds,
- * and the reviewer looks once more.
+ * reviews its own integration when no reviewer is set), code-flow runs the tests the reviewer
+ * shows its findings with, the supervisor fixes the ones that block, and the reviewer looks once more.
  */
 export const supervisorPattern: Pattern = {
   id: "supervisor",
@@ -238,10 +234,10 @@ export const supervisorPattern: Pattern = {
     // The supervisor split the work and integrated it; someone else should judge the result.
     const [reviewer = supervisor] = ctx.agents("reviewer");
     if (reviewer === supervisor) ctx.log("No separate reviewer: the supervisor reviews its own integration", "warn");
-    const review = async (round: number, previous?: StepOutcome) => {
+    const review = async (round: number, previous?: StepOutcome, reply?: string) => {
       const diff = await ctx.diff(integration);
       const testChanges = await ctx.testChanges(integration);
-      return ctx.decide<Review>({
+      return ctx.decide<ReviewVerdict>({
         title: round === 1 ? "Integration review" : `Integration review (${round})`,
         schema: REVIEW_SCHEMA,
         what: "review verdict",
@@ -251,7 +247,7 @@ export const supervisorPattern: Pattern = {
         cwd: integration,
         resume: reviewer === supervisor && round === 1 ? plan : previous,
         prompt:
-          (round > 1 ? "The supervisor fixed the issues you raised. Review the updated result.\n" : "") +
+          (round > 1 ? "The supervisor fixed the issues you raised. Review the updated result.\n" + builderReply(reply) : "") +
           (reviewer === supervisor
             ? ""
             : preamble("reviewer", reviewer, `${READ_ONLY} Other agents built this in parallel parts that were then merged; review it critically.`) +
@@ -263,17 +259,20 @@ export const supervisorPattern: Pattern = {
           section("Combined diff", fence(diff, "diff")) +
           checkEvidence(ctx, check, 3_000) +
           proofEvidence(round === 1 ? proved.proof : check?.ok ? await ctx.prove(integration) : null) +
-          (testChanges.length ? section("Changes to tests (found by code-flow)", `Request changes unless the task requires them:\n${describeIssues(testChanges)}`) : "") +
-          jsonInstruction('{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}'),
+          (testChanges.length ? section("Changes to tests (found by code-flow)", `Raise each as a medium issue unless the task requires it:\n${describeIssues(testChanges)}`) : "") +
+          reproRule(ctx) +
+          jsonInstruction(REVIEW_SHAPE),
       });
     };
+    const label = (round: number) => (round === 1 ? "Integration review" : `Integration review (${round})`);
 
     let reviewed = await review(1);
     let verdict = reviewed.value;
+    // Approval goes by what blocks once code-flow has run the reviewer's tests, not by its verdict word.
+    let findings: ReviewFinding[] = await checkReview(ctx, integration, { label: label(1), reviewer, round: 1, review: verdict });
     let unreviewedFix = false;
-    if (verdict?.verdict === "changes_requested" && verdict.issues?.length) {
-      ctx.learn(verdict.issues);
-      await ctx.ask({
+    if (!approves(findings)) {
+      const fix = await ctx.ask({
         title: "Fix integration issues",
         role: "supervisor",
         agent: supervisor,
@@ -283,21 +282,22 @@ export const supervisorPattern: Pattern = {
           preamble("integrator", supervisor, WRITE) +
           section("Overall goal", ctx.task) +
           gaps +
-          section("Issues found in review", fence(JSON.stringify(verdict.issues, null, 2), "json")) +
-          section("Deliverable", "Fix these issues, run the tests, and summarize."),
+          findingsForBuilder(reviewer, findings) +
+          section("Deliverable", "Fix what blocks, run the tests, and summarize."),
       });
       await ctx.commit(integration, `${supervisor}: fix integration issues`);
       check = (await fixUntilGreen(ctx, { agent: supervisor, role: "supervisor", wt: integration, attempts: 2, context: gaps })).check;
       // The fix is reviewed too, unless the supervisor would only be checking itself again.
       if (reviewer !== supervisor) {
-        reviewed = await review(2, reviewed.outcome);
+        reviewed = await review(2, reviewed.outcome, fix.finalText);
         verdict = reviewed.value;
+        findings = await checkReview(ctx, integration, { label: label(2), reviewer, round: 2, review: verdict });
       } else unreviewedFix = true;
     }
 
     await ctx.artifact("Integrated result", integration);
     if (check) ctx.setVerdict(check.ok ? "passed" : "failing");
-    ctx.setFacts({ approved: verdict.verdict === "approve", proof: ctx.proofOf(integration)?.status });
+    ctx.setFacts({ approved: approves(findings), proof: ctx.proofOf(integration)?.status });
     return [
       `**Integrated**${check ? (check.ok ? `, and \`${check.command}\` passes` : `, but \`${check.command}\` still fails`) : ""} — branch \`${integration.branch}\``,
       proofLine(ctx.proofOf(integration)),
@@ -308,7 +308,9 @@ export const supervisorPattern: Pattern = {
       contracts ? section("Contracts", contracts) : "",
       section(
         "Integration review",
-        `${reviewer}: ${verdict.verdict} — ${verdict.issues.length} issues${unreviewedFix ? ", fixed by the supervisor, not re-reviewed" : ""}`,
+        `${reviewer}: ${approves(findings) ? "approved" : "findings block approval"} — ${findings.length} issues, ${findings.filter((f) => f.blocking).length} blocking` +
+          `${unreviewedFix ? ", fixed by the supervisor, not re-reviewed" : ""}` +
+          (findingsLine(findings) ? `\n${findingsLine(findings)}` : ""),
       ),
     ].join("\n");
   },

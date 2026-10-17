@@ -80,23 +80,59 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
   } else if (prompt.includes('"verdict": "pass" | "fail"')) {
     answer = json({ verdict: "pass", failures: [] });
   } else if (prompt.includes('"raised_by"')) {
-    // Review council chair: merge the reviewers' findings.
+    // Review council chair: merge the reviewers' findings. FAKE_REPRO: findings that came with
+    // tests, one that fails (raised by one reviewer) and one that passes (raised by both).
     answer = json({
       verdict: "changes_requested",
       summary: "Two reviewers found the same off-by-one.",
-      findings: [
-        { severity: "low", file: "README.md", problem: "Typo", fix: "Fix the typo", raised_by: ["B"] },
-        { severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use < instead of <=", raised_by: ["A", "B"] },
-      ],
+      findings: process.env.FAKE_REPRO
+        ? [
+            { severity: "low", file: "README.md", problem: "Typo", fix: "Fix the typo", raised_by: ["B"], repro: noRepro },
+            { severity: "medium", file: "feature.txt", problem: "No docs for the feature", fix: "Document it", raised_by: ["A", "B"], repro: noRepro },
+            { severity: "high", file: "feature.txt", problem: "Missing null check", fix: "Check for null", raised_by: ["A", "B"], repro: passingRepro },
+            { severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use < instead of <=", raised_by: ["A"], repro: failingRepro },
+          ]
+        : [
+            { severity: "low", file: "README.md", problem: "Typo", fix: "Fix the typo", raised_by: ["B"], repro: noRepro },
+            { severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use < instead of <=", raised_by: ["A", "B"], repro: noRepro },
+          ],
     });
   } else if (prompt.includes("Other reviewers are reviewing the same changes")) {
-    answer = json({ verdict: "changes_requested", issues: [{ severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use <" }] });
+    const offByOne = { severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use <" };
+    answer = json({
+      verdict: "changes_requested",
+      issues: process.env.FAKE_REPRO
+        ? [{ ...offByOne, repro: failingRepro }, { severity: "high", file: "feature.txt", problem: "Missing null check", fix: "Check for null", repro: passingRepro }]
+        : [{ ...offByOne, repro: noRepro }],
+    });
+  } else if (prompt.includes('"verdict": "approve" | "changes_requested"') && process.env.FAKE_REPRO) {
+    // A reviewer that shows its finding with a test (FAKE_REPRO): fails (a real bug, raised in the
+    // first review only), passes (a false alarm), none (no test), approve-fails (a failing test,
+    // every review, under an "approve" verdict), uncollected (a test the check never runs).
+    const mode = process.env.FAKE_REPRO;
+    const marker = `${process.env.CODEFLOW_HOME}/.repro-reviewed-once`;
+    const first = !existsSync(marker);
+    if (first) writeFileSync(marker, "1");
+    const issue = (repro) => ({ severity: "high", file: "feature.txt", problem: "Off-by-one in the loop bound", fix: "Use < instead of <=", repro });
+    answer = json(
+      mode === "fails"
+        ? first ? { verdict: "changes_requested", issues: [issue(failingRepro)] } : { verdict: "approve", issues: [] }
+        : mode === "approve-fails"
+          ? { verdict: "approve", issues: [issue({ path: "tests/bound.test.mjs", contents: failingRepro.contents, command: "node --test tests/bound.test.mjs" })] }
+          : mode === "uncollected"
+            ? { verdict: "changes_requested", issues: [issue({ ...failingRepro, path: "notes/bound.spec.txt" })] }
+            : { verdict: "changes_requested", issues: [issue(mode === "passes" ? passingRepro : noRepro)] },
+    );
   } else if (prompt.includes('"verdict": "approve" | "changes_requested"')) {
     // State lives outside the worktree: read-only steps have their file changes reverted.
     const marker = `${process.env.CODEFLOW_HOME}/.reviewed-once`;
     const failReview = process.env.FAKE_REVIEW_FAIL_ONCE && !existsSync(marker);
     if (failReview) writeFileSync(marker, "1");
-    answer = json(failReview ? { verdict: "changes_requested", issues: [{ severity: "medium", file: "src/x.ts", problem: "missing edge case", fix: "handle it" }] } : { verdict: "approve", issues: [] });
+    answer = json(
+      failReview
+        ? { verdict: "changes_requested", issues: [{ severity: "medium", file: "src/x.ts", problem: "missing edge case", fix: "handle it", repro: noRepro }] }
+        : { verdict: "approve", issues: [] },
+    );
   } else if (prompt.includes('"winner"')) {
     answer = json({ winner: "B", ranking: ["B", "A"], reasons: "B is simpler" });
   } else if (write && process.env.FAKE_TAMPER && existsSync("failing.test.mjs")) {
@@ -133,6 +169,10 @@ const testFile = (...body) => ['import { test } from "node:test";', 'import asse
 const implementedTest = testFile('test("feature is implemented", () => assert.ok(readdirSync(".").some((f) => /^(claude|codex|agy)-.*\\.txt$/.test(f))));');
 const passingTest = testFile('test("feature is implemented", () => assert.ok(readdirSync(".").length > 0));');
 const brokenTest = testFile('test("feature is implemented", () => assert.fail("never passes"));');
+/** Reviewers' repros: no test; a test that fails on any code (the bug is there); one that passes (a false alarm). */
+const noRepro = { path: "", contents: "", command: "" };
+const failingRepro = { path: "bound.test.mjs", contents: testFile('test("loop bound", () => assert.equal([1, 2, 3].length, 4, "off by one: the loop runs once too often"));'), command: "" };
+const passingRepro = { path: "null.test.mjs", contents: testFile('test("null check", () => assert.ok(true));'), command: "" };
 
 /** FAKE_SLEEP_MS for this vendor (FAKE_SLEEP_VENDOR unset = every vendor), else 0. */
 export function sleepMs(vendor) {

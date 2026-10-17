@@ -45,7 +45,7 @@ Open **http://localhost:4317**, choose a repository, describe the task, pick a t
 - **A team, not one agent.** Seven patterns, from Plan → Build → Review to a Best-of-N race judged blind, with any agent in any role and a model and effort per role. Having a different vendor review or judge catches what a model misses in its own work.
 - **Your subscriptions, their official CLIs.** code-flow launches `claude`, `codex` and `agy` headless, as they ship. It never reads or stores credentials.
 - **Your checkout stays untouched.** Every run works in git worktrees. Results are branches: review them line by line, send comments back to the agent, merge safely, or open a PR.
-- **Done means the check passes, and proves something.** code-flow runs your test command itself after every change, feeds failures back, and flags edits that make tests pass without fixing anything. Then it runs the result's tests on the original code: at least one should fail there, or nothing shows the change works, and the agent is asked for a test that does.
+- **Done means the check passes, and proves something.** code-flow runs your test command itself after every change, feeds failures back, and flags edits that make tests pass without fixing anything. Then it runs the result's tests on the original code: at least one should fail there, or nothing shows the change works, and the agent is asked for a test that does. Reviewers show the bugs they report with a test that code-flow runs, so a false alarm doesn't cost a fix round.
 - **A conversation, not a job queue.** Approve the plan before anyone builds, message the team while it works (straight into a running Codex turn), and reply after it finishes.
 - **A side panel, like the apps you know.** Next to the work: a chat with the agent you pick, the files (of the repo or of a run's worktree), a terminal, a browser for the app a run started, and your notes. It stays as you move between runs.
 - **Where the work lives, even when you're away.** Start from GitHub issues and PRs, fix failing CI, have a council review a PR, run on a schedule or from webhooks, and check in or take over from your phone.
@@ -61,13 +61,13 @@ Open **http://localhost:4317**, choose a repository, describe the task, pick a t
 
 | Pattern | How the agents work | Reach for it when |
 |---|---|---|
-| **Plan → Build → Review** | one plans, one builds, another reviews; fixes until the check passes and the reviewer approves | most features and bug fixes |
+| **Plan → Build → Review** | one plans, one builds, another reviews; code-flow runs the tests the reviewer shows bugs with; fixes until the check passes and nothing blocks | most features and bug fixes |
 | **Loop until green** | fix → code-flow runs the check → repeat; hands over to the next vendor when stuck | "done" is a command: failing tests, a broken build |
 | **Best-of-N race** | everyone solves it in parallel → a judge picks from anonymized diffs | the task is open-ended or risky |
 | **Debate → Synthesize → Build** | proposals → critique rounds → one plan → build | architecture, API design, big refactors |
 | **Supervisor → Workers** | split into parallel subtasks → build on branches → integrate and review | larger tasks that split cleanly |
 | **Test-first** | one writes failing tests, another makes them pass without touching them | behavior you can specify with tests |
-| **Review council** | independent read-only reviews → a chair ranks what they agree on | reviewing a PR before merging |
+| **Review council** | independent read-only reviews, bugs shown with tests code-flow runs → a chair ranks the worst confirmed first | reviewing a PR before merging |
 
 How each pattern loops, checks and stops: [Team patterns, checks and limits](docs/patterns.md).
 

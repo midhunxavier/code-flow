@@ -370,12 +370,31 @@ export function runnerMissing(result: CheckResult): string | undefined {
  */
 export function proofOutcome(result: CheckResult): { status: "proven" | "unproven" | "unverified"; detail: string } {
   if (result.ok) return { status: "unproven", detail: `\`${result.command}\` passes on the base code too, with this change's tests` };
-  if (result.timedOut) return { status: "unverified", detail: `\`${result.command}\` timed out on the base code` };
-  const missing = runnerMissing(result);
-  if (missing) return { status: "unverified", detail: `the test runner didn't start on the base code: ${missing}` };
-  if (/^(code-flow couldn't run it|Cancelled before it started)/.test(result.output)) return { status: "unverified", detail: result.output.split("\n")[0]! };
-  if (result.exitCode === 5 && /\bpytest\b/.test(result.command)) return { status: "unverified", detail: "pytest collected no tests on the base code" };
+  const unknown = inconclusive(result, "on the base code");
+  if (unknown) return { status: "unverified", detail: unknown };
   return { status: "proven", detail: failureExcerpt(result.output, 1_500) || `exit code ${result.exitCode}` };
+}
+
+/**
+ * What a run of a reviewer's repro (a test that should fail because of the bug it reports) says
+ * about the result: failing there confirms the bug, passing refutes it. A run that never got as
+ * far as the tests says neither.
+ */
+export function reproOutcome(result: CheckResult): { status: "confirmed" | "refuted" | "unverified"; detail: string } {
+  if (result.ok) return { status: "refuted", detail: `\`${result.command}\` passes with the reviewer's test` };
+  const unknown = inconclusive(result, "on the result");
+  if (unknown) return { status: "unverified", detail: unknown };
+  return { status: "confirmed", detail: failureExcerpt(result.output, 1_500) || `exit code ${result.exitCode}` };
+}
+
+/** Why a failing run didn't get as far as the tests (no test runner, nothing collected, a timeout); else undefined. */
+function inconclusive(result: CheckResult, where: string): string | undefined {
+  if (result.timedOut) return `\`${result.command}\` timed out ${where}`;
+  const missing = runnerMissing(result);
+  if (missing) return `the test runner didn't start ${where}: ${missing}`;
+  if (/^(code-flow couldn't run it|Cancelled before it started)/.test(result.output)) return result.output.split("\n")[0]!;
+  if (result.exitCode === 5 && /\bpytest\b/.test(result.command)) return `pytest collected no tests ${where}`;
+  return undefined;
 }
 
 /** What to tell you when the check can't run; the fix is setting it up for this repo. */

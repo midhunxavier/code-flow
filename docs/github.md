@@ -72,7 +72,7 @@ The task names the issue or PR by number. Its title isn't put in the task (whoev
 
 A read-only pattern: several agents review the same changes independently, and a chair merges their findings.
 
-- Reviewers are anonymous to the chair ("Reviewer A/B"), and findings several reviewers agree on rank first.
+- Reviewers are anonymous to the chair ("Reviewer A/B"). code-flow runs the tests reviewers show their bugs with before the chair merges, and findings rank by severity, then by whether a test confirms them, then by how many reviewers agree (see [checked review findings](patterns.md#checks-loops-and-limits)).
 - Nothing is changed. **Post to PR #N** posts the review as a comment, and only when you click it.
 
 ### Follow-through
