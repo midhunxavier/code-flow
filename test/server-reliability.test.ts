@@ -3,6 +3,7 @@
 // claim. Real servers on free ports with fake agents, gh and docker; never ports 4317/4318.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { request } from "node:http";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo, type Server } from "node:net";
@@ -156,6 +157,23 @@ test("a cookie of the same name a page on another port set (a narrower path, so 
   assert.equal(shadowed.status, 200);
   assert.equal((await fetch(`${a.base}/api/patterns`, { headers: { cookie: "codeflow_session=planted" } })).status, 401, "a planted one alone signs nobody in");
   assert.equal((await fetch(`${a.base}/api/patterns`, { headers: { cookie: "codeflow_session=" } })).status, 401);
+});
+
+test("a cookie jar another app on localhost filled up doesn't lock you out: code-flow still reads it, and the token link still works", async () => {
+  // 30 cookies of nearly 4 KB: far over Node's default 16 KB of headers.
+  const junk = Array.from({ length: 30 }, (_, i) => `pad${i}=${"A".repeat(3900)}`).join("; ");
+  const port = Number(new URL(a.base).port);
+  const status = (path: string, cookie: string) =>
+    new Promise<number>((resolve, reject) => {
+      request({ host: "127.0.0.1", port, path, headers: { host: `localhost:${port}`, cookie } }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      })
+        .on("error", reject)
+        .end();
+    });
+  assert.equal(await status("/api/patterns", `${junk}; codeflow_session=${TOKEN}`), 200);
+  assert.equal(await status(`/?token=${TOKEN}`, junk), 302, "the sign-in link gets through");
 });
 
 test("/api/events: a hello with the server's epoch and every run, ids on every event, and a reconnect gets only what it missed", async () => {

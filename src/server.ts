@@ -141,6 +141,13 @@ const auth = {
 };
 manager.onActivity(() => (auth.claimable = false));
 const COOKIE = "codeflow_session";
+/**
+ * Room for a big Cookie header. Cookies ignore ports, so every app on this host name (one in the
+ * Browser's preview too) adds to what the browser sends code-flow; Chrome keeps up to 180 of 4 KB
+ * each. With Node's default (16 KB), a page that filled the jar would lock you out of code-flow,
+ * the ?token= link included, until you cleared the site's data.
+ */
+const MAX_HEADER_SIZE = 1024 * 1024;
 
 /**
  * Only a browser on this machine may claim the session. The Host header alone doesn't say so:
@@ -576,7 +583,7 @@ const LAN_ALLOW_LOCAL = process.env.CODEFLOW_LAN_ALLOW_LOCAL === "1";
 function syncLanServer(signOut = false): Promise<void> {
   if (remote.enabled && remote.lan && !lanServer) {
     lanError = undefined;
-    const server = createServer(listener("lan"));
+    const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("lan"));
     server.on("connection", (socket) => {
       if (!LAN_ALLOW_LOCAL && isOwnAddress(socket.remoteAddress)) socket.destroy();
     });
@@ -1187,7 +1194,7 @@ function listener(via: Via) {
   };
 }
 
-const server = createServer(listener("local")).listen(PORT, HOST, async () => {
+const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("local")).listen(PORT, HOST, async () => {
   const agents = await agentAvailability();
   const runs = manager.list();
   console.log(`code-flow running at http://localhost:${PORT}  (${runs.length} runs loaded from ${CODEFLOW_HOME})`);
