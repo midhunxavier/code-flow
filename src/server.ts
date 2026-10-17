@@ -16,6 +16,7 @@ import { readRepoConfig } from "./repo-config.js";
 import { openFolder } from "./serve.js";
 import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
 import { Previews } from "./preview.js";
+import { SnapshotError, takeSnapshot } from "./snapshot.js";
 import { Notes } from "./notes.js";
 import { CODEFLOW_HOME, envNumber, PORT } from "./config.js";
 import { RunManager, UntrustedSourceError, type LoopSettings, type Pattern } from "./engine.js";
@@ -921,6 +922,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     const body = await readJson(req);
     // On the host name this page was opened with (checkOrigin allows only code-flow's own), so the app is same-site with it.
     return send(res, 200, await attempt(() => previews.show(String(body.url ?? ""), req.headers.host)));
+  }
+  // Snapshot mode: a screenshot of any page, in a headless Chrome of its own (src/snapshot.ts).
+  if (parts[1] === "snapshot" && req.method === "POST") {
+    const body = await readJson(req);
+    try {
+      return send(res, 200, await takeSnapshot({ url: String(body.url ?? ""), width: Number(body.width), height: body.height === undefined ? undefined : Number(body.height), full: body.full === true }));
+    } catch (err) {
+      if (err instanceof SnapshotError) throw new HttpError(err.status, err.message);
+      throw err;
+    }
   }
   if (parts[1] === "shell") {
     const id = parts[2];

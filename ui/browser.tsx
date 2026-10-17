@@ -45,6 +45,18 @@ interface Pin {
   tried?: Record<string, string>;
   /** Picked in an earlier load of the page: its element is gone, so Adjust can't reach it. */
   gone?: boolean;
+  /** A box drawn on a snapshot (its rect is in the snapshot's pixels), not on the live page. */
+  source?: "snapshot";
+}
+/** A screenshot of the page from a headless Chrome (snapshot mode), to draw boxes on. */
+interface Snap {
+  /** PNG data URL. */
+  image: string;
+  width: number;
+  height: number;
+  url: string;
+  title: string;
+  full: boolean;
 }
 interface ConsoleLine {
   level: "error" | "warn" | "network";
@@ -63,6 +75,11 @@ interface PageState {
   ready?: boolean;
   /** Why they don't, when they don't. */
   why?: string;
+  /** Snapshot mode: the latest snapshot, whether it's shown instead of the live page, and how taking one went. */
+  snap?: Snap;
+  showSnap?: boolean;
+  snapping?: boolean;
+  snapError?: string;
 }
 /** Per page (scope|page id): pins and console survive switching tabs and pages. */
 const pages = signal<Record<string, PageState>>({});
@@ -163,8 +180,25 @@ export function BrowserTab() {
   // Annotating needs the overlay: the page shown through the preview (an https://localhost address,
   // say, is refused by it and shown as it is), and the overlay answering in the page as it is now.
   const local = !!active?.url && LOCAL.test(active.url) && !onPhone;
-  const canAnnotate = !!active?.url && !!state?.preview && !!state?.ready;
+  const canAnnotate = !!active?.url && !!state?.preview && !!state?.ready && !state.showSnap;
   useEffect(() => setMode("off"), [key, canAnnotate]);
+  const area = useRef<HTMLDivElement>(null);
+  /** Snapshot mode: any page, in a headless Chrome at the width you're looking at it. */
+  const snapshot = async (full = state?.snap?.full ?? false) => {
+    if (!active?.url) return;
+    const at = key;
+    // A phone's or a tablet's screen, or the space the page has in the panel.
+    const width = device === "phone" ? 390 : device === "tablet" ? 768 : Math.min(2560, Math.max(320, area.current?.clientWidth || 1280));
+    const height = device === "phone" ? 844 : device === "tablet" ? 1024 : Math.min(1600, Math.max(480, area.current?.clientHeight || 800));
+    setPage(at, (p) => ({ ...p, showSnap: true, snapping: true, snapError: undefined }));
+    try {
+      const shot = await post<Omit<Snap, "full">>("/api/snapshot", { url: pageState(at).at ?? active.url, width, height, full });
+      // Boxes drawn on the old snapshot point at its pixels: they go with it.
+      setPage(at, (p) => ({ ...p, snapping: false, snap: { ...shot, image: `data:image/png;base64,${shot.image}`, full }, pins: p.pins.filter((x) => x.source !== "snapshot") }));
+    } catch (err) {
+      setPage(at, (p) => ({ ...p, snapping: false, snapError: (err as Error).message }));
+    }
+  };
 
   const items: StripItem[] = list.map((p) => ({ key: p.id, label: shortUrl(pageState(`${s.key}|${p.id}`).at ?? p.url), title: p.url || "New page", below: p.id === second?.id }));
   const idle = s.run ? s.run.worktrees.filter((w) => !running.some((x) => x.key === `${s.run!.id}/${w.name}`)) : [];
@@ -243,19 +277,23 @@ export function BrowserTab() {
           errors={errors}
           showConsole={showConsole}
           onConsole={() => setShowConsole(!showConsole)}
+          snapshotOn={!!state?.showSnap}
+          onSnapshot={() => (state?.showSnap ? setPage(key, (p) => ({ ...p, showSnap: false })) : state?.snap ? setPage(key, (p) => ({ ...p, showSnap: true })) : void snapshot())}
         />
       ) : null}
-      <div class={`browse ${second ? "compare" : ""}`}>
+      <div class={`browse ${second ? "compare" : ""}`} ref={area}>
         {!active || !active.url ? (
           <div class="browse-empty">
             <p>
               Open the app a run started with <b>Run app</b>, or type an address.
             </p>
-            <p class="help">Apps on this computer (localhost) can be annotated: pick an element or draw a box, say what's wrong, and send it to the agent with a snapshot.</p>
+            <p class="help">Apps on this computer (localhost) can be annotated: pick an element or draw a box, say what's wrong, and send it to the agent with a snapshot. For any other page, take a <b>Snapshot</b> and draw boxes on that.</p>
           </div>
         ) : (
           <>
-            <PageFrame key={`${key}#${nonce}`} pageKey={key} url={active.url} device={device} mode={mode} onModeOff={() => setMode("off")} />
+            {state?.showSnap ? <SnapshotView pageKey={key} state={state} onTake={(full) => void snapshot(full)} onLive={() => setPage(key, (p) => ({ ...p, showSnap: false }))} /> : null}
+            {/* The live page stays loaded behind a snapshot, so going back to it is instant. */}
+            <PageFrame key={`${key}#${nonce}`} pageKey={key} url={active.url} device={device} mode={mode} onModeOff={() => setMode("off")} hidden={!!state?.showSnap} />
             {second?.url ? <PageFrame key={`${s.key}|${second.id}#${nonce}`} pageKey={`${s.key}|${second.id}`} url={second.url} device={device} mode="off" onModeOff={() => {}} /> : null}
           </>
         )}
@@ -280,6 +318,8 @@ function AddressBar(props: {
   errors: number;
   showConsole: boolean;
   onConsole: () => void;
+  snapshotOn: boolean;
+  onSnapshot: () => void;
 }) {
   const [typed, setTyped] = useState(props.url);
   useEffect(() => setTyped(props.url), [props.url]);
@@ -313,13 +353,23 @@ function AddressBar(props: {
         <button type="button" class={`btn small ${props.errors ? "danger" : ""}`} aria-pressed={props.showConsole} disabled={!props.canAnnotate} title={props.canAnnotate ? "Console errors and failed requests from the page" : props.why} onClick={props.onConsole}>
           Console{props.errors ? ` · ${props.errors}` : ""}
         </button>
+        <button
+          type="button"
+          class={`btn small annotate ${props.snapshotOn ? "on" : ""}`}
+          aria-pressed={props.snapshotOn}
+          disabled={!/^https?:\/\//i.test(props.url)}
+          title={props.snapshotOn ? "Back to the live page" : "A screenshot of the page, any page, to draw boxes on (taken by a headless Chrome, signed out)"}
+          onClick={props.onSnapshot}
+        >
+          Snapshot
+        </button>
       </div>
     </>
   );
 }
 
 /** One page: a local app through the preview (with the overlay), anything else as it is. */
-function PageFrame({ pageKey, url, device, mode, onModeOff }: { pageKey: string; url: string; device: Device; mode: "off" | "pick" | "box"; onModeOff: () => void }) {
+function PageFrame({ pageKey, url, device, mode, onModeOff, hidden = false }: { pageKey: string; url: string; device: Device; mode: "off" | "pick" | "box"; onModeOff: () => void; hidden?: boolean }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [view, setView] = useState<{ src: string; origin?: string } | null>(null);
   const [problem, setProblem] = useState("");
@@ -379,7 +429,7 @@ function PageFrame({ pageKey, url, device, mode, onModeOff }: { pageKey: string;
           // A new document: nothing is being captured in it yet, and what was pinned went with the old one.
           setPage(pageKey, (p) => ({ ...p, capturing: 0, pins: p.pins.map((x) => ({ ...x, gone: true })) }));
           send({ type: "mode", mode });
-          send({ type: "pins", pins: pageState(pageKey).pins.map((p) => ({ n: p.n, rect: p.rect, kind: p.kind })) });
+          send({ type: "pins", pins: livePins(pageState(pageKey).pins) });
         }
       } else if (m.type === "console") {
         setPage(pageKey, (p) => ({ ...p, console: [...p.console.slice(-299), { level: m.level, text: m.text, at: m.at }] }));
@@ -399,10 +449,10 @@ function PageFrame({ pageKey, url, device, mode, onModeOff }: { pageKey: string;
   }, [pageKey]);
   useEffect(() => send({ type: "mode", mode }), [mode, view?.origin]);
   const pins = pageState(pageKey).pins;
-  useEffect(() => send({ type: "pins", pins: pins.map((p) => ({ n: p.n, rect: p.rect, kind: p.kind })) }), [pins.length, view?.origin]);
+  useEffect(() => send({ type: "pins", pins: livePins(pins) }), [pins.length, view?.origin]);
 
   return (
-    <div class="browse-page">
+    <div class="browse-page" hidden={hidden}>
       {problem ? <div class="msg warn browse-note">{problem}</div> : null}
       <div class="browse-frame" style={`width:${WIDTHS[device]}`}>
         {view ? (
@@ -426,6 +476,151 @@ function PageFrame({ pageKey, url, device, mode, onModeOff }: { pageKey: string;
           <div class="side-empty help">Opening…</div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** What the overlay draws on the live page: the pins picked there, not boxes drawn on a snapshot. */
+const livePins = (pins: Pin[]) => pins.filter((p) => p.source !== "snapshot").map((p) => ({ n: p.n, rect: p.rect, kind: p.kind }));
+
+/** An image, once loaded (load, not decode(): Chrome can leave decode() waiting in a hidden tab). */
+const loadImage = (src: string) =>
+  new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("The snapshot couldn't be read"));
+    img.src = src;
+  });
+/** A box's part of the snapshot, as its own PNG: the close-up that goes with the pin. */
+async function cropSnap(src: string, r: Rect): Promise<string | undefined> {
+  try {
+    const img = await loadImage(src);
+    const canvas = Object.assign(document.createElement("canvas"), { width: r.w, height: r.h });
+    canvas.getContext("2d")!.drawImage(img, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+    return canvas.toDataURL("image/png");
+  } catch {
+    return undefined;
+  }
+}
+/** The whole snapshot with the boxes drawn on it and numbered, as the agent should see it. */
+async function annotatedSnap(snap: Snap, pins: Pin[]): Promise<string | undefined> {
+  try {
+    const img = await loadImage(snap.image);
+    const canvas = Object.assign(document.createElement("canvas"), { width: snap.width, height: snap.height });
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(img, 0, 0);
+    for (const p of pins) {
+      ctx.strokeStyle = "#e8590c";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(p.rect.x + 1.5, p.rect.y + 1.5, Math.max(0, p.rect.w - 3), Math.max(0, p.rect.h - 3));
+      const cx = Math.min(snap.width - 14, p.rect.x + p.rect.w);
+      const cy = Math.max(14, p.rect.y);
+      ctx.fillStyle = "#e8590c";
+      ctx.beginPath();
+      ctx.arc(cx, cy, 13, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 14px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(p.n), cx, cy + 0.5);
+    }
+    return canvas.toDataURL("image/png");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Snapshot mode: the page as a headless Chrome saw it. Drag to draw a box; each is a pin with its
+ * own close-up, in the same tray as the live page's pins, and goes to the agent the same way.
+ */
+function SnapshotView({ pageKey, state, onTake, onLive }: { pageKey: string; state: PageState; onTake: (full: boolean) => void; onLive: () => void }) {
+  const stage = useRef<HTMLDivElement>(null);
+  const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const snap = state.snap;
+  /** Where the pointer is on the snapshot, in its own pixels. */
+  const at = (e: PointerEvent) => {
+    const r = stage.current!.getBoundingClientRect();
+    const k = snap!.width / r.width;
+    return { x: Math.max(0, Math.min(snap!.width, (e.clientX - r.left) * k)), y: Math.max(0, Math.min(snap!.height, (e.clientY - r.top) * k)) };
+  };
+  const box = (d: { x0: number; y0: number; x1: number; y1: number }): Rect => ({
+    x: Math.round(Math.min(d.x0, d.x1)),
+    y: Math.round(Math.min(d.y0, d.y1)),
+    w: Math.round(Math.abs(d.x1 - d.x0)),
+    h: Math.round(Math.abs(d.y1 - d.y0)),
+  });
+  const pct = (r: Rect) => `left:${(r.x / snap!.width) * 100}%;top:${(r.y / snap!.height) * 100}%;width:${(r.w / snap!.width) * 100}%;height:${(r.h / snap!.height) * 100}%`;
+  const finish = async () => {
+    if (!drag || !snap) return;
+    const r = box(drag);
+    setDrag(null);
+    if (r.w < 6 || r.h < 6) return;
+    const image = await cropSnap(snap.image, r);
+    setPage(pageKey, (p) => ({
+      ...p,
+      pins: [...p.pins, { n: (p.pins.at(-1)?.n ?? 0) + 1, id: `snap-${Date.now().toString(36)}`, kind: "box", source: "snapshot", selector: "", text: "", rect: r, url: snap.url, viewport: { w: snap.width, h: snap.height }, image, comment: "" }],
+    }));
+  };
+  const boxes = state.pins.filter((p) => p.source === "snapshot");
+  return (
+    <div class="browse-page snap-page">
+      <div class="snap-bar">
+        <span class="snap-what" title={snap ? `${snap.title}\n${snap.url}` : undefined}>
+          {state.snapping ? "Taking a snapshot…" : snap ? `Snapshot · ${snap.width}×${snap.height}${snap.full ? " · whole page" : ""}` : "No snapshot yet"}
+        </span>
+        <span class="spacer" />
+        <button type="button" class={`btn ghost small ${snap?.full ? "on" : ""}`} aria-pressed={!!snap?.full} disabled={state.snapping} title="Take it again, as tall as the page" onClick={() => onTake(!snap?.full)}>
+          Whole page
+        </button>
+        <button type="button" class="btn ghost small" disabled={state.snapping} title="Take it again, as the page is now" onClick={() => onTake(!!snap?.full)}>
+          <Icon name="refresh" /> Retake
+        </button>
+        <button type="button" class="btn ghost small" onClick={onLive}>
+          Live page
+        </button>
+      </div>
+      {state.snapError ? <div class="msg err browse-note">{state.snapError}</div> : null}
+      {snap ? (
+        <div class={`snap-scroll ${state.snapping ? "dim" : ""}`}>
+          <div class="help snap-hint">Drag on the snapshot to box what's wrong.</div>
+          <div
+            class="snap-stage"
+            ref={stage}
+            style={`max-width:${snap.width}px`}
+            onPointerDown={(e) => {
+              if (e.button !== 0 || state.snapping) return;
+              e.preventDefault();
+              // Keeps the drag going outside the snapshot; a browser that can't capture still draws.
+              try {
+                stage.current?.setPointerCapture(e.pointerId);
+              } catch {
+                // nothing to capture
+              }
+              const p = at(e);
+              setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+            }}
+            onPointerMove={(e) => {
+              if (!drag) return;
+              const p = at(e);
+              setDrag({ ...drag, x1: p.x, y1: p.y });
+            }}
+            onPointerUp={() => void finish()}
+            onPointerCancel={() => setDrag(null)}
+          >
+            <img src={snap.image} alt={`Snapshot of ${snap.url}`} draggable={false} />
+            {boxes.map((p) => (
+              <div key={p.n} class="snap-box" style={pct(p.rect)}>
+                <span class="snap-n">{p.n}</span>
+              </div>
+            ))}
+            {drag ? <div class="snap-box drawing" style={pct(box(drag))} /> : null}
+          </div>
+        </div>
+      ) : state.snapping ? (
+        <div class="side-empty help">Loading the page in a headless Chrome… a few seconds.</div>
+      ) : null}
     </div>
   );
 }
@@ -487,11 +682,16 @@ export function destinations(s: SideScope): { key: string; label: string; sub: s
  * be on different pages of the app, so each says where it was when that isn't the first one's.
  * Snapshot names carry the batch: a second lot added to the same message box starts at 1 again.
  */
-export function pinsMessage(pins: Pin[], console: ConsoleLine[], batch: string | number): { text: string; images: Attachment[] } {
+export function pinsMessage(pins: Pin[], console: ConsoleLine[], batch: string | number, onSnap?: { name: string; snap: Pick<Snap, "url" | "width" | "height" | "full"> }): { text: string; images: Attachment[] } {
   const url = pins[0]?.url ?? "";
   const snapshot = (p: Pin) => `pin-${batch}-${p.n}.png`;
   const lines = pins.map((p) => {
-    const what = p.kind === "box" ? `an area ${p.rect.w}×${p.rect.h} at ${p.rect.x},${p.rect.y} (around \`${p.selector}\`)` : `\`${p.selector}\``;
+    const what =
+      p.source === "snapshot"
+        ? `an area ${p.rect.w}×${p.rect.h} at ${p.rect.x},${p.rect.y} on the snapshot${onSnap ? ` (box ${p.n} on ${onSnap.name})` : ""}`
+        : p.kind === "box"
+          ? `an area ${p.rect.w}×${p.rect.h} at ${p.rect.x},${p.rect.y} (around \`${p.selector}\`)`
+          : `\`${p.selector}\``;
     const parts = [`${p.n}. ${what}: ${p.comment.trim() || "(no comment)"}`];
     if (p.url !== url) parts.push(`   On: ${p.url}`);
     if (p.text) parts.push(`   Text: "${p.text.slice(0, 120)}"`);
@@ -501,7 +701,12 @@ export function pinsMessage(pins: Pin[], console: ConsoleLine[], batch: string |
     return parts.join("\n");
   });
   const errors = console.filter((c) => c.level !== "warn").slice(-20);
-  const head = url ? `From the app in the browser (${url}${pins[0] ? `, ${pins[0].viewport.w}px wide` : ""}):` : "From the app in the browser:";
+  const head =
+    onSnap && pins.every((p) => p.source === "snapshot")
+      ? `From a snapshot of ${onSnap.snap.url} (${onSnap.snap.width}px wide${onSnap.snap.full ? ", the whole page" : ""}, as a signed-out visitor sees it); the boxes are numbered on ${onSnap.name}:`
+      : url
+        ? `From the app in the browser (${url}${pins[0] ? `, ${pins[0].viewport.w}px wide` : ""}):`
+        : "From the app in the browser:";
   const text = [head, ...lines, errors.length ? `Console errors and failed requests:\n${errors.map((e) => `- ${e.text.split("\n")[0]!.slice(0, 300)}`).join("\n")}` : ""].filter(Boolean).join("\n");
   const images = pins
     .filter((p) => p.image)
@@ -527,8 +732,15 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
     if (!pin.gone) overlays.get(pageKey)?.({ type: "reset", id: pin.id });
     setPage(pageKey, (p) => ({ ...p, pins: p.pins.filter((x) => x.n !== pin.n) }));
   };
-  const sendTo = (to: string) => {
-    const { text, images } = pinsMessage(state.pins, withConsole ? errors : [], batchName());
+  const sendTo = async (to: string) => {
+    const batch = batchName();
+    const boxes = state.pins.filter((p) => p.source === "snapshot");
+    // Boxes drawn on a snapshot go with the whole snapshot, numbered, so the agent sees where each one is.
+    const whole = boxes.length && state.snap ? await annotatedSnap(state.snap, boxes) : undefined;
+    const onSnap = whole && state.snap ? { name: `snapshot-${batch}.png`, snap: state.snap } : undefined;
+    const message = pinsMessage(state.pins, withConsole ? errors : [], batch, onSnap);
+    const text = message.text;
+    const images = whole && onSnap ? [{ name: onSnap.name, size: Math.round((whole.length * 3) / 4), data: whole.replace(/^data:image\/png;base64,/, "") }, ...message.images] : message.images;
     const draft = { to, text, images };
     rememberSide({ sendTo: to });
     for (const p of state.pins) if (!p.gone) overlays.get(pageKey)?.({ type: "reset", id: p.id });
@@ -622,7 +834,7 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
                   sub={o.sub}
                   onClick={() => {
                     done();
-                    sendTo(o.key);
+                    void sendTo(o.key);
                   }}
                 >
                   {o.label}
@@ -631,7 +843,7 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
             </>
           )}
         </Menu>
-        <button type="button" class="btn primary small" disabled={!state.pins.length} onClick={() => sendTo(primary.key)}>
+        <button type="button" class="btn primary small" disabled={!state.pins.length} onClick={() => void sendTo(primary.key)}>
           Add to {primary.key.startsWith("main:") && primary.label === "Main chat" ? "main chat" : primary.key === "composer" ? "a new run" : primary.label.toLowerCase().startsWith("side chat") ? "side chat" : primary.label}
         </button>
       </div>

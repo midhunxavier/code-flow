@@ -193,7 +193,7 @@
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${rect.w} ${rect.h}"><foreignObject width="${node === document.body ? document.documentElement.scrollWidth : rect.w}" height="${node === document.body ? document.documentElement.scrollHeight : rect.h}">${new XMLSerializer().serializeToString(frame)}</foreignObject></svg>`;
       const img = new Image();
       img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-      await img.decode();
+      await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; if (img.complete && img.naturalWidth) resolve(); });
       const canvas = document.createElement("canvas");
       canvas.width = w;
       canvas.height = h;

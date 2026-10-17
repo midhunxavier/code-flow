@@ -1081,3 +1081,18 @@
   /* The side panel in a window of its own */
   .popped { flex: 1; min-height: 0; display: flex; }
   .side.popped { display: flex; flex: 1; position: static; width: auto; transform: none; box-shadow: none; border-left: 0; z-index: auto; }
+
+  /* Snapshot mode: a headless Chrome's screenshot of any page, to draw boxes on */
+  .snap-page { overflow: hidden; background: var(--sunken); }
+  .snap-bar { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--raised); font-size: 12px; }
+  .snap-bar .spacer { flex: 1; }
+  .snap-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); color: var(--muted); }
+  .snap-bar .btn.on { background: var(--accent-soft); color: var(--text); }
+  .snap-scroll { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px 16px; }
+  .snap-scroll.dim { opacity: .55; pointer-events: none; }
+  .snap-hint { margin: 0 0 6px; font-size: 11.5px; }
+  .snap-stage { position: relative; margin: 0 auto; cursor: crosshair; touch-action: none; user-select: none; box-shadow: var(--shadow); }
+  .snap-stage img { display: block; width: 100%; height: auto; pointer-events: none; }
+  .snap-box { position: absolute; border: 2px solid #e8590c; border-radius: 3px; background: color-mix(in srgb, #e8590c 10%, transparent); pointer-events: none; }
+  .snap-box.drawing { border-style: dashed; }
+  .snap-n { position: absolute; top: -10px; right: -10px; width: 20px; height: 20px; border-radius: 50%; background: #e8590c; color: #fff; font: 700 11px var(--sans); display: grid; place-items: center; box-shadow: 0 0 0 2px #fff; }

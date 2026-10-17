@@ -84,6 +84,7 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 | `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments |
 | `CODEFLOW_CODEX_TRANSPORT` | `auto` | `auto`: `codex app-server` when the installed Codex has it, else `codex exec`. A Codex without app-server is re-checked every 10 minutes; a slow or failed app-server start fails only that turn. `app-server`: require it. `exec`: always `codex exec` (your notes then wait for Codex's next turn) |
 | `CODEFLOW_PYTHON` | `python3` | The Python 3 that runs the side panel Terminal's pseudo-terminal (`scripts/pty.py`). It's found once and run by its full path, so a repository that pins another Python (pyenv, asdf, mise) still gets a terminal. Without a working one, terminals are line-based (`interactiveTerminal: false` in `/api/health`) |
+| `CODEFLOW_CHROME` | first one installed | The Chrome, Chromium, Edge or Brave the side panel Browser's **Snapshot** runs headless. Without one, Snapshot says so |
 | `CODEFLOW_AGY_SKIP_PERMISSIONS` | `1` | Set to `0` to stop passing `--dangerously-skip-permissions` to agy; then configure `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` |
 
 A numeric setting that isn't a valid number (`30m`, say) or is out of range falls back to its default, with a warning in the terminal.
