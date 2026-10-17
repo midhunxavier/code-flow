@@ -438,3 +438,58 @@ test("a PR watch whose polls keep failing says why, needs you after three, and r
   await watcher.poll(Date.now() + 10 * hour);
   assert.ok(["watching", "green"].includes(run.watches[branch]!.state), `back to ${run.watches[branch]!.state} once gh works again`);
 });
+
+test("Merge PR merges the branch's pull request on GitHub, only while it's the branch you reviewed", async () => {
+  const run = await idle(
+    await manager.start({ pattern: findPattern("pipeline")!, task: "Merge me", repo, roles: { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, options: {} }),
+  );
+  assert.equal(run.status, "done", run.error);
+  const branch = run.artifacts[0]!.branch;
+  await assert.rejects(manager.mergePr(run.id, { branch, method: "merge" }), /Open a pull request for this branch first/);
+  const url = await manager.pullRequest(run.id, { branch, into: "main" });
+  const number = url.split("/").pop()!;
+  const info = await manager.prMergeInfo(run.id, branch);
+  assert.equal(info.state, "OPEN");
+  assert.equal(info.baseRefName, "main");
+  assert.equal(info.ci, "pass");
+  assert.deepEqual(info.methods, ["merge", "squash", "rebase"]);
+
+  // A commit the PR doesn't have yet: merging now would leave it out.
+  const wt = run.worktrees.find((w) => w.branch === branch)!;
+  sh(wt.path, "commit", "-q", "--allow-empty", "-m", "not pushed");
+  await assert.rejects(manager.mergePr(run.id, { branch, method: "merge" }), new RegExp(`has commits that aren't on PR #${number} yet`));
+  sh(wt.path, "reset", "-q", "--hard", "HEAD~1");
+
+  setState((s) => (s.prs[number].isDraft = true));
+  await assert.rejects(manager.mergePr(run.id, { branch, method: "merge" }), /is a draft/);
+  setState((s) => {
+    s.prs[number].isDraft = false;
+    s.repo = { mergeCommitAllowed: false, squashMergeAllowed: true, rebaseMergeAllowed: false };
+  });
+  try {
+    assert.deepEqual((await manager.prMergeInfo(run.id, branch)).methods, ["squash"]);
+    await assert.rejects(manager.mergePr(run.id, { branch, method: "merge" }), /doesn't allow merge commits\. Pick squash/);
+    assert.equal(state().prs[number].state, "OPEN", "nothing was merged");
+
+    const outcome = await manager.mergePr(run.id, { branch, method: "squash" });
+    assert.ok(outcome.merged && !outcome.already);
+    assert.equal(outcome.into, "main");
+  } finally {
+    setState((s) => delete s.repo);
+  }
+  assert.equal(state().prs[number].state, "MERGED");
+  assert.equal(state().prs[number].mergedWith, "squash");
+  assert.equal(git("rev-parse", "origin/main"), originHead("main"), "origin/main was fetched");
+  assert.ok(git("ls-tree", "-r", "--name-only", "origin/main").split("\n").some((f) => f.startsWith("codex-")), "main on GitHub has the change");
+  assert.deepEqual(
+    run.merges.map((m) => ({ branch: m.branch, into: m.into, pr: m.pr, commit: m.commit })),
+    [{ branch, into: "main", pr: url, commit: state().prs[number].mergeCommit.oid }],
+  );
+  assert.match(await logs(run), new RegExp(`Merged ${url} into main on GitHub`));
+
+  // Pressed again (or merged on GitHub first): said so, recorded once, and archived if asked.
+  const again = await manager.mergePr(run.id, { branch, method: "squash", archiveAfter: true });
+  assert.ok(again.merged && again.already);
+  assert.equal(run.merges.length, 1);
+  assert.equal(run.archived, true);
+});

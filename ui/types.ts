@@ -2,6 +2,7 @@
 export type { AgentEvent, AgentId, AgentSettings, ModelCatalog, ModelInfo } from "../src/adapters/types.js";
 export type { Artifact, FollowUp, LoopSettings, Note, Run, RunEvent, RunSummary, Step, Pattern, RoleSpec, OptionSpec } from "../src/engine.js";
 export type { DiffFile, MergeOutcome } from "../src/ship.js";
+export type { MergeMethod, PrMergeInfo } from "../src/github.js";
 export type { TreeEntry } from "../src/repo-tree.js";
 export type { BranchInfo } from "../src/git.js";
 export type { DirListing } from "../src/fs.js";

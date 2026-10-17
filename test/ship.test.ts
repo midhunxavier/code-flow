@@ -113,6 +113,7 @@ test("merge into a branch that isn't checked out uses merge-tree; into the check
   assert.ok(viaRef.ok && viaRef.method === "ref");
   assert.ok(git("ls-tree", "-r", "--name-only", "release").includes("codex-"));
   assert.equal(git("log", "-1", "--format=%P", "release").trim().split(" ").length, 2, "a real merge commit");
+  await assert.rejects(manager.merge(run.id, { branch, into: "release" }), /Nothing to merge: release already has everything on/);
 
   writeFileSync(join(repo, "README.md"), "dirty\n");
   await assert.rejects(manager.merge(run.id, { branch, into: "main" }), /has uncommitted changes/);
