@@ -71,11 +71,24 @@ before(async () => {
     }),
   );
 
+  // The terminals' login shell is bash with a home of its own: nobody's dotfiles (a question at
+  // start-up, like oh-my-zsh's update prompt, would take the typed command as its answer), nothing
+  // added to their shell history, a known prompt. Only the shell's home: the server keeps yours,
+  // whose git identity the merge into main uses.
+  const shellHome = mkdtempSync(join(tmpdir(), "codeflow-e2e-user-"));
+  const loginShell = join(shellHome, "e2e-shell");
+  writeFileSync(
+    loginShell,
+    `#!/bin/bash\nexport HOME='${shellHome}' HISTFILE='${join(shellHome, ".bash_history")}' BASH_SILENCE_DEPRECATION_WARNING=1 PS1='e2e$ '\nexec /bin/bash --noprofile --norc -i\n`,
+    { mode: 0o755 },
+  );
+
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
   server = spawn("npx", ["tsx", "src/server.ts"], {
     cwd: root,
     env: {
       ...process.env,
+      SHELL: loginShell,
       PORT: String(PORT),
       CODEFLOW_REMOTE_PORT: String(REMOTE_PORT),
       CODEFLOW_HOME: mkdtempSync(join(tmpdir(), "codeflow-e2e-home-")),
@@ -487,17 +500,18 @@ test("side panel: chat with one agent, read a file, run a command, keep a note",
   await side.getByRole("button", { name: "Back to the files" }).click();
   await side.locator(".node", { hasText: "check.mjs" }).waitFor();
 
-  // Terminal: the shell keeps its folder between commands and reports exit codes.
+  // Terminal: a real terminal (python3 is there); keystrokes reach the shell, which keeps its folder between commands.
   await side.getByRole("tab", { name: "Terminal" }).click();
-  const command = side.getByLabel("Command");
-  await command.waitFor();
-  await command.fill("mkdir -p sub && cd sub && echo side-$((20+22))");
-  await command.press("Enter");
-  await side.locator(".term-out").getByText("side-42").waitFor({ timeout: 10_000 });
-  await command.fill("basename \"$PWD\"; false");
-  await command.press("Enter");
-  await side.locator(".term-out").getByText("exit 1").waitFor({ timeout: 10_000 });
-  assert.match(await side.locator(".term-out").innerText(), /\nsub\n/, "`cd` held for the next command");
+  const screen = side.locator("#side-pane-terminal .term-x .xterm-rows");
+  await screen.waitFor();
+  await side.locator("#side-pane-terminal .term-x .xterm").click();
+  await page.keyboard.type("mkdir -p sub && cd sub && echo side-$((20+22))");
+  await page.keyboard.press("Enter");
+  await screen.getByText("side-42").waitFor({ timeout: 15_000 });
+  await page.keyboard.type("basename \"$PWD\"; false; echo code-$?");
+  await page.keyboard.press("Enter");
+  await screen.getByText("code-1").waitFor({ timeout: 10_000 });
+  assert.match(await screen.innerText(), /(^|\n)sub\s*\n/, "`cd` held for the next command");
 
   // Notes: saved as you type, on the server.
   await side.getByRole("tab", { name: "Notes" }).click();
@@ -512,6 +526,198 @@ test("side panel: chat with one agent, read a file, run a command, keep a note",
   const own = projects.find((p) => p.repos.includes(realpathSync(repo)))!;
   assert.equal(chat.project, own.id);
   assert.notEqual(own.defaults?.pattern, chat.pattern, "a chat isn't the composer's choice of team");
+});
+
+test("side panel: follows the run you open, side chats in its worktree, its changes, terminals, and the pin", async () => {
+  const api = (path: string, body?: unknown) =>
+    fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+  const created = await api("/api/runs", { repo, task: "E2E: a run for the panel", pattern: "pipeline", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["codex"] }, options: {} });
+  assert.ok(created.id, created.error);
+  let run = await api(`/api/runs/${created.id}`);
+  for (let i = 0; i < 150 && run.status === "running"; i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    run = await api(`/api/runs/${created.id}`);
+  }
+  assert.equal(run.status, "done");
+  const result = run.artifacts[0];
+  assert.ok(result, "the run has a result");
+
+  // No repository picked in the composer: the panel works in the run's anyway.
+  await page.goto(`${BASE}/?token=${TOKEN}`); // signed in even when this test runs on its own
+  const remembered = await page.evaluate(() => localStorage.getItem("repo"));
+  await page.evaluate(() => localStorage.removeItem("repo"));
+  // A new page, not a hash change: a hash-only goto can return on the old page's own history push,
+  // and a reload then reloads that instead.
+  await page.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
+  const toggle = page.getByRole("button", { name: "Side panel", exact: true });
+  if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
+  const side = page.getByRole("complementary", { name: "Side panel" });
+  const scope = side.locator(".side-scope");
+  const chats = side.locator("#side-pane-chat .sess");
+  await scope.getByText("E2E: a run for the panel").waitFor();
+  assert.match(await scope.locator(".scope-state").innerText(), /following/i);
+
+  // Files and Terminal open on the run's result.
+  await side.getByRole("tab", { name: "Files" }).click();
+  assert.equal(await side.getByLabel("Folder").inputValue(), result.path);
+  await side.getByRole("tab", { name: "Terminal" }).click();
+  await side.locator("#side-pane-terminal .sess.on").waitFor();
+  assert.equal(await side.locator("#side-pane-terminal .sess.on .sess-pick").getAttribute("title"), result.path);
+  // A second terminal in the repository, and both at once.
+  await side.getByRole("button", { name: "New terminal" }).click();
+  await side.locator(".pop-item", { hasText: "repository" }).click();
+  await side.locator("#side-pane-terminal .sess").nth(1).waitFor();
+  await side.getByRole("button", { name: "Split" }).click();
+  await side.locator("#side-pane-terminal .term-pane").nth(1).waitFor();
+  assert.equal(await side.locator("#side-pane-terminal .term-pane").count(), 2);
+
+  // A side chat asks in the run's worktree; nothing is committed and the run's thread stays the team's.
+  await side.getByRole("tab", { name: "Chat" }).click();
+  await side.getByText("Chat about this run").waitFor();
+  await side.getByLabel("Message").fill("E2E: what did this run change?");
+  await side.getByLabel("Message").press("Enter");
+  await side.locator("#side-pane-chat .fu-answer.done").first().waitFor({ timeout: 30_000 });
+  assert.equal(await side.getByText("Choose a repository first.").count(), 0);
+  run = await api(`/api/runs/${created.id}`);
+  const ask = run.followUps.find((f: { message: string }) => f.message === "E2E: what did this run change?");
+  assert.deepEqual([ask.kind, ask.side.mode, ask.worktree], ["side", "ask", run.worktrees.find((w: { path: string }) => w.path === result.path).name]);
+  assert.equal(await page.locator(".runview").getByText("E2E: what did this run change?").count(), 0, "a side chat isn't in the run's thread");
+  assert.match(await chats.first().innerText(), /E2E: what did this run change\?/);
+
+  // Change: committed on the run's branch; the run's thread gets a line about it.
+  await side.getByRole("button", { name: "Change", exact: true }).click();
+  await side.getByLabel("Message").fill("E2E: add a note");
+  await side.getByLabel("Message").press("Enter");
+  await page.locator(".runview .side-note").waitFor({ timeout: 30_000 });
+  const branch = execFileSync("git", ["log", "-1", "--format=%s", result.branch], { cwd: repo }).toString().trim();
+  assert.match(branch, /side chat · E2E: what did this run change\?/);
+
+  // Changes: the run's files; the last step is the side chat's commit only.
+  const diff = (last: boolean) => api(`/api/runs/${created.id}/diff?branch=${encodeURIComponent(result.branch)}${last ? "&last=1" : ""}`);
+  const [all, lastStep] = [await diff(false), await diff(true)];
+  assert.ok(lastStep.length > 0 && lastStep.length < all.length, `the side chat's commit is the last step: ${lastStep.length} of ${all.length}`);
+  await side.getByRole("tab", { name: "Changes" }).click();
+  await side.locator(".changes-sum", { hasText: new RegExp(`^${all.length} files? ·`) }).waitFor();
+  await side.getByRole("button", { name: "Last step" }).click();
+  await side.locator(".changes-sum", { hasText: new RegExp(`^${lastStep.length} files? ·.*in the last step`) }).waitFor();
+  assert.deepEqual(await side.locator(".changes .rf .fp").allInnerTexts(), lastStep.map((f: { path: string }) => f.path));
+
+  // Pinned, the panel stays on the run while you look at something else.
+  await side.getByRole("button", { name: "Pin the panel to this run" }).click();
+  await page.goto(`${BASE}/#/insights`);
+  await scope.getByText("Pinned").waitFor();
+  await side.getByRole("tab", { name: "Chat" }).click();
+  assert.match(await side.locator("#side-pane-chat .sess.on").innerText(), /E2E: what did this run change\?/, "still the run's side chat");
+  await scope.getByRole("button", { name: "Follow" }).click();
+  await scope.getByText("Following").waitFor();
+  assert.equal(await scope.getByText("E2E: a run for the panel").count(), 0);
+  assert.equal(await side.locator("#side-pane-chat .sess", { hasText: "E2E: what did this run change?" }).count(), 0, "elsewhere, the panel has its own chats");
+
+  // Back on the run: its side chat again.
+  await page.goto(`${BASE}/#/run/${created.id}`);
+  await scope.getByText("E2E: a run for the panel").waitFor();
+  await side.getByRole("tab", { name: "Chat" }).click();
+  assert.match(await side.locator("#side-pane-chat .sess.on").innerText(), /E2E: what did this run change\?/);
+
+  // The project's name in the sidebar opens its page, and the panel follows the project.
+  const project = (await api("/api/projects")).find((p: { id: string }) => p.id === run.project);
+  await page.locator(".rail .proj-toggle", { hasText: project.name }).first().click();
+  await page.locator(".project-page h1", { hasText: project.name }).waitFor();
+  assert.match(page.url(), new RegExp(`#/project/${project.id}$`));
+  await scope.locator(".sc-where", { hasText: project.name }).waitFor();
+  assert.equal(await side.getByRole("tab", { name: "Changes" }).count(), 0, "changes belong to runs");
+
+  if (remembered) await page.evaluate((r) => localStorage.setItem("repo", r), remembered);
+  await page.reload();
+});
+
+test("side panel browser: a run's app through the preview, annotated, sent to the main chat; a panel in its own window", async () => {
+  const api = (path: string, body?: unknown) =>
+    fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+  const created = await api("/api/runs", { repo, task: "E2E: a run with an app", pattern: "pipeline", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["codex"] }, options: {} });
+  let run = await api(`/api/runs/${created.id}`);
+  for (let i = 0; i < 150 && run.status === "running"; i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    run = await api(`/api/runs/${created.id}`);
+  }
+  assert.equal(run.status, "done");
+  const wt = run.worktrees.find((w: { path: string }) => w.path === run.artifacts[0].path);
+  const appFile = join(mkdtempSync(join(tmpdir(), "codeflow-e2e-app-")), "app.cjs");
+  writeFileSync(
+    appFile,
+    `require("http").createServer((q, r) => { if (q.url.startsWith("/api")) { r.writeHead(500); return r.end(); } r.writeHead(200, { "content-type": "text/html", "x-frame-options": "DENY" }); r.end('<html><head><title>E2E app</title></head><body><header><button class="theme-toggle">Theme</button></header><script>console.error("E2E boom"); fetch("/api/x")</script></body></html>'); }).listen(process.env.PORT, "127.0.0.1");`,
+  );
+  const app = await api(`/api/runs/${created.id}/worktrees/${wt.name}/serve`, { command: `node ${JSON.stringify(appFile)}` });
+  assert.equal(app.status, "running", JSON.stringify(app));
+
+  await page.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
+  const toggle = page.getByRole("button", { name: "Side panel", exact: true });
+  if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
+  const side = page.getByRole("complementary", { name: "Side panel" });
+  await side.getByRole("tab", { name: "Browser" }).click();
+  const frame = side.locator("#side-pane-browser iframe");
+  await frame.waitFor();
+  const src = new URL((await frame.getAttribute("src"))!);
+  assert.equal(src.hostname, new URL(BASE).hostname, "the preview uses the host name code-flow was opened with");
+  assert.notEqual(src.port, new URL(app.url).port, "the app is shown through the preview, on a port of its own");
+  await side.getByRole("button", { name: /^Console · 2$/ }).waitFor({ timeout: 15_000 });
+
+  // Pick the button, say what's wrong, and put it in the run's main chat.
+  await side.getByRole("button", { name: "Pick", exact: true }).click();
+  await side.frameLocator("#side-pane-browser iframe").locator("button.theme-toggle").click();
+  await side.locator(".pins-tray .pin-row").waitFor({ timeout: 15_000 });
+  await side.getByLabel("What about pin 1?").fill("E2E: the toggle is hard to see");
+  await side.getByRole("button", { name: "Add to main chat" }).click();
+  const box = page.locator(".runview .chatbox textarea");
+  await page.locator(".runview .draft-img").waitFor();
+  const text = await box.inputValue();
+  assert.match(text, /header > button\.theme-toggle`?: E2E: the toggle is hard to see/);
+  await page.locator(".runview .chatbox .send").click();
+  for (let i = 0; i < 150; i++) {
+    run = await api(`/api/runs/${created.id}`);
+    if (run.followUps.at(-1)?.status === "done") break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  const reply = run.followUps.at(-1);
+  assert.equal(reply.kind, "reply");
+  assert.equal(reply.files.length, 1, "the snapshot went with the reply");
+
+  // Snapshot: the page in a headless Chrome of the server's own, a box drawn on the picture, and the
+  // picture (boxes numbered) and the box's close-up in the main chat.
+  await side.getByRole("button", { name: "Snapshot", exact: true }).click();
+  const stage = side.locator(".snap-stage");
+  await stage.locator("img").waitFor({ timeout: 30_000 });
+  assert.match(await side.locator(".snap-what").innerText(), /^Snapshot · \d+×\d+$/);
+  const at = (await stage.boundingBox())!;
+  await page.mouse.move(at.x + 10, at.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(at.x + 90, at.y + 60, { steps: 5 });
+  await page.mouse.up();
+  await side.locator(".snap-box:not(.drawing)").waitFor();
+  await side.getByLabel(/^What about pin \d+\?$/).fill("E2E: the header is too tall");
+  await side.getByRole("button", { name: "Add to main chat" }).click();
+  await page.locator(".runview .draft-img").nth(1).waitFor();
+  const snapText = await box.inputValue();
+  assert.match(snapText, /From a snapshot of http:\/\/(localhost|127\.0\.0\.1):\d+\/ \(\d+px wide, as a signed-out visitor sees it\); the boxes are numbered on snapshot-[\w-]+\.png:/);
+  assert.match(snapText, /on the snapshot \(box \d+ on snapshot-[\w-]+\.png\): E2E: the header is too tall/);
+  await page.locator(".runview .chatbox .send").click();
+  for (let i = 0; i < 150; i++) {
+    run = await api(`/api/runs/${created.id}`);
+    if (run.followUps.length > 2 && run.followUps.at(-1)?.status === "done") break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  const names = run.followUps.at(-1).files.map((f: string) => f.split("/").pop());
+  assert.equal(names.length, 2, JSON.stringify(names));
+  assert.ok(names.some((n: string) => /-snapshot-[\w-]+\.png$/.test(n)) && names.some((n: string) => /-pin-[\w-]+-\d+\.png$/.test(n)), JSON.stringify(names));
+  await fetch(`${BASE}/api/runs/${created.id}/worktrees/${wt.name}/serve`, { method: "DELETE", headers: bearer });
+
+  // The panel in a window of its own, for this run.
+  const popped = await browser.newPage({ viewport: { width: 560, height: 860 } });
+  await popped.goto(`${BASE}/?token=${TOKEN}#/side/chat/${encodeURIComponent(`run:${created.id}`)}`);
+  await popped.locator(".side-scope", { hasText: "E2E: a run with an app" }).waitFor();
+  assert.match(await popped.locator(".scope-state").innerText(), /own window/i);
+  assert.equal(await popped.locator(".rail").count(), 0, "just the panel");
+  await popped.close();
 });
 
 test("projects: the Automations page and its inbox follow the project you're in; the phone view lists runs by project", async () => {

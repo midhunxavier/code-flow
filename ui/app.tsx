@@ -8,6 +8,7 @@ import { SweepDialog } from "./sweeps.js";
 import { AutomationsView } from "./automations.js";
 import { InsightsView } from "./insights.js";
 import { ProjectsDialog } from "./projects.js";
+import { ProjectView } from "./project.js";
 import { Rail } from "./rail.js";
 import { Icon } from "./icons.js";
 import logo from "./brand/vibesboard-mark.png";
@@ -35,11 +36,59 @@ import {
   runs,
   waitingCount,
   watchNeedingYou,
+  navigate,
+  routeFromHash,
+  sideTab,
+  type SideTab,
 } from "./state.js";
 import type { DirListing, RunSummary } from "./types.js";
 import { teamNeedsResume } from "./team-state.js";
 
 export function App() {
+  if (route.value.view === "side") return <PoppedSide tab={route.value.tab} />;
+  return <MainApp />;
+}
+
+/**
+ * The side panel in a window of its own: one run's or project's, whatever the main window shows.
+ * Its scope is the route's (see `poppedScope`), and it stays a panel: the pages it opens open in
+ * the main window (see `navigate`).
+ */
+function PoppedSide({ tab }: { tab: SideTab }) {
+  useEffect(() => {
+    sideTab.value = tab;
+    sideOpen.value = true;
+    document.addEventListener("click", handOffLink);
+    return () => document.removeEventListener("click", handOffLink);
+  }, []);
+  useEffect(() => {
+    document.title = `code-flow · ${tab}`;
+  }, [tab]);
+  return (
+    <div class="popped">
+      <SidePanel popped />
+      <div class="sr-only" role="status" aria-live="polite">
+        {announcement.value}
+      </div>
+      {toast.value ? (
+        <div class="toast" role="status" key={toast.value.id}>
+          {toast.value.text}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** A link to one of the app's pages, clicked in a popped-out panel: the main window shows the page. */
+export function handOffLink(e: MouseEvent) {
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const link = (e.target as Element | null)?.closest?.("a[href^='#/']");
+  if (!link || link.getAttribute("target")) return;
+  e.preventDefault();
+  navigate(routeFromHash(link.getAttribute("href")!));
+}
+
+function MainApp() {
   useEffect(() => {
     document.title = waitingCount.value ? `(${waitingCount.value}) code-flow` : "code-flow";
   }, [waitingCount.value]);
@@ -67,6 +116,8 @@ export function App() {
             <AutomationsView />
           ) : route.value.view === "insights" ? (
             <InsightsView group={route.value.group} />
+          ) : route.value.view === "project" ? (
+            <ProjectView key={route.value.id} id={route.value.id} />
           ) : (
             <Composer />
           )}
@@ -120,7 +171,7 @@ function TopBar() {
 /** On a run or its review: the project it's in and the run. Other pages carry their own heading. */
 function Crumbs() {
   const r = route.value;
-  const run = "id" in r ? runs.value.get(r.id) : undefined;
+  const run = r.view === "run" || r.view === "review" ? runs.value.get(r.id) : undefined;
   if (!run) return <span class="spacer" />;
   const project = projectFor(run);
   return (
@@ -176,7 +227,8 @@ export function Bell() {
 }
 
 export function notifyFinished(run: RunSummary) {
-  const viewing = "id" in route.value && route.value.id === run.id;
+  if (route.value.view === "side") return; // a popped-out panel: the main window says it
+  const viewing = (route.value.view === "run" || route.value.view === "review") && route.value.id === run.id;
   const verbs: Record<string, string> = {
     done: run.verdict === "failing" ? "finished, but its check fails" : run.checkCantRun ? "finished, but its check couldn't run" : "finished",
     failed: "failed",

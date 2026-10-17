@@ -4,6 +4,7 @@ import "./check-node.mjs";
 import * as esbuild from "esbuild";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { watch as watchFile } from "node:fs";
+import { createRequire } from "node:module";
 
 const watching = process.argv.includes("--watch");
 
@@ -14,8 +15,12 @@ async function inlineFonts(css) {
   return css.replace(/url\("fonts\/([\w.-]+\.woff2)"\)/g, (_, f) => `url(data:font/woff2;base64,${data.get(f)})`);
 }
 
+// The Terminal's xterm brings a stylesheet of its own; ours comes after it, to override it.
+const XTERM_CSS = createRequire(import.meta.url).resolve("@xterm/xterm/css/xterm.css");
+
 async function assemble(js) {
-  const [template, css] = await Promise.all([readFile("ui/index.html", "utf8"), readFile("ui/styles.css", "utf8").then(inlineFonts)]);
+  const [template, xtermCss, ownCss] = await Promise.all([readFile("ui/index.html", "utf8"), readFile(XTERM_CSS, "utf8"), readFile("ui/styles.css", "utf8").then(inlineFonts)]);
+  const css = `${xtermCss}\n${ownCss}`;
   const html = template
     .replace("/*__CSS__*/", () => css)
     .replace("//__JS__", () => js.replace(/<\/script/gi, "<\\/script"));

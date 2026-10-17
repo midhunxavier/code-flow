@@ -1,59 +1,65 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
+import { BrowserTab } from "./browser.js";
+import { ChangesTab } from "./changes.js";
 import { addContext, FileTree } from "./composer.js";
-import { AgentPicker, ChatThread, ConversationBar, useRunStream } from "./run.js";
-import { AgentTag, Markdown } from "./bits.js";
 import { Icon, type IconName } from "./icons.js";
-import { ago, api, baseName, enc, fmtSize, onPhone, post, SHORT, showToast, store, STATUS_TEXT } from "./lib.js";
+import { ago, api, baseName, enc, fmtSize, onPhone, post, showToast } from "./lib.js";
+import { placesFor, PlacePicker, usePlace } from "./panel-bits.js";
+import { ChatTab } from "./side-chat.js";
 import {
-  afterStart,
-  agents,
-  agentSettings,
   closeSide,
-  limits,
+  navigate,
   openSide,
-  patterns,
+  pinSide,
+  projectKeyOf,
+  rememberSide,
   repo,
+  restoreSideTab,
   route,
-  runs,
-  runState,
   setSideChat,
   setSideWidth,
-  setTask,
   SIDE_TABS,
-  sideChat,
   sideDraft,
   sideFile,
+  sideMemo,
+  sideMemory,
   sideOpen,
+  sideScope,
   sideTab,
-  sideWidth,
-  target,
-  task,
-  trust,
   type SideTab,
 } from "./state.js";
-import type { AgentId, DevServer, FileContent, RunSummary, ShellEvent, ShellInfo } from "./types.js";
+import { TerminalTab } from "./terminal.js";
+import type { DevServer, FileContent } from "./types.js";
 
 /**
  * The side panel: what you'd keep open next to the work in Claude's or Codex's app. A chat with
  * one agent (you pick which), the files of the repository or of a run's worktree, a terminal, a
- * browser for the app a run started, and your notes. It stays as you move between runs.
+ * browser for the app a run started, and your notes. It follows what you open (see `sideScope`):
+ * on a run, every tab is that run's, and each run keeps its own chat, folders and address.
  */
 
 const TABS: Record<SideTab, { label: string; icon: IconName; title: string }> = {
-  chat: { label: "Chat", icon: "chat", title: "Chat with one agent about this repository" },
+  chat: { label: "Chat", icon: "chat", title: "Chat with one agent about this run or repository" },
+  changes: { label: "Changes", icon: "diff", title: "What this run changed: the whole branch or its last step, with line comments" },
   files: { label: "Files", icon: "files", title: "The repository's files, or a run's worktree" },
   terminal: { label: "Terminal", icon: "terminal", title: "A shell in the repository or a worktree" },
   browser: { label: "Browser", icon: "globe", title: "Open the app a run started, or any address" },
   notes: { label: "Notes", icon: "note", title: "Your scratchpad for this repository" },
 };
 
-export function SidePanel() {
-  const tab = sideTab.value;
+export function SidePanel({ popped = false }: { popped?: boolean }) {
+  const run = sideScope.value.run;
+  // Changes are a run's: the tab is there while the panel shows one.
+  const tabs = SIDE_TABS.filter((t) => t !== "changes" || run);
+  const tab = tabs.includes(sideTab.value) ? sideTab.value : "chat";
   // Tabs you've opened stay mounted: the terminal and the browser keep their state behind another tab.
   const [visited, setVisited] = useState<Set<SideTab>>(() => new Set([tab]));
   useEffect(() => {
     if (!visited.has(tab)) setVisited(new Set([...visited, tab]));
   }, [tab]);
+  // Back on a run you've used the panel with: the tab you had open there.
+  const scopeKey = sideScope.value.key;
+  useEffect(restoreSideTab, [scopeKey]);
   const [dragging, setDragging] = useState(false);
   const startDrag = (e: PointerEvent) => {
     e.preventDefault();
@@ -67,306 +73,107 @@ export function SidePanel() {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
   };
-  const panes: Record<SideTab, () => preact.JSX.Element> = { chat: () => <ChatTab />, files: () => <FilesTab />, terminal: () => <TerminalTab />, browser: () => <BrowserTab />, notes: () => <NotesTab /> };
+  const panes: Record<SideTab, () => preact.JSX.Element> = {
+    chat: () => <ChatTab />,
+    changes: () => (run ? <ChangesTab key={run.id} run={run} /> : <div class="side-empty help">Open a run to see what it changed.</div>),
+    files: () => <FilesTab />,
+    terminal: () => <TerminalTab />,
+    browser: () => <BrowserTab />,
+    notes: () => <NotesTab />,
+  };
   return (
-    <aside class={`side ${sideOpen.value ? "open" : ""}`} aria-label="Side panel" aria-hidden={!sideOpen.value}>
-      <div class={`side-handle ${dragging ? "dragging" : ""}`} role="separator" aria-orientation="vertical" aria-label="Resize the side panel" title="Drag to resize" onPointerDown={startDrag} />
+    <aside class={`side ${sideOpen.value ? "open" : ""} ${popped ? "popped" : ""}`} aria-label="Side panel" aria-hidden={!sideOpen.value}>
+      {popped ? null : <div class={`side-handle ${dragging ? "dragging" : ""}`} role="separator" aria-orientation="vertical" aria-label="Resize the side panel" title="Drag to resize" onPointerDown={startDrag} />}
+      <ScopeHeader popped={popped} />
       <div class="side-tabs" role="tablist" aria-label="Side panel tabs">
-        {SIDE_TABS.map((t) => (
-          <button key={t} type="button" role="tab" id={`side-tab-${t}`} aria-selected={t === tab} aria-controls={`side-pane-${t}`} class={`side-tab ${t === tab ? "on" : ""}`} title={TABS[t].title} onClick={() => openSide(t)}>
+        {tabs.map((t) => (
+          <button key={t} type="button" role="tab" id={`side-tab-${t}`} aria-selected={t === tab} aria-controls={`side-pane-${t}`} class={`side-tab ${t === tab ? "on" : ""}`} aria-label={TABS[t].label} title={TABS[t].title} onClick={() => openSide(t)}>
             <Icon name={TABS[t].icon} />
             <span>{TABS[t].label}</span>
           </button>
         ))}
-        <button type="button" class="btn ghost small side-close" aria-label="Close side panel" title="Close (\)" onClick={closeSide}>
-          <Icon name="close" />
-        </button>
       </div>
       <div class="side-body">
-        {SIDE_TABS.filter((t) => visited.has(t) || t === tab).map((t) => (
-          <div key={t} id={`side-pane-${t}`} role="tabpanel" aria-labelledby={`side-tab-${t}`} class="side-pane" hidden={t !== tab}>
-            {panes[t]()}
-          </div>
-        ))}
+        {sideScope.value.waiting ? (
+          <div class="side-empty help">Loading…</div>
+        ) : (
+          tabs.filter((t) => visited.has(t) || t === tab).map((t) => (
+            <div key={t} id={`side-pane-${t}`} role="tabpanel" aria-labelledby={`side-tab-${t}`} class="side-pane" hidden={t !== tab}>
+              {panes[t]()}
+            </div>
+          ))
+        )}
       </div>
     </aside>
   );
 }
 
-// ---------------------------------------------------------------- where: the repo or a run's worktree
-interface Place {
-  label: string;
-  path: string;
-  /** The run this worktree belongs to, when it's one. */
-  runId?: string;
-}
-
-/** The run open in the main view, if any. */
-const openRun = (): RunSummary | undefined => ("id" in route.value ? runs.value.get(route.value.id) : undefined);
-
-/**
- * The folders the panel can look at: the chosen repository, and the worktrees of the run you're
- * looking at. Following the view: opening a run moves to its worktree until you pick another.
- */
-function usePlace(preferWorktree: boolean): [Place | undefined, (p: Place) => void, Place[]] {
-  const run = openRun();
-  const places: Place[] = [];
-  if (repo.value) places.push({ label: `${baseName(repo.value)} · repository`, path: repo.value });
-  if (run) {
-    if (run.repo !== repo.value) places.push({ label: `${baseName(run.repo)} · repository`, path: run.repo });
-    for (const wt of run.worktrees) places.push({ label: `${wt.name} · ${wt.branch}`, path: wt.path, runId: run.id });
-  }
-  const [picked, setPicked] = useState<string | null>(null);
-  const viewKey = "id" in route.value ? route.value.id : route.value.view;
-  useEffect(() => setPicked(null), [viewKey]);
-  const current = places.find((p) => p.path === picked) ?? (preferWorktree && run?.worktrees.length ? places.find((p) => p.runId) : undefined) ?? places[0];
-  return [current, (p) => setPicked(p.path), places];
-}
-
-function PlacePicker({ place, places, onChange, label }: { place?: Place; places: Place[]; onChange: (p: Place) => void; label: string }) {
-  if (!places.length) return <span class="help">Choose a repository first.</span>;
-  return (
-    <select class="field" aria-label={label} title={place?.path} value={place?.path ?? ""} onChange={(e) => onChange(places.find((p) => p.path === e.currentTarget.value) ?? places[0]!)}>
-      {places.map((p) => (
-        <option key={p.path} value={p.path}>
-          {p.label}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-// ---------------------------------------------------------------- chat
-/** Patterns that are a conversation with one agent (Single agent). */
-const chatPatterns = () => new Set(patterns.value.filter((p) => p.chat).map((p) => p.id));
-
-function ChatTab() {
-  const id = sideChat.value;
-  const kinds = chatPatterns();
-  const chats = [...runs.value.values()].filter((r) => kinds.has(r.pattern) && !r.archived && (!repo.value || r.repo === repo.value)).sort((a, b) => b.createdAt - a.createdAt);
-  // The chat you were in stays listed even from another repository, until you leave it.
-  const current = id ? runs.value.get(id) : undefined;
-  const listed = current && kinds.has(current.pattern) && !chats.some((r) => r.id === current.id) ? [current, ...chats] : chats;
-  return (
-    <>
-      <div class="side-toolbar">
-        <select
-          class="field"
-          aria-label="Chat"
-          value={current && kinds.has(current.pattern) ? current.id : ""}
-          onChange={(e) => setSideChat(e.currentTarget.value || null)}
-        >
-          <option value="">New chat</option>
-          {listed.length ? (
-            <optgroup label={repo.value ? `Chats in ${baseName(repo.value)}` : "Chats"}>
-              {listed.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.status === "running" ? "● " : ""}
-                  {r.task.split("\n")[0]!.slice(0, 60)}
-                </option>
-              ))}
-            </optgroup>
-          ) : null}
-        </select>
-        {current ? (
-          <a class="btn ghost small" href={`#/run/${enc(current.id)}`} title="Open this chat as a run, with its branch and result">
-            Open
-          </a>
-        ) : null}
-        <button type="button" class="btn ghost small" title="New chat" aria-label="New chat" onClick={() => setSideChat(null)}>
-          <Icon name="plus" />
-        </button>
-      </div>
-      {current ? <ChatView key={current.id} id={current.id} /> : <NewChat />}
-    </>
-  );
-}
-
-/** A chat in progress: the Single-agent run's thread and its composer, compact. */
-function ChatView({ id }: { id: string }) {
-  const { run, problem, data, version } = useRunStream(id);
-  const scroll = useRef<HTMLDivElement>(null);
-  // Follow the conversation unless you scrolled up to read.
-  useEffect(() => {
-    const el = scroll.current;
-    if (!el) return;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 160) el.scrollTop = el.scrollHeight;
-  }, [version, run?.status, run?.followUps?.length]);
-  if (problem) {
-    return (
-      <div class="side-empty">
-        <p class="msg err">{problem}</p>
-        <button class="btn" onClick={() => setSideChat(null)}>
-          New chat
-        </button>
-      </div>
-    );
-  }
-  if (!run) return <div class="side-empty help">Loading…</div>;
-  const steps = [...data.current.steps.values()];
-  const agent = Object.values(run.roles).flat()[0] as AgentId | undefined;
-  const state = runState(run);
-  const branch = run.artifacts[0]?.branch ?? run.worktrees[0]?.branch;
-  return (
-    <>
-      <div class="chat-scroll" ref={scroll}>
-        <div class="thread">
-          <div class="chat-meta">
-            <AgentTag id={agent} />
-            <span class={`status-pill ${state}`}>{STATUS_TEXT[run.status] ?? run.status}</span>
-            {branch ? (
-              <code title="The branch this chat works on">{branch}</code>
-            ) : null}
-            {state === "failing" ? <span class="note">check fails</span> : run.verdict === "passed" ? <span class="ok">check passes</span> : null}
-          </div>
-          <div class="msg-you">
-            <div class="bubble">
-              <Markdown text={run.task} />
-            </div>
-          </div>
-          <ChatThread run={run} steps={steps} data={data.current} />
-          {["interrupted", "stopped", "failed", "cancelled"].includes(run.status) ? (
-            <div class="chat-resume">
-              <span class="help">{run.status === "interrupted" ? "This chat was interrupted." : `This chat ${STATUS_TEXT[run.status]?.toLowerCase() ?? run.status}.`}</span>
-              <button class="btn small" onClick={() => post(`/api/runs/${run.id}/resume`).catch((e) => showToast(e.message))}>
-                ▶ Resume
-              </button>
-            </div>
-          ) : null}
-        </div>
-      </div>
-      <ConversationBar run={run} steps={steps} chat />
-    </>
-  );
-}
-
-/** Where a new chat starts: a fresh Single-agent run on the repository, with the agent you pick. */
-function NewChat() {
-  const [text, setText] = useState("");
-  const [agent, setAgent] = useState<AgentId>(() => {
-    const saved = store.get("sideAgent") as AgentId | null;
-    return saved && agents.value.some((a) => a.id === saved && a.available) ? saved : (agents.value.find((a) => a.available)?.id ?? "claude");
-  });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [base, setBase] = useState("");
-  const area = useRef<HTMLTextAreaElement>(null);
-  // Text sent over from Notes (or a file) lands in the box.
-  useEffect(() => {
-    if (!sideDraft.value) return;
-    setText((t) => (t ? `${t}\n\n${sideDraft.value}` : sideDraft.value));
-    sideDraft.value = "";
-    area.current?.focus();
-  }, [sideDraft.value]);
-  useEffect(() => {
-    const el = area.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
-  }, [text]);
-  const solo = patterns.value.find((p) => p.chat);
-  const run = openRun();
-  /** A run's result branch the chat can start from, so the agent sees that work. */
-  const fromRun = run && run.repo === repo.value ? run.artifacts.map((a) => a.branch) : [];
-  const name = SHORT[agent] ?? agent;
-  const send = async () => {
-    if (!text.trim() || busy || !solo) return;
-    if (!repo.value) return setError("Choose a repository first.");
-    setBusy(true);
-    setError("");
-    try {
-      const continues = base && run ? run.id : undefined;
-      const { id, project } = await post<{ id: string; project?: string }>("/api/runs", {
-        repo: repo.value,
-        // In the project you're in; a chat that continues a run stays in that run's project.
-        project: continues ? undefined : target.value.project?.id,
-        task: text.trim(),
-        pattern: solo.id,
-        roles: { agent: [agent] },
-        options: {},
-        baseRef: base || undefined,
-        agentSettings: agentSettings.value,
-        trust: trust.value,
-        loop: { maxMinutes: limits.value.maxMinutes, maxSteps: limits.value.maxSteps },
-        parentRunId: continues,
-      });
-      setText("");
-      setSideChat(id);
-      void afterStart(project); // a chat in a repo no project held made one
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
+// ---------------------------------------------------------------- what the panel is about
+/** The project and run the panel is showing, and the pin that keeps it there while you open others. */
+function ScopeHeader({ popped }: { popped: boolean }) {
+  const s = sideScope.value;
+  /** This tab in a window of its own, fixed to what the panel shows now; the panel here closes. */
+  const popOut = () => {
+    const url = `${location.origin}${location.pathname}#/side/${sideTab.value}/${encodeURIComponent(s.key)}`;
+    if (window.open(url, `codeflow-side-${s.key}`, "popup,width=560,height=860")) closeSide();
+    else showToast("The browser blocked the window: allow pop-ups for code-flow", 5000);
   };
+  const thing = s.run ? "run" : "project";
+  const where = s.project?.name ?? (s.repo ? baseName(s.repo) : "");
+  const task = s.run ? s.run.task.split("\n")[0] || "(no task)" : "";
   return (
-    <>
-      <div class="chat-scroll">
-        <div class="side-empty">
-          <h3>Chat with {name}</h3>
-          <p class="help">
-            Ask a question or ask for a change. {name} works on its own branch of {repo.value ? baseName(repo.value) : "the repository"} and you keep talking to it; its reply shows here and the chat is a run like any other.
-          </p>
-          {!solo ? <p class="msg warn">This code-flow has no Single-agent pattern, which the chat needs.</p> : null}
-        </div>
-      </div>
-      <div class="convo">
-        <div class="convo-inner">
-          {error ? <div class="msg err">{error}</div> : null}
-          <div class="chatbox">
-            <textarea
-              ref={area}
-              rows={1}
-              aria-label="Message"
-              placeholder={`Message ${name}…`}
-              value={text}
-              onInput={(e) => setText(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-                  e.preventDefault();
-                  void send();
-                }
-              }}
-            />
-            <div class="chatbox-bar">
-              <label class="to">
-                <span class="to-lbl">Agent</span>
-                <AgentPicker
-                  value={agent}
-                  onChange={(id) => {
-                    setAgent(id);
-                    store.set("sideAgent", id);
-                  }}
-                />
-              </label>
-              {fromRun.length ? (
-                <label class="to" title="Start from this run's result branch, so the agent sees that work">
-                  <span class="to-lbl">From</span>
-                  <select aria-label="Start from" value={base} onChange={(e) => setBase(e.currentTarget.value)}>
-                    <option value="">HEAD</option>
-                    {fromRun.map((b) => (
-                      <option key={b} value={b}>
-                        {b}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-              <span class="chatbox-hint" />
-              <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={busy || !text.trim() || !solo} onClick={send}>
-                <Icon name="send" />
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </>
+    <div class={`side-scope ${s.pinned ? "pinned" : ""}`}>
+      <span class="scope-state" title={popped ? `This window shows one ${thing}` : s.pinned ? `The panel stays on this ${thing} while you open others` : "The panel follows what you open"}>
+        {popped ? <Icon name="external" /> : s.pinned ? <Icon name="pin" /> : <span class="scope-dot" aria-hidden="true" />}
+        {popped ? "Own window" : s.pinned ? "Pinned" : "Following"}
+      </span>
+      <span class="scope-crumbs" title={[where, s.repo, task].filter(Boolean).join("\n")}>
+        {where ? <span class="sc-where">{where}</span> : s.waiting ? null : <span class="help">No repository chosen</span>}
+        {!s.run && s.project && s.project.repos.length > 1 ? (
+          <>
+            <span class="sep" aria-hidden="true">›</span>
+            <span class="sc-what">{baseName(s.repo)}</span>
+          </>
+        ) : null}
+        {s.run ? (
+          <>
+            <span class="sep" aria-hidden="true">›</span>
+            {s.pinned ? (
+              <a class="sc-what" href={`#/run/${enc(s.run.id)}`} title={popped ? "Open this run in the main window" : "Open this run"}>
+                {task}
+              </a>
+            ) : (
+              <span class="sc-what">{task}</span>
+            )}
+          </>
+        ) : null}
+      </span>
+      {popped ? null : s.pinned ? (
+        <button type="button" class="btn ghost small" title="Follow what you open again" onClick={() => pinSide(false)}>
+          Follow
+        </button>
+      ) : (
+        <button type="button" class="icon-btn" aria-label={`Pin the panel to this ${thing}`} title={`Pin: keep the panel on this ${thing} while you open others`} disabled={!s.repo} onClick={() => pinSide(true)}>
+          <Icon name="pin" />
+        </button>
+      )}
+      {popped || onPhone ? null : (
+        <button type="button" class="icon-btn" aria-label="Open in its own window" title="Open this tab in a window of its own, for this run or project" disabled={!s.repo} onClick={popOut}>
+          <Icon name="external" />
+        </button>
+      )}
+      {popped ? null : (
+        <button type="button" class="icon-btn" aria-label="Close side panel" title="Close (\)" onClick={closeSide}>
+          <Icon name="close" />
+        </button>
+      )}
+    </div>
   );
 }
 
 // ---------------------------------------------------------------- files
 function FilesTab() {
-  const [place, setPlace, places] = usePlace(true);
+  const [place, setPlace, places] = usePlace("files");
   const [open, setOpen] = useState<string | null>(null);
   // Something else asked for a file (a run's diff, a transcript): show it, in its folder.
   useEffect(() => {
@@ -448,269 +255,11 @@ function FileViewer({ root, path, onClose }: { root: string; path: string; onClo
   );
 }
 
-// ---------------------------------------------------------------- terminal
-type Line = ShellEvent;
-
-function TerminalTab() {
-  const [place, setPlace, places] = usePlace(false);
-  const cwd = place?.path ?? "";
-  const [shell, setShell] = useState<ShellInfo | null>(null);
-  const [lines, setLines] = useState<Line[]>([]);
-  const [command, setCommand] = useState("");
-  const [history, setHistory] = useState<string[]>(() => store.json("termHistory", []));
-  const [at, setAt] = useState(-1);
-  const [error, setError] = useState("");
-  const out = useRef<HTMLPreElement>(null);
-  const input = useRef<HTMLInputElement>(null);
-  /** Opening a shell for a folder; a second request for the same folder waits for it. */
-  const opening = useRef<Promise<ShellInfo> | null>(null);
-  /** Bumped to connect again (after Restart); `fresh` says to open a new shell rather than reattach. */
-  const [generation, setGeneration] = useState(0);
-  const fresh = useRef(false);
-
-  /** The shell for this folder: one that's already open there, or a new one. */
-  const attach = async (fresh = false): Promise<ShellInfo | null> => {
-    if (!cwd) return null;
-    if (!fresh) {
-      const open = await api<ShellInfo[]>("/api/shell").catch(() => [] as ShellInfo[]);
-      const existing = open.find((s) => s.cwd === cwd && s.status === "running") ?? open.find((s) => s.status === "running" && s.cwd.startsWith(cwd + "/"));
-      if (existing) return existing;
-    }
-    opening.current ??= post<ShellInfo>("/api/shell", { cwd }).finally(() => (opening.current = null));
-    return opening.current;
-  };
-
-  useEffect(() => {
-    if (!cwd) return;
-    let source: EventSource | undefined;
-    let closed = false;
-    setLines([]);
-    setShell(null);
-    setError("");
-    const connect = async (openNew = false) => {
-      try {
-        const s = await attach(openNew);
-        if (!s || closed) return;
-        setShell(s);
-        source = new EventSource(`/api/shell/${s.id}/events`);
-        source.onmessage = (msg) => {
-          const ev = JSON.parse(msg.data) as ShellEvent | { type: "hello"; shell: ShellInfo; history: ShellEvent[] };
-          if (ev.type === "hello") {
-            setShell(ev.shell);
-            setLines(ev.history);
-            return;
-          }
-          setLines((l) => append(l, ev));
-          if (ev.type === "done") setShell((cur) => (cur ? { ...cur, busy: false, cwd: ev.cwd } : cur));
-          else if (ev.type === "exit") setShell((cur) => (cur ? { ...cur, status: "exited", exitCode: ev.code, busy: false } : cur));
-          else if (ev.type === "input") setShell((cur) => (cur ? { ...cur, busy: true } : cur));
-        };
-        // The stream closed for good: the shell is gone (code-flow restarted). Open a new one.
-        source.onerror = () => {
-          if (source?.readyState !== EventSource.CLOSED || closed) return;
-          source.close();
-          api(`/api/shell/${s.id}`).then(
-            () => setTimeout(() => void connect(), 2_000),
-            () => void connect(true),
-          );
-        };
-      } catch (err) {
-        if (!closed) setError((err as Error).message);
-      }
-    };
-    void connect(fresh.current);
-    fresh.current = false;
-    return () => {
-      closed = true;
-      source?.close();
-    };
-  }, [cwd, generation]);
-
-  // Keep the newest output in view.
-  useEffect(() => {
-    const el = out.current;
-    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 200) el.scrollTop = el.scrollHeight;
-  }, [lines]);
-
-  const send = async () => {
-    const text = command;
-    if (!shell || !text.trim()) return;
-    setCommand("");
-    setAt(-1);
-    const next = [text, ...history.filter((h) => h !== text)].slice(0, 100);
-    setHistory(next);
-    store.set("termHistory", JSON.stringify(next));
-    try {
-      await post(`/api/shell/${shell.id}/input`, { text });
-    } catch (err) {
-      showToast((err as Error).message, 4000);
-    }
-  };
-  /** Stop whatever is running: the shell goes with it, and a new one opens in the same folder. */
-  const restart = async () => {
-    if (shell) await api(`/api/shell/${shell.id}`, { method: "DELETE" }).catch(() => {});
-    fresh.current = true;
-    setGeneration((n) => n + 1);
-  };
-
-  const prompt = shell ? `${baseName(shell.cwd)} $` : "$";
-  return (
-    <>
-      <div class="side-toolbar">
-        <PlacePicker label="Terminal folder" place={place} places={places} onChange={setPlace} />
-        <button type="button" class="btn ghost small" title="Clear the output" onClick={() => setLines([])}>
-          Clear
-        </button>
-        <button type="button" class={`btn ghost small ${shell?.busy ? "danger" : ""}`} title={shell?.busy ? "Stop what's running (the shell restarts in the same folder)" : "Start a new shell in this folder"} onClick={() => void restart()}>
-          <Icon name={shell?.busy ? "stop" : "refresh"} /> {shell?.busy ? "Stop" : "Restart"}
-        </button>
-      </div>
-      <div class="term" onClick={(e) => (e.target as HTMLElement).closest("pre") && !window.getSelection()?.toString() && input.current?.focus()}>
-        <pre class="term-out" ref={out} aria-live="polite" aria-label="Terminal output">
-          {!lines.length ? (
-            <span class="help">
-              {error || (shell ? `${shell.shell} in ${shell.cwd}. Commands run here, not in an interactive terminal: no pagers or full-screen programs.` : cwd ? "Opening a shell…" : "Choose a repository first.")}
-            </span>
-          ) : null}
-          {lines.map((l, i) =>
-            l.type === "input" ? (
-              <span key={i} class="in">
-                {`$ ${l.text}\n`}
-              </span>
-            ) : l.type === "output" ? (
-              <span key={i}>{l.text}</span>
-            ) : l.type === "done" ? (
-              l.code ? (
-                <span key={i} class="exit">{`exit ${l.code}\n`}</span>
-              ) : null
-            ) : (
-              <span key={i} class="exit">{`\n[shell exited${l.code === null ? "" : ` with ${l.code}`} — Restart opens a new one]\n`}</span>
-            ),
-          )}
-        </pre>
-        <div class="term-row">
-          <span class="prompt" title={shell?.cwd}>
-            {shell?.busy ? <span class="term-busy" aria-label="Running" /> : null}
-            {prompt}
-          </span>
-          <input
-            ref={input}
-            type="text"
-            aria-label="Command"
-            placeholder={shell?.status === "exited" ? "The shell exited — Restart" : "Type a command and press ↵"}
-            autocomplete="off"
-            spellcheck={false}
-            disabled={!shell || shell.status === "exited"}
-            value={command}
-            onInput={(e) => setCommand(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void send();
-              } else if (e.key === "ArrowUp" && history.length) {
-                e.preventDefault();
-                const n = Math.min(history.length - 1, at + 1);
-                setAt(n);
-                setCommand(history[n] ?? "");
-              } else if (e.key === "ArrowDown") {
-                e.preventDefault();
-                const n = Math.max(-1, at - 1);
-                setAt(n);
-                setCommand(n < 0 ? "" : history[n] ?? "");
-              } else if (e.key === "c" && e.ctrlKey) {
-                e.preventDefault();
-                void restart();
-              }
-            }}
-          />
-        </div>
-      </div>
-    </>
-  );
-}
-
-/** Output comes in many pieces: join runs of output so the list stays short. */
-function append(lines: Line[], ev: ShellEvent): Line[] {
-  const last = lines.at(-1);
-  if (ev.type === "output" && last?.type === "output" && last.text.length < 8_192) return [...lines.slice(0, -1), { type: "output", text: last.text + ev.text }];
-  return lines.length > 4_000 ? [...lines.slice(-3_000), ev] : [...lines, ev];
-}
-
-// ---------------------------------------------------------------- browser
-function BrowserTab() {
-  const [url, setUrl] = useState(store.get("sideUrl") ?? "");
-  const [typed, setTyped] = useState(url);
-  const [servers, setServers] = useState<Omit<DevServer, "logs">[]>([]);
-  const [nonce, setNonce] = useState(0);
-  useEffect(() => {
-    let alive = true;
-    const poll = () => api<Omit<DevServer, "logs">[]>("/api/serve").then((s) => alive && setServers(s), () => {});
-    poll();
-    const timer = setInterval(poll, 5_000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, []);
-  const go = (target: string) => {
-    let next = target.trim();
-    if (!next) return;
-    if (!/^https?:\/\//i.test(next)) next = /^(localhost|127\.|\[::1\]|\d+\.\d+\.\d+\.\d+)/.test(next) ? `http://${next}` : `https://${next}`;
-    // From the phone, the app is on the computer's Wi-Fi address — reachable if it listens there.
-    if (onPhone) next = next.replace("//localhost:", `//${location.hostname}:`).replace("//127.0.0.1:", `//${location.hostname}:`);
-    setUrl(next);
-    setTyped(next);
-    store.set("sideUrl", next);
-    setNonce((n) => n + 1);
-  };
-  const running = servers.filter((s) => s.status === "running");
-  return (
-    <>
-      <div class="side-toolbar browse-bar">
-        <input
-          type="url"
-          class="field mono"
-          aria-label="Address"
-          placeholder="localhost:3000, or an address…"
-          value={typed}
-          onInput={(e) => setTyped(e.currentTarget.value)}
-          onKeyDown={(e) => e.key === "Enter" && go(typed)}
-        />
-        <button type="button" class="btn ghost small" title="Reload" aria-label="Reload" disabled={!url} onClick={() => setNonce((n) => n + 1)}>
-          <Icon name="refresh" />
-        </button>
-        <a class={`btn ghost small ${url ? "" : "off"}`} href={url || "#"} target="_blank" rel="noreferrer" title="Open in a new tab" aria-label="Open in a new tab" aria-disabled={!url}>
-          <Icon name="external" />
-        </a>
-      </div>
-      {running.length ? (
-        <div class="browse-apps">
-          <span class="lbl">Running</span>
-          {running.map((s) => (
-            <button key={s.key} type="button" class="chip-tpl" title={`${s.command} in ${s.cwd}`} aria-pressed={url === s.url} onClick={() => go(s.url)}>
-              {baseName(s.cwd)} · :{s.port}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      <div class="browse">
-        {url ? (
-          <iframe key={`${url}#${nonce}`} src={url} title="Browser" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals" />
-        ) : (
-          <div class="browse-empty">
-            <p>Open the app a run started with <b>Run app</b>, or type an address.</p>
-            <p class="help">Some sites refuse to be shown inside another page; those open in a new tab instead.</p>
-          </div>
-        )}
-      </div>
-    </>
-  );
-}
-
 // ---------------------------------------------------------------- notes
 function NotesTab() {
-  const [scope, setScope] = useState<"repo" | "general">(repo.value ? "repo" : "general");
-  const key = scope === "repo" && repo.value ? repo.value : "general";
+  const here = sideScope.value.repo;
+  const [scope, setScope] = useState<"repo" | "general">(here ? "repo" : "general");
+  const key = scope === "repo" && here ? here : "general";
   const [text, setText] = useState("");
   const [saved, setSaved] = useState<{ at: number; text: string } | null>(null);
   const [status, setStatus] = useState("");
@@ -757,10 +306,10 @@ function NotesTab() {
   return (
     <>
       <div class="side-toolbar">
-        {repo.value ? (
+        {here ? (
           <div class="segmented small" role="group" aria-label="Which notes">
-            <button type="button" class={scope === "repo" ? "on" : ""} aria-pressed={scope === "repo"} onClick={() => setScope("repo")} title={repo.value}>
-              {baseName(repo.value)}
+            <button type="button" class={scope === "repo" ? "on" : ""} aria-pressed={scope === "repo"} onClick={() => setScope("repo")} title={here}>
+              {baseName(here)}
             </button>
             <button type="button" class={scope === "general" ? "on" : ""} aria-pressed={scope === "general"} onClick={() => setScope("general")}>
               General
@@ -776,9 +325,8 @@ function NotesTab() {
           title="Add the selection (or the whole note) to the task in the composer"
           disabled={!text.trim()}
           onClick={() => {
-            const add = selection();
-            setTask(task.value.trim() ? `${task.value.trimEnd()}\n\n${add}` : add);
-            route.value = { view: "composer" };
+            // The composer takes it as a draft, so from a popped-out panel it goes to the main window's.
+            navigate({ view: "composer" }, [{ to: "composer", text: selection(), images: [] }]);
             showToast("Added to the task");
           }}
         >

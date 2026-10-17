@@ -1,5 +1,5 @@
 import { copyFile, mkdir, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { CONTEXT_DIR, objectTypeAt, workingCopyDiffers } from "./git.js";
 import { normalizeRepoPath, resolveInsideRepo } from "./repo-tree.js";
 
@@ -114,6 +114,40 @@ export async function prepareContext(repo: string, baseRef: string, input: Conte
   }
 
   return ctx;
+}
+
+/**
+ * Files sent with a message to a run (the Browser's screenshots, say): staged in the run's
+ * `stageDir`, never in a worktree, which may not be attached right now (a folder made at its path
+ * would stop it from being attached again). `copyMessageFiles` puts them in the worktree's
+ * CONTEXT_DIR once the turn has it, where the agent can open them and nothing is committed.
+ * Their paths there, relative to the worktree.
+ */
+export async function stageMessageFiles(stageDir: string, prefix: string, files: { name: string; data: string }[]): Promise<string[]> {
+  if (files.length > LIMITS.attachments) throw new Error(`Too many attached files (max ${LIMITS.attachments})`);
+  const names = new Set<string>();
+  const paths: string[] = [];
+  let total = 0;
+  for (const f of files) {
+    const data = Buffer.from(String(f.data ?? ""), "base64");
+    if (data.length > LIMITS.fileBytes) throw new Error(`"${f.name}" is larger than ${mb(LIMITS.fileBytes)}`);
+    total += data.length;
+    if (total > LIMITS.totalBytes) throw new Error(`Attached files exceed ${mb(LIMITS.totalBytes)} in total`);
+    const name = uniqueName(`${prefix}-${safeFileName(String(f.name ?? "file"))}`, names);
+    const dir = join(stageDir, "messages");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, name), data);
+    paths.push(`${CONTEXT_DIR}/messages/${name}`);
+  }
+  return paths;
+}
+
+/** Copy files staged by `stageMessageFiles` into an attached worktree, at the paths it returned. */
+export async function copyMessageFiles(stageDir: string, worktree: string, files: string[]): Promise<void> {
+  if (!files.length) return;
+  const dir = join(worktree, CONTEXT_DIR, "messages");
+  await mkdir(dir, { recursive: true });
+  for (const file of files) await copyFile(join(stageDir, "messages", basename(file)), join(dir, basename(file)));
 }
 
 /** The prompt section every agent gets. Empty when the user gave no context. */

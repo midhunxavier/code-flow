@@ -79,7 +79,10 @@ export function Rail() {
   const view = railView.value;
   const f = runFilter.value;
   const filtering = filterActive.value;
-  const current = "id" in route.value ? route.value.id : undefined;
+  const r = route.value;
+  const current = r.view === "run" || r.view === "review" ? r.id : undefined;
+  /** The project whose page is open. */
+  const page = r.view === "project" ? r.id : undefined;
   const all = [...runs.value.values()].sort((a, b) => b.createdAt - a.createdAt);
   // While you search or filter, archived runs that match show too: nothing is out of reach.
   const list = all.filter((r) => matchesFilter(r) && (!r.archived || view.archived || filtering));
@@ -155,11 +158,17 @@ export function Rail() {
     if (!g.runs.length)
       return (
         <div key={g.key} class="proj quiet" role="group" aria-label={g.name}>
-          <div class="proj-head">
-            <span class="proj-name" title={g.project?.repos.join("\n")}>
-              <span class="pn">{g.name}</span>
-              {g.archived ? <span class="pc">{g.archived} archived</span> : null}
-            </span>
+          <div class={`proj-head ${page && page === g.project?.id ? "here" : ""}`}>
+            {g.project ? (
+              <button type="button" class="proj-name" title={`Open ${g.name}: ${g.project.repos.join(", ")}`} aria-current={page === g.project.id ? "page" : undefined} onClick={() => go({ view: "project", id: g.project!.id })}>
+                <span class="pn">{g.name}</span>
+                {g.archived ? <span class="pc">{g.archived} archived</span> : null}
+              </button>
+            ) : (
+              <span class="proj-name">
+                <span class="pn">{g.name}</span>
+              </span>
+            )}
             {g.project ? actions(g.project) : null}
           </div>
         </div>
@@ -170,9 +179,17 @@ export function Rail() {
     const hidden = folded ? 0 : g.runs.length - shown.length;
     return (
       <div key={g.key} class="proj" role="group" aria-label={g.name}>
-        <div class="proj-head">
-          <button type="button" class="proj-toggle" aria-expanded={!folded} title={g.project ? g.project.repos.join("\n") : "Runs whose project was deleted"} onClick={() => toggle(g.key)}>
+        <div class={`proj-head ${page && page === g.project?.id ? "here" : ""}`}>
+          <button type="button" class="proj-fold" aria-expanded={!folded} aria-label={`${folded ? "Show" : "Hide"} the runs in ${g.name}`} title={folded ? "Show its runs" : "Hide its runs"} onClick={() => toggle(g.key)}>
             <Icon name="chevron" class="caret" />
+          </button>
+          <button
+            type="button"
+            class="proj-toggle"
+            aria-current={g.project && page === g.project.id ? "page" : undefined}
+            title={g.project ? `Open ${g.name}: ${g.project.repos.join(", ")}` : "Runs whose project was deleted"}
+            onClick={() => (g.project ? go({ view: "project", id: g.project.id }) : toggle(g.key))}
+          >
             <span class="pn">{g.name}</span>
             {folded && g.runs.length ? <span class="pc">{g.runs.length}</span> : null}
           </button>
