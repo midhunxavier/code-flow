@@ -656,7 +656,9 @@ test("side panel browser: a run's app through the preview, annotated, sent to th
   await side.getByRole("tab", { name: "Browser" }).click();
   const frame = side.locator("#side-pane-browser iframe");
   await frame.waitFor();
-  assert.match((await frame.getAttribute("src"))!, /^http:\/\/127\.0\.0\.1:\d+\//, "the app is shown through the preview");
+  const src = new URL((await frame.getAttribute("src"))!);
+  assert.equal(src.hostname, new URL(BASE).hostname, "the preview uses the host name code-flow was opened with");
+  assert.notEqual(src.port, new URL(app.url).port, "the app is shown through the preview, on a port of its own");
   await side.getByRole("button", { name: /^Console · 2$/ }).waitFor({ timeout: 15_000 });
 
   // Pick the button, say what's wrong, and put it in the run's main chat.
@@ -678,6 +680,34 @@ test("side panel browser: a run's app through the preview, annotated, sent to th
   const reply = run.followUps.at(-1);
   assert.equal(reply.kind, "reply");
   assert.equal(reply.files.length, 1, "the snapshot went with the reply");
+
+  // Snapshot: the page in a headless Chrome of the server's own, a box drawn on the picture, and the
+  // picture (boxes numbered) and the box's close-up in the main chat.
+  await side.getByRole("button", { name: "Snapshot", exact: true }).click();
+  const stage = side.locator(".snap-stage");
+  await stage.locator("img").waitFor({ timeout: 30_000 });
+  assert.match(await side.locator(".snap-what").innerText(), /^Snapshot · \d+×\d+$/);
+  const at = (await stage.boundingBox())!;
+  await page.mouse.move(at.x + 10, at.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(at.x + 90, at.y + 60, { steps: 5 });
+  await page.mouse.up();
+  await side.locator(".snap-box:not(.drawing)").waitFor();
+  await side.getByLabel(/^What about pin \d+\?$/).fill("E2E: the header is too tall");
+  await side.getByRole("button", { name: "Add to main chat" }).click();
+  await page.locator(".runview .draft-img").nth(1).waitFor();
+  const snapText = await box.inputValue();
+  assert.match(snapText, /From a snapshot of http:\/\/(localhost|127\.0\.0\.1):\d+\/ \(\d+px wide, as a signed-out visitor sees it\); the boxes are numbered on snapshot-[\w-]+\.png:/);
+  assert.match(snapText, /on the snapshot \(box \d+ on snapshot-[\w-]+\.png\): E2E: the header is too tall/);
+  await page.locator(".runview .chatbox .send").click();
+  for (let i = 0; i < 150; i++) {
+    run = await api(`/api/runs/${created.id}`);
+    if (run.followUps.length > 2 && run.followUps.at(-1)?.status === "done") break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  const names = run.followUps.at(-1).files.map((f: string) => f.split("/").pop());
+  assert.equal(names.length, 2, JSON.stringify(names));
+  assert.ok(names.some((n: string) => /-snapshot-[\w-]+\.png$/.test(n)) && names.some((n: string) => /-pin-[\w-]+-\d+\.png$/.test(n)), JSON.stringify(names));
   await fetch(`${BASE}/api/runs/${created.id}/worktrees/${wt.name}/serve`, { method: "DELETE", headers: bearer });
 
   // The panel in a window of its own, for this run.
