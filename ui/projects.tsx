@@ -195,7 +195,7 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
             class="field"
             value={name}
             maxLength={60}
-            placeholder="e.g. OPC UA modeler"
+            placeholder="e.g. Web app"
             onInput={(e) => setName(e.currentTarget.value)}
             onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), void save())}
           />
