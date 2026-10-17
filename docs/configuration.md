@@ -14,7 +14,8 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
   "limits": { "maxMinutes": 90, "maxSteps": 60 },
   "trust": "standard",
   "image": "node:22",
-  "learn": true
+  "learn": true,
+  "prove": true
 }
 ```
 
@@ -26,7 +27,7 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
 
   Setup runs once per worktree outside the agents' sandboxes, so the check can run without network (`--no-sync`). When a run's check can't run at all (not installed, nothing collected, `conftest.py` can't import the project), the run says so and asks you to set these.
 - `copy` brings files git doesn't carry (like `.env`) from your checkout into every new worktree. Only regular files that git ignores are copied. Symlinks are refused, since a cloned repo's `.env` could point at your credentials, and so are files git would commit. Patterns can't reach outside the repo.
-- `image` is the Docker image for running checks in isolation (automations, untrusted sources). `learn` passes recurring review problems on to later runs.
+- `image` is the Docker image for running checks in isolation (automations, untrusted sources). `learn` passes recurring review problems on to later runs. `prove` checks that each passing result has a test that fails without it ([fail-to-pass](patterns.md#checks-loops-and-limits)); set it to `false` when the check is too slow to run twice.
 - A result's worktree that was removed (archived) is set up again when you follow up on it: files copied, setup run, context restored, and the files you sent with the follow-up added. If its branch was deleted, that follow-up fails with a clear message; the run itself stays finished. A follow-up also fails, rather than delete anything, when the worktree's folder is there but holds something else: move that folder away, then send it again.
 - **Try it:** each result has **Terminal**, **Editor** (Cursor, VS Code, Zed or Sublime, whichever is installed) and **Folder** buttons that open its worktree, plus **▶ Run app**.
   - Run app starts your dev server in the worktree on a free port (passed as `$PORT`), with logs and **Stop app**. Servers stop when the run is archived or code-flow shuts down.

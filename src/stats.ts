@@ -1,5 +1,5 @@
 import type { AgentId } from "./adapters/index.js";
-import type { RunSummary } from "./engine.js";
+import type { Proof, RunSummary } from "./engine.js";
 
 /**
  * Insights: what runs cost and how they went, per agent and per pattern, and side by side for
@@ -40,6 +40,9 @@ export interface PatternStats {
   stopped: number;
   /** Runs whose result changed tests in ways that could hide failures. */
   flagged: number;
+  /** Runs whose result was proven fail-to-pass (a test fails without it), and ones that weren't. */
+  proven: number;
+  unproven: number;
   /** Runs that ended, and their total wall-clock time. */
   ended: number;
   ms: number;
@@ -60,6 +63,7 @@ export interface GroupRun {
   tokens: number;
   costUsd: number;
   flagged: number;
+  proof?: Proof["status"];
   stat?: string;
 }
 
@@ -90,7 +94,7 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
   };
 
   for (const r of runs) {
-    const p = patterns.get(r.pattern) ?? { pattern: r.pattern, runs: 0, done: 0, passed: 0, failing: 0, failed: 0, stopped: 0, flagged: 0, ended: 0, ms: 0, steps: 0, tokens: 0, costUsd: 0 };
+    const p = patterns.get(r.pattern) ?? { pattern: r.pattern, runs: 0, done: 0, passed: 0, failing: 0, failed: 0, stopped: 0, flagged: 0, proven: 0, unproven: 0, ended: 0, ms: 0, steps: 0, tokens: 0, costUsd: 0 };
     patterns.set(r.pattern, p);
     p.runs++;
     if (r.status === "done") p.done++;
@@ -99,6 +103,8 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
     if (r.verdict === "passed") p.passed++;
     if (r.verdict === "failing") p.failing++;
     if (r.integrity && Object.keys(r.integrity).length) p.flagged++;
+    if (r.facts?.proof === "proven") p.proven++;
+    if (r.facts?.proof === "unproven") p.unproven++;
     if (r.endedAt) {
       p.ended++;
       p.ms += r.endedAt - r.createdAt;
@@ -153,6 +159,7 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
       tokens: tokensOf(r),
       costUsd: r.usage.costUsd ?? 0,
       flagged: Object.values(r.integrity ?? {}).flat().length,
+      proof: r.facts?.proof,
       stat: lastLine(r.artifacts.find((a) => a.stat?.trim())?.stat),
     });
   }

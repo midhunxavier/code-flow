@@ -1,7 +1,7 @@
 import { adapters, type AgentId } from "../adapters/index.js";
 import { failureExcerpt, type CheckResult } from "../checks.js";
-import { RejectedError, type StepOutcome, type TeamContext } from "../engine.js";
-import type { Worktree } from "../git.js";
+import { RejectedError, type Proof, type StepOutcome, type TeamContext } from "../engine.js";
+import { changedFiles, resolveCommit, restorePaths, type Worktree } from "../git.js";
 
 /** Shared framing so every agent knows it is one member of a team. */
 export function preamble(role: string, agent: AgentId, duty: string): string {
@@ -77,6 +77,108 @@ export function checkEvidence(ctx: TeamContext, check: CheckResult | null, maxOu
     `Check \`${cantRun.command}\` couldn't run (run by code-flow)`,
     `It can't run in this environment (${cantRun.reason}) — on the base commit either, so not because of this change. Nobody has run the tests on this change; review it with that in mind.`,
   );
+}
+
+/** What an agent that writes the code is told up front when code-flow will prove it fail-to-pass. */
+export function proofRule(ctx: TeamContext): string {
+  if (!ctx.proves) return "";
+  return section(
+    "Prove it",
+    "code-flow will run your tests on the original code, without your change: at least one should fail there and pass with your change. " +
+      "Add or update a test that shows the change works, unless the task can't be tested that way (docs, a pure refactor); then say why in your summary.",
+  );
+}
+
+/** A proof as evidence for a reviewer or judge: does any test fail without the change? Empty without one. */
+export function proofEvidence(proof: Proof | null): string {
+  if (!proof) return "";
+  const tests = proof.tests.length ? `this change's tests (${proof.tests.join(", ")})` : "the existing tests";
+  if (proof.status === "proven") {
+    return section(
+      "Fail-to-pass: proven (run by code-flow)",
+      `code-flow put ${tests} onto the original code and ran \`${proof.command}\`: it fails there and passes with the change, so the tests need the change.\n${fence(proof.detail)}`,
+    );
+  }
+  if (proof.status === "unproven") {
+    return section(
+      "Fail-to-pass: not proven (run by code-flow)",
+      `code-flow put ${tests} onto the original code and ran \`${proof.command}\`: it passes there too, so no test shows the change works. ` +
+        "Ask for a test that fails without the change, unless the task can't be tested that way (docs, a pure refactor).",
+    );
+  }
+  return section("Fail-to-pass: couldn't tell (run by code-flow)", `code-flow couldn't run the tests on the original code: ${proof.detail}.`);
+}
+
+/** One line for a result summary. */
+export function proofLine(proof: Proof | null): string {
+  if (!proof) return "";
+  if (proof.status === "proven") return `Proven: \`${proof.command}\` fails without the change${proof.tests.length ? ` (with ${proof.tests.join(", ")})` : ""}, so its tests need it.`;
+  if (proof.status === "unproven") return "⚠ Not proven: no test fails without the change.";
+  return `Couldn't prove it fails without the change: ${proof.detail}.`;
+}
+
+/**
+ * Fail-to-pass, once the check passes: code-flow proves the change (see TeamContext.prove). When
+ * no test fails without it and `ask` is set, `agent` is asked once to add one; the check (with up
+ * to `attempts` fixes) and the proof then run again. Returns the last check and proof, the
+ * agent's session, and whether it was asked.
+ */
+export async function proveOrAsk(
+  ctx: TeamContext,
+  opts: {
+    agent: AgentId;
+    role: string;
+    wt: Worktree;
+    check: CheckResult | null;
+    session?: StepOutcome;
+    attempts: number;
+    /** Ask the agent for a test when it isn't proven (patterns ask once per run). */
+    ask: boolean;
+    context?: string;
+  },
+): Promise<{ check: CheckResult | null; proof: Proof | null; session?: StepOutcome; asked: boolean }> {
+  let { check, session } = opts;
+  if (!check?.ok) return { check, proof: null, session, asked: false };
+  let proof = await ctx.prove(opts.wt);
+  if (proof?.status !== "unproven" || !opts.ask) return { check, proof, session, asked: false };
+  session = session?.agent === opts.agent ? session : undefined;
+  const before = await ctx.remember("head", `before proof test in ${opts.wt.name}`, () => resolveCommit(opts.wt.path));
+  session = await ctx.ask({
+    title: "Add a test that fails without the change",
+    role: opts.role,
+    agent: opts.agent,
+    mode: "write",
+    cwd: opts.wt,
+    resume: session,
+    prompt:
+      (session ? "" : preamble(opts.role, opts.agent, WRITE) + section("Task", ctx.task) + (opts.context ?? "")) +
+      "The check passes, but code-flow ran this change's tests on the original code, without the change, and they pass there too: " +
+      "nothing shows the change does what the task asks." +
+      section(
+        "Next",
+        "Add or update a test that fails without your change and passes with it. Don't change the implementation unless the test finds a real bug. " +
+          "If the task can't be tested that way (docs, a pure refactor), change nothing and say why.",
+      ),
+  });
+  const sha = await ctx.commit(opts.wt, `${opts.agent}: add a test that fails without the change`);
+  if (!sha) {
+    ctx.log(`${adapters[opts.agent].displayName} added no test; the result stays unproven`, "warn");
+    return { check, proof, session, asked: true };
+  }
+  const fixed = await fixUntilGreen(ctx, { agent: opts.agent, role: opts.role, wt: opts.wt, session, attempts: opts.attempts, context: opts.context });
+  check = fixed.check;
+  session = fixed.session ?? session;
+  if (check && !check.ok) {
+    // Asking for a proof mustn't cost a green result: undo what never passed, and it stays unproven.
+    ctx.log(`The check fails since ${adapters[opts.agent].displayName} added its test, and fixing didn't help; undoing that`, "warn");
+    const changed = await ctx.remember("changed", `since proof test in ${opts.wt.name}`, () => changedFiles(opts.wt.path, before));
+    await ctx.remember("restore-before-proof", opts.wt.name, () => restorePaths(opts.wt.path, before, changed).then(() => true));
+    await ctx.commit(opts.wt, `code-flow: undo ${opts.agent}'s test that never passed`);
+    check = await ctx.check(opts.wt);
+    return { check, proof: check?.ok ? await ctx.prove(opts.wt) : null, session, asked: true };
+  }
+  proof = check?.ok ? await ctx.prove(opts.wt) : null;
+  return { check, proof, session, asked: true };
 }
 
 /**

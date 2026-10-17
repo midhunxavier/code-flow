@@ -103,11 +103,11 @@ Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and t
 ## Insights, comparisons and finding runs
 
 - **Insights** (in the sidebar, or <kbd>i</kbd>) shows, per agent and per pattern, for the project you're in, one repo, or everything, over 7 days, 30 days or all time:
-  - runs, and how often the result passed its check;
+  - runs, how often the result passed its check, and how often it was proven (a test fails without the change);
   - race wins, loops each agent got green, and review findings other reviewers agreed with;
   - failed steps, tokens (input, output, cached) and time per step;
   - Claude's API-equivalent cost. Your plan isn't billed per token; it's a measure of size.
-- **Compare setups…** (next to *Start run*) starts the same task with several patterns at once, each with the team you last picked for it, optionally 2–3 times each. Insights shows them side by side: result, time, steps, tokens, cost, and whether tests were touched. The best value in each column is highlighted.
+- **Compare setups…** (next to *Start run*) starts the same task with several patterns at once, each with the team you last picked for it, optionally 2–3 times each. Insights shows them side by side: result, time, steps, tokens, cost, whether tests were touched, and whether the result was proven. The best value in each column is highlighted.
 - **Tokens and cost** also show on each step, in the run's details under the header (with a per-agent breakdown on hover) and when you hover a run in the sidebar.
 - **Disk:** every worktree is a full checkout, often with its own `node_modules`. Insights measures them and **Clean up** removes the worktrees, not the branches, of runs that finished more than *N* days ago and need nothing from you.
 - **Finding runs:** the sidebar lists every [project](#projects)'s runs, one line each: a status dot, the task and its age (hover for the rest). It has search (<kbd>/</kbd>) and, behind the button next to it, grouping by project or by status, filters (needs you, running, passed, failing, tests changed; pattern; agent; this repo) and **show archived runs** (also the archive button at the bottom of the sidebar). While you search or filter, matching archived runs show too. <kbd>j</kbd>/<kbd>k</kbd> move between runs. In a run, <kbd>[</kbd>/<kbd>]</kbd> move between steps. <kbd>\</kbd> shows or hides the side panel. <kbd>?</kbd> lists every shortcut. Run status changes are announced to screen readers.

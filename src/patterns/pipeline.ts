@@ -1,19 +1,18 @@
 import type { CheckResult } from "../checks.js";
-import type { Pattern, StepOutcome } from "../engine.js";
+import type { Pattern, Proof, ReviewFinding, StepOutcome } from "../engine.js";
 import { describeIssues } from "../integrity.js";
+import { approves, builderReply, checkReview, findingsForBuilder, findingsLine, findingsSection, REVIEW_SHAPE, reproRule, type ReviewVerdict } from "./findings.js";
 import { REVIEW_SCHEMA } from "./schemas.js";
-import { checkEvidence, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
-
-interface ReviewVerdict {
-  verdict: "approve" | "changes_requested";
-  issues?: { severity?: string; file?: string; problem: string; fix?: string }[];
-}
+import { checkEvidence, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, proofEvidence, proofLine, proofRule, proveOrAsk, READ_ONLY, section, WRITE } from "./prompts.js";
 
 /**
  * Plan → Build → Review loop.
- * One agent plans, another implements, a third (ideally a different vendor) reviews the
- * diff with fresh context. Requested changes go back to the builder, which resumes its own
- * session so it keeps its context.
+ * One agent plans, another implements, a third reviews the diff with fresh context. The
+ * reviewer defaults to a vendor other than the planner's (the composer suggests one too), and
+ * judges the change against the task, with the plan only as context: a reviewer that shares
+ * the planner's view would let a wrong plan through. code-flow runs the tests the reviewer shows
+ * its findings with, and findings that block (see `blocks`) go back to the builder, which resumes
+ * its own session so it keeps its context, and may dispute a finding no test shows.
  */
 export const pipelinePattern: Pattern = {
   id: "pipeline",
@@ -24,7 +23,7 @@ export const pipelinePattern: Pattern = {
   roles: [
     { id: "planner", label: "Planner", description: "Reads the code, writes the implementation plan", default: ["claude"] },
     { id: "builder", label: "Builder", description: "Implements the plan and applies review fixes", default: ["codex"] },
-    { id: "reviewer", label: "Reviewer", description: "Reviews the diff with fresh eyes", default: ["claude"] },
+    { id: "reviewer", label: "Reviewer", description: "Reviews the diff against the task, ideally a vendor other than the planner", default: ["agy"] },
   ],
   options: [
     { id: "maxRounds", label: "Max review rounds", type: "number", default: 2, min: 1, max: 5 },
@@ -36,6 +35,7 @@ export const pipelinePattern: Pattern = {
     const builder = ctx.agent("builder");
     const reviewer = ctx.agent("reviewer");
     const maxRounds = ctx.option("maxRounds", 2);
+    if (reviewer === planner) ctx.log(`${planner} both plans and reviews; a reviewer from another vendor is likelier to catch a wrong plan`, "warn");
     const wt = await ctx.worktree("build");
 
     let plan = await ctx.ask({
@@ -66,22 +66,32 @@ export const pipelinePattern: Pattern = {
         preamble("builder", builder, WRITE) +
         section("Task", ctx.task) +
         section("Plan from the planner", plan.finalText) +
+        proofRule(ctx) +
         section("Deliverable", "Implement the plan, run the relevant tests, then summarize what you changed."),
     });
     await ctx.commit(wt, `${builder}: implement plan`);
     const checkFixes = ctx.option("checkFixes", 2);
 
     let verdict: ReviewVerdict | undefined;
+    let findings: ReviewFinding[] = [];
     let review: StepOutcome | undefined;
+    let reply: string | undefined;
     let fixer = build;
     let check: CheckResult | null = null;
+    let proof: Proof | null = null;
+    let askedForProof = false;
     let reviewRounds = 0;
 
     for (let round = 1; round <= maxRounds; round++) {
       // Every round starts with code-flow running the check; a reviewer never sees red code.
       const fixed = await fixUntilGreen(ctx, { agent: builder, role: "builder", wt, session: fixer, attempts: checkFixes });
-      check = fixed.check;
       fixer = fixed.session ?? fixer;
+      // Green isn't enough: a test should fail without the change. The builder is asked for one once.
+      const proved = await proveOrAsk(ctx, { agent: builder, role: "builder", wt, check: fixed.check, session: fixer, attempts: checkFixes, ask: !askedForProof });
+      askedForProof ||= proved.asked;
+      check = proved.check;
+      proof = proved.proof;
+      fixer = proved.session ?? fixer;
       if (check && !check.ok) {
         ctx.log(`The check still fails after ${checkFixes} fix attempts; stopping before review`, "warn");
         break;
@@ -101,33 +111,36 @@ export const pipelinePattern: Pattern = {
         resume: review,
         prompt:
           (review ? "The builder addressed your previous review. Here is the updated diff.\n" : "") +
+          builderReply(reply) +
           preamble("reviewer", reviewer, `${READ_ONLY} You did not write this code; review it critically.`) +
           section("Task", ctx.task) +
           // A reviewer without its earlier session hasn't seen the plan.
-          (round === 1 || !review?.sessionId ? section("Plan", plan.finalText) : "") +
+          (round === 1 || !review?.sessionId ? section("The planner's plan (context, not the spec)", plan.finalText) : "") +
           section("Diff against base", fence(diff, "diff")) +
           checkEvidence(ctx, check) +
+          proofEvidence(proof) +
           (testChanges.length
             ? section(
                 "Changes to tests (found by code-flow)",
-                `These can make the check pass without fixing anything. Request changes unless the task clearly requires them:\n${describeIssues(testChanges)}`,
+                `These can make the check pass without fixing anything. Raise each as a medium issue unless the task clearly requires it:\n${describeIssues(testChanges)}`,
               )
             : "") +
           section(
             "Deliverable",
-            "Check correctness, missed requirements, edge cases, tests and security. Only request changes for real problems, not style preferences.",
+            "Judge the change against the task, not against the plan: the plan is one way to do it, and it can be wrong. " +
+              "If following it missed or broke something the task asks for, raise that and say what the task needs instead. " +
+              "Check correctness, missed requirements, edge cases, tests and security. Only raise real problems, not style preferences.",
           ) +
-          jsonInstruction(
-            '{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}',
-          ),
+          reproRule(ctx) +
+          jsonInstruction(REVIEW_SHAPE),
       });
 
       review = decided.outcome;
       verdict = decided.value;
       reviewRounds = round;
-      ctx.log(`Review round ${round}: ${verdict.verdict} (${verdict.issues?.length ?? 0} issues)`);
-      if (verdict.verdict === "changes_requested") ctx.learn(verdict.issues ?? []);
-      if (verdict.verdict === "approve" || round === maxRounds) break;
+      // Approval goes by what blocks once code-flow has run the reviewer's tests, not by its verdict word.
+      findings = await checkReview(ctx, wt, { label: `Review round ${round}`, reviewer, round, review: verdict });
+      if (approves(findings) || round === maxRounds) break;
 
       fixer = await ctx.ask({
         title: `Address review (round ${round})`,
@@ -136,29 +149,28 @@ export const pipelinePattern: Pattern = {
         mode: "write",
         cwd: wt,
         resume: fixer,
-        prompt:
-          `The ${reviewer} reviewer requested changes. Address each issue, re-run tests, and summarize the fixes.\n` +
-          fence(JSON.stringify(verdict.issues ?? [], null, 2), "json"),
+        prompt: findingsForBuilder(reviewer, findings),
       });
+      reply = fixer.finalText;
       await ctx.commit(wt, `${builder}: address review round ${round}`);
     }
 
     await ctx.artifact("Result", wt);
     const green = !check || check.ok;
-    const approved = green && !!review && (!verdict || verdict.verdict === "approve");
+    const approved = green && !!review && approves(findings);
     if (ctx.hasCheck) ctx.setVerdict(green ? "passed" : "failing");
-    ctx.setFacts({ reviewRounds, approved });
+    ctx.setFacts({ reviewRounds, approved, proof: ctx.proofOf(wt)?.status });
     const headline = !green
       ? `Check \`${check!.command}\` still fails after ${checkFixes} fix attempts`
       : approved
         ? ctx.hasCheck ? `Approved, and \`${check!.command}\` passes` : "Approved"
-        : "Not approved after the last review round";
+        : "Not approved: findings still block after the last review round";
     return [
       `**${headline}** — branch \`${wt.branch}\``,
+      proofLine(ctx.proofOf(wt)),
+      review ? findingsLine(findings) : "",
       section("Builder summary", fixer.finalText),
-      verdict?.issues?.length && !approved
-        ? section("Open review issues", verdict.issues.map((i) => `- ${i.problem}`).join("\n"))
-        : "",
+      review && !approved ? findingsSection("Open review findings", findings) : "",
       !green ? section("Last failure", "```\n" + check!.output.slice(-1_500).trim() + "\n```") : "",
     ].join("\n");
   },

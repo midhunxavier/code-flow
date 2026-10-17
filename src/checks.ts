@@ -22,6 +22,8 @@ export interface CheckResult {
   output: string;
   /** Tests that ran (passed + failed), when the runner's summary says. */
   tests?: number;
+  /** Tests that failed (pytest: and errored), when the runner's summary says. */
+  failed?: number;
 }
 
 const KEEP_OUTPUT = 20_000;
@@ -188,7 +190,7 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
         timedOut,
         durationMs: Date.now() - started,
         output: timedOut ? `${trimmed}\n[timed out after ${Math.round(opts.timeoutMs / 1000)}s]` : trimmed,
-        tests: countTests(output),
+        ...testCounts(output),
       });
     };
     child.on("error", (err) => {
@@ -209,39 +211,51 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
 }
 
 /**
- * How many tests ran, read from the runner's summary (node --test, Jest, Vitest, Mocha, pytest,
- * cargo, Go). Skipped tests don't count: a drop between two runs means tests were removed or
- * skipped. Undefined when the output has no summary code-flow recognizes.
+ * How many tests ran and how many of them failed, read from the runner's summary (node --test,
+ * Jest, Vitest, Mocha, pytest, cargo, Go). Skipped tests don't count: a drop in tests between two
+ * runs means tests were removed or skipped. Empty when the output has no summary code-flow
+ * recognizes.
  */
-export function countTests(output: string): number | undefined {
+export function testCounts(output: string): { tests?: number; failed?: number } {
   const tail = output.slice(-20_000);
   const last = (re: RegExp) => {
     const all = [...tail.matchAll(re)];
     return all.length ? all[all.length - 1]! : undefined;
   };
   const n = (s: string | undefined) => (s ? Number(s) : 0);
+  const counts = (passed: number, failed: number) => ({ tests: passed + failed, failed });
   // node --test: "# pass 12" / "# fail 1" (TAP) or "ℹ pass 12" / "ℹ fail 1" (spec reporter)
   const nodePass = last(/^(?:#|ℹ) pass (\d+)/gm);
-  if (nodePass) return n(nodePass[1]) + n(last(/^(?:#|ℹ) fail (\d+)/gm)?.[1]);
+  if (nodePass) return counts(n(nodePass[1]), n(last(/^(?:#|ℹ) fail (\d+)/gm)?.[1]));
   // Jest: "Tests:       1 failed, 2 skipped, 10 passed, 13 total"
   const jest = last(/^Tests:\s+(.*\d+ total)/gm);
-  if (jest) return n(jest[1]!.match(/(\d+) passed/)?.[1]) + n(jest[1]!.match(/(\d+) failed/)?.[1]);
+  if (jest) return counts(n(jest[1]!.match(/(\d+) passed/)?.[1]), n(jest[1]!.match(/(\d+) failed/)?.[1]));
   // Vitest: "Tests  2 failed | 10 passed (12)"
   const vitest = last(/^\s*Tests\s+(.*\(\d+\))/gm);
-  if (vitest) return n(vitest[1]!.match(/(\d+) passed/)?.[1]) + n(vitest[1]!.match(/(\d+) failed/)?.[1]);
+  if (vitest) return counts(n(vitest[1]!.match(/(\d+) passed/)?.[1]), n(vitest[1]!.match(/(\d+) failed/)?.[1]));
   // cargo: "test result: ok. 10 passed; 0 failed; 1 ignored" (one line per test binary)
   const cargo = [...tail.matchAll(/test result: \w+\. (\d+) passed; (\d+) failed/g)];
-  if (cargo.length) return cargo.reduce((sum, m) => sum + n(m[1]) + n(m[2]), 0);
-  // pytest: "===== 2 failed, 10 passed, 1 skipped in 0.12s ====="
-  const pytest = last(/^=+ (.*\d+ (?:passed|failed).*) in [\d.]+s/gm);
-  if (pytest) return n(pytest[1]!.match(/(\d+) passed/)?.[1]) + n(pytest[1]!.match(/(\d+) failed/)?.[1]);
+  if (cargo.length) return counts(cargo.reduce((sum, m) => sum + n(m[1]), 0), cargo.reduce((sum, m) => sum + n(m[2]), 0));
+  // pytest: "===== 2 failed, 10 passed, 1 skipped, 1 error in 0.12s =====", or the same without the
+  // bars under -q. An error (in a fixture, or a module that doesn't import) is a test that ran
+  // and didn't pass, so "9 passed, 1 error" is 10 tests, and "1 error in 0.07s" is a summary too.
+  const pytest = [...tail.matchAll(/^=*\s*(\d+ [a-z]+(?:, \d+ [a-z]+)*) in [\d.]+s\b/gm)].filter((m) => /\d+ (?:passed|failed|errors?)\b/.test(m[1]!)).pop();
+  if (pytest) {
+    const failed = n(pytest[1]!.match(/(\d+) failed/)?.[1]) + n(pytest[1]!.match(/(\d+) errors?\b/)?.[1]);
+    return counts(n(pytest[1]!.match(/(\d+) passed/)?.[1]), failed);
+  }
   // Mocha: "  10 passing" / "  2 failing"
   const mocha = last(/^\s+(\d+) passing/gm);
-  if (mocha) return n(mocha[1]) + n(last(/^\s+(\d+) failing/gm)?.[1]);
+  if (mocha) return counts(n(mocha[1]), n(last(/^\s+(\d+) failing/gm)?.[1]));
   // go test -v: one line per test
   const go = tail.match(/^--- (?:PASS|FAIL): /gm);
-  if (go) return go.length;
-  return undefined;
+  if (go) return { tests: go.length, failed: go.filter((l) => l.includes("FAIL")).length };
+  return {};
+}
+
+/** How many tests ran, from the runner's summary (see `testCounts`). */
+export function countTests(output: string): number | undefined {
+  return testCounts(output).tests;
 }
 
 const TEST_RUNNER =
@@ -326,10 +340,7 @@ export function cantRunReason(result: CheckResult): string | undefined {
   const missingModule = /ModuleNotFoundError|No module named/;
   const code = result.exitCode;
 
-  // The shell couldn't find (126: couldn't execute) the command: `uv`, `poetry`, `pytest`…
-  if (code === 127 || code === 126) return first(/not found/i, /cannot execute|permission denied|no such file/i) ?? `command not found (exit code ${code})`;
-  // `python3 -m pytest` without pytest; uv or Poetry with nothing installed in the environment.
-  const noRunner = first(/No module named '?pytest'?$/, /^error: Failed to spawn: /, /^Command not found: /);
+  const noRunner = runnerMissing(result);
   if (noRunner) return noRunner;
 
   if (!/\bpytest\b/.test(result.command) && !/^=+ .*(test session starts|no tests ran)|^rootdir: |while loading conftest/m.test(output)) return undefined;
@@ -338,6 +349,65 @@ export function cantRunReason(result: CheckResult): string | undefined {
   if (code === 5) return first(/no tests ran/i, /collected 0 items/) ?? "pytest collected no tests (exit code 5)";
   // Test modules that can't import the project's own package: it isn't installed here.
   if (/errors? during collection/.test(output) && missingModule.test(output)) return first(missingModule);
+  return undefined;
+}
+
+/**
+ * The test runner itself isn't there: the shell couldn't find (126: couldn't execute) the
+ * command (`uv`, `poetry`, `pytest`…), `python3 -m pytest` without pytest, or uv or Poetry with
+ * nothing installed in the environment. Returns the line that says so.
+ */
+export function runnerMissing(result: CheckResult): string | undefined {
+  if (result.ok || result.timedOut) return undefined;
+  const lines = result.output
+    .split("\n")
+    .map((l) => l.replace(/^E\s+/, "").trim())
+    .filter(Boolean);
+  const first = (...res: RegExp[]) => {
+    for (const re of res) {
+      const line = lines.find((l) => re.test(l));
+      if (line) return line.length > 200 ? `${line.slice(0, 200)}…` : line;
+    }
+    return undefined;
+  };
+  const code = result.exitCode;
+  if (code === 127 || code === 126) return first(/not found/i, /cannot execute|permission denied|no such file/i) ?? `command not found (exit code ${code})`;
+  return first(/No module named '?pytest'?$/, /^error: Failed to spawn: /, /^Command not found: /);
+}
+
+/**
+ * What a fail-to-pass proof's run says: the check on the base code, with the change's tests put
+ * onto it. Failing there is the point (a test needs the change); passing means none does. A run
+ * that couldn't get as far as the tests (no test runner, nothing collected, a timeout) says
+ * neither. A test that can't import code only the change adds does fail for the change, so an
+ * import error counts as failing.
+ */
+export function proofOutcome(result: CheckResult): { status: "proven" | "unproven" | "unverified"; detail: string } {
+  if (result.ok) return { status: "unproven", detail: `\`${result.command}\` passes on the base code too, with this change's tests` };
+  const unknown = inconclusive(result, "on the base code");
+  if (unknown) return { status: "unverified", detail: unknown };
+  return { status: "proven", detail: failureExcerpt(result.output, 1_500) || `exit code ${result.exitCode}` };
+}
+
+/**
+ * What a run of a reviewer's repro (a test that should fail because of the bug it reports) says
+ * about the result: failing there confirms the bug, passing refutes it. A run that never got as
+ * far as the tests says neither.
+ */
+export function reproOutcome(result: CheckResult): { status: "confirmed" | "refuted" | "unverified"; detail: string } {
+  if (result.ok) return { status: "refuted", detail: `\`${result.command}\` passes with the reviewer's test` };
+  const unknown = inconclusive(result, "on the result");
+  if (unknown) return { status: "unverified", detail: unknown };
+  return { status: "confirmed", detail: failureExcerpt(result.output, 1_500) || `exit code ${result.exitCode}` };
+}
+
+/** Why a failing run didn't get as far as the tests (no test runner, nothing collected, a timeout); else undefined. */
+function inconclusive(result: CheckResult, where: string): string | undefined {
+  if (result.timedOut) return `\`${result.command}\` timed out ${where}`;
+  const missing = runnerMissing(result);
+  if (missing) return `the test runner didn't start ${where}: ${missing}`;
+  if (/^(code-flow couldn't run it|Cancelled before it started)/.test(result.output)) return result.output.split("\n")[0]!;
+  if (result.exitCode === 5 && /\bpytest\b/.test(result.command)) return `pytest collected no tests ${where}`;
   return undefined;
 }
 

@@ -3,7 +3,7 @@ import { isPlainTestCommand, type CheckResult } from "../checks.js";
 import { changedFiles, resolveCommit, restorePaths } from "../git.js";
 import { isPlainSource, isTestFile } from "../integrity.js";
 import { TEST_SPEC_SCHEMA, TEST_VERDICT_SCHEMA } from "./schemas.js";
-import { checkSection, fence, jsonInstruction, preamble, section, WRITE } from "./prompts.js";
+import { checkSection, fence, jsonInstruction, preamble, proofLine, section, WRITE } from "./prompts.js";
 
 interface TestSpec {
   test_command: string;
@@ -84,12 +84,13 @@ export const tddPattern: Pattern = {
     }
     let testerStep = written.outcome;
     const spec: TestSpec | undefined = written.value;
-    const testsCommit = await ctx.commit(wt, `${tester}: failing tests`);
+    let testsCommit = await ctx.commit(wt, `${tester}: failing tests`);
     // Grows as the tester adds edge-case tests; the builder may not touch any of them: tests,
     // fixtures, snapshots, test config (and whatever the tester named). Only a plain source file
     // the tester added, a stub for the tests to import, is the builder's to fill in.
     const named = (spec?.test_files ?? []).map((f) => f.replace(/^\.\//, ""));
-    const testFiles = testsCommit ? (await changedFiles(wt.path, wt.base, testsCommit)).filter((f) => !isPlainSource(f) || named.includes(f)) : named;
+    const testsIn = async (commit: string | null) => (commit ? (await changedFiles(wt.path, wt.base, commit)).filter((f) => !isPlainSource(f) || named.includes(f)) : named);
+    let testFiles = await testsIn(testsCommit);
 
     // Evidence comes from code-flow running the tests itself. An agent-chosen command is only run
     // when it looks like a plain test invocation; the user's configured check always runs.
@@ -122,9 +123,32 @@ export const tddPattern: Pattern = {
       return null;
     };
 
-    // Red first: new tests that already pass don't specify anything new.
-    if (runsTargeted()) {
-      const red = await ctx.check(wt, "New tests (should fail)", targeted);
+    // Red first: tests that pass before anything is implemented don't specify anything new. This
+    // is the first half of a fail-to-pass proof, so the tester gets one chance to fix it.
+    const redCommand = runsTargeted() ? targeted : ctx.hasCheck ? ctx.run.loop.check : undefined;
+    if (redCommand) {
+      let red = await ctx.check(wt, "New tests (should fail)", redCommand);
+      if (red?.ok && ctx.run.prove !== false) {
+        ctx.log("The new tests already pass before any implementation; asking the tester for tests that fail first", "warn");
+        testerStep = await ctx.ask({
+          title: "Make the tests fail first",
+          role: "tester",
+          agent: tester,
+          mode: "write",
+          cwd: wt,
+          resume: testerStep,
+          prompt:
+            `code-flow ran \`${redCommand}\` before anyone implemented the feature, and it passes: your tests don't pin down anything the code doesn't already do.\n` +
+            "Change them so they fail now, for the missing behaviour, and pass once it's implemented. Write tests only." +
+            checkSection(red),
+        });
+        const revised = await ctx.commit(wt, `${tester}: tests that fail first`);
+        if (revised) {
+          testsCommit = revised;
+          testFiles = await testsIn(revised);
+          red = await ctx.check(wt, "Revised tests (should fail)", redCommand);
+        }
+      }
       if (red?.ok) ctx.log("The new tests already pass before any implementation; they may not test the new behaviour", "warn");
     }
 
@@ -229,12 +253,14 @@ export const tddPattern: Pattern = {
 
     await ctx.artifact("Result", wt);
     if (evidence()) ctx.setVerdict(green ? "passed" : "failing");
+    ctx.setFacts({ proof: ctx.proofOf(wt)?.status });
     const headline = green
       ? evidence() ? "All tests pass (run by code-flow)" : "The tester reports all tests pass"
       : "Tests still failing after the last round";
     return [
       `**${headline}** — branch \`${wt.branch}\``,
       `Test command: \`${testCommand}\``,
+      green ? proofLine(ctx.proofOf(wt)) : "",
       !green && feedback ? section("Still open", feedback) : "",
       builderStep ? section("Builder summary", builderStep.finalText) : "",
     ].join("\n");

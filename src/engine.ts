@@ -2,8 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { cp, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
 import {
   adapters,
   type AccessMode,
@@ -15,23 +15,26 @@ import {
 } from "./adapters/index.js";
 import { CODEFLOW_HOME, MAX_DIFF_CHARS, STEP_IDLE_MS, STEP_TIMEOUT_MS, timerMs } from "./config.js";
 import { logWarn } from "./log.js";
-import { cantRunMessage, cantRunReason, runCheck, type CheckResult, type Container } from "./checks.js";
+import { cantRunMessage, cantRunReason, isPlainTestCommand, proofOutcome, reproOutcome, runCheck, type CheckResult, type Container } from "./checks.js";
 import { commandExists } from "./adapters/process.js";
 import { contextPrompt, copyMessageFiles, hasStagedFiles, prepareContext, stageMessageFiles, type ContextInput, type RunContext } from "./context.js";
 import { fitDiff } from "./diff.js";
-import { describeIssues, inspectChanges, unverifiedIssue, type IntegrityIssue } from "./integrity.js";
+import { writeFileInside } from "./fs.js";
+import { describeIssues, inspectChanges, isTestFile, isTestSide, unverifiedIssue, type IntegrityIssue } from "./integrity.js";
 import { extractJson, shapeProblem } from "./json.js";
 import { readConventions, recordFindings, recurringLessons } from "./learnings.js";
 import { Slots } from "./slots.js";
 import {
   CONTEXT_DIR,
   branchExists,
+  changedFiles,
   changedSince,
   commitAll,
   diffSince,
   diffStat,
   ensureCodeflowExcludes,
   git,
+  gitError,
   isAncestor,
   isClean,
   isMerging,
@@ -41,6 +44,7 @@ import {
   removeDetachedWorktree,
   repoRoot,
   resolveCommit,
+  restorePaths,
   restoreSnapshot,
   snapshot,
   uncommittedCount,
@@ -144,7 +148,116 @@ export interface RunFacts {
   /** Review rounds before approval (pipeline), and whether the reviewer approved. */
   reviewRounds?: number;
   approved?: boolean;
+  /** Whether a test in the result fails without its change (see Proof). */
+  proof?: Proof["status"];
 }
+
+/**
+ * Fail-to-pass: code-flow puts a change's tests onto the base code and runs the check there. A
+ * test that fails without the change and passes with it shows the change does something; a
+ * check that passes either way shows nothing about it.
+ */
+export interface Proof {
+  /**
+   * proven: the check fails on the base code with the change's tests (and passes on the change).
+   * unproven: it passes there too, so no test needs the change. unverified: code-flow couldn't
+   * tell (setup failed on the base commit, the test runner didn't start, a timeout…).
+   */
+  status: "proven" | "unproven" | "unverified";
+  command: string;
+  /** The change's test files, fixtures and runner settings that were put onto the base code. */
+  tests: string[];
+  /** proven: how the check failed on the base code (an excerpt); otherwise why it's not proven. */
+  detail: string;
+  /** The base code, and the change whose tests ran on it. */
+  base: string;
+  head: string;
+  at: number;
+}
+
+/**
+ * A reviewer's evidence for an issue: a test that fails on the result because of the bug. A test
+ * file to add (path and full contents), a plain test-runner command that runs it (empty: the
+ * run's check), or a command alone that runs existing tests. All empty: no repro.
+ */
+export interface Repro {
+  path: string;
+  contents: string;
+  command: string;
+}
+
+/**
+ * What code-flow found running an issue's repro on the result (the reverse of a Proof: there,
+ * the tests should fail without the change; here, the reviewer's test should fail with it).
+ * confirmed: it fails, so the bug is there. refuted: it passes, a false alarm. unconfirmed: no
+ * repro came with the issue, or one code-flow won't run. unverified: code-flow couldn't tell
+ * (the test runner didn't start, a timeout, the check already fails without the test…).
+ */
+export interface FindingCheck {
+  status: "confirmed" | "refuted" | "unconfirmed" | "unverified";
+  /** What ran, and the test file put in for it. */
+  command?: string;
+  path?: string;
+  contents?: string;
+  /** confirmed: how the test fails (an excerpt); otherwise why it isn't confirmed. */
+  detail: string;
+  /** The commit it ran on. */
+  head?: string;
+}
+
+/** A review issue, what code-flow found checking it, and whether it blocks approval (see `blocks`). */
+export interface ReviewFinding {
+  severity: "high" | "medium" | "low";
+  file: string;
+  problem: string;
+  fix: string;
+  check: FindingCheck;
+  blocking: boolean;
+}
+
+/** The latest review of a result branch, its issues checked (Pipeline, Debate, Supervisor). */
+export interface CheckedReview {
+  reviewer: AgentId;
+  round: number;
+  /** The reviewer's own word; approval goes by the findings that block, not by this. */
+  verdict: "approve" | "changes_requested";
+  findings: ReviewFinding[];
+  at: number;
+}
+
+/**
+ * The severity gate: high and medium issues block approval, low ones are suggestions. Evidence
+ * overrules the reviewer: an issue whose own test passes is a false alarm, and a high-severity
+ * claim (a bug) blocks only when a test shows it, or code-flow couldn't run the one it came with.
+ */
+export function blocks(severity: string, check: FindingCheck["status"]): boolean {
+  if (severity === "low" || check === "refuted") return false;
+  return !(severity === "high" && check === "unconfirmed");
+}
+
+/**
+ * Why code-flow won't run a repro as given (undefined: it will). It runs outside any agent's
+ * sandbox, so only a plain test-runner command, and only a test file goes in: a repro can't
+ * replace the code it's about.
+ */
+export function reproProblem(repro: Repro): string | undefined {
+  const command = repro.command.trim();
+  if (command && !isPlainTestCommand(command)) return `\`${command.slice(0, 120)}\` isn't a plain test-runner command, so code-flow didn't run it`;
+  const path = repro.path.trim();
+  if (!path) return repro.contents.trim() ? "the repro's test has no path" : undefined;
+  if (isAbsolute(path) || path.startsWith("-") || path.split(/[\\/]/).some((part) => part === ".." || part === ".git")) return `\`${path.slice(0, 120)}\` isn't a path inside the repo`;
+  if (!isTestFile(path)) return `\`${path.slice(0, 120)}\` isn't named like a test file, so code-flow didn't add it`;
+  if (!repro.contents.trim()) return `the repro gives no contents for ${path}`;
+  if (repro.contents.length > 100_000) return `the repro's test is over 100 KB`;
+  return undefined;
+}
+
+/** Scratch checkouts code-flow runs tests in (see TeamContext.scratchAt). */
+type Scratch = "proof" | "repro";
+
+/** Files that say which dependencies to install: when one changes, a scratch checkout is set up again. */
+const DEPENDENCY_FILE =
+  /(^|\/)(package(-lock)?\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|pyproject\.toml|poetry\.lock|uv\.lock|Pipfile(\.lock)?|requirements[^/]*\.txt|setup\.(py|cfg)|Cargo\.(toml|lock)|go\.(mod|sum)|Gemfile(\.lock)?|composer\.(json|lock)|mix\.(exs|lock)|pom\.xml|build\.gradle(\.kts)?)$/;
 
 export interface Artifact {
   label: string;
@@ -237,6 +350,12 @@ export interface Run {
   triage?: { state: "pending" | "approved" | "rejected" | "empty"; at: number; note?: string };
   /** Changes to tests in each result branch that could make the check pass without a fix. */
   integrity?: Record<string, IntegrityIssue[]>;
+  /** Fail-to-pass proof of each result branch whose check passes (see Proof). */
+  proofs?: Record<string, Proof>;
+  /** The latest review of each result branch, its findings checked (see CheckedReview). */
+  findings?: Record<string, CheckedReview>;
+  /** Prove results fail-to-pass (`prove` in .codeflow/config.json; default on). */
+  prove?: boolean;
   /** Comparable outcomes (see RunFacts). */
   facts?: RunFacts;
   /** Runs started together to compare setups on the same task. */
@@ -330,8 +449,10 @@ export interface CouncilFinding {
   file: string;
   problem: string;
   fix: string;
-  /** Reviewers who raised it; more agreement ranks first. */
+  /** Reviewers who raised it; after severity and evidence, more agreement ranks first. */
   raisedBy: AgentId[];
+  /** What code-flow found running its repro (see FindingCheck). */
+  check?: FindingCheck;
 }
 
 export interface CouncilReview {
@@ -339,6 +460,8 @@ export interface CouncilReview {
   summary: string;
   findings: CouncilFinding[];
   reviewers: { agent: AgentId; verdict: string; issues: number }[];
+  /** Does a test in the changes fail without them? Set when the run has a check. */
+  proof?: Proof;
   markdown: string;
   /** Set when you posted it to the pull request. */
   postedTo?: string;
@@ -520,6 +643,19 @@ export class TeamContext {
   private readonly testCounts = new Map<string, { first?: number; last?: number }>();
   /** Why the run's check can't run here (null: it can), settled by its first result. */
   private checkRunsHere?: Promise<string | null>;
+  /** Whether the run's check passed in each worktree, at which commit, and how many tests ran. */
+  private readonly lastChecks = new Map<string, { head?: string; ok: boolean; tests?: number }>();
+  /** Proofs made in this attempt, by `base..head`: the same change is proven once. */
+  private readonly proofCache = new Map<string, Promise<Proof>>();
+  /** Repros run in this attempt, by commit and repro: the same test on the same code runs once. */
+  private readonly reproCache = new Map<string, Promise<FindingCheck>>();
+  /**
+   * Checkouts code-flow runs tests in, apart from the agents' worktrees: "proof" at the base code,
+   * "repro" at a result's commit. Each is set up once and moved between commits (see `scratchAt`).
+   */
+  private readonly scratch = new Map<Scratch, Promise<{ wt: Worktree; ready: boolean; setupAt: string }>>();
+  /** Runs in a scratch checkout take turns: they share it. */
+  private readonly scratchQueue = new Map<Scratch, Promise<unknown>>();
 
   constructor(
     readonly run: Run,
@@ -674,6 +810,11 @@ export class TeamContext {
     return !!this.run.loop.check && !this.run.checkCantRun;
   }
 
+  /** True when results are proven fail-to-pass: there's a check that runs here, and proofs are on. */
+  get proves(): boolean {
+    return this.hasCheck && this.run.prove !== false;
+  }
+
   /** Publish the run's current state (for engine helpers outside the class). */
   publish() {
     this.manager.emitRun(this.run);
@@ -785,6 +926,7 @@ export class TeamContext {
       (recorded) => !recorded.head || !head || recorded.head === head,
     );
     if (doneWhen && !(await this.checkCanRun(wt, result))) return null;
+    if (doneWhen) this.lastChecks.set(wt.name, { head: head ?? result.head, ok: result.ok, tests: result.tests });
     if (doneWhen && result.tests !== undefined) {
       const counts = this.testCounts.get(wt.name) ?? {};
       counts.first ??= result.tests;
@@ -855,8 +997,253 @@ export class TeamContext {
     }
   }
 
-  /** Run a shell command in a worktree as a visible step (used for checks and setup). */
-  private async command(kind: "check" | "setup", title: string, wt: Worktree, command: string): Promise<CheckResult> {
+  /**
+   * Fail-to-pass proof of the change in `wt`, from `from` (its base) to its current commit: the
+   * change's tests, with their fixtures and the runner's settings, are put onto the base code and
+   * the check runs there. It should fail: a test that passes without the change doesn't show the
+   * change does anything. Meant for a change whose check passes. Recorded on the run by result
+   * branch. Null when there's nothing to prove it with (no check that runs here, or proofs off).
+   * `known` is the check's result on the base code, reused when the change touches no tests.
+   */
+  async prove(wt: Worktree, opts: { from?: string; known?: CheckResult | null } = {}): Promise<Proof | null> {
+    if (!this.proves) return null;
+    this.checkCancelled();
+    const from = opts.from ?? wt.base;
+    const head = this.heads.get(wt.name) ?? (await resolveCommit(wt.path));
+    const key = `${from}..${head}`;
+    let proving = this.proofCache.get(key);
+    const fresh = !proving;
+    if (!proving) {
+      proving = this.remember("proof", `${wt.name}|${key}`, () => this.proveLive(wt, from, head, this.run.loop.check!, opts.known ?? undefined));
+      this.proofCache.set(key, proving);
+      // A proof that was stopped isn't a result: the next call tries again.
+      proving.catch(() => this.proofCache.get(key) === proving && this.proofCache.delete(key));
+    }
+    const proof = await proving;
+    this.run.proofs = { ...this.run.proofs, [wt.branch]: proof };
+    if (fresh) {
+      const what = proof.tests.length ? `this change's tests (${proof.tests.join(", ")})` : "the existing tests";
+      if (proof.status === "proven") this.log(`Proven: with ${what} on the base code, \`${proof.command}\` fails there, so the tests need the change`);
+      else if (proof.status === "unproven") this.log(`Not proven: ${proof.detail}, so no test fails without the change`, "warn");
+      else this.log(`Couldn't prove the change: ${proof.detail}`, "warn");
+    }
+    this.manager.emitRun(this.run);
+    return proof;
+  }
+
+  /**
+   * Prove a result whose check passed at its current commit, or forget an earlier proof of it
+   * (its code changed since, or its check fails now). Returns the proof, if any.
+   */
+  async refreshProof(wt: Worktree): Promise<Proof | null> {
+    const last = this.lastChecks.get(wt.name);
+    if (this.proves && last?.ok && last.head && last.head === this.heads.get(wt.name)) return this.prove(wt);
+    if (this.run.proofs?.[wt.branch]) {
+      const { [wt.branch]: _gone, ...rest } = this.run.proofs;
+      this.run.proofs = Object.keys(rest).length ? rest : undefined;
+    }
+    return null;
+  }
+
+  /** The recorded proof of a result branch, if any. */
+  proofOf(wt: Worktree): Proof | null {
+    return this.run.proofs?.[wt.branch] ?? null;
+  }
+
+  private proveLive(wt: Worktree, from: string, head: string, command: string, known?: CheckResult): Promise<Proof> {
+    const make = (status: Proof["status"], detail: string, tests: string[] = []): Proof => ({ status, command, tests, detail, base: from, head, at: Date.now() });
+    const run = async (): Promise<Proof> => {
+      let tests: string[] = [];
+      try {
+        const changed = await changedFiles(wt.path, from, head);
+        tests = changed.filter(isTestSide);
+        let result = !tests.length && known ? known : undefined;
+        if (!result) {
+          // Exactly the base code, then the change's version of each test file (or none, if it deleted one).
+          const checkout = await this.scratchAt("proof", from);
+          if (!checkout) return make("unverified", "setup failed on the base commit", tests);
+          // The tests may need a package only the change adds: its dependency files come along and
+          // are installed, or the missing package would make the tests fail as if they needed the
+          // change's code.
+          const deps = changed.filter((f) => DEPENDENCY_FILE.test(f) && !isTestSide(f));
+          await restorePaths(checkout.path, head, [...tests, ...deps]);
+          if (deps.length && this.run.loop.setup && !(await this.setupScratch("proof", checkout, head, "Setup proof checkout (the change's dependencies)"))) {
+            return make("unverified", `setup failed on the base code with the change's dependencies (${deps.join(", ")})`, tests);
+          }
+          result = await this.command("check", "Proof: tests without the change", checkout, command, (r) => {
+            const outcome = proofOutcome(r);
+            return outcome.status === "proven"
+              ? { ok: true, text: `Fails without the change, as it should (exit code ${r.exitCode})` }
+              : { ok: false, text: outcome.status === "unproven" ? "Passes without the change too: no test needs it" : `Couldn't tell: ${outcome.detail}` };
+          });
+          this.run.usage.checks++;
+        }
+        const { status, detail } = proofOutcome(result);
+        return make(status, detail, tests);
+      } catch (err) {
+        if (this.signal.aborted || err instanceof CancelledError) throw err;
+        return make("unverified", `code-flow couldn't set up the base code: ${(err as Error).message.split("\n")[0]}`, tests);
+      }
+    };
+    return this.inScratch("proof", run);
+  }
+
+  /**
+   * Run an issue's repro on the result in `wt` at its current commit: code-flow writes the
+   * reviewer's test into a scratch checkout of that commit and runs it (with the repro's command,
+   * else the run's check). Failing there confirms the issue; passing refutes it (see
+   * FindingCheck). Journaled, so a resumed run replays it; the same repro on the same code runs
+   * once. `title` names the step.
+   */
+  async reproduce(wt: Worktree, repro: Repro | undefined, title: string): Promise<FindingCheck> {
+    const head = this.heads.get(wt.name) ?? (await resolveCommit(wt.path));
+    const path = repro?.path.trim() ?? "";
+    const command = repro?.command.trim() || (path ? this.run.loop.check : undefined);
+    const unconfirmed = (detail: string): FindingCheck => ({ status: "unconfirmed", detail, head });
+    if (!repro || (!path && !repro.command.trim())) return unconfirmed("no test came with it");
+    const problem = reproProblem({ ...repro, path });
+    if (problem) return unconfirmed(problem);
+    if (!command) return unconfirmed(`the repro gives no command to run ${path} with, and the run has no check`);
+    if (!repro.command.trim()) {
+      // It runs with the check: that only shows something when the check passes here without it.
+      const unverified = (detail: string): FindingCheck => ({ status: "unverified", detail, command, path, contents: repro.contents, head });
+      if (this.run.checkCantRun) return unverified(`the check can't run here (${this.run.checkCantRun.reason})`);
+      const last = this.lastChecks.get(wt.name);
+      if (last && !last.ok && last.head === head) return unverified(`\`${command}\` already fails on this code without the reviewer's test`);
+    }
+    this.checkCancelled();
+    const digest = createHash("sha1").update(`${path}\0${repro.contents}\0${command}`).digest("hex").slice(0, 12);
+    const key = `${head}|${digest}`;
+    let running = this.reproCache.get(key);
+    if (!running) {
+      running = this.remember("repro", `${wt.name}|${key}`, () => this.reproduceLive(wt, head, { path, contents: repro.contents, command }, title));
+      this.reproCache.set(key, running);
+      // A run that was stopped isn't a result: the next call tries again.
+      running.catch(() => this.reproCache.get(key) === running && this.reproCache.delete(key));
+    }
+    return running;
+  }
+
+  private reproduceLive(wt: Worktree, head: string, repro: Repro, title: string): Promise<FindingCheck> {
+    const make = (status: FindingCheck["status"], detail: string): FindingCheck => ({
+      status,
+      detail,
+      command: repro.command,
+      path: repro.path || undefined,
+      contents: repro.path ? repro.contents : undefined,
+      head,
+    });
+    const run = async (): Promise<FindingCheck> => {
+      try {
+        const checkout = await this.scratchAt("repro", head);
+        if (!checkout) return make("unverified", "setup failed on the result's code");
+        if (repro.path) {
+          // The result's code may come from someone else (a PR): its symlinks mustn't take the
+          // reviewer's file outside the checkout, where nothing sandboxes code-flow's own writes.
+          const refused = await writeFileInside(checkout.path, repro.path, repro.contents);
+          if (refused) return make("unconfirmed", `code-flow didn't write the reviewer's test: ${refused}`);
+        }
+        const result = await this.command("check", title, checkout, repro.command, (r) => {
+          const outcome = reproOutcome(r);
+          return outcome.status === "confirmed"
+            ? { ok: false, text: `Fails: the problem is there (exit code ${r.exitCode})` }
+            : { ok: outcome.status === "refuted", text: outcome.status === "refuted" ? "Passes: a false alarm" : `Couldn't tell: ${outcome.detail}` };
+        });
+        this.run.usage.checks++;
+        const outcome = reproOutcome(result);
+        // Run with the check, a test the runner never picked up passes too: that refutes nothing.
+        const without = this.lastChecks.get(wt.name);
+        if (outcome.status === "refuted" && repro.path && repro.command === this.run.loop.check && without?.head === head && result.tests !== undefined && without.tests !== undefined && result.tests <= without.tests) {
+          return make("unverified", `\`${repro.command}\` ran ${result.tests} tests with it, as many as without, so it didn't run ${repro.path}`);
+        }
+        return make(outcome.status, outcome.detail);
+      } catch (err) {
+        if (this.signal.aborted || err instanceof CancelledError) throw err;
+        return make("unverified", `code-flow couldn't set up the result's code: ${(err as Error).message.split("\n")[0]}`);
+      }
+    };
+    return this.inScratch("repro", run);
+  }
+
+  /** Run `fn` when the scratch checkout `kind` is free: one checkout serves every run of its kind. */
+  private inScratch<T>(kind: Scratch, fn: () => Promise<T>): Promise<T> {
+    const queued = (this.scratchQueue.get(kind) ?? Promise.resolve()).then(fn, fn);
+    this.scratchQueue.set(kind, queued.catch(() => undefined));
+    return queued;
+  }
+
+  /**
+   * The scratch checkout `kind` at exactly `commit`, apart from the agents' worktrees: opened and
+   * set up like a worktree the first time, then moved between commits (files from earlier runs
+   * cleaned away, copied files put back). Setup runs again only when a file that says which
+   * dependencies to install changed. Undefined when setup failed. Call it from `inScratch`.
+   */
+  private async scratchAt(kind: Scratch, commit: string): Promise<Worktree | undefined> {
+    const title = `Setup ${kind} checkout`;
+    let current = await this.scratch.get(kind)?.catch(() => undefined);
+    if (!current) {
+      const opening = (async () => {
+        const wt: Worktree = { name: kind, path: join(this.run.worktreeDir, `.${kind}-check`), branch: "", base: commit };
+        const { warning } = await openDetachedWorktree(this.run.repo, wt.path, commit, { signal: this.signal });
+        if (warning) this.log(warning, "warn");
+        if (this.run.loop.copy?.length) await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
+        const ready = !this.run.loop.setup || (await this.command("setup", title, wt, this.run.loop.setup)).ok;
+        return { wt, ready, setupAt: commit };
+      })();
+      this.scratch.set(kind, opening);
+      current = await opening;
+    }
+    const { wt } = current;
+    for (const args of [["reset", "-q", "--hard", commit], ["clean", "-fdq"]]) {
+      const res = await git(args, wt.path);
+      if (res.code !== 0) throw new Error(gitError(args, res));
+    }
+    wt.base = commit;
+    if (this.run.loop.copy?.length) await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
+    if (current.setupAt !== commit && this.run.loop.setup && (await changedFiles(wt.path, current.setupAt, commit)).some((f) => DEPENDENCY_FILE.test(f))) {
+      current.ready = (await this.command("setup", `${title} (dependencies changed)`, wt, this.run.loop.setup)).ok;
+      current.setupAt = commit;
+    }
+    return current.ready ? wt : undefined;
+  }
+
+  /**
+   * Run setup in a scratch checkout whose dependency files now come from `commit`, and remember
+   * that: the next `scratchAt` sets it up again for the commit it moves to. False when setup fails.
+   */
+  private async setupScratch(kind: Scratch, wt: Worktree, commit: string, title: string): Promise<boolean> {
+    const ok = (await this.command("setup", title, wt, this.run.loop.setup!)).ok;
+    const current = await this.scratch.get(kind)?.catch(() => undefined);
+    if (current) Object.assign(current, { setupAt: commit, ready: ok });
+    return ok;
+  }
+
+  /** Remove the scratch checkouts; the run's attempt is over. */
+  async closeScratch() {
+    for (const [kind, opening] of this.scratch) {
+      this.scratch.delete(kind);
+      const current = await opening.catch(() => undefined);
+      if (current) await removeDetachedWorktree(this.run.repo, current.wt.path).catch(() => undefined);
+    }
+  }
+
+  /** Record the latest review of a result branch, its findings checked. */
+  setFindings(wt: Worktree, review: CheckedReview) {
+    this.run.findings = { ...this.run.findings, [wt.branch]: review };
+    this.manager.emitRun(this.run);
+  }
+
+  /**
+   * Run a shell command in a worktree as a visible step (used for checks and setup). `describe`
+   * says how the step reads when passing isn't what's wanted (a proof should fail).
+   */
+  private async command(
+    kind: "check" | "setup",
+    title: string,
+    wt: Worktree,
+    command: string,
+    describe?: (result: CheckResult) => { ok: boolean; text: string },
+  ): Promise<CheckResult> {
     this.checkCancelled();
     const step: Step = {
       id: `s${this.run.steps.length + 1}`,
@@ -902,12 +1289,15 @@ export class TeamContext {
       event: { kind: "tool_result", callId: step.id, output: result.output.slice(-8_000) || "(no output)", isError: !result.ok },
     });
     step.endedAt = Date.now();
-    step.status = this.signal.aborted ? this.abortedStatus() : result.ok ? "done" : "failed";
-    step.finalText = result.ok
-      ? `Passed in ${Math.round(result.durationMs / 1000)}s${result.tests !== undefined ? ` (${result.tests} tests)` : ""}`
-      : result.timedOut
-        ? `Timed out after ${this.run.loop.checkTimeoutMin} min`
-        : `Failed (exit code ${result.exitCode})`;
+    const described = describe?.(result);
+    step.status = this.signal.aborted ? this.abortedStatus() : (described?.ok ?? result.ok) ? "done" : "failed";
+    step.finalText =
+      described?.text ??
+      (result.ok
+        ? `Passed in ${Math.round(result.durationMs / 1000)}s${result.tests !== undefined ? ` (${result.tests} tests)` : ""}`
+        : result.timedOut
+          ? `Timed out after ${this.run.loop.checkTimeoutMin} min`
+          : `Failed (exit code ${result.exitCode})`);
     this.manager.emit(this.run, { type: "agent", stepId: step.id, event: { kind: "status", text: step.finalText } });
     this.manager.emit(this.run, { type: "step", step: { ...step } });
     this.checkCancelled();
@@ -1079,6 +1469,7 @@ export class TeamContext {
     else delete integrity[wt.branch];
     this.run.integrity = Object.keys(integrity).length ? integrity : undefined;
     if (issues.length) this.log(`${label}: changes to tests to look at before merging:\n${describeIssues(issues)}`, "warn");
+    await this.refreshProof(wt);
     this.manager.emitRun(this.run);
   }
 
@@ -2310,6 +2701,7 @@ export class RunManager {
       conventions: conventions || undefined,
       lessons: lessons.length ? lessons : undefined,
       learn,
+      prove: config.prove !== false,
       group: input.group,
       app: config.run,
       roles: input.roles,
@@ -2460,6 +2852,7 @@ export class RunManager {
       })
       .then(() => (run.status === "done" || run.status === "interrupted" ? undefined : collectUnfinishedWork(run)))
       .catch(() => undefined)
+      .then(() => ctx.closeScratch())
       .then(() => (run.trigger ? this.toInbox(run) : undefined))
       .catch(() => undefined)
       .finally(() => {
@@ -2702,6 +3095,8 @@ async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
   f.integrity = issues.length ? issues : undefined;
   if (issues.length) ctx.log(`Follow-up ${f.id} (${f.agent}) changed tests:\n${describeIssues(issues)}`, "warn");
   const check = await ctx.check(wt, `Check after follow-up ${f.id}`);
+  // The result changed: prove it again (or drop a proof of code that's no longer there).
+  if (sha) ctx.setFacts({ proof: (await ctx.refreshProof(wt))?.status });
   f.status = outcome.ok ? "done" : "failed";
   f.result = outcome.ok ? outcome.finalText : outcome.error;
   f.checkPassed = check ? check.ok : undefined;

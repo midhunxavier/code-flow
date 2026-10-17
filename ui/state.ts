@@ -1,5 +1,6 @@
 import { computed, signal } from "@preact/signals";
 import { api, ApiError, post, showToast, store } from "./lib.js";
+import { independentRoles, type RoleValue } from "./roles.js";
 import type {
   AgentId,
   AgentInfo,
@@ -527,7 +528,7 @@ export const contextError = signal("");
 export const patternId = signal(store.get("pattern") ?? "pipeline");
 export const pattern = computed(() => patterns.value.find((p) => p.id === patternId.value) ?? patterns.value[0]);
 /** A role is filled by an agent, or "auto": code-flow picks one whose plan has room. */
-export type RoleValue = AgentId | "auto";
+export type { RoleValue } from "./roles.js";
 export const roleSel = signal<Record<string, Record<string, RoleValue[]>>>(store.json("roleSel", {}));
 export const optionValues = signal<Record<string, Record<string, number | boolean>>>({});
 export const agentSettings = signal<AgentSettings>(store.json("agentSettings", {}));
@@ -634,18 +635,8 @@ export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]
     if (!ids.length && !role.optional && !saved[role.id] && firstAvailable) ids = [firstAvailable];
     roles[role.id] = ids;
   }
-  // A race is fairer when the judge isn't also competing: default to a vendor that isn't.
-  if (p.id === "race" && !saved.judge) {
-    const outsider = agents.value.find((a) => a.available && !roles.contestants?.includes(a.id) && !roles.contestants?.includes("auto"));
-    if (outsider) roles.judge = [outsider.id];
-  }
-  // Nobody re-reviews the supervisor's fixes to its own review: default the reviewer to another vendor.
-  if (p.id === "supervisor" && !saved.reviewer) {
-    const [supervisor] = roles.supervisor ?? [];
-    const other = agents.value.find((a) => a.available && a.id !== supervisor);
-    if (supervisor && supervisor !== "auto" && (roles.reviewer?.[0] ?? supervisor) === supervisor && other) roles.reviewer = [other.id];
-  }
-  return roles;
+  // Judges, reviewers and synthesizers default to a vendor that didn't do the work they check.
+  return independentRoles(p.id, roles, saved, agents.value.filter((a) => a.available).map((a) => a.id));
 }
 
 export function optionsFor(p: PatternInfo | undefined): Record<string, number | boolean> {

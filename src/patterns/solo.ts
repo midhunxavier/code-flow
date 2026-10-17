@@ -1,6 +1,6 @@
 import { adapters } from "../adapters/index.js";
 import type { Pattern } from "../engine.js";
-import { section, WRITE } from "./prompts.js";
+import { proofLine, section, WRITE } from "./prompts.js";
 
 /**
  * Single agent.
@@ -45,12 +45,18 @@ export const soloPattern: Pattern = {
     const sha = await ctx.commit(wt, `${agent}: ${ctx.task.split("\n")[0]!.slice(0, 60) || "your task"}`);
     const check = await ctx.check(wt);
     if (check) ctx.setVerdict(check.ok ? "passed" : "failing");
+    // Publishing the result proves it (fail-to-pass) when its check passes; nobody is asked for a test.
     await ctx.artifact("Result", wt);
+    ctx.setFacts({ proof: ctx.proofOf(wt)?.status });
 
     if (!turn.ok) {
       return `**${name} didn't finish:** ${turn.error ?? "unknown error"}\n\nReply to try again or to change course${sha ? `; what it changed is on \`${wt.branch}\`` : ""}.`;
     }
     const outcome = check ? (check.ok ? ` — \`${check.command}\` passes` : ` — \`${check.command}\` fails`) : "";
-    return [`**${sha ? `Changes on \`${wt.branch}\`` : "No changes"}**${outcome}`, section(`${name}'s answer`, turn.finalText || "(no answer)")].join("\n");
+    return [
+      `**${sha ? `Changes on \`${wt.branch}\`` : "No changes"}**${outcome}`,
+      sha ? proofLine(ctx.proofOf(wt)) : "",
+      section(`${name}'s answer`, turn.finalText || "(no answer)"),
+    ].join("\n");
   },
 };
