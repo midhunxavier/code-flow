@@ -148,11 +148,17 @@
   .rail-more { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; color: var(--muted); font-size: 12px; font-weight: 500; padding: 4px 10px 6px 26px; border-radius: 8px; }
   .rail-more:hover { color: var(--text); }
   .rail-more.quiet { padding-left: 6px; margin-top: 4px; }
-  .rail-foot { flex: none; display: flex; align-items: center; gap: 2px; margin: 0 -12px; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--panel); }
+  .rail-foot { flex: none; display: flex; align-items: center; gap: 2px; margin: 0 -12px; padding: 8px 6px; border-top: 1px solid var(--border); background: var(--panel); }
   .rail-foot .spacer { flex: 1; }
-  .foot-btn { padding: 5px 8px; min-height: 30px; gap: 5px; letter-spacing: .04em; }
+  .foot-btn { padding: 5px 7px; min-height: 30px; gap: 5px; letter-spacing: .04em; }
   .foot-btn .icon { width: 15px; height: 15px; }
   .foot-btn[aria-pressed="true"] { color: var(--accent-ink); }
+  /* short screens (phones in landscape, high zoom): the whole sidebar scrolls, so open filters never cut off; the footer stays put */
+  @media (max-height: 600px) {
+    .rail { overflow-y: auto; }
+    .rail-list { flex: none; overflow: visible; }
+    .rail-foot { position: sticky; bottom: 0; margin-top: auto; }
+  }
   .rail-title { font-size: 10px; font-weight: 500; color: var(--faint); letter-spacing: .14em; padding: 12px 10px 5px; }
   .run-item { position: relative; text-align: left; border: 1px solid transparent; background: none; border-radius: var(--radius-sm); padding: 6px 10px; display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; column-gap: 9px; width: 100%; transition: background-color .15s, border-color .15s; }
   .run-item:hover { background: var(--hover); }
@@ -650,6 +656,7 @@
   @media (max-width: 1180px) {
     .app, .app.with-side { grid-template-columns: 236px minmax(0, 1fr); }
     .brand { width: 210px; }
+    .agent-status .as-label:not(.bad) { display: none; } /* the narrower sidebar: just the dots, unless one needs you */
     /* the side panel slides over the work instead of taking a column */
     .side { display: flex; position: fixed; right: 0; top: 60px; bottom: 0; width: min(var(--side-w, 420px), 92vw); z-index: 5; box-shadow: var(--shadow-md); transform: translateX(105%); transition: transform .25s var(--ease); }
     .app.with-side .side { transform: none; }
@@ -785,7 +792,7 @@
   .ws-tools .lbl { margin: 0 4px 0 0; }
   .ws-tools .field.inline { width: 150px; }
   .serve-logs { width: 100%; max-height: 180px; }
-  button.agent-status { display: inline-flex; align-items: center; gap: 4px; border: 1px solid transparent; background: none; padding: 4px 9px; min-height: 30px; border-radius: 999px; transition: background-color .15s; }
+  button.agent-status { display: inline-flex; align-items: center; gap: 4px; border: 1px solid transparent; background: none; padding: 4px 7px; min-height: 30px; border-radius: 999px; transition: background-color .15s; }
   button.agent-status:hover { background: var(--hover); }
   .agent-status .agent { gap: 0; }
   .agent-status .agent.off { opacity: .4; }
