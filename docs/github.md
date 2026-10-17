@@ -14,6 +14,13 @@ When a run finishes, each result branch has **Review changes**, **Merge…** and
   - Otherwise code-flow builds the merge with `git merge-tree` and moves the branch, so no checkout is touched. That needs git 2.38 or later; with an older git, check the branch out and merge there.
   - On a real conflict you see the files and can **ask an agent to resolve them**: code-flow merges the target into the result branch and the agent fixes the markers. Then merge again.
   - By default the run is archived after merging (worktrees removed, branches kept).
+  - Merging a branch that's already in the target says *Nothing to merge* instead of recording a second merge.
+- **Merge PR…** takes the place of **Merge…** once the branch has a pull request, and merges that pull request on GitHub (`gh pr merge`):
+  - Pick how, from the ways the repository allows: a merge commit, squash, or rebase. You confirm before anything happens. The panel shows the PR's CI, and says so if GitHub reports a conflict.
+  - It merges only while the pull request is exactly the branch you reviewed here. If the branch has commits the PR doesn't have yet (a follow-up that wasn't pushed), or someone pushed to the PR, you're told which and nothing is merged; GitHub also refuses if the PR moves in the meantime.
+  - A draft or closed PR isn't merged; one already merged on GitHub is recorded as merged. No branch is deleted, and `origin/<base>` is fetched afterwards.
+  - With a merge queue, or rules that hold the merge until required checks pass, GitHub accepts it and merges later.
+  - **Merge into a local branch instead…** still offers the local merge above.
 - **Open PR…** pushes the branch to `origin` and opens a pull request with `gh`, using the task and summary as the description (cut to fit GitHub's 65,536-character limit). If the push works but `gh` then fails, or a pull request for the branch is already open, code-flow finds that pull request and records it, so trying again doesn't fail with "already exists".
 - **Archive…** removes a run's worktrees (optionally its branches too). Kept branches can still be merged or resumed later. A worktree git won't remove (a locked one, one with submodules) is tried again with `--force` twice; whatever still can't be removed is reported rather than left behind silently.
 - **Try it:** each result also has **Terminal**, **Editor** and **Folder** buttons and **▶ Run app**; see [Configuration](configuration.md#per-repo-config).

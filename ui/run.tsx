@@ -28,7 +28,7 @@ import {
   selectProject,
 } from "./state.js";
 import { ProjectChip } from "./projects.js";
-import type { AgentEvent, AgentId, Artifact, FollowUp, IntegrityIssue, MergeOutcome, Note, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
+import type { AgentEvent, AgentId, Artifact, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
 const modelNote = (run: RunSummary | null, id?: AgentId) =>
@@ -812,7 +812,7 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
         <code>{artifact.branch}</code>
         {merged.map((m) => (
           <span key={m.commit} class="badge ok">
-            merged into {m.into}
+            {m.pr ? "PR merged into" : "merged into"} {m.into}
           </span>
         ))}
         {pr ? (
@@ -828,7 +828,7 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
           ) : null}
           {worktree ? (
             <button class="btn small" aria-pressed={panel === "merge"} onClick={() => setPanel(panel === "merge" ? null : "merge")}>
-              Merge…
+              {pr ? "Merge PR…" : "Merge…"}
             </button>
           ) : null}
           {worktree && fromPr && !fromPr.isCrossRepository && run.status !== "running" ? (
@@ -868,9 +868,11 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
       {run.integrity?.[artifact.branch]?.length ? <IntegrityNote issues={run.integrity[artifact.branch]!} /> : null}
       {artifact.stat ? <pre>{artifact.stat}</pre> : <div class="help">No changes</div>}
       {worktree && existsHint(run) ? <WorkspaceTools run={run} worktree={worktree.name} /> : null}
-      {panel === "merge" && worktree ? <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : null}
+      {panel === "merge" && worktree ? (
+        pr ? <PrMergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} />
+      ) : null}
       {panel === "pr" ? <PrPanel run={run} branch={artifact.branch} /> : null}
-      {pr && worktree ? <WatchPanel run={run} branch={artifact.branch} steps={steps} worktree={worktree.name} /> : null}
+      {pr && worktree && !merged.some((m) => m.pr === pr) ? <WatchPanel run={run} branch={artifact.branch} steps={steps} worktree={worktree.name} /> : null}
     </div>
   );
 }
@@ -1048,6 +1050,86 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
         </div>
       ) : null}
     </div>
+  );
+}
+
+const MERGE_METHOD_TEXT: Record<MergeMethod, string> = { merge: "Create a merge commit", squash: "Squash and merge", rebase: "Rebase and merge" };
+const CI_TEXT = { pass: "CI passing", fail: "CI failing", pending: "CI still running", none: "no CI checks" } as const;
+
+/** Merge the branch's pull request on GitHub (or, if you'd rather, into a local branch). */
+function PrMergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch: string; worktree: string; steps: Step[] }) {
+  const [info, setInfo] = useState<PrMergeInfo | null>(null);
+  const [error, setError] = useState("");
+  const [method, setMethod] = useState<MergeMethod | "">("");
+  const [archiveAfter, setArchiveAfter] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [local, setLocal] = useState(false);
+  useEffect(() => {
+    api<PrMergeInfo>(`/api/runs/${run.id}/pr-merge?branch=${encodeURIComponent(branch)}`).then(setInfo, (e) => setError((e as Error).message));
+  }, [run.id, branch]);
+  const how = method || info?.methods[0] || "merge";
+  const name = info ? `PR #${info.number}` : "the PR";
+  const open = info?.state === "OPEN";
+  const merge = async () => {
+    if (!info || !confirm(`${MERGE_METHOD_TEXT[how]}: merge ${name} into ${info.baseRefName} on GitHub?`)) return;
+    setBusy(true);
+    try {
+      const outcome = await post<{ merged: boolean; already?: boolean; into: string }>(`/api/runs/${run.id}/merge-pr`, { branch, method: how, archiveAfter });
+      if (!outcome.merged) showToast(`GitHub accepted the merge; ${name} merges once the repository's requirements are met`, 6000);
+      else showToast(`${outcome.already ? `${name} was already merged` : `Merged ${name}`} into ${outcome.into} on GitHub${archiveAfter ? " and archived the run" : ""}`, 4000);
+      setInfo({ ...info, state: outcome.merged ? "MERGED" : info.state });
+    } catch (err) {
+      showToast((err as Error).message, 6000);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <div class="ship-panel">
+        <div class="row">
+          <label class="lbl">Merge pull request</label>
+          {info ? (
+            <a href={info.url} target="_blank" rel="noreferrer">
+              #{info.number} into {info.baseRefName} ↗
+            </a>
+          ) : (
+            <span class="help">{error ? "—" : "Asking GitHub…"}</span>
+          )}
+          {open ? (
+            <>
+              <select class="field" value={how} aria-label="How to merge" onChange={(e) => setMethod(e.currentTarget.value as MergeMethod)}>
+                {info!.methods.map((m) => (
+                  <option key={m} value={m}>
+                    {MERGE_METHOD_TEXT[m]}
+                  </option>
+                ))}
+              </select>
+              <label class="check">
+                <input type="checkbox" checked={archiveAfter} onChange={(e) => setArchiveAfter(e.currentTarget.checked)} /> archive the run afterwards (removes its worktrees, keeps branches)
+              </label>
+              <button class="btn primary small" disabled={busy || info!.isDraft} onClick={merge}>
+                {busy ? "Merging…" : `Merge ${name}`}
+              </button>
+            </>
+          ) : null}
+        </div>
+        {error ? <div class="msg err">{error}</div> : null}
+        {info?.state === "MERGED" ? <div class="msg">{name} is merged into {info.baseRefName}.</div> : null}
+        {info?.state === "CLOSED" ? <div class="msg warn">{name} is closed. Reopen it on GitHub to merge it.</div> : null}
+        {open && info!.isDraft ? <div class="msg warn">{name} is a draft. Mark it ready for review on GitHub, then merge.</div> : null}
+        {open && info!.mergeable === "CONFLICTING" ? <div class="msg warn">GitHub says {name} conflicts with {info!.baseRefName}: merge {info!.baseRefName} into the branch and resolve them first.</div> : null}
+        {open ? (
+          <div class="help">
+            {CI_TEXT[info!.ci]}. code-flow merges it on GitHub only while it's exactly the branch you reviewed here, and deletes no branches.{" "}
+            <button class="linkish" onClick={() => setLocal(!local)}>
+              {local ? "Hide local merge" : "Merge into a local branch instead…"}
+            </button>
+          </div>
+        ) : null}
+      </div>
+      {local || error ? <MergePanel run={run} branch={branch} worktree={worktree} steps={steps} /> : null}
+    </>
   );
 }
 

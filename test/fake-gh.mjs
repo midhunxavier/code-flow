@@ -8,6 +8,7 @@
 // `signedOut: true` makes every command fail the way an expired login does (and `gh auth
 // status` say so); `failAll: "<message>"` makes every command but `auth status` fail with it.
 // `createFails: "<message>"` makes `gh pr create` make the PR and then fail anyway (a timeout).
+// `gh pr merge` merges into the base branch on origin; `repo` sets the merge methods allowed.
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
@@ -110,7 +111,26 @@ else if (group === "issue" && command === "view") {
 }
 else if (group === "pr" && command === "view") {
   const pr = prOf(target);
-  print({ ...pr, headRefOid: headOf(pr), reviews: pr.reviews ?? [] });
+  print({ ...pr, headRefOid: headOf(pr), reviews: pr.reviews ?? [], statusCheckRollup: rollup(pr) });
+} else if (group === "repo" && command === "view") print(state.repo ?? { mergeCommitAllowed: true, squashMergeAllowed: true, rebaseMergeAllowed: true });
+else if (group === "pr" && command === "merge") {
+  const pr = prOf(target);
+  if (pr.state !== "OPEN") fail(`X Pull request #${pr.number} was already ${pr.state === "MERGED" ? "merged" : "closed"}`);
+  const method = ["merge", "squash", "rebase"].find((m) => args.includes(`--${m}`));
+  if (!method) fail("--merge, --rebase, or --squash required when not running interactively");
+  const head = headOf(pr);
+  if (flag("--match-head-commit") && flag("--match-head-commit") !== head) fail("GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)");
+  // `queued`: a merge queue takes it, and it merges later.
+  if (!pr.queued) {
+    // Like GitHub: the base branch on origin gets the merge (a merge commit, whatever the method).
+    const originDir = execFileSync("git", ["remote", "get-url", "origin"]).toString().trim();
+    const og = (...a) => execFileSync("git", a, { cwd: originDir }).toString().trim();
+    const tree = og("merge-tree", "--write-tree", `refs/heads/${pr.baseRefName}`, head).split("\n")[0];
+    const commit = og("-c", "user.name=gh", "-c", "user.email=gh@example.com", "commit-tree", tree, "-p", `refs/heads/${pr.baseRefName}`, "-p", head, "-m", `Merge pull request #${pr.number}`);
+    og("update-ref", `refs/heads/${pr.baseRefName}`, commit);
+    Object.assign(pr, { state: "MERGED", mergeCommit: { oid: commit }, mergedWith: method });
+    save();
+  }
 } else if (group === "pr" && command === "checks") {
   const pr = prOf(target);
   const head = headOf(pr);

@@ -55,7 +55,19 @@ import { branchDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktr
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
 import { projectOf, type Project, type Projects } from "./projects.js";
-import { commentOnPr, loadSource, mergeBase, pushBranch, sourcePrompt, type RunSource, type SourceInput } from "./github.js";
+import {
+  commentOnPr,
+  loadSource,
+  mergeBase,
+  mergePullRequest,
+  prMergeInfo,
+  pushBranch,
+  sourcePrompt,
+  type MergeMethod,
+  type PrMergeInfo,
+  type RunSource,
+  type SourceInput,
+} from "./github.js";
 
 /** How many agent CLIs, and how many check/setup commands, may run at once across all runs. */
 const agentSlots = new Slots(Math.max(1, Number(process.env.CODEFLOW_MAX_AGENTS) || 6));
@@ -201,8 +213,8 @@ export interface Run {
   resumes?: number;
   /** Work you sent back to an agent after the run (review comments, conflict fixes). */
   followUps: FollowUp[];
-  /** Result branches merged from the UI. */
-  merges: { branch: string; into: string; commit: string; at: number }[];
+  /** Result branches merged from the UI; `pr` when it was the branch's pull request, on GitHub. */
+  merges: { branch: string; into: string; commit: string; at: number; pr?: string }[];
   /** Pull requests opened from the UI (or the PR the run started from, once pushed to), by branch. */
   prs: Record<string, string>;
   /** The GitHub issue or pull request the run started from. */
@@ -1733,6 +1745,8 @@ export class RunManager {
     const run = this.require(id);
     if (this.busyRun(run)) throw new Error("Wait for the run to finish before merging");
     if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
+    // git would say "Already up to date" and code-flow would call that a merge.
+    if (await isAncestor(run.repo, input.branch, `refs/heads/${input.into}`)) throw new Error(`Nothing to merge: ${input.into} already has everything on ${input.branch}`);
     const outcome = await mergeInto(run.repo, input.branch, input.into, `Merge ${input.branch} into ${input.into} (code-flow run ${run.id})`);
     if (outcome.ok) {
       run.merges.push({ branch: input.branch, into: input.into, commit: outcome.commit, at: Date.now() });
@@ -1741,6 +1755,65 @@ export class RunManager {
       if (input.archiveAfter) await this.archive(id, { cleanup: true });
     }
     return outcome;
+  }
+
+  /** A result branch's pull request, as merging it needs to know it. */
+  async prMergeInfo(id: string, branch: string): Promise<PrMergeInfo> {
+    const run = this.require(id);
+    const url = run.prs[branch];
+    if (!url) throw new Error("This branch has no pull request");
+    return prMergeInfo(run.repo, url);
+  }
+
+  /**
+   * Merge a result branch's pull request on GitHub, the way the button there does, but only
+   * while the PR is exactly the branch you reviewed here (GitHub refuses if it moves meanwhile).
+   */
+  async mergePr(id: string, input: { branch: string; method: MergeMethod; archiveAfter?: boolean }) {
+    const run = this.require(id);
+    if (this.busyRun(run)) throw new Error("Wait for the run to finish before merging");
+    if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
+    const url = run.prs[input.branch];
+    if (!url) throw new Error("Open a pull request for this branch first");
+    const pr = await prMergeInfo(run.repo, url);
+    const name = `PR #${pr.number}`;
+    if (pr.state === "MERGED") {
+      this.recordPrMerge(run, input.branch, pr);
+      if (input.archiveAfter) await this.archive(id, { cleanup: true });
+      return { merged: true, already: true, url, into: pr.baseRefName, commit: pr.mergeCommit };
+    }
+    if (pr.state === "CLOSED") throw new Error(`${name} is closed. Reopen it on GitHub to merge it.`);
+    if (pr.isDraft) throw new Error(`${name} is a draft. Mark it ready for review on GitHub, then merge.`);
+    if (!pr.methods.includes(input.method)) throw new Error(`This repository doesn't allow ${input.method === "merge" ? "merge commits" : `${input.method} merging`}. Pick ${pr.methods.join(" or ")}.`);
+    const local = await resolveCommit(run.repo, `refs/heads/${input.branch}`);
+    if (pr.headRefOid !== local) {
+      throw new Error(
+        (await isAncestor(run.repo, pr.headRefOid, local))
+          ? `${input.branch} has commits that aren't on ${name} yet. Push them to the pull request, then merge.`
+          : `${name} has commits that aren't on ${input.branch} (someone pushed to it). Look at it on GitHub before merging.`,
+      );
+    }
+    await mergePullRequest(run.repo, url, input.method, local);
+    const after = await prMergeInfo(run.repo, url).catch(() => undefined);
+    if (after && after.state !== "MERGED") {
+      // A merge queue, or a rule that holds the merge until the checks it requires pass.
+      this.emit(run, { type: "log", level: "info", text: `GitHub accepted merging ${url}, but it isn't merged yet; it merges once the repository's requirements are met` });
+      this.emitRun(run);
+      return { merged: false, url, into: pr.baseRefName };
+    }
+    this.recordPrMerge(run, input.branch, after ?? pr);
+    // So origin/<base> (the next run's starting point, the branch lists) has it straight away.
+    await git(["fetch", "--quiet", "origin", `+refs/heads/${pr.baseRefName}:refs/remotes/origin/${pr.baseRefName}`], run.repo);
+    if (input.archiveAfter) await this.archive(id, { cleanup: true });
+    return { merged: true, url, into: pr.baseRefName, commit: after?.mergeCommit };
+  }
+
+  private recordPrMerge(run: Run, branch: string, pr: PrMergeInfo) {
+    if (run.merges.some((m) => m.pr === pr.url)) return;
+    run.merges.push({ branch, into: pr.baseRefName, commit: pr.mergeCommit ?? pr.headRefOid, at: Date.now(), pr: pr.url });
+    this.emit(run, { type: "log", level: "info", text: `Merged ${pr.url} into ${pr.baseRefName} on GitHub${pr.mergeCommit ? ` (${pr.mergeCommit.slice(0, 8)})` : ""}` });
+    if (run.watches[branch] && run.watches[branch]!.state !== "closed") this.updateWatch(run.id, branch, { state: "closed", detail: "The pull request was merged" });
+    this.emitRun(run);
   }
 
   /** Push a result branch and open a pull request for it. */

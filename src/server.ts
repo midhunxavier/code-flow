@@ -28,7 +28,7 @@ import { computeStats, rankAgents } from "./stats.js";
 import { acquireLock, writeHealth } from "./store.js";
 import { reapOrphanGroups } from "./adapters/process.js";
 import { logError, logInfo, logWarn } from "./log.js";
-import { listIssues, listPullRequests, type SourceInput } from "./github.js";
+import { listIssues, listPullRequests, MERGE_METHODS, type SourceInput } from "./github.js";
 import { listSweep, runSweep, sourceKeys, type SweepKind } from "./sweeps.js";
 import { resolveAuto } from "./routing.js";
 import { templates } from "./templates.js";
@@ -1050,6 +1050,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const outcome = await attempt(() =>
         manager.merge(run.id, { branch: String(body.branch ?? ""), into: String(body.into ?? ""), archiveAfter: !!body.archiveAfter }),
       );
+      return send(res, 200, outcome);
+    }
+    if (req.method === "GET" && parts[3] === "pr-merge") {
+      return send(res, 200, await attempt(() => manager.prMergeInfo(run.id, url.searchParams.get("branch") ?? "")));
+    }
+    if (req.method === "POST" && parts[3] === "merge-pr") {
+      const body = await readJson(req);
+      if (!MERGE_METHODS.includes(body.method)) throw new HttpError(400, "Pick how to merge: merge, squash or rebase");
+      const outcome = await attempt(() => manager.mergePr(run.id, { branch: String(body.branch ?? ""), method: body.method, archiveAfter: !!body.archiveAfter }));
       return send(res, 200, outcome);
     }
     if (req.method === "GET" && parts[3] === "pr-targets") {

@@ -5,8 +5,8 @@ import { git } from "./git.js";
 
 /**
  * GitHub through the `gh` CLI (your own login): issues and PRs to start runs from, a PR's
- * branch, its CI checks and comments, and posting a comment you asked for. code-flow never
- * merges a pull request.
+ * branch, its CI checks and comments, and posting a comment you asked for. code-flow merges a
+ * pull request only when you press Merge PR, never on its own.
  */
 
 export interface Issue {
@@ -274,6 +274,62 @@ export async function failedLogs(repo: string, checks: Check[], maxChars = 15_00
 
 export async function commentOnPr(repo: string, pr: string, body: string): Promise<void> {
   await gh(repo, ["pr", "comment", pr, "--body-file", "-"], `${body}\n\n${CODEFLOW_MARKER}`);
+}
+
+export type MergeMethod = "merge" | "squash" | "rebase";
+export const MERGE_METHODS: MergeMethod[] = ["merge", "squash", "rebase"];
+
+/** What merging a pull request needs to know: whether it can be, and how the repository allows. */
+export interface PrMergeInfo {
+  number: number;
+  url: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  baseRefName: string;
+  headRefOid: string;
+  /** MERGEABLE, CONFLICTING, or UNKNOWN while GitHub is still working it out. */
+  mergeable: string;
+  ci: CiState;
+  /** The ways this repository lets pull requests be merged. */
+  methods: MergeMethod[];
+  mergeCommit?: string;
+}
+
+export async function prMergeInfo(repo: string, pr: string): Promise<PrMergeInfo> {
+  const data = JSON.parse(await gh(repo, ["pr", "view", pr, "--json", "number,url,state,isDraft,baseRefName,headRefOid,mergeable,mergeCommit,statusCheckRollup"]));
+  // The PR's own repository (its URL says which), in case it isn't the checkout's default remote.
+  const nameWithOwner = String(data.url ?? pr).match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1];
+  let methods = MERGE_METHODS;
+  const allowed = await ghRaw(repo, ["repo", "view", ...(nameWithOwner ? [nameWithOwner] : []), "--json", "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"]);
+  if (allowed.code === 0) {
+    try {
+      const a = JSON.parse(allowed.stdout);
+      const listed = MERGE_METHODS.filter((m) => a[{ merge: "mergeCommitAllowed", squash: "squashMergeAllowed", rebase: "rebaseMergeAllowed" }[m]] !== false);
+      if (listed.length) methods = listed;
+    } catch {
+      // Unreadable: offer every method and let GitHub say which it refuses.
+    }
+  }
+  return {
+    number: data.number,
+    url: data.url,
+    state: data.state,
+    isDraft: !!data.isDraft,
+    baseRefName: data.baseRefName,
+    headRefOid: data.headRefOid,
+    mergeable: data.mergeable ?? "UNKNOWN",
+    ci: ciState(data.statusCheckRollup ?? []),
+    methods,
+    mergeCommit: data.mergeCommit?.oid || undefined,
+  };
+}
+
+/**
+ * Merge a pull request on GitHub, only while its head is still `headSha` (the commit you
+ * reviewed). Neither the local branch nor the one on GitHub is deleted.
+ */
+export async function mergePullRequest(repo: string, pr: string, method: MergeMethod, headSha: string): Promise<void> {
+  await gh(repo, ["pr", "merge", pr, `--${method}`, "--match-head-commit", headSha]);
 }
 
 /** GitHub refuses a pull request description longer than this. */
