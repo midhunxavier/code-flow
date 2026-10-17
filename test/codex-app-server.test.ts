@@ -265,6 +265,17 @@ test("requests code-flow doesn't know are answered, and the run shows what Codex
   }
 });
 
+test("Auto members get structured question guidance without granting native permissions", async () => {
+  for (const method of ["item/tool/requestUserInput", "mcpServer/elicitation/request"]) {
+    const { result, events } = await withEnv({ FAKE_CODEX_SERVER_REQUEST: method }, () => turn("Ask through the team outcome", { questionProtocol: "structured" }));
+    assert.ok(result.ok, result.error);
+    assert.ok(events.some((event) => event.kind === "status" && event.text.includes("needs_info")));
+    assert.ok(events.some((event) => event.kind === "text" && /got \{(?:"error"|"action":"decline")/.test(event.text)));
+  }
+  const denied = await withEnv({ FAKE_CODEX_SERVER_REQUEST: "item/permissions/requestApproval" }, () => turn("Ask through the team outcome", { questionProtocol: "structured" }));
+  assert.ok(denied.events.some((event) => event.kind === "text" && event.text.includes('got {"decision":"decline"}')));
+});
+
 test("app-server: a crash mid-turn fails it; a hang after the turn doesn't", async () => {
   const crashed = await withEnv({ FAKE_CRASH_VENDOR: "codex" }, () => turn("Look around"));
   assert.equal(crashed.result.ok, false);

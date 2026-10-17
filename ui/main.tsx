@@ -4,7 +4,7 @@ import { useEffect, useState } from "preact/hooks";
 import { App, notifyFinished } from "./app.js";
 import logo from "./brand/vibesboard-mark.png";
 import { api, showToast, store } from "./lib.js";
-import { agents, hashFor, listenForHandOffs, loadHealth, loadModels, loadProjects, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
+import { agents, hashFor, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
 // The tab icon: the vibesboard mark, like the top bar.
 const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/png", href: logo });
@@ -47,6 +47,7 @@ async function boot() {
   }
   agents.value = agentList;
   patterns.value = patternList;
+  await loadTeamRollout();
   route.value = routeFromHash();
   effect(() => {
     const hash = hashFor(route.value);

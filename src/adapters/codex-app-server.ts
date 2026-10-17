@@ -20,6 +20,7 @@ export interface AppServerTurn {
   model?: string;
   effort?: string;
   outputSchema?: object;
+  questionProtocol?: "structured";
   /** `-c key=value` overrides for the server, e.g. network access in the workspace sandbox. */
   config: string[];
   signal?: AbortSignal;
@@ -215,13 +216,16 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
   }
 
   /**
-   * Runs are headless (approvals are off), so anything that asks for a person gets "no", and the
-   * run shows what was asked: a request code-flow doesn't know is answered too, never left hanging.
+   * Native approvals remain off. Auto members use structured questions at turn boundaries;
+   * unsupported native requests are answered immediately rather than holding a slot open.
    */
   function answerServerRequest(msg: any) {
     const method = String(msg.method);
     const reply = (result: unknown) => proc.send({ id: msg.id, result });
     const declined = "declined — code-flow runs Codex without approval prompts";
+    const questionGuidance = turn.questionProtocol === "structured"
+      ? "Return a needs_info outcome with an addressed question and checkpoint; code-flow can supply the answer on your next turn."
+      : "It runs Codex headless.";
     switch (method) {
       case "item/commandExecution/requestApproval":
       case "item/fileChange/requestApproval":
@@ -239,11 +243,11 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
           turn.onText(`Codex asked for ${method}${detail}; ${declined}`);
           reply({ decision: "decline" });
         } else if (/elicitation/i.test(method)) {
-          turn.onText(`Codex asked for input (${method})${detail}; declined — nobody can answer in a headless run`);
+          turn.onText(`Codex asked for input (${method})${detail}; native input declined. ${questionGuidance}`);
           reply({ action: "decline", content: null });
         } else {
-          turn.onText(`Codex asked code-flow for ${method}${detail}, which a headless run can't answer; told Codex it isn't supported`);
-          proc.send({ id: msg.id, error: { code: -32601, message: `code-flow doesn't handle ${method} (it runs Codex headless)` } });
+          turn.onText(`Codex asked code-flow for ${method}${detail}; native request unsupported. ${questionGuidance}`);
+          proc.send({ id: msg.id, error: { code: -32601, message: `code-flow doesn't handle ${method}. ${questionGuidance}` } });
         }
       }
     }
