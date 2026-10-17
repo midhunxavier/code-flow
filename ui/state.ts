@@ -24,6 +24,7 @@ export type Route =
   | { view: "composer" }
   | { view: "automations" }
   | { view: "insights"; group?: string }
+  | { view: "project"; id: string }
   | { view: "run"; id: string }
   | { view: "review"; id: string; branch: string };
 export const route = signal<Route>({ view: "composer" });
@@ -31,9 +32,9 @@ export const railOpen = signal(false);
 export const pickerOpen = signal(false);
 
 // ---------------------------------------------------------------- side panel
-/** The side panel's tabs: a chat with one agent, the files, a terminal, a browser, your notes. */
-export type SideTab = "chat" | "files" | "terminal" | "browser" | "notes";
-export const SIDE_TABS: SideTab[] = ["chat", "files", "terminal", "browser", "notes"];
+/** The side panel's tabs: a chat with one agent, a run's changes, the files, a terminal, a browser, your notes. */
+export type SideTab = "chat" | "changes" | "files" | "terminal" | "browser" | "notes";
+export const SIDE_TABS: SideTab[] = ["chat", "changes", "files", "terminal", "browser", "notes"];
 /** Open as you left it on a wide screen; on a phone it covers the work, so it starts closed. */
 export const sideOpen = signal(window.innerWidth > 760 && (store.get("sideOpen") ? store.get("sideOpen") === "1" : window.innerWidth > 1180));
 export const sideTab = signal<SideTab>(SIDE_TABS.includes(store.get("sideTab") as SideTab) ? (store.get("sideTab") as SideTab) : "chat");
@@ -248,7 +249,12 @@ export const projectKeyOf = (run: RunSummary) => projectScope(projectFor(run), r
 /** What the panel would show if it weren't pinned. */
 const followed = computed<SideScope>(() => {
   const r = route.value;
-  const run = "id" in r ? runs.value.get(r.id) : undefined;
+  if (r.view === "project") {
+    // A project's page: its repository you're working in, else the one its latest run used.
+    const p = projects.value.find((x) => x.id === r.id);
+    if (p) return projectScope(p, p.repos.includes(repo.value) ? repo.value : p.repos.length ? lastRepo(p) : "");
+  }
+  const run = r.view === "run" || r.view === "review" ? runs.value.get(r.id) : undefined;
   return run ? runScope(run) : projectScope(target.value.project, repo.value);
 });
 export const sideScope = computed<SideScope>(() => {

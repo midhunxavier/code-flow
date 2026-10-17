@@ -4,7 +4,7 @@ import { api, enc, post, showToast, store } from "./lib.js";
 import { route, runs } from "./state.js";
 import type { AgentId, DiffFile, Run } from "./types.js";
 
-interface Comment {
+export interface Comment {
   file: string;
   side: "old" | "new";
   line: number;
@@ -52,10 +52,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
 
   const worktree = ((run ?? summary)?.worktrees ?? []).find((w) => w.branch === branch);
   // Default to the agent that last wrote code in this worktree.
-  const defaultAgent = useMemo(
-    () => [...(run?.steps ?? [])].reverse().find((s) => (s.kind ?? "agent") === "agent" && s.worktree === worktree?.name && s.mode === "write")?.agent,
-    [run, worktree?.name],
-  );
+  const defaultAgent = useMemo(() => lastWriter(run, worktree?.name), [run, worktree?.name]);
   const target: AgentId = agent ?? defaultAgent ?? "claude";
   const file = files?.find((f) => f.path === selected);
   const totals = files?.reduce((t, f) => ({ add: t.add + f.additions, del: t.del + f.deletions }), { add: 0, del: 0 });
@@ -64,10 +61,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   const send = async () => {
     if (!worktree) return;
     setSending(true);
-    const lines = comments.map(
-      (c, i) => `${i + 1}. ${c.file}:${c.line}${c.side === "old" ? " (a removed line)" : ""} — \`${c.code.trim().slice(0, 140)}\`\n   ${c.text.trim()}`,
-    );
-    const message = [lines.join("\n"), general.trim() ? `General: ${general.trim()}` : ""].filter(Boolean).join("\n\n");
+    const message = commentsMessage(comments, general);
     try {
       await post(`/api/runs/${id}/followups`, { kind: "comments", worktree: worktree.name, agent: target, message });
       setComments([]);
@@ -162,7 +156,17 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   );
 }
 
-function FileDiff({ file, comments, onAdd, onRemove }: { file: DiffFile; comments: Comment[]; onAdd: (c: Comment) => void; onRemove: (c: Comment) => void }) {
+/** The agent that last wrote code in a worktree: who line comments go to unless you pick someone else. */
+export const lastWriter = (run: Run | null, worktree?: string): AgentId | undefined =>
+  [...(run?.steps ?? [])].reverse().find((s) => (s.kind ?? "agent") === "agent" && s.worktree === worktree && s.mode === "write")?.agent;
+
+/** Line comments (and an overall one) as the follow-up message the agent gets. */
+export function commentsMessage(comments: Comment[], general = ""): string {
+  const lines = comments.map((c, i) => `${i + 1}. ${c.file}:${c.line}${c.side === "old" ? " (a removed line)" : ""} — \`${c.code.trim().slice(0, 140)}\`\n   ${c.text.trim()}`);
+  return [lines.join("\n"), general.trim() ? `General: ${general.trim()}` : ""].filter(Boolean).join("\n\n");
+}
+
+export function FileDiff({ file, comments, onAdd, onRemove }: { file: DiffFile; comments: Comment[]; onAdd: (c: Comment) => void; onRemove: (c: Comment) => void }) {
   const rows = useMemo(() => parsePatch(file.patch), [file.patch]);
   const [editing, setEditing] = useState<{ side: "old" | "new"; line: number; code: string } | null>(null);
   const [text, setText] = useState("");

@@ -1692,12 +1692,17 @@ export class RunManager {
   }
 
   /** Per-file diff of one of the run's branches against the run's base. */
-  async diff(id: string, branch: string): Promise<DiffFile[]> {
+  /** A result branch's changes since the run started; `last`: only its latest commit (the last step or follow-up). */
+  async diff(id: string, branch: string, last = false): Promise<DiffFile[]> {
     const run = this.require(id);
     if (!run.worktrees.some((w) => w.branch === branch) && !run.artifacts.some((a) => a.branch === branch)) {
       throw new Error("That branch doesn't belong to this run");
     }
-    return branchDiff(run.repo, run.baseRef, branch);
+    if (!last) return branchDiff(run.repo, run.baseRef, branch);
+    // Never further back than where the run started: a branch with no commits of its own has no last step.
+    const ahead = await git(["rev-list", "--count", `${run.baseRef}..${branch}`], run.repo);
+    if (ahead.code !== 0) throw new Error(`Couldn't read ${branch}: ${ahead.stderr.trim()}`);
+    return Number(ahead.stdout.trim()) > 0 ? branchDiff(run.repo, `${branch}~1`, branch) : [];
   }
 
   /** Send work back to an agent after the run (review comments, or resolving merge conflicts). */

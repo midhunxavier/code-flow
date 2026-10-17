@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { ChangesTab } from "./changes.js";
 import { addContext, FileTree } from "./composer.js";
 import { AgentPicker, ChatThread, ConversationBar, useRunStream } from "./run.js";
 import { AgentTag, Markdown } from "./bits.js";
@@ -49,7 +50,8 @@ import type { AgentId, DevServer, FileContent, RunSummary, ShellEvent, ShellInfo
  */
 
 const TABS: Record<SideTab, { label: string; icon: IconName; title: string }> = {
-  chat: { label: "Chat", icon: "chat", title: "Chat with one agent about this repository" },
+  chat: { label: "Chat", icon: "chat", title: "Chat with one agent about this run or repository" },
+  changes: { label: "Changes", icon: "diff", title: "What this run changed: the whole branch or its last step, with line comments" },
   files: { label: "Files", icon: "files", title: "The repository's files, or a run's worktree" },
   terminal: { label: "Terminal", icon: "terminal", title: "A shell in the repository or a worktree" },
   browser: { label: "Browser", icon: "globe", title: "Open the app a run started, or any address" },
@@ -57,7 +59,10 @@ const TABS: Record<SideTab, { label: string; icon: IconName; title: string }> = 
 };
 
 export function SidePanel() {
-  const tab = sideTab.value;
+  const run = sideScope.value.run;
+  // Changes are a run's: the tab is there while the panel shows one.
+  const tabs = SIDE_TABS.filter((t) => t !== "changes" || run);
+  const tab = tabs.includes(sideTab.value) ? sideTab.value : "chat";
   // Tabs you've opened stay mounted: the terminal and the browser keep their state behind another tab.
   const [visited, setVisited] = useState<Set<SideTab>>(() => new Set([tab]));
   useEffect(() => {
@@ -79,21 +84,28 @@ export function SidePanel() {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
   };
-  const panes: Record<SideTab, () => preact.JSX.Element> = { chat: () => <ChatTab />, files: () => <FilesTab />, terminal: () => <TerminalTab />, browser: () => <BrowserTab />, notes: () => <NotesTab /> };
+  const panes: Record<SideTab, () => preact.JSX.Element> = {
+    chat: () => <ChatTab />,
+    changes: () => (run ? <ChangesTab key={run.id} run={run} /> : <div class="side-empty help">Open a run to see what it changed.</div>),
+    files: () => <FilesTab />,
+    terminal: () => <TerminalTab />,
+    browser: () => <BrowserTab />,
+    notes: () => <NotesTab />,
+  };
   return (
     <aside class={`side ${sideOpen.value ? "open" : ""}`} aria-label="Side panel" aria-hidden={!sideOpen.value}>
       <div class={`side-handle ${dragging ? "dragging" : ""}`} role="separator" aria-orientation="vertical" aria-label="Resize the side panel" title="Drag to resize" onPointerDown={startDrag} />
       <ScopeHeader />
       <div class="side-tabs" role="tablist" aria-label="Side panel tabs">
-        {SIDE_TABS.map((t) => (
-          <button key={t} type="button" role="tab" id={`side-tab-${t}`} aria-selected={t === tab} aria-controls={`side-pane-${t}`} class={`side-tab ${t === tab ? "on" : ""}`} title={TABS[t].title} onClick={() => openSide(t)}>
+        {tabs.map((t) => (
+          <button key={t} type="button" role="tab" id={`side-tab-${t}`} aria-selected={t === tab} aria-controls={`side-pane-${t}`} class={`side-tab ${t === tab ? "on" : ""}`} aria-label={TABS[t].label} title={TABS[t].title} onClick={() => openSide(t)}>
             <Icon name={TABS[t].icon} />
             <span>{TABS[t].label}</span>
           </button>
         ))}
       </div>
       <div class="side-body">
-        {SIDE_TABS.filter((t) => visited.has(t) || t === tab).map((t) => (
+        {tabs.filter((t) => visited.has(t) || t === tab).map((t) => (
           <div key={t} id={`side-pane-${t}`} role="tabpanel" aria-labelledby={`side-tab-${t}`} class="side-pane" hidden={t !== tab}>
             {panes[t]()}
           </div>

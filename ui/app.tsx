@@ -8,6 +8,7 @@ import { SweepDialog } from "./sweeps.js";
 import { AutomationsView } from "./automations.js";
 import { InsightsView } from "./insights.js";
 import { ProjectsDialog } from "./projects.js";
+import { ProjectView } from "./project.js";
 import { Rail } from "./rail.js";
 import { Icon } from "./icons.js";
 import logo from "./brand/vibesboard-mark.png";
@@ -66,6 +67,8 @@ export function App() {
             <AutomationsView />
           ) : route.value.view === "insights" ? (
             <InsightsView group={route.value.group} />
+          ) : route.value.view === "project" ? (
+            <ProjectView key={route.value.id} id={route.value.id} />
           ) : (
             <Composer />
           )}
@@ -119,7 +122,7 @@ function TopBar() {
 /** On a run or its review: the project it's in and the run. Other pages carry their own heading. */
 function Crumbs() {
   const r = route.value;
-  const run = "id" in r ? runs.value.get(r.id) : undefined;
+  const run = r.view === "run" || r.view === "review" ? runs.value.get(r.id) : undefined;
   if (!run) return <span class="spacer" />;
   const project = projectFor(run);
   return (
@@ -175,7 +178,7 @@ export function Bell() {
 }
 
 export function notifyFinished(run: RunSummary) {
-  const viewing = "id" in route.value && route.value.id === run.id;
+  const viewing = route.value.view === "run" && route.value.id === run.id;
   const verbs: Record<string, string> = {
     done: run.verdict === "failing" ? "finished, but its check fails" : run.checkCantRun ? "finished, but its check couldn't run" : "finished",
     failed: "failed",

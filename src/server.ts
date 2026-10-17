@@ -989,7 +989,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       return send(res, 200, { archived: true, ...result });
     }
     if (req.method === "GET" && parts[3] === "diff") {
-      return send(res, 200, await attempt(() => manager.diff(run.id, url.searchParams.get("branch") ?? "")));
+      return send(res, 200, await attempt(() => manager.diff(run.id, url.searchParams.get("branch") ?? "", url.searchParams.get("last") === "1")));
     }
     if (req.method === "POST" && parts[3] === "followups") {
       const body = await readJson(req);

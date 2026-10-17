@@ -89,6 +89,19 @@ test("per-file diff of a result branch", async () => {
   await assert.rejects(manager.diff(run.id, "main"), /doesn't belong to this run/);
 });
 
+test("the last step's diff is the branch's latest commit only", async () => {
+  const run = await runPattern("pipeline", pipelineRoles);
+  const branch = run.artifacts[0]!.branch;
+  const built = await manager.diff(run.id, branch, true);
+  assert.deepEqual(built.map((f) => f.path), (await manager.diff(run.id, branch)).map((f) => f.path), "one commit so far: the build");
+  await manager.followUp(run.id, { worktree: "build", agent: "codex", message: "- please also handle empty input" });
+  await finished(run);
+  const whole = (await manager.diff(run.id, branch)).map((f) => f.path);
+  const last = (await manager.diff(run.id, branch, true)).map((f) => f.path);
+  assert.equal(whole.length, built.length + last.length, `the follow-up's commit added files of its own: ${whole} vs ${last}`);
+  assert.ok(last.length > 0 && last.every((p) => !built.some((f) => f.path === p)), "only what the follow-up changed");
+});
+
 test("review comments go back to the agent as a follow-up in the same run", async () => {
   const run = await runPattern("pipeline", pipelineRoles);
   const before = agentTitles(run);

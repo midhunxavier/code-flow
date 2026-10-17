@@ -133,7 +133,9 @@
   .proj { display: flex; flex-direction: column; gap: 1px; }
   .proj-head { display: flex; align-items: center; gap: 2px; border-radius: var(--radius-sm); }
   .proj-head:hover { background: var(--hover); }
-  .proj-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; background: none; padding: 6px 4px 6px 6px; text-align: left; color: var(--text); border-radius: var(--radius-sm); }
+  .proj-fold { flex: none; display: grid; place-items: center; width: 22px; height: 28px; padding: 0 0 0 4px; border: 0; background: none; border-radius: var(--radius-sm); }
+  .proj-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; background: none; padding: 6px 4px 6px 2px; text-align: left; color: var(--text); border-radius: var(--radius-sm); }
+  .proj-head.here { background: var(--hover); box-shadow: inset 2px 0 0 var(--accent-edge); }
   .proj-toggle .pn { font-size: 13px; font-weight: 650; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .proj-toggle .pc { font-size: 11px; color: var(--faint); font-weight: 500; }
   .caret { width: 14px; height: 14px; color: var(--faint); transition: transform .15s; }
@@ -143,6 +145,7 @@
   @media (hover: none) { .proj-actions { opacity: 1; } }
   .proj .run-item { padding-left: 26px; }
   .proj-name { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; padding: 5px 4px 5px 26px; }
+  button.proj-name { border: 0; background: none; text-align: left; color: var(--text); font: inherit; border-radius: var(--radius-sm); }
   .proj.quiet .pn { font-size: 13px; font-weight: 500; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .proj.quiet .pc { font-size: 11px; color: var(--faint); white-space: nowrap; }
   .rail-more { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; color: var(--muted); font-size: 12px; font-weight: 500; padding: 4px 10px 6px 26px; border-radius: 8px; }
@@ -289,9 +292,10 @@
   .side-tab:hover { background: var(--hover); color: var(--text); }
   .side-tab.on { color: var(--text); border-bottom-color: var(--accent-edge); }
   .side-tab .icon { width: 15px; height: 15px; }
-  /* A narrow panel shows the tabs' icons only (their titles name them), and never pushes the page sideways */
+  /* A narrow panel names only the open tab (the others show their icon; their titles name them), and never pushes the page sideways */
   .side-tab span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  @container side (max-width: 400px) { .side-tab span { display: none; } .side-tab { padding: 8px 12px; } }
+  @container side (max-width: 520px) { .side-tab:not(.on) span { display: none; } .side-tab:not(.on) { padding: 8px 10px; } }
+  @container side (max-width: 340px) { .side-tab span { display: none; } .side-tab { padding: 8px 10px; } }
   .side-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .side-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .side-toolbar { flex: none; display: flex; gap: 6px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
@@ -948,3 +952,34 @@
     .phone-qr { flex-direction: column; align-items: flex-start; }
     .phone-qr-text .help, .hook code { overflow-wrap: anywhere; }
   }
+
+  /* A project's page (#/project/<id>) */
+  .project-page { max-width: 880px; }
+  .project-page .page-head { margin-bottom: 8px; }
+  .pp-title { margin-right: auto; display: grid; gap: 6px; min-width: 0; }
+  .pp-title h1 { margin: 0; overflow-wrap: anywhere; }
+  .pp-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 18px; }
+  .pp-task { display: flex; gap: 10px; align-items: flex-end; background: var(--raised); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 10px 10px 10px 14px; margin-bottom: 18px; }
+  .pp-task textarea.field { flex: 1; min-width: 0; border: 0; background: none; box-shadow: none; resize: vertical; min-height: 44px; padding: 6px 0; }
+  .pp-numbers { margin-bottom: 4px; }
+  .pp-value { font-size: 22px; font-weight: 700; letter-spacing: -.03em; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .pp-section { margin-top: 26px; }
+  .pp-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; margin: 6px 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--raised); color: var(--text); text-decoration: none; text-align: left; font: inherit; }
+  .pp-row:hover { border-color: var(--accent-line); }
+  .pp-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .pp-row .m { color: var(--faint); font-size: 12px; white-space: nowrap; }
+  .pp-row .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .pp-row > .icon { color: var(--faint); }
+  .pp-row.off { opacity: .65; }
+  @media (max-width: 700px) { .pp-row .m { display: none; } .pp-task { flex-direction: column; align-items: stretch; } }
+
+  /* The side panel's Changes tab: a run's changed files, a compact diff, line comments */
+  .changes { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 2px; padding: 6px 8px 12px; }
+  .changes .rf { width: 100%; }
+  .changes-sum { padding: 4px 9px 6px; font-size: 12px; }
+  .changes-diff { overflow: auto; margin: 0 -8px; }
+  .changes-diff .diff-file-head { display: none; }
+  .changes .file-head { margin: -6px -8px 0; }
+  .changes-branch { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .changes-send { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--raised); }
+  .changes-send .help { flex: 1; }

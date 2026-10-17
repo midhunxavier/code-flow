@@ -9,7 +9,7 @@ import type { Project, RunSummary } from "./types.js";
 import { ProjectButton } from "./projects.js";
 
 /** The project an automation's runs go in: the one it was saved with, or (deleted since) its repo's. */
-const automationProject = (run: { project?: string; repo: string }) =>
+export const automationProject = (run: { project?: string; repo: string }) =>
   projects.value.find((p) => p.id === run.project) ?? projects.value.find((p) => p.repos.includes(run.repo));
 
 /** Is the automation in what the app is showing? (inScope, for where its runs go.) */
