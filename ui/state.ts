@@ -41,11 +41,15 @@ export const sideTab = signal<SideTab>(SIDE_TABS.includes(store.get("sideTab") a
 export const sideWidth = signal(Math.min(Math.max(Number(store.get("sideWidth")) || 420, 300), 900));
 export function openSide(tab?: SideTab) {
   if (tab) {
-    sideTab.value = tab;
-    store.set("sideTab", tab);
+    showSideTab(tab);
+    rememberSide({ tab });
   }
   sideOpen.value = true;
   store.set("sideOpen", "1");
+}
+function showSideTab(tab: SideTab) {
+  sideTab.value = tab;
+  store.set("sideTab", tab);
 }
 export function closeSide() {
   sideOpen.value = false;
@@ -55,12 +59,10 @@ export function setSideWidth(px: number) {
   sideWidth.value = Math.min(Math.max(Math.round(px), 300), 900);
   store.set("sideWidth", String(sideWidth.value));
 }
-/** The chat shown in the side panel: a Single-agent run, or none (a fresh chat). */
-export const sideChat = signal<string | null>(store.get("sideChat"));
+/** The chat shown in the side panel for what it's looking at: a Single-agent run, or none (a fresh chat). */
+export const sideChat = computed(() => sideMemo.value.chat || null);
 export function setSideChat(id: string | null) {
-  sideChat.value = id;
-  if (id) store.set("sideChat", id);
-  else store.set("sideChat", "");
+  rememberSide({ chat: id ?? "" });
 }
 /** Text handed to the side chat's composer (from Notes, or a file). */
 export const sideDraft = signal("");
@@ -215,6 +217,83 @@ function repoProblem(name: string, err: unknown): string {
   if (err.status === 401) return "Not signed in to code-flow";
   if (err.status >= 500) return `Couldn't open ${name}: ${err.message}`;
   return err.message;
+}
+
+// ---------------------------------------------------------------- what the side panel is about
+/**
+ * The side panel follows what you're looking at: on a run (or its review), that run, its project
+ * and its worktrees; anywhere else, the composer's project and repository. Pinned, it stays put.
+ */
+export interface SideScope {
+  /** Names the scope in the panel's memory: run:<id>, project:<id>, repo:<path>, or none. */
+  key: string;
+  kind: "run" | "project";
+  run?: RunSummary;
+  project?: Project;
+  /** The repository to work in; "" when there's none to go on. */
+  repo: string;
+  pinned: boolean;
+}
+type SidePin = { kind: "run"; id: string } | { kind: "project"; project?: string; repo: string };
+const sidePin = signal<SidePin | null>(store.json<SidePin | null>("sidePin", null));
+
+const runScope = (run: RunSummary, pinned = false): SideScope => ({ key: `run:${run.id}`, kind: "run", run, project: projectFor(run), repo: run.repo, pinned });
+function projectScope(project: Project | undefined, repo: string, pinned = false): SideScope {
+  const r = repo || project?.repos[0] || "";
+  return { key: project ? `project:${project.id}` : r ? `repo:${r}` : "none", kind: "project", project, repo: r, pinned };
+}
+/** Where a run's project-level memory lives (its app's address, say), for the run to fall back on. */
+export const projectKeyOf = (run: RunSummary) => projectScope(projectFor(run), run.repo).key;
+
+/** What the panel would show if it weren't pinned. */
+const followed = computed<SideScope>(() => {
+  const r = route.value;
+  const run = "id" in r ? runs.value.get(r.id) : undefined;
+  return run ? runScope(run) : projectScope(target.value.project, repo.value);
+});
+export const sideScope = computed<SideScope>(() => {
+  const pin = sidePin.value;
+  if (pin?.kind === "run") {
+    // A run that isn't loaded (yet, or any more) can't be shown: follow until it is.
+    const run = runs.value.get(pin.id);
+    if (run) return runScope(run, true);
+  } else if (pin) {
+    return projectScope(projects.value.find((p) => p.id === pin.project), pin.repo, true);
+  }
+  return followed.value;
+});
+export function pinSide(on: boolean) {
+  const s = sideScope.value;
+  sidePin.value = !on ? null : s.run ? { kind: "run", id: s.run.id } : { kind: "project", project: s.project?.id, repo: s.repo };
+  store.set("sidePin", JSON.stringify(sidePin.value));
+}
+
+/** What the panel remembers per scope, so going back to a run brings back its panel. */
+export interface SideMemory {
+  tab?: SideTab;
+  /** The side chat's run id; "" for a new chat. */
+  chat?: string;
+  /** The folder the Files and Terminal tabs show. */
+  files?: string;
+  terminal?: string;
+  /** The Browser tab's address. */
+  url?: string;
+  at: number;
+}
+const MAX_SIDE_MEMORIES = 200;
+export const sideMemory = signal<Record<string, SideMemory>>(store.json("sideMemory", {}));
+export const sideMemo = computed<SideMemory>(() => sideMemory.value[sideScope.value.key] ?? { at: 0 });
+export function rememberSide(patch: Omit<Partial<SideMemory>, "at">, key = sideScope.value.key) {
+  const all = { ...sideMemory.value, [key]: { ...sideMemory.value[key], ...patch, at: Date.now() } };
+  const keys = Object.keys(all);
+  if (keys.length > MAX_SIDE_MEMORIES) for (const k of keys.sort((a, b) => all[a]!.at - all[b]!.at).slice(0, keys.length - MAX_SIDE_MEMORIES)) delete all[k];
+  sideMemory.value = all;
+  store.set("sideMemory", JSON.stringify(all));
+}
+/** The scope changed: show the tab you last had open there, if any. */
+export function restoreSideTab() {
+  const tab = sideMemo.value.tab;
+  if (tab && SIDE_TABS.includes(tab) && tab !== sideTab.value) showSideTab(tab);
 }
 
 // ---------------------------------------------------------------- composer

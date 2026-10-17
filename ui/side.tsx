@@ -12,7 +12,12 @@ import {
   limits,
   openSide,
   patterns,
+  pinSide,
+  projectFor,
+  projectKeyOf,
+  rememberSide,
   repo,
+  restoreSideTab,
   route,
   runs,
   runState,
@@ -23,12 +28,15 @@ import {
   sideChat,
   sideDraft,
   sideFile,
+  sideMemo,
+  sideMemory,
   sideOpen,
+  sideScope,
   sideTab,
   sideWidth,
-  target,
   task,
   trust,
+  type SideScope,
   type SideTab,
 } from "./state.js";
 import type { AgentId, DevServer, FileContent, RunSummary, ShellEvent, ShellInfo } from "./types.js";
@@ -36,7 +44,8 @@ import type { AgentId, DevServer, FileContent, RunSummary, ShellEvent, ShellInfo
 /**
  * The side panel: what you'd keep open next to the work in Claude's or Codex's app. A chat with
  * one agent (you pick which), the files of the repository or of a run's worktree, a terminal, a
- * browser for the app a run started, and your notes. It stays as you move between runs.
+ * browser for the app a run started, and your notes. It follows what you open (see `sideScope`):
+ * on a run, every tab is that run's, and each run keeps its own chat, folders and address.
  */
 
 const TABS: Record<SideTab, { label: string; icon: IconName; title: string }> = {
@@ -54,6 +63,9 @@ export function SidePanel() {
   useEffect(() => {
     if (!visited.has(tab)) setVisited(new Set([...visited, tab]));
   }, [tab]);
+  // Back on a run you've used the panel with: the tab you had open there.
+  const scopeKey = sideScope.value.key;
+  useEffect(restoreSideTab, [scopeKey]);
   const [dragging, setDragging] = useState(false);
   const startDrag = (e: PointerEvent) => {
     e.preventDefault();
@@ -71,6 +83,7 @@ export function SidePanel() {
   return (
     <aside class={`side ${sideOpen.value ? "open" : ""}`} aria-label="Side panel" aria-hidden={!sideOpen.value}>
       <div class={`side-handle ${dragging ? "dragging" : ""}`} role="separator" aria-orientation="vertical" aria-label="Resize the side panel" title="Drag to resize" onPointerDown={startDrag} />
+      <ScopeHeader />
       <div class="side-tabs" role="tablist" aria-label="Side panel tabs">
         {SIDE_TABS.map((t) => (
           <button key={t} type="button" role="tab" id={`side-tab-${t}`} aria-selected={t === tab} aria-controls={`side-pane-${t}`} class={`side-tab ${t === tab ? "on" : ""}`} title={TABS[t].title} onClick={() => openSide(t)}>
@@ -78,9 +91,6 @@ export function SidePanel() {
             <span>{TABS[t].label}</span>
           </button>
         ))}
-        <button type="button" class="btn ghost small side-close" aria-label="Close side panel" title="Close (\)" onClick={closeSide}>
-          <Icon name="close" />
-        </button>
       </div>
       <div class="side-body">
         {SIDE_TABS.filter((t) => visited.has(t) || t === tab).map((t) => (
@@ -93,7 +103,57 @@ export function SidePanel() {
   );
 }
 
-// ---------------------------------------------------------------- where: the repo or a run's worktree
+// ---------------------------------------------------------------- what the panel is about
+/** The project and run the panel is showing, and the pin that keeps it there while you open others. */
+function ScopeHeader() {
+  const s = sideScope.value;
+  const thing = s.run ? "run" : "project";
+  const where = s.project?.name ?? (s.repo ? baseName(s.repo) : "");
+  const task = s.run ? s.run.task.split("\n")[0] || "(no task)" : "";
+  return (
+    <div class={`side-scope ${s.pinned ? "pinned" : ""}`}>
+      <span class="scope-state" title={s.pinned ? `The panel stays on this ${thing} while you open others` : "The panel follows what you open"}>
+        {s.pinned ? <Icon name="pin" /> : <span class="scope-dot" aria-hidden="true" />}
+        {s.pinned ? "Pinned" : "Following"}
+      </span>
+      <span class="scope-crumbs" title={[where, s.repo, task].filter(Boolean).join("\n")}>
+        {where ? <span class="sc-where">{where}</span> : <span class="help">No repository chosen</span>}
+        {!s.run && s.project && s.project.repos.length > 1 ? (
+          <>
+            <span class="sep" aria-hidden="true">›</span>
+            <span class="sc-what">{baseName(s.repo)}</span>
+          </>
+        ) : null}
+        {s.run ? (
+          <>
+            <span class="sep" aria-hidden="true">›</span>
+            {s.pinned ? (
+              <a class="sc-what" href={`#/run/${enc(s.run.id)}`} title="Open this run">
+                {task}
+              </a>
+            ) : (
+              <span class="sc-what">{task}</span>
+            )}
+          </>
+        ) : null}
+      </span>
+      {s.pinned ? (
+        <button type="button" class="btn ghost small" title="Follow what you open again" onClick={() => pinSide(false)}>
+          Follow
+        </button>
+      ) : (
+        <button type="button" class="icon-btn" aria-label={`Pin the panel to this ${thing}`} title={`Pin: keep the panel on this ${thing} while you open others`} disabled={!s.repo} onClick={() => pinSide(true)}>
+          <Icon name="pin" />
+        </button>
+      )}
+      <button type="button" class="icon-btn" aria-label="Close side panel" title="Close (\)" onClick={closeSide}>
+        <Icon name="close" />
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- where: a run's worktrees, or the repository
 interface Place {
   label: string;
   path: string;
@@ -101,26 +161,22 @@ interface Place {
   runId?: string;
 }
 
-/** The run open in the main view, if any. */
-const openRun = (): RunSummary | undefined => ("id" in route.value ? runs.value.get(route.value.id) : undefined);
-
-/**
- * The folders the panel can look at: the chosen repository, and the worktrees of the run you're
- * looking at. Following the view: opening a run moves to its worktree until you pick another.
- */
-function usePlace(preferWorktree: boolean): [Place | undefined, (p: Place) => void, Place[]] {
-  const run = openRun();
+/** The folders the panel can show: a run's worktrees and its repository, or the project's repositories. */
+function placesFor(s: SideScope): Place[] {
   const places: Place[] = [];
-  if (repo.value) places.push({ label: `${baseName(repo.value)} · repository`, path: repo.value });
-  if (run) {
-    if (run.repo !== repo.value) places.push({ label: `${baseName(run.repo)} · repository`, path: run.repo });
-    for (const wt of run.worktrees) places.push({ label: `${wt.name} · ${wt.branch}`, path: wt.path, runId: run.id });
-  }
-  const [picked, setPicked] = useState<string | null>(null);
-  const viewKey = "id" in route.value ? route.value.id : route.value.view;
-  useEffect(() => setPicked(null), [viewKey]);
-  const current = places.find((p) => p.path === picked) ?? (preferWorktree && run?.worktrees.length ? places.find((p) => p.runId) : undefined) ?? places[0];
-  return [current, (p) => setPicked(p.path), places];
+  if (s.run) for (const wt of s.run.worktrees) places.push({ label: `${wt.name} · ${wt.branch}`, path: wt.path, runId: s.run.id });
+  const repos = s.run ? [s.run.repo] : [s.repo, ...(s.project?.repos ?? [])];
+  for (const r of new Set(repos.filter(Boolean))) places.push({ label: `${baseName(r)} · repository`, path: r });
+  return places;
+}
+
+/** The folder a tab shows, remembered per run or project. A run starts on its result's worktree. */
+function usePlace(tab: "files" | "terminal"): [Place | undefined, (p: Place) => void, Place[]] {
+  const s = sideScope.value;
+  const places = placesFor(s);
+  const result = s.run?.artifacts[0]?.path;
+  const current = places.find((p) => p.path === sideMemo.value[tab]) ?? places.find((p) => p.path === result) ?? places[0];
+  return [current, (p) => rememberSide({ [tab]: p.path }), places];
 }
 
 function PlacePicker({ place, places, onChange, label }: { place?: Place; places: Place[]; onChange: (p: Place) => void; label: string }) {
@@ -141,35 +197,36 @@ function PlacePicker({ place, places, onChange, label }: { place?: Place; places
 const chatPatterns = () => new Set(patterns.value.filter((p) => p.chat).map((p) => p.id));
 
 function ChatTab() {
-  const id = sideChat.value;
+  const s = sideScope.value;
   const kinds = chatPatterns();
-  const chats = [...runs.value.values()].filter((r) => kinds.has(r.pattern) && !r.archived && (!repo.value || r.repo === repo.value)).sort((a, b) => b.createdAt - a.createdAt);
-  // The chat you were in stays listed even from another repository, until you leave it.
+  // Not the run you're looking at itself, when it's a chat: it's open already.
+  const chats = [...runs.value.values()].filter((r) => kinds.has(r.pattern) && !r.archived && r.id !== s.run?.id).sort((a, b) => b.createdAt - a.createdAt);
+  // On a run, the chats started from it first; then the other chats in its project (or repository, without one).
+  const about = s.run ? chats.filter((r) => r.parentRunId === s.run!.id) : [];
+  const nearby = chats.filter((r) => !about.includes(r) && (s.project ? projectFor(r)?.id === s.project.id : !!s.repo && r.repo === s.repo));
+  const where = s.project?.name ?? (s.repo ? baseName(s.repo) : "");
+  // The chat you were in here stays listed even once it's archived, until you leave it.
+  const id = sideChat.value;
   const current = id ? runs.value.get(id) : undefined;
-  const listed = current && kinds.has(current.pattern) && !chats.some((r) => r.id === current.id) ? [current, ...chats] : chats;
+  const shown = current && kinds.has(current.pattern) ? current : undefined;
+  const stray = shown && !about.includes(shown) && !nearby.includes(shown) ? [shown] : [];
+  const option = (r: RunSummary) => (
+    <option key={r.id} value={r.id}>
+      {r.status === "running" ? "● " : ""}
+      {r.task.split("\n")[0]!.slice(0, 60)}
+    </option>
+  );
   return (
     <>
       <div class="side-toolbar">
-        <select
-          class="field"
-          aria-label="Chat"
-          value={current && kinds.has(current.pattern) ? current.id : ""}
-          onChange={(e) => setSideChat(e.currentTarget.value || null)}
-        >
+        <select class="field" aria-label="Chat" value={shown?.id ?? ""} onChange={(e) => setSideChat(e.currentTarget.value || null)}>
           <option value="">New chat</option>
-          {listed.length ? (
-            <optgroup label={repo.value ? `Chats in ${baseName(repo.value)}` : "Chats"}>
-              {listed.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.status === "running" ? "● " : ""}
-                  {r.task.split("\n")[0]!.slice(0, 60)}
-                </option>
-              ))}
-            </optgroup>
-          ) : null}
+          {stray.length ? <optgroup label="This chat">{stray.map(option)}</optgroup> : null}
+          {about.length ? <optgroup label="About this run">{about.map(option)}</optgroup> : null}
+          {nearby.length ? <optgroup label={where ? `Chats in ${where}` : "Chats"}>{nearby.map(option)}</optgroup> : null}
         </select>
-        {current ? (
-          <a class="btn ghost small" href={`#/run/${enc(current.id)}`} title="Open this chat as a run, with its branch and result">
+        {shown ? (
+          <a class="btn ghost small" href={`#/run/${enc(shown.id)}`} title="Open this chat as a run, with its branch and result">
             Open
           </a>
         ) : null}
@@ -177,7 +234,7 @@ function ChatTab() {
           <Icon name="plus" />
         </button>
       </div>
-      {current ? <ChatView key={current.id} id={current.id} /> : <NewChat />}
+      {shown ? <ChatView key={shown.id} id={shown.id} /> : <NewChat key={s.key} scope={s} />}
     </>
   );
 }
@@ -240,8 +297,14 @@ function ChatView({ id }: { id: string }) {
   );
 }
 
-/** Where a new chat starts: a fresh Single-agent run on the repository, with the agent you pick. */
-function NewChat() {
+/**
+ * Where a new chat starts: a fresh Single-agent run, with the agent you pick, in the panel's
+ * repository. On a run, it's about that run: it starts from the run's result unless you pick HEAD.
+ */
+function NewChat({ scope }: { scope: SideScope }) {
+  const run = scope.run;
+  /** The run's result branches the chat can start from, so the agent sees that work. */
+  const fromRun = run ? run.artifacts.map((a) => a.branch) : [];
   const [text, setText] = useState("");
   const [agent, setAgent] = useState<AgentId>(() => {
     const saved = store.get("sideAgent") as AgentId | null;
@@ -249,7 +312,7 @@ function NewChat() {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [base, setBase] = useState("");
+  const [base, setBase] = useState(fromRun[0] ?? "");
   const area = useRef<HTMLTextAreaElement>(null);
   // Text sent over from Notes (or a file) lands in the box.
   useEffect(() => {
@@ -265,21 +328,18 @@ function NewChat() {
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [text]);
   const solo = patterns.value.find((p) => p.chat);
-  const run = openRun();
-  /** A run's result branch the chat can start from, so the agent sees that work. */
-  const fromRun = run && run.repo === repo.value ? run.artifacts.map((a) => a.branch) : [];
   const name = SHORT[agent] ?? agent;
+  const where = scope.repo ? baseName(scope.repo) : "the repository";
   const send = async () => {
     if (!text.trim() || busy || !solo) return;
-    if (!repo.value) return setError("Choose a repository first.");
+    if (!scope.repo) return setError("Choose a repository first.");
     setBusy(true);
     setError("");
     try {
-      const continues = base && run ? run.id : undefined;
       const { id, project } = await post<{ id: string; project?: string }>("/api/runs", {
-        repo: repo.value,
-        // In the project you're in; a chat that continues a run stays in that run's project.
-        project: continues ? undefined : target.value.project?.id,
+        repo: scope.repo,
+        // In the panel's project; a chat about a run goes in that run's project.
+        project: run ? undefined : scope.project?.id,
         task: text.trim(),
         pattern: solo.id,
         roles: { agent: [agent] },
@@ -288,11 +348,14 @@ function NewChat() {
         agentSettings: agentSettings.value,
         trust: trust.value,
         loop: { maxMinutes: limits.value.maxMinutes, maxSteps: limits.value.maxSteps },
-        parentRunId: continues,
+        parentRunId: run?.id,
       });
       setText("");
       setSideChat(id);
-      void afterStart(project); // a chat in a repo no project held made one
+      // A chat in a repo no project held made one: the panel is then about that project, so keep the chat open there.
+      void afterStart(project).then(() => {
+        if (sideScope.value.key !== scope.key && scope.key.startsWith("repo:")) setSideChat(id);
+      });
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -305,7 +368,9 @@ function NewChat() {
         <div class="side-empty">
           <h3>Chat with {name}</h3>
           <p class="help">
-            Ask a question or ask for a change. {name} works on its own branch of {repo.value ? baseName(repo.value) : "the repository"} and you keep talking to it; its reply shows here and the chat is a run like any other.
+            {run
+              ? `Ask about this run or ask for a change. ${name} works on a branch of its own${base ? ", starting from the run's result" : ""}, and you keep talking to it; the chat is a run like any other.`
+              : `Ask a question or ask for a change. ${name} works on its own branch of ${where} and you keep talking to it; its reply shows here and the chat is a run like any other.`}
           </p>
           {!solo ? <p class="msg warn">This code-flow has no Single-agent pattern, which the chat needs.</p> : null}
         </div>
@@ -366,7 +431,7 @@ function NewChat() {
 
 // ---------------------------------------------------------------- files
 function FilesTab() {
-  const [place, setPlace, places] = usePlace(true);
+  const [place, setPlace, places] = usePlace("files");
   const [open, setOpen] = useState<string | null>(null);
   // Something else asked for a file (a run's diff, a transcript): show it, in its folder.
   useEffect(() => {
@@ -452,7 +517,7 @@ function FileViewer({ root, path, onClose }: { root: string; path: string; onClo
 type Line = ShellEvent;
 
 function TerminalTab() {
-  const [place, setPlace, places] = usePlace(false);
+  const [place, setPlace, places] = usePlace("terminal");
   const cwd = place?.path ?? "";
   const [shell, setShell] = useState<ShellInfo | null>(null);
   const [lines, setLines] = useState<Line[]>([]);
@@ -637,9 +702,18 @@ function append(lines: Line[], ev: ShellEvent): Line[] {
 }
 
 // ---------------------------------------------------------------- browser
+/** An address as the browser should load it: with a scheme, and from the phone, on the computer's Wi-Fi address. */
+function address(target: string): string {
+  let next = target.trim();
+  if (!next) return "";
+  if (!/^https?:\/\//i.test(next)) next = /^(localhost|127\.|\[::1\]|\d+\.\d+\.\d+\.\d+)/.test(next) ? `http://${next}` : `https://${next}`;
+  // From the phone, the app is on the computer's Wi-Fi address — reachable if it listens there.
+  if (onPhone) next = next.replace("//localhost:", `//${location.hostname}:`).replace("//127.0.0.1:", `//${location.hostname}:`);
+  return next;
+}
+
 function BrowserTab() {
-  const [url, setUrl] = useState(store.get("sideUrl") ?? "");
-  const [typed, setTyped] = useState(url);
+  const s = sideScope.value;
   const [servers, setServers] = useState<Omit<DevServer, "logs">[]>([]);
   const [nonce, setNonce] = useState(0);
   useEffect(() => {
@@ -652,18 +726,24 @@ function BrowserTab() {
       clearInterval(timer);
     };
   }, []);
+  const running = servers.filter((x) => x.status === "running");
+  // The apps started in the panel's folders come first: a run's own worktrees (every run's sit inside
+  // the repository), or anywhere in the project's repositories.
+  const within = (cwd: string, folder: string) => cwd === folder || cwd.startsWith(`${folder}/`);
+  const folders = s.run ? s.run.worktrees.map((w) => w.path) : placesFor(s).map((p) => p.path);
+  const mine = running.filter((x) => folders.some((f) => within(x.cwd, f)));
+  const apps = [...mine, ...running.filter((x) => !mine.includes(x))];
+  // What you had open here; else the app this run or project started; else what you had open for the run's project.
+  const url = sideMemo.value.url || (mine[0] ? address(mine[0].url) : "") || (s.run ? sideMemory.value[projectKeyOf(s.run)]?.url : "") || "";
+  const [typed, setTyped] = useState(url);
+  useEffect(() => setTyped(url), [url]);
   const go = (target: string) => {
-    let next = target.trim();
+    const next = address(target);
     if (!next) return;
-    if (!/^https?:\/\//i.test(next)) next = /^(localhost|127\.|\[::1\]|\d+\.\d+\.\d+\.\d+)/.test(next) ? `http://${next}` : `https://${next}`;
-    // From the phone, the app is on the computer's Wi-Fi address — reachable if it listens there.
-    if (onPhone) next = next.replace("//localhost:", `//${location.hostname}:`).replace("//127.0.0.1:", `//${location.hostname}:`);
-    setUrl(next);
+    rememberSide({ url: next });
     setTyped(next);
-    store.set("sideUrl", next);
     setNonce((n) => n + 1);
   };
-  const running = servers.filter((s) => s.status === "running");
   return (
     <>
       <div class="side-toolbar browse-bar">
@@ -683,12 +763,12 @@ function BrowserTab() {
           <Icon name="external" />
         </a>
       </div>
-      {running.length ? (
+      {apps.length ? (
         <div class="browse-apps">
           <span class="lbl">Running</span>
-          {running.map((s) => (
-            <button key={s.key} type="button" class="chip-tpl" title={`${s.command} in ${s.cwd}`} aria-pressed={url === s.url} onClick={() => go(s.url)}>
-              {baseName(s.cwd)} · :{s.port}
+          {apps.map((x) => (
+            <button key={x.key} type="button" class="chip-tpl" title={`${x.command} in ${x.cwd}`} aria-pressed={url === address(x.url)} onClick={() => go(x.url)}>
+              {baseName(x.cwd)} · :{x.port}
             </button>
           ))}
         </div>
@@ -709,8 +789,9 @@ function BrowserTab() {
 
 // ---------------------------------------------------------------- notes
 function NotesTab() {
-  const [scope, setScope] = useState<"repo" | "general">(repo.value ? "repo" : "general");
-  const key = scope === "repo" && repo.value ? repo.value : "general";
+  const here = sideScope.value.repo;
+  const [scope, setScope] = useState<"repo" | "general">(here ? "repo" : "general");
+  const key = scope === "repo" && here ? here : "general";
   const [text, setText] = useState("");
   const [saved, setSaved] = useState<{ at: number; text: string } | null>(null);
   const [status, setStatus] = useState("");
@@ -757,10 +838,10 @@ function NotesTab() {
   return (
     <>
       <div class="side-toolbar">
-        {repo.value ? (
+        {here ? (
           <div class="segmented small" role="group" aria-label="Which notes">
-            <button type="button" class={scope === "repo" ? "on" : ""} aria-pressed={scope === "repo"} onClick={() => setScope("repo")} title={repo.value}>
-              {baseName(repo.value)}
+            <button type="button" class={scope === "repo" ? "on" : ""} aria-pressed={scope === "repo"} onClick={() => setScope("repo")} title={here}>
+              {baseName(here)}
             </button>
             <button type="button" class={scope === "general" ? "on" : ""} aria-pressed={scope === "general"} onClick={() => setScope("general")}>
               General

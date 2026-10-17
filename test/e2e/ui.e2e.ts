@@ -514,6 +514,73 @@ test("side panel: chat with one agent, read a file, run a command, keep a note",
   assert.notEqual(own.defaults?.pattern, chat.pattern, "a chat isn't the composer's choice of team");
 });
 
+test("side panel: follows the run you open, keeps each run's chat, and stays put when pinned", async () => {
+  const api = (path: string, body?: unknown) =>
+    fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+  const created = await api("/api/runs", { repo, task: "E2E: a run for the panel", pattern: "pipeline", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["codex"] }, options: {} });
+  assert.ok(created.id, created.error);
+  let run = await api(`/api/runs/${created.id}`);
+  for (let i = 0; i < 150 && run.status === "running"; i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    run = await api(`/api/runs/${created.id}`);
+  }
+  assert.equal(run.status, "done");
+  const result = run.artifacts[0];
+  assert.ok(result, "the run has a result");
+
+  // No repository picked in the composer: the panel works in the run's anyway.
+  const remembered = await page.evaluate(() => localStorage.getItem("repo"));
+  await page.evaluate(() => localStorage.removeItem("repo"));
+  await page.goto(`${BASE}/#/run/${created.id}`);
+  await page.reload();
+  const toggle = page.getByRole("button", { name: "Side panel", exact: true });
+  if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
+  const side = page.getByRole("complementary", { name: "Side panel" });
+  const scope = side.locator(".side-scope");
+  const chatPicker = side.locator('select[aria-label="Chat"]');
+  await scope.getByText("E2E: a run for the panel").waitFor();
+  assert.match(await scope.locator(".scope-state").innerText(), /following/i);
+
+  // Files and Terminal open on the run's result.
+  await side.getByRole("tab", { name: "Files" }).click();
+  assert.equal(await side.getByLabel("Folder").inputValue(), result.path);
+  await side.getByRole("tab", { name: "Terminal" }).click();
+  assert.equal(await side.getByLabel("Terminal folder").inputValue(), result.path);
+
+  // A chat started here is about this run, in its repository and project.
+  await side.getByRole("tab", { name: "Chat" }).click();
+  await side.getByLabel("Message").fill("E2E: what did this run change?");
+  await side.getByLabel("Message").press("Enter");
+  await side.getByText(/Implemented changes as/).waitFor({ timeout: 30_000 });
+  assert.equal(await side.getByText("Choose a repository first.").count(), 0);
+  const chat = (await api("/api/runs")).find((r: { task: string }) => r.task === "E2E: what did this run change?");
+  assert.equal(chat.parentRunId, created.id, "the chat is about the run");
+  assert.deepEqual([chat.repo, chat.project], [run.repo, run.project], "in the run's repository and project");
+  assert.equal(await chatPicker.inputValue(), chat.id);
+  assert.equal(await side.locator('optgroup[label="About this run"] option').count(), 1);
+
+  // Pinned, the panel stays on the run while you look at something else.
+  await side.getByRole("button", { name: "Pin the panel to this run" }).click();
+  await page.goto(`${BASE}/#/insights`);
+  await scope.getByText("Pinned").waitFor();
+  await side.getByRole("tab", { name: "Chat" }).click();
+  assert.equal(await chatPicker.inputValue(), chat.id, "still the run's chat");
+  await scope.getByRole("button", { name: "Follow" }).click();
+  await scope.getByText("Following").waitFor();
+  assert.equal(await scope.getByText("E2E: a run for the panel").count(), 0);
+  await side.getByRole("tab", { name: "Chat" }).click();
+  assert.notEqual(await chatPicker.inputValue(), chat.id, "elsewhere, the panel has its own chat");
+
+  // Back on the run: its chat again.
+  await page.goto(`${BASE}/#/run/${created.id}`);
+  await scope.getByText("E2E: a run for the panel").waitFor();
+  await side.getByRole("tab", { name: "Chat" }).click();
+  assert.equal(await chatPicker.inputValue(), chat.id);
+
+  if (remembered) await page.evaluate((r) => localStorage.setItem("repo", r), remembered);
+  await page.reload();
+});
+
 test("projects: the Automations page and its inbox follow the project you're in; the phone view lists runs by project", async () => {
   const api = (path: string, body?: unknown) =>
     fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());

@@ -267,16 +267,31 @@
   .start-row .why { color: var(--muted); font-size: 13px; }
 
   /* ---------- side panel: chat · files · terminal · browser · notes ---------- */
-  .side { display: none; position: relative; border-left: 1px solid var(--border); background: var(--panel); flex-direction: column; min-height: 0; min-width: 0; }
+  .side { container: side / inline-size; display: none; position: relative; border-left: 1px solid var(--border); background: var(--panel); flex-direction: column; min-height: 0; min-width: 0; }
   .app.with-side .side { display: flex; }
   .side-handle { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 2; }
   .side-handle:hover, .side-handle.dragging { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+  /* What the panel is about: Following (what you open) or Pinned (to one run or project) */
+  .side-scope { flex: none; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; min-width: 0; }
+  .side-scope.pinned { background: var(--accent-soft); border-bottom-color: var(--accent-line); }
+  .scope-state { flex: none; display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); text-transform: uppercase; font-size: 9.5px; letter-spacing: .12em; color: var(--accent-ink); border: 1px solid var(--accent-line); border-radius: 999px; padding: 2px 8px; }
+  .scope-state .icon { width: 11px; height: 11px; }
+  .scope-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-edge); }
+  .scope-crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; color: var(--muted); }
+  .scope-crumbs .sep { flex: none; color: var(--faint); }
+  .sc-where { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-weight: 650; letter-spacing: -.01em; }
+  .sc-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+  a.sc-what { color: var(--text); text-decoration: none; }
+  a.sc-what:hover { text-decoration: underline; }
+  .side-scope .icon-btn:disabled { opacity: .4; cursor: default; }
   .side-tabs { flex: none; display: flex; align-items: center; gap: 2px; padding: 6px 6px 0; border-bottom: 1px solid var(--border); }
-  .side-tab { border: 0; background: none; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; padding: 8px 9px; font-size: 12.5px; font-weight: 600; letter-spacing: -.01em; border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 8px 8px 0 0; transition: background-color .15s, color .15s; }
+  .side-tab { flex: 0 1 auto; min-width: 0; border: 0; background: none; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; padding: 8px 9px; font-size: 12.5px; font-weight: 600; letter-spacing: -.01em; border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 8px 8px 0 0; transition: background-color .15s, color .15s; }
   .side-tab:hover { background: var(--hover); color: var(--text); }
   .side-tab.on { color: var(--text); border-bottom-color: var(--accent-edge); }
   .side-tab .icon { width: 15px; height: 15px; }
-  .side-close { margin-left: auto; }
+  /* A narrow panel shows the tabs' icons only (their titles name them), and never pushes the page sideways */
+  .side-tab span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @container side (max-width: 400px) { .side-tab span { display: none; } .side-tab { padding: 8px 12px; } }
   .side-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .side-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .side-toolbar { flex: none; display: flex; gap: 6px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
