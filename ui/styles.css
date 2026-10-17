@@ -537,7 +537,7 @@
   .convo-inner { max-width: 824px; margin: 0 auto; display: grid; gap: 8px; }
   .chatbox { border: 1px solid var(--border); border-radius: 24px; background: var(--raised); box-shadow: var(--shadow); transition: border-color .15s, box-shadow .15s; }
   .chatbox:focus-within { border-color: var(--accent-edge); box-shadow: 0 0 0 4px var(--ring), var(--shadow); }
-  .chatbox textarea { display: block; width: 100%; border: 0; background: transparent; resize: none; outline: none; padding: 14px 18px 4px; font-size: 15px; line-height: 1.5; max-height: 220px; overflow-y: auto; }
+  .chatbox textarea { display: block; width: 100%; border: 0; background: transparent; resize: none; outline: none; padding: 14px 18px 4px; font-size: 15px; line-height: 1.5; min-height: 2.5em; max-height: 220px; overflow-y: auto; }
   .chatbox-bar { display: flex; align-items: center; gap: 10px; padding: 6px 8px 8px 12px; }
   .to { flex: none; max-width: 55%; display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 999px; padding: 2px 6px 2px 11px; background: var(--bg); transition: border-color .15s, box-shadow .15s; }
   .to:hover { border-color: var(--accent-line); }

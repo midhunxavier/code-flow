@@ -380,7 +380,8 @@ function useDraft(text: string, setText: (fn: (t: string) => string) => void) {
     const el = area.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+    // In a hidden tab the box measures 0: leave it at its natural height rather than shrink it to nothing.
+    if (el.scrollHeight) el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [text]);
   return area;
 }

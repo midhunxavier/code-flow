@@ -1480,7 +1480,8 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
     const el = area.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+    // In a hidden tab the box measures 0: leave it at its natural height rather than shrink it to nothing.
+    if (el.scrollHeight) el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [text]);
   const running = run.status === "running";
   // Who you can talk to after the run: each agent that wrote code, in its worktree.
