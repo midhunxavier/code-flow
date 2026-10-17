@@ -20,7 +20,8 @@ const SEVERITY = { high: 0, medium: 1, low: 2 } as const;
 /**
  * Review council.
  * Several agents review the same changes independently and read-only; a chair merges their
- * reviews into one, ranking problems several reviewers found first. Reviewers are anonymous
+ * reviews into one. Findings rank by severity, then by how many reviewers raised them: a low
+ * problem two reviewers found doesn't outrank a high one only one did. Reviewers are anonymous
  * to the chair ("Reviewer A/B/…") so it can't favour its own vendor. Nothing is changed or
  * posted: you decide whether to post the review to the pull request.
  */
@@ -29,7 +30,7 @@ export const councilPattern: Pattern = {
   name: "Review council",
   summary: "Several agents review the same changes on their own; a chair merges what they found.",
   description:
-    "Use to review a pull request or a branch before merging: different models catch different problems, and issues several reviewers agree on rank first. Read-only — nothing is changed.",
+    "Use to review a pull request or a branch before merging: different models catch different problems. The worst problems rank first, and among them the ones several reviewers agree on. Read-only — nothing is changed.",
   roles: [
     { id: "reviewers", label: "Reviewers", description: "Each reviews the changes on its own, read-only", multiple: true, default: ["claude", "codex", "agy"] },
     { id: "chair", label: "Chair", description: "Merges the reviews into one, noting where reviewers agree", default: ["claude"] },
@@ -141,7 +142,7 @@ export const councilPattern: Pattern = {
     const agentOf = Object.fromEntries(done.map((r) => [r.label, r.agent]));
     const findings: CouncilFinding[] = merged.findings
       .map((f) => ({ severity: f.severity, file: f.file, problem: f.problem, fix: f.fix, raisedBy: [...new Set(f.raised_by.map((l) => agentOf[l]!).filter(Boolean))] }))
-      .sort((a, b) => b.raisedBy.length - a.raisedBy.length || SEVERITY[a.severity] - SEVERITY[b.severity]);
+      .sort((a, b) => SEVERITY[a.severity] - SEVERITY[b.severity] || b.raisedBy.length - a.raisedBy.length);
     ctx.learn(findings);
     const markdown = renderReview(merged.verdict, merged.summary, findings, done.map((r) => r.agent), proof);
     ctx.setReview({

@@ -2,7 +2,7 @@ import { adapters } from "../adapters/index.js";
 import type { Pattern, StepOutcome } from "../engine.js";
 import { describeIssues } from "../integrity.js";
 import { REVIEW_SCHEMA } from "./schemas.js";
-import { checkEvidence, fence, fixUntilGreen, jsonInstruction, planCheckpoint, preamble, proofEvidence, proofLine, proofRule, proveOrAsk, READ_ONLY, section, WRITE } from "./prompts.js";
+import { checkEvidence, fence, fixUntilGreen, jsonInstruction, LETTERS, planCheckpoint, preamble, proofEvidence, proofLine, proofRule, proveOrAsk, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface ReviewVerdict {
   verdict: "approve" | "changes_requested";
@@ -12,9 +12,11 @@ interface ReviewVerdict {
 /**
  * Debate → Synthesize → Build.
  * Debaters propose designs independently, then read each other's proposals and revise
- * (critique rounds). A synthesizer merges the final positions into one plan, an optional
- * builder implements it, and an optional reviewer checks the build against the plan (one round
- * of fixes).
+ * (critique rounds). Proposals are anonymous ("Proposal A/B/…") to the debaters and the
+ * synthesizer, so nobody sides with a vendor by name; the synthesizer defaults to a vendor that
+ * isn't debating (the log warns when it is). It merges the final positions into one plan, an
+ * optional builder implements it, and an optional reviewer checks the build against the plan,
+ * re-reviewing after each round of fixes.
  */
 export const debatePattern: Pattern = {
   id: "debate",
@@ -30,7 +32,7 @@ export const debatePattern: Pattern = {
       multiple: true,
       default: ["claude", "codex"],
     },
-    { id: "synthesizer", label: "Synthesizer", description: "Merges the debate into one plan", default: ["claude"] },
+    { id: "synthesizer", label: "Synthesizer", description: "Merges the debate into one plan, ideally a vendor that isn't debating", default: ["agy"] },
     {
       id: "builder",
       label: "Builder",
@@ -46,16 +48,23 @@ export const debatePattern: Pattern = {
       default: ["claude"],
     },
   ],
-  options: [{ id: "rounds", label: "Critique rounds", type: "number", default: 1, min: 0, max: 3 }],
+  options: [
+    { id: "rounds", label: "Critique rounds", type: "number", default: 1, min: 0, max: 3 },
+    { id: "reviewRounds", label: "Max review rounds", type: "number", default: 2, min: 1, max: 5 },
+  ],
 
   async run(ctx) {
     const debaters = ctx.agents("debaters");
     if (debaters.length < 2) throw new Error("A debate needs at least two debaters");
     const rounds = ctx.option("rounds", 1);
+    const synthesizer = ctx.agent("synthesizer");
+    if (debaters.includes(synthesizer)) ctx.log(`${synthesizer} both debates and synthesizes; a synthesizer from another vendor is fairer`, "warn");
     const designWt = await ctx.worktree("design");
+    // Proposals go by letter, never by vendor: debater i's is Proposal A, B, … in every round.
+    const label = (i: number) => `Proposal ${LETTERS[i]!}`;
 
     // Round 0: independent proposals, in parallel (one failing stops the others).
-    let positions: StepOutcome[] = await ctx.parallel(debaters, (agent) =>
+    let positions: StepOutcome[] = await ctx.parallel(debaters, (agent, i) =>
       ctx.ask({
         title: `Proposal — ${adapters[agent].displayName}`,
         role: "debaters",
@@ -63,7 +72,7 @@ export const debatePattern: Pattern = {
         mode: "read",
         cwd: designWt,
         prompt:
-          preamble("debater", agent, `${READ_ONLY} Other agents are proposing designs independently.`) +
+          preamble("debater", agent, `${READ_ONLY} Other agents are proposing designs independently. Yours will be ${label(i)}.`) +
           section("Task", ctx.task) +
           section(
             "Deliverable",
@@ -75,10 +84,9 @@ export const debatePattern: Pattern = {
     // Critique rounds: each debater sees the others' latest positions and revises its own.
     for (let round = 1; round <= rounds; round++) {
       const snapshot = positions;
-      positions = await ctx.parallel(snapshot, (own) => {
+      positions = await ctx.parallel(snapshot, (own, i) => {
         const others = snapshot
-          .filter((p) => p !== own)
-          .map((p) => section(`Proposal from ${adapters[p.agent].displayName}`, p.finalText))
+          .map((p, j) => (j === i ? "" : section(label(j), p.finalText)))
           .join("");
         return ctx.ask({
           title: `Critique round ${round} — ${adapters[own.agent].displayName}`,
@@ -88,7 +96,7 @@ export const debatePattern: Pattern = {
           cwd: designWt,
           resume: own,
           prompt:
-            "Here are the other agents' current proposals." +
+            `Here are the other agents' current proposals (yours is ${label(i)}).` +
             others +
             section(
               "Deliverable",
@@ -99,7 +107,7 @@ export const debatePattern: Pattern = {
           fresh:
             preamble("debater", own.agent, `${READ_ONLY} Other agents are proposing designs too.`) +
             section("Task", ctx.task) +
-            section("Your proposal so far", own.finalText) +
+            section(`Your proposal so far (${label(i)})`, own.finalText) +
             section("The other agents' current proposals", others) +
             section(
               "Deliverable",
@@ -110,7 +118,6 @@ export const debatePattern: Pattern = {
       });
     }
 
-    const synthesizer = ctx.agent("synthesizer");
     let plan = await ctx.ask({
       title: "Synthesize plan",
       role: "synthesizer",
@@ -118,9 +125,9 @@ export const debatePattern: Pattern = {
       mode: "read",
       cwd: designWt,
       prompt:
-        preamble("synthesizer", synthesizer, READ_ONLY) +
+        preamble("synthesizer", synthesizer, `${READ_ONLY} The debaters are anonymous: weigh each proposal on its merits.`) +
         section("Task", ctx.task) +
-        positions.map((p) => section(`Final position — ${adapters[p.agent].displayName}`, p.finalText)).join("") +
+        positions.map((p, i) => section(`Final position: ${label(i)}`, p.finalText)).join("") +
         section(
           "Deliverable",
           "Merge these into a single implementation plan. List each point of disagreement and which side you chose and why. " +
@@ -155,59 +162,91 @@ export const debatePattern: Pattern = {
     fixed = { check: proved.check, session: proved.session ?? fixed.session };
     let check = fixed.check;
 
-    // The debate settled the design, not the code: a reviewer checks the build against the plan.
+    // The debate settled the design, not the code: a reviewer checks the build against the plan,
+    // and checks again after the builder addresses its review.
     const [reviewer] = ctx.agents("reviewer");
+    const reviewRounds = ctx.option("reviewRounds", 2);
     let verdict: ReviewVerdict | undefined;
-    if (reviewer && (!check || check.ok)) {
+    let review: StepOutcome | undefined;
+    let proof = proved.proof;
+    let session = fixed.session ?? build;
+    let reviewed = 0;
+    /** The last review's issues went back to the builder, but nobody has reviewed the fixes. */
+    let unreviewed = false;
+    for (let round = 1; reviewer && (!check || check.ok) && round <= reviewRounds; round++) {
       const testChanges = await ctx.testChanges(buildWt);
-      verdict = (
-        await ctx.decide<ReviewVerdict>({
-          title: "Review the build",
-          schema: REVIEW_SCHEMA,
-          what: "review verdict",
-          role: "reviewer",
-          agent: reviewer,
-          mode: "read",
-          cwd: buildWt,
-          prompt:
-            preamble("reviewer", reviewer, `${READ_ONLY} You did not write this code; review it critically.`) +
-            section("Task", ctx.task) +
-            section("Agreed plan", plan.finalText) +
-            section("Diff against base", fence(await ctx.diff(buildWt), "diff")) +
-            checkEvidence(ctx, check) +
-            proofEvidence(proved.proof) +
-            (testChanges.length ? section("Changes to tests (found by code-flow)", `Request changes unless the task requires them:\n${describeIssues(testChanges)}`) : "") +
-            section("Deliverable", "Check that the build does what the plan and task say, and look for bugs, missed edge cases and missing tests. Only request changes for real problems.") +
-            jsonInstruction('{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}'),
-        })
-      ).value;
-      ctx.log(`Review: ${verdict.verdict} (${verdict.issues.length} issues)`);
-      if (verdict.verdict === "changes_requested" && verdict.issues.length) {
-        ctx.learn(verdict.issues);
-        const session = await ctx.ask({
-          title: "Address review",
-          role: "builder",
-          agent: builder,
-          mode: "write",
-          cwd: buildWt,
-          resume: fixed.session ?? build,
-          prompt: `The ${reviewer} reviewer requested changes. Address each issue, re-run tests, and summarize the fixes.\n${fence(JSON.stringify(verdict.issues, null, 2), "json")}`,
-        });
-        await ctx.commit(buildWt, `${builder}: address review`);
-        fixed = await fixUntilGreen(ctx, { agent: builder, role: "builder", wt: buildWt, session, attempts: 2 });
-        check = fixed.check;
+      const decided = await ctx.decide<ReviewVerdict>({
+        title: round === 1 ? "Review the build" : `Review the build (round ${round})`,
+        schema: REVIEW_SCHEMA,
+        what: "review verdict",
+        role: "reviewer",
+        agent: reviewer,
+        mode: "read",
+        cwd: buildWt,
+        resume: review,
+        prompt:
+          (review ? "The builder addressed your previous review. Here is the updated diff.\n" : "") +
+          preamble("reviewer", reviewer, `${READ_ONLY} You did not write this code; review it critically.`) +
+          section("Task", ctx.task) +
+          // A reviewer without its earlier session hasn't seen the plan.
+          (round === 1 || !review?.sessionId ? section("Agreed plan", plan.finalText) : "") +
+          section("Diff against base", fence(await ctx.diff(buildWt), "diff")) +
+          checkEvidence(ctx, check) +
+          proofEvidence(proof) +
+          (testChanges.length ? section("Changes to tests (found by code-flow)", `Request changes unless the task requires them:\n${describeIssues(testChanges)}`) : "") +
+          section("Deliverable", "Check that the build does what the plan and task say, and look for bugs, missed edge cases and missing tests. Only request changes for real problems.") +
+          jsonInstruction('{"verdict": "approve" | "changes_requested", "issues": [{"severity": "high|medium|low", "file": "path", "problem": "...", "fix": "..."}]}'),
+      });
+      review = decided.outcome;
+      verdict = decided.value;
+      reviewed = round;
+      unreviewed = false;
+      ctx.log(`Review round ${round}: ${verdict.verdict} (${verdict.issues.length} issues)`);
+      if (verdict.verdict !== "changes_requested" || !verdict.issues.length) break;
+      ctx.learn(verdict.issues);
+      if (round === reviewRounds) break;
+
+      session = await ctx.ask({
+        title: round === 1 ? "Address review" : `Address review (round ${round})`,
+        role: "builder",
+        agent: builder,
+        mode: "write",
+        cwd: buildWt,
+        resume: session,
+        prompt: `The ${reviewer} reviewer requested changes. Address each issue, re-run tests, and summarize the fixes.\n${fence(JSON.stringify(verdict.issues, null, 2), "json")}`,
+      });
+      await ctx.commit(buildWt, round === 1 ? `${builder}: address review` : `${builder}: address review round ${round}`);
+      unreviewed = true;
+      fixed = await fixUntilGreen(ctx, { agent: builder, role: "builder", wt: buildWt, session, attempts: 2 });
+      session = fixed.session ?? session;
+      check = fixed.check;
+      if (check && !check.ok) {
+        ctx.log("The check still fails after 2 fix attempts; stopping before the next review", "warn");
+        break;
       }
+      // The fixes changed the code: the next review sees the proof of what it reviews.
+      proof = check?.ok ? await ctx.prove(buildWt) : null;
     }
+    const approved = verdict?.verdict === "approve";
 
     await ctx.artifact("Result", buildWt);
     if (check) ctx.setVerdict(check.ok ? "passed" : "failing");
-    if (verdict) ctx.setFacts({ approved: verdict.verdict === "approve", reviewRounds: 1 });
+    if (verdict) ctx.setFacts({ approved, reviewRounds: reviewed });
     ctx.setFacts({ proof: ctx.proofOf(buildWt)?.status });
 
     return [
       `**Built**${check ? (check.ok ? `, and \`${check.command}\` passes` : `, but \`${check.command}\` still fails`) : ""} on branch \`${buildWt.branch}\``,
       proofLine(ctx.proofOf(buildWt)),
-      verdict ? `Review by ${reviewer}: ${verdict.verdict === "approve" ? "approved" : `${verdict.issues.length} issue(s) sent back to the builder`}.` : "",
+      verdict
+        ? `Review by ${reviewer}: ${
+            approved
+              ? `approved${reviewed > 1 ? ` in round ${reviewed}` : ""}`
+              : unreviewed
+                ? `${verdict.issues.length} issue(s) sent back to the builder, whose fixes weren't re-reviewed: the check fails since`
+                : `not approved after ${reviewed} round${reviewed === 1 ? "" : "s"}`
+          }.`
+        : "",
+      verdict?.issues.length && !approved && !unreviewed ? section("Open review issues", verdict.issues.map((i) => `- ${i.problem}`).join("\n")) : "",
       section("Synthesized plan", plan.finalText),
       section("Builder summary", build.finalText),
     ].join("\n");

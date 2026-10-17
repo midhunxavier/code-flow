@@ -80,12 +80,13 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
   } else if (prompt.includes('"verdict": "pass" | "fail"')) {
     answer = json({ verdict: "pass", failures: [] });
   } else if (prompt.includes('"raised_by"')) {
-    // Review council chair: merge the reviewers' findings.
+    // Review council chair: merge the reviewers' findings (out of order: code-flow ranks them).
     answer = json({
       verdict: "changes_requested",
       summary: "Two reviewers found the same off-by-one.",
       findings: [
-        { severity: "low", file: "README.md", problem: "Typo", fix: "Fix the typo", raised_by: ["B"] },
+        { severity: "low", file: "README.md", problem: "Typo", fix: "Fix the typo", raised_by: ["A", "B"] },
+        { severity: "high", file: "feature.txt", problem: "No check for empty input", fix: "Return early when n is 0", raised_by: ["A"] },
         { severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use < instead of <=", raised_by: ["A", "B"] },
       ],
     });
@@ -107,6 +108,10 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     writeFileSync("spec.test.mjs", 'import { test } from "node:test";\ntest("always passes", () => {});\n');
     writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
     answer = "Simplified the test and implemented it.";
+  } else if (write && process.env.FAKE_BREAKS_VENDOR === vendor) {
+    // A change that makes things worse: see FAILING_CHECK in the loop tests.
+    writeFileSync(`broken-${vendor}-${id}.txt`, `${vendor} broke something\n`);
+    answer = `Tried something else as ${vendor}.`;
   } else if (write && process.env.FAKE_NOOP_VENDOR === vendor) {
     answer = `${vendor} looked around but changed nothing.\nIt would need network access to go further.`;
   } else if (write) {

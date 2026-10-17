@@ -72,7 +72,7 @@ The task names the issue or PR by number. Its title isn't put in the task (whoev
 
 A read-only pattern: several agents review the same changes independently, and a chair merges their findings.
 
-- Reviewers are anonymous to the chair ("Reviewer A/B"), and findings several reviewers agree on rank first.
+- Reviewers are anonymous to the chair ("Reviewer A/B"). Findings rank by severity, then by how many reviewers raised them, so a low problem two reviewers found doesn't outrank a high one only one did.
 - Nothing is changed. **Post to PR #N** posts the review as a comment, and only when you click it.
 
 ### Follow-through
