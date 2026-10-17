@@ -12,12 +12,14 @@ const obj = (properties: Record<string, object>) => ({
 });
 const str = { type: "string" };
 const strings = { type: "array", items: str };
+/** A test that shows an issue: a test file to add (path, contents), the plain command that runs it, or both ("" for none). */
+const repro = obj({ path: str, contents: str, command: str });
 
 export const REVIEW_SCHEMA = obj({
   verdict: { type: "string", enum: ["approve", "changes_requested"] },
   issues: {
     type: "array",
-    items: obj({ severity: { type: "string", enum: ["high", "medium", "low"] }, file: str, problem: str, fix: str }),
+    items: obj({ severity: { type: "string", enum: ["high", "medium", "low"] }, file: str, problem: str, fix: str, repro }),
   },
 });
 
@@ -38,6 +40,6 @@ export const COUNCIL_SCHEMA = obj({
   summary: str,
   findings: {
     type: "array",
-    items: obj({ severity: { type: "string", enum: ["high", "medium", "low"] }, file: str, problem: str, fix: str, raised_by: strings }),
+    items: obj({ severity: { type: "string", enum: ["high", "medium", "low"] }, file: str, problem: str, fix: str, raised_by: strings, repro }),
   },
 });

@@ -1,7 +1,7 @@
 import type { Pattern } from "../engine.js";
 import { describeIssues } from "../integrity.js";
 import { JUDGE_SCHEMA } from "./schemas.js";
-import { checkSection, fence, jsonInstruction, LETTERS, preamble, READ_ONLY, section, WRITE } from "./prompts.js";
+import { checkSection, fence, jsonInstruction, LETTERS, preamble, proofEvidence, proofLine, proofRule, READ_ONLY, section, WRITE } from "./prompts.js";
 
 interface JudgeVerdict {
   winner: string;
@@ -62,6 +62,7 @@ export const racePattern: Pattern = {
         prompt:
           preamble("contestant", agent, `${WRITE} Other agents are solving the same task independently; the best solution is kept.`) +
           section("Task", ctx.task) +
+          proofRule(ctx) +
           section("Deliverable", "Implement the task completely, run the relevant tests, then summarize your approach and test results."),
       });
       await ctx.commit(wt, `candidate ${label}`);
@@ -72,7 +73,9 @@ export const racePattern: Pattern = {
 
     const changed = entries.filter((e) => e.result.ok && e.diff !== "(no changes)");
     if (changed.length === 0) throw new Error("No contestant produced a usable change");
+    // Publishing a candidate proves it (fail-to-pass) when its check passes; the judge sees that too.
     for (const e of entries) await ctx.artifact(`Candidate ${e.label} (${e.agent})`, e.wt);
+    const proofs = new Map(entries.map((e) => [e.label, ctx.proofOf(e.wt)]));
 
     // With a check configured, a candidate that fails it can't win if any candidate passes —
     // and one that passes only by weakening tests can't win over one that passes honestly.
@@ -118,13 +121,16 @@ export const racePattern: Pattern = {
                   `Candidate ${e.label}`,
                   fence(e.diff, "diff") +
                     (e.check ? checkSection(e.check, 2_000) : "") +
+                    proofEvidence(proofs.get(e.label) ?? null) +
                     (e.tests.length ? `\n**Changes to tests found by code-flow:**\n${describeIssues(e.tests)}\n` : ""),
                 ),
               )
               .join("") +
             section(
               "Deliverable",
-              `Compare the candidates on correctness, completeness, test coverage, simplicity and risk. Pick one winner from: ${labels.join(", ")}.`,
+              "Compare the candidates on correctness, completeness, test coverage, simplicity and risk" +
+                (ctx.proves ? ", and on whether their tests prove the change (a test that fails without it)" : "") +
+                `. Pick one winner from: ${labels.join(", ")}.`,
             ) +
             jsonInstruction('{"winner": "A", "ranking": ["A", "B"], "reasons": "..."}'),
         }),
@@ -144,9 +150,10 @@ export const racePattern: Pattern = {
 
     ctx.log(`Winner: candidate ${winner.label} (${winner.agent})`);
     if (ctx.hasCheck) ctx.setVerdict(winner.check?.ok ? "passed" : "failing");
-    ctx.setFacts({ winner: winner.agent, entrants: entries.map((e) => e.agent) });
+    ctx.setFacts({ winner: winner.agent, entrants: entries.map((e) => e.agent), proof: proofs.get(winner.label)?.status });
     return [
       `**Winner: Candidate ${winner.label} — ${winner.agent}** on branch \`${winner.wt.branch}\``,
+      proofLine(proofs.get(winner.label) ?? null),
       reasons.length ? section(reasons.length > 1 ? "Judges' reasoning" : "Judge's reasoning", reasons.join("\n\n")) : "",
       section(
         "All candidates",
@@ -154,7 +161,9 @@ export const racePattern: Pattern = {
           .map((e) => {
             const status = e.result.ok ? "completed" : `failed (${e.result.error})`;
             const check = e.check ? (e.check.ok ? ", check passes" : ", check fails") : "";
-            return `- ${e.label}: ${e.agent} — ${status}${check} — \`${e.wt.branch}\``;
+            const proof = proofs.get(e.label)?.status;
+            const proven = proof === "proven" ? ", proven" : proof === "unproven" ? ", not proven" : "";
+            return `- ${e.label}: ${e.agent} — ${status}${check}${proven} — \`${e.wt.branch}\``;
           })
           .join("\n"),
       ),

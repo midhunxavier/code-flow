@@ -38,6 +38,15 @@ const FIXTURE = /(^|\/)(__snapshots__|__fixtures__|fixtures?|testdata|test-data|
  */
 export const isPlainSource = (path: string) => SOURCE.test(path) && !TEST_FILE.test(path) && !TEST_CONFIG.test(path) && !FIXTURE.test(path);
 
+/** A test runner's own settings, which decide what it collects (not a build's, like vite.config). */
+const RUNNER_CONFIG = /(^|\/)(jest|vitest|playwright|cypress|karma|ava)\.config\.[cm]?[jt]s$|(^|\/)\.mocharc(\.[a-z]+)?$|(^|\/)(pytest\.ini|conftest\.py)$/;
+
+/**
+ * The tests side of a change: test files, their fixtures and the runner's settings. A
+ * fail-to-pass proof puts these onto the base code, so they run there as they do on the change.
+ */
+export const isTestSide = (path: string) => TEST_FILE.test(path) || FIXTURE.test(path) || RUNNER_CONFIG.test(path);
+
 /**
  * The check found nothing only means something if it could look: when git fails, that is the
  * issue (fail closed), so a pass isn't accepted as clean on no evidence.

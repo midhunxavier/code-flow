@@ -1,7 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +40,7 @@ async function run(pattern: string, roles: Record<string, any>, extra: Record<st
 
 /** The run's activity log, from memory (the on-disk log is written asynchronously). */
 const log = async (r: Run) => (await manager.events(r.id)).map((e) => (e.type === "log" ? e.text : "")).join("\n");
+const branchFiles = (branch: string) => execFileSync("git", ["ls-tree", "-r", "--name-only", branch], { cwd: repo }).toString().split("\n");
 const titles = (r: Run) => r.steps.map((s) => `${s.title}${s.kind === "agent" ? ` [${s.agent}]` : ""}:${s.status}`);
 
 test("detects the repo's test command", async () => {
@@ -133,6 +134,96 @@ test("loop until green hands off to the next vendor when one is stuck", async ()
   }
 });
 
+/**
+ * A check that reports how many tests fail, like node --test: 2 at first, one fewer per file an
+ * agent implements, two more per broken-*.txt (FAKE_BREAKS_VENDOR writes those).
+ */
+const FAILING_CHECK =
+  'good=$(ls claude-*.txt codex-*.txt agy-*.txt 2>/dev/null | wc -l); bad=$(ls broken-*.txt 2>/dev/null | wc -l); f=$((2 - good + 2 * bad)); [ "$f" -lt 0 ] && f=0; echo "# pass 3"; echo "# fail $f"; [ "$f" -eq 0 ]';
+
+test("loop until green: more failing tests isn't progress, and the round is undone", async () => {
+  process.env.FAKE_BREAKS_VENDOR = "codex";
+  try {
+    const r = await run("loop", { workers: ["codex", "claude"] }, { loop: { check: FAILING_CHECK }, options: { maxRounds: 4, stuckAfter: 1 } });
+    assert.equal(r.status, "done", r.error);
+    assert.equal(r.verdict, "passed");
+    // Round 1's failure differs from the baseline's (4 failing, not 2), but it's worse, not progress: Codex hands over.
+    assert.deepEqual(titles(r).slice(0, 8), [
+      "Baseline check:failed",
+      "Round 1 [codex]:done",
+      "Check after round 1:failed",
+      "Check after undoing round 1:failed",
+      "Round 2 [claude]:done",
+      "Check after round 2:failed",
+      "Round 3 [claude]:done",
+      "Check after round 3:done",
+    ]);
+    const text = await log(r);
+    assert.match(text, /Round 1 left 4 tests failing, more than the 2 before any change; undoing it/);
+    assert.match(text, /Codex made no progress for 1 rounds; handing over to Claude Code/);
+    assert.match(r.summary!, /Round 1 \(Codex\): changed code, check failed \(4 tests failing\) — worse than before any change, so code-flow undid it/);
+    // Round 2 had one failing test, fewer than before: progress, so Claude kept going.
+    assert.match(r.summary!, /Round 2 \(Claude Code\): changed code, check failed \(1 test failing\)\n/);
+    assert.ok(!branchFiles(r.artifacts[0]!.branch).some((f) => f.startsWith("broken-")), "the worse round's change is gone");
+    assert.equal(r.facts?.solvedBy, "claude");
+  } finally {
+    delete process.env.FAKE_BREAKS_VENDOR;
+  }
+});
+
+test("loop until green: when every round makes it worse, the branch keeps the best state", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codeflow-record-"));
+  process.env.FAKE_BREAKS_VENDOR = "codex";
+  process.env.FAKE_RECORD_DIR = dir;
+  try {
+    const r = await run("loop", { workers: ["codex"] }, { loop: { check: FAILING_CHECK }, options: { maxRounds: 2 } });
+    assert.equal(r.status, "done", r.error);
+    assert.equal(r.verdict, "failing");
+    assert.match(r.summary!, /Check still failing\*\* after 2 rounds — branch `[^`]+` has the best attempt \(2 tests failing\)/);
+    const branch = r.artifacts[0]!.branch;
+    assert.ok(!branchFiles(branch).some((f) => f.startsWith("broken-")));
+    assert.equal(execFileSync("git", ["diff", "--name-only", `${r.baseRef}..${branch}`], { cwd: repo }).toString(), "", "back to the code before any change");
+    // The agent hears that its round was undone, and why.
+    const second = readdirSync(dir)
+      .map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as { prompt: string })
+      .find((p) => p.prompt.startsWith("Your last change"));
+    assert.match(second!.prompt, /^Your last change left 4 tests failing, more than the 2 before any change, so code-flow undid it/);
+  } finally {
+    delete process.env.FAKE_BREAKS_VENDOR;
+    delete process.env.FAKE_RECORD_DIR;
+  }
+});
+
+test("loop until green: a resumed run replays an undone round instead of redoing it", async () => {
+  process.env.FAKE_BREAKS_VENDOR = "codex";
+  process.env.FAKE_FAIL_VENDOR = "claude";
+  const resumable = new RunManager(findPattern);
+  const idle = (r: Run) =>
+    new Promise<void>((resolve) => {
+      const check = () => r.status !== "running" && resolve();
+      resumable.subscribe(r.id, check);
+      check();
+    });
+  let r: Run;
+  try {
+    r = await resumable.start({ pattern: findPattern("loop")!, task: "Make it green", repo, roles: { workers: ["codex", "claude"] }, options: { maxRounds: 4, stuckAfter: 1 }, loop: { check: FAILING_CHECK } });
+    await idle(r);
+    assert.equal(r.status, "failed");
+    assert.match(r.error!, /Round 2 \(claude\) failed/);
+    delete process.env.FAKE_FAIL_VENDOR;
+    await resumable.resume(r.id);
+    await idle(r);
+  } finally {
+    delete process.env.FAKE_BREAKS_VENDOR;
+    delete process.env.FAKE_FAIL_VENDOR;
+  }
+  assert.equal(r.status, "done", r.error);
+  assert.equal(r.verdict, "passed");
+  assert.equal(r.steps.filter((s) => s.title === "Round 1" && s.status === "done").length, 1, "Codex's round isn't run again");
+  assert.equal(r.steps.filter((s) => s.title === "Check after undoing round 1").length, 1, "nor is the undo");
+  assert.ok(!branchFiles(r.artifacts[0]!.branch).some((f) => f.startsWith("broken-")));
+});
+
 test("loop until green reports failure honestly when it never passes", async () => {
   const r = await run("loop", { workers: ["claude"] }, { loop: { check: "false" }, options: { maxRounds: 2 } });
   assert.equal(r.status, "done", r.error);
@@ -158,6 +249,8 @@ test("pipeline fixes a failing check before any review", async () => {
     "Check:failed",
     "Fix failing check (1/2) [codex]:done",
     "Check:done",
+    // The check is the test here: it fails on the base code, so the change is proven.
+    "Proof: tests without the change:done",
     "Review (round 1) [claude]:done",
   ]);
   assert.match(r.summary!, /Approved, and `test/);

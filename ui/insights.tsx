@@ -110,6 +110,7 @@ export function InsightsView({ group }: { group?: string }) {
                           <th class="num">Tokens</th>
                           <th class="num">Cost</th>
                           <th>Tests changed</th>
+                          <th>Proven</th>
                           <th>Changes</th>
                         </tr>
                       </thead>
@@ -139,6 +140,9 @@ export function InsightsView({ group }: { group?: string }) {
                               <td class={`num ${best("tokens") ? "best" : ""}`}>{fmtTokens(r.tokens)}</td>
                               <td class="num">{r.costUsd ? fmtCost(r.costUsd) : "–"}</td>
                               <td>{r.flagged ? <span class="badge warn">⚠ {r.flagged}</span> : <span class="help">no</span>}</td>
+                              <td title={PROOF_TITLE}>
+                                {r.proof === "proven" ? <span class="badge ok">✓ yes</span> : r.proof === "unproven" ? <span class="badge warn">⚠ no</span> : <span class="help">–</span>}
+                              </td>
                               <td class="help">{r.stat ?? "–"}</td>
                             </tr>
                           );
@@ -215,6 +219,7 @@ export function InsightsView({ group }: { group?: string }) {
                     <th class="num">Check failing</th>
                     <th class="num">Failed or stopped</th>
                     <th class="num">Tests changed</th>
+                    <th class="num" title={PROOF_TITLE}>Proven</th>
                     <th class="num">Avg time</th>
                     <th class="num">Avg steps</th>
                     <th class="num">Tokens</th>
@@ -230,6 +235,9 @@ export function InsightsView({ group }: { group?: string }) {
                       <td class={`num ${p.failing ? "warn" : ""}`}>{p.failing || "–"}</td>
                       <td class={`num ${p.failed + p.stopped ? "warn" : ""}`}>{p.failed + p.stopped || "–"}</td>
                       <td class={`num ${p.flagged ? "warn" : ""}`}>{p.flagged || "–"}</td>
+                      <td class={`num ${p.unproven ? "warn" : ""}`} title={p.proven + p.unproven ? `${p.proven} proven, ${p.unproven} not proven` : undefined}>
+                        {p.proven + p.unproven ? `${p.proven}/${p.proven + p.unproven}` : "–"}
+                      </td>
                       <td class="num">{p.ended ? duration(p.ms / p.ended) : "–"}</td>
                       <td class="num">{(p.steps / p.runs).toFixed(1)}</td>
                       <td class="num">{fmtTokens(p.tokens)}</td>
@@ -246,6 +254,8 @@ export function InsightsView({ group }: { group?: string }) {
     </div>
   );
 }
+
+const PROOF_TITLE = "Proven: a test in the result fails on the base code without the change (code-flow ran the change's tests there)";
 
 function Card({ label, value, note }: { label: string; value: string; note?: string }) {
   return (

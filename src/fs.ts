@@ -1,7 +1,7 @@
-import { readdir, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { lstat, mkdir, open, readdir, realpath, stat } from "node:fs/promises";
+import { constants, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 export interface DirEntry {
   name: string;
@@ -51,4 +51,41 @@ export async function listDirectories(path?: string, showHidden = false): Promis
     entries,
     truncated: dirs.length > MAX_ENTRIES,
   };
+}
+
+/**
+ * Write `contents` to `rel` inside `root` without following a symbolic link anywhere on the way.
+ * For files whose path comes from an agent (a reviewer's test), written into a checkout of code
+ * someone else may control: a tracked `tests -> ../../..` would otherwise send the write outside
+ * the checkout, to your own files. Folders that don't exist are created one at a time. Returns
+ * why it refused (a link, a file where a folder should be, a path that leaves `root`), or
+ * undefined once it's written.
+ */
+export async function writeFileInside(root: string, rel: string, contents: string): Promise<string | undefined> {
+  const parts = rel.split(/[\\/]+/).filter((p) => p && p !== ".");
+  if (!parts.length || parts.some((p) => p === "..")) return `\`${rel}\` isn't a path inside the checkout`;
+  const realRoot = await realpath(root);
+  let dir = root;
+  for (const part of parts.slice(0, -1)) {
+    dir = join(dir, part);
+    const info = await lstat(dir).catch(() => undefined);
+    if (!info) await mkdir(dir);
+    else if (info.isSymbolicLink()) return `\`${rel}\` goes through a symbolic link (\`${part}\`)`;
+    else if (!info.isDirectory()) return `\`${rel}\` goes through \`${part}\`, which isn't a folder`;
+  }
+  // Checked part by part above; this catches a link that appeared in between.
+  const realDir = await realpath(dir);
+  if (realDir !== realRoot && !realDir.startsWith(realRoot + sep)) return `\`${rel}\` leads outside the checkout`;
+  const target = join(dir, parts[parts.length - 1]!);
+  const existing = await lstat(target).catch(() => undefined);
+  if (existing?.isSymbolicLink()) return `\`${rel}\` is a symbolic link`;
+  if (existing && !existing.isFile()) return `\`${rel}\` isn't a file`;
+  // O_NOFOLLOW: if a link shows up at the last moment, opening fails instead of following it.
+  const file = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0), 0o644);
+  try {
+    await file.writeFile(contents);
+  } finally {
+    await file.close();
+  }
+  return undefined;
 }
