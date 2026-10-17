@@ -1,6 +1,8 @@
 import { computed, signal } from "@preact/signals";
 import { api, ApiError, post, store } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
+import { defaultPlanApproval } from "./team-state.js";
+import type { TeamRollout } from "../src/team-evaluation.js";
 import type {
   AgentId,
   AgentInfo,
@@ -20,6 +22,14 @@ export const agents = signal<AgentInfo[]>([]);
 export const patterns = signal<PatternInfo[]>([]);
 export const catalogs = signal<Record<string, CatalogOrError>>({});
 export const runs = signal<Map<string, RunSummary>>(new Map());
+export const teamRollout = signal<TeamRollout | null>(null);
+export async function loadTeamRollout() {
+  try {
+    const rollout = await api<TeamRollout>("/api/team-rollout");
+    teamRollout.value = rollout;
+    if (rollout.enabled && rollout.stage === "default" && !store.get("pattern") && patterns.value.some((item) => item.id === "auto-team")) patternId.value = "auto-team";
+  } catch { /* The existing app remains usable if optional evaluation metadata cannot load. */ }
+}
 
 export type Route =
   | { view: "composer" }
@@ -285,12 +295,18 @@ export async function loadHealth() {
 
 /** "Let me approve the plan before agents build" (patterns that have a plan step). */
 export const approvePlan = signal(store.get("approvePlan") === "1");
+const approvalChosen = signal(store.get("approvePlan") !== null);
 export function setApprovePlan(on: boolean) {
+  approvalChosen.value = true;
   approvePlan.value = on;
   store.set("approvePlan", on ? "1" : "0");
 }
+/** New Auto teams pause before dispatch unless the user has chosen otherwise. */
+export function planApprovalFor(patternId: string): boolean {
+  return defaultPlanApproval(patternId, approvalChosen.value ? approvePlan.value : undefined);
+}
 /** Patterns with a plan checkpoint, and what you approve there. */
-export const CHECKPOINTS: Record<string, string> = { pipeline: "the plan", debate: "the plan", supervisor: "the subtasks", tdd: "the tests" };
+export const CHECKPOINTS: Record<string, string> = { pipeline: "the plan", debate: "the plan", supervisor: "the subtasks", tdd: "the tests", "auto-team": "the team and plan" };
 
 export function setTask(value: string) {
   task.value = value;
@@ -329,6 +345,7 @@ export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]
   const roles: Record<string, RoleValue[]> = {};
   for (const role of p.roles) {
     let ids = (saved[role.id] ?? role.default).filter((id) => id === "auto" || available(id));
+    if (p.id === "auto-team" && role.id === "coordinator" && !saved[role.id]) ids = ["auto"];
     if (!role.multiple) ids = ids.slice(0, 1);
     if (!ids.length && !role.optional && !saved[role.id] && firstAvailable) ids = [firstAvailable];
     roles[role.id] = ids;
@@ -395,7 +412,7 @@ export async function loadModels() {
 
 // ---------------------------------------------------------------- runs
 /** A run needs you when it finished and you haven't looked, or it was interrupted. */
-export const needsYou = (r: RunSummary) => !r.archived && (!!r.awaiting || (r.status !== "running" && (r.status === "interrupted" || !r.seen)));
+export const needsYou = (r: RunSummary) => !r.archived && (!!r.awaiting || !!r.team?.awaitingRequestId || (r.status !== "running" && (r.status === "interrupted" || !r.seen)));
 /**
  * A finished run whose result fails its check is a warning, not a success; so is one whose check
  * couldn't run here at all ("unchecked": nobody knows whether it works).
@@ -423,8 +440,8 @@ let onFinished: ((run: RunSummary) => void) | undefined;
  * than what the list shows. That stream replays a run's history first, and an old "running"
  * snapshot in the list would make the next refresh announce a finish that happened long ago.
  */
-export function upsertRunFrom(run: RunSummary, seq: number) {
-  if (seq <= (feed.runSeq.get(run.id) ?? 0)) return;
+export function upsertRunFrom(run: RunSummary, seq: number, authoritative = false) {
+  if (!authoritative && seq <= (feed.runSeq.get(run.id) ?? 0)) return;
   feed.runSeq.set(run.id, seq);
   upsertRun(run);
 }
@@ -434,6 +451,7 @@ function noticeChange(before: RunSummary | undefined, run: RunSummary) {
   if (!onFinished) return;
   if (before?.status === "running" && run.status !== "running") onFinished(run);
   else if (run.awaiting && !before?.awaiting) onFinished(run); // paused for your decision
+  else if (run.team?.awaitingRequestId && run.team.awaitingRequestId !== before?.team?.awaitingRequestId) onFinished(run);
   else if (watchNeedingYou(run) && !watchNeedingYou(before)) onFinished(run); // a PR watch handed back to you
 }
 

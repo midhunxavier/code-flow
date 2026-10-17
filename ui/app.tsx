@@ -37,6 +37,7 @@ import {
   watchNeedingYou,
 } from "./state.js";
 import type { DirListing, RunSummary } from "./types.js";
+import { teamNeedsResume } from "./team-state.js";
 
 export function App() {
   useEffect(() => {
@@ -179,13 +180,13 @@ export function notifyFinished(run: RunSummary) {
   const verbs: Record<string, string> = {
     done: run.verdict === "failing" ? "finished, but its check fails" : run.checkCantRun ? "finished, but its check couldn't run" : "finished",
     failed: "failed",
-    stopped: "stopped at a limit",
+    stopped: teamNeedsResume(run) ? "has unresolved work" : "stopped at a limit",
     interrupted: "was interrupted",
   };
   const watch = run.status !== "running" && !run.awaiting ? watchNeedingYou(run) : undefined;
   const title = run.awaiting
     ? `code-flow: ${run.awaiting.title.toLowerCase()}`
-    : watch
+    : run.team?.awaitingRequestId ? "code-flow: your team needs an answer" : watch
       ? `code-flow: PR needs you — ${watch.detail}`
       : `code-flow: run ${verbs[run.status] ?? run.status}`;
   announcement.value = `${title.replace(/^code-flow: /, "")}: ${run.task.split("\n")[0]!.slice(0, 120)}`;

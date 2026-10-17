@@ -1,0 +1,865 @@
+{
+  "version": 1,
+  "recordedAt": "2026-10-17T12:54:31.625Z",
+  "implementation": {
+    "baseCommit": "8cb364143716a3feda3edd12e7fa0a310c92ecf5",
+    "branch": "codex/dynamic-teams",
+    "state": "Uncommitted implementation working tree",
+    "node": "v22.14.0"
+  },
+  "verification": {
+    "unitIntegrationTestsPassed": 397,
+    "browserTestsPassed": 17,
+    "focusedCompositionAndRolloutPassed": 11,
+    "focusedEvaluationPassed": 8,
+    "typecheck": "passed",
+    "build": "passed",
+    "whitespace": "passed"
+  },
+  "realTrials": [
+    {
+      "label": "A",
+      "maximumMinutes": 5,
+      "variant": "Initial implementation; identifier repair and bounded timeout",
+      "comparison": {
+        "version": 1,
+        "mode": "real",
+        "reports": [
+          {
+            "version": 1,
+            "id": "evaluation-2610171237-9f0d5dba",
+            "runId": "2610171237-9f0d5dba",
+            "at": 1792240953810,
+            "mode": "real",
+            "caseId": "sum-numbers-v1",
+            "pairId": "pair-1",
+            "taskHash": "7e83ad7757316a372db8323c740d0b2f45707c8148a29f0f32864323b219a354",
+            "baseRef": "21839919ae08e8ee1d95034e345c593ece21e4ab",
+            "pattern": "auto-team",
+            "cliVersions": {
+              "claude": "2.1.302 (Claude Code)",
+              "codex": "codex-cli 0.162.1"
+            },
+            "status": "stopped",
+            "verified": false,
+            "verification": {
+              "checks": "unknown",
+              "review": "unknown",
+              "gaps": 0,
+              "requirements": 7,
+              "covered": 0,
+              "integrityFlags": 0
+            },
+            "metrics": {
+              "invocations": 3,
+              "coordinatorInvocations": 2,
+              "coordinatorFraction": 0.6666666666666666,
+              "workerTurns": 1,
+              "multiWorker": false,
+              "elapsedMs": 300476,
+              "activeWorkMs": 297879,
+              "coordinatorMs": 163800,
+              "reportedTokens": 62894,
+              "reportedApiCostUsd": 2.98061675,
+              "tokenReportingTurns": 2,
+              "questions": 0,
+              "peerQuestions": 0,
+              "blockedTurns": 0,
+              "peerYieldRate": 0,
+              "peerWaitingMs": 0,
+              "peerWaitingWallMs": 0,
+              "avoidableBarrierEstimateMs": 0,
+              "timedPeerQuestions": 0,
+              "repairTurns": 0,
+              "selectedMemories": 0,
+              "omittedMemories": 0,
+              "replay": {
+                "bytes": 38298,
+                "records": 24,
+                "durationMs": 2.947416999959387,
+                "kind": "journal-load"
+              }
+            },
+            "limitations": [
+              "API-equivalent cost is not a subscription charge; unreported values remain unknown.",
+              "Avoidable barrier time is a counterfactual upper-bound estimate after answered peer questions; it does not prove spare process capacity or an asynchronous speedup.",
+              "Active work is the union of observed step intervals; it excludes gaps and is not a full run-clock measurement."
+            ]
+          },
+          {
+            "version": 1,
+            "id": "evaluation-2610171242-35cf7f39",
+            "runId": "2610171242-35cf7f39",
+            "at": 1792241170732,
+            "mode": "real",
+            "caseId": "sum-numbers-v1",
+            "pairId": "pair-1",
+            "taskHash": "7e83ad7757316a372db8323c740d0b2f45707c8148a29f0f32864323b219a354",
+            "baseRef": "21839919ae08e8ee1d95034e345c593ece21e4ab",
+            "pattern": "supervisor",
+            "cliVersions": {
+              "claude": "2.1.302 (Claude Code)",
+              "codex": "codex-cli 0.162.1"
+            },
+            "status": "done",
+            "verified": true,
+            "verification": {
+              "checks": "passed",
+              "review": "approved",
+              "proof": "proven",
+              "gaps": 0,
+              "requirements": 0,
+              "covered": 0,
+              "integrityFlags": 0
+            },
+            "metrics": {
+              "invocations": 4,
+              "coordinatorInvocations": 1,
+              "coordinatorFraction": 0.25,
+              "workerTurns": 2,
+              "multiWorker": true,
+              "elapsedMs": 216598,
+              "activeWorkMs": 215157,
+              "coordinatorMs": 149865,
+              "reportedTokens": 116822,
+              "reportedApiCostUsd": 2.11688725,
+              "tokenReportingTurns": 4,
+              "questions": 0,
+              "peerQuestions": 0,
+              "blockedTurns": 0,
+              "peerYieldRate": 0,
+              "peerWaitingMs": 0,
+              "peerWaitingWallMs": 0,
+              "avoidableBarrierEstimateMs": 0,
+              "timedPeerQuestions": 0,
+              "repairTurns": 0,
+              "selectedMemories": 0,
+              "omittedMemories": 0,
+              "replay": {
+                "bytes": 23817,
+                "records": 13,
+                "durationMs": 3.5324170000385493,
+                "kind": "journal-load"
+              }
+            },
+            "limitations": [
+              "API-equivalent cost is not a subscription charge; unreported values remain unknown.",
+              "Avoidable barrier time is a counterfactual upper-bound estimate after answered peer questions; it does not prove spare process capacity or an asynchronous speedup.",
+              "Active work is the union of observed step intervals; it excludes gaps and is not a full run-clock measurement.",
+              "Supervisor coordination includes its planning, integration and repair turns; legacy requirements have no structured coverage manifest."
+            ]
+          }
+        ],
+        "assessment": {
+          "realRuns": 2,
+          "realAutoRuns": 1,
+          "realWorkerTurns": 1,
+          "matchedPairs": 1,
+          "verifiedAutoRuns": 0,
+          "overheadFraction": null,
+          "peerYieldRate": 0,
+          "eligibleBeta": false,
+          "eligibleDefault": false,
+          "blockers": [
+            "Need 20 real Auto runs; recorded 1.",
+            "Need 100 real worker turns; recorded 1.",
+            "Need 20 matched Auto/Supervisor comparisons; recorded 1.",
+            "Auto verification regressed against a matched Supervisor result.",
+            "Some real Auto results are incomplete or unverified.",
+            "No multi-worker coordinator overhead sample."
+          ]
+        }
+      }
+    },
+    {
+      "label": "B",
+      "maximumMinutes": 8,
+      "variant": "Codex strict-schema incompatibility; pre-fix canonical memory path",
+      "comparison": {
+        "version": 1,
+        "mode": "real",
+        "reports": [
+          {
+            "version": 1,
+            "id": "evaluation-2610171242-5e3de685",
+            "runId": "2610171242-5e3de685",
+            "at": 1792240932672,
+            "mode": "real",
+            "caseId": "sum-numbers-v2-seeded-memory",
+            "pairId": "pair-1",
+            "taskHash": "7e83ad7757316a372db8323c740d0b2f45707c8148a29f0f32864323b219a354",
+            "baseRef": "aeb12fee0eb2ccbe25802a77c4d04389166a0648",
+            "pattern": "auto-team",
+            "cliVersions": {
+              "codex": "codex-cli 0.162.1",
+              "claude": "2.1.302 (Claude Code)"
+            },
+            "status": "failed",
+            "verified": false,
+            "verification": {
+              "checks": "unknown",
+              "review": "unknown",
+              "gaps": 0,
+              "requirements": 0,
+              "covered": 0,
+              "integrityFlags": 0
+            },
+            "metrics": {
+              "invocations": 1,
+              "coordinatorInvocations": 1,
+              "coordinatorFraction": 1,
+              "workerTurns": 0,
+              "multiWorker": false,
+              "elapsedMs": 5554,
+              "activeWorkMs": 3198,
+              "coordinatorMs": 3198,
+              "tokenReportingTurns": 0,
+              "questions": 0,
+              "peerQuestions": 0,
+              "blockedTurns": 0,
+              "peerYieldRate": null,
+              "peerWaitingMs": 0,
+              "peerWaitingWallMs": 0,
+              "avoidableBarrierEstimateMs": 0,
+              "timedPeerQuestions": 0,
+              "repairTurns": 0,
+              "selectedMemories": 0,
+              "omittedMemories": 0,
+              "coordinatorRevisions": 0,
+              "approvals": {
+                "approved": 0,
+                "revised": 0,
+                "rejected": 0,
+                "withReason": 0
+              },
+              "memoryFeedback": {
+                "useful": 0,
+                "irrelevant": 0,
+                "stale": 0,
+                "incorrect": 0
+              },
+              "replay": {
+                "bytes": 2538,
+                "records": 4,
+                "durationMs": 0.3419999999996435,
+                "kind": "journal-load"
+              }
+            },
+            "limitations": [
+              "API-equivalent cost is not a subscription charge; unreported values remain unknown.",
+              "Avoidable barrier time is a counterfactual upper-bound estimate after answered peer questions; it does not prove spare process capacity or an asynchronous speedup.",
+              "Active work is the union of observed step intervals; it excludes gaps and is not a full run-clock measurement.",
+              "This trial seeds one synthetic accepted repository memory about dependency-free node:test. Selection measures retrieval plumbing, not learned-memory usefulness."
+            ]
+          },
+          {
+            "version": 1,
+            "id": "evaluation-2610171242-1c978ccc",
+            "runId": "2610171242-1c978ccc",
+            "at": 1792241166271,
+            "mode": "real",
+            "caseId": "sum-numbers-v2-seeded-memory",
+            "pairId": "pair-1",
+            "taskHash": "7e83ad7757316a372db8323c740d0b2f45707c8148a29f0f32864323b219a354",
+            "baseRef": "aeb12fee0eb2ccbe25802a77c4d04389166a0648",
+            "pattern": "supervisor",
+            "cliVersions": {
+              "codex": "codex-cli 0.162.1",
+              "claude": "2.1.302 (Claude Code)"
+            },
+            "status": "done",
+            "verified": true,
+            "verification": {
+              "checks": "passed",
+              "review": "approved",
+              "proof": "proven",
+              "gaps": 0,
+              "requirements": 0,
+              "covered": 0,
+              "integrityFlags": 0
+            },
+            "metrics": {
+              "invocations": 4,
+              "coordinatorInvocations": 1,
+              "coordinatorFraction": 0.25,
+              "workerTurns": 2,
+              "multiWorker": true,
+              "elapsedMs": 233428,
+              "activeWorkMs": 232323,
+              "coordinatorMs": 37460,
+              "reportedTokens": 122232,
+              "reportedApiCostUsd": 2.2690794999999997,
+              "tokenReportingTurns": 4,
+              "questions": 0,
+              "peerQuestions": 0,
+              "blockedTurns": 0,
+              "peerYieldRate": 0,
+              "peerWaitingMs": 0,
+              "peerWaitingWallMs": 0,
+              "avoidableBarrierEstimateMs": 0,
+              "timedPeerQuestions": 0,
+              "repairTurns": 0,
+              "selectedMemories": 0,
+              "omittedMemories": 0,
+              "coordinatorRevisions": 0,
+              "approvals": {
+                "approved": 0,
+                "revised": 0,
+                "rejected": 0,
+                "withReason": 0
+              },
+              "memoryFeedback": {
+                "useful": 0,
+                "irrelevant": 0,
+                "stale": 0,
+                "incorrect": 0
+              },
+              "replay": {
+                "bytes": 20345,
+                "records": 13,
+                "durationMs": 3.3712909999885596,
+                "kind": "journal-load"
+              }
+            },
+            "limitations": [
+              "API-equivalent cost is not a subscription charge; unreported values remain unknown.",
+              "Avoidable barrier time is a counterfactual upper-bound estimate after answered peer questions; it does not prove spare process capacity or an asynchronous speedup.",
+              "Active work is the union of observed step intervals; it excludes gaps and is not a full run-clock measurement.",
+              "Supervisor coordination includes its planning, integration and repair turns; legacy requirements have no structured coverage manifest.",
+              "This trial seeds one synthetic accepted repository memory about dependency-free node:test. Selection measures retrieval plumbing, not learned-memory usefulness."
+            ]
+          }
+        ],
+        "assessment": {
+          "realRuns": 2,
+          "realAutoRuns": 1,
+          "realWorkerTurns": 0,
+          "matchedPairs": 1,
+          "verifiedAutoRuns": 0,
+          "overheadFraction": null,
+          "peerYieldRate": null,
+          "eligibleBeta": false,
+          "eligibleDefault": false,
+          "blockers": [
+            "Need 20 real Auto runs; recorded 1.",
+            "Need 100 real worker turns; recorded 0.",
+            "Need 20 matched Auto/Supervisor comparisons; recorded 1.",
+            "Auto verification regressed against a matched Supervisor result.",
+            "Some real Auto results are incomplete or unverified.",
+            "No multi-worker coordinator overhead sample."
+          ]
+        }
+      }
+    },
+    {
+      "label": "C",
+      "maximumMinutes": 8,
+      "variant": "Corrected strict schemas and canonical memory path; before final redundant-review diagnostic wording and taskless-worker metric adjustment",
+      "comparison": {
+        "version": 1,
+        "mode": "real",
+        "reports": [
+          {
+            "version": 1,
+            "id": "evaluation-2610171244-020d3ac6",
+            "runId": "2610171244-020d3ac6",
+            "at": 1792241390881,
+            "mode": "real",
+            "caseId": "sum-numbers-v2-seeded-memory",
+            "pairId": "pair-1",
+            "taskHash": "7e83ad7757316a372db8323c740d0b2f45707c8148a29f0f32864323b219a354",
+            "baseRef": "eec12c27d9b32d7006167a8eb09a78436b152d13",
+            "pattern": "auto-team",
+            "cliVersions": {
+              "codex": "codex-cli 0.162.1",
+              "claude": "2.1.302 (Claude Code)"
+            },
+            "status": "done",
+            "verified": true,
+            "verification": {
+              "checks": "passed",
+              "review": "approved",
+              "proof": "proven",
+              "gaps": 0,
+              "requirements": 5,
+              "covered": 5,
+              "integrityFlags": 0
+            },
+            "metrics": {
+              "invocations": 5,
+              "coordinatorInvocations": 3,
+              "coordinatorFraction": 0.6,
+              "workerTurns": 1,
+              "multiWorker": false,
+              "elapsedMs": 294590,
+              "activeWorkMs": 290457,
+              "coordinatorMs": 143693,
+              "reportedTokens": 139520,
+              "reportedApiCostUsd": 1.1800662499999999,
+              "tokenReportingTurns": 5,
+              "questions": 0,
+              "peerQuestions": 0,
+              "blockedTurns": 0,
+              "peerYieldRate": 0,
+              "peerWaitingMs": 0,
+              "peerWaitingWallMs": 0,
+              "avoidableBarrierEstimateMs": 0,
+              "timedPeerQuestions": 0,
+              "repairTurns": 0,
+              "selectedMemories": 1,
+              "omittedMemories": 0,
+              "coordinatorRevisions": 0,
+              "approvals": {
+                "approved": 0,
+                "revised": 0,
+                "rejected": 0,
+                "withReason": 0
+              },
+              "memoryFeedback": {
+                "useful": 0,
+                "irrelevant": 0,
+                "stale": 0,
+                "incorrect": 0
+              },
+              "replay": {
+                "bytes": 54147,
+                "records": 70,
+                "durationMs": 0.8683750000200234,
+                "kind": "journal-load"
+              }
+            },
+            "limitations": [
+              "API-equivalent cost is not a subscription charge; unreported values remain unknown.",
+              "Avoidable barrier time is a counterfactual upper-bound estimate after answered peer questions; it does not prove spare process capacity or an asynchronous speedup.",
+              "Active work is the union of observed step intervals; it excludes gaps and is not a full run-clock measurement.",
+              "This trial seeds one synthetic accepted repository memory about dependency-free node:test. Selection measures retrieval plumbing, not learned-memory usefulness."
+            ]
+          },
+          {
+            "version": 1,
+            "id": "evaluation-2610171249-df989381",
+            "runId": "2610171249-df989381",
+            "at": 1792241650644,
+            "mode": "real",
+            "caseId": "sum-numbers-v2-seeded-memory",
+            "pairId": "pair-1",
+            "taskHash": "7e83ad7757316a372db8323c740d0b2f45707c8148a29f0f32864323b219a354",
+            "baseRef": "eec12c27d9b32d7006167a8eb09a78436b152d13",
+            "pattern": "supervisor",
+            "cliVersions": {
+              "codex": "codex-cli 0.162.1",
+              "claude": "2.1.302 (Claude Code)"
+            },
+            "status": "done",
+            "verified": true,
+            "verification": {
+              "checks": "passed",
+              "review": "approved",
+              "proof": "proven",
+              "gaps": 0,
+              "requirements": 0,
+              "covered": 0,
+              "integrityFlags": 0
+            },
+            "metrics": {
+              "invocations": 4,
+              "coordinatorInvocations": 1,
+              "coordinatorFraction": 0.25,
+              "workerTurns": 2,
+              "multiWorker": true,
+              "elapsedMs": 259620,
+              "activeWorkMs": 258741,
+              "coordinatorMs": 35853,
+              "reportedTokens": 119935,
+              "reportedApiCostUsd": 2.48302025,
+              "tokenReportingTurns": 4,
+              "questions": 0,
+              "peerQuestions": 0,
+              "blockedTurns": 0,
+              "peerYieldRate": 0,
+              "peerWaitingMs": 0,
+              "peerWaitingWallMs": 0,
+              "avoidableBarrierEstimateMs": 0,
+              "timedPeerQuestions": 0,
+              "repairTurns": 0,
+              "selectedMemories": 0,
+              "omittedMemories": 0,
+              "coordinatorRevisions": 0,
+              "approvals": {
+                "approved": 0,
+                "revised": 0,
+                "rejected": 0,
+                "withReason": 0
+              },
+              "memoryFeedback": {
+                "useful": 0,
+                "irrelevant": 0,
+                "stale": 0,
+                "incorrect": 0
+              },
+              "replay": {
+                "bytes": 20789,
+                "records": 13,
+                "durationMs": 1.455625000060536,
+                "kind": "journal-load"
+              }
+            },
+            "limitations": [
+              "API-equivalent cost is not a subscription charge; unreported values remain unknown.",
+              "Avoidable barrier time is a counterfactual upper-bound estimate after answered peer questions; it does not prove spare process capacity or an asynchronous speedup.",
+              "Active work is the union of observed step intervals; it excludes gaps and is not a full run-clock measurement.",
+              "Supervisor coordination includes its planning, integration and repair turns; legacy requirements have no structured coverage manifest.",
+              "This trial seeds one synthetic accepted repository memory about dependency-free node:test. Selection measures retrieval plumbing, not learned-memory usefulness."
+            ]
+          }
+        ],
+        "assessment": {
+          "realRuns": 2,
+          "realAutoRuns": 1,
+          "realWorkerTurns": 1,
+          "matchedPairs": 1,
+          "verifiedAutoRuns": 1,
+          "overheadFraction": null,
+          "peerYieldRate": 0,
+          "eligibleBeta": true,
+          "eligibleDefault": false,
+          "blockers": [
+            "Need 20 real Auto runs; recorded 1.",
+            "Need 100 real worker turns; recorded 1.",
+            "Need 20 matched Auto/Supervisor comparisons; recorded 1.",
+            "No multi-worker coordinator overhead sample."
+          ]
+        }
+      }
+    }
+  ],
+  "fakeComparison": {
+    "version": 1,
+    "mode": "fake",
+    "reports": [
+      {
+        "version": 1,
+        "id": "evaluation-2610171242-31885702",
+        "runId": "2610171242-31885702",
+        "at": 1792240976239,
+        "mode": "fake",
+        "caseId": "fake-peer-question-v2-seeded-memory",
+        "pairId": "pair-1",
+        "taskHash": "ae1915e35338f887cc3fe1264f43492c1bde4817238a0b8779609d73bacf703b",
+        "baseRef": "72682484377ffab9f1de30043f943af261d9a35b",
+        "pattern": "auto-team",
+        "cliVersions": {
+          "claude": "2.1.300 (Claude Code)",
+          "codex": "codex-cli 0.162.1"
+        },
+        "status": "done",
+        "verified": true,
+        "verification": {
+          "checks": "passed",
+          "review": "approved",
+          "proof": "proven",
+          "gaps": 0,
+          "requirements": 1,
+          "covered": 1,
+          "integrityFlags": 0
+        },
+        "metrics": {
+          "invocations": 5,
+          "coordinatorInvocations": 2,
+          "coordinatorFraction": 0.4,
+          "workerTurns": 2,
+          "multiWorker": false,
+          "elapsedMs": 7420,
+          "activeWorkMs": 4189,
+          "coordinatorMs": 985,
+          "reportedTokens": 742,
+          "reportedApiCostUsd": 1,
+          "tokenReportingTurns": 5,
+          "questions": 1,
+          "peerQuestions": 1,
+          "blockedTurns": 1,
+          "peerYieldRate": 0.5,
+          "peerWaitingMs": 796,
+          "peerWaitingWallMs": 796,
+          "avoidableBarrierEstimateMs": 226,
+          "timedPeerQuestions": 1,
+          "repairTurns": 0,
+          "selectedMemories": 1,
+          "omittedMemories": 0,
+          "coordinatorRevisions": 0,
+          "approvals": {
+            "approved": 0,
+            "revised": 0,
+            "rejected": 0,
+            "withReason": 0
+          },
+          "memoryFeedback": {
+            "useful": 0,
+            "irrelevant": 0,
+            "stale": 0,
+            "incorrect": 0
+          },
+          "replay": {
+            "bytes": 17594,
+            "records": 58,
+            "durationMs": 19.1075409999994,
+            "kind": "journal-load"
+          }
+        },
+        "limitations": [
+          "Deterministic fake CLIs validate orchestration, not model quality or subscription savings.",
+          "API-equivalent cost is not a subscription charge; unreported values remain unknown.",
+          "Avoidable barrier time is a counterfactual upper-bound estimate after answered peer questions; it does not prove spare process capacity or an asynchronous speedup.",
+          "Active work is the union of observed step intervals; it excludes gaps and is not a full run-clock measurement.",
+          "This trial seeds one synthetic accepted repository memory about dependency-free node:test. Selection measures retrieval plumbing, not learned-memory usefulness."
+        ]
+      },
+      {
+        "version": 1,
+        "id": "evaluation-2610171242-e7c6b0da",
+        "runId": "2610171242-e7c6b0da",
+        "at": 1792240980814,
+        "mode": "fake",
+        "caseId": "fake-peer-question-v2-seeded-memory",
+        "pairId": "pair-1",
+        "taskHash": "ae1915e35338f887cc3fe1264f43492c1bde4817238a0b8779609d73bacf703b",
+        "baseRef": "72682484377ffab9f1de30043f943af261d9a35b",
+        "pattern": "supervisor",
+        "cliVersions": {
+          "claude": "2.1.300 (Claude Code)",
+          "codex": "codex-cli 0.162.1"
+        },
+        "status": "done",
+        "verified": true,
+        "verification": {
+          "checks": "passed",
+          "review": "approved",
+          "proof": "proven",
+          "gaps": 0,
+          "requirements": 0,
+          "covered": 0,
+          "integrityFlags": 0
+        },
+        "metrics": {
+          "invocations": 4,
+          "coordinatorInvocations": 1,
+          "coordinatorFraction": 0.25,
+          "workerTurns": 2,
+          "multiWorker": true,
+          "elapsedMs": 4005,
+          "activeWorkMs": 2157,
+          "coordinatorMs": 391,
+          "reportedTokens": 524,
+          "reportedApiCostUsd": 0.5,
+          "tokenReportingTurns": 4,
+          "questions": 0,
+          "peerQuestions": 0,
+          "blockedTurns": 0,
+          "peerYieldRate": 0,
+          "peerWaitingMs": 0,
+          "peerWaitingWallMs": 0,
+          "avoidableBarrierEstimateMs": 0,
+          "timedPeerQuestions": 0,
+          "repairTurns": 0,
+          "selectedMemories": 0,
+          "omittedMemories": 0,
+          "coordinatorRevisions": 0,
+          "approvals": {
+            "approved": 0,
+            "revised": 0,
+            "rejected": 0,
+            "withReason": 0
+          },
+          "memoryFeedback": {
+            "useful": 0,
+            "irrelevant": 0,
+            "stale": 0,
+            "incorrect": 0
+          },
+          "replay": {
+            "bytes": 5030,
+            "records": 13,
+            "durationMs": 6.4389590000009775,
+            "kind": "journal-load"
+          }
+        },
+        "limitations": [
+          "Deterministic fake CLIs validate orchestration, not model quality or subscription savings.",
+          "API-equivalent cost is not a subscription charge; unreported values remain unknown.",
+          "Avoidable barrier time is a counterfactual upper-bound estimate after answered peer questions; it does not prove spare process capacity or an asynchronous speedup.",
+          "Active work is the union of observed step intervals; it excludes gaps and is not a full run-clock measurement.",
+          "Supervisor coordination includes its planning, integration and repair turns; legacy requirements have no structured coverage manifest.",
+          "This trial seeds one synthetic accepted repository memory about dependency-free node:test. Selection measures retrieval plumbing, not learned-memory usefulness."
+        ]
+      }
+    ],
+    "assessment": {
+      "realRuns": 0,
+      "realAutoRuns": 0,
+      "realWorkerTurns": 0,
+      "matchedPairs": 0,
+      "verifiedAutoRuns": 0,
+      "overheadFraction": null,
+      "peerYieldRate": null,
+      "eligibleBeta": false,
+      "eligibleDefault": false,
+      "blockers": [
+        "Need 20 real Auto runs; recorded 0.",
+        "Need 100 real worker turns; recorded 0.",
+        "Need 20 matched Auto/Supervisor comparisons; recorded 0.",
+        "No multi-worker coordinator overhead sample."
+      ]
+    }
+  },
+  "liveBridgeSmoke": [
+    {
+      "provider": "claude",
+      "version": "2.1.302 (Claude Code)",
+      "transport": "stream-json",
+      "elapsedMs": 8630,
+      "ok": true,
+      "callbackCount": 1,
+      "callbacks": [
+        {
+          "name": "read_inbox",
+          "memberId": "claude"
+        }
+      ],
+      "nonceMatched": true,
+      "finalText": "team-bridge-ok-claude-7015",
+      "toolSequence": [
+        {
+          "kind": "tool_call",
+          "name": "ToolSearch",
+          "input": {
+            "query": "select:mcp__codeflow_team__read_inbox",
+            "max_results": 1
+          }
+        },
+        {
+          "kind": "tool_result",
+          "output": "[tool_reference]",
+          "isError": false
+        },
+        {
+          "kind": "tool_call",
+          "name": "mcp__codeflow_team__read_inbox",
+          "input": {
+            "input": "{}"
+          }
+        },
+        {
+          "kind": "tool_result",
+          "output": "Unexpected argument: input",
+          "isError": true
+        },
+        {
+          "kind": "tool_call",
+          "name": "mcp__codeflow_team__read_inbox",
+          "input": {}
+        },
+        {
+          "kind": "tool_result",
+          "output": {
+            "messages": [
+              {
+                "id": "m-smoke",
+                "origin": "agent",
+                "body": "team-bridge-ok-claude-7015"
+              }
+            ]
+          },
+          "isError": false
+        }
+      ],
+      "usage": [
+        {
+          "kind": "usage",
+          "inputTokens": 25492,
+          "outputTokens": 294,
+          "cacheReadTokens": 75426,
+          "costUsd": 0.005998860000000001
+        }
+      ],
+      "statuses": [],
+      "modelAlias": "haiku",
+      "captureProvenance": {
+        "kind": "reconstructed_from_retained_tool_output",
+        "observedDate": "2026-10-17",
+        "source": "functions.exec -> tools.write_stdin(session_id=72035), completed real smoke output retained in the live_bridge agent conversation",
+        "note": "The original combined JSON report was overwritten by the subsequent Codex-only corrective smoke. This sanitized artifact reproduces the successful Claude record actually observed in tool output; it is not a new run. No exact start timestamp was preserved."
+      }
+    },
+    {
+      "provider": "codex",
+      "version": "codex-cli 0.162.1",
+      "transport": "app-server",
+      "elapsedMs": 13623,
+      "ok": true,
+      "callbackCount": 1,
+      "callbacks": [
+        {
+          "name": "read_inbox",
+          "memberId": "codex"
+        }
+      ],
+      "nonceMatched": true,
+      "usage": [
+        {
+          "kind": "usage",
+          "inputTokens": 6011,
+          "outputTokens": 101,
+          "cacheReadTokens": 31872
+        }
+      ],
+      "provenance": "Sanitized CLI smoke report captured during this implementation session"
+    }
+  ],
+  "assessment": {
+    "realRuns": 6,
+    "realAutoRuns": 3,
+    "realWorkerTurns": 2,
+    "matchedPairs": 3,
+    "verifiedAutoRuns": 1,
+    "overheadFraction": null,
+    "peerYieldRate": 0,
+    "eligibleBeta": false,
+    "eligibleDefault": false,
+    "blockers": [
+      "Need 20 real Auto runs; recorded 3.",
+      "Need 100 real worker turns; recorded 2.",
+      "Need 20 matched Auto/Supervisor comparisons; recorded 3.",
+      "Auto verification regressed against a matched Supervisor result.",
+      "Some real Auto results are incomplete or unverified.",
+      "No multi-worker coordinator overhead sample."
+    ]
+  },
+  "rollout": {
+    "enabled": true,
+    "stage": "experimental",
+    "reason": "All P0–P8 implementation packages are complete. Keep Auto opt-in: three small development comparisons include two unverified Auto attempts and one verified result. No real multi-worker Auto overhead sample or representative 20-run/100-worker-turn evidence exists. Retain all failed trials and collect broader evidence before promotion.",
+    "decision": {
+      "at": 1792241671602,
+      "stage": "experimental",
+      "rationale": "All P0–P8 implementation packages are complete. Keep Auto opt-in: three small development comparisons include two unverified Auto attempts and one verified result. No real multi-worker Auto overhead sample or representative 20-run/100-worker-turn evidence exists. Retain all failed trials and collect broader evidence before promotion.",
+      "evaluationIds": [
+        "evaluation-2610171237-9f0d5dba",
+        "evaluation-2610171242-35cf7f39",
+        "evaluation-2610171242-5e3de685",
+        "evaluation-2610171242-1c978ccc",
+        "evaluation-2610171244-020d3ac6",
+        "evaluation-2610171249-df989381"
+      ]
+    },
+    "decisionScope": "Isolated evaluation store; normal user installation unchanged"
+  },
+  "limitations": [
+    "Development comparisons use one generated numeric utility task, with code fixes between trials; they are not independent representative final-version benchmarks.",
+    "All paired task runs explicitly disable interactive plan approval; approval behavior is covered by automated browser and engine tests.",
+    "The final pair includes one synthetic accepted project-memory seed, measuring retrieval plumbing rather than learned-memory usefulness. No human memory usefulness feedback was recorded.",
+    "Journal timings measure a single local journal load, not a full process restart.",
+    "Live smoke results cover real read_inbox transport and identity. Other collaboration operations are covered by deterministic adapter and engine tests.",
+    "Provider token and API-equivalent cost reports can be partial; API-equivalent cost is not a subscription charge.",
+    "20 real Auto runs, 100 worker turns, 20 matched comparisons and representative multi-worker overhead evidence are not complete. No default rollout is justified."
+  ]
+}

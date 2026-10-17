@@ -4,6 +4,7 @@
 
 | Pattern | Roles | Flow | Reach for it when |
 |---|---|---|---|
+| **Auto team** | coordinator, generated workers, independent reviewer | Propose and approve a team → dependency waves → addressed questions and bounded revisions → integrate, check, review and repair | You want code-flow to choose the team and workflow; see [Auto team](auto-team.md) for communication, memories, budgets and recovery |
 | **Plan → Build → Review** | planner, builder, reviewer | Plan (read-only) → implement → **check** (the builder fixes it first if it fails) → independent review against the task, with the plan as context → code-flow runs the reviewer's tests → the builder fixes what blocks → re-check and re-review, up to *N* rounds | Most features and bug fixes. Cross-vendor review catches what a model misses in its own work |
 | **Loop until green** | workers (1+, in hand-off order) | Baseline check → the agent works → code-flow runs the check → the failure goes back to the agent → repeat until it passes. A round that makes more tests fail is undone. After *K* rounds without progress, the next vendor takes over with a handover note | "Done" is a command: failing tests, type errors, a broken build. Needs a check |
 | **Best-of-N race** | contestants (2+), judge | All contestants solve the task in parallel, each in its own worktree → judge compares **anonymized** diffs (Candidate A/B…) and picks one | The solution space is wide, or the task is risky enough to want several independent attempts |

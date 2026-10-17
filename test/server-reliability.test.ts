@@ -207,6 +207,27 @@ test("a run's stream: its history in order with ids, before any live event, and 
   assert.equal((await fetch(`${a.base}/api/runs/no-such-run/events`, { headers: bearer })).status, 404);
 });
 
+test("a run's durable cursor survives server restart and invalid future cursors reset", async () => {
+  const home = mkdtempSync(join(tmpdir(), "codeflow-cursor-home-"));
+  const first = await startServer({ CODEFLOW_HOME: home });
+  const started = await api(first, "/api/runs", { pattern: "pipeline", task: "Persistent cursor", repo, roles: team });
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  const id = started.body.id;
+  await finishedRun(first, id);
+  const events = await readEvents(`${first.base}/api/runs/${id}/events`, bearer, (items) => items.some((item) => item.data.type === "run" && item.data.run.endedAt));
+  const cursor = events[Math.floor(events.length / 2)]!;
+  const stopped = new Promise((resolve) => first.child.once("exit", resolve));
+  first.child.kill("SIGTERM");
+  await stopped;
+  const second = await startServer({ CODEFLOW_HOME: home });
+  const replay = await readEvents(`${second.base}/api/runs/${id}/events`, { ...bearer, "last-event-id": cursor.id! }, (items) => items.some((item) => item.data.type === "run" && item.data.run.endedAt));
+  assert.equal(replay[0]!.data.resumed, true);
+  assert.equal(replay[0]!.data.epoch, events[0]!.data.epoch);
+  assert.ok(replay.slice(1).every((event) => seqOf(event) > seqOf(cursor)));
+  const reset = await readEvents(`${second.base}/api/runs/${id}/events`, { ...bearer, "last-event-id": `${events[0]!.data.epoch}:9007199254740991` }, (items) => !!items.length);
+  assert.equal(reset[0]!.data.resumed, false);
+});
+
 test("a webhook is answered at once and the run starts in the background; GitHub sending a delivery again starts nothing", async () => {
   const created = await api(a, "/api/automations", { name: "Hook", webhook: true, run: { repo, pattern: "pipeline", task: "Hooked chore", roles: team } });
   assert.equal(created.status, 201, JSON.stringify(created.body));

@@ -25,7 +25,7 @@
 
 ---
 
-You pick how the agents work together (plan → build → review, a race, a debate, a supervisor with workers…), assign an agent to each role, and watch them work live in your browser. code-flow runs the official CLIs on your own logins, does all the work in git worktrees so your checkout is never touched, and only calls a result done when your tests pass.
+Choose **Auto team** to have code-flow propose a team and workflow from your task, or pick a manual pattern (plan → build → review, a race, a debate, a supervisor with workers…). Watch individual members work, exchange questions, and retain private, team and project knowledge. code-flow runs the official CLIs on your own logins and works in git worktrees so your checkout stays untouched. Results include checks, independent review and any unresolved gaps.
 
 ## Quickstart
 
@@ -42,7 +42,8 @@ Open **http://localhost:4317**, choose a repository, describe the task, pick a t
 
 ## Highlights
 
-- **A team, not one agent.** Seven patterns, from Plan → Build → Review to a Best-of-N race judged blind, with any agent in any role and a model and effort per role. Having a different vendor review or judge catches what a model misses in its own work.
+- **Dynamic teams and manual patterns.** [Auto team](docs/auto-team.md) proposes members, dependencies and acceptance criteria, asks for plan approval, then adapts within your limits. Manual patterns include Plan → Build → Review and a Best-of-N race judged blind, with a model and effort per role.
+- **Communication and memory.** Members ask addressed questions, yield when blocked, and resume with answers and checkpoints. Private progress stays scoped to its member; accepted team contracts and reviewed project knowledge supply shared context.
 - **Your subscriptions, their official CLIs.** code-flow launches `claude`, `codex` and `agy` headless, as they ship. It never reads or stores credentials.
 - **Your checkout stays untouched.** Every run works in git worktrees. Results are branches: review them line by line, send comments back to the agent, merge safely, or open a PR.
 - **Done means the check passes, and proves something.** code-flow runs your test command itself after every change, feeds failures back, and flags edits that make tests pass without fixing anything. Then it runs the result's tests on the original code: at least one should fail there, or nothing shows the change works, and the agent is asked for a test that does. Reviewers show the bugs they report with a test that code-flow runs, so a false alarm doesn't cost a fix round.
@@ -61,6 +62,7 @@ Open **http://localhost:4317**, choose a repository, describe the task, pick a t
 
 | Pattern | How the agents work | Reach for it when |
 |---|---|---|
+| **Auto team** | propose and approve the team → ready tasks, addressed questions and bounded revisions → integrate, check, review and repair | you want code-flow to choose the team and workflow |
 | **Plan → Build → Review** | one plans, one builds, another vendor reviews against the task; code-flow runs the tests the reviewer shows bugs with; fixes until the check passes and nothing blocks | most features and bug fixes |
 | **Loop until green** | fix → code-flow runs the check → repeat; hands over to the next vendor when stuck | "done" is a command: failing tests, a broken build |
 | **Best-of-N race** | everyone solves it in parallel → a judge picks from anonymized diffs | the task is open-ended or risky |
@@ -85,6 +87,7 @@ code-flow enforces read-only steps itself, for every agent. It never merges on i
 
 - [Getting started](docs/getting-started.md): install, your first run, context, models, worktrees
 - [Team patterns, checks and limits](docs/patterns.md)
+- [Auto team](docs/auto-team.md): dynamic workflows, messages, private/team/project memory, budgets and recovery
 - [Runs](docs/runs.md): the run view, talking to a run, projects, the side panel, restarts and resume, Insights
 - [GitHub, review and shipping](docs/github.md): review, merge, PRs, issues, follow-through
 - [Automations and away mode](docs/automations.md): schedules, webhooks, the inbox, the phone view and full control from your phone

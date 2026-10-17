@@ -12,7 +12,8 @@
     "dev:real": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
-    "test:e2e": "tsx --test test/e2e/*.e2e.ts"
+    "test:e2e": "tsx --test test/e2e/*.e2e.ts",
+    "evaluate:teams": "tsx scripts/evaluate-teams.ts"
   },
   "engines": {
     "node": ">=20"

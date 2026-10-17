@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { sleepMs, work } from "./fake-work.mjs";
+import { exerciseTeamTools } from "./fake-team-tools.mjs";
 
 class TurnFailure extends Error {
   constructor(message, codexErrorInfo) {
@@ -76,10 +77,11 @@ export async function serve(args) {
 
   async function runTurn(turn, params) {
     const prompt = params.input.filter((i) => i.type === "text").map((i) => i.text).join("\n");
+    const teamTools = await exerciseTeamTools(args);
     if (process.env.FAKE_RECORD_DIR) {
       record = {
         file: `${process.env.FAKE_RECORD_DIR}/codex-${Date.now()}-${randomUUID().slice(0, 6)}.json`,
-        body: { vendor: "codex", transport: "app-server", args, prompt, cwd: process.cwd(), thread: thread.params, turn: { ...params, input: undefined }, steers: [] },
+        body: { vendor: "codex", transport: "app-server", args, prompt, cwd: process.cwd(), thread: thread.params, turn: { ...params, input: undefined }, steers: [], teamTools },
       };
       writeRecord();
     }

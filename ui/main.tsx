@@ -4,7 +4,7 @@ import { useEffect, useState } from "preact/hooks";
 import { App, notifyFinished } from "./app.js";
 import logo from "./brand/vibesboard-mark.png";
 import { api, showToast, store } from "./lib.js";
-import { agents, loadHealth, loadModels, loadProjects, patterns, refreshRuns, route, setRepo, templates, watchAllRuns, type Route } from "./state.js";
+import { agents, loadHealth, loadModels, loadProjects, loadTeamRollout, patterns, refreshRuns, route, setRepo, templates, watchAllRuns, type Route } from "./state.js";
 
 /** The current view lives in the URL hash, so reload, back/forward and links work. */
 function routeFromHash(): Route {
@@ -64,6 +64,7 @@ async function boot() {
   }
   agents.value = agentList;
   patterns.value = patternList;
+  await loadTeamRollout();
   route.value = routeFromHash();
   effect(() => {
     const hash = hashFor(route.value);
