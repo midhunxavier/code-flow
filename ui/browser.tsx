@@ -55,6 +55,10 @@ interface PageState {
   capturing: number;
   /** The page's address as you'd type it (the app's own, not the preview's). */
   at?: string;
+  /** The overlay answered in the page as it is now: Pick, Box and Console work. */
+  ready?: boolean;
+  /** Why they don't, when they don't. */
+  why?: string;
 }
 /** Per page (scope|page id): pins and console survive switching tabs and pages. */
 const pages = signal<Record<string, PageState>>({});
@@ -139,7 +143,12 @@ export function BrowserTab() {
   const state = key ? pageState(key) : undefined;
   const errors = state?.console.filter((c) => c.level !== "warn").length ?? 0;
   const local = !!active?.url && LOCAL.test(active.url) && !onPhone;
+  // Pick, Box and Console need the overlay in the page: only once it has answered.
+  const annotatable = local && !!state?.ready;
   useEffect(() => setMode("off"), [key]);
+  useEffect(() => {
+    if (!annotatable) setMode("off");
+  }, [annotatable]);
 
   const items: StripItem[] = list.map((p) => ({ key: p.id, label: shortUrl(pageState(`${s.key}|${p.id}`).at ?? p.url), title: p.url || "New page", below: p.id === second?.id }));
   const idle = s.run ? s.run.worktrees.filter((w) => !running.some((x) => x.key === `${s.run!.id}/${w.name}`)) : [];
@@ -213,7 +222,8 @@ export function BrowserTab() {
           onDevice={(d) => rememberSide({ device: d })}
           mode={mode}
           onMode={setMode}
-          canAnnotate={local}
+          canAnnotate={annotatable}
+          why={state?.why ?? (local ? "Waiting for the page" : "Annotating works on apps on this computer (localhost)")}
           errors={errors}
           showConsole={showConsole}
           onConsole={() => setShowConsole(!showConsole)}
@@ -249,6 +259,8 @@ function AddressBar(props: {
   mode: "off" | "pick" | "box";
   onMode: (m: "off" | "pick" | "box") => void;
   canAnnotate: boolean;
+  /** Why Pick, Box and Console are off. */
+  why: string;
   errors: number;
   showConsole: boolean;
   onConsole: () => void;
@@ -276,13 +288,13 @@ function AddressBar(props: {
           ))}
         </div>
         <span class="spacer" />
-        <button type="button" class={`btn small annotate ${props.mode === "pick" ? "on" : ""}`} aria-pressed={props.mode === "pick"} disabled={!props.canAnnotate} title={props.canAnnotate ? "Click an element in the page to comment on it (Esc stops)" : "Annotating works on apps on this computer (localhost)"} onClick={() => toggle("pick")}>
+        <button type="button" class={`btn small annotate ${props.mode === "pick" ? "on" : ""}`} aria-pressed={props.mode === "pick"} disabled={!props.canAnnotate} title={props.canAnnotate ? "Click an element in the page to comment on it (Esc stops)" : props.why} onClick={() => toggle("pick")}>
           Pick
         </button>
-        <button type="button" class={`btn small annotate ${props.mode === "box" ? "on" : ""}`} aria-pressed={props.mode === "box"} disabled={!props.canAnnotate} title={props.canAnnotate ? "Drag a box over an area of the page to comment on it" : "Annotating works on apps on this computer (localhost)"} onClick={() => toggle("box")}>
+        <button type="button" class={`btn small annotate ${props.mode === "box" ? "on" : ""}`} aria-pressed={props.mode === "box"} disabled={!props.canAnnotate} title={props.canAnnotate ? "Drag a box over an area of the page to comment on it" : props.why} onClick={() => toggle("box")}>
           Box
         </button>
-        <button type="button" class={`btn small ${props.errors ? "danger" : ""}`} aria-pressed={props.showConsole} disabled={!props.canAnnotate} title="Console errors and failed requests from the page" onClick={props.onConsole}>
+        <button type="button" class={`btn small ${props.errors ? "danger" : ""}`} aria-pressed={props.showConsole} disabled={!props.canAnnotate} title={props.canAnnotate ? "Console errors and failed requests from the page" : props.why} onClick={props.onConsole}>
           Console{props.errors ? ` · ${props.errors}` : ""}
         </button>
       </div>
@@ -300,12 +312,18 @@ function PageFrame({ pageKey, url, device, mode, onModeOff }: { pageKey: string;
   useEffect(() => {
     let alive = true;
     setProblem("");
+    setPage(pageKey, (p) => ({ ...p, ready: false, why: local ? "Waiting for the page" : "Annotating works on apps on this computer (localhost)" }));
     if (!local) return setView({ src: url });
     post<{ url: string; origin: string }>("/api/preview", { url }).then(
       (p) => alive && setView({ src: p.url, origin: p.origin }),
       (err) => {
         if (!alive) return;
-        setProblem(`${(err as Error).message}: showing it without annotations`);
+        // code-flow's own page is never proxied: annotating is for your app.
+        const why = /code-flow itself/.test((err as Error).message)
+          ? "This is code-flow itself, so it can't be annotated here. Open your app: Run app on a run, or its localhost address."
+          : `${(err as Error).message}: showing it without annotations.`;
+        setProblem(why);
+        setPage(pageKey, (p) => ({ ...p, why }));
         setView({ src: url });
       },
     );
@@ -331,7 +349,7 @@ function PageFrame({ pageKey, url, device, mode, onModeOff }: { pageKey: string;
       const mode = modeNow.current;
       const m = e.data;
       if (m.type === "ready" || m.type === "location") {
-        setPage(pageKey, (p) => ({ ...p, at: String(m.url).replace(view.origin!, targetOrigin) }));
+        setPage(pageKey, (p) => ({ ...p, at: String(m.url).replace(view.origin!, targetOrigin), ...(m.type === "ready" ? { ready: true, why: undefined } : {}) }));
         if (m.type === "ready") {
           send({ type: "mode", mode });
           send({ type: "pins", pins: pageState(pageKey).pins.map((p) => ({ n: p.n, rect: p.rect, kind: p.kind })) });
@@ -367,7 +385,15 @@ function PageFrame({ pageKey, url, device, mode, onModeOff }: { pageKey: string;
             title="Browser"
             referrerpolicy="no-referrer"
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
-            onLoad={() => send({ type: "hello" })}
+            onLoad={() => {
+              if (!origin.current) return;
+              // A new document: its overlay answers the hello, or this page can't be annotated.
+              setPage(pageKey, (p) => ({ ...p, ready: false, why: "Waiting for the page" }));
+              send({ type: "hello" });
+              setTimeout(() => {
+                if (!pageState(pageKey).ready) setPage(pageKey, (p) => ({ ...p, why: "The page didn't load code-flow's annotation script, so it can't be annotated" }));
+              }, 3_000);
+            }}
           />
         ) : (
           <div class="side-empty help">Opening…</div>
