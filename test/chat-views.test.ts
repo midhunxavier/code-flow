@@ -152,6 +152,8 @@ test("teamSteps leaves out side chats' turns, also before the run says whose the
     step("s3", { role: "side chat", title: "Side chat: Another" }),
     step("s4", { kind: "check", role: "check", title: "Check after side chat f1" }),
     step("s5", { kind: "check", role: "check", title: "Check after follow-up f2" }),
+    // A proof a side change set off: the step says whose it is.
+    step("s6", { kind: "check", role: "check", title: "Proof: tests without the change", sideOf: "f1" }),
   ];
   assert.deepEqual(
     m.teamSteps(run, steps).map((s: any) => s.id),

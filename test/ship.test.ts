@@ -233,6 +233,45 @@ test("a side chat's turn waiting for a team that's stopped ends, saying why", as
   }
 });
 
+test("a side Change stopped after its commit: the old proof goes, its steps are the side chat's, and resuming finishes it", async () => {
+  // The check passes once there's a change (the fake agents write `*-*.txt`); on the base code, in the
+  // proof's checkout, it fails, slowly when asked.
+  const check = 'case "$PWD" in *proof-check*) if [ -n "$SLOW_PROOF" ]; then sleep 8; fi;; esac; ls *-*.txt 2>/dev/null | grep -q .';
+  const run = await runPattern("solo", { agent: ["claude"] }, { loop: { check } });
+  assert.equal(run.status, "done", run.error);
+  const branch = run.artifacts[0]!.branch;
+  const proof = () => run.proofs?.[branch];
+  assert.equal(proof()?.status, "proven");
+  process.env.SLOW_PROOF = "1";
+  const proving = () => run.steps.find((s) => s.title === "Proof: tests without the change" && s.status === "running");
+  try {
+    await manager.followUp(run.id, { kind: "side", worktree: "solo", agent: "claude", message: "Change it", side: { chat: "c40", mode: "change", title: "Change it" } });
+    for (let i = 0; i < 400 && !proving(); i++) await pause(50);
+    const f = run.followUps.at(-1)!;
+    assert.ok(proving() && f.commit && f.checkPassed, "committed, checked, and being proven");
+    assert.equal(proving()!.sideOf, f.id, "the proof is the side chat's work, not the team's");
+    assert.equal(run.steps.find((s) => s.title === `Check after side chat ${f.id}`)?.sideOf, f.id);
+    assert.equal(run.steps.find((s) => s.id === f.stepId)?.sideOf, f.id);
+    assert.equal(proof(), undefined, "the proof of the code before the change is gone");
+    manager.cancel(run.id);
+    await finished(run);
+    assert.equal(run.status, "cancelled");
+    assert.equal(f.status, "pending", "it had started: resuming finishes it, rather than sending it again");
+    assert.equal(proof(), undefined);
+  } finally {
+    delete process.env.SLOW_PROOF;
+  }
+  await manager.resume(run.id);
+  await finished(run);
+  const f = run.followUps.at(-1)!;
+  assert.equal(run.status, "done", run.error);
+  assert.equal(f.status, "done");
+  assert.equal(proof()?.head, f.commit, "proven again, at the side chat's commit");
+  assert.equal(run.facts?.proof, proof()?.status, "and what Insights counts says the same");
+  assert.equal(run.steps.filter((s) => s.sideOf).every((s) => s.sideOf === f.id), true);
+  assert.equal(run.steps.filter((s) => !s.sideOf && s.title.includes("side chat")).length, 0, "no side chat step left as the team's");
+});
+
 test("side chats and the run's thread keep apart: a reply continues the team's session, and team messages skip side turns", async () => {
   const run = await runPattern("solo", { agent: ["claude"] });
   const team = run.steps.find((s) => s.title === "Your task")!;

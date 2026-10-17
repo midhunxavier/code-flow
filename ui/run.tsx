@@ -753,9 +753,12 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
 
 /** The steps that answered side chats: they show in the side panel, not in the run's thread. */
 export const sideStepIds = (run: RunSummary) => new Set(run.followUps.filter((f) => f.side && f.stepId).map((f) => f.stepId!));
-/** A side chat's turn, or the check after one, known from the step alone: it can arrive before the run says whose it is. */
-const sideWork = (s: Step) => s.role === "side chat" || /^Check after side chat /.test(s.title);
-/** The run's own steps, in order, without side chats' turns and the checks after them. */
+/**
+ * A side chat's work, known from the step alone (it can arrive before the run says whose it is): its
+ * turn, the check after it, a proof it set off. Runs from before steps said so go by role and title.
+ */
+const sideWork = (s: Step) => !!s.sideOf || s.role === "side chat" || /^Check after side chat /.test(s.title);
+/** The run's own steps, in order, without side chats' turns and the work that came of them. */
 export function teamSteps(run: RunSummary, steps: Iterable<Step>): Step[] {
   const side = sideStepIds(run);
   return [...steps].filter((s) => !side.has(s.id) && !sideWork(s));

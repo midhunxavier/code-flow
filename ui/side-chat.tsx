@@ -121,7 +121,8 @@ export function ChatTab() {
           label: c.title,
           title: `${c.title}\n${SHORT[c.agent] ?? c.agent} · side chat in this run's worktree`,
           agent: c.agent,
-          state: pending ? (last.stepId ? "working" : "queued") : last.status === "failed" ? "failed" : finishedTurns(c) > (memo.seen?.[c.key] ?? 0) && c.key !== shown ? "unread" : undefined,
+          // A turn the run stopped in the middle of waits for the run to be resumed.
+          state: pending ? (last.stepId && run?.status === "running" ? "working" : "queued") : last.status === "failed" ? "failed" : finishedTurns(c) > (memo.seen?.[c.key] ?? 0) && c.key !== shown ? "unread" : undefined,
         };
       }),
     ...opened.map(
@@ -242,7 +243,13 @@ function SideChatView({ run: summary, chat }: { run: RunSummary; chat: string })
                 <div class={`fu-answer ${f.status}`}>
                   <div class="fu-head">
                     <AgentTag id={f.agent} />
-                    {f.status === "pending" && !step ? <span class="fu-live">{run.patternDone ? "up next…" : "waits for the team to finish…"}</span> : <FollowUpBadges f={f} />}
+                    {f.status === "pending" && run.status !== "running" ? (
+                      <span class="help">the run stopped before this turn finished: resume the run to finish it</span>
+                    ) : f.status === "pending" && !step ? (
+                      <span class="fu-live">{run.patternDone ? "up next…" : "waits for the team to finish…"}</span>
+                    ) : (
+                      <FollowUpBadges f={f} />
+                    )}
                   </div>
                   {step ? <TurnBody run={run} step={step} data={data.current} answer={f.status === "pending" ? undefined : f.result} /> : f.result ? <Markdown text={f.result} /> : null}
                 </div>

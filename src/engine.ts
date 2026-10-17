@@ -112,6 +112,8 @@ export interface Step {
   usage?: TokenUsage;
   /** Times this turn was retried after a passing failure (overloaded, network). */
   retries?: number;
+  /** The side chat turn (its follow-up's id) this step was part of: its turn, its check, a proof it set off. */
+  sideOf?: string;
 }
 
 export interface TokenUsage {
@@ -656,6 +658,8 @@ export class TeamContext {
   private readonly scratch = new Map<Scratch, Promise<{ wt: Worktree; ready: boolean; setupAt: string }>>();
   /** Runs in a scratch checkout take turns: they share it. */
   private readonly scratchQueue = new Map<Scratch, Promise<unknown>>();
+  /** The side chat turn being answered (its follow-up's id): steps made meanwhile are its, not the team's. */
+  sideTurn?: string;
 
   constructor(
     readonly run: Run,
@@ -1254,6 +1258,7 @@ export class TeamContext {
       worktree: wt.name,
       status: "running",
       startedAt: Date.now(),
+      ...(this.sideTurn ? { sideOf: this.sideTurn } : {}),
     };
     this.run.steps.push(step);
     this.manager.emit(this.run, { type: "step", step: { ...step } });
@@ -1535,6 +1540,7 @@ export class TeamContext {
       worktree: params.cwd.name,
       status: "running",
       startedAt: Date.now(),
+      ...(this.sideTurn ? { sideOf: this.sideTurn } : {}),
     };
     // Notes are picked up before the step is announced. Anything sent after it shows as running
     // goes into the turn itself if the turn takes input (Codex app-server), else to the next turn.
@@ -3149,12 +3155,14 @@ async function placeFiles(run: Run, wt: Worktree, f: FollowUp) {
 
 /**
  * Side chat turns still waiting when the run ends without finishing (it failed, stopped or was
- * cancelled): only a running run takes them, so they end, saying why, rather than wait unseen.
+ * cancelled): only a running run takes them, so they end, saying why, rather than wait unseen. A
+ * turn that had started stays, like a reply: resuming the run finishes it (its turn and commit are
+ * replayed, then checked and proven). Sending it again would make its change twice.
  */
 function endQueuedSideTurns(run: Run) {
   const why = run.status === "cancelled" ? "was cancelled" : run.status === "stopped" ? "stopped" : "failed";
   for (const f of run.followUps) {
-    if (f.status !== "pending" || !f.side) continue;
+    if (f.status !== "pending" || !f.side || f.stepId) continue;
     f.status = "failed";
     f.result = `The run ${why} before this turn could finish. Resume the run, then send it again.`;
   }
@@ -3166,6 +3174,15 @@ function endQueuedSideTurns(run: Run) {
  * continues its own conversation, never the team's.
  */
 async function runSideTurn(ctx: TeamContext, run: Run, f: FollowUp, side: SideTurn) {
+  ctx.sideTurn = f.id;
+  try {
+    await sideTurn(ctx, run, f, side);
+  } finally {
+    ctx.sideTurn = undefined;
+  }
+}
+
+async function sideTurn(ctx: TeamContext, run: Run, f: FollowUp, side: SideTurn) {
   const wt = await ctx.worktree(f.worktree);
   await placeFiles(run, wt, f);
   const change = side.mode === "change";
@@ -3211,11 +3228,16 @@ async function runSideTurn(ctx: TeamContext, run: Run, f: FollowUp, side: SideTu
   if (change) {
     const sha = await ctx.commit(wt, `${f.agent}: side chat · ${side.title} (${f.id})`);
     f.commit = sha ?? undefined;
+    // The branch's proof was of the code before this change: it goes now, not once the check is done
+    // (which a stop could keep from happening).
+    if (sha) await ctx.refreshProof(wt);
     const issues = sha ? await ctx.testChanges(wt, before) : [];
     f.integrity = issues.length ? issues : undefined;
     if (issues.length) ctx.log(`Side chat ${f.id} (${f.agent}) changed tests:\n${describeIssues(issues)}`, "warn");
     const check = await ctx.check(wt, `Check after side chat ${f.id}`);
     f.checkPassed = check ? check.ok : undefined;
+    // Proven again (or not) at the new code, as a reply is, and what Insights counts with it.
+    if (sha) ctx.setFacts({ proof: (await ctx.refreshProof(wt))?.status });
     if (artifact) await ctx.artifact(artifact.label, wt);
   }
   f.status = outcome.ok ? "done" : "failed";
