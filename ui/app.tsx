@@ -196,7 +196,7 @@ function Crumbs() {
           </span>
         )}
         {sep}
-        <span class={`crumb ${r.view === "run" ? "here" : ""}`} title={run.task} aria-current={r.view === "run" ? "page" : undefined}>
+        <span class={`crumb title ${r.view === "run" ? "here" : ""}`} title={run.task} aria-current={r.view === "run" ? "page" : undefined}>
           {run.task.split("\n")[0] || "(no task)"}
         </span>
         {r.view === "review" ? (
@@ -540,10 +540,10 @@ function FolderPicker() {
         <div class="picker-head">
           <h3>{adding ? adding.title : "Choose a repository"}</h3>
           <div class="row">
-            <button class="btn small" type="button" title="Parent folder" disabled={!dir?.parent} onClick={() => dir?.parent && browse(dir.parent)}>
+            <button class="btn" type="button" title="Parent folder" disabled={!dir?.parent} onClick={() => dir?.parent && browse(dir.parent)}>
               ↑
             </button>
-            <button class="btn small" type="button" title="Home folder" onClick={() => browse(dir?.home)}>
+            <button class="btn" type="button" title="Home folder" onClick={() => browse(dir?.home)}>
               ~
             </button>
             <input
@@ -563,7 +563,7 @@ function FolderPicker() {
                 }
               }}
             />
-            <button class="btn small" type="button" onClick={() => browse(path.trim())}>
+            <button class="btn" type="button" onClick={() => browse(path.trim())}>
               Go
             </button>
           </div>

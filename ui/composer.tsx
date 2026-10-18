@@ -352,7 +352,7 @@ function CompareDialog({ base, onClose, onStarted }: { base: Record<string, any>
             Cancel
           </button>
           <button class="btn primary" disabled={busy || picked.size < 2 || runs > 9} onClick={go} title={picked.size < 2 ? "Pick at least two setups" : ""}>
-            {busy ? "Starting…" : `Start ${runs} runs`}
+            {busy ? "Starting…" : `Start ${runs} run${runs === 1 ? "" : "s"}`}
           </button>
         </div>
       </div>
@@ -478,6 +478,10 @@ function TaskBox({ onStart }: { onStart: () => void }) {
   }, []);
 
   const count = contextPaths.value.size + attachments.value.length;
+  const ofContext = `${count} item${count === 1 ? "" : "s"} of context`;
+  // Short enough to fit the toolbar beside the open side panel; the title keeps the full sentence
+  const hint = count ? `${ofContext} — agents read these first` : "Drag files here to give the agents context";
+  const hintFull = count ? `${ofContext} — agents read these before starting` : "Drag files here from the file list or Finder to give the agents context";
   return (
     <div
       class={`taskbox ${over ? "over" : ""}`}
@@ -545,8 +549,8 @@ function TaskBox({ onStart }: { onStart: () => void }) {
         ) : improve.done ? (
           <span class="hint status" title={improve.done.note}>{improve.done.note}</span>
         ) : (
-          <span class="hint">
-            {count ? `${count} item${count === 1 ? "" : "s"} of context — agents read these before starting` : "Drag files here from the file list or Finder to give the agents context"}
+          <span class="hint" title={hintFull}>
+            {hint}
           </span>
         )}
         {improve.done ? (

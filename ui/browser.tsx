@@ -845,7 +845,7 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
             <span class="pin-n">{p.n}</span>
             <div class="pin-main">
               <div class="pin-what" title={p.html ?? p.selector}>
-                {p.kind === "box" ? `Area ${p.rect.w}×${p.rect.h}` : p.selector}
+                {p.kind === "box" ? <span class="pin-label">Area {p.rect.w}×{p.rect.h}</span> : <span class="pin-label pin-sel">{p.selector}</span>}
                 {p.image ? <img class="pin-thumb" src={p.image} alt={`Snapshot of pin ${p.n}`} /> : <span class="help"> · no snapshot</span>}
               </div>
               <input class="field" aria-label={`What about pin ${p.n}?`} placeholder="What's wrong, or what should change?" value={p.comment} onInput={(e) => update(p.n, { comment: e.currentTarget.value })} />

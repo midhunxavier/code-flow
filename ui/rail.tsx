@@ -372,10 +372,10 @@ export function Rail() {
             ))}
           </select>
           <label class="check">
-            <input type="checkbox" checked={f.thisRepo} onChange={(e) => setRunFilter({ thisRepo: e.currentTarget.checked })} /> only {repo.value ? baseName(repo.value) : "the selected repository"}
+            <input type="checkbox" checked={f.thisRepo} onChange={(e) => setRunFilter({ thisRepo: e.currentTarget.checked })} /> {repo.value ? `Only ${baseName(repo.value)}` : "Only the selected repository"}
           </label>
           <label class="check">
-            <input type="checkbox" checked={view.archived} onChange={(e) => setRailView({ archived: e.currentTarget.checked })} /> show archived runs
+            <input type="checkbox" checked={view.archived} onChange={(e) => setRailView({ archived: e.currentTarget.checked })} /> Show archived runs
           </label>
         </div>
       ) : null}
@@ -392,7 +392,7 @@ export function Rail() {
         <div class="rail-hint">
           {list.length} of {all.length} runs
           <button type="button" onClick={() => setRunFilter({ q: "", status: "all", pattern: "", agent: "", thisRepo: false })}>
-            clear
+            Clear
           </button>
         </div>
       ) : null}

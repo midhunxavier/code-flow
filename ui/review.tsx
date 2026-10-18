@@ -112,7 +112,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
           <Icon name="chevron" class="back" /> Back to run
         </button>
         <div class="review-title">
-          <b>Review</b>
+          <h1>Review</h1>
           <code title={branch}>{branch}</code>
           {totals ? (
             <span class="review-totals">
@@ -120,18 +120,20 @@ export function Review({ id, branch }: { id: string; branch: string }) {
             </span>
           ) : null}
         </div>
-        <span class="spacer" />
-        {summary?.status === "done" ? (
-          <>
-            <span class="review-to">Send to</span>
-            <AgentPicker value={target} onChange={setAgent} />
-            <button class="btn primary" disabled={!canSend || sending} onClick={send}>
-              {sending ? "Sending…" : `Send ${comments.length || ""} comment${comments.length === 1 ? "" : "s"}`.replace("  ", " ")}
-            </button>
-          </>
-        ) : (
-          <span class="review-to">Comments can be sent once the run has finished.</span>
-        )}
+        {/* one group, so the agent and the button wrap together */}
+        <div class="review-send">
+          {summary?.status === "done" ? (
+            <>
+              <span class="review-to">Send to</span>
+              <AgentPicker value={target} onChange={setAgent} />
+              <button class="btn primary" disabled={!canSend || sending} onClick={send}>
+                {sending ? "Sending…" : `Send ${comments.length || ""} comment${comments.length === 1 ? "" : "s"}`.replace("  ", " ")}
+              </button>
+            </>
+          ) : (
+            <span class="review-to">Comments can be sent once the run has finished.</span>
+          )}
+        </div>
       </div>
       {error ? <div class="msg err review-msg">{error}</div> : null}
       {runError ? <div class="msg warn review-msg">{runError}</div> : null}

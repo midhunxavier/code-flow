@@ -76,7 +76,7 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   await page.locator("main .convo select").selectOption("member:builder-two");
   await page.locator("main .convo textarea").fill("Use the accepted alpha contract in the dependent component.");
   await page.locator("main .convo textarea").press("Enter");
-  await page.locator(".note-chip", { hasText: "queued for builder-two" }).waitFor();
+  await page.locator(".note-chip", { hasText: "Queued for builder-two" }).waitFor();
   await page.getByRole("button", { name: "✓ Approve", exact: true }).click();
   await page.getByPlaceholder("Your answer…").waitFor({ timeout: 30_000 });
   // The question is published before the scheduler finishes independent work and

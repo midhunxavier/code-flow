@@ -403,7 +403,7 @@ function WorkSummary({ run, steps }: { run: RunSummary; steps: Step[] }) {
   const took = duration((run.endedAt ?? Date.now()) - run.createdAt);
   return (
     <>
-      <span class={`work-ic ${run.status === "running" ? "running" : ""}`} aria-hidden="true" />
+      <span class={`work-ic ${runState(run)}`} aria-hidden="true" />
       <span class="work-title">
         {run.status === "running" ? (live.length ? `Working — ${live.map((s) => s.title).join(", ")}` : "Working…") : `${steps.length} step${steps.length === 1 ? "" : "s"}`}
       </span>
@@ -630,7 +630,7 @@ function FollowUpThread({ run, data }: { run: RunSummary; data: RunData }) {
                 <span>
                   {followUpLabel(f)} in {f.worktree}
                 </span>
-                <FollowUpBadges f={f} />
+                <FollowUpBadges f={f} run={run} />
               </div>
               {step ? <TurnBody run={run} step={step} data={data} answer={f.status === "pending" ? undefined : f.result} /> : f.result ? <Markdown text={f.result} /> : null}
             </div>
@@ -654,11 +654,29 @@ function SideNote({ run, f }: { run: RunSummary; f: FollowUp }) {
   );
 }
 
-/** How a follow-up went: still working, didn't finish, pushed, the check, test changes. */
-export function FollowUpBadges({ f }: { f: FollowUp }) {
+/**
+ * How a follow-up went: still working, didn't finish, pushed, the check, test changes. Given its
+ * run, one still pending on a run that has stopped says so instead of "Working…": it won't move
+ * until the run is resumed (interrupted keeps it for the resume; a failure or a stop leaves it
+ * unfinished). A done run isn't stopped: a new reply is pending there for a moment before it starts.
+ */
+export function FollowUpBadges({ f, run }: { f: FollowUp; run?: RunSummary }) {
+  const halted = f.status === "pending" && !!run && run.status !== "running" && run.status !== "done";
   return (
     <>
-      {f.status === "pending" ? <span class="fu-live">Working…</span> : f.status === "failed" ? <span class="err">✕ Didn't finish</span> : null}
+      {halted ? (
+        run!.status === "interrupted" ? (
+          <span class="note" title="code-flow stopped before this turn finished. Resume the run to continue it.">
+            Interrupted
+          </span>
+        ) : (
+          <span class="err">✕ Didn't finish</span>
+        )
+      ) : f.status === "pending" ? (
+        <span class="fu-live">Working…</span>
+      ) : f.status === "failed" ? (
+        <span class="err">✕ Didn't finish</span>
+      ) : null}
       {f.pushed ? <span class="ok">Pushed {f.pushed.slice(0, 7)}</span> : f.pushError ? <span class="note" title={f.pushError}>Push failed: {f.pushError}</span> : null}
       {f.checkPassed === false ? <span class="note">check fails</span> : f.checkPassed ? <span class="ok">check passes</span> : null}
       {f.integrity?.length ? (
@@ -732,7 +750,11 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
               <div class="fu-answer">
                 <div class="fu-head">
                   <AgentTag id={f.agent} />
-                  {f.status === "pending" ? <span class="fu-live">{run.status === "running" ? "Up next…" : "Waiting…"}</span> : <FollowUpBadges f={f} />}
+                  {f.status === "pending" && (run.status === "running" || run.status === "done") ? (
+                    <span class="fu-live">{run.status === "running" ? "Up next…" : "Waiting…"}</span>
+                  ) : (
+                    <FollowUpBadges f={f} run={run} />
+                  )}
                 </div>
                 {f.status === "pending" || !f.result ? null : f.status === "failed" ? <div class="ev error">{f.result}</div> : <Markdown text={f.result} />}
               </div>
@@ -762,7 +784,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
             <div class="fu-answer">
               <div class="fu-head">
                 <AgentTag id={s.agent} note={modelNote(run, s.agent)} />
-                {f ? <FollowUpBadges f={f} /> : s.status === "running" ? <span class="fu-live">Working…</span> : s.status === "failed" ? <span class="err">✕ Didn't finish</span> : null}
+                {f ? <FollowUpBadges f={f} run={run} /> : s.status === "running" ? <span class="fu-live">Working…</span> : s.status === "failed" ? <span class="err">✕ Didn't finish</span> : null}
                 {!f && s.status !== "running" && run.lastCheck && nothingAfter ? (
                   run.lastCheck.ok ? <span class="ok">check passes</span> : <span class="note">check fails</span>
                 ) : null}
@@ -831,7 +853,7 @@ function ReviewCard({ run }: { run: RunSummary }) {
         {pr ? (
           review.postedTo ? (
             <a class="badge ok" href={review.postedTo} target="_blank" rel="noreferrer">
-              Posted to PR #{pr.number} ↗
+              Posted to PR #{pr.number} <Icon name="external" />
             </a>
           ) : (
             <button
@@ -1295,7 +1317,7 @@ function PrMergePanel({ run, branch, worktree, steps }: { run: RunSummary; branc
           <label class="lbl">Merge pull request</label>
           {info ? (
             <a href={info.url} target="_blank" rel="noreferrer">
-              #{info.number} into {info.baseRefName} ↗
+              #{info.number} into {info.baseRefName} <Icon name="external" />
             </a>
           ) : (
             <span class="help">{error ? "—" : "Asking GitHub…"}</span>
@@ -1840,9 +1862,16 @@ const PAGE = 200;
 
 function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: RunData; version: number }) {
   const body = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
+  // A live step follows its newest line, and a failed one opens at its end, where it went wrong;
+  // any other finished step opens at its start, so it reads from the top.
+  const tail = (s?: Step) => s?.status === "running" || s?.status === "failed";
+  const stick = useRef(tail(step));
   const [shown, setShown] = useState(PAGE);
-  useEffect(() => setShown(PAGE), [step?.id]);
+  useEffect(() => {
+    setShown(PAGE);
+    stick.current = tail(step);
+    if (!stick.current && body.current) body.current.scrollTop = 0;
+  }, [step?.id]);
   useEffect(() => {
     if (stick.current && body.current) body.current.scrollTop = body.current.scrollHeight;
   });

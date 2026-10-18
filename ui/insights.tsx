@@ -240,7 +240,7 @@ export function InsightsView({ group }: { group?: string }) {
                 <tbody>
                   {stats.patterns.map((p) => (
                     <tr key={p.pattern}>
-                      <td>{patternName(p.pattern)}</td>
+                      <td class="name">{patternName(p.pattern)}</td>
                       <td class="num">{p.runs}</td>
                       <td class="num">{p.passed ? `${p.passed} (${pct(p.passed, p.runs)})` : "–"}</td>
                       <td class={`num ${p.failing ? "warn" : ""}`}>{p.failing || "–"}</td>

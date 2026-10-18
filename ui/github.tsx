@@ -89,7 +89,7 @@ export function GitHubPicker() {
             </div>
           </div>
           <div class="picker-list">
-            {error ? <div class="msg err">{error}</div> : null}
+            {error ? <div class="msg err pad">{error}</div> : null}
             {!items && !error ? <div class="help pad">Loading from GitHub…</div> : null}
             {items && !shown.length ? <div class="help pad">No open {kind === "issue" ? "issues" : "pull requests"}{q ? " match" : ""}.</div> : null}
             {shown.map((i) => (

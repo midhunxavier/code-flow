@@ -166,7 +166,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   // Merge into main from the UI.
   await page.getByRole("button", { name: "Merge…" }).click();
   await page.getByRole("button", { name: "Merge into main" }).click();
-  await page.locator(".badge", { hasText: "merged into main" }).waitFor();
+  await page.locator(".badge", { hasText: "Merged into main" }).waitFor();
 
   const log = execFileSync("git", ["log", "-1", "--format=%s", "main"], { cwd: repo }).toString();
   assert.match(log, /^Merge codeflow\/.+\/build into main/);
@@ -204,7 +204,7 @@ test("a message sent while Codex is working reaches its running turn", async () 
   await page.locator("main .convo select").selectOption("codex");
   await page.locator("main .convo textarea").fill("Prefer tabs over spaces");
   await page.locator("main .convo textarea").press("Enter");
-  await page.locator(".note-chip", { hasText: "✓ delivered to codex mid-turn (Implement plan): Prefer tabs over spaces" }).waitFor({ timeout: 10_000 });
+  await page.locator(".note-chip", { hasText: "✓ Delivered to codex mid-turn (Implement plan): Prefer tabs over spaces" }).waitFor({ timeout: 10_000 });
   await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
 
   const run = await fetch(`${BASE}/api/runs/${runId}`, { headers: bearer }).then((r) => r.json());
@@ -764,8 +764,8 @@ test("projects: the Automations page and its inbox follow the project you're in;
   assert.match(under(own.name), /E2E: check can&#39;t run/);
   await api("/api/remote", { enabled: false });
 
-  // "show all" goes back to every project, as the sidebar's does.
-  await page.locator(".automations .rail-hint", { hasText: "more in other projects" }).getByRole("button", { name: "show all" }).click();
+  // "Show all" goes back to every project, as the sidebar's does.
+  await page.locator(".automations .rail-hint", { hasText: "more in other projects" }).getByRole("button", { name: "Show all" }).click();
   await page.locator(".project-btn", { hasText: "All projects" }).waitFor();
   assert.equal(await page.locator(".auto-row").count(), total);
   assert.equal(await page.locator(".inbox-item").count(), pending);
