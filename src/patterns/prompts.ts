@@ -151,7 +151,7 @@ export async function proveOrAsk(
   let proof = await ctx.prove(opts.wt);
   if (proof?.status !== "unproven" || !opts.ask) return { check, proof, session, asked: false };
   session = session?.agent === opts.agent ? session : undefined;
-  const before = await ctx.remember("head", `before proof test in ${opts.wt.name}`, () => resolveCommit(opts.wt.path));
+  const before = await ctx.remember("head", `before proof test in ${opts.wt.name}`, async () => resolveCommit(await ctx.gitAt(opts.wt)));
   session = await ctx.ask({
     title: "Add a test that fails without the change",
     role: opts.role,
@@ -180,8 +180,8 @@ export async function proveOrAsk(
   if (check && !check.ok) {
     // Asking for a proof mustn't cost a green result: undo what never passed, and it stays unproven.
     ctx.log(`The check fails since ${adapters[opts.agent].displayName} added its test, and fixing didn't help; undoing that`, "warn");
-    const changed = await ctx.remember("changed", `since proof test in ${opts.wt.name}`, () => changedFiles(opts.wt.path, before));
-    await ctx.remember("restore-before-proof", opts.wt.name, () => restorePaths(opts.wt.path, before, changed).then(() => true));
+    const changed = await ctx.remember("changed", `since proof test in ${opts.wt.name}`, async () => changedFiles(await ctx.gitAt(opts.wt), before));
+    await ctx.remember("restore-before-proof", opts.wt.name, () => restorePaths(ctx.run.repo, opts.wt, before, changed).then(() => true));
     await ctx.commit(opts.wt, `code-flow: undo ${opts.agent}'s test that never passed`);
     check = await ctx.check(opts.wt);
     return { check, proof: check?.ok ? await ctx.prove(opts.wt) : null, session, asked: true };

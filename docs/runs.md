@@ -17,6 +17,8 @@ A run reads like a conversation, top to bottom:
 
 ## Talking to a run
 
+[Auto teams](auto-team.md) add individual member targeting and structured questions. Questions addressed to you pause the workflow and appear in **Needs you**; answering saves the reply before work resumes. The team panel exposes tasks, dependencies, messages, coverage, checkpoints, context references and coordination usage. Its project-memory panel supports revision-aware edits, acceptance and deletion. A stopped Auto team with unresolved gaps resumes its existing workflow with a fresh bounded allocation.
+
 Runs are conversations, not fire-and-forget jobs:
 
 - **Approve the plan:** tick *Let me approve the plan* (the subtasks for Supervisor, the tests for Test-first). The run pauses at that checkpoint, and its time budget with it.

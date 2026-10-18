@@ -5,6 +5,7 @@
 import { writeFileSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { sleepMs, work } from "./fake-work.mjs";
+import { exerciseTeamTools } from "./fake-team-tools.mjs";
 
 const [vendor, ...args] = process.argv.slice(2);
 
@@ -30,6 +31,14 @@ if (unknownFlag && args.includes(unknownFlag)) {
   // commander's wording (claude, agy) and clap's (codex)
   process.stderr.write(vendor === "codex" ? `error: unexpected argument '${unknownFlag}' found\n\nUsage: codex exec [OPTIONS] [PROMPT]\n` : `error: unknown option '${unknownFlag}'\n`);
   process.exit(vendor === "codex" ? 2 : 1);
+}
+if (vendor === "codex" && args[0] === "mcp" && args[1] === "get") {
+  process.stdout.write(JSON.stringify({ name: args[2], transport: { type: "stdio", command: "node", args: [] }, enabled_tools: ["read_inbox"] }));
+  process.exit(0);
+}
+if (vendor === "codex" && args[0] === "features" && args[1] === "list") {
+  process.stdout.write("multi_agent stable true\nmulti_agent_v2 stable false\n");
+  process.exit(0);
 }
 if (vendor === "claude" && args[0] === "auth" && args[1] === "status") {
   process.stdout.write(JSON.stringify({ loggedIn: process.env.FAKE_SIGNED_OUT !== "claude", authMethod: "claude.ai" }));
@@ -106,9 +115,10 @@ if (resumeId && when("INVALID_SESSION")) {
 }
 
 // Let tests inspect exactly what code-flow passed to the CLI.
+const teamTools = await exerciseTeamTools(args);
 if (process.env.FAKE_RECORD_DIR) {
   writeFileSync(`${process.env.FAKE_RECORD_DIR}/${vendor}-${Date.now()}-${randomUUID().slice(0, 6)}.json`,
-    JSON.stringify({ vendor, args, prompt, cwd: process.cwd(), token: process.env.CODEFLOW_TOKEN ?? null }));
+    JSON.stringify({ vendor, args, prompt, cwd: process.cwd(), token: process.env.CODEFLOW_TOKEN ?? null, teamTools }));
 }
 const write =
   (vendor === "claude" && (args.includes("acceptEdits") || args.includes("bypassPermissions"))) ||
@@ -218,6 +228,8 @@ Options:
   --permission-mode <mode>                          Permission mode to use for the session
   --allowedTools, --allowed-tools <tools...>        Tools to allow
   --disallowedTools, --disallowed-tools <tools...>  Tools to deny
+  --mcp-config <configs...>                        Per-turn MCP configuration
+  --strict-mcp-config                             Use only the supplied MCP configuration
   -v, --version                                     Output the version number
   -h, --help                                        Display help for command
 `;

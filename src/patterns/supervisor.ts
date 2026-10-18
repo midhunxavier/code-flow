@@ -1,8 +1,9 @@
 import { adapters, isAgentId, type AgentId } from "../adapters/index.js";
 import { RejectedError, type Pattern, type ReviewFinding, type StepOutcome } from "../engine.js";
-import { changedFiles, hasConflictMarkers } from "../git.js";
+import { changedFiles } from "../git.js";
 import { describeIssues } from "../integrity.js";
 import { approves, builderReply, checkReview, findingsForBuilder, findingsLine, REVIEW_SHAPE, reproRule, type ReviewVerdict } from "./findings.js";
+import { decompositionInstructions, integrateBranch } from "./team-strategies.js";
 import { REVIEW_SCHEMA, SUBTASKS_SCHEMA } from "./schemas.js";
 import { checkEvidence, fence, fixUntilGreen, jsonInstruction, preamble, proofEvidence, proofLine, proofRule, proveOrAsk, READ_ONLY, section, WRITE } from "./prompts.js";
 
@@ -82,12 +83,7 @@ export const supervisorPattern: Pattern = {
         section("Task", ctx.task) +
         section(
           "Deliverable",
-          `Study the code and split the task into at most ${maxSubtasks} subtasks that can be built in parallel ` +
-            "on separate branches with minimal file overlap (they will be merged afterwards). " +
-            "Each subtask's instructions must be self-contained: the worker sees only them and the contracts, not the other subtasks. " +
-            "In `contracts`, pin down everything the parts must agree on so they fit together: function signatures, " +
-            "endpoints, data shapes, file and module names, who owns which shared file. " +
-            `Assign each subtask to one of these workers: ${roster}.`,
+          decompositionInstructions(maxSubtasks, roster),
         ) +
         jsonInstruction(SPLIT_SHAPE),
     });
@@ -167,7 +163,7 @@ export const supervisorPattern: Pattern = {
       await ctx.commit(wt, `${agent}: ${sub.title}`);
       // A turn can end fine without changing anything (blocked, or nothing seemed needed):
       // that part is missing, not done.
-      const changed = (await changedFiles(wt.path, wt.base)).length > 0;
+      const changed = (await changedFiles(await ctx.gitAt(wt), wt.base)).length > 0;
       if (result.ok && !changed) ctx.failStep(result, `Made no changes: ${firstLine(result.finalText)}`);
       return { sub, agent, wt, result, changed };
     });
@@ -194,12 +190,8 @@ export const supervisorPattern: Pattern = {
         ctx.log(`Nothing to merge from "${r.sub.title}": ${r.agent} made no changes`, "warn");
         continue;
       }
-      const merge = await ctx.merge(integration, r.wt.branch);
-      if (merge.ok) {
-        ctx.log(`Merged ${r.wt.branch}`);
-        continue;
-      }
-      ctx.log(`Conflicts merging ${r.wt.branch}: ${merge.conflicts.join(", ")}`, "warn");
+      const resolved = await integrateBranch(ctx, integration, r.wt.branch, async (conflicts) => {
+      ctx.log(`Conflicts merging ${r.wt.branch}: ${conflicts.join(", ")}`, "warn");
       await ctx.ask({
         title: `Resolve conflicts: ${r.sub.title}`,
         role: "supervisor",
@@ -212,7 +204,7 @@ export const supervisorPattern: Pattern = {
           section(
             "Situation",
             `A git merge of branch ${r.wt.branch} ("${r.sub.title}") is in progress and has conflicts in:\n` +
-              merge.conflicts.map((f) => `- ${f}`).join("\n"),
+              conflicts.map((f) => `- ${f}`).join("\n"),
           ) +
           gaps +
           section(
@@ -221,8 +213,8 @@ export const supervisorPattern: Pattern = {
               "Do not run git merge --abort or commit.",
           ),
       });
-      if (await hasConflictMarkers(integration)) throw new Error(`Conflict markers remain after merging ${r.wt.branch}`);
-      await ctx.commit(integration, `Merge ${r.wt.branch} (conflicts resolved by ${supervisor})`);
+      }, `Merge ${r.wt.branch} (conflicts resolved by ${supervisor})`);
+      if (!resolved) ctx.log(`Merged ${r.wt.branch}`);
     }
 
     // The merged result is where parts break each other: check it before reviewing.

@@ -1,6 +1,7 @@
 import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, RunOptions, RunResult } from "./types.js";
 import { classifyError, resetFromText } from "./errors.js";
 import { commandExists, describeFailure, processErrorKind, startJsonlProcess, stderrTail, stringify, truncate } from "./process.js";
+import { adapterTeamCapabilities, prepareTeamTools, TEAM_NESTED_DENYLIST, TEAM_TOOL_ALLOWLIST } from "./team-tools.js";
 
 /**
  * Claude Code via `claude -p --output-format stream-json`.
@@ -68,22 +69,29 @@ export const claudeAdapter: AgentAdapter = {
   },
 
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
+    const supportsTools = opts.teamTools && (await adapterTeamCapabilities("claude")).scopedTools === "tested";
+    const teamTools = supportsTools ? await prepareTeamTools(opts.teamTools!) : undefined;
+    if (opts.teamTools && !teamTools) onEvent({ kind: "status", text: "This Claude CLI has no verified per-turn team tools; use structured outcomes and next-turn replies." });
+    try {
     // The prompt goes on stdin (no positional argument), so its size isn't limited by argv.
     const args = ["-p", "--output-format", "stream-json", "--verbose"];
     if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push("--effort", opts.effort);
     if (opts.jsonSchema) args.push("--json-schema", JSON.stringify(opts.jsonSchema));
+    if (teamTools) args.push("--mcp-config", teamTools.claudeConfig, "--strict-mcp-config");
+    const collaborationTools = teamTools ? TEAM_TOOL_ALLOWLIST : [];
+    const deniedTools = [...(opts.mode === "read" ? ["Edit", "Write", "NotebookEdit"] : []), ...(opts.questionProtocol === "structured" ? TEAM_NESTED_DENYLIST : [])];
+    if (deniedTools.length) args.push("--disallowedTools", deniedTools.join(","));
     if (opts.mode === "write" && opts.trust === "full") {
       // Full access: every tool, without permission checks.
       args.push("--permission-mode", "bypassPermissions");
     } else if (opts.mode === "write") {
-      args.push("--permission-mode", "acceptEdits", "--allowedTools", writeTools(opts.trust).join(","));
+      args.push("--permission-mode", "acceptEdits", "--allowedTools", [...writeTools(opts.trust), ...collaborationTools].join(","));
     } else {
       args.push(
         "--permission-mode", "default",
-        "--disallowedTools", "Edit,Write,NotebookEdit",
-        "--allowedTools", READ_TOOLS.join(","),
+        "--allowedTools", [...READ_TOOLS, ...collaborationTools].join(","),
       );
     }
 
@@ -215,6 +223,7 @@ export const claudeAdapter: AgentAdapter = {
       errorKind,
       ...(resetsAt && { resetsAt }),
     };
+    } finally { await teamTools?.cleanup(); }
   },
 };
 

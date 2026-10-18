@@ -18,26 +18,31 @@ import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
 import { Previews } from "./preview.js";
 import { SnapshotError, takeSnapshot } from "./snapshot.js";
 import { Notes } from "./notes.js";
-import { CODEFLOW_HOME, envNumber, PORT } from "./config.js";
+import { CODEFLOW_HOME, autoTeamEnabled, envNumber, PORT } from "./config.js";
 import { RunManager, UntrustedSourceError, type LoopSettings, type Pattern } from "./engine.js";
 import { detectCheckCommand } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
-import { listBranches, repoRoot, worktreeRoot } from "./git.js";
+import { listBranches, repoRoot, worktreeRoot, type GitCwd } from "./git.js";
 import { stat } from "node:fs/promises";
 import { folderSizes, remoteBranches, removeWorktrees } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
-import { acquireLock, writeHealth } from "./store.js";
+import { acquireLock, writeHealth, loadJournal } from "./store.js";
 import { reapOrphanGroups } from "./adapters/process.js";
 import { logError, logInfo, logWarn } from "./log.js";
 import { listIssues, listPullRequests, MERGE_METHODS, type SourceInput } from "./github.js";
 import { listSweep, runSweep, sourceKeys, type SweepKind } from "./sweeps.js";
 import { resolveAuto } from "./routing.js";
+import { improvePrompt, ImproveError, MAX_IMPROVE_CHARS, type ImproveRequest } from "./improve.js";
 import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
 import { Automations, describeSchedule, readWebhook, validateSchedule } from "./automation.js";
 import { changeRemote, isOwnAddress, lanAddresses, loadRemote, renderRemote, saveRemote, tokenMatches, type RemoteSettings } from "./remote.js";
 import { projectOf, Projects } from "./projects.js";
+import { memoryStore, MemoryConflictError, type MemoryAuthority, type MemoryEntry } from "./memory.js";
+import { adapterTeamCapabilities } from "./adapters/team-tools.js";
+import { teamToolBridge } from "./team-tools.js";
+import { teamEvaluationStore, buildTeamEvaluation, assessTeamRollout } from "./team-evaluation.js";
 import type { Run, RunEvent, RunSummary, SideTurn, StartRunInput } from "./engine.js";
 
 // One server per CODEFLOW_HOME (waits for one that is still shutting down).
@@ -259,11 +264,29 @@ async function attempt<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function requestedRepo(url: URL): Promise<string> {
-  const requested = url.searchParams.get("repo") ?? "";
+  return validRepo(url.searchParams.get("repo") ?? "");
+}
+
+async function validRepo(requested: string): Promise<string> {
   if (!requested.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
   return repoRoot(requested).catch(() => {
     throw new HttpError(400, "Not a git repository");
   });
+}
+
+/**
+ * The folder the Files panel asks about. A run's worktree comes with the git folder its run's
+ * repository has for it (see worktreeGit): agents can rewrite the worktree's `.git`, and git
+ * finding the repository through it would read a config of theirs.
+ */
+async function requestedFolder(url: URL): Promise<GitCwd> {
+  const requested = url.searchParams.get("repo") ?? "";
+  const worktree = requested.startsWith("/")
+    ? await manager.worktreeAt(requested).catch((err: Error) => {
+        throw new HttpError(400, err.message);
+      })
+    : undefined;
+  return worktree ?? requestedRepo(url);
 }
 
 function describePattern(p: Pattern) {
@@ -287,6 +310,11 @@ function requestedRoles(pattern: Pattern, input: unknown): Record<string, string
 async function validateRoles(pattern: Pattern, input: unknown, repo?: string): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
   const requested = requestedRoles(pattern, input);
   const installed = new Set((await agentAvailability()).filter((a) => a.available).map((a) => a.id));
+  if (pattern.id === "auto-team") {
+    const supplied = input && typeof input === "object" ? input as Record<string, unknown> : {};
+    if (!Array.isArray(supplied.coordinator)) requested.coordinator = ["auto"];
+    if (!Array.isArray(supplied.pool)) requested.pool = [...installed];
+  }
   const wantsAuto = Object.values(requested).some((list) => list.includes("auto"));
   const rank = wantsAuto && repo ? rankAgents(manager.list(), repo) : undefined;
   const resolved = resolveAuto(requested, manager.quota, installed, rank);
@@ -305,6 +333,53 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string): P
     }
   }
   return { roles, notes: resolved.notes };
+}
+
+/** Improve turns running now: a few at most, since each one is a CLI process. */
+let improving = 0;
+const MAX_IMPROVING = 3;
+
+/** The composer's Improve: rewrite the task in one read-only turn (see improve.ts). */
+async function improveTask(body: any, res: ServerResponse) {
+  const text = typeof body.text === "string" ? body.text : "";
+  if (!text.trim()) throw new HttpError(400, "Write a task to improve first");
+  if (text.length > MAX_IMPROVE_CHARS) throw new HttpError(400, `The task is too long to improve (${MAX_IMPROVE_CHARS.toLocaleString("en")} characters at most)`);
+  const request: ImproveRequest = {
+    text,
+    repo: await validRepo(typeof body.repo === "string" ? body.repo : ""),
+    mode: body.mode === "repo" ? "repo" : "quick",
+    context: Array.isArray(body.context) ? body.context.filter((p: unknown): p is string => typeof p === "string" && !!p.trim()).slice(0, 50).map((p: string) => p.slice(0, 300)) : [],
+    source:
+      body.source && ["issue", "pr", "alert"].includes(body.source.kind) && Number.isInteger(body.source.number)
+        ? { kind: body.source.kind, number: body.source.number, title: typeof body.source.title === "string" ? body.source.title.slice(0, 200) : undefined }
+        : undefined,
+  };
+  const installed = new Set((await agentAvailability()).filter((a) => a.available).map((a) => a.id));
+  const agent = resolveAuto({ improve: [isAgentId(body.agent) ? body.agent : "auto"] }, manager.quota, installed).roles.improve?.[0];
+  if (!agent) throw new HttpError(400, "Install the Claude Code, Codex or Antigravity CLI to improve tasks");
+  if (!installed.has(agent)) throw new HttpError(400, `${adapters[agent].displayName} (\`${adapters[agent].binary}\`) is not installed or not on PATH`);
+  if (improving >= MAX_IMPROVING) throw new HttpError(429, "Other tasks are being improved right now. Try again in a moment.");
+  // Closing the request (Stop in the composer, or leaving the page) stops the turn.
+  const stop = new AbortController();
+  res.on("close", () => stop.abort());
+  improving++;
+  try {
+    const result = await improvePrompt(agent, request, {
+      signal: stop.signal,
+      onEvent: (e) => {
+        if (e.kind === "quota") manager.recordQuota(agent, e.status, e.windows);
+      },
+    });
+    return send(res, 200, { ...result, agent });
+  } catch (err) {
+    if (!(err instanceof ImproveError)) throw err;
+    // Auto steers later turns and runs away from a plan that's out of room or signed out.
+    if (err.kind === "usage_limit") manager.recordLimit(agent, err.resetsAt);
+    if (err.kind === "auth") manager.recordQuota(agent, "signed_out", {});
+    throw new HttpError(502, err.message);
+  } finally {
+    improving--;
+  }
 }
 
 /** { kind: "issue" | "pr", number, ciLogs? } or { kind: "alert", tool, number, numbers? } — where a run starts from on GitHub. */
@@ -408,6 +483,7 @@ function validateLoop(input: unknown): Partial<LoopSettings> {
     copy: Array.isArray(raw.copy) ? raw.copy.filter((p): p is string => typeof p === "string" && !!p.trim()).slice(0, 50) : undefined,
     maxMinutes: number("maxMinutes", 1, 720),
     maxSteps: number("maxSteps", 1, 200),
+    maxInvocations: number("maxInvocations", 1, 200),
     checkTimeoutMin: number("checkTimeoutMin", 1, 120),
   };
 }
@@ -452,7 +528,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
     branchPrefix: body.branchPrefix ? String(body.branchPrefix) : undefined,
     context: body.context && typeof body.context === "object" ? body.context : undefined,
     loop,
-    approvals: { plan: body.approvals?.plan === true },
+    approvals: { plan: typeof body.approvals?.plan === "boolean" ? body.approvals.plan : pattern.id === "auto-team" },
     parentRunId: typeof body.parentRunId === "string" && manager.get(body.parentRunId) ? body.parentRunId : undefined,
     trust: ["safe", "standard", "trusted", "full"].includes(body.trust) ? body.trust : undefined,
     roleSettings: validateRoleSettings(body.roleSettings),
@@ -626,7 +702,7 @@ const STALL_MS = envNumber("CODEFLOW_SSE_STALL_MS", 30_000, { min: 100 });
  * An event stream. Each event carries `id: <epoch>:<seq>`, which the browser sends back as
  * Last-Event-ID when it reconnects, so only what it missed is sent again.
  */
-function openStream(res: ServerResponse): { send(event: unknown, seq?: number): void } {
+function openStream(res: ServerResponse, epoch = EPOCH): { send(event: unknown, seq?: number): void } {
   res.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
@@ -648,14 +724,14 @@ function openStream(res: ServerResponse): { send(event: unknown, seq?: number): 
     clearInterval(ping);
     clearTimeout(stalled);
   });
-  return { send: (event, seq) => write(`${seq === undefined ? "" : `id: ${EPOCH}:${seq}\n`}data: ${JSON.stringify(event)}\n\n`) };
+  return { send: (event, seq) => write(`${seq === undefined ? "" : `id: ${epoch}:${seq}\n`}data: ${JSON.stringify(event)}\n\n`) };
 }
 
 /** The last event a reconnecting client got (its Last-Event-ID), if it's from this server start. */
-function lastEventSeq(req: IncomingMessage): number | undefined {
+function lastEventSeq(req: IncomingMessage, expectedEpoch = EPOCH): number | undefined {
   const [epoch, seq] = String(req.headers["last-event-id"] ?? "").split(":");
   const n = Number(seq);
-  return epoch === EPOCH && seq !== "" && Number.isInteger(n) && n >= 0 ? n : undefined;
+  return epoch === expectedEpoch && seq !== "" && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
 }
 
 /**
@@ -663,11 +739,12 @@ function lastEventSeq(req: IncomingMessage): number | undefined {
  * still being read wait for it, so the client never gets an older snapshot after a newer one.
  */
 async function streamEvents(req: IncomingMessage, res: ServerResponse, runId: string) {
-  const stream = openStream(res);
-  const after = lastEventSeq(req);
-  // Which server start this is: the client keeps what it has only when it's the one it knew.
-  stream.send({ type: "hello", epoch: EPOCH, resumed: after !== undefined });
-  let last = after ?? 0;
+  // Run event sequences are recovered from disk. Their cursor is bound to the run,
+  // rather than the server process; the sidebar's transient feed still uses EPOCH.
+  const epoch = `run-${runId}`;
+  const stream = openStream(res, epoch);
+  const requested = lastEventSeq(req, epoch);
+  let last = 0;
   const deliver = (e: RunEvent) => {
     if (e.seq <= last) return;
     last = e.seq;
@@ -677,7 +754,17 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, runId: st
   const unsubscribe = manager.subscribe(runId, (e) => (waiting ? waiting.push(e) : deliver(e)));
   res.on("close", unsubscribe);
   try {
-    for (const event of await manager.events(runId)) deliver(event);
+    const history = await manager.events(runId);
+    const newest = Math.max(0, history.at(-1)?.seq ?? 0, waiting.at(-1)?.seq ?? 0);
+    const after = requested !== undefined && requested <= newest ? requested : undefined;
+    last = after ?? 0;
+    const current = manager.get(runId)!;
+    const { steps, ...run } = current;
+    // An event may have reached a client before a crash lost its best-effort log write.
+    // The snapshot is the control state as of `newest`, whether or not the client resumes:
+    // a fresh connection then never depends on the event log holding the latest state.
+    stream.send({ type: "hello", epoch, resumed: after !== undefined, snapshot: { run, steps, seq: newest } });
+    for (const event of history) deliver(event);
   } finally {
     const live = waiting.sort((a, b) => a.seq - b.seq);
     waiting = undefined;
@@ -762,6 +849,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     throw Object.assign(new HttpError(401, via === "lan" ? "Not signed in: scan the phone QR code again" : "Not signed in: reload code-flow, or open it from the link printed at startup"), { signIn: true });
   }
 
+  if (req.method === "GET" && parts[1] === "team-capabilities") return send(res, 200, await Promise.all((["claude", "codex", "agy"] as const).map(adapterTeamCapabilities)));
+  if (parts[1] === "team-rollout") {
+    if (req.method === "GET") return send(res, 200, await teamEvaluationStore.rollout(autoTeamEnabled()));
+    if (req.method === "POST") {
+      const body = await readJson(req);
+      await attempt(() => teamEvaluationStore.decide({ stage: body.stage, rationale: body.rationale, evaluationIds: body.evaluationIds }));
+      return send(res, 200, await teamEvaluationStore.rollout(autoTeamEnabled()));
+    }
+  }
+  if (req.method === "GET" && parts[1] === "team-evaluations") {
+    const reports = await teamEvaluationStore.list();
+    return send(res, 200, { reports, assessment: assessTeamRollout(reports), rollout: await teamEvaluationStore.rollout(autoTeamEnabled()) });
+  }
   if (req.method === "GET" && parts[1] === "agents") return send(res, 200, await agentAvailability());
   if (req.method === "GET" && parts[1] === "events") return streamAllRuns(req, res);
   if (req.method === "GET" && parts[1] === "patterns") return send(res, 200, patterns.map(describePattern));
@@ -778,7 +878,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, { repo, worktreeRoot: worktreeRoot(repo), ...(await listBranches(repo)) });
   }
   if (req.method === "GET" && parts[1] === "tree") {
-    const repo = await requestedRepo(url);
+    const repo = await requestedFolder(url);
     const listing = await listTree(repo, url.searchParams.get("path") ?? "").catch((err: NodeJS.ErrnoException) => {
       throw new HttpError(err.code === "ENOENT" ? 404 : 400, err.code === "ENOENT" ? "Folder not found" : err.message);
     });
@@ -819,6 +919,63 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       return send(res, 201, await attempt(() => projects.create({ name: body.name, repos: Array.isArray(body.repos) ? body.repos : [] })));
     }
     if (id && !projects.get(id)) throw new HttpError(404, "Project not found");
+    if (id && parts[3] === "memory") {
+      const project = projects.get(id)!;
+      const requested = url.searchParams.get("repo");
+      if (requested && !project.repos.includes(requested)) throw new HttpError(400, "That repository is not in this project");
+      const repos = requested ? [requested] : project.repos;
+      if (req.method === "GET" && !parts[4]) {
+        const entries = (await Promise.all(repos.map((repo) => memoryStore.list({ repo, projectId: id, scope: "project" }, { kind: "user", repo, projectId: id })))).flat();
+        return send(res, 200, entries.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)));
+      }
+      if (req.method === "POST" && parts[4] === "commands" && !parts[5]) {
+        const body = await readJson(req);
+        try {
+          let entry: MemoryEntry;
+          if (body.op === "create") {
+            const repo = typeof body.repo === "string" ? body.repo : project.repos.length === 1 ? project.repos[0]! : "";
+            if (!project.repos.includes(repo)) throw new HttpError(400, "Choose a repository in this project");
+            // This authenticated endpoint creates user-authored rules. Caller-provided
+            // authority, origins, verification, run IDs and status are never forwarded.
+            entry = await memoryStore.propose({
+              scope: "project", repo, projectId: id, title: body.title, body: body.body,
+              paths: body.paths, tags: body.tags, applicability: body.applicability,
+            }, { kind: "user", repo, projectId: id });
+          } else {
+            if (!["approve", "update", "delete", "feedback"].includes(body.op)) throw new HttpError(400, "Unknown memory command");
+            if (typeof body.id !== "string" || !Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1) throw new HttpError(400, "Memory commands need an entry ID and exact revision");
+            const entries = (await Promise.all(project.repos.map((repo) => memoryStore.list({ repo, projectId: id, scope: "project" }, { kind: "user", repo, projectId: id })))).flat();
+            const existing = entries.find((candidate) => candidate.id === body.id);
+            if (!existing) throw new HttpError(404, "Memory entry not found in this project");
+            const authority: MemoryAuthority = { kind: "user", repo: existing.repo, projectId: id };
+            if (body.op === "approve") entry = await memoryStore.accept(existing.id, body.expectedRevision, authority);
+            else if (body.op === "delete") entry = await memoryStore.remove(existing.id, body.expectedRevision, authority);
+            else if (body.op === "feedback") {
+              if (body.runId !== undefined) {
+                const source = typeof body.runId === "string" ? manager.get(body.runId) : undefined;
+                if (!source || source.repo !== existing.repo || source.project !== id || !source.memoryManifest?.included.some((ref) => ref.id === existing.id && ref.revision === body.expectedRevision)) throw new HttpError(400, "Feedback must refer to memory actually selected by this project's run");
+              }
+              entry = await memoryStore.recordFeedback(existing.id, body.expectedRevision, { rating: body.rating, note: body.note, runId: body.runId }, authority);
+            }
+            else {
+              const patch: Parameters<typeof memoryStore.revise>[2] = {};
+              for (const key of ["title", "body", "paths", "tags", "applicability"] as const) if (key in body) patch[key] = body[key];
+              // Saving an edit never accepts a proposal by itself; `accept: true` says so explicitly.
+              entry = await memoryStore.revise(existing.id, body.expectedRevision, patch, authority, { accept: body.accept === true });
+            }
+          }
+          return send(res, body.op === "create" ? 201 : 200, entry);
+        } catch (error) {
+          if (error instanceof HttpError) throw error;
+          if (error instanceof MemoryConflictError) throw new HttpError(409, error.message);
+          const message = (error as Error).message;
+          // A store that cannot be read or written is the server's fault, not the request's.
+          if (/^Memory store cannot be read|^Memory storage limit/.test(message)) throw new HttpError(500, message);
+          throw new HttpError(400, message);
+        }
+      }
+      throw new HttpError(404, "Unknown project memory route");
+    }
     if (id && req.method === "POST") {
       const body = await readJson(req);
       return send(res, 200, await attempt(() => manager.updateProject(id, { name: body.name, repos: Array.isArray(body.repos) ? body.repos : undefined })));
@@ -906,11 +1063,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, (await detectCheckCommand(repo)) ?? { command: null });
   }
   if (req.method === "GET" && parts[1] === "search") {
-    const repo = await requestedRepo(url);
+    const repo = await requestedFolder(url);
     return send(res, 200, await searchFiles(repo, url.searchParams.get("q") ?? ""));
   }
   if (req.method === "GET" && parts[1] === "file") {
-    const repo = await requestedRepo(url);
+    const repo = await requestedFolder(url);
     const content = await readRepoFile(repo, url.searchParams.get("path") ?? "").catch((err: NodeJS.ErrnoException) => {
       throw new HttpError(err.code === "ENOENT" ? 404 : 400, err.code === "ENOENT" ? "File not found" : err.message);
     });
@@ -952,10 +1109,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const cwd = String(body.cwd ?? "").trim();
       if (!cwd.startsWith("/")) throw new HttpError(400, "The folder must be an absolute path");
       if (!(await stat(cwd).then((s) => s.isDirectory(), () => false))) throw new HttpError(404, "Folder not found");
-      // A repository or one of its worktrees: not just any folder a request names.
-      await repoRoot(cwd).catch(() => {
-        throw new HttpError(400, "The terminal opens in a git repository or one of its worktrees");
-      });
+      // A repository or one of its worktrees: not just any folder a request names. A run's
+      // worktree is known without asking git, which would go by the `.git` agents can rewrite.
+      if (!(await manager.worktreeAt(cwd).then(Boolean, () => false))) {
+        await repoRoot(cwd).catch(() => {
+          throw new HttpError(400, "The terminal opens in a git repository or one of its worktrees");
+        });
+      }
       manager.noteActivity(); // commands run on this machine, like Run app
       try {
         // `pty`: a real terminal of `cols` × `rows` (line-based, `interactive: false`, without python3).
@@ -999,6 +1159,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (id && req.method === "DELETE") return send(res, 200, { closed: shells.close(id) });
   }
+  if (req.method === "POST" && parts[1] === "improve-prompt") return improveTask(await readJson(req), res);
   if (req.method === "GET" && parts[1] === "models") {
     const agents = await agentAvailability();
     const entries = await Promise.all(
@@ -1029,7 +1190,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     const run = runId ? manager.get(runId) : undefined;
     if (!run) throw new HttpError(404, "Run not found");
     if (req.method === "GET" && parts.length === 3) return send(res, 200, run);
+    if (req.method === "GET" && parts[3] === "evaluation") {
+      const report = (await teamEvaluationStore.list()).find((item) => item.runId === run.id && item.at === run.endedAt);
+      if (report) return send(res, 200, report);
+      const journal = await loadJournal(run.id, { strict: run.pattern === "auto-team" });
+      const memoryEntries = run.project && projects.get(run.project)?.repos.includes(run.repo) ? await memoryStore.list({ repo: run.repo, projectId: run.project, scope: "project" }, { kind: "user", repo: run.repo, projectId: run.project }) : [];
+      return send(res, 200, buildTeamEvaluation(run, { replay: run.recovery, journal, memoryEntries }));
+    }
     if (req.method === "GET" && parts[3] === "events") return await streamEvents(req, res, run.id);
+    if (req.method === "POST" && parts[3] === "revise-goal") {
+      const body = await readJson(req);
+      const revised = await attempt(() => manager.reviseGoal(run.id, { message: body.message, budget: body.budget === undefined ? undefined : { maxSteps: body.budget?.maxSteps, maxInvocations: body.budget?.maxInvocations, maxMinutes: body.budget?.maxMinutes } }));
+      return send(res, 201, { id: revised.id });
+    }
     if (req.method === "POST" && parts[3] === "cancel") return send(res, 200, { cancelled: manager.cancel(run.id) });
     if (req.method === "POST" && parts[3] === "resume") {
       await manager.resume(run.id).catch((err: Error) => {
@@ -1070,6 +1243,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
           agent: body.agent,
           message: typeof body.message === "string" ? body.message : undefined,
           mergeFrom: typeof body.mergeFrom === "string" ? body.mergeFrom : undefined,
+          budget: body.budget === undefined ? undefined : { maxSteps: body.budget?.maxSteps, maxInvocations: body.budget?.maxInvocations, maxMinutes: body.budget?.maxMinutes },
           attachments: Array.isArray(body.attachments) ? body.attachments.filter((a: any) => a && typeof a.data === "string").map((a: any) => ({ name: String(a.name ?? "file"), data: a.data })) : undefined,
         }),
       );
@@ -1105,7 +1279,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (req.method === "POST" && parts[3] === "notes") {
       const body = await readJson(req);
-      const note = await attempt(async () => manager.addNote(run.id, String(body.text ?? ""), isAgentId(body.agent) ? body.agent : undefined));
+      const note = await attempt(async () => typeof body.requestId === "string"
+        ? manager.answerTeamQuestion(run.id, body.requestId, String(body.text ?? ""))
+        : (run.team ? manager.addTeamNote.bind(manager) : manager.addNote.bind(manager))(run.id, String(body.text ?? ""), isAgentId(body.agent) ? body.agent : undefined, typeof body.memberId === "string" ? body.memberId : undefined));
       return send(res, 200, note);
     }
     if (req.method === "POST" && parts[3] === "answer") {
@@ -1147,7 +1323,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "POST" && parts[3] === "triage") {
       const body = await readJson(req);
       if (!["approve", "revise", "reject"].includes(body.decision)) throw new HttpError(400, "Unknown decision");
-      await attempt(() => manager.triage(run.id, { decision: body.decision, note: typeof body.note === "string" ? body.note : undefined, openPr: !!body.openPr, pushPr: !!body.pushPr }));
+      await attempt(() => manager.triage(run.id, { decision: body.decision, note: typeof body.note === "string" ? body.note : undefined, openPr: !!body.openPr, pushPr: !!body.pushPr, budget: body.budget === undefined ? undefined : { maxSteps: body.budget?.maxSteps, maxInvocations: body.budget?.maxInvocations, maxMinutes: body.budget?.maxMinutes } }));
       return send(res, 200, { ok: true });
     }
     if (req.method === "POST" && parts[3] === "push-pr") {
@@ -1319,6 +1495,7 @@ async function stop(reason: string, code = 0) {
     // still starting up: nothing is listening yet
   }
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));
+  await teamToolBridge.close().catch(() => undefined);
   await automationsSaved;
   process.exit(code);
 }

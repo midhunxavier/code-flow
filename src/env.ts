@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 const INSTALL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Variables that belong to code-flow itself, never to the processes it starts. */
-const SECRET_VARS = ["CODEFLOW_TOKEN"];
+const SECRET_VARS = ["CODEFLOW_TOKEN", "CODEFLOW_TEAM_CAPABILITY", "CODEFLOW_TEAM_ENDPOINT"];
 
 /**
  * Environment for everything code-flow starts (agent CLIs, checks, setup, Run app, gh, git):

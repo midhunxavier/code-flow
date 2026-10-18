@@ -92,7 +92,7 @@ export const tddPattern: Pattern = {
     // fixtures, snapshots, test config (and whatever the tester named). Only a plain source file
     // the tester added, a stub for the tests to import, is the builder's to fill in.
     const named = (spec?.test_files ?? []).map((f) => f.replace(/^\.\//, ""));
-    const testsIn = async (commit: string | null) => (commit ? (await changedFiles(wt.path, wt.base, commit)).filter((f) => !isPlainSource(f) || named.includes(f)) : named);
+    const testsIn = async (commit: string | null) => (commit ? (await changedFiles(await ctx.gitAt(wt), wt.base, commit)).filter((f) => !isPlainSource(f) || named.includes(f)) : named);
     let testFiles = await testsIn(testsCommit);
 
     // Evidence comes from code-flow running the tests itself. An agent-chosen command is only run
@@ -170,7 +170,7 @@ export const tddPattern: Pattern = {
 
     for (let round = 1; round <= maxRounds; round++) {
       // Only the builder's own changes count when checking for edited tests.
-      const before = await ctx.remember("head", `before round ${round}`, () => resolveCommit(wt.path));
+      const before = await ctx.remember("head", `before round ${round}`, async () => resolveCommit(await ctx.gitAt(wt)));
       builderStep = await ctx.ask({
         title: round === 1 ? "Implement to pass tests" : `Fix failures (round ${round})`,
         role: "builder",
@@ -195,11 +195,11 @@ export const tddPattern: Pattern = {
       // The tests are the spec: the builder's changes to them are undone, not just reported. So
       // are its changes to the test runner's own config, a new conftest.py or vitest.config too:
       // those can make the tests pass as surely as editing them.
-      const touched = (await changedFiles(wt.path, before)).filter((f) => testFiles.includes(f) || isRunnerConfig(f));
+      const touched = (await changedFiles(await ctx.gitAt(wt), before)).filter((f) => testFiles.includes(f) || isRunnerConfig(f));
       let tamperNote = "";
       if (touched.length) {
         ctx.log(`Builder modified test files: ${touched.join(", ")}; code-flow put them back`, "warn");
-        await ctx.remember("restore-tests", `round ${round}`, () => restorePaths(wt.path, before, touched).then(() => true));
+        await ctx.remember("restore-tests", `round ${round}`, () => restorePaths(ctx.run.repo, wt, before, touched).then(() => true));
         await ctx.commit(wt, `code-flow: restore tests changed by ${builder} (round ${round})`);
         tamperNote = `\nNote: the builder changed ${touched.join(", ")}; code-flow put those test files back as you wrote them.`;
         feedback = `You changed the test files ${touched.join(", ")}. code-flow put them back: the tests are the spec. Make them pass by changing the implementation.\n\n`;
@@ -229,7 +229,7 @@ export const tddPattern: Pattern = {
       if (failing) feedback += checkSection(failing);
       if (failing || tampered.length) continue; // straight back to the builder; no point probing red code
 
-      const beforeProbe = await ctx.remember("head", `before probe ${round}`, () => resolveCommit(wt.path));
+      const beforeProbe = await ctx.remember("head", `before probe ${round}`, async () => resolveCommit(await ctx.gitAt(wt)));
       const probed = await ctx.decide<TestVerdict>({
         title: `Try to break it (round ${round})`,
         schema: TEST_VERDICT_SCHEMA,
@@ -249,12 +249,12 @@ export const tddPattern: Pattern = {
       });
       await ctx.commit(wt, `${tester}: edge-case tests round ${round}`);
       // The tester probes with tests; changes it makes to the implementation are undone.
-      const probeChanges = await changedFiles(wt.path, beforeProbe);
+      const probeChanges = await changedFiles(await ctx.gitAt(wt), beforeProbe);
       const outside = probeChanges.filter((f) => !isTestFile(f) && !testFiles.includes(f));
       for (const f of probeChanges) if (!outside.includes(f) && !testFiles.includes(f)) testFiles.push(f);
       if (outside.length) {
         ctx.log(`Tester changed files outside the tests: ${outside.join(", ")}; code-flow undid that`, "warn");
-        await ctx.remember("restore-implementation", `round ${round}`, () => restorePaths(wt.path, beforeProbe, outside).then(() => true));
+        await ctx.remember("restore-implementation", `round ${round}`, () => restorePaths(ctx.run.repo, wt, beforeProbe, outside).then(() => true));
         await ctx.commit(wt, `code-flow: undo ${tester}'s changes outside the tests (round ${round})`);
       }
       testerStep = probed.outcome;

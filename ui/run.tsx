@@ -34,6 +34,10 @@ import {
   sideMemo,
 } from "./state.js";
 import { ProjectChip } from "./projects.js";
+import { AutoTeam, TeamQuestionCard } from "./team.js";
+import { ProjectMemory } from "./memory.js";
+import { reconcileStreamSnapshot, type StreamSnapshot } from "./run-stream.js";
+import { followupMinimumCalls, teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
 import type { AgentEvent, AgentId, Artifact, Attachment, CheckedReview, FindingCheck, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
@@ -96,10 +100,17 @@ export function useRunStream(id: string, onStep?: (step: Step) => void) {
       };
     };
     const onMessage = (msg: MessageEvent<string>) => {
-      const ev = JSON.parse(msg.data) as RunEvent | { type: "hello"; epoch: string; resumed?: boolean };
+      const ev = JSON.parse(msg.data) as RunEvent | { type: "hello"; epoch: string; resumed?: boolean; snapshot?: StreamSnapshot };
       if (ev.type === "hello") {
         // Not resumed means the whole history follows: start over rather than mix two of them.
         if (ev.epoch !== data.current.epoch || !ev.resumed) data.current = { ...emptyData(), epoch: ev.epoch };
+        if (ev.snapshot) {
+          data.current = reconcileStreamSnapshot(data.current, ev.snapshot);
+          // The run list is the global feed's (watchAllRuns), as for every other event of this stream.
+          setRun(ev.snapshot.run);
+          for (const step of ev.snapshot.steps) stepHandler.current?.(step);
+          bump(0);
+        }
         return;
       }
       const d = data.current;
@@ -222,6 +233,7 @@ export function RunView({ id }: { id: string }) {
   };
   const p = patterns.value.find((x) => x.id === run.pattern);
   const state = runState(run);
+  const awaitingInput = !!run.awaiting || teamAwaitingAnswer(run);
   /** A conversation with one agent (Single agent): the turns are the thread, not a list of steps. */
   const chat = !!p?.chat;
 
@@ -230,8 +242,8 @@ export function RunView({ id }: { id: string }) {
       <div class="run-scroll">
         <header class="run-head">
           <div class="run-title">
-            <span class={`status-pill ${run.awaiting ? "awaiting" : state}`}>
-              {run.awaiting ? "Waiting for you" : state === "failing" ? "Done · check failing" : state === "unchecked" ? "Done · check can't run" : STATUS_TEXT[run.status] ?? run.status}
+            <span class={`status-pill ${awaitingInput ? "awaiting" : state}`}>
+              {awaitingInput ? "Waiting for you" : teamNeedsResume(run) ? "Unresolved work" : state === "failing" ? "Done · check failing" : state === "unchecked" ? "Done · check can't run" : STATUS_TEXT[run.status] ?? run.status}
             </span>
             <h2 title={run.task}>{run.task.split("\n")[0] || "(no task)"}</h2>
             <span class="run-pattern">{p?.name ?? run.pattern}</span>
@@ -296,10 +308,14 @@ export function RunView({ id }: { id: string }) {
                   ↩ continues an earlier run
                 </a>
               ) : null}
+              {run.supersededBy ? <a class="help" href={`#/run/${run.supersededBy}`}>Continue with the revised goal →</a> : null}
             </div>
           </div>
 
           {run.awaiting ? <AwaitingCard run={run} /> : null}
+          {teamAwaitingAnswer(run) ? <TeamQuestionCard run={run} /> : null}
+          {run.team ? <AutoTeam run={run} /> : null}
+          {run.team && run.project ? <ProjectMemory projectId={run.project} repo={run.repo} refreshKey={`${run.status}:${run.team.revision}`} /> : null}
           {run.triage?.state === "pending" && run.status !== "running" ? (
             <div class="awaiting-card">
               <div class="aw-head">
@@ -523,7 +539,7 @@ function ResultCard({ run, steps, onSelectStep, chat }: { run: RunSummary; steps
     unchecked: "⚠ Finished — but the check couldn't run, so nothing was tested",
     failed: "✕ Failed",
     cancelled: "■ Stopped by you",
-    stopped: `■ Stopped at the ${run.stopReason ?? "limit"} — work so far is kept below`,
+    stopped: teamNeedsResume(run) ? "■ Paused with unresolved work — press Resume to continue" : `■ Stopped at the ${run.stopReason ?? "limit"} — work so far is kept below`,
     interrupted: "■ Interrupted — press Resume to continue where it stopped",
   };
   if (chat) Object.assign(titles, { done: run.verdict === "passed" ? "✓ The check passes" : "", failing: "⚠ The check fails", unchecked: "⚠ The check couldn't run, so nothing was tested" });
@@ -857,7 +873,7 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
   const worktree = (run.worktrees ?? []).find((w) => w.branch === artifact.branch);
   const merged = run.merges?.filter((m) => m.branch === artifact.branch) ?? [];
   const pr = run.prs?.[artifact.branch];
-  const canReview = run.status === "done" && !!worktree;
+  const canReview = (run.status === "done" || teamNeedsResume(run)) && !!worktree;
   const fromPr = run.source?.kind === "pr" ? run.source : undefined;
   const [pushing, setPushing] = useState(false);
   return (
@@ -1597,6 +1613,8 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
   const [text, setText] = useState("");
   const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
+  const [followupSteps, setFollowupSteps] = useState(run.loop.maxInvocations ?? run.loop.maxSteps);
+  const [followupMinutes, setFollowupMinutes] = useState(run.loop.maxMinutes);
   /** Snapshots that came with pins from the Browser: they go with the reply. */
   const [images, setImages] = useState<Attachment[]>([]);
   const area = useRef<HTMLTextAreaElement>(null);
@@ -1635,20 +1653,26 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
     ).values(),
   ];
   const teamAgents = [...new Set(Object.values(run.roles).flat())];
-  const defaultTarget = running ? "" : writers.at(-1) ? `${writers.at(-1)!.agent}@${writers.at(-1)!.worktree}` : "team";
-  const chosen = target || defaultTarget;
+  const coordinator = run.team?.members.find((member) => member.role === "coordinator");
+  const defaultTarget = running ? coordinator && coordinator.status !== "retired" ? `member:${coordinator.id}` : "" : run.team ? "team" : writers.at(-1) ? `${writers.at(-1)!.agent}@${writers.at(-1)!.worktree}` : "team";
+  const targets = running ? run.team ? run.team.members.filter((member) => member.status !== "retired").map((member) => `member:${member.id}`) : teamAgents : ["team", ...writers.map((step) => `${step.agent}@${step.worktree}`)];
+  const chosen = target && targets.includes(target) ? target : defaultTarget;
+  const memberId = chosen.startsWith("member:") ? chosen.slice(7) : undefined;
+  const member = run.team?.members.find((item) => item.id === memberId);
+  const minimumCalls = followupMinimumCalls(!!run.team, running, chosen);
+  const budgetValid = Number.isInteger(followupSteps) && followupSteps >= minimumCalls && followupSteps <= 200 && Number.isFinite(followupMinutes) && followupMinutes >= 1 && followupMinutes <= 720;
   if (!running && !sideOnly && run.status !== "done") return null;
 
   const send = async () => {
-    if (!text.trim()) return;
+    if (!text.trim() || busy || (!running && !budgetValid)) return;
     setBusy(true);
     try {
       const files = images.map(({ name, data }) => ({ name, data }));
       if (running) {
-        const note = await post<Note>(`/api/runs/${run.id}/notes`, { text, agent: chosen || undefined });
+        const note = await post<Note>(`/api/runs/${run.id}/notes`, { text, agent: memberId ? undefined : chosen || undefined, memberId });
         if (images.length) showToast("Sent. The snapshots stay here: they go with a reply once the run has finished", 6000);
         else if (note.deliveredTo?.midTurn) showToast(`Sent into ${note.deliveredTo.agent}'s running turn`);
-        else showToast(chosen ? `Queued for ${chosen}'s next turn` : "Queued for the next agent's turn");
+        else showToast(chosen ? `Queued for ${member?.name ?? chosen}'s next turn` : "Queued for the next agent's turn");
         setText("");
         return;
       } else if (chosen === "team") {
@@ -1666,14 +1690,17 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
           baseRef: base === "HEAD" ? "" : base,
           context: { paths: (run.context?.paths ?? []).map((c) => ({ path: c.path })), attachments: files },
           agentSettings: run.agentSettings,
-          loop: run.loop,
+          roleSettings: run.roleSettings,
+          trust: run.trust,
+          project: run.project,
+          loop: { ...run.loop, maxSteps: followupSteps, maxInvocations: followupSteps, maxMinutes: followupMinutes },
           approvals: run.approvals,
           parentRunId: run.id,
         });
         navigate({ view: "run", id });
       } else {
         const [agent, worktree] = chosen.split("@");
-        await post(`/api/runs/${run.id}/followups`, { kind: "reply", agent, worktree, message: text, attachments: files });
+        await post(`/api/runs/${run.id}/followups`, { kind: "reply", agent, worktree, message: text, attachments: files, budget: { maxSteps: followupSteps, maxInvocations: followupSteps, maxMinutes: followupMinutes } });
         showToast(sideOnly ? "Queued: it goes once the side chat is done" : "Sent — the agent is on it");
       }
       setText("");
@@ -1685,8 +1712,18 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
     }
   };
 
+  const reviseGoal = async () => {
+    if (!running || !run.team || !text.trim() || busy || !budgetValid) return;
+    setBusy(true);
+    try {
+      const { id } = await post<{ id: string }>(`/api/runs/${run.id}/revise-goal`, { message: text.trim(), budget: { maxSteps: followupSteps, maxInvocations: followupSteps, maxMinutes: followupMinutes } });
+      setText(""); route.value = { view: "run", id };
+    } catch (error) { showToast((error as Error).message, 5000); }
+    finally { setBusy(false); }
+  };
+
   const [agentId, worktree] = chosen.split("@") as [AgentId, string | undefined];
-  const name = SHORT[agentId] ?? agentId;
+  const name = member?.name ?? SHORT[agentId] ?? agentId;
   /** In a chat there's one agent to talk to, so no "To"; a message it can't take now is its next turn. */
   const chatName = SHORT[(writers.at(-1)?.agent ?? teamAgents[0])!] ?? "the agent";
   const hint = chat
@@ -1699,12 +1736,10 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
         : `Continues ${chatName}'s session on its branch${sideOnly ? ", once the side chat is done" : ""}`
     : running
       ? chosen
-        ? `Steered into ${name}'s running turn if it takes messages, otherwise its next turn`
+        ? memberId ? `Sent to ${name}'s next turn` : `Steered into ${name}'s running turn if it takes messages, otherwise its next turn`
         : "Goes to the next agent that takes a turn"
       : chosen === "team"
-        ? waitForSide
-          ? "Starts a new run with the same team, from this result: wait for the side chat to finish first"
-          : "Starts a new run with the same team, from this result"
+        ? `${run.team ? "Builds a revised team and plan from this result, with your approval settings" : "Starts a new run with the same team, from this result"}${waitForSide ? ": wait for the side chat to finish first" : ""}`
         : `Continues ${name}'s session on its branch, in ${worktree}${sideOnly ? ", once the side chat is done" : ""}`;
   const placeholder = chat ? `Message ${chatName}…` : running ? "Message the team…" : chosen === "team" ? "Tell the team what to change…" : `Reply to ${name}…`;
   // In a chat, what you said is already in the thread; only what's still on its way shows here.
@@ -1714,6 +1749,8 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
   return (
     <div class="convo">
       <div class="convo-inner">
+        {!budgetValid ? <p class="msg err" role="alert">Send is off until the budget below allows {minimumCalls}–200 calls and 1–720 minutes.</p> : null}
+        {!running || run.team ? <details class="followup-budget"><summary>{running ? "Goal revision budget" : "New execution budget"} · {followupSteps} calls · {followupMinutes} min</summary><div class="at-row"><label>Maximum calls<input class="field" aria-label="Follow-up maximum calls" type="number" min={minimumCalls} max={200} value={followupSteps} onInput={(event) => setFollowupSteps(Number(event.currentTarget.value))} /></label><label>Maximum minutes<input class="field" aria-label="Follow-up maximum minutes" type="number" min={1} max={720} value={followupMinutes} onInput={(event) => setFollowupMinutes(Number(event.currentTarget.value))} /></label></div><p class="help">{sideOnly ? "A reply queued behind a side chat joins the running execution's allowance; this budget applies when a reply starts a new execution. " : "This is a new allocation. "}The result branch, project memory and applicable context are retained. Earlier spend remains in lifetime usage.</p>{!budgetValid ? <p class="msg err">Choose {minimumCalls}–200 calls and 1–720 minutes.</p> : null}</details> : null}
         {running && shownNotes.length ? (
           <div class="notes">
             {shownNotes.map((n) => (
@@ -1721,11 +1758,11 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
                 <span class="n">
                   {n.followUp
                     ? "✓ sent as your next message"
-                    : n.status === "delivered"
-                      ? `✓ delivered to ${n.deliveredTo?.agent}${noteStep(n, steps)}`
+                    : n.requestId ? "✓ answered the team's question" : n.status === "delivered"
+                      ? `✓ delivered to ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.deliveredTo?.agent ?? "the team"}${noteStep(n, steps)}`
                       : chat
                         ? "⏳ sent when this turn ends"
-                        : `⏳ queued for ${n.agent ?? "next agent"}`}
+                        : `⏳ queued for ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.agent ?? "next agent"}`}
                   : {n.text}
                 </span>
               </span>
@@ -1755,12 +1792,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
                 <select aria-label="Who gets this" value={chosen} onChange={(e) => setTarget(e.currentTarget.value)}>
                   {running ? (
                     <>
-                      <option value="">Next agent</option>
-                      {teamAgents.map((a) => (
-                        <option key={a} value={a}>
-                          {SHORT[a] ?? a}
-                        </option>
-                      ))}
+                      {run.team ? run.team.members.filter((item) => item.status !== "retired").map((item) => <option key={item.id} value={`member:${item.id}`}>{item.name} · {item.id} ({SHORT[item.provider]})</option>) : <><option value="">Next agent</option>{teamAgents.map((a) => <option key={a} value={a}>{SHORT[a] ?? a}</option>)}</>}
                     </>
                   ) : (
                     <>
@@ -1786,11 +1818,12 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
             <span class="chatbox-hint" title={hint}>
               {hint}
             </span>
-            <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={busy || !text.trim()} onClick={send}>
+            <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={busy || !text.trim() || !running && !budgetValid} onClick={send}>
               <Icon name="send" />
             </button>
           </div>
         </div>
+        {running && run.team && !run.awaiting ? <div class="goal-revision-action"><button class="btn small" disabled={busy || !text.trim() || !budgetValid} onClick={reviseGoal}>Revise goal</button><span class="help">Uses this message to stop the current execution and build a new team plan from integrated work, with your approval settings. Send keeps it as a member note.</span></div> : null}
       </div>
     </div>
   );

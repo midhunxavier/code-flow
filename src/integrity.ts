@@ -1,4 +1,4 @@
-import { git, gitError } from "./git.js";
+import { git, gitError, type GitCwd } from "./git.js";
 
 /**
  * Test integrity: the check only proves something if the tests it runs are still the tests.
@@ -109,8 +109,8 @@ function pytestSettings(toml?: string): string | undefined {
   return lines.length ? lines.join("\n") : undefined;
 }
 
-async function fileAt(cwd: string, ref: string, path: string): Promise<string | undefined> {
-  const res = await git(["show", `${ref}:${path}`], cwd);
+async function fileAt(cwd: GitCwd, ref: string, path: string): Promise<string | undefined> {
+  const res = await git(["show", "--no-textconv", `${ref}:${path}`], cwd);
   return res.code === 0 ? res.stdout : undefined;
 }
 
@@ -119,14 +119,15 @@ async function fileAt(cwd: string, ref: string, path: string): Promise<string | 
  * after (from the check's summary), which catches skips the patterns above don't know about.
  */
 export async function inspectChanges(
-  cwd: string,
+  cwd: GitCwd,
   from: string,
   to = "HEAD",
   opts: { check?: string; tests?: { before?: number; after?: number } } = {},
 ): Promise<IntegrityIssue[]> {
   const issues: IntegrityIssue[] = [];
   const range = `${from}..${to}`;
-  const statusArgs = ["diff", "--name-status", "-M", "-z", range];
+  // git's own diff, never an external program or textconv (see RAW_DIFF in git.ts).
+  const statusArgs = ["diff", "--no-ext-diff", "--no-textconv", "--name-status", "-M", "-z", range];
   const status = await git(statusArgs, cwd);
   if (status.code !== 0) return [unverifiedIssue(gitError(statusArgs, status))];
   const tokens = status.stdout.split("\0").filter(Boolean);
@@ -157,7 +158,7 @@ export async function inspectChanges(
 
   // Added lines that skip tests, and test files that lost assertions.
   const added = new Set(changes.filter((c) => c.code === "A").map((c) => c.path));
-  const patchArgs = ["diff", "-U0", "--no-color", "-M", range];
+  const patchArgs = ["diff", "--no-ext-diff", "--no-textconv", "-U0", "--no-color", "-M", range];
   const patch = await git(patchArgs, cwd);
   if (patch.code !== 0) return [...issues, unverifiedIssue(gitError(patchArgs, patch))];
   let file = "";
@@ -243,7 +244,7 @@ interface AddedLine {
  * into a fixture, as a string: that line matches SKIP but skips nothing. For Python and JS/TS the
  * file is read as a whole, so strings spanning lines (docstrings, template literals) count too.
  */
-async function codeSkips(cwd: string, ref: string, found: AddedLine[]): Promise<AddedLine[]> {
+async function codeSkips(cwd: GitCwd, ref: string, found: AddedLine[]): Promise<AddedLine[]> {
   const code = new Map<string, Promise<string[] | undefined>>();
   const linesOf = (file: string) => {
     const lang = /\.pyi?$/i.test(file) ? "py" : /\.[cm]?[jt]sx?$/i.test(file) ? "js" : undefined;

@@ -63,3 +63,8 @@ export function codexTransport(): "auto" | "app-server" | "exec" {
   const value = process.env.CODEFLOW_CODEX_TRANSPORT;
   return value === "app-server" || value === "exec" ? value : "auto";
 }
+
+/** Disables only creation; recovery and inspection of saved teams remain available. */
+export function autoTeamEnabled(): boolean {
+  return !["0", "false", "off"].includes((process.env.CODEFLOW_AUTO_TEAM_ENABLED ?? "true").toLowerCase());
+}
