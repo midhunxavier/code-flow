@@ -101,7 +101,7 @@ export function InsightsView({ group }: { group?: string }) {
               {groups.map((g) => (
                 <div key={g.id} class={`ins-group ${g.id === group ? "focus" : ""}`}>
                   <div class="ig-title">{g.task.split("\n")[0]}</div>
-                  <div class="table-wrap">
+                  <div class="table-wrap" tabIndex={0} role="region" aria-label="Scrollable results table">
                     <table class="ins-table">
                       <thead>
                         <tr>
@@ -168,16 +168,17 @@ export function InsightsView({ group }: { group?: string }) {
           <section class="ins-section" aria-labelledby="ins-agents">
             <h2 id="ins-agents">Agents</h2>
             <p class="help">
-              <b>Passed</b>: finished runs with a check where the agent wrote code, and how many of those passed. “Auto” routing prefers the agent that passes most often in a repo once
-              each has a few runs there.
+              <b>Passed</b> includes shared run outcomes. Provider comparisons and “Auto” routing use runs with a single writing provider, with at least three samples per provider.
+              The 95% interval shows uncertainty in that observed rate. Task difficulty can still vary.
             </p>
-            <div class="table-wrap">
+            <div class="table-wrap" tabIndex={0} role="region" aria-label="Scrollable results table">
               <table class="ins-table">
                 <thead>
                   <tr>
                     <th>Agent</th>
                     <th class="num">Runs</th>
                     <th class="num">Passed</th>
+                    <th class="num">Sole-writer evidence</th>
                     <th class="num">Race wins</th>
                     <th class="num">Loops it got green</th>
                     <th class="num">Review findings</th>
@@ -198,6 +199,9 @@ export function InsightsView({ group }: { group?: string }) {
                       <td class="num" title={`${a.passed} of ${a.judged}`}>
                         {a.judged ? `${pct(a.passed, a.judged)} (${a.passed}/${a.judged})` : "–"}
                       </td>
+                      <td class="num" title={`${a.sharedJudged ?? 0} shared outcomes excluded from provider comparisons`}>
+                        {a.attributedJudged ? <>{a.attributedPassed}/{a.attributedJudged}<div class="help">95%: {Math.round(100 * a.confidence.low)}–{Math.round(100 * a.confidence.high)}%</div></> : "No attributable samples"}
+                      </td>
                       <td class="num">{a.raceEntries ? `${a.raceWins}/${a.raceEntries}` : "–"}</td>
                       <td class="num">{a.loopSolves || "–"}</td>
                       <td class="num" title="Findings, and how many another reviewer also raised">
@@ -216,10 +220,18 @@ export function InsightsView({ group }: { group?: string }) {
               </table>
             </div>
           </section>
+          {stats.cohorts?.length ? <section class="ins-section" aria-labelledby="ins-cohorts">
+            <h2 id="ins-cohorts">Task cohorts</h2>
+            <p class="help">Compare runs in the same repository, workflow and source category. These groups do not estimate task difficulty.</p>
+            <div class="table-wrap" tabIndex={0} role="region" aria-label="Scrollable results table"><table class="ins-table">
+              <thead><tr><th>Repository</th><th>Workflow</th><th>Source</th><th class="num">Runs</th><th class="num">Passed / checked</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead>
+              <tbody>{stats.cohorts.map((c) => <tr key={c.key}><td title={c.repo}>{baseName(c.repo)}</td><td>{patternName(c.pattern)}</td><td>{c.sourceKind}</td><td class="num">{c.runs}</td><td class="num">{c.passed}/{c.judged}</td><td class="num">{fmtTokens(c.tokens)}</td><td class="num">{c.costUsd ? fmtCost(c.costUsd) : "–"}</td></tr>)}</tbody>
+            </table></div>
+          </section> : null}
 
           <section class="ins-section" aria-labelledby="ins-patterns">
             <h2 id="ins-patterns">Patterns</h2>
-            <div class="table-wrap">
+            <div class="table-wrap" tabIndex={0} role="region" aria-label="Scrollable results table">
               <table class="ins-table">
                 <thead>
                   <tr>
@@ -337,7 +349,7 @@ function DiskPanel({ scope }: { scope: URLSearchParams }) {
         </button>
       </div>
       {disk?.runs.length ? (
-        <div class="table-wrap">
+        <div class="table-wrap" tabIndex={0} role="region" aria-label="Scrollable results table">
           <table class="ins-table">
             <tbody>
               {disk.runs.slice(0, 10).map((r) => (

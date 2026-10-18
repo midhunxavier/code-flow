@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, uptime } from "node:os";
 import { join } from "node:path";
 
@@ -41,8 +41,44 @@ test("childEnv drops code-flow's token, npm variables and its own node_modules/.
     process.env = saved;
   }
   const install = "/opt/tools/code-flow";
-  const path = ["/opt/tools/code-flow/node_modules/.bin", "/opt/tools/node_modules/.bin", "/repo/node_modules/.bin", "/usr/bin", ""].join(":");
+  const path = ["/opt/tools/code-flow/node_modules/.bin", "/opt/tools/node_modules/.bin", ".", "relative/bin", "/repo/node_modules/.bin", "/usr/bin", ""].join(":");
   assert.equal(cleanPath(path, install), "/repo/node_modules/.bin:/usr/bin");
+});
+
+test("childEnv never launches cwd Git or provider impostors through inherited or overridden PATH", async (t) => {
+  if (process.platform === "win32") return t.skip("POSIX executable lookup and fallback");
+  const directory = mkdtempSync(join(tmpdir(), "codeflow-path-lookup-")), cwd = join(directory, "repo"), trusted = join(directory, "trusted-bin"), marker = join(directory, "impostor-executed"), provider = "codeflow-path-provider-fixture";
+  const originalPath = process.env.PATH;
+  try {
+    mkdirSync(join(cwd, "relative-bin"), { recursive: true }); mkdirSync(trusted);
+    const impostor = `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)},'executed');process.stdout.write('impostor\\n');\n`;
+    for (const folder of [cwd, join(cwd, "relative-bin")]) for (const name of ["git", provider]) writeFileSync(join(folder, name), impostor, { mode: 0o700 });
+    writeFileSync(join(trusted, provider), `#!${process.execPath}\nprocess.stdout.write('trusted fixture provider\\n');\n`, { mode: 0o700 });
+    // Prove the fixture can execute when cwd lookup is allowed, then exercise app environments.
+    assert.equal(spawnSync(provider, [], { cwd, env: { ...childEnv(), PATH: "." }, encoding: "utf8" }).stdout, "impostor\n"); rmSync(marker);
+    for (const via of ["inherited", "extra"] as const) for (const path of [undefined, ".", "", ":", "relative-bin", "..:relative-bin:"]) {
+      if (via === "inherited") { if (path === undefined) delete process.env.PATH; else process.env.PATH = path; }
+      else process.env.PATH = `${trusted}:/usr/bin:/bin`;
+      const extra = via === "extra" ? { PATH: path } : {};
+      assert.equal(childEnv(extra).PATH, "/usr/bin:/bin", `${via} PATH=${String(path)}`);
+      const result = await git(["--version"], cwd, { env: extra, timeoutMs: 5000 });
+      assert.equal(result.code, 0, result.stderr); assert.match(result.stdout, /^git version /);
+      const absent = spawnSync(provider, [], { cwd, env: childEnv(extra), encoding: "utf8" });
+      assert.equal((absent.error as NodeJS.ErrnoException | undefined)?.code, "ENOENT", "fallback never searches cwd or its relative tool directory");
+      assert.equal(existsSync(marker), false, `${via} PATH=${String(path)} executed a repository impostor`);
+    }
+    const mixed = `.::relative-bin:${trusted}:/usr/bin:/bin`;
+    for (const via of ["inherited", "extra"] as const) {
+      process.env.PATH = via === "inherited" ? mixed : "/usr/bin:/bin";
+      const environment = childEnv(via === "extra" ? { PATH: mixed } : {});
+      assert.equal(environment.PATH, `${trusted}:/usr/bin:/bin`);
+      const result = spawnSync(provider, [], { cwd, env: environment, encoding: "utf8" });
+      assert.equal(result.status, 0); assert.equal(result.stdout, "trusted fixture provider\n"); assert.equal(existsSync(marker), false, "an explicit absolute provider bin remains usable ahead of system tools");
+    }
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("envNumber falls back on values setTimeout would misread", () => {

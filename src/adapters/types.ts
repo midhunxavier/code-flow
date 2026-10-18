@@ -6,13 +6,25 @@
  * what keeps subscription use within each vendor's terms.
  */
 
-export type AgentId = "claude" | "codex" | "agy";
+export type BuiltinAgentId = "claude" | "codex" | "agy";
+export type AgentId = BuiltinAgentId | `plugin:${string}`;
 
 /**
  * read  — may inspect files and run read-only commands, must not modify the tree.
  * write — may edit files and run commands inside `cwd` (always a disposable worktree).
  */
 export type AccessMode = "read" | "write";
+
+export type ApprovalDecision = "approve" | "decline";
+/** A single concrete action. Approvals never authorize a session or amend a policy. */
+export interface AgentApprovalRequest {
+  id: string;
+  kind: "command" | "file-change";
+  command?: string;
+  paths?: string[];
+  reason?: string;
+  cwd?: string;
+}
 
 export interface RunOptions {
   prompt: string;
@@ -42,6 +54,12 @@ export interface RunOptions {
    * "full" = any command with no sandbox at all.
    */
   trust?: "safe" | "standard" | "trusted" | "full";
+  /** Explicit interactive-run opt-in; headless/automated runs keep declining native prompts. */
+  interactiveApprovals?: boolean;
+  /** Server-owned callback. Abort means the request can no longer be approved. */
+  onApproval?: (request: AgentApprovalRequest, signal: AbortSignal) => Promise<ApprovalDecision>;
+  /** Run the official CLI inside an explicitly prepared image, with no host credentials. */
+  agentContainer?: import("../agent-container.js").AgentContainer;
   /**
    * Adapters whose CLI takes more input while a turn runs (Codex app-server) call this once the
    * turn can be steered, with a function that adds a user message to it (resolving false when

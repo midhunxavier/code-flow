@@ -1,8 +1,9 @@
-import { constants, existsSync } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, type Stats } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { lstat, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type { AgentSettings } from "./adapters/types.js";
-import { COPIED_FILES, git, gitWithInput } from "./git.js";
+import { COPIED_FILES, git, gitWithInput, worktreeGit } from "./git.js";
 
 /**
  * Optional per-repo settings, committed with the project at `.codeflow/config.json`, so every
@@ -87,14 +88,15 @@ export async function copyIntoWorktree(
 ): Promise<{ copied: string[]; refused: { path: string; why: string }[] }> {
   const copied: string[] = [];
   const refused: { path: string; why: string }[] = [];
-  const root = await realpath(repo).catch(() => repo);
-  const candidates: string[] = [];
+  const root = await realpath(repo);
+  const destination = resolve(worktree);
+  const destinationRoot = await realpath(worktree);
+  const candidates = new Set<string>();
   for (const raw of patterns) {
     const pattern = raw.replace(/\\/g, "/").replace(/^\.\//, "");
-    if (!pattern || pattern.startsWith("/") || pattern.split("/").includes("..")) continue;
+    if (!pattern || pattern.startsWith("/") || pattern.includes("\0") || pattern.split("/").some((part) => !part || part === ".." || part === ".")) continue;
     for (const rel of await expand(repo, pattern)) {
       const from = join(repo, rel);
-      if (existsSync(join(worktree, rel))) continue;
       const info = await lstat(from).catch(() => null);
       if (!info) continue;
       if (info.isSymbolicLink()) {
@@ -108,12 +110,12 @@ export async function copyIntoWorktree(
         refused.push({ path: rel, why: "it's outside the repository" });
         continue;
       }
-      candidates.push(rel);
+      candidates.add(rel);
     }
   }
   const ignored = new Set(
-    candidates.length
-      ? (await gitWithInput(["check-ignore", "--stdin", "-z"], repo, candidates.join("\0") + "\0")).stdout.split("\0").filter(Boolean)
+    candidates.size
+      ? (await gitWithInput(["check-ignore", "--stdin", "-z"], repo, [...candidates].join("\0") + "\0")).stdout.split("\0").filter(Boolean)
       : [],
   );
   for (const rel of candidates) {
@@ -121,23 +123,106 @@ export async function copyIntoWorktree(
       refused.push({ path: rel, why: "git doesn't ignore it, so it would be committed with the agents' work" });
       continue;
     }
-    // The worktree is the agents' (a re-attached one holds whatever they committed): a link there
-    // would send your `.env` wherever it points.
-    const done = await copyFileInside(worktree, rel, join(repo, rel), { overwrite: false });
-    if (done.copied) copied.push(rel);
-    else if (done.why) refused.push({ path: rel, why: done.why });
+    const result = copyWithoutLinks(root, destination, destinationRoot, rel);
+    if (result === "copied") copied.push(rel);
+    else if (result !== "exists") refused.push({ path: rel, why: result });
   }
-  await recordCopied(worktree, copied);
+  await recordCopied(repo, worktree, copied);
   return { copied, refused };
 }
+
+/**
+ * No awaits occur between checking ancestry, opening exclusively and copying through file
+ * descriptors. A dangling link counts as existing; neither it nor an existing file is ever
+ * followed or replaced. Directory links are refused even when they point inside the tree.
+ * Worktrees must remain exclusively owned during preparation, as for git checkout itself.
+ */
+function copyWithoutLinks(sourceRoot: string, destination: string, destinationRoot: string, rel: string, opts: { sourcePath?: string; overwrite?: boolean } = {}): string {
+  let from: number | undefined;
+  let to: number | undefined;
+  let created: Stats | undefined;
+  const target = join(destinationRoot, rel);
+  let output = target;
+  try {
+    // Refuse a linked root and detect replacement since the canonical path was obtained.
+    if (lstatSync(destination).isSymbolicLink() || !lstatSync(destination).isDirectory() || realpathSync(destination) !== destinationRoot) return "the worktree root is a symbolic link or has changed";
+    verifyParents(sourceRoot, dirname(opts.sourcePath ?? rel), false);
+    verifyParents(destinationRoot, dirname(rel), true);
+    const source = join(sourceRoot, opts.sourcePath ?? rel);
+    const sourceInfo = lstatSync(source);
+    if (sourceInfo.isSymbolicLink()) return "it's a symbolic link";
+    if (!sourceInfo.isFile() || !realpathSync(source).startsWith(sourceRoot + sep)) return "it's outside the repository or isn't a regular file";
+    from = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (!sameFile(sourceInfo, fstatSync(from))) return "the source file changed while preparing the copy";
+    const existing = statIfPresent(target);
+    if (existing?.isSymbolicLink()) return "the destination is a symbolic link";
+    if (existing && !existing.isFile()) return "the destination isn't a regular file";
+    if (existing && !opts.overwrite) return "exists";
+    // Context refreshes replace an existing file atomically rather than truncating a hardlink.
+    if (opts.overwrite) output = `${target}.codeflow-copy-${randomBytes(10).toString("hex")}`;
+    // O_EXCL, rather than an exists-then-copy check, makes the no-overwrite rule atomic.
+    to = openSync(output, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    created = fstatSync(to);
+    verifyParents(destinationRoot, dirname(rel), false);
+    if (!sameFile(created, lstatSync(output))) throw new Error("the destination changed while preparing the copy");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let bytes: number;
+    while ((bytes = readSync(from, buffer, 0, buffer.length, null))) {
+      let written = 0;
+      while (written < bytes) written += writeSync(to, buffer, written, bytes - written);
+    }
+    if (output !== target) {
+      closeSync(to); to = undefined;
+      verifyParents(destinationRoot, dirname(rel), false);
+      if (statIfPresent(target)?.isSymbolicLink()) throw new Error("the destination is a symbolic link");
+      renameSync(output, target);
+    }
+    return "copied";
+  } catch (error) {
+    // If someone won exclusive creation, leave their file alone.
+    if (!created && (error as NodeJS.ErrnoException).code === "EEXIST") return "exists";
+    if (created && sameFile(created, statIfPresent(output))) {
+      try { unlinkSync(output); } catch { /* Preserve the original error. */ }
+    }
+    return (error as Error).message;
+  } finally {
+    if (from !== undefined) closeSync(from);
+    if (to !== undefined) closeSync(to);
+  }
+}
+
+function verifyParents(root: string, relative: string, create: boolean): void {
+  let path = root;
+  const expectedRoot = lstatSync(root);
+  if (!expectedRoot.isDirectory() || expectedRoot.isSymbolicLink()) throw new Error("the copy root is not a regular directory");
+  for (const part of relative === "." ? [] : relative.split(sep)) {
+    path = join(path, part);
+    if (create) {
+      try { mkdirSync(path, { mode: 0o700 }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    }
+    const info = lstatSync(path);
+    if (info.isSymbolicLink()) throw new Error(`a parent directory is a symbolic link at \`${path.slice(root.length + 1).split(sep).join("/")}\``);
+    if (!info.isDirectory() || realpathSync(path) !== path) throw new Error("a parent directory is outside the copy root or isn't a directory");
+  }
+  if (!sameFile(expectedRoot, lstatSync(root))) throw new Error("the copy root changed while preparing the copy");
+}
+
+function statIfPresent(path: string): Stats | undefined {
+  try { return lstatSync(path); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
+const sameFile = (a: Stats, b: Stats | undefined) => !!b && a.dev === b.dev && a.ino === b.ino;
 
 /**
  * Note in the worktree's git dir (where agents don't write) which files were copied in, so
  * committing leaves them out even after an agent un-ignores one or `git add -f`s it (commitAll).
  */
-async function recordCopied(worktree: string, copied: string[]): Promise<void> {
+async function recordCopied(repo: string, worktree: string, copied: string[]): Promise<void> {
   if (!copied.length) return;
-  const res = await git(["rev-parse", "--git-path", COPIED_FILES], worktree);
+  const at = await worktreeGit(repo, worktree).catch(() => undefined);
+  if (!at) return;
+  const res = await git(["rev-parse", "--git-path", COPIED_FILES], at);
   if (res.code !== 0 || !res.stdout.trim()) return;
   const file = resolve(worktree, res.stdout.trim());
   const known = (await readFile(file, "utf8").catch(() => "")).split("\0").filter(Boolean);
@@ -158,34 +243,14 @@ export async function copyFileInside(
   opts: { overwrite?: boolean } = {},
 ): Promise<{ copied: true } | { copied: false; why?: string }> {
   const parts = rel.split(/[\\/]+/).filter((p) => p && p !== ".");
-  if (!parts.length || parts.includes("..")) return { copied: false, why: `\`${rel}\` isn't a path inside the worktree` };
-  const realRoot = await realpath(root);
-  let dir = root;
-  for (const [i, part] of parts.slice(0, -1).entries()) {
-    dir = join(dir, part);
-    const info = await lstat(dir).catch(() => undefined);
-    const at = parts.slice(0, i + 1).join("/");
-    if (!info) await mkdir(dir);
-    else if (info.isSymbolicLink()) return { copied: false, why: `the worktree has a symbolic link at \`${at}\`` };
-    else if (!info.isDirectory()) return { copied: false, why: `\`${at}\` in the worktree isn't a folder` };
-  }
-  // Checked part by part above; this catches a link that appeared in between.
-  const realDir = await realpath(dir);
-  if (realDir !== realRoot && !realDir.startsWith(realRoot + sep)) return { copied: false, why: `\`${rel}\` leads outside the worktree` };
-  const target = join(dir, parts.at(-1)!);
-  const existing = await lstat(target).catch(() => undefined);
-  if (existing?.isSymbolicLink()) return { copied: false, why: `the worktree has a symbolic link at \`${rel}\`` };
-  if (existing && !existing.isFile()) return { copied: false, why: `\`${rel}\` in the worktree isn't a file` };
-  if (existing && opts.overwrite === false) return { copied: false };
-  const [data, mode] = await Promise.all([readFile(from), stat(from).then((s) => s.mode & 0o777)]);
-  // O_NOFOLLOW: if a link shows up at the last moment, opening fails instead of following it.
-  const file = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0), mode);
+  if (!parts.length || parts.includes("..") || /^[\\/]|^[a-z]:/i.test(rel)) return { copied: false, why: `\`${rel}\` isn't a path inside the worktree` };
   try {
-    await file.writeFile(data);
-  } finally {
-    await file.close();
+    const [realRoot, sourceRoot] = await Promise.all([realpath(root), realpath(dirname(from))]);
+    const result = copyWithoutLinks(sourceRoot, resolve(root), realRoot, parts.join("/"), { sourcePath: basename(from), overwrite: opts.overwrite !== false });
+    return result === "copied" ? { copied: true } : { copied: false, ...(result === "exists" ? {} : { why: result }) };
+  } catch (error) {
+    return { copied: false, why: (error as Error).message };
   }
-  return { copied: true };
 }
 
 async function expand(repo: string, pattern: string): Promise<string[]> {

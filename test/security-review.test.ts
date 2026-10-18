@@ -83,7 +83,7 @@ before(async () => {
   git("add", ".");
   git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
   // No Chrome: a snapshot that gets past the address check says so (501) instead of starting one.
-  [a, byLink, byCookie] = await Promise.all([startServer({ CODEFLOW_LAN_ALLOW_LOCAL: "1", CODEFLOW_CHROME: "/no/such/chrome" }), startServer(), startServer()]);
+  [a, byLink, byCookie] = await Promise.all([startServer({ CODEFLOW_LAN_ALLOW_LOCAL: "1", CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL: "1", CODEFLOW_CHROME: "/no/such/chrome" }), startServer(), startServer()]);
 });
 
 after(() => {

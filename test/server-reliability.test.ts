@@ -5,7 +5,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo, type Server } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,7 +79,7 @@ before(async () => {
     }),
   );
   [a, b] = await Promise.all([
-    startServer({ FAKE_GH_STATE: ghState, CODEFLOW_LAN_ALLOW_LOCAL: "1" }),
+    startServer({ FAKE_GH_STATE: ghState, CODEFLOW_LAN_ALLOW_LOCAL: "1", CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL: "1" }),
     startServer({ FAKE_GH_STATE: ghState, FAKE_SIGNED_OUT: "codex", CODEFLOW_SSE_STALL_MS: "500" }),
   ]);
 });
@@ -180,7 +180,7 @@ test("/api/events: a hello with the server's epoch and every run, ids on every e
   const first = await readEvents(`${a.base}/api/events`, bearer, (e) => e.length >= 1);
   const hello = first[0]!.data;
   assert.equal(hello.type, "hello");
-  assert.match(hello.epoch, /^[0-9a-f]{12}$/);
+  assert.match(hello.epoch, /^[0-9a-f]{12}-fs\d+$/, "feed identity includes the server instance and filesystem-policy generation");
   assert.ok(Array.isArray(hello.runs), "a first connection gets the whole list");
   assert.equal(first[0]!.id, `${hello.epoch}:${hello.seq}`);
 
@@ -466,12 +466,21 @@ test("the health check tells Auto when an agent is signed out", async () => {
   assert.notEqual(second.find((e: { id: string }) => e.id === "claude").quota?.status, "signed_out");
 });
 
+test("a filesystem-policy generation invalidates an old feed cursor and sends a fresh authorized snapshot", async () => {
+  const initial = (await readEvents(`${b.base}/api/events?limit=100`, bearer, (events) => events.length > 0))[0]!;
+  const created = await api(b, "/api/projects", { name: "Policy generation fixture", repos: [repo] }); assert.equal(created.status, 201);
+  const changed = await fetch(`${b.base}/api/projects/${created.body.id}/filesystem-policy`, { method: "PUT", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ revision: 0, read: { allow: ["."], deny: ["private"] }, write: { allow: ["."], deny: [] } }) }); assert.equal(changed.status, 200, await changed.text());
+  const refreshed = (await readEvents(`${b.base}/api/events?limit=100`, { ...bearer, "last-event-id": initial.id! }, (events) => events.length > 0))[0]!;
+  assert.notEqual(refreshed.data.epoch, initial.data.epoch); assert.equal(refreshed.data.epoch.split("-fs")[0], initial.data.epoch.split("-fs")[0], "the instance remains the same while its authorization generation changes"); assert.equal(Number(refreshed.data.epoch.split("-fs")[1]), Number(initial.data.epoch.split("-fs")[1]) + 1);
+  assert.ok(Array.isArray(refreshed.data.runs)); assert.notEqual(refreshed.data.resumed, true, "a cursor from an earlier policy must never preserve old visible results"); assert.equal(refreshed.id, `${refreshed.data.epoch}:${refreshed.data.seq}`);
+});
+
 test("Improve rewrites the task in one read-only turn: Auto picks the agent, bad input is refused, the repository is untouched", async () => {
   const status = () => execFileSync("git", ["status", "--porcelain"], { cwd: repo }).toString();
   const before = status();
   const quick = await api(a, "/api/improve-prompt", { text: "add rate limit to login", repo, context: ["src/login.ts"], source: { kind: "issue", number: 6, title: "Tests are flaky" } });
   assert.equal(quick.status, 200, JSON.stringify(quick.body));
-  assert.deepEqual(quick.body, { prompt: "Goal: add rate limit to login\n\nDone when: the tests pass.", summary: "Stated the goal and when it's done (quick, claude).", agent: "claude" });
+  assert.deepEqual(quick.body, { prompt: "Goal: add rate limit to login\n\nDone when: the tests pass.", summary: "Stated the goal and when it's done (quick, claude). Context: text only; empty private repository.", agent: "claude" });
   const deep = await api(a, "/api/improve-prompt", { text: "add rate limit to login", repo, mode: "repo", agent: "agy" });
   assert.equal(deep.status, 200, JSON.stringify(deep.body));
   assert.equal(deep.body.agent, "agy");
@@ -488,4 +497,47 @@ test("Improve rewrites the task in one read-only turn: Auto picks the agent, bad
   await refused({ text: "x", repo: "relative/path" }, /absolute path/);
   await refused({ text: "x", repo: tmpdir() }, /Not a git repository/);
   await refused({ text: "IMPROVE-EMPTY", repo }, /didn't return a rewritten task/, 502);
+});
+
+test("Improve holds repository and policy leases during a delayed turn, and explicit remote/container profiles never launch a native fallback", { timeout: 60_000 }, async () => {
+  const records = mkdtempSync(join(tmpdir(), "codeflow-improve-lease-records-"));
+  const instance = await startServer({ FAKE_SLEEP_MS: "60000", FAKE_SLEEP_VENDOR: "claude", FAKE_RECORD_DIR: records });
+  const stop = new AbortController(); let turn: Promise<unknown> | undefined;
+  const waitFor = async (check: () => boolean | Promise<boolean>) => { const end = Date.now() + 10_000; while (!await check()) { if (Date.now() > end) throw new Error("Improve lease fixture timed out"); await new Promise((resolve) => setTimeout(resolve, 25)); } };
+  try {
+    for (const profile of [{ execution: "remote" }, { execution: "container" }, { remoteWorker: { workerId: "fixture", repoMapping: "repo" } }, { agentContainer: { image: "fixture:prepared" } }, { loop: { remoteWorker: { workerId: "fixture", repoMapping: "repo" } } }, { loop: { agentContainer: { image: "fixture:prepared" } } }]) {
+      const refused = await api(instance, "/api/improve-prompt", { text: "No fallback", repo, agent: "claude", ...profile }); assert.equal(refused.status, 400, JSON.stringify(refused.body)); assert.match(refused.body.error, /local execution only|cannot fall back/);
+    }
+    assert.deepEqual(readdirSync(records), [], "unsupported profiles are rejected before any native provider turn");
+    const project = await api(instance, "/api/projects", { name: "Improve lease fixture", repos: [repo] }); assert.equal(project.status, 201, JSON.stringify(project.body));
+    const path = `/api/workspace/file?repo=${encodeURIComponent(repo)}&path=README.md`, original = await api(instance, path); assert.equal(original.status, 200);
+    turn = fetch(`${instance.base}/api/improve-prompt`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ text: "SNEAKY Improve lease fixture", repo, agent: "claude", mode: "repo" }), signal: stop.signal }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    void turn.catch(() => undefined);
+    await waitFor(() => readdirSync(records).length > 0 && existsSync(join(JSON.parse(readFileSync(join(records, readdirSync(records)[0]!), "utf8")).cwd, "sneaky.txt")));
+    const calls = readdirSync(records).map((name) => JSON.parse(readFileSync(join(records, name), "utf8"))); assert.equal(calls.length, 1); assert.equal(calls[0].vendor, "claude"); assert.match(calls[0].prompt, /Rewrite the task below/);
+    const activity = (await api(instance, "/api/health")).body.activity; assert.ok(activity.leases.some((lease: { kind: string; repo: string }) => lease.kind === "prompt improvement" && lease.repo === realpathSync(repo)), "the delayed provider turn holds the canonical repository lease");
+    const edit = await api(instance, "/api/workspace/file", { repo, path: "README.md", text: "Must not overwrite\n", expectedHash: original.body.hash }); assert.equal(edit.status, 409, JSON.stringify(edit.body)); assert.match(edit.body.error, /prompt improvement/);
+    const started = await api(instance, "/api/runs", { pattern: "pipeline", task: "Must not start beside Improve", repo, roles: team, loop: { check: "true", setup: "", copy: [] } }); assert.equal(started.status, 409, JSON.stringify(started.body)); assert.match(started.body.error, /prompt improvement/);
+    const policy = await fetch(`${instance.base}/api/projects/${project.body.id}/filesystem-policy`, { method: "PUT", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ revision: 0, read: { allow: ["."], deny: ["private"] }, write: { allow: ["."], deny: [] } }) }); assert.equal(policy.status, 409, await policy.text()); assert.equal((await api(instance, `/api/projects/${project.body.id}/filesystem-policy`)).body.revision, 0, "the policy is not committed while an improvement can execute or restore files");
+    assert.equal(readdirSync(records).length, 1, "neither the refused run nor unsupported profiles dispatched another provider");
+    stop.abort(); await assert.rejects(turn, (error: Error) => error.name === "AbortError");
+    await waitFor(async () => !(await api(instance, "/api/health")).body.activity.leases.length && !existsSync(calls[0].cwd));
+    assert.equal(readFileSync(join(repo, "README.md"), "utf8"), original.body.text, "private cleanup never touches the original checkout"); assert.equal(existsSync(join(repo, "sneaky.txt")), false);
+    const saved = await api(instance, "/api/workspace/file", { repo, path: "README.md", text: original.body.text, expectedHash: original.body.hash }); assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  } finally { stop.abort(); await turn?.catch(() => undefined); await waitFor(async () => !(await api(instance, "/api/health")).body.activity.leases.length).catch(() => undefined); instance.child.kill("SIGTERM"); }
+});
+
+test("Improve refuses relative PATH before source Git validation can execute a committed impostor", { timeout: 45_000 }, async () => {
+  const source = mkdtempSync(join(tmpdir(), "codeflow-improve-path-repo-")), marker = join(source, "IMPOSTOR_EXECUTED"), records = mkdtempSync(join(tmpdir(), "codeflow-improve-path-records-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: source }); writeFileSync(join(source, "README.md"), "fixture\n"); writeFileSync(join(source, "git"), `#!/bin/sh\nprintf 'bad' > '${marker.replace(/'/g, "'\\''")}'\nexit 1\n`, { mode: 0o700 }); execFileSync("git", ["add", "."], { cwd: source }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "impostor"], { cwd: source });
+  const instance = await startServer({ PATH: `.:${join(root, "test/fake-bin")}:${process.env.PATH}`, FAKE_RECORD_DIR: records });
+  try {
+    for (const prefix of ["/api", "/api/v1"]) {
+      const refused = await api(instance, `${prefix}/improve-prompt`, { text: "Rewrite safely", repo: source, agent: "claude", mode: "repo" }); assert.equal(refused.status, 400, JSON.stringify(refused.body)); assert.match(refused.body.error, /PATH/);
+      const unknown = await api(instance, `${prefix}/improve-prompt/extra`, { text: "Rewrite safely", repo: source }); assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
+      const read = await api(instance, `${prefix}/improve-prompt?repo=${encodeURIComponent(source)}`); assert.equal(read.status, 404, JSON.stringify(read.body));
+    }
+    assert.equal(existsSync(marker), false, "repository discovery must not execute source/git before environment validation"); assert.deepEqual(readdirSync(records), [], "no provider fallback executes");
+  }
+  finally { instance.child.kill("SIGTERM"); }
 });

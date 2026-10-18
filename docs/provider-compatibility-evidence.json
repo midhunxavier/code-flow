@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "scope": "Version/help probes only; no account or live inference acceptance",
+  "records": [
+    {
+      "schema": 1,
+      "requested": "2.1.300",
+      "checkedAt": "2026-10-18T09:29:15.819Z",
+      "platform": "darwin",
+      "architecture": "arm64",
+      "node": "v22.14.0",
+      "id": "claude",
+      "installed": true,
+      "version": "2.1.300 (Claude Code)",
+      "compatible": true,
+      "missing": [],
+      "warnings": [],
+      "scope": "version-and-help-only"
+    },
+    {
+      "schema": 1,
+      "requested": "2.1.302",
+      "checkedAt": "2026-10-18T09:33:09.549Z",
+      "platform": "darwin",
+      "architecture": "arm64",
+      "node": "v22.14.0",
+      "id": "claude",
+      "installed": true,
+      "version": "2.1.302 (Claude Code)",
+      "compatible": true,
+      "missing": [],
+      "warnings": [],
+      "scope": "version-and-help-only"
+    },
+    {
+      "schema": 1,
+      "requested": "0.162.0",
+      "checkedAt": "2026-10-18T09:29:23.649Z",
+      "platform": "darwin",
+      "architecture": "arm64",
+      "node": "v22.14.0",
+      "id": "codex",
+      "installed": true,
+      "version": "codex-cli 0.162.0",
+      "compatible": true,
+      "missing": [],
+      "warnings": [],
+      "scope": "version-and-help-only"
+    },
+    {
+      "schema": 1,
+      "requested": "0.162.1",
+      "checkedAt": "2026-10-18T10:11:55.328Z",
+      "platform": "darwin",
+      "architecture": "arm64",
+      "node": "v22.14.0",
+      "id": "codex",
+      "installed": true,
+      "version": "codex-cli 0.162.1",
+      "compatible": true,
+      "missing": [],
+      "warnings": [],
+      "scope": "version-and-help-only"
+    },
+    {
+      "schema": 1,
+      "requested": "current",
+      "checkedAt": "2026-10-18T09:38:16.817Z",
+      "platform": "linux",
+      "architecture": "arm64",
+      "node": "v22.23.3",
+      "id": "agy",
+      "installed": true,
+      "version": "1.4.2",
+      "compatible": true,
+      "missing": [],
+      "warnings": [],
+      "scope": "version-and-help-only"
+    }
+  ]
+}

@@ -56,9 +56,10 @@ export const codexAdapter: AgentAdapter = {
   },
 
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
-    const supportsTools = opts.teamTools && (await adapterTeamCapabilities("codex")).scopedTools === "tested";
+    const supportsTools = !opts.agentContainer && opts.teamTools && (await adapterTeamCapabilities("codex")).scopedTools === "tested";
     const teamTools = supportsTools ? await prepareTeamTools(opts.teamTools!) : undefined;
-    if (opts.teamTools && !teamTools) onEvent({ kind: "status", text: "This Codex CLI has no verified per-turn team tools; use structured outcomes and next-turn replies." });
+    if (opts.agentContainer) onEvent({ kind: "status", text: `Codex runs in Docker image ${opts.agentContainer.image}. Live team tools are unavailable in containers; use structured outcomes and next-turn replies.` });
+    else if (opts.teamTools && !teamTools) onEvent({ kind: "status", text: "This Codex CLI has no verified per-turn team tools; use structured outcomes and next-turn replies." });
     try {
     const sandbox = opts.mode === "read" ? "read-only" : opts.trust === "full" ? "danger-full-access" : "workspace-write";
     // Codex sandboxes writes to the worktree unless the run has full access; "trusted" adds network access.
@@ -161,6 +162,9 @@ export const codexAdapter: AgentAdapter = {
         onMessage: handle,
         onText,
         onSteerable: opts.onSteerable,
+        interactiveApprovals: opts.interactiveApprovals,
+        onApproval: opts.onApproval,
+        agentContainer: opts.agentContainer,
       });
       if (!("unavailable" in served)) {
         outcome = served;
@@ -178,6 +182,7 @@ export const codexAdapter: AgentAdapter = {
     }
 
     if (!outcome) {
+      if (opts.interactiveApprovals) onEvent({ kind: "status", text: "Native tool approvals require Codex app-server; this exec turn remains headless." });
       // `-c sandbox_mode=` works for both `exec` and `exec resume` (resume has no -s flag).
       const common = ["--json", "--skip-git-repo-check", "-c", `sandbox_mode="${sandbox}"`, ...network, ...teamConfig];
       if (opts.model) common.push("-m", opts.model);
@@ -198,6 +203,7 @@ export const codexAdapter: AgentAdapter = {
         idleTimeoutMs: opts.idleTimeoutMs,
         onText,
         onJson: handle,
+        agentContainer: opts.agentContainer ? { config: opts.agentContainer, mode: opts.mode, readOnly: schemaFile ? [schemaFile] : undefined } : undefined,
       });
       resultSeen = () => proc.resultSeen();
       outcome = await proc.outcome;
@@ -305,7 +311,7 @@ function handleItem(
       if (done) {
         const changes = (item.changes ?? []).map((c: any) => `${c.kind} ${c.path}`).join("\n");
         onEvent({ kind: "tool_call", callId: item.id, name: "file_change", input: changes });
-        onEvent({ kind: "tool_result", callId: item.id, output: item.status ?? "", isError: item.status === "failed" });
+        onEvent({ kind: "tool_result", callId: item.id, output: item.status ?? "", isError: item.status === "failed" || item.status === "declined" });
       }
       break;
 

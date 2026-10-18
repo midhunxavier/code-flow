@@ -135,21 +135,21 @@ function tailOf(before: unknown, after: unknown, afterJson: string): [number, un
  * from snapshots that don't follow each other. Unchanged fields are shared with the snapshot
  * before, so treat the snapshots as read-only.
  */
-export function decodeRunLog(lines: unknown[]): RunEvent[] {
-  const out: RunEvent[] = [];
-  let current: RunSummary | undefined;
-  let currentSeq = -1;
-  for (const line of lines as (RunEvent | RunPatch)[]) {
+export class RunLogReader {
+  private current?: RunSummary;
+  private currentSeq = -1;
+  decode(value: unknown): RunEvent | undefined {
+    const line = value as RunEvent | RunPatch | undefined;
     if (line?.type === "run") {
-      current = line.run;
-      currentSeq = line.seq;
-      out.push(line);
+      this.current = line.run;
+      this.currentSeq = line.seq;
+      return line;
     } else if (line?.type === "run-patch") {
-      if (!current || current.id !== line.runId || line.base !== currentSeq) {
-        current = undefined;
-        continue;
+      if (!this.current || this.current.id !== line.runId || line.base !== this.currentSeq) {
+        this.current = undefined;
+        return undefined;
       }
-      const next: Record<string, unknown> = { ...current };
+      const next: Record<string, unknown> = { ...this.current };
       for (const [key, value] of Object.entries(line.set ?? {})) next[key] = value;
       for (const [key, [at, rest]] of Object.entries(line.tail ?? {})) {
         const before = next[key];
@@ -157,13 +157,61 @@ export function decodeRunLog(lines: unknown[]): RunEvent[] {
         else if (Array.isArray(before) && Array.isArray(rest) && before.length >= at) next[key] = [...before.slice(0, at), ...rest];
       }
       for (const key of line.unset ?? []) delete next[key];
-      current = next as unknown as RunSummary;
-      currentSeq = line.seq;
-      out.push({ seq: line.seq, ts: line.ts, runId: line.runId, type: "run", run: current });
+      this.current = next as unknown as RunSummary;
+      this.currentSeq = line.seq;
+      return { seq: line.seq, ts: line.ts, runId: line.runId, type: "run", run: this.current };
     } else if (line) {
-      out.push(line);
+      return line;
     }
   }
+}
+
+/**
+ * Receipt and deletion decisions require an exact patch chain. Recovery's reader above stays
+ * tolerant of damaged records; this reader rejects them and clears its base, so a later full
+ * snapshot can explicitly establish authoritative state again. Callers retain their own byte
+ * bounds and may either stop on an error or skip to that next full snapshot.
+ */
+export class StrictRunLogReader {
+  private reader = new RunLogReader();
+  private current?: RunSummary;
+  private currentSeq?: number;
+
+  constructor(private readonly runId: string) {}
+
+  decode(value: unknown): RunEvent | undefined {
+    try {
+      if (!record(value) || typeof value.type !== "string" || value.runId !== undefined && value.runId !== this.runId) throw new Error("Invalid or mismatched run log record");
+      if (value.type === "run") {
+        if (!record(value.run) || value.run.id !== this.runId || value.seq !== undefined && !sequence(value.seq)) throw new Error("Invalid or mismatched run snapshot");
+      } else if (value.type === "run-patch") {
+        if (Object.keys(value).some((key) => !["seq", "ts", "runId", "type", "base", "set", "tail", "unset"].includes(key)) || value.runId !== this.runId || !sequence(value.seq) || !sequence(value.base) || value.seq <= value.base || !this.current || value.base !== this.currentSeq) throw new Error("Invalid or missing run patch base");
+        if (value.set !== undefined && !record(value.set) || value.tail !== undefined && !record(value.tail) || value.unset !== undefined && (!Array.isArray(value.unset) || value.unset.some((key) => typeof key !== "string"))) throw new Error("Invalid run patch fields");
+        const set = value.set as Record<string, unknown> | undefined, tail = value.tail as Record<string, unknown> | undefined, unset = value.unset as string[] | undefined;
+        const keys = [...Object.keys(set ?? {}), ...Object.keys(tail ?? {}), ...(unset ?? [])];
+        if (new Set(keys).size !== keys.length || keys.some((key) => !key || ["id", "__proto__", "constructor", "prototype"].includes(key))) throw new Error("Invalid or overlapping run patch fields");
+        for (const [key, change] of Object.entries(tail ?? {})) {
+          if (!Array.isArray(change) || change.length !== 2 || !sequence(change[0])) throw new Error("Invalid run patch tail");
+          const [at, rest] = change, before = (this.current as Record<string, unknown>)[key];
+          if (!(typeof before === "string" && typeof rest === "string" && at <= before.length || Array.isArray(before) && Array.isArray(rest) && at <= before.length)) throw new Error("Invalid run patch tail");
+        }
+      }
+      const event = this.reader.decode(value);
+      if (event?.type === "run") { this.current = event.run; this.currentSeq = sequence(value.seq) ? value.seq : undefined; }
+      return event;
+    } catch (error) {
+      this.reader = new RunLogReader(); this.current = undefined; this.currentSeq = undefined;
+      throw error;
+    }
+  }
+}
+
+const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+const sequence = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+export function decodeRunLog(lines: unknown[]): RunEvent[] {
+  const out: RunEvent[] = [], reader = new RunLogReader();
+  for (const line of lines) { const event = reader.decode(line); if (event) out.push(event); }
   return out;
 }
 

@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { ApprovalInbox } from "./approval-inbox.js";
 import { Composer } from "./composer.js";
+import { WorkbenchView } from "./workbench.js";
+import { CommandPalette } from "./command-palette.js";
 import { SidePanel } from "./side.js";
 import { RunView } from "./run.js";
 import { Review } from "./review.js";
@@ -20,6 +23,8 @@ import {
   projectsOpen,
   announcement,
   shortcutsOpen,
+  commandPaletteOpen,
+  connection,
   closeSide,
   openSide,
   sideOpen,
@@ -103,11 +108,13 @@ function MainApp() {
 
   return (
     <>
+      <a class="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to main content</a>
       <TopBar />
+      <ApprovalInbox />
       <div class={`app ${sideOpen.value ? "with-side" : ""}`} style={`--side-w:${sideWidth.value}px`}>
         <Rail />
         {railOpen.value ? <div class="rail-scrim" aria-hidden="true" onClick={() => (railOpen.value = false)} /> : null}
-        <main>
+        <main id="main-content" tabIndex={-1}>
           {route.value.view === "run" ? (
             <RunView key={route.value.id} id={route.value.id} />
           ) : route.value.view === "review" ? (
@@ -118,6 +125,14 @@ function MainApp() {
             <InsightsView group={route.value.group} />
           ) : route.value.view === "project" ? (
             <ProjectView key={route.value.id} id={route.value.id} />
+          ) : route.value.view === "workspace" ? (
+            <WorkbenchView />
+          ) : route.value.view === "invalid" ? (
+            <div class="composer" role="alert">
+              <h1>This link is invalid</h1>
+              <p>The address contains an incomplete or invalid URL escape. Your saved work is available from the run list.</p>
+              <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>Open new run</button>
+            </div>
           ) : (
             <Composer />
           )}
@@ -131,6 +146,7 @@ function MainApp() {
       {projectsOpen.value ? <ProjectsDialog /> : null}
       {healthOpen.value ? <HealthDialog /> : null}
       {shortcutsOpen.value ? <ShortcutsDialog /> : null}
+      {commandPaletteOpen.value ? <CommandPalette /> : null}
       <div class="sr-only" role="status" aria-live="polite">
         {announcement.value}
       </div>
@@ -155,6 +171,10 @@ function TopBar() {
         <span class="brand-name">code-flow</span>
       </span>
       <Crumbs />
+      <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.state === "connected" ? "Live updates are connected" : "Live updates are unavailable; displayed run information may be out of date"}>
+        <span aria-hidden="true">●</span> {connection.value.state === "connected" ? "Connected" : connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}
+      </span>
+      <button class="btn ghost command-btn" aria-label="Open command palette" title="Commands and navigation (⌘K / Ctrl+K)" onClick={() => (commandPaletteOpen.value = true)}>⌘K</button>
       <button
         class="btn ghost side-btn"
         aria-pressed={sideOpen.value}
@@ -259,6 +279,7 @@ export function notifyFinished(run: RunSummary) {
 
 // ---------------------------------------------------------------- keyboard
 const SHORTCUTS: [string, string][] = [
+  ["⌘K / Ctrl+K", "Commands, projects and runs"],
   ["/", "Search runs"],
   ["j / k", "Next / previous run in the list"],
   ["[ / ]", "Previous / next step of the open run"],
@@ -273,6 +294,11 @@ const SHORTCUTS: [string, string][] = [
 ];
 
 function onShortcut(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    commandPaletteOpen.value = !commandPaletteOpen.value;
+    return;
+  }
   if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
   const target = e.target as HTMLElement | null;
   if (target?.closest("input, textarea, select, [contenteditable=true], dialog")) return;
@@ -441,10 +467,15 @@ function FolderPicker() {
   const [path, setPath] = useState("");
   const [status, setStatus] = useState("");
   const [hidden, setHidden] = useState(false);
-  const dialog = useDialog(pickerOpen.value, () => {
+  const pathInput = useRef<HTMLInputElement>(null);
+  const opened = useRef(false);
+  const closePicker = () => {
+    opened.current = false;
+    latest.current++;
     pickerOpen.value = false;
     pickerChoose.value = null;
-  });
+  };
+  const dialog = useDialog(pickerOpen.value, closePicker);
   const adding = pickerChoose.value;
   // Only the latest listing counts: a slow earlier one must not replace a path you just typed.
   const latest = useRef(0);
@@ -452,6 +483,8 @@ function FolderPicker() {
   const typed = useRef(false);
 
   const browse = async (target?: string, showHidden = hidden) => {
+    if (!pickerOpen.value) return;
+    opened.current = true;
     const request = ++latest.current;
     typed.current = false;
     setStatus("Loading…");
@@ -460,32 +493,37 @@ function FolderPicker() {
     if (showHidden) q.set("hidden", "1");
     try {
       const d = await api<DirListing>(`/api/fs?${q}`);
-      if (request !== latest.current) return;
+      if (request !== latest.current || !pickerOpen.value) return;
       setDir(d);
       if (!typed.current) setPath(d.path);
       setStatus(d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked GIT, or type a path");
     } catch (err) {
-      if (request !== latest.current) return;
+      if (request !== latest.current || !pickerOpen.value) return;
       setStatus((err as Error).message);
-      if (!dir) void browse(undefined, showHidden);
+      if (!dir && target) void browse(undefined, showHidden);
     }
   };
   useEffect(() => {
-    if (pickerOpen.value) void browse(repo.value || undefined);
+    // A paste + Enter can precede this effect. Its explicit browse already owns this opening;
+    // a delayed default listing must never supersede it (or erase text typed before the effect).
+    if (pickerOpen.value && !opened.current) void browse(repo.value || undefined);
+    if (!pickerOpen.value) opened.current = false;
   }, [pickerOpen.value]);
 
   const choose = (p: string) => {
-    pickerOpen.value = false;
+    closePicker();
     if (adding) adding.choose(p);
     else void pickRepo(p);
   };
   const parts = dir ? dir.path.split("/").filter(Boolean) : [];
   const recent = dir && dir.path === dir.home ? recentRepos() : [];
   const row = (icon: string, name: string, p: string, isRepo: boolean) => (
-    <div key={p} class="dir" tabIndex={0} title={p} onClick={() => browse(p)} onKeyDown={(e) => e.key === "Enter" && browse(p)}>
+    <div key={p} class="dir" title={p}>
+      <button type="button" class="dir-browse" aria-label={`Open folder ${name}`} onClick={() => browse(p)}>
       <span class="di">{icon}</span>
       <span class="dn">{name}</span>
       {isRepo ? <span class="git-badge">GIT</span> : null}
+      </button>
       {isRepo ? (
         <button
           class="btn small"
@@ -518,35 +556,33 @@ function FolderPicker() {
               type="text"
               spellcheck={false}
               aria-label="Folder path"
+              ref={pathInput}
               value={path}
               onInput={(e) => {
+                opened.current = true;
                 typed.current = true;
                 setPath(e.currentTarget.value);
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  void browse(path.trim());
+                  void browse(e.currentTarget.value.trim());
                 }
               }}
             />
-            <button class="btn small" type="button" onClick={() => browse(path.trim())}>
+            <button class="btn small" type="button" onClick={() => browse((pathInput.current?.value ?? path).trim())}>
               Go
             </button>
           </div>
-          <div class="crumbs">
-            <button type="button" class="link" aria-label="The root folder" onClick={() => browse("/")}>
-              /
-            </button>
+          <nav class="crumbs" aria-label="Folder breadcrumbs">
+            <button type="button" aria-label="The root folder" onClick={() => browse("/")}>/</button>
             {parts.map((part, i) => (
               <span key={i}>
-                <button type="button" class="link" onClick={() => browse("/" + parts.slice(0, i + 1).join("/"))}>
-                  {part}
-                </button>
+                <button type="button" aria-current={i === parts.length - 1 ? "location" : undefined} onClick={() => browse("/" + parts.slice(0, i + 1).join("/"))}>{part}</button>
                 {i < parts.length - 1 ? "/" : ""}
               </span>
             ))}
-          </div>
+          </nav>
         </div>
         <div class="picker-list">
           {recent.length ? <div class="picker-section">Recent</div> : null}
@@ -569,10 +605,13 @@ function FolderPicker() {
             />{" "}
             hidden folders
           </label>
-          <button class="btn" type="button" onClick={() => (pickerOpen.value = false)}>
+          <button class="btn" type="button" onClick={closePicker}>
             Cancel
           </button>
-          <button class="btn primary" type="button" disabled={!dir} onClick={() => dir && choose(dir.path)}>
+          <button class="btn primary" type="button" disabled={!dir || path.trim() !== dir.path || status === "Loading…"} onClick={() => {
+            const entered = (pathInput.current?.value ?? path).trim();
+            if (dir && entered === dir.path && status !== "Loading…") choose(dir.path);
+          }}>
             {adding ? "Add this folder" : "Use this folder"}
           </button>
         </div>
@@ -584,11 +623,21 @@ function FolderPicker() {
 /** Open/close a <dialog> from state, and report Esc/backdrop closes back. */
 export function useDialog(open: boolean, onClose: () => void) {
   const [el, setEl] = useState<HTMLDialogElement | null>(null);
+  // close() queues a native event. It may arrive after the same dialog has reopened, so it
+  // acknowledges the controlled transition rather than requesting another state change.
+  const controlledCloses = useRef(new WeakMap<HTMLDialogElement, number>());
   useEffect(() => {
     if (!el) return;
     if (open && !el.open) el.showModal();
-    if (!open && el.open) el.close();
-    const handler = () => onClose();
+    if (!open && el.open) {
+      controlledCloses.current.set(el, (controlledCloses.current.get(el) ?? 0) + 1);
+      el.close();
+    }
+    const handler = () => {
+      const pending = controlledCloses.current.get(el) ?? 0;
+      if (pending) { controlledCloses.current.set(el, pending - 1); return; }
+      onClose();
+    };
     el.addEventListener("close", handler);
     return () => el.removeEventListener("close", handler);
   }, [el, open]);

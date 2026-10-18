@@ -21,7 +21,7 @@ process.env.CODEFLOW_MAX_AGENTS = "1";
 
 const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
-const { adapters } = await import("../src/adapters/index.js");
+const { adapters, getAdapter } = await import("../src/adapters/index.js");
 const { loadJournal } = await import("../src/store.js");
 type Run = import("../src/engine.js").Run;
 type Pattern = import("../src/engine.js").Pattern;
@@ -72,12 +72,12 @@ type Stub = (opts: RunOptions, onEvent: (e: AgentEvent) => void) => Promise<RunR
 
 /** Replace these agents' adapters with `stub` while `fn` runs. */
 async function withStub<T>(agents: AgentId[], stub: Stub, fn: () => Promise<T>): Promise<T> {
-  const saved = agents.map((a) => adapters[a].run);
-  for (const a of agents) adapters[a].run = stub;
+  const saved = agents.map((a) => getAdapter(a).run);
+  for (const a of agents) getAdapter(a).run = stub;
   try {
     return await fn();
   } finally {
-    agents.forEach((a, i) => (adapters[a].run = saved[i]!));
+    agents.forEach((a, i) => (getAdapter(a).run = saved[i]!));
   }
 }
 

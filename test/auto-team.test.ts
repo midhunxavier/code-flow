@@ -13,6 +13,7 @@ const { RunManager, TeamContext } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
 const { flushWrites } = await import("../src/store.js");
 const { memoryStore } = await import("../src/memory.js");
+const { editableTeamPlan } = await import("../src/workflow-control.js");
 type Run = import("../src/engine.js").Run;
 const repositories: string[] = [];
 after(async () => { await flushWrites(); for (const repo of repositories) rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
@@ -101,6 +102,41 @@ test("Auto team requires plan approval before any writer starts", async () => {
   await manager.answer(run.id, { decision: "approve" });
   await waitFor(run, manager, () => run.status !== "running");
   assert.equal(run.team!.status, "completed", run.error ?? JSON.stringify(run.team!.gaps));
+});
+
+test("human workflow edits survive cancellation and replay and control the approved dispatch", async () => {
+  const { run, manager } = await start("Implement the editable sample", { approvals: { plan: true } });
+  await waitFor(run, manager, () => !!run.awaiting || run.status !== "running");
+  assert.ok(run.awaiting, run.error);
+  const original = editableTeamPlan(run.team!);
+  const edit = structuredClone(original);
+  edit.tasks[0]!.title = "Human-reviewed implementation";
+  edit.tasks[0]!.instructions += " Preserve the approved human instruction.";
+  await manager.editTeamPlan(run.id, edit);
+  assert.equal(run.team!.revision, original.revision + 1);
+  assert.match(run.awaiting!.content, /Human-reviewed implementation/);
+  await assert.rejects(manager.editTeamPlan(run.id, original), /plan changed/i);
+  const second = editableTeamPlan(run.team!);
+  second.contracts.push("Preserve the public API.");
+  await manager.editTeamPlan(run.id, second);
+  manager.cancel(run.id);
+  await waitFor(run, manager, () => run.status !== "running");
+  await manager.shutdown();
+  await flushWrites();
+  const reloaded = new RunManager(findPattern);
+  await reloaded.load();
+  const resumed = await reloaded.resume(run.id);
+  await waitFor(resumed, reloaded, () => !!resumed.awaiting || resumed.status !== "running");
+  assert.equal(resumed.team!.tasks[0]!.title, "Human-reviewed implementation");
+  assert.equal(resumed.team!.revision, original.revision + 2);
+  assert.ok(resumed.team!.contracts.includes("Preserve the public API."));
+  assert.equal(resumed.steps.filter((step) => step.kind === "agent").length, 1, "planning was replayed without a second CLI turn");
+  reloaded.answer(run.id, { decision: "approve" });
+  await waitFor(resumed, reloaded, () => resumed.status !== "running");
+  assert.equal(resumed.status, "done", resumed.error);
+  assert.ok(resumed.steps.some((step) => step.title.includes("Human-reviewed implementation")), "the edited task was dispatched");
+  await assert.rejects(reloaded.editTeamPlan(run.id, second), /not waiting/i);
+  await reloaded.shutdown();
 });
 
 test("Auto team keeps missing artifacts as gaps even when the integration check passes", async () => {
@@ -228,17 +264,32 @@ test("Auto team resumes after memory acceptance persisted but its journal acknow
 
 
 test("Auto event scheduler integrates a dependency and starts its successor before an unrelated member finishes", async () => {
-  const { run } = await finish("AUTO-EVENT Implement the sample", { options: { eventDriven: true } });
-  assert.equal(run.status, "done", run.error);
-  assert.equal(run.team!.scheduler, "event");
-  const alpha = run.steps.find((step) => step.taskId === "alpha" && step.title.startsWith("Auto task"))!;
-  const beta = run.steps.find((step) => step.taskId === "beta" && step.title.startsWith("Auto task"))!;
-  const slow = run.steps.find((step) => step.taskId === "slow" && step.title.startsWith("Auto task"))!;
-  assert.ok(beta.startedAt >= alpha.endedAt!, "the successor waits for its own dependency");
-  assert.ok(beta.startedAt < slow.endedAt!, `avoidable barrier remained: beta ${beta.startedAt}, slow ended ${slow.endedAt}`);
-  assert.ok(run.team!.contextManifests.find((manifest) => manifest.taskId === "beta")!.inputHead);
-  assert.equal(run.team!.verification!.approved, true);
+  const release = join(home, "slow-task-release");
+  process.env.FAKE_AUTO_SLOW_RELEASE = release;
+  const safety = setTimeout(() => writeFileSync(release, "release"), 25000);
+  let item: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    item = await start("AUTO-EVENT Implement the sample", { options: { eventDriven: true } });
+    const { run, manager } = item;
+    await waitFor(run, manager, () => run.steps.some((step) => step.taskId === "beta" && step.title.startsWith("Auto task")) || run.status !== "running");
+    const alpha = run.steps.find((step) => step.taskId === "alpha" && step.title.startsWith("Auto task"))!;
+    const beta = run.steps.find((step) => step.taskId === "beta" && step.title.startsWith("Auto task"))!;
+    const slow = run.steps.find((step) => step.taskId === "slow" && step.title.startsWith("Auto task"));
+    assert.ok(beta, run.error);
+    assert.ok(beta.startedAt >= alpha.endedAt!, "the successor waits for its own dependency");
+    assert.ok(!slow?.endedAt, "the successor starts while the unrelated worker remains held at its explicit checkpoint");
+    writeFileSync(release, "release");
+    await waitFor(run, manager, () => run.status !== "running");
+    assert.equal(run.status, "done", run.error);
+    assert.equal(run.team!.scheduler, "event");
+    assert.ok(run.team!.contextManifests.find((manifest) => manifest.taskId === "beta")!.inputHead);
+    assert.equal(run.team!.verification!.approved, true);
+  } finally {
+    clearTimeout(safety); writeFileSync(release, "release"); delete process.env.FAKE_AUTO_SLOW_RELEASE;
+    if (item?.run.status === "running") await item.manager.shutdown();
+  }
 });
+
 
 test("explicit legacy wave mode retains a barrier and remains available for saved workflows", async () => {
   const { run } = await finish("AUTO-EVENT Implement the sample", { options: { eventDriven: false } });

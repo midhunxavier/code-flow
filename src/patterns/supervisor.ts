@@ -1,4 +1,4 @@
-import { adapters, isAgentId, type AgentId } from "../adapters/index.js";
+import { getAdapter, adapters, isAgentId, type AgentId } from "../adapters/index.js";
 import { RejectedError, type Pattern, type ReviewFinding, type StepOutcome } from "../engine.js";
 import { changedFiles } from "../git.js";
 import { describeIssues } from "../integrity.js";
@@ -66,7 +66,7 @@ export const supervisorPattern: Pattern = {
     const workers = ctx.agents("workers");
     if (workers.length === 0) throw new Error("Assign at least one worker");
     const maxSubtasks = ctx.option("maxSubtasks", 3);
-    const roster = workers.map((w) => `"${w}" (${adapters[w].displayName})`).join(", ");
+    const roster = workers.map((w) => `"${w}" (${getAdapter(w).displayName})`).join(", ");
 
     const integration = await ctx.worktree("integration");
     let decomposed = await ctx.decide<Split>({

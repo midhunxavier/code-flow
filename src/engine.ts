@@ -1,12 +1,14 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+
 import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   adapters,
+  getAdapter,
   agentAvailability,
   agentCatalog,
   validateAgentSettings,
@@ -23,6 +25,21 @@ import { cantRunMessage, cantRunReason, isPlainTestCommand, proofOutcome, reproO
 import { commandExists } from "./adapters/process.js";
 import { contextPrompt, copyMessageFiles, copyStagedContext, hasStagedFiles, prepareContext, stageMessageFiles, type ContextInput, type RunContext } from "./context.js";
 import { fitDiff } from "./diff.js";
+import type { ExternalSource } from "./integrations.js";
+import { externalSourcePrompt } from "./source-context.js";
+import { ContextBudgetError, enforceContextBudget, type PromptContextEvidence } from "./context-inspection.js";
+import { validateContextBudget, type ContextBudget } from "./context-budget.js";
+import { editableTeamPlan, summarizeTeamPlan, teamPlanPolicy, validateTeamPlanEdit, TeamPlanEditError } from "./workflow-control.js";
+import { DEFAULT_LOOP, strip, withoutFollowUps } from "./run-projection.js";
+import { RunColdStore, coldEligible } from "./run-cold-store.js";
+import { recoverRun, recoverRunSync } from "./run-recovery.js";
+import { encodeRunCursor, decodeRunCursor, compareRuns, afterRunCursor } from "./run-history.js";
+import { validateMergeTarget, type MergeValidation } from "./merge-validation.js";
+import { approvals } from "./approvals.js";
+import { validateAgentContainer, type AgentContainer } from "./agent-container.js";
+import { runVerification, validateVerificationProfile, assessChangeRisk, reviewCoverage, type VerificationProfile, type VerificationReport } from "./verification.js";
+import { verificationIntegrity, VerificationIntegrityError } from "./verification-integrity.js";
+import { prepareTeamRerun, validateTeamRerunSeed, TeamRerunError, type TeamRerunSeed } from "./team-reruns.js";
 import { writeFileInside } from "./fs.js";
 import { describeIssues, inspectChanges, isTestFile, isTestSide, unverifiedIssue, type IntegrityIssue } from "./integrity.js";
 import { extractJson, shapeProblem } from "./json.js";
@@ -30,6 +47,7 @@ import { readConventions, recordFindings, recurringLessons } from "./learnings.j
 import { Slots } from "./slots.js";
 import {
   CONTEXT_DIR,
+  assertWorktree,
   branchExists,
   changedFiles,
   changedSince,
@@ -70,6 +88,10 @@ import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
 import { projectOf, type Project, type Projects } from "./projects.js";
 import { exhausted } from "./routing.js";
+import { assertTransferTree } from "./remote-workers/bundles.js";
+import { assertPolicyExecution, type FilePolicySnapshot } from "./filesystem-policy.js";
+import { assertExtensionBindings, extensionBindings, type ExtensionBinding } from "./extensions.js";
+import { RemoteWorkers, type RemoteRunResult } from "./remote-workers/client.js";
 import { rankAgents } from "./stats.js";
 import type { TeamState, TeamInventory, TeamContextManifest, TeamCommandReceipt, TeamMessage } from "./teams.js";
 import { memoryStore, type MemoryRef, type MemorySelection } from "./memory.js";
@@ -124,6 +146,8 @@ export interface Step {
   invocations?: number;
   settings?: { model?: string; effort?: string };
   contextManifest?: TeamContextManifest;
+  contextInput?: PromptContextEvidence;
+  remote?: RemoteRunResult["remote"] & { recovered?: boolean };
   mode: AccessMode;
   worktree?: string;
   status: Status;
@@ -177,6 +201,8 @@ export interface RunFacts {
   approved?: boolean;
   /** Whether a test in the result fails without its change (see Proof). */
   proof?: Proof["status"];
+  /** An unchanged selective rerun was checked and independently reviewed without claiming new proof. */
+  proofNotRequired?: "unchanged-rerun";
 }
 
 /**
@@ -298,6 +324,8 @@ export interface Artifact {
 }
 
 export interface Run {
+  extensions?: ExtensionBinding[];
+  filePolicies?: FilePolicySnapshot[];
   id: string;
   pattern: string;
   task: string;
@@ -336,6 +364,9 @@ export interface Run {
   lastCheck?: { ok: boolean; command: string; worktree: string; at: number };
   /** Set by patterns: did the result pass its check? */
   verdict?: "passed" | "failing";
+  verification?: VerificationReport & { head?: string; branch?: string };
+  pauseRequested?: boolean;
+  priority?: number;
   /**
    * The check can't run in this environment: its first run failed in a way that says the
    * environment is wrong, not the code (see `cantRunReason`), and it fails the same way on the
@@ -354,11 +385,16 @@ export interface Run {
    */
   notes: Note[];
   /** Checkpoints you asked to approve (e.g. the plan before building). */
-  approvals: { plan?: boolean };
+  approvals: { plan?: boolean; tools?: boolean };
   /** Set while the run is paused for your decision. */
-  awaiting?: { kind: "plan"; title: string; content: string; at: number };
+  awaiting?: { kind: "plan"; title: string; content: string; at: number; teamPlanRound?: number };
   /** The run this one continues (a "whole team again" reply). */
   parentRunId?: string;
+  /** Internal server-created accepted task projection, persisted for deterministic rerun replay. */
+  teamRerun?: TeamRerunSeed;
+  /** Durable queue identity, constructed by the server rather than a run request body. */
+  deferred?: { jobId: string; claimId: string; attempt: number };
+  coordination?: { jobId: string; nodeId: string; claimId: string; attempt: number };
   /** Source trust follows related work even when the child has no GitHub source. */
   inheritedSourceTrust?: "trusted" | "untrusted" | "unknown";
   supersededBy?: string;
@@ -368,10 +404,14 @@ export interface Run {
   followUps: FollowUp[];
   /** Result branches merged from the UI; `pr` when it was the branch's pull request, on GitHub. */
   merges: { branch: string; into: string; commit: string; at: number; pr?: string }[];
+  mergeValidation?: MergeValidation;
+  humanReview?: Record<string, { head: string; files: string[]; at: number; audit?: { at: number; actor: string; path: string; reviewed: boolean }[] }>;
+  humanRework?: { id: string; branch: string; head: string; minutes: number; note: string; at: number }[];
   /** Pull requests opened from the UI (or the PR the run started from, once pushed to), by branch. */
   prs: Record<string, string>;
   /** The GitHub issue or pull request the run started from. */
   source?: RunSource;
+  externalSource?: ExternalSource;
   /** Commit the changes under review are compared against (a PR's merge base). */
   reviewBase?: string;
   /** A review council's merged review. */
@@ -384,7 +424,7 @@ export interface Run {
    * Started by an automation (schedule, webhook, or "Run now") or a sweep, rather than by you
    * one at a time: its result waits in the inbox.
    */
-  trigger?: { id: string; name: string; via: "schedule" | "webhook" | "manual" | "sweep" };
+  trigger?: { id: string; name: string; via: "schedule" | "webhook" | "manual" | "sweep" | "deferred" | "coordination" };
   /** Your decision on an automation's result: it waits in the inbox until you make one. */
   triage?: { state: "pending" | "approved" | "rejected" | "empty"; at: number; note?: string };
   /** Changes to tests in each result branch that could make the check pass without a fix. */
@@ -428,7 +468,7 @@ export interface Run {
   artifacts: Artifact[];
 }
 
-export type RunSummary = Omit<Run, "steps">;
+export type RunSummary = Omit<Run, "steps"> & { cold?: true; detailAvailable?: true };
 
 /** How many tests the run's check ran at a commit. */
 export interface TestCount {
@@ -554,6 +594,7 @@ export interface PrWatch {
 }
 
 export interface LoopSettings {
+  remoteWorker?: { workerId: string; repoMapping: string };
   /** Shell command code-flow runs itself to decide "done" (e.g. `npm test`). Empty = agents' judgment only. */
   check?: string;
   /** Runs once in every new worktree before agents start (e.g. `npm ci`). */
@@ -566,10 +607,17 @@ export interface LoopSettings {
   maxSteps: number;
   /** Optional ceiling on actual CLI launches, including retries, per execution allocation. */
   maxInvocations?: number;
+  /** Ceilings apply to provider-reported usage; unreported usage cannot be counted. */
+  maxTokens?: number;
+  maxCostUsd?: number;
+  contextBudget?: ContextBudget;
+  verification?: VerificationProfile;
   /** Per check/setup command. */
   checkTimeoutMin: number;
   /** Run check and setup commands in this Docker container instead of on your machine. */
   container?: Container;
+  /** Explicit prebuilt image; authentication lives in an explicitly named container volume. */
+  agentContainer?: AgentContainer;
 }
 
 /** What steering a teammate's message into a running turn came to: unknown when the CLI had not answered by the deadline. */
@@ -582,7 +630,7 @@ function followUpBudget(input: Partial<Pick<LoopSettings, "maxSteps" | "maxInvoc
   return budget;
 }
 
-export const DEFAULT_LOOP: LoopSettings = { maxMinutes: 60, maxSteps: 40, checkTimeoutMin: 10 };
+export { DEFAULT_LOOP } from "./run-projection.js";
 
 export type RunEvent = { seq: number; ts: number; runId: string } & (
   | { type: "run"; run: RunSummary }
@@ -642,6 +690,8 @@ export interface Pattern {
 }
 
 export interface AskParams {
+  /** Engine-assigned durable ask occurrence; callers cannot override its scoped identity. */
+  remoteIdentity?: string;
   title: string;
   role: string;
   agent: AgentId;
@@ -687,6 +737,7 @@ export interface DecideParams extends AskParams {
 }
 
 export interface StepOutcome extends RunResult {
+  remote?: Step["remote"];
   stepId: string;
   agent: AgentId;
   memberId?: string;
@@ -706,6 +757,7 @@ export class CancelledError extends Error {
     super("Run cancelled");
   }
 }
+export class RunConflictError extends Error {}
 
 /** The `parallel()` branch the current code runs in, so ctx calls made there stop with it. */
 const branchScope = new AsyncLocalStorage<{ ctx: TeamContext; signal: AbortSignal }>();
@@ -734,6 +786,7 @@ export class TeamContext {
    * this, not against HEAD: a check recorded for different code is run again.
    */
   private readonly heads = new Map<string, string>();
+  private readonly remoteCommits = new Map<string, string>();
   /** How many tests the run's check ran in each worktree: the first time, and the latest. */
   private readonly testCounts = new Map<string, { first?: number; last?: number }>();
   /**
@@ -827,13 +880,15 @@ export class TeamContext {
   /** This run's turns and commands waiting for a slot, holding one, and whether that paused the clock. */
   private readonly slotUse = { waiting: 0, holding: 0, paused: false };
 
+
   /** Start the run's time budget; it pauses while the run waits for you, or only for slots. */
   startClock(minutes: number) {
+    this.stopClock();
     this.clock = { remaining: minutes * 60_000, startedAt: Date.now() };
     if (!this.clockHolds) this.armClock();
   }
   private armClock() {
-    if (!this.clock) return;
+    if (!this.clock || this.clockHolds > 0) return;
     this.clock.startedAt = Date.now();
     // Clamped: past setTimeout's range (or NaN) a timer fires at once and would stop the run.
     this.clock.timer = setTimeout(() => this.stop(`time limit (${this.run.loop.maxMinutes} min)`), timerMs(this.clock.remaining));
@@ -842,6 +897,7 @@ export class TeamContext {
   /** Pause the clock until a matching `resumeClock`; pauses nest (a checkpoint while a branch waits for a slot). */
   pauseClock() {
     if (this.clockHolds++ || !this.clock?.timer) return;
+
     clearTimeout(this.clock.timer);
     this.clock.timer = undefined;
     this.clock.remaining -= Date.now() - this.clock.startedAt;
@@ -856,13 +912,13 @@ export class TeamContext {
    * wants one waits (a run queued behind others, a sweep's runs), its time budget is paused:
    * waiting its turn on this machine isn't time the run took. A wait beside a turn that runs counts.
    */
-  private async takeSlot(slots: Slots): Promise<(() => void) | undefined> {
+  private async takeSlot(slots: Slots, signal: AbortSignal = this.signal): Promise<(() => void) | undefined> {
     const queued = slots.busy >= slots.size;
     if (queued) this.slotUse.waiting++;
     this.slotClock();
     let release: (() => void) | undefined;
     try {
-      release = await slots.acquire(this.signal).catch(() => undefined);
+      release = await slots.acquire(signal, { priority: () => this.run.priority ?? 0, group: this.run.project ?? this.run.repo }).catch(() => undefined);
     } finally {
       if (queued) this.slotUse.waiting--;
     }
@@ -886,6 +942,7 @@ export class TeamContext {
     this.slotUse.paused = onlyWaiting;
     if (onlyWaiting) this.pauseClock();
     else this.resumeClock();
+
   }
   stopClock() {
     if (this.clock?.timer) clearTimeout(this.clock.timer);
@@ -899,6 +956,7 @@ export class TeamContext {
    */
   freshBudget() {
     this.attemptSteps = 0;
+    this.actualInvocations = 0;
     this.stopClock();
     this.startClock(this.run.loop.maxMinutes);
   }
@@ -908,11 +966,11 @@ export class TeamContext {
    * too) until you approve, ask for changes, or reject. Answers are journaled, so a resumed run
    * doesn't ask again. Without the checkpoint enabled, this approves immediately.
    */
-  async approve(kind: "plan", title: string, content: string): Promise<ApprovalAnswer> {
+  async approve(kind: "plan", title: string, content: string, context?: { teamPlanRound?: number }): Promise<ApprovalAnswer> {
     if (!this.run.approvals?.[kind]) return { decision: "approve" };
     this.checkCancelled();
     return this.remember("approval", title, async () => {
-      this.run.awaiting = { kind, title, content, at: Date.now() };
+      this.run.awaiting = { kind, title, content, at: Date.now(), ...context };
       this.run.seen = false;
       this.pauseClock();
       this.manager.emitRun(this.run);
@@ -982,6 +1040,18 @@ export class TeamContext {
     this.publish();
   }
 
+  /** Restore the last durable human edit before replaying its approval or dispatching work. */
+  restoreTeamPlanEdit(state: TeamState, round: number) {
+    const saved = this.journal.get(`team-plan-edit:${round}`) as { version: number; revision: number; editCount: number; plan: ReturnType<typeof editableTeamPlan> } | undefined;
+    if (!saved) return;
+    if (saved.version !== 1 || !Number.isSafeInteger(saved.revision) || saved.revision <= state.revision || !Number.isSafeInteger(saved.editCount) || saved.editCount < 1) throw new Error("The saved workflow edit is invalid; no tasks were dispatched");
+    const plan = validateTeamPlanEdit({ ...saved.plan, revision: state.revision }, state, teamPlanPolicy(state, this.run));
+    Object.assign(state, plan, { revision: saved.revision });
+    state.subplans = undefined;
+    state.strategyInstances = undefined;
+    state.metrics.revisions += saved.editCount;
+  }
+
   /** The logical commit at this point in replay, not a later HEAD already on disk. */
   async head(wt: Worktree): Promise<string> {
     return this.heads.get(wt.name) ?? wt.base;
@@ -1001,17 +1071,19 @@ export class TeamContext {
    * provider, and a network fetch for agy) are reused rather than probed at every event.
    */
   async teamInventory(previous?: TeamInventory): Promise<TeamInventory> {
-    const availability = await agentAvailability();
+    const remote = this.run.loop.remoteWorker;
+    const availability = remote ? (await this.manager.remoteInventory(remote)).providers : await agentAvailability();
     const catalogs = await Promise.all(availability.map(async ({ id, available }) => {
       if (!available) return undefined;
       const known = previous?.providers.find((p) => p.id === id);
       if (known?.models) return { models: known.models, efforts: known.efforts };
+      if (remote) return undefined;
       try { return await agentCatalog(id); } catch { return undefined; }
     }));
     return {
       at: Date.now(),
       providers: availability.map(({ id, available }, index) => ({
-        id, available, blockedReason: exhausted(id, this.manager.quota), quotaKnown: !!this.manager.quota[id],
+        id, available, blockedReason: exhausted(id, this.manager.quotaForWorker(remote?.workerId)), quotaKnown: !!this.manager.quotaForWorker(remote?.workerId)[id],
         models: catalogs[index]?.models,
         efforts: catalogs[index]?.efforts,
         ...this.run.agentSettings[id],
@@ -1309,7 +1381,7 @@ export class TeamContext {
    * attached context, the repo's conventions and the problems reviewers keep raising here.
    */
   get task() {
-    return this.run.task + sourcePrompt(this.run.source) + contextPrompt(this.run.context) + knowledgePrompt(this.run);
+    return this.run.task + externalSourcePrompt(this.run.externalSource) + sourcePrompt(this.run.source) + contextPrompt(this.run.context) + knowledgePrompt(this.run);
   }
 
   /** Record a review council's result (shown as the run's review, postable to the PR). */
@@ -1346,6 +1418,9 @@ export class TeamContext {
   }
 
   checkCancelled() {
+    const tokens = (this.run.usage.inputTokens ?? 0) + (this.run.usage.outputTokens ?? 0) + (this.run.usage.cacheReadTokens ?? 0);
+    if (this.run.loop.maxTokens && tokens >= this.run.loop.maxTokens) this.stop("reported token limit");
+    if (this.run.loop.maxCostUsd && (this.run.usage.costUsd ?? 0) >= this.run.loop.maxCostUsd) this.stop("reported API-equivalent usage limit");
     if (this.persistenceError) throw this.persistenceError;
     if (this.signal.aborted) throw new CancelledError();
   }
@@ -1403,16 +1478,49 @@ export class TeamContext {
     const result = await this.remember(
       "check",
       `${wt.name}|${title}|${command}`,
-      async (): Promise<CheckResult & { head?: string }> => {
-        const result = await this.command("check", title, wt, command);
+      async (): Promise<CheckResult & { head?: string; verification?: Run["verification"] }> => {
+        let result: CheckResult;
+        let verification: Run["verification"];
+        const at = await this.gitAt(wt);
+        const head = await resolveCommit(at).catch(() => undefined);
+        if (doneWhen && this.run.loop.verification) {
+          const configured = this.run.loop.verification;
+          const profile = configured.checks.some((check) => check.command === command) ? configured : { ...configured, checks: [...configured.checks, { id: "primary-check", kind: "custom" as const, command, required: true, timeoutMs: this.run.loop.checkTimeoutMin * 60_000 }] };
+          const changes = head ? await branchDiff(at, this.run.baseRef, head) : [];
+          const reviewed = this.run.humanReview?.[wt.branch];
+          const startedAt = Date.now();
+          this.run.verification = undefined;
+          try {
+            const integrity = await verificationIntegrity(await assertWorktree(this.run.repo, wt), this.signal);
+            if (integrity.head !== head) throw new VerificationIntegrityError("The checkout commit moved while verification was being prepared. Refresh and verify the current commit.");
+            verification = { ...await runVerification(wt.path, profile, { signal: this.signal, changedFiles: changes, reviewedFiles: reviewed && reviewed.head === head ? reviewed.files : [], execute: async (gate, opts) => {
+              await integrity.assert(`before gate ${gate.id}`);
+              const checked = await this.command("check", `${title}: ${gate.title ?? gate.id}`, wt, gate.command, undefined, opts.timeoutMs);
+              await assertWorktree(this.run.repo, wt);
+              await integrity.assert(`gate ${gate.id}`);
+              return checked;
+            } }), head: integrity.head, branch: wt.branch };
+            await integrity.assert("completion");
+            await assertWorktree(this.run.repo, wt);
+          } catch (error) {
+            if (!(error instanceof VerificationIntegrityError)) throw error;
+            this.checkCancelled();
+            verification = { version: 1, profile: profile.name, state: "blocked", startedAt, endedAt: Date.now(), checks: [], skipped: profile.checks.map((check) => ({ check, reason: error.message })), head, branch: wt.branch };
+          }
+          const primary = verification.checks.find((gate) => gate.check.command === command)?.attempts[0];
+          result = { ...(primary ?? { command, exitCode: null, timedOut: false, output: "", durationMs: 0 }), command, ok: verification.state === "verified", output: [...verification.checks.map((gate) => `[${gate.check.id}: ${gate.diagnosis}]\n${gate.attempts.at(-1)?.output ?? gate.reason ?? ""}`), ...verification.skipped.map((gate) => `[${gate.check.id}: blocked]\n${gate.reason}`)].join("\n\n"), durationMs: verification.endedAt - verification.startedAt };
+          this.run.verification = verification;
+        } else result = await this.command("check", title, wt, command);
         this.run.usage.checks++;
         this.run.lastCheck = { ok: result.ok, command, worktree: wt.name, at: Date.now() };
         this.manager.emitRun(this.run);
-        return { ...result, head: await this.gitAt(wt).then(resolveCommit).catch(() => undefined) };
+        return { ...result, head: verification?.head ?? await this.gitAt(wt).then(resolveCommit).catch(() => undefined), verification };
+
       },
       (recorded) => !recorded.head || !head || recorded.head === head,
     );
-    if (doneWhen && !(await this.checkCanRun(wt, result))) return null;
+    if ((result as CheckResult & {verification?: Run["verification"]}).verification) this.run.verification = (result as CheckResult & {verification?: Run["verification"]}).verification;
+    if (doneWhen && !this.run.loop.verification && !(await this.checkCanRun(wt, result))) return null;
     if (doneWhen) this.lastChecks.set(wt.name, { head: head ?? result.head, ok: result.ok, tests: result.tests });
     if (doneWhen && result.tests !== undefined) {
       const counts = this.testCounts.get(wt.name) ?? {};
@@ -1761,13 +1869,46 @@ export class TeamContext {
    * Run a shell command in a worktree as a visible step (used for checks and setup). `describe`
    * says how the step reads when passing isn't what's wanted (a proof should fail).
    */
+  private async readyForWork() {
+    if (!this.run.pauseRequested) return;
+    this.pauseClock();
+    try { await this.manager.waitWhilePaused(this.run, this.signal); }
+    finally { this.resumeClock(); }
+    this.checkCancelled();
+  }
+
+  /** A pause can arrive while queued. Leave that queue without holding a slot or a budget. */
+  private async acquireWorkSlot(slots: Slots): Promise<() => void> {
+    const signal = this.signal;
+    for (;;) {
+      await this.readyForWork();
+      this.checkCancelled();
+      const waiting = new AbortController();
+      const abort = () => waiting.abort();
+      signal.addEventListener("abort", abort, { once: true });
+      const unsubscribe = this.manager.subscribe(this.run.id, () => { if (this.run.pauseRequested) waiting.abort(); });
+      try {
+        if (signal.aborted || this.run.pauseRequested) waiting.abort();
+        const release = await this.takeSlot(slots, waiting.signal);
+        if (release) {
+          if (!this.run.pauseRequested && !signal.aborted) return release;
+          release();
+        }
+        this.checkCancelled();
+      } finally { unsubscribe(); signal.removeEventListener("abort", abort); }
+    }
+  }
+
   private async command(
     kind: "check" | "setup",
     title: string,
     wt: Worktree,
     command: string,
     describe?: (result: CheckResult) => { ok: boolean; text: string },
+    timeoutMs?: number,
   ): Promise<CheckResult> {
+    await this.manager.assertExecutionAllowed(this.run.repo, this.run, `${kind} command`);
+    await this.readyForWork();
     this.checkCancelled();
     const step: Step = {
       id: `s${this.run.steps.length + 1}`,
@@ -1797,10 +1938,10 @@ export class TeamContext {
       if (this.run.lockdown && !container && !this.run.lockdownOnHost) {
         throw new Error(`${this.run.lockdown}, and Docker isn't available, so code-flow won't run \`${command}\` on this machine`);
       }
-      release = await this.takeSlot(checkSlots);
-      result = release
-        ? await runCheck(wt.path, command, { timeoutMs: timerMs(this.run.loop.checkTimeoutMin * 60_000, 1_000), signal: this.signal, container })
-        : { command, ok: false, exitCode: null, timedOut: false, durationMs: 0, output: "Cancelled before it started" };
+      release = await this.acquireWorkSlot(checkSlots);
+      await assertWorktree(this.run.repo, wt);
+      result = await runCheck(wt.path, command, { timeoutMs: timeoutMs ?? timerMs(this.run.loop.checkTimeoutMin * 60_000, 1_000), signal: this.signal, container });
+
     } catch (err) {
       // Couldn't even start it: the step still ends, as a failure that says why.
       result = { command, ok: false, exitCode: null, timedOut: false, durationMs: 0, output: `code-flow couldn't run it: ${(err as Error).message}` };
@@ -1830,11 +1971,12 @@ export class TeamContext {
   }
 
   private abortedStatus(): Status {
-    return this.manager.isShuttingDown ? "interrupted" : "cancelled";
+    return this.run.stopReason ? "stopped" : this.manager.isShuttingDown ? "interrupted" : "cancelled";
   }
 
   /** A worktree for this run; reused if it already exists (e.g. when resuming). */
   async worktree(name: string, fromRef = this.run.baseRef): Promise<Worktree> {
+    await this.manager.assertExecutionAllowed(this.run.repo, this.run, "worktree preparation");
     this.checkCancelled();
     let live = false;
     let wt = await this.remember("worktree", name, () => ((live = true), this.openWorktreeLive(name, fromRef)));
@@ -1925,12 +2067,15 @@ export class TeamContext {
   }
 
   async commit(wt: Worktree, message: string): Promise<string | null> {
+    await this.manager.assertExecutionAllowed(this.run.repo, this.run, "Git checkpoint");
     this.checkCancelled();
     const sha = await this.remember(
       "commit",
       `${wt.name}|${message}`,
       async () => {
-        const sha = (await commitAll(this.run.repo, wt, message, (warning) => this.log(warning, "warn"))) ?? (await this.recoverCommit(wt, message));
+        const remote = this.remoteCommits.get(wt.name);
+        const sha = (await commitAll(this.run.repo, wt, message, (warning) => this.log(warning, "warn"))) ?? (remote && await resolveCommit(await this.gitAt(wt)) === remote ? remote : await this.recoverCommit(wt, message));
+
         if (sha) this.log(`Committed ${sha.slice(0, 8)} on ${wt.branch}: ${message}`);
         return sha;
       },
@@ -1938,6 +2083,7 @@ export class TeamContext {
       async (recorded) => recorded === null || (await this.gitAt(wt).then((at) => isAncestor(at, recorded), () => false)),
     );
     if (sha) this.heads.set(wt.name, sha);
+    this.remoteCommits.delete(wt.name);
     return sha;
   }
 
@@ -1956,6 +2102,7 @@ export class TeamContext {
 
   /** Merge another branch into a worktree (the conflicts, if any, are left for an agent). */
   async merge(wt: Worktree, branch: string): Promise<MergeResult> {
+    await this.manager.assertExecutionAllowed(this.run.repo, this.run, "Git worktree integration");
     this.checkCancelled();
     const result = await this.remember("merge", this.run.team ? `${wt.name}|${branch}` : branch, async (): Promise<MergeResult & { head?: string }> => {
       const merged = await mergeBranch(this.run.repo, wt, branch);
@@ -2072,7 +2219,10 @@ export class TeamContext {
     // stops the run before anything is recorded.) An Auto team keeps its failures: its later
     // decisions were made from them, and it retries a failed task as a new attempt.
     const keep = (outcome: StepOutcome) => outcome.ok || !!this.run.team || !UNRECORDED.has(failureKind(outcome, !!params.resume));
-    return this.remember("ask", `${params.role}|${params.agent}|${params.cwd.name}|${params.identity ?? params.title}`, async () => {
+    const identity = `${params.role}|${params.agent}|${params.cwd.name}|${params.identity ?? params.title}`;
+    params = { ...params, remoteIdentity: `${identity}#${(this.counters.get(`ask:${identity}`) ?? 0) + 1}` };
+    const outcome = await this.remember("ask", identity, async () => {
+
       const member = params.memberId;
       const workspace = params.cwd.path;
       const session = params.resume?.sessionId;
@@ -2089,9 +2239,13 @@ export class TeamContext {
         if (session) this.activeSessions.delete(session);
       }
     }, undefined, keep);
+    if (outcome.remote?.resultHead && !outcome.remote.ambiguous) this.remoteCommits.set(params.cwd.name, outcome.remote.resultHead);
+    return outcome;
+
   }
 
   private async askLive(params: AskParams): Promise<StepOutcome> {
+    await this.readyForWork();
     if (this.attemptSteps >= this.run.loop.maxSteps) {
       this.stop(`step limit (${this.run.loop.maxSteps} agent steps)`);
       this.checkCancelled();
@@ -2125,7 +2279,7 @@ export class TeamContext {
 
     const onEvent = (event: AgentEvent) => {
       if (event.kind === "session") step.sessionId = event.sessionId;
-      if (event.kind === "quota") this.manager.recordQuota(params.agent, event.status, event.windows);
+      if (event.kind === "quota") this.manager.recordQuota(params.agent, event.status, event.windows, this.run.loop.remoteWorker?.workerId);
       if (event.kind === "usage") this.addTokens(step, params.agent, event);
       this.manager.emit(this.run, { type: "agent", stepId: step.id, event });
     };
@@ -2137,7 +2291,8 @@ export class TeamContext {
     const slot: AgentSlot = {
       take: async () => {
         if (agentSlots.busy >= agentSlots.size) onEvent({ kind: "status", text: `Waiting for a free agent slot (${agentSlots.size} agents run at once; CODEFLOW_MAX_AGENTS)` });
-        release = await this.takeSlot(agentSlots);
+        release = await this.acquireWorkSlot(agentSlots);
+
         return !!release;
       },
       give: () => {
@@ -2164,10 +2319,10 @@ export class TeamContext {
     const kind = failureKind(result, !!params.resume);
     // Out of plan usage steers "Auto" away from this agent; a per-minute 429 was just retried.
     const usageLimit = kind === "usage_limit";
-    if (usageLimit) this.manager.recordLimit(params.agent, result.resetsAt);
+    if (usageLimit) this.manager.recordLimit(params.agent, result.resetsAt, this.run.loop.remoteWorker?.workerId);
     if (kind === "auth") {
-      this.manager.recordQuota(params.agent, "signed_out", {});
-      result = { ...result, error: `${adapters[params.agent].displayName} isn't signed in. Sign in to it in a terminal, then resume the run. (${firstLine(result.error)})` };
+      this.manager.recordQuota(params.agent, "signed_out", {}, this.run.loop.remoteWorker?.workerId);
+      result = { ...result, error: this.run.loop.remoteWorker ? `${getAdapter(params.agent).displayName} isn't signed in on the selected worker. Sign in in that machine's terminal, then start a fresh invocation. (${firstLine(result.error)})` : `${getAdapter(params.agent).displayName} isn't signed in. Sign in to it in a terminal, then resume the run. (${firstLine(result.error)})` };
     }
 
     step.endedAt = Date.now();
@@ -2198,13 +2353,14 @@ export class TeamContext {
     // for a turn that may fail: a race or a split would go on without it, and a resume after the
     // reset gives it its turn.
     if (usageLimit && !this.signal.aborted) {
-      this.stop(`usage limit of ${adapters[params.agent].displayName}`);
+      this.stop(`usage limit of ${getAdapter(params.agent).displayName}`);
+
     }
     this.checkCancelled();
     if (!result.ok && !params.allowFailure) {
       throw new Error(`${params.title} (${params.agent}) failed: ${result.error ?? "unknown error"}`);
     }
-    return { ...result, stepId: step.id, agent: params.agent, memberId: params.memberId, worktree: params.cwd.name };
+    return { ...result, ...(step.remote ? { remote: step.remote } : {}), stepId: step.id, agent: params.agent, memberId: params.memberId, worktree: params.cwd.name };
   }
 
   /**
@@ -2287,19 +2443,36 @@ export class TeamContext {
    * with the whole task instead.
    */
   private async attempts(params: AskParams, step: Step, onEvent: (e: AgentEvent) => void, slot: AgentSlot, start?: Snapshot): Promise<RunResult> {
-    const name = adapters[params.agent].displayName;
+    const name = getAdapter(params.agent).displayName;
     // Only a turn that worked left a conversation worth continuing.
-    let resume = params.resume?.ok !== false ? params.resume?.sessionId : undefined;
+    const remote = this.run.loop.remoteWorker;
+    let resume = !remote && params.resume?.ok !== false ? params.resume?.sessionId : undefined;
     let prompt = params.resume && !resume ? this.freshPrompt(params) : params.prompt;
     /** What starting over runs: the step's own request. */
     let initial = { resume, prompt };
     let freshSession = false;
     for (let retries = 0; ; ) {
+      await this.manager.assertExecutionAllowed(this.run.repo, this.run, "agent invocation");
+      await assertWorktree(this.run.repo, params.cwd);
+      assertExtensionBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
+      if (params.agent.startsWith("plugin:") && (this.run.loop.agentContainer || this.run.loop.remoteWorker || this.run.approvals.tools)) throw new Error("Extension providers support local dispatch only; container, SSH and native approval profiles are unavailable");
       this.checkCancelled();
-      if (this.run.loop.maxInvocations !== undefined && this.actualInvocations >= this.run.loop.maxInvocations) {
+      const assembledPrompt = this.notesFor(step.id) + prompt;
+      try { step.contextInput = enforceContextBudget({ prompt: assembledPrompt, jsonSchema: params.schema, resumeSessionId: resume }, this.run.loop.contextBudget); }
+      catch (error) {
+        if (error instanceof ContextBudgetError) { step.contextInput = error.evidence; this.manager.emit(this.run, { type: "step", step: { ...step } }); this.stop("explicit invocation context budget"); }
+        throw error;
+      }
+      this.manager.emit(this.run, { type: "step", step: { ...step } });
+      if (step.contextInput.exceeded) this.log(`${step.title}: explicit invocation context exceeds its warning budget (${step.contextInput.bytes.toLocaleString()} bytes, approximately ${step.contextInput.approximateTokens.toLocaleString()} tokens). Hidden provider history and later file reads are excluded.`, "warn");
+      const remoteSignature = remote ? createHash("sha256").update(JSON.stringify({ agent: params.agent, mode: params.mode, prompt: assembledPrompt, schema: params.schema, settings: params.settings, roleSettings: this.run.roleSettings[params.role], settingsByAgent: this.run.agentSettings[params.agent], trust: params.trust ?? this.run.trust })).digest("hex") : undefined;
+      const launch = remote ? await this.remember("remote-launch", params.remoteIdentity!, async () => ({ id: randomBytes(16).toString("hex"), stepId: step.id, threadId: params.memberId ?? this.sideTurn ?? params.role, baseCommit: await resolveCommit(await this.gitAt(params.cwd)), signature: remoteSignature! })) : undefined;
+      if (launch && launch.signature !== remoteSignature) throw new Error("The scoped remote invocation inputs changed. Inspect its prior receipt, then intentionally start a new run with the changed instructions.");
+      const recoveringRemote = !!remote && !!launch && !!await this.manager.remoteWorkers?.hasRequest(remote.workerId, launch.id);
+      if (!recoveringRemote && this.run.loop.maxInvocations !== undefined && this.actualInvocations >= this.run.loop.maxInvocations) {
         this.stop("CLI invocation limit"); this.checkCancelled();
       }
-      if (this.run.team) {
+      if (this.run.team && !recoveringRemote) {
         if (this.teamBudgetRemaining(params.coordination) <= 0) {
           this.stop(params.coordination ? "coordinator invocation limit" : "team invocation limit");
           this.checkCancelled();
@@ -2309,15 +2482,15 @@ export class TeamContext {
       }
       // Reserve both ceilings before any await so concurrent turns cannot over-admit.
       // A refused retry must not create a durable launch or inflate team usage.
-      this.actualInvocations++;
-      if (this.run.team) {
+      if (!recoveringRemote) this.actualInvocations++;
+      if (this.run.team && !recoveringRemote) {
         await this.persist(`team-launch:${randomBytes(12).toString("hex")}`, { stepId: step.id, memberId: params.memberId, coordination: !!params.coordination, at: Date.now() });
         this.checkCancelled();
         this.run.team.metrics.invocations++;
         if (params.coordination) this.run.team.metrics.coordinatorInvocations++;
         this.publish();
       }
-      step.invocations = (step.invocations ?? 0) + 1;
+      if (!recoveringRemote) step.invocations = (step.invocations ?? 0) + 1;
       const member = this.run.team?.members.find((item) => item.id === params.memberId);
       const task = this.run.team?.tasks.find((item) => item.id === params.taskId);
       const attempt = task?.attempts;
@@ -2329,15 +2502,15 @@ export class TeamContext {
         return activeTurn && !this.signal.aborted && this.run.status === "running" && !!currentMember && currentMember.status !== "retired" &&
           (!params.taskId || !!currentTask && currentTask.owner === currentMember.id && currentTask.attempts === attempt);
       };
-      const grant = member && params.agent !== "agy" ? await teamToolBridge.issue({
+      const grant = member && params.agent !== "agy" && !params.agent.startsWith("plugin:") && !this.run.loop.agentContainer && !remote ? await teamToolBridge.issue({
         identity: { runId: this.run.id, memberId: member.id, taskId: params.taskId, attempt, stepId: step.id, attemptId: logicalAttemptId },
         handler: (request, identity) => this.teamTool(request, identity, params.cwd, activeCapability), signal: this.signal, ttlMs: STEP_TIMEOUT_MS,
         isActive: activeCapability,
       }) : undefined;
       let result: RunResult;
-      try { result = await adapters[params.agent].run(
-        {
-          prompt: this.notesFor(step.id) + prompt,
+      try {
+        const agentOptions: import("./adapters/types.js").RunOptions = {
+          prompt: assembledPrompt,
           cwd: params.cwd.path,
           mode: params.mode,
           resumeSessionId: resume,
@@ -2346,16 +2519,38 @@ export class TeamContext {
           jsonSchema: params.schema,
           questionProtocol: params.memberId ? "structured" : undefined,
           teamTools: grant?.connection,
+          agentContainer: this.run.loop.agentContainer,
+          interactiveApprovals: !remote && this.run.approvals.tools === true && !this.run.trigger && !this.run.lockdown,
+          onApproval: params.agent.startsWith("plugin:") ? undefined : async (request: import("./adapters/types.js").AgentApprovalRequest, signal: AbortSignal) => {
+            this.pauseClock();
+            try { return await approvals.request(this.run.id, step.id, request, signal); }
+            finally { this.resumeClock(); }
+          },
           trust: params.trust ?? this.run.trust,
           signal: this.signal,
           timeoutMs: STEP_TIMEOUT_MS,
           idleTimeoutMs: STEP_IDLE_MS,
-          onSteerable: params.side ? undefined : (steer) => this.manager.setSteerer(this.run, step.id, params.agent, steer),
-        },
-        onEvent,
-      );
-      } finally { activeTurn = false; grant?.revoke(); }
-      if (result.ok || this.signal.aborted) return result;
+          onSteerable: params.side || remote || params.agent.startsWith("plugin:") ? undefined : (steer: ((text: string) => Promise<boolean>) | undefined) => this.manager.setSteerer(this.run, step.id, params.agent, steer),
+        };
+        if (remote && launch) {
+          const client = this.manager.remoteWorkers!;
+          const value = recoveringRemote ? await client.receipt(remote.workerId, launch.id) : await client.execute({ ...remote, requestId: launch.id, scope: { runId: this.run.id, stepId: launch.stepId, threadId: launch.threadId }, repositoryBase: this.run.baseRef, agent: params.agent, onReceipt: (value) => { step.remote = value; this.manager.emit(this.run, { type: "step", step: { ...step } }); }, options: { ...agentOptions, resumeSessionId: undefined, teamTools: undefined, interactiveApprovals: false, agentContainer: undefined } }, onEvent);
+          step.remote = { ...value.remote, recovered: recoveringRemote || undefined }; this.manager.emit(this.run, { type: "step", step: { ...step } });
+          try {
+            if (value.artifact) {
+              const at = await assertWorktree(this.run.repo, params.cwd);
+              const head = await resolveCommit(at);
+              if (value.remote.ambiguous || this.signal.aborted) throw new Error("Remote result cannot be imported until its outcome and cancellation are settled");
+              if (head === value.artifact.head) { await verificationIntegrity(at); await client.discardArtifact(value.artifact); }
+              else await client.importArtifact(at, value.artifact, launch.baseCommit);
+            }
+          } catch (error) { if (value.artifact) await client.discardArtifact(value.artifact); throw error; }
+          const { remote: _remote, artifact: _artifact, ...publicResult } = value; result = publicResult;
+          if (recoveringRemote) onEvent({ kind: "status", text: "Recovered the durable remote receipt; no new provider invocation was launched." });
+          if (value.remote.ambiguous) this.stop("ambiguous remote execution; inspect its durable receipt before resuming or starting another invocation");
+        } else result = await getAdapter(params.agent).run(agentOptions, onEvent);
+      } finally { activeTurn = false; grant?.revoke(); approvals.cancelStep(this.run.id, step.id); }
+      if (remote || result.ok || this.signal.aborted) return result;
       const kind = failureKind(result, !!resume);
       if (kind === "session_not_found" && resume && !freshSession) {
         // An earlier attempt of this write step may have edited files before failing: the whole
@@ -2548,12 +2743,17 @@ export interface StartRunInput {
   context?: ContextInput;
   agentSettings?: AgentSettings;
   loop?: Partial<LoopSettings>;
-  approvals?: { plan?: boolean };
+  approvals?: { plan?: boolean; tools?: boolean };
   parentRunId?: string;
+  teamRerun?: TeamRerunSeed;
+  deferred?: Run["deferred"];
+  coordination?: Run["coordination"];
+  requireProjectRepo?: boolean;
   roleSettings?: Record<string, AgentSettings>;
   trust?: Trust;
   /** Start from a GitHub issue or PR (a PR's branch becomes the base). */
   source?: SourceInput;
+  externalSource?: ExternalSource;
   /** How "Auto" roles were resolved, for the log. */
   routing?: string[];
   /** Set when an automation starts the run. */
@@ -2577,25 +2777,59 @@ export interface StartRunInput {
 const QUOTA_FILE = join(CODEFLOW_HOME, "quota.json");
 
 export class RunManager {
+  private readonly mergeValidating = new Map<string, AbortController>();
+  private readonly mergeValidationWork = new Map<string, Promise<MergeValidation>>();
   private readonly runs = new Map<string, Run>();
+  /** Preserve callers' live Run handles on promotion without retaining cold full state. */
+  private readonly runIdentities = new Map<string, WeakRef<Run>>();
+  private readonly coldRuns = new RunColdStore();
+  private readonly coldWrites = new Map<string, Promise<void>>();
+  /** Async mutations retain their adopted live object while an older cold write settles. */
+  private readonly coldMutations = new Map<string, number>();
   /** Event history of running runs (finished runs are read back from disk when needed). */
   private readonly history = new Map<string, RunEvent[]>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly active = new Map<string, Promise<void>>();
   /** Runs between "resume requested" and "running": a second request must not start them twice. */
   private readonly starting = new Set<string>();
+  private readonly startingRepositories = new Map<string, number>();
+  private readonly startingWork = new Set<Promise<Run>>();
+  private readonly repositoryLeases = new Map<string, { id: string; repo: string; scope: Set<string>; kind: string; owner?: string; at: number }>();
+  private readonly repositoryLeaseWork = new Map<string, Promise<unknown>>();
   /** Stop was pressed while a resume was starting: it doesn't start. */
   private readonly stoppedWhileStarting = new Set<string>();
   private readonly bus = new EventEmitter();
   private seq = 0;
   private shuttingDown = false;
+  private executionPolicyLease?: { id: string; at: number };
+  private filesystemPolicyGuard?: (repo: string, run?: Run) => Promise<FilePolicySnapshot[]>;
+  setFilesystemPolicyGuard(guard: (repo: string, run?: Run) => Promise<FilePolicySnapshot[]>) { this.filesystemPolicyGuard = guard; }
+  async assertExecutionAllowed(repo: string, run?: Run, surface = "Execution"): Promise<FilePolicySnapshot[]> {
+    if (this.executionPolicyLease) throw new RunConflictError("Filesystem policy activation holds the global execution lease");
+    const fresh = await this.filesystemPolicyGuard?.(repo, run) ?? [];
+    if (this.executionPolicyLease) throw new RunConflictError("Filesystem policy activation holds the global execution lease");
+    assertPolicyExecution([...(run?.filePolicies ?? []), ...fresh], surface);
+    if (run) assertExtensionBindings(run);
+    return structuredClone(fresh);
+  }
+  async withIdleExecution<T>(operation: () => T): Promise<Awaited<T>> {
+    // A crash may precede the public receipt snapshot, after the private request claim.
+    // Resume reconciles that journaled identity; absence of metadata is not proof of exit.
+    const unresolvedRemote = [...this.runs.values()].some((run) => run.steps.some((step) => step.remote ? step.remote.ambiguous || ["accepted", "running", "unknown"].includes(step.remote.state) : run.loop.remoteWorker && (step.kind ?? "agent") === "agent" && ["failed", "stopped", "interrupted"].includes(step.status)));
+    if (this.shuttingDown || this.executionPolicyLease || this.startingRepositories.size || this.starting.size || this.active.size || this.mergeValidating.size || this.repositoryLeases.size || unresolvedRemote || [...this.runs.values()].some((run) => this.busyRun(run))) throw new RunConflictError("Wait for every run, start, validation, workspace edit and unresolved remote receipt before activating filesystem policy");
+    const lease = { id: `policy-${randomBytes(8).toString("hex")}`, at: Date.now() }; this.executionPolicyLease = lease;
+    const work = Promise.resolve().then(operation); this.repositoryLeaseWork.set(lease.id, work);
+    try { return await work; } finally { this.repositoryLeaseWork.delete(lease.id); if (this.executionPolicyLease === lease) this.executionPolicyLease = undefined; }
+  }
   /** Writes run snapshots to the logs as patches (see src/run-log.ts). */
   private readonly logWriter = new RunLogWriter();
+
 
   constructor(
     private readonly findPattern: (id: string) => Pattern | undefined = () => undefined,
     /** Where runs are grouped; without it runs record no project. */
     readonly projects?: Projects,
+    readonly remoteWorkers?: RemoteWorkers,
   ) {
     this.bus.setMaxListeners(0);
   }
@@ -2614,6 +2848,12 @@ export class RunManager {
     return () => this.bus.off("activity", listener);
   }
 
+  /** Workspace services abort startup before cancellation or cleanup can remove their files. */
+  onWorkspaceStop(listener: (runId: string) => void): () => void {
+    this.bus.on("workspace-stop", listener);
+    return () => this.bus.off("workspace-stop", listener);
+  }
+
   /** How busy code-flow is: processes running and waiting across all runs. */
   get busy() {
     return { agents: { running: agentSlots.busy, waiting: agentSlots.queued, max: agentSlots.size }, checks: { running: checkSlots.busy, waiting: checkSlots.queued, max: checkSlots.size } };
@@ -2622,30 +2862,24 @@ export class RunManager {
   /** Rebuild runs from their event logs; runs that were mid-flight become "interrupted". */
   async load(): Promise<void> {
     await this.loadQuota();
-    const ids = (await listRunIds()).filter((id) => !this.runs.has(id));
-    /** Logs written before snapshots were patches, with many of them: compacted once loaded. */
+    const ids = (await listRunIds()).filter((id) => !this.runs.has(id) && !this.coldRuns.has(id));
     const compact: string[] = [];
-    // A few logs at a time: one by one is slow with hundreds of runs, all at once opens too many files.
-    const logs = await mapLimit(ids, 8, async (id) => {
-      const lines = await readJsonLines(`${id}.jsonl`).catch((err: Error) => {
-        logWarn(`Couldn't read the log of run ${id}; it's left out`, { error: err.message });
-        return [] as RunEvent[];
-      });
-      if (lines.filter((l) => l?.type === "run").length >= COMPACT_SNAPSHOTS && !lines.some((l) => l?.type === "run-patch")) compact.push(id);
-      return decodeRunLog(lines);
-    });
-    ids.forEach((id, i) => {
-      const events = logs[i]!;
-      for (const e of events) if (typeof e.seq === "number" && e.seq > this.seq) this.seq = e.seq;
-      const run = rebuildRun(events);
-      if (!run) {
-        if (events.length) logWarn(`The log of run ${id} has no run snapshot; it's left out`, { events: events.length });
-        return;
-      }
-      if (this.runs.has(id)) return;
+    // Recover each record incrementally and release its log before opening another batch.
+    await mapLimit(ids, 4, async (id) => {
+      const cold = await this.coldRuns.load(id);
+      if (cold) { this.seq = Math.max(this.seq, cold.seq); return; }
+      const projection = await recoverRun(id).catch((error: Error) => { logWarn(`Couldn't recover the log of run ${id}`, { error: error.message }); throw error; });
+      this.seq = Math.max(this.seq, projection.seq);
+      if (projection.fullSnapshots >= COMPACT_SNAPSHOTS && !projection.patches) compact.push(id);
+      const run = projection.run;
+      if (!run) { if (projection.records) logWarn(`The log of run ${id} has no run snapshot; it's left out`, { events: projection.records }); return; }
+      if (this.runs.has(id) || this.coldRuns.has(id)) return;
+
       this.runs.set(id, run);
+      this.runIdentities.set(id, new WeakRef(run));
       const wasRunning = run.status === "running";
       if (wasRunning) {
+        run.pauseRequested = false;
         run.status = "interrupted";
         run.error = "code-flow stopped while this run was in progress. Resume to continue.";
         run.endedAt = run.endedAt ?? Date.now();
@@ -2669,6 +2903,7 @@ export class RunManager {
         requeueNotes(run);
         this.emitRun(run);
       }
+      await this.coolRun(run);
     });
     void this.tidyWorktrees().catch((err: Error) => logWarn("Couldn't tidy worktrees at startup", { error: err.message }));
     if (compact.length) void this.compactLogs(compact);
@@ -2684,7 +2919,7 @@ export class RunManager {
     let after = 0;
     for (const id of ids) {
       if (this.shuttingDown) break;
-      await rewriteLines(`${id}.jsonl`, (lines) => {
+      const rewritten = await rewriteLines(`${id}.jsonl`, (lines) => {
         if (lines.some((l) => (l as { type?: string } | null)?.type === "run-patch")) return undefined;
         const events = decodeRunLog(lines);
         const compacted = compactRunLog(events);
@@ -2693,7 +2928,14 @@ export class RunManager {
         before += was;
         after += is;
         return compacted;
-      }).catch((err: Error) => logWarn(`Couldn't compact the log of run ${id}; it's left as it was`, { error: err.message }));
+      }).catch((err: Error) => { logWarn(`Couldn't compact the log of run ${id}; it's left as it was`, { error: err.message }); return false; });
+      // Rewriting changes the authoritative source identity. Refresh one cold projection at a
+      // time so the next history listing cannot promote every compacted archived run at once.
+      // A concurrent listing may already have promoted the stale projection while the rewrite
+      // completed. Refresh that live record too; coolRun still excludes active/mutating runs.
+      if (rewritten || this.coldRuns.has(id) && !this.coldRuns.valid(id)) {
+        const run = this.get(id); if (run) await this.coolRun(run);
+      }
     }
     if (before) logInfo(`Compacted run logs: ${Math.round(before / 1024)} KB → ${Math.round(after / 1024)} KB`);
   }
@@ -2704,26 +2946,89 @@ export class RunManager {
    * worktrees on a drive that isn't mounted right now.
    */
   private async tidyWorktrees() {
-    const runs = [...this.runs.values()];
+    const runs = this.allSummaries();
     const roots = new Set(runs.filter((r) => existsSync(r.repo)).map((r) => dirname(r.worktreeDir)));
     for (const root of roots) {
       const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
-      const orphans = entries.filter((e) => e.isDirectory() && !e.name.startsWith(".") && !this.runs.has(e.name)).map((e) => join(root, e.name));
+      const orphans = entries.filter((e) => e.isDirectory() && !e.name.startsWith(".") && !this.runs.has(e.name) && !this.coldRuns.has(e.name)).map((e) => join(root, e.name));
       if (orphans.length) logWarn("Worktree folders no run owns (left alone; remove them if you don't need them)", { folders: orphans });
     }
   }
 
   list(): RunSummary[] {
-    return [...this.runs.values()].map(strip).sort((a, b) => b.createdAt - a.createdAt);
+    return this.allSummaries().sort(compareRuns);
+  }
+
+  private allSummaries(): RunSummary[] {
+    for (const id of [...this.coldRuns.ids()]) if (!this.coldRuns.valid(id)) this.get(id);
+    return [...this.runs.values()].map(strip).concat(this.coldRuns.summaries());
+  }
+  private searchText(metadata: RunSummary): string {
+    const run = metadata.cold ? this.get(metadata.id)! : metadata;
+    return [run.task, run.id, run.repo, run.pattern, run.branchPrefix, run.source ? `#${run.source.number} ${run.source.title}` : "", run.externalSource?.title ?? "", run.trigger?.name ?? "", run.group?.label ?? ""].join("\n").toLowerCase();
+  }
+  private async coolRun(run: Run): Promise<void> {
+    if (!coldEligible(run) || this.busyRun(run) || this.active.has(run.id) || this.coldMutations.has(run.id) || this.runs.get(run.id) !== run) return;
+    await flushWrites();
+    if (!coldEligible(run) || this.busyRun(run) || this.active.has(run.id) || this.coldMutations.has(run.id) || this.runs.get(run.id) !== run) return;
+    const before = JSON.stringify(run);
+    if (await this.coldRuns.save(run, this.seq)) {
+      if (this.runs.get(run.id) === run && coldEligible(run) && !this.busyRun(run) && !this.active.has(run.id) && !this.coldMutations.has(run.id) && JSON.stringify(run) === before) { this.runs.delete(run.id); this.history.delete(run.id); this.logWriter.forget(run.id); }
+      else this.coldRuns.drop(run.id);
+    }
+  }
+  private scheduleCold(run: Run) {
+    if (!coldEligible(run) || this.coldWrites.has(run.id)) return;
+    const work = this.coolRun(run).catch((error: Error) => logWarn(`Couldn't cache archived run ${run.id}; its log remains authoritative`, { error: error.message })).finally(() => this.coldWrites.delete(run.id));
+    this.coldWrites.set(run.id, work);
+  }
+  private holdColdMutation(run: Run): () => void {
+    this.coldMutations.set(run.id, (this.coldMutations.get(run.id) ?? 0) + 1);
+    return () => {
+      const remaining = this.coldMutations.get(run.id)! - 1;
+      if (remaining) { this.coldMutations.set(run.id, remaining); return; }
+      this.coldMutations.delete(run.id);
+      const pending = this.coldWrites.get(run.id);
+      if (pending) void pending.then(() => this.scheduleCold(run));
+      else this.scheduleCold(run);
+    };
+  }
+  inspectStorage() { return { hot: this.runs.size, cold: this.coldRuns.inspect(), pending: this.coldWrites.size }; }
+
+  /** All running runs stay visible; older attention is stable-cursor paginated. */
+  attentionPage(input: { limit?: number; cursor?: string; predicate?: (run: RunSummary) => boolean } = {}) {
+    const limit = input.limit ?? 100; if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Attention page size must be between 1 and 100");
+    const cursor = input.cursor ? decodeRunCursor(input.cursor) : undefined;
+    const candidates = this.allSummaries().filter((run) => !input.predicate || input.predicate(run)).sort(compareRuns), running = candidates.filter((run) => run.status === "running");
+    const attention = candidates.filter((run) => run.status !== "running" && !run.archived && (!run.seen || run.status === "interrupted" || !!run.awaiting || !!run.team?.awaitingRequestId || run.triage?.state === "pending"));
+    const remaining = attention.filter((run) => !cursor || afterRunCursor(run, cursor)), selected = remaining.slice(0, limit), truncated = remaining.length > limit;
+    return { runs: [...running, ...selected], total: running.length + attention.length, running: running.length, truncated, nextCursor: truncated ? encodeRunCursor(selected.at(-1)!) : undefined };
+  }
+
+  page(input: { limit?: number; before?: number; cursor?: string; query?: string; project?: string; predicate?: (run: RunSummary) => boolean } = {}) {
+    if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)) throw new Error("History page size must be between 1 and 100");
+    if (input.before !== undefined && (!Number.isSafeInteger(input.before) || input.before < 0)) throw new Error("Invalid history timestamp");
+    const cursor = input.cursor === undefined ? undefined : decodeRunCursor(input.cursor);
+    const limit = input.limit ?? 50;
+    const words = input.query?.trim().toLowerCase().split(/\s+/).filter(Boolean) ?? [];
+    const matches = this.allSummaries().filter((run) => { if (input.predicate && !input.predicate(run) || input.project && run.project !== input.project) return false; if (!words.length) return true; const text = this.searchText(run); return words.every((word) => text.includes(word)); }).sort(compareRuns);
+    const remaining = matches.filter((run) => (!cursor || afterRunCursor(run, cursor)) && (input.before === undefined || run.createdAt < input.before));
+    const selected = remaining.slice(0, limit);
+    return { runs: selected, total: matches.length, nextCursor: remaining.length > limit ? encodeRunCursor(selected.at(-1)!) : undefined, nextBefore: remaining.length > limit ? selected.at(-1)?.createdAt : undefined };
   }
 
   get(id: string): Run | undefined {
-    return this.runs.get(id);
+    const hot = this.runs.get(id); if (hot) return hot;
+    if (!this.coldRuns.has(id)) return undefined;
+    let cold: Run | undefined; try { cold = this.coldRuns.get(id); } catch { /* Rebuild from the authoritative log. */ }
+    if (cold) return cold;
+    const recovered = recoverRunSync(id); if (!recovered.run) throw new Error("Cold run has no recoverable authoritative snapshot");
+    this.coldRuns.drop(id); this.seq = Math.max(this.seq, recovered.seq); return this.adoptRun(recovered.run);
   }
 
   /** The run worktree (or scratch checkout) `path` is or is in, for code-flow's git there (see runWorktreeAt). */
   worktreeAt(path: string): Promise<Checkout | undefined> {
-    return runWorktreeAt(this.runs.values(), path);
+    return runWorktreeAt(this.allSummaries(), path);
   }
 
   /** Full event history of a run (from memory, or from its log for runs loaded from disk). */
@@ -2745,25 +3050,101 @@ export class RunManager {
     return () => this.bus.off("*", listener);
   }
 
+  setPaused(id: string, paused: boolean) {
+    const run = this.require(id);
+    if (run.status !== "running") throw new Error("Only a running run can be paused");
+    run.pauseRequested = paused;
+    this.emitRun(run);
+    this.bus.emit(`pause:${id}`);
+    return { paused, pending: paused && run.steps.some((step) => step.status === "running") };
+  }
+
+  setPriority(id: string, priority: number) {
+    if (!Number.isInteger(priority) || priority < -10 || priority > 10) throw new Error("Priority must be an integer from -10 to 10");
+    const run = this.require(id);
+    run.priority = priority;
+    this.emitRun(run);
+    return { priority };
+  }
+
+  async waitWhilePaused(run: Run, signal: AbortSignal) {
+    while (run.pauseRequested && !signal.aborted) await new Promise<void>((resolve) => {
+      const finish = () => { this.bus.off(`pause:${run.id}`, finish); signal.removeEventListener("abort", finish); resolve(); };
+      this.bus.once(`pause:${run.id}`, finish);
+      signal.addEventListener("abort", finish, { once: true });
+      if (!run.pauseRequested || signal.aborted) finish();
+    });
+  }
+
   cancel(id: string): boolean {
+    approvals.cancelRun(id);
+    this.bus.emit("workspace-stop", id);
+    const validation = this.mergeValidating.get(id);
+    validation?.abort();
     // A resume still waiting for the last attempt to wrap up: that controller is the old one.
     if (this.starting.has(id)) this.stoppedWhileStarting.add(id);
     const controller = this.controllers.get(id);
-    if (!controller) return this.starting.has(id);
+    const run = this.runs.get(id);
+    if (run) run.pauseRequested = false;
+    this.bus.emit(`pause:${id}`);
+    if (!controller) return this.starting.has(id) || !!validation;
     controller.abort();
     return true;
   }
 
   setSeen(id: string, seen = true) {
-    const run = this.runs.get(id);
+    const run = this.get(id);
     if (!run || run.seen === seen) return;
+    this.coldRuns.drop(id); this.runs.set(id, run);
     run.seen = seen;
     this.emitRun(run);
   }
 
   /** Running, or claimed by a resume that's about to start it. */
   private busyRun(run: Run): boolean {
-    return run.status === "running" || this.starting.has(run.id);
+    return run.status === "running" || this.starting.has(run.id) || this.mergeValidating.has(run.id);
+  }
+
+  isRepositoryIdle(repo: string): boolean {
+    const scope = this.repositoryScope(repo);
+    return ![...this.startingRepositories].some(([path, count]) => count > 0 && scope.has(path)) && ![...this.runs.values()].some((run) => scope.has(run.repo) && this.busyRun(run));
+  }
+
+  /** Related main checkouts and owned worktrees share one in-process activity boundary. */
+  private repositoryScope(repo: string): Set<string> {
+    const neighbors = new Map<string, Set<string>>();
+    for (const run of this.allSummaries()) for (const tree of run.worktrees) {
+      if (!neighbors.has(run.repo)) neighbors.set(run.repo, new Set());
+      if (!neighbors.has(tree.path)) neighbors.set(tree.path, new Set());
+      neighbors.get(run.repo)!.add(tree.path); neighbors.get(tree.path)!.add(run.repo);
+    }
+    const scope = new Set([repo]), queue = [repo];
+    for (let index = 0; index < queue.length; index++) for (const path of neighbors.get(queue[index]!) ?? []) if (!scope.has(path)) { scope.add(path); queue.push(path); }
+    return scope;
+  }
+
+  private assertNoWorkspaceLease(repo: string) {
+    if (this.executionPolicyLease) throw new RunConflictError("Filesystem policy activation holds the global execution lease");
+    const scope = this.repositoryScope(repo);
+    for (const lease of this.repositoryLeases.values()) if ([...scope].some((path) => lease.scope.has(path))) throw new RunConflictError(`Wait for ${lease.kind} to finish before starting another operation in this workspace`);
+  }
+
+  /** Claim after canonicalization but before invoking any mutation; independent starts stay parallel. */
+  async withIdleRepository<T>(repo: string, operation: () => T, metadata: { kind?: string; owner?: string } = {}): Promise<Awaited<T>> {
+    const canonical = await realpath(await repoRoot(repo));
+    if (this.shuttingDown) throw new RunConflictError("code-flow is shutting down");
+    this.assertNoWorkspaceLease(canonical);
+    if (!this.isRepositoryIdle(canonical)) throw new RunConflictError("Finish or stop active and starting runs before changing this workspace");
+    const id = `lease-${randomBytes(8).toString("hex")}`;
+    this.repositoryLeases.set(id, { id, repo: canonical, scope: this.repositoryScope(canonical), kind: metadata.kind?.slice(0, 100) || "workspace mutation", owner: metadata.owner?.slice(0, 256), at: Date.now() });
+    try {
+      const work = Promise.resolve(operation()); this.repositoryLeaseWork.set(id, work);
+      return await work;
+    } finally { this.repositoryLeases.delete(id); this.repositoryLeaseWork.delete(id); }
+  }
+
+  inspectRepositoryActivity() {
+    return { leases: [...this.repositoryLeases.values()].map(({ scope: _scope, ...lease }) => lease), starting: [...this.startingRepositories].map(([repo, count]) => ({ repo, count })), runs: [...this.runs.values()].filter((run) => this.busyRun(run)).map((run) => ({ id: run.id, repo: run.repo, status: run.status, starting: this.starting.has(run.id), validating: this.mergeValidating.has(run.id) })) };
   }
 
   setArchived(id: string, archived: boolean) {
@@ -2808,9 +3189,9 @@ export class RunManager {
 
   /** Record `id` on the runs that belonged to it only through their repo (as of `before`). */
   private keepInProject(id: string, before: Project[], affected: (repo: string) => boolean) {
-    for (const run of this.runs.values()) {
-      if (run.project || !affected(run.repo) || projectOf(run, before) !== id) continue;
-      run.project = id;
+    for (const metadata of this.allSummaries()) {
+      if (metadata.project || !affected(metadata.repo) || projectOf(metadata, before) !== id) continue;
+      const run = this.require(metadata.id); run.project = id;
       this.emitRun(run);
     }
   }
@@ -2827,6 +3208,7 @@ export class RunManager {
   async archive(id: string, opts: { cleanup?: boolean; deleteBranches?: boolean } = {}) {
     const run = this.require(id);
     this.setArchived(id, true);
+    this.bus.emit("workspace-stop", id);
     this.devServers.stopMatching(`${id}/`);
     if (!opts.cleanup) return { removed: [], deletedBranches: [] };
     const result = await removeWorktrees(run.repo, run.worktrees, !!opts.deleteBranches);
@@ -2880,7 +3262,7 @@ export class RunManager {
   /** Per-file diff of one of the run's branches against the run's base. */
   /** A result branch's changes since the run started; `last`: only its latest commit (the last step or follow-up). */
   async diff(id: string, branch: string, last = false): Promise<DiffFile[]> {
-    const run = this.require(id);
+    const run = this.get(id); if (!run) throw new Error("Run not found");
     if (!run.worktrees.some((w) => w.branch === branch) && !run.artifacts.some((a) => a.branch === branch)) {
       throw new Error("That branch doesn't belong to this run");
     }
@@ -2911,54 +3293,84 @@ export class RunManager {
     },
   ) {
     const run = this.require(id);
-    const kind = input.kind ?? "comments";
-    if (kind === "side" && !input.side) throw new Error("A side chat's turn needs its chat");
-    // A side chat's turn can wait for the team, and anything can wait for follow-ups once the team is
-    // done (a reply sent while a side chat works): the running execution takes it after its own work.
-    const waits = () => run.status === "running" && !this.starting.has(id) && (kind === "side" || !!run.patternDone);
-    let queue = waits();
-    if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error(kind === "side" ? "Side chats can start once the run has finished or while it's running" : "Follow-ups can be sent once the run has finished");
-    if (!run.worktrees.some((w) => w.name === input.worktree)) throw new Error(`Unknown worktree "${input.worktree}"`);
-    if (kind !== "resolve-conflicts" && !input.message?.trim()) throw new Error(kind === "reply" ? "Write a reply" : kind === "side" ? "Write a message" : "Write at least one comment");
-    if (kind === "resolve-conflicts" && !input.mergeFrom) throw new Error("Say which branch to merge");
-    if (kind === "resolve-conflicts" && !(await validRef(run.repo, input.mergeFrom!))) throw new Error(`"${input.mergeFrom}" isn't a branch in this repository`);
-    // An invalid budget is refused before any file is staged.
-    const budget = followUpBudget(input.budget, run.loop);
-    // Staged with the run's context, not in the worktree: it may have been removed (archived,
-    // cleaned up), and the turn re-attaches it first. The turn copies them in.
-    const files = input.attachments?.length ? await stageMessageFiles(join(run.worktreeDir, STAGE_DIR), Date.now().toString(36), input.attachments) : [];
-    // Writing the files took a moment: whether it waits for the team or starts now is decided after.
-    queue = waits();
-    if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error("Follow-ups can be sent once the run has finished");
-    const message = (input.message?.trim() ?? "") + (files.length ? `\n\nAttached, in this worktree (not committed): ${files.map((f) => `\`${f}\``).join(", ")}` : "");
-    run.followUps.push({
-      id: `f${run.followUps.length + 1}`, budget,
-      kind,
-      side: kind === "side" ? input.side : undefined,
-      worktree: input.worktree,
-      agent: input.agent,
-      message,
-      files: files.length ? files : undefined,
-      mergeFrom: input.mergeFrom,
-      from: input.from,
-      push: input.push,
-      watch: input.watch,
-      trust: input.trust,
-      status: "pending",
-      at: Date.now(),
-    });
-    // The budget is the allocation of the execution this follow-up starts. A queued one joins the
-    // execution that is running (its limits are read live: shrinking them could stop the side chat
-    // it waits for), so its budget is kept on the follow-up only.
-    if (budget && !queue) Object.assign(run.loop, budget);
-    if (queue) {
-      this.emitRun(run);
-      return run;
-    }
-    return this.resume(id);
+    const release = this.holdColdMutation(run);
+    try {
+      await this.assertExecutionAllowed(run.repo, run, "follow-up dispatch");
+      const kind = input.kind ?? "comments";
+      if (kind === "side" && !input.side) throw new Error("A side chat's turn needs its chat");
+      // A side chat's turn can wait for the team, and anything can wait for follow-ups once the team is
+      // done (a reply sent while a side chat works): the running execution takes it after its own work.
+      const waits = () => run.status === "running" && !this.starting.has(id) && (kind === "side" || !!run.patternDone);
+      let queue = waits();
+      if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error(kind === "side" ? "Side chats can start once the run has finished or while it's running" : "Follow-ups can be sent once the run has finished");
+      if (!run.worktrees.some((w) => w.name === input.worktree)) throw new Error(`Unknown worktree "${input.worktree}"`);
+      if (kind !== "resolve-conflicts" && !input.message?.trim()) throw new Error(kind === "reply" ? "Write a reply" : kind === "side" ? "Write a message" : "Write at least one comment");
+      if (kind === "resolve-conflicts" && !input.mergeFrom) throw new Error("Say which branch to merge");
+      if (kind === "resolve-conflicts" && !(await validRef(run.repo, input.mergeFrom!))) throw new Error(`"${input.mergeFrom}" isn't a branch in this repository`);
+      // An invalid budget is refused before any file is staged.
+      const budget = followUpBudget(input.budget, run.loop);
+      // Staged with the run's context, not in the worktree: it may have been removed (archived,
+      // cleaned up), and the turn re-attaches it first. The turn copies them in.
+      const files = input.attachments?.length ? await stageMessageFiles(join(run.worktreeDir, STAGE_DIR), Date.now().toString(36), input.attachments) : [];
+      // Writing the files took a moment: whether it waits for the team or starts now is decided after.
+      queue = waits();
+      if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error("Follow-ups can be sent once the run has finished");
+      const message = (input.message?.trim() ?? "") + (files.length ? `\n\nAttached, in this worktree (not committed): ${files.map((f) => `\`${f}\``).join(", ")}` : "");
+      run.followUps.push({
+        id: `f${run.followUps.length + 1}`, budget,
+        kind,
+        side: kind === "side" ? input.side : undefined,
+        worktree: input.worktree,
+        agent: input.agent,
+        message,
+        files: files.length ? files : undefined,
+        mergeFrom: input.mergeFrom,
+        from: input.from,
+        push: input.push,
+        watch: input.watch,
+        trust: input.trust,
+        status: "pending",
+        at: Date.now(),
+      });
+      // The budget is the allocation of the execution this follow-up starts. A queued one joins the
+      // execution that is running (its limits are read live: shrinking them could stop the side chat
+      // it waits for), so its budget is kept on the follow-up only.
+      if (budget && !queue) Object.assign(run.loop, budget);
+      if (queue) {
+        this.emitRun(run);
+        return run;
+      }
+      return await this.resume(id);
+    } finally { release(); }
   }
 
   private readonly goalRevisions = new Map<string, { signature: string; promise: Promise<Run> }>();
+  private readonly taskReruns = new Map<string, { signature: string; promise: Promise<Run> }>();
+
+  /** Execute selected accepted tasks and their dependents in a fresh child; the source is unchanged. */
+  async rerunTeamTasks(id: string, input: unknown): Promise<Run> {
+    const run = this.require(id), signature = JSON.stringify(input);
+    const pending = this.taskReruns.get(id);
+    if (pending) { if (pending.signature !== signature) throw new TeamRerunError("A different task rerun is already starting", 409); return pending.promise; }
+    if (this.shuttingDown || this.busyRun(run)) throw new TeamRerunError("Wait for the source run and its operations to finish before rerunning tasks", 409);
+    this.assertNoWorkspaceLease(run.repo);
+    const pattern = this.findPattern("auto-team");
+    if (!pattern || !autoTeamEnabled()) throw new TeamRerunError("New Auto-team executions are unavailable", 409);
+    // This same synchronous claim prevents resume, archive, merge and a second rerun racing us.
+    this.starting.add(id); this.stoppedWhileStarting.delete(id);
+    const promise = (async () => {
+      await this.active.get(id)?.catch(() => undefined);
+      const seed = await prepareTeamRerun(run, input);
+      if (this.stoppedWhileStarting.has(id) || this.shuttingDown) throw new TeamRerunError("Task rerun was cancelled before the child started", 409);
+      return this.start({ pattern, repo: run.repo, project: run.project, parentRunId: run.id, baseRef: seed.baseCommit, teamRerun: seed,
+        task: run.task, roles: structuredClone(run.roles), options: structuredClone(run.options), loop: { ...structuredClone(run.loop), ...seed.budget },
+        approvals: { ...run.approvals }, trust: run.trust, agentSettings: structuredClone(run.agentSettings), roleSettings: structuredClone(run.roleSettings),
+        context: { paths: run.context.paths.map(({ path }) => ({ path })) },
+      });
+    })();
+    this.taskReruns.set(id, { signature, promise });
+    try { return await promise; } finally { this.taskReruns.delete(id); this.starting.delete(id); this.stoppedWhileStarting.delete(id); }
+  }
 
   /** A user goal change creates a new approved plan after all original processes reconcile. */
   async reviseGoal(id: string, input: { message: string; budget?: Partial<Pick<LoopSettings, "maxSteps" | "maxInvocations" | "maxMinutes">> }): Promise<Run> {
@@ -2998,13 +3410,78 @@ export class RunManager {
   }
 
   /** Merge a result branch into one of your branches (see `mergeInto` for how it stays safe). */
-  async merge(id: string, input: { branch: string; into: string; archiveAfter?: boolean }) {
+  async reviewCoverage(id: string, branch: string) {
+    const run = this.readRun(id);
+    if (!run.worktrees.some((tree) => tree.branch === branch)) throw new Error("That branch doesn't belong to this run");
+    const head = await resolveCommit(run.repo, `refs/heads/${branch}`);
+    const files = await branchDiff(run.repo, run.baseRef, head);
+    const review = run.humanReview?.[branch];
+    const reviewed = review?.head === head ? review.files : [];
+    return { head, files: files.map((file) => file.path), reviewed, coverage: reviewCoverage(files.map((file) => file.path), reviewed), risk: assessChangeRisk(files), stale: !!review && review.head !== head, rework: (run.humanRework ?? []).filter((item) => item.branch === branch) };
+  }
+
+  async recordFileReview(id: string, input: { branch: string; expectedHead: string; path: string; reviewed: boolean }, actor = "owner", authorize: () => void = () => {}) {
+    if (typeof actor !== "string" || actor.length > 200 || !/^(?:owner|shared:[a-zA-Z0-9_-]+:[a-zA-Z0-9_.-]+)$/.test(actor)) throw new Error("A server-authenticated review identity is required");
+    const run = this.require(id);
+    const current = await this.reviewCoverage(id, input.branch);
+    if (input.expectedHead !== current.head || await resolveCommit(run.repo, `refs/heads/${input.branch}`) !== current.head) throw new RunConflictError("This branch changed. Review the current file before recording coverage.");
+    if (!current.files.includes(input.path) || typeof input.reviewed !== "boolean") throw new Error("Choose a changed file and its review state");
+    const existing = run.humanReview?.[input.branch];
+    const files = new Set(existing?.head === current.head ? existing.files : []);
+    if (input.reviewed) files.add(input.path); else files.delete(input.path);
+    authorize();
+    const at = Date.now();
+    Object.defineProperty(run.humanReview ??= Object.create(null), input.branch, { value: { head: current.head, files: [...files], at, audit: [...(existing?.audit ?? []), { at, actor, path: input.path, reviewed: input.reviewed }].slice(-200) }, enumerable: true, writable: true, configurable: true });
+    if (run.verification?.head === current.head && run.verification.branch === input.branch) run.verification.review = reviewCoverage(current.files, [...files]);
+    this.emitRun(run);
+    return this.reviewCoverage(id, input.branch);
+  }
+
+  async recordHumanRework(id: string, input: { branch: string; expectedHead: string; minutes: number; note?: string }) {
+    const run = this.require(id);
+    if (!Number.isFinite(input.minutes) || input.minutes < 1 || input.minutes > 1440 || (input.note !== undefined && (typeof input.note !== "string" || input.note.length > 2000))) throw new Error("Record 1–1,440 minutes and an optional note under 2,000 characters");
+    if ((run.humanRework?.length ?? 0) >= 100) throw new Error("This run already has 100 rework records");
+    const current = await this.reviewCoverage(id, input.branch);
+    if (input.expectedHead !== current.head) throw new RunConflictError("This branch changed. Refresh before recording rework");
+    (run.humanRework ??= []).push({ id: randomBytes(12).toString("hex"), branch: input.branch, head: current.head, minutes: input.minutes, note: input.note?.trim() ?? "", at: Date.now() });
+    this.emitRun(run);
+    return this.reviewCoverage(id, input.branch);
+  }
+
+  async validateMerge(id: string, input: { branch: string; into: string; allowUntrusted?: boolean }, signal?: AbortSignal) {
+    const run = this.require(id);
+    this.assertNoWorkspaceLease(run.repo);
+    if (this.busyRun(run)) throw new Error("Wait for the run and its validation to finish");
+    if (!run.worktrees.some((tree) => tree.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
+    if (run.lockdown && !run.loop.container && !run.lockdownOnHost && !input.allowUntrusted) throw new UntrustedSourceError(`${run.lockdown}. Merge validation executes repository code on this machine.`);
+    const profile = run.loop.verification ?? (run.loop.check ? { name: "Run check", checks: [{ id: "run-check", kind: "custom" as const, command: run.loop.check, required: true, timeoutMs: timerMs(run.loop.checkTimeoutMin * 60000, 1000) }] } : undefined);
+    if (!profile) throw new Error("Configure a verification profile or check before validating a merge target");
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    this.mergeValidating.set(id, controller);
+    this.noteActivity();
+    run.mergeValidation = undefined;
+    this.emitRun(run);
+    const work = validateMergeTarget(run.repo, { ...input, profile, setup: run.loop.setup, container: run.loop.container, signal: controller.signal });
+    this.mergeValidationWork.set(id, work);
+    try {
+      run.mergeValidation = await work;
+      this.emitRun(run);
+      return run.mergeValidation;
+    } finally { signal?.removeEventListener("abort", abort); this.mergeValidating.delete(id); this.mergeValidationWork.delete(id); }
+  }
+
+  async merge(id: string, input: { branch: string; into: string; archiveAfter?: boolean; requireValidation?: boolean }) {
     const run = this.require(id);
     if (this.busyRun(run)) throw new Error("Wait for the run to finish before merging");
     if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
     // git would say "Already up to date" and code-flow would call that a merge.
     if (await isAncestor(run.repo, input.branch, `refs/heads/${input.into}`)) throw new Error(`Nothing to merge: ${input.into} already has everything on ${input.branch}`);
-    const outcome = await mergeInto(run.repo, input.branch, input.into, `Merge ${input.branch} into ${input.into} (code-flow run ${run.id})`);
+    const verified = run.mergeValidation;
+    if (input.requireValidation && (!verified?.tree || verified.branch !== input.branch || verified.into !== input.into || verified.report?.state !== "verified" || verified.conflicts.length)) throw new Error("Validate this merge target successfully before merging");
+    const outcome = await mergeInto(run.repo, input.branch, input.into, `Merge ${input.branch} into ${input.into} (code-flow run ${run.id})`, input.requireValidation ? verified : undefined);
     if (outcome.ok) {
       run.merges.push({ branch: input.branch, into: input.into, commit: outcome.commit, at: Date.now() });
       this.emit(run, { type: "log", level: "info", text: `Merged ${input.branch} into ${input.into} (${outcome.commit.slice(0, 8)})` });
@@ -3017,7 +3494,7 @@ export class RunManager {
 
   /** A result branch's pull request, as merging it needs to know it. */
   async prMergeInfo(id: string, branch: string): Promise<PrMergeInfo> {
-    const run = this.require(id);
+    const run = this.readRun(id);
     const url = run.prs[branch];
     if (!url) throw new Error("This branch has no pull request");
     return prMergeInfo(run.repo, url);
@@ -3110,7 +3587,7 @@ export class RunManager {
 
   /** The branch a result's pull request should go into (see `pullRequestTarget`). */
   async pullRequestTarget(id: string): Promise<string> {
-    const run = this.require(id);
+    const run = this.readRun(id);
     const startedFrom = run.baseLabel === "HEAD" ? await currentBranch(run.repo) : run.baseLabel;
     return pullRequestTarget(run.repo, startedFrom);
   }
@@ -3213,15 +3690,31 @@ export class RunManager {
   private readonly waiters = new Map<string, (answer: ApprovalAnswer) => void>();
   private readonly teamWaiters = new Map<string, (answer: string) => void>();
   private readonly teamReplyWrites = new Map<string, Promise<Note>>();
+  private readonly teamPlanWrites = new Map<string, Promise<TeamState>>();
   /** Turns that take input while they run, by run and step: where notes can go right away. */
   private readonly steerers = new Map<string, Map<string, { agent: AgentId; steer: (text: string) => Promise<boolean> }>>();
   /** Latest plan-usage signal per vendor (Claude reports windows; others only "limited"). */
   readonly quota: Partial<Record<AgentId, { status: string; windows: Record<string, { utilization?: number; resetsAt?: number }>; at: number }>> = {};
+  private readonly remoteQuota = new Map<string, RunManager["quota"]>();
+  private readonly remoteProbes = new Map<string, { at: number; value: Awaited<ReturnType<RemoteWorkers["probe"]>> }>();
+  quotaForWorker(workerId?: string): RunManager["quota"] { if (!workerId) return this.quota; let quota = this.remoteQuota.get(workerId); if (!quota) { quota = {}; this.remoteQuota.set(workerId, quota); } return quota; }
+  async remoteInventory(selection: NonNullable<LoopSettings["remoteWorker"]>) {
+    if (!this.remoteWorkers || !selection || typeof selection.workerId !== "string" || typeof selection.repoMapping !== "string" || Object.keys(selection).some((key) => !["workerId", "repoMapping"].includes(key)) || !this.remoteWorkers.list().some((worker) => worker.id === selection.workerId && worker.repoMappings.includes(selection.repoMapping))) throw new Error("Choose an explicitly registered remote worker and repository mapping");
+    const key = `${selection.workerId}/${selection.repoMapping}`, cached = this.remoteProbes.get(key);
+    if (cached && Date.now() - cached.at < 30_000) return cached.value.capabilities;
+    const value = await this.remoteWorkers.probe(selection.workerId, { repoMapping: selection.repoMapping }); if (!value.capabilities.repoMappings.includes(selection.repoMapping)) throw new Error("Repository mapping is unavailable on the remote worker"); this.remoteProbes.set(key, { at: Date.now(), value }); return value.capabilities;
+  }
+  async inspectRemoteStep(id: string, stepId: string, options: { cancel?: boolean } = {}) {
+    const run = this.require(id), step = run.steps.find((item) => item.id === stepId); if (!step?.remote || !this.remoteWorkers) throw new Error("This step has no owned remote worker request");
+    const expectedScope = { runId: run.id, stepIds: run.steps.filter((item) => item.remote?.workerId === step.remote!.workerId && item.remote.requestId === step.remote!.requestId).map((item) => item.id) };
+    const value = options.cancel ? await this.remoteWorkers.cancel(step.remote.workerId, step.remote.requestId, { expectedScope }) : await this.remoteWorkers.receipt(step.remote.workerId, step.remote.requestId, { downloadArtifact: false, expectedScope });
+    for (const related of run.steps) if (related.remote?.workerId === step.remote.workerId && related.remote.requestId === step.remote.requestId) { related.remote = { ...value.remote, recovered: true }; this.emit(run, { type: "step", step: { ...related } }); } this.emitRun(run); return { remote: step.remote, ok: value.ok, error: value.error, finalText: value.finalText };
+  }
   /** "Run app" dev servers, keyed `${runId}/${worktree}`. */
   readonly devServers = new DevServers();
 
-  recordQuota(agent: AgentId, status: string, windows: Record<string, { utilization?: number; resetsAt?: number }>) {
-    this.quota[agent] = { status, windows, at: Date.now() };
+  recordQuota(agent: AgentId, status: string, windows: Record<string, { utilization?: number; resetsAt?: number }>, workerId?: string) {
+    this.quotaForWorker(workerId)[agent] = { status, windows, at: Date.now() };
     this.saveQuota();
   }
 
@@ -3230,16 +3723,17 @@ export class RunManager {
    * already known (Claude's windows) still say when it ends, so they're kept rather than replaced
    * by nothing — which "Auto" would read as "an hour".
    */
-  recordLimit(agent: AgentId, resetsAt?: number) {
+  recordLimit(agent: AgentId, resetsAt?: number, workerId?: string) {
     const now = Date.now();
     // Without a reset time from the CLI, the known windows say how long the limit lasts: a window it
     // reported full, or else the one that resets soonest. Keeping every window would bench the
     // agent until the last of them (its weekly reset) on a guess; with none known, routing's
     // one-hour default applies.
-    const known = Object.entries(this.quota[agent]?.windows ?? {}).filter(([, w]) => !!w.resetsAt && w.resetsAt > now);
+    const known = Object.entries(this.quotaForWorker(workerId)[agent]?.windows ?? {}).filter(([, w]) => !!w.resetsAt && w.resetsAt > now);
     const full = known.filter(([, w]) => (w.utilization ?? 0) >= 1);
     const soonest = known.sort(([, a], [, b]) => a.resetsAt! - b.resetsAt!).slice(0, 1);
-    this.recordQuota(agent, "limited", resetsAt ? { limit: { resetsAt } } : Object.fromEntries(full.length ? full : soonest));
+    this.recordQuota(agent, "limited", resetsAt ? { limit: { resetsAt } } : Object.fromEntries(full.length ? full : soonest), workerId);
+
   }
 
   private quotaSave?: ReturnType<typeof setTimeout>;
@@ -3254,11 +3748,14 @@ export class RunManager {
         .then(() => writeFile(tmp, JSON.stringify(this.quota)))
         .then(() => rename(tmp, QUOTA_FILE))
         .catch((err: Error) => logWarn("Couldn't save quota.json", { error: err.message }));
+      const remoteFile = join(CODEFLOW_HOME, "remote-quota.json"), remoteTemp = `${remoteFile}.${process.pid}.tmp`;
+      void mkdir(CODEFLOW_HOME, { recursive: true }).then(() => writeFile(remoteTemp, JSON.stringify(Object.fromEntries(this.remoteQuota)))).then(() => rename(remoteTemp, remoteFile)).catch((error: Error) => logWarn("Couldn't save remote quota", { error: error.message }));
     }, 1_000);
     this.quotaSave.unref?.();
   }
 
   private async loadQuota() {
+    try { const saved = JSON.parse(await readFile(join(CODEFLOW_HOME, "remote-quota.json"), "utf8")); for (const worker of this.remoteWorkers?.list() ?? []) if (saved?.[worker.id] && typeof saved[worker.id] === "object") this.remoteQuota.set(worker.id, saved[worker.id]); } catch { /* Remote quota is unknown until reported. */ }
     try {
       const saved = JSON.parse(await readFile(QUOTA_FILE, "utf8"));
       for (const [agent, q] of Object.entries(saved ?? {})) {
@@ -3291,8 +3788,38 @@ export class RunManager {
     const run = this.require(id);
     const waiter = this.waiters.get(id);
     if (!run.awaiting || !waiter) throw new Error("This run isn't waiting for a decision");
+    if (this.teamPlanWrites.has(id)) throw new TeamPlanEditError("Wait for the workflow edit to finish saving before answering.", 409);
     if (answer.decision === "revise" && !answer.note?.trim()) throw new Error("Say what should change");
     waiter({ decision: answer.decision, note: answer.note?.trim() || undefined });
+  }
+
+  /** A plan edit is durable before its held approval projection changes. */
+  async editTeamPlan(id: string, input: unknown): Promise<TeamState> {
+    if (this.require(id).teamRerun) throw new TeamPlanEditError("A selective rerun keeps its pinned task graph. Reject it and create another rerun to change the selected tasks or instructions.", 409);
+    if (this.teamPlanWrites.has(id)) throw new TeamPlanEditError("A workflow edit is already being saved. Refresh and try again.", 409);
+    const run = this.require(id);
+    const team = run.team;
+    const awaiting = run.awaiting;
+    if (run.pattern !== "auto-team" || run.status !== "running" || !team || !awaiting || !Number.isSafeInteger(awaiting.teamPlanRound) || !this.waiters.has(id)) throw new TeamPlanEditError("This run is not waiting for an editable workflow plan.", 409);
+    const plan = validateTeamPlanEdit(input, team, teamPlanPolicy(team, run));
+    const write = (async () => {
+      const key = `team-plan-edit:${awaiting.teamPlanRound}`;
+      const journal = await loadJournal(id, { strict: true });
+      const previous = journal.get(key) as { editCount?: number } | undefined;
+      const revision = team.revision + 1;
+      await journalEntry(id, key, { version: 1, revision, editCount: (previous?.editCount ?? 0) + 1, plan: editableTeamPlan({ ...team, ...plan }), at: Date.now() });
+      if (run.status !== "running" || run.team !== team || run.awaiting !== awaiting) throw new TeamPlanEditError("The run stopped while saving. The edit is retained for resume.", 409);
+      Object.assign(team, plan, { revision });
+      team.subplans = undefined;
+      team.strategyInstances = undefined;
+      team.metrics.revisions++;
+      awaiting.content = summarizeTeamPlan(team);
+      this.emitRun(run);
+      return team;
+    })();
+    this.teamPlanWrites.set(id, write);
+    try { return await write; }
+    finally { this.teamPlanWrites.delete(id); }
   }
 
   async waitForTeamAnswer(id: string, requestId: string, signal: AbortSignal): Promise<string> {
@@ -3461,9 +3988,17 @@ export class RunManager {
   }
 
   private require(id: string): Run {
-    const run = this.runs.get(id);
-    if (!run) throw new Error("Run not found");
-    return run;
+    const run = this.readRun(id);
+    this.coldRuns.drop(id);
+    return this.adoptRun(run);
+  }
+
+  private readRun(id: string): Run { const run = this.get(id); if (!run) throw new Error("Run not found"); return run; }
+
+  private adoptRun(value: Run): Run {
+    const original = this.runIdentities.get(value.id)?.deref();
+    if (original && original !== value) { for (const key of Object.keys(original)) if (!(key in value)) delete (original as unknown as Record<string, unknown>)[key]; Object.assign(original, value); value = original; }
+    this.runIdentities.set(value.id, new WeakRef(value)); this.runs.set(value.id, value); return value;
   }
 
   /**
@@ -3475,12 +4010,36 @@ export class RunManager {
     for (;;) {
       const id = `${stamp}-${randomBytes(4).toString("hex")}`;
       const taken =
-        this.runs.has(id) || existsSync(join(RUNS_DIR, `${id}.jsonl`)) || existsSync(join(RUNS_DIR, `${id}.journal.jsonl`)) || existsSync(join(worktreeRoot(repo), id));
+        this.runs.has(id) || this.coldRuns.has(id) || existsSync(join(RUNS_DIR, `${id}.jsonl`)) || existsSync(join(RUNS_DIR, `${id}.journal.jsonl`)) || existsSync(join(worktreeRoot(repo), id));
       if (!taken) return id;
     }
   }
 
   async start(input: StartRunInput): Promise<Run> {
+    if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
+    const repo = await realpath(await repoRoot(input.repo));
+    this.assertNoWorkspaceLease(repo);
+    if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
+    this.startingRepositories.set(repo, (this.startingRepositories.get(repo) ?? 0) + 1);
+    const work = this.startResolved({ ...input, repo });
+    this.startingWork.add(work);
+    try { return await work; } finally {
+      this.startingWork.delete(work);
+      const remaining = (this.startingRepositories.get(repo) ?? 1) - 1;
+      if (remaining) this.startingRepositories.set(repo, remaining); else this.startingRepositories.delete(repo);
+    }
+  }
+
+  private async startResolved(input: StartRunInput): Promise<Run> {
+    if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
+    const filePolicies = await this.assertExecutionAllowed(input.repo, undefined, "run startup");
+    const extensions = extensionBindings(input.pattern.id, input.roles);
+    if (input.teamRerun) {
+      const parent = input.parentRunId ? this.get(input.parentRunId) : undefined;
+      if (input.pattern.id !== "auto-team" || !parent?.team || input.teamRerun.parentRunId !== parent.id || input.baseRef !== input.teamRerun.baseCommit) throw new TeamRerunError("Task reruns must start from their owned source checkpoint", 409);
+      validateTeamRerunSeed(input.teamRerun, teamPlanPolicy(parent.team, parent));
+      if (await resolveCommit(parent.repo, `refs/heads/${input.teamRerun.integrationBranch}`) !== input.teamRerun.baseCommit) throw new TeamRerunError("The source integration branch moved before the child could start", 409);
+    }
     if (input.pattern.id === "auto-team" && !autoTeamEnabled()) throw new Error("New Auto team runs are disabled; saved teams remain viewable and resumable");
     // .codeflow/config.json supplies defaults; anything the request sets explicitly wins.
     const { config } = await readRepoConfig(await repoRoot(input.repo).catch(() => input.repo));
@@ -3494,7 +4053,21 @@ export class RunManager {
     };
     if (given.check === undefined) loop.check = config.check;
     if (given.setup === undefined) loop.setup = config.setup;
-    loop.check = loop.check?.trim() || undefined;
+    if (loop.verification) loop.verification = validateVerificationProfile(loop.verification);
+    loop.contextBudget = validateContextBudget(loop.contextBudget);
+    if (Object.values(input.roles).flat().some((id) => id.startsWith("plugin:")) && (loop.agentContainer || loop.remoteWorker || input.approvals?.tools)) throw new Error("Extension providers support local dispatch only; container, SSH and native approval profiles are unavailable");
+    if (loop.remoteWorker) {
+      const inventory = await this.remoteInventory(loop.remoteWorker);
+      if (input.approvals?.tools) throw new Error("Native interactive approvals are unavailable on remote workers");
+      if (loop.agentContainer) throw new Error("Select a registered worker-local container profile; host agent-container settings cannot be forwarded");
+      if (loop.copy?.length) throw new Error("Remote turns do not transfer copied workspace files. Clear copy settings or provision needed worker-local files explicitly.");
+      if (input.pattern.id === "auto-team" && !(input.roles.pool ?? []).some((id) => inventory.providers.some((provider) => provider.id === id && provider.available))) throw new Error("Keep at least one available remote provider in the Auto-team pool");
+      const needed = new Set(input.pattern.id === "auto-team" ? input.roles.coordinator : Object.values(input.roles).flat()); for (const id of needed) if (!inventory.providers.some((provider) => provider.id === id && provider.available)) throw new Error(`${id} is unavailable on the selected remote worker`);
+    }
+    if (loop.agentContainer) { loop.agentContainer = validateAgentContainer(loop.agentContainer); if (!(await commandExists("docker"))) throw new Error("Agent isolation needs Docker installed and running"); }
+    loop.check = loop.check?.trim() || loop.verification?.checks.find((check) => check.required)?.command || undefined;
+    loop.maxTokens = positive(loop.maxTokens);
+    loop.maxCostUsd = positive(loop.maxCostUsd);
     loop.setup = loop.setup?.trim() || undefined;
     // Budgets are positive numbers; anything else (0, "abc", a negative) falls back to the default.
     // Very long ones are clamped where the timers are set.
@@ -3509,15 +4082,23 @@ export class RunManager {
       throw new Error("Isolation runs checks in a Docker container, but Docker isn't installed or not on PATH");
     }
     const repo = await repoRoot(input.repo);
-    const parent = input.parentRunId ? this.runs.get(input.parentRunId) : undefined;
+    const parent = input.parentRunId ? this.get(input.parentRunId) : undefined;
     // A PR's own branch is the base; its changes are reviewed against the PR's target.
     const fromGitHub = input.source ? await loadSource(repo, input.source) : undefined;
     const baseLabel = fromGitHub?.branch ?? (input.baseRef?.trim() || "HEAD");
     const baseRef = await resolveCommit(repo, baseLabel).catch(() => {
       throw new Error(`Base branch "${baseLabel}" not found in ${repo}`);
     });
+    if (loop.remoteWorker) await assertTransferTree(repo, baseRef);
     const source = fromGitHub?.source ?? (parent?.repo === repo ? parent.source : undefined);
-    const reviewBase = source?.kind === "pr" ? await mergeBase(repo, `origin/${source.baseRefName}`, baseRef) : undefined;
+    const externalSource = input.externalSource ?? (parent?.repo === repo ? parent.externalSource : undefined);
+    let reviewBase = source?.kind === "pr" ? await mergeBase(repo, `origin/${source.baseRefName}`, baseRef) : undefined;
+    if (externalSource?.code) {
+      if (!loop.agentContainer) throw new Error("Fetched external PR code requires an explicitly prepared agent container; native Safe mode is not filesystem isolation.");
+      const code = externalSource.code, sha = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+      if (!["gitlab", "bitbucket"].includes(externalSource.provider) || externalSource.kind !== "pr" || externalSource.trusted !== false || externalSource.untrusted !== true || !/^[a-f0-9]{40}$/.test(code.previewId) || ![code.head, code.target, code.base].every((value) => typeof value === "string" && sha.test(value)) || baseRef !== code.head || externalSource.sha !== code.head || await resolveCommit(repo, code.target) !== code.target || await resolveCommit(repo, code.base) !== code.base || await mergeBase(repo, code.head, code.target) !== code.base) throw new Error("External code provenance no longer matches the fetched source, target and review base. Fetch a fresh server preview.");
+      reviewBase = code.base;
+    }
 
     // Text from outside the repo's maintainers can carry instructions aimed at the agents, and
     // its code (a fork's PR) runs when the check does. Lock the run down: Safe mode, no .env
@@ -3526,10 +4107,10 @@ export class RunManager {
     let trust: Trust = input.trust ?? config.trust ?? "standard";
     let lockdown: string | undefined;
     let lockdownOnHost: boolean | undefined;
-    if (source?.trusted === false || parent?.lockdown) {
+    if (externalSource || source?.trusted === false || parent?.lockdown) {
       const who = source?.author ? `@${source.author}` : "someone the repository doesn't know";
       const relation = source?.isCrossRepository ? "from a fork" : `who isn't one of its maintainers (${(source?.association ?? "unknown").toLowerCase()})`;
-      lockdown = parent?.lockdown ? `Continued from locked-down run ${parent.id}: ${parent.lockdown}` : `${source!.kind === "issue" ? "Issue" : source!.kind === "pr" ? "Pull request" : "Alert"} #${source!.number} comes from ${who}, ${relation}`;
+      lockdown = parent?.lockdown ? `Continued from locked-down run ${parent.id}: ${parent.lockdown}` : externalSource ? `Imported ${externalSource.provider} ${externalSource.kind} ${externalSource.key} is untrusted external context` : `${source!.kind === "issue" ? "Issue" : source!.kind === "pr" ? "Pull request" : "Alert"} #${source!.number} comes from ${who}, ${relation}`;
       trust = "safe";
       loop.copy = undefined;
       if (loop.container) {
@@ -3540,7 +4121,7 @@ export class RunManager {
         // Even without a check: a pattern can run commands of its own (test-first runs the
         // tester's test command), and every command code-flow runs for this run goes in it.
         loop.container = { image: config.image ?? "node:22", network: false };
-      } else if (input.allowUntrusted || parent?.lockdownOnHost) {
+      } else if (input.allowUntrusted || parent?.lockdownOnHost && !["deferred", "coordination"].includes(input.trigger?.via ?? "")) {
         lockdownOnHost = true;
       } else if (loop.check || loop.setup) {
         throw new UntrustedSourceError(lockdown);
@@ -3569,15 +4150,19 @@ export class RunManager {
     });
     // An automation's saved project may have been deleted since: then the repo's project takes its
     // runs. With projects off (projects.json unreadable), runs still start and record none.
-    const placed = await (this.projects?.available ? this.projects : undefined)?.place(repo, { requested: input.project, parent: parent?.project, lenient: !!input.trigger }).catch(async (err) => {
+    const placed = await (this.projects?.available ? this.projects : undefined)?.place(repo, { requested: input.project, parent: parent?.project, lenient: !!input.trigger, requireRepo: input.requireProjectRepo }).catch(async (err) => {
       await rm(worktreeDir, { recursive: true, force: true });
       throw err;
     });
 
     const run: Run = {
       id,
+      filePolicies,
+      extensions,
       pattern: input.pattern.id,
       task: input.task,
+      deferred: input.deferred ? structuredClone(input.deferred) : undefined,
+      coordination: input.coordination ? { jobId: input.coordination.jobId, nodeId: input.coordination.nodeId, claimId: input.coordination.claimId, attempt: input.coordination.attempt } : undefined,
       repo,
       project: placed?.project.id,
       baseRef,
@@ -3607,12 +4192,15 @@ export class RunManager {
       approvals: input.trigger ? {} : input.approvals ?? (input.pattern.id === "auto-team" ? { plan: true } : {}),
       trigger: input.trigger,
       parentRunId: input.parentRunId,
+      teamRerun: input.teamRerun ? structuredClone(input.teamRerun) : undefined,
       // With no source to mark, a run on someone else's words says so in its source trust.
       inheritedSourceTrust:
         input.untrustedText && !source ? "untrusted" : parent ? (memoryAuthorityForRun(parent) as { sourceTrust: "trusted" | "untrusted" | "unknown" }).sourceTrust : undefined,
       merges: [],
       prs: {},
       source: input.untrustedText && source ? { ...source, untrustedText: true } : source,
+      externalSource: externalSource ? structuredClone(externalSource) : undefined,
+
       reviewBase,
       watches: {},
       routing: input.routing?.length ? input.routing : undefined,
@@ -3623,6 +4211,10 @@ export class RunManager {
       steps: [],
       artifacts: [],
     };
+    if (this.shuttingDown || input.teamRerun && this.stoppedWhileStarting.has(input.teamRerun.parentRunId)) {
+      await rm(worktreeDir, { recursive: true, force: true });
+      throw new TeamRerunError("Run creation was cancelled before execution started", 409);
+    }
     this.runs.set(run.id, run);
     this.history.set(run.id, []);
     this.emitRun(run);
@@ -3651,9 +4243,11 @@ export class RunManager {
    * instantly, and real work resumes at the first unfinished step — with a fresh budget.
    */
   async resume(id: string): Promise<Run> {
-    const run = this.runs.get(id);
+    const run = this.require(id);
     if (!run) throw new Error("Run not found");
-    if (run.status === "running" || this.starting.has(id)) throw new Error("This run is already running");
+    if (run.steps.some((step) => step.remote?.ambiguous)) throw new RunConflictError("Inspect or cancel the ambiguous remote receipt before resuming this run");
+    this.assertNoWorkspaceLease(run.repo);
+    if (this.busyRun(run)) throw new Error("This run is already running or validating a merge");
     const pattern = this.findPattern(run.pattern);
     if (!pattern) throw new Error(`Unknown pattern "${run.pattern}"`);
     if (run.pattern === "auto-team" && run.team && run.team.version !== 1) throw new Error("This team uses an unsupported plan version; update code-flow to resume it");
@@ -3663,8 +4257,14 @@ export class RunManager {
     this.starting.add(id);
     this.stoppedWhileStarting.delete(id);
     try {
+      await this.assertExecutionAllowed(run.repo, run, "run resume");
+      if (run.loop.remoteWorker) await this.remoteInventory(run.loop.remoteWorker);
+      this.assertNoWorkspaceLease(run.repo);
       // The last attempt may still be wrapping up (listing its work, the inbox): let it finish.
       await this.active.get(id)?.catch(() => undefined);
+      // Human plan writes may still be reading the journal before their append is queued.
+      // Replay cannot load an earlier plan while an accepted edit is becoming durable.
+      await this.teamPlanWrites.get(id)?.catch((error) => { if (!(error instanceof TeamPlanEditError)) throw error; });
       if (this.stoppedWhileStarting.has(id)) return run; // you pressed Stop meanwhile
       return await this.resumeClaimed(run, pattern);
     } finally {
@@ -3734,7 +4334,7 @@ export class RunManager {
 
     const patternDone = followUpsOnly
       ? Promise.resolve(run.patternSummary ?? withoutFollowUps(run.summary ?? ""))
-      : pattern.run(ctx).then((summary) => {
+      : this.assertExecutionAllowed(run.repo, run, "workflow dispatch").then(() => pattern.run(ctx)).then((summary) => {
           run.patternDone = !(run.team?.status === "blocked");
           run.patternSummary = summary;
           return summary;
@@ -3886,16 +4486,20 @@ export class RunManager {
   async shutdown(timeoutMs = 10_000): Promise<void> {
     this.shuttingDown = true;
     this.devServers.stopAll();
+    for (const controller of this.mergeValidating.values()) controller.abort();
     for (const controller of this.controllers.values()) controller.abort();
     await Promise.race([
-      Promise.allSettled([...this.active.values()]),
+      Promise.allSettled([...this.active.values(), ...this.mergeValidationWork.values(), ...this.startingWork, ...this.repositoryLeaseWork.values(), ...[...this.taskReruns.values()].map((entry) => entry.promise)]),
       new Promise((resolve) => setTimeout(resolve, timeoutMs).unref?.()),
     ]);
     await flushWrites();
+    await Promise.allSettled(this.coldWrites.values());
   }
 
   emitRun(run: Run) {
+    this.coldRuns.drop(run.id); run = this.adoptRun(run);
     this.emit(run, { type: "run", run: strip(run) });
+    this.scheduleCold(run);
   }
 
   emit(run: Run, body: RunEventBody) {
@@ -3904,8 +4508,8 @@ export class RunManager {
     this.bus.emit(run.id, event);
     if (event.type === "run") this.bus.emit("*", event.run);
     // A finished run's last snapshot is synced: after a power cut it must not reload as running.
-    // A line that didn't make it: the next snapshot is written whole, not as a patch on a lost one.
-    appendLine(`${run.id}.jsonl`, this.logWriter.encode(event), { sync: event.type === "run" && event.run.status !== "running", onFailed: () => this.logWriter.forget(run.id) });
+    appendLine(`${run.id}.jsonl`, this.logWriter.encode(event), { sync: event.type === "run" && event.run.status !== "running", checkpoint: event.type === "run" && event.run.status !== "running" ? { seq: event.seq, run } : undefined, onFailed: () => this.logWriter.forget(run.id) });
+
   }
 }
 
@@ -4256,56 +4860,6 @@ async function collectUnfinishedWork(run: Run) {
     const note = pending ? `${pending} uncommitted change${pending === 1 ? "" : "s"} left in the worktree` : "";
     run.artifacts.push({ label: `Work so far: ${wt.name}`, branch: wt.branch, path: wt.path, stat: [stat, note].filter(Boolean).join("\n") });
   }
-}
-
-/** Rebuild a run from its event log: the last run snapshot plus the latest state of each step. */
-function rebuildRun(events: RunEvent[]): Run | undefined {
-  let snapshot: RunSummary | undefined;
-  const steps = new Map<string, Step>();
-  for (const e of events) {
-    if (e.type === "run") snapshot = e.run;
-    else if (e.type === "step") steps.set(e.step.id, { ...e.step, kind: e.step.kind ?? "agent" });
-  }
-  if (!snapshot) return undefined;
-  // Logs written before newer fields existed get sensible defaults.
-  const legacy = snapshot as Partial<Run> & RunSummary;
-  return {
-    ...legacy,
-    context: legacy.context ?? { paths: [], attachments: [] },
-    agentSettings: legacy.agentSettings ?? {},
-    loop: { ...DEFAULT_LOOP, ...(legacy.loop ?? {}) },
-    usage: legacy.usage ?? { agentSteps: 0, checks: 0 },
-    // Runs saved before patternDone existed: a finished run's pattern finished.
-    patternDone: legacy.patternDone ?? (legacy.status === "done" ? true : undefined),
-    patternSummary: legacy.patternSummary ?? (legacy.status === "done" && legacy.summary ? withoutFollowUps(legacy.summary) : undefined),
-    worktrees: legacy.worktrees ?? [],
-    baseLabel: legacy.baseLabel ?? "HEAD",
-    branchPrefix: legacy.branchPrefix ?? `codeflow/${legacy.id}`,
-    worktreeDir: legacy.worktreeDir ?? join(worktreeRoot(legacy.repo), legacy.id),
-    followUps: legacy.followUps ?? [],
-    notes: legacy.notes ?? [],
-    roleSettings: legacy.roleSettings ?? {},
-    trust: legacy.trust ?? "standard",
-    approvals: legacy.approvals ?? {},
-    merges: legacy.merges ?? [],
-    prs: legacy.prs ?? {},
-    watches: legacy.watches ?? {},
-    seen: legacy.seen ?? true,
-    archived: legacy.archived ?? false,
-    artifacts: legacy.artifacts ?? [],
-    steps: [...steps.values()],
-  };
-}
-
-function strip(run: Run): RunSummary {
-  const { steps: _steps, ...rest } = run;
-  // A copy: the snapshot in the event history must not change as the run goes on.
-  return structuredClone(rest);
-}
-
-/** The summary as the pattern wrote it, without the follow-ups section added after it. */
-function withoutFollowUps(summary: string): string {
-  return summary.split("\n\n## Follow-ups\n")[0]!;
 }
 
 /**

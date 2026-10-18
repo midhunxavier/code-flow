@@ -43,12 +43,24 @@ export interface PrComment {
   association: string;
   body: string;
   createdAt: string;
+  /** Inline review location; absent for conversation comments and review summaries. */
+  path?: string;
+  line?: number;
+  side?: "LEFT" | "RIGHT";
+  /** Stable root comment ID, shared by replies in the same review thread. */
+  threadId?: string;
+  replyTo?: string;
+  reviewId?: string;
+  url?: string;
+  outdated?: boolean;
 }
 
 export interface PrStatus {
   state: "OPEN" | "CLOSED" | "MERGED";
   headRefOid: string;
   comments: PrComment[];
+  /** More inline comments may exist than the bounded listing returned. */
+  commentsTruncated?: boolean;
 }
 
 export type AlertTool = "dependabot" | "code-scanning";
@@ -241,18 +253,42 @@ export async function fetchPullRequest(repo: string, number: number): Promise<{ 
 }
 
 export async function prStatus(repo: string, pr: string): Promise<PrStatus> {
-  const data = JSON.parse(await gh(repo, ["pr", "view", pr, "--json", "state,headRefOid,comments,reviews"]));
+  const data = JSON.parse(await gh(repo, ["pr", "view", pr, "--json", "number,state,headRefOid,comments,reviews"]));
   const comments: PrComment[] = [];
   for (const c of data.comments ?? []) {
     comments.push({ id: String(c.id), author: c.author?.login ?? "", association: c.authorAssociation ?? "", body: c.body ?? "", createdAt: c.createdAt ?? "" });
   }
-  // A review's summary is a comment too; line comments live in its threads (not fetched).
+  // Review summaries and inline comments are separate GitHub resources.
   for (const r of data.reviews ?? []) {
     if (!r.body?.trim()) continue;
     comments.push({ id: String(r.id), author: r.author?.login ?? "", association: r.authorAssociation ?? "", body: r.body, createdAt: r.submittedAt ?? "" });
   }
-  comments.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  return { state: data.state, headRefOid: data.headRefOid, comments };
+  if (!Number.isSafeInteger(data.number) || data.number < 1) throw new Error("GitHub returned an invalid pull request number");
+  let commentsTruncated = false;
+  // Bound both output and API requests. `--paginate` alone can fetch an unlimited history.
+  for (let page = 1; page <= 10; page++) {
+    const inline = JSON.parse(await gh(repo, ["api", `repos/{owner}/{repo}/pulls/${data.number}/comments?per_page=100&page=${page}`]));
+    if (!Array.isArray(inline)) throw new Error("GitHub returned an invalid review comment list");
+    for (const c of inline.slice(0, 100)) {
+      const root = c.in_reply_to_id ?? c.id;
+      comments.push({
+        id: `review-comment:${c.id}`,
+        author: c.user?.login ?? "", association: c.author_association ?? "",
+        body: c.body ?? "", createdAt: c.created_at ?? "",
+        path: c.path, line: c.line ?? c.original_line,
+        side: c.side === "LEFT" ? "LEFT" : c.side === "RIGHT" ? "RIGHT" : undefined,
+        threadId: `review-thread:${root}`,
+        replyTo: c.in_reply_to_id === undefined ? undefined : `review-comment:${c.in_reply_to_id}`,
+        reviewId: c.pull_request_review_id === undefined ? undefined : String(c.pull_request_review_id),
+        url: c.html_url, outdated: c.line === null,
+      });
+    }
+    if (inline.length < 100) break;
+    if (page === 10) commentsTruncated = true;
+  }
+  const unique = [...new Map(comments.map((c) => [c.id, c])).values()];
+  unique.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  return { state: data.state, headRefOid: data.headRefOid, comments: unique, commentsTruncated };
 }
 
 export async function prChecks(repo: string, pr: string): Promise<Check[]> {
@@ -656,7 +692,18 @@ const GH_TIMEOUT_MS = 60_000;
 /** CI logs can be huge; nothing code-flow reads from gh needs more than this. */
 const GH_MAX_OUTPUT = 32 * 1024 * 1024;
 
-function ghRaw(cwd: string, args: string[], input?: string): Promise<{ code: number; stdout: string; stderr: string }> {
+export interface GithubCommandOptions { signal?: AbortSignal; timeoutMs?: number; maxOutputBytes?: number }
+/** Fixed GraphQL endpoint on an explicit server-held GitHub host, with caller-bounded execution. */
+export async function githubGraphql(repo: string, host: string, query: string, variables: Record<string, unknown>, options: GithubCommandOptions = {}): Promise<any> {
+  if (!/^[a-z0-9][a-z0-9.-]*(?::\d{1,5})?$/i.test(host) || typeof query !== "string" || !query.trim() || query.length > 64 * 1024) throw new Error("Invalid GitHub GraphQL endpoint or query");
+  const input = JSON.stringify({ query, variables }); if (Buffer.byteLength(input) > 1024 * 1024) throw new Error("GitHub GraphQL input exceeds 1 MiB");
+  const args = ["api", "graphql", "--hostname", host, "--method", "POST", "--input", "-"];
+  const result = await ghRaw(repo, args, input, options); if (result.code) throw ghFailure(args, result);
+  const value = JSON.parse(result.stdout); if (Array.isArray(value.errors) && value.errors.length) throw new Error(`GitHub GraphQL: ${value.errors.map((error: any) => String(error?.message ?? "Request failed")).join("; ").slice(0, 2000)}`);
+  if (!value.data || typeof value.data !== "object") throw new Error("GitHub returned no GraphQL data"); return value.data;
+}
+
+function ghRaw(cwd: string, args: string[], input?: string, options: GithubCommandOptions = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn("gh", args, {
       cwd,
@@ -665,21 +712,21 @@ function ghRaw(cwd: string, args: string[], input?: string): Promise<{ code: num
       env: { ...childEnv(), GH_PROMPT_DISABLED: "1", NO_COLOR: "1", GH_NO_UPDATE_NOTIFIER: "1" },
     });
     trackGroup(child.pid);
-    // Bytes, decoded once at the end: a UTF-8 character split across two chunks would otherwise
-    // become two U+FFFD in an issue body, a comment or a CI log.
-    const out: Buffer[] = [];
-    let outBytes = 0;
+    const output: Buffer[] = []; let bytes = 0;
     let stderr = "";
     let failure: string | undefined;
+    let finished = false;
+    const maxOutput = Number.isFinite(options.maxOutputBytes) ? Math.min(GH_MAX_OUTPUT, Math.max(1024, options.maxOutputBytes!)) : GH_MAX_OUTPUT;
+    const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.min(GH_TIMEOUT_MS, Math.max(100, options.timeoutMs!)) : GH_TIMEOUT_MS;
     const stop = (why: string) => {
       failure ??= why;
       killGroup(child.pid, 2_000);
     };
     child.stdout!.on("data", (d: Buffer) => {
       if (failure) return;
-      outBytes += d.length;
-      if (outBytes > GH_MAX_OUTPUT) stop(`gh printed more than ${GH_MAX_OUTPUT / 1024 / 1024} MB`);
-      else out.push(d);
+      bytes += d.length;
+      if (bytes > maxOutput) stop(`gh printed more than ${maxOutput / 1024 / 1024} MB`);
+      else if (!failure) output.push(d);
     });
     // Decoded as a stream, for the same reason.
     child.stderr!.setEncoding("utf8");
@@ -691,14 +738,17 @@ function ghRaw(cwd: string, args: string[], input?: string): Promise<{ code: num
       child.stdin!.on("error", () => {});
       child.stdin!.end(input);
     }
-    const timer = setTimeout(() => stop(`gh ${args.slice(0, 2).join(" ")} timed out after ${GH_TIMEOUT_MS / 1000}s`), GH_TIMEOUT_MS);
+    const abort = () => stop(`gh ${args.slice(0, 2).join(" ")} cancelled`);
+    options.signal?.addEventListener("abort", abort, { once: true }); if (options.signal?.aborted) abort();
+    const timer = setTimeout(() => stop(`gh ${args.slice(0, 2).join(" ")} timed out after ${timeoutMs / 1000}s`), timeoutMs);
     const done = (result: { code: number; stdout: string; stderr: string }) => {
+      if (finished) return; finished = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       untrackGroup(child.pid);
       resolve(failure ? { code: 124, stdout: "", stderr: failure } : result);
     };
-    const stdout = () => Buffer.concat(out).toString("utf8");
-    child.on("error", (err) => done({ code: 127, stdout: stdout(), stderr: err.message }));
-    child.on("close", (code) => done({ code: code ?? 1, stdout: stdout(), stderr }));
+    child.on("error", (err) => done({ code: 127, stdout: "", stderr: err.message }));
+    child.on("close", (code) => done({ code: code ?? 1, stdout: Buffer.concat(output).toString("utf8"), stderr }));
   });
 }

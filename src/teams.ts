@@ -46,6 +46,10 @@ export interface TeamTask {
   waitingSince?: number;
   evidenceRevision?: number;
   evidenceStale?: boolean;
+  /** Reused source inputs, never a claim of fresh execution or verification in this run. */
+  retainedBaseline?: { sourceRunId: string; sourceRevision: number; sourceTaskHead: string; baseCommit: string };
+  /** Measured by Git after a rerun turn, not reported by an agent. Requires fresh final checks/review. */
+  noNewDiff?: boolean;
 }
 
 export interface TeamSubplan {

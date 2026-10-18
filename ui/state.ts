@@ -1,8 +1,10 @@
 import { computed, signal } from "@preact/signals";
 import { api, ApiError, post, showToast, store } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
-import { subscribe } from "./stream.js";
+import { onStreamState, subscribe } from "./stream.js";
 import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
+import { hashFor, parseRouteHash, SIDE_TABS, type Route, type SideTab } from "./navigation.js";
+export { hashFor, SIDE_TABS, type Route, type SideTab } from "./navigation.js";
 import type { TeamRollout } from "../src/team-evaluation.js";
 import type {
   AgentId,
@@ -34,45 +36,18 @@ export async function loadTeamRollout() {
 /** The first list of runs has come: until then, a run missing from `runs` may just not be here yet. */
 export const runsLoaded = signal(false);
 
-export type Route =
-  | { view: "composer" }
-  | { view: "automations" }
-  | { view: "insights"; group?: string }
-  | { view: "project"; id: string }
-  /** The side panel on its own, in a window of its own (popped out), for one scope. */
-  | { view: "side"; tab: SideTab; scope: string }
-  | { view: "run"; id: string }
-  | { view: "review"; id: string; branch: string };
 export const route = signal<Route>({ view: "composer" });
 /** The current view lives in the URL hash, so reload, back/forward and links work. */
 export function routeFromHash(hash = location.hash): Route {
-  const [view, id, ...rest] = hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
-  if (view === "run" && id) return { view: "run", id };
-  if (view === "review" && id && rest.length) return { view: "review", id, branch: rest.join("/") };
-  if (view === "automations") return { view: "automations" };
-  if (view === "insights") return { view: "insights", group: id || undefined };
-  if (view === "project" && id) return { view: "project", id };
-  if (view === "side" && id && rest[0]) return { view: "side", tab: SIDE_TABS.includes(id as SideTab) ? (id as SideTab) : "chat", scope: rest[0] };
-  return { view: "composer" };
-}
-export function hashFor(r: Route): string {
-  if (r.view === "run") return `#/run/${encodeURIComponent(r.id)}`;
-  if (r.view === "automations") return "#/automations";
-  if (r.view === "project") return `#/project/${encodeURIComponent(r.id)}`;
-  if (r.view === "side") return `#/side/${r.tab}/${encodeURIComponent(r.scope)}`;
-  if (r.view === "insights") return r.group ? `#/insights/${encodeURIComponent(r.group)}` : "#/insights";
-  if (r.view === "review") return `#/review/${encodeURIComponent(r.id)}/${r.branch.split("/").map(encodeURIComponent).join("/")}`;
-  return "#/";
+  return parseRouteHash(hash);
 }
 export const railOpen = signal(false);
 export const pickerOpen = signal(false);
 
 // ---------------------------------------------------------------- side panel
 /** The side panel's tabs: a chat with one agent, a run's changes, the files, a terminal, a browser, your notes. */
-export type SideTab = "chat" | "changes" | "files" | "terminal" | "browser" | "notes";
-export const SIDE_TABS: SideTab[] = ["chat", "changes", "files", "terminal", "browser", "notes"];
 /** Open as you left it on a wide screen; on a phone it covers the work, so it starts closed. */
-export const sideOpen = signal(window.innerWidth > 760 && (store.get("sideOpen") ? store.get("sideOpen") === "1" : window.innerWidth > 1180));
+export const sideOpen = signal(window.innerWidth > 760 && store.get("sideOpen") === "1");
 export const sideTab = signal<SideTab>(SIDE_TABS.includes(store.get("sideTab") as SideTab) ? (store.get("sideTab") as SideTab) : "chat");
 /** Width of the side panel on wide screens, in pixels; dragged, and remembered. */
 export const sideWidth = signal(Math.min(Math.max(Number(store.get("sideWidth")) || 420, 300), 900));
@@ -149,12 +124,16 @@ export const available = (id: AgentId) => agents.value.find((a) => a.id === id)?
 /** Read out by screen readers when a run finishes or needs you (an aria-live region). */
 export const announcement = signal("");
 export const shortcutsOpen = signal(false);
+export const commandPaletteOpen = signal(false);
 
 // ---------------------------------------------------------------- repository
 export const repoInfo = signal<RepoInfo | null>(null);
 export const repoError = signal("");
 export const repoChecking = signal(false);
+export const configChecking = signal(false);
 export const repo = computed(() => repoInfo.value?.repo ?? "");
+let repoSelection = 0;
+let configRequest = 0;
 
 let checkLoading: Promise<void> = Promise.resolve();
 /** The repo's "Done when" lookup has finished: what's set after this (Edit & run again) isn't overwritten by it. */
@@ -162,26 +141,38 @@ export const checkLoaded = () => checkLoading;
 
 export async function setRepo(path: string, remember = true) {
   path = path.trim();
-  const previous = repo.value;
+  const request = ++repoSelection;
+  ++configRequest;
+  repoInfo.value = null;
+  repoConfig.value = null;
+  setupCmd.value = "";
+  checkCmd.value = "";
+  checkHint.value = "";
+  trust.value = (["safe", "standard", "trusted", "full"].includes(store.get("trust") ?? "") ? store.get("trust") : "standard") as Trust;
+  contextPaths.value = new Map();
+  configChecking.value = false;
   repoChecking.value = true;
   repoError.value = "";
   try {
     const info = await api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(path)}`);
+    if (request !== repoSelection) return false;
     repoInfo.value = info;
+    if (baseRef.value && !info.branches.some((branch) => branch.name === baseRef.value)) baseRef.value = "";
     if (remember) {
       store.set("repo", info.repo);
       store.set("recentRepos", JSON.stringify([info.repo, ...recentRepos().filter((p) => p !== info.repo)].slice(0, 8)));
     }
   } catch (err) {
+    if (request !== repoSelection) return false;
     repoInfo.value = null;
     repoError.value = path ? repoProblem(path.split("/").pop() || path, err) : "";
   } finally {
-    repoChecking.value = false;
+    if (request === repoSelection) repoChecking.value = false;
   }
-  if (repo.value !== previous) {
-    contextPaths.value = new Map(); // paths are relative to the repo they came from
-    checkLoading = loadCheck();
-  }
+  if (request !== repoSelection) return false;
+  checkLoading = loadCheck();
+  await checkLoading;
+  return request === repoSelection;
 }
 export const recentRepos = () => store.json<string[]>("recentRepos", []);
 /** The folder picker adds a repo to something (a project you're editing) instead of choosing the composer's repo. */
@@ -260,11 +251,12 @@ function applyDefaults(d: ProjectDefaults) {
   store.set("roleSel", JSON.stringify(roleSel.value));
   store.set("roleModels", JSON.stringify(roleModels.value));
   store.set("agentSettings", JSON.stringify(agentSettings.value));
+  composerOrigins.value = { ...composerOrigins.value, pattern: "Project defaults", roles: "Project defaults", models: "Project defaults" };
 }
 
 /** You picked a repo: if the project you're in doesn't hold it, show the repo's own project (or every run, if none holds it yet). */
 export async function pickRepo(path: string) {
-  await setRepo(path);
+  if (!(await setRepo(path))) return;
   const p = activeProject.value;
   const r = repo.value;
   if (!r || !p || !p.repos.length || p.repos.includes(r)) return;
@@ -537,6 +529,12 @@ export function listenForHandOffs() {
 
 // ---------------------------------------------------------------- composer
 export const task = signal(store.get("draftTask") ?? "");
+export const acceptanceCriteria = signal<string[]>(store.json<unknown>("draftAcceptance", []) instanceof Array ? store.json<unknown[]>("draftAcceptance", []).filter((v): v is string => typeof v === "string").slice(0, 100) : []);
+export function setAcceptanceCriteria(criteria: string[]) {
+  acceptanceCriteria.value = criteria.slice(0, 100).map((c) => c.slice(0, 2000));
+  store.set("draftAcceptance", JSON.stringify(acceptanceCriteria.value));
+}
+export const composerOrigins = signal<Record<string, string>>({ pattern: store.get("pattern") ? "Browser preference" : "Application default", roles: store.get("roleSel") ? "Browser preferences" : "Workflow defaults", models: store.get("agentSettings") ? "Browser preferences" : "CLI defaults" });
 export const contextPaths = signal<Map<string, ContextItem>>(new Map());
 export const attachments = signal<Attachment[]>([]);
 export const contextError = signal("");
@@ -552,7 +550,7 @@ export const branchPrefix = signal("");
 export const checkCmd = signal("");
 export const checkHint = signal("");
 export const setupCmd = signal("");
-export const limits = signal(store.json("limits", { maxMinutes: 60, maxSteps: 40 }));
+export const limits = signal(store.json<{ maxMinutes: number; maxSteps: number; maxTokens?: number; maxCostUsd?: number }>("limits", { maxMinutes: 60, maxSteps: 40 }));
 export type Trust = "safe" | "standard" | "trusted" | "full";
 export const trust = signal<Trust>((store.get("trust") as Trust) || "standard");
 export function setTrust(value: Trust) {
@@ -568,7 +566,8 @@ export function setRoleModel(patternId: string, roleId: string, agent: AgentId, 
   store.set("roleModels", JSON.stringify(roleModels.value));
 }
 /** .codeflow/config.json of the selected repo, if it has one. */
-export const repoConfig = signal<{ config: Record<string, any>; found: boolean; error?: string } | null>(null);
+interface RepoConfiguration { config: Record<string, any>; found: boolean; error?: string }
+export const repoConfig = signal<RepoConfiguration | null>(null);
 
 export interface Health {
   id: AgentId;
@@ -628,14 +627,17 @@ export function setTask(value: string) {
 export function setPattern(id: string) {
   patternId.value = id;
   store.set("pattern", id);
+  composerOrigins.value = { ...composerOrigins.value, pattern: "This run (remembered)" };
 }
 export function setRoles(patternId: string, roleId: string, ids: RoleValue[]) {
   roleSel.value = { ...roleSel.value, [patternId]: { ...(roleSel.value[patternId] ?? {}), [roleId]: ids } };
   store.set("roleSel", JSON.stringify(roleSel.value));
+  composerOrigins.value = { ...composerOrigins.value, roles: "This run (remembered)" };
 }
 export function setAgentSetting(id: AgentId, patch: { model?: string; effort?: string }) {
   agentSettings.value = { ...agentSettings.value, [id]: { ...(agentSettings.value[id] ?? {}), ...patch } };
   store.set("agentSettings", JSON.stringify(agentSettings.value));
+  composerOrigins.value = { ...composerOrigins.value, models: "This run (remembered)" };
 }
 export function setCheck(value: string) {
   checkCmd.value = value;
@@ -645,7 +647,7 @@ export function setSetup(value: string) {
   setupCmd.value = value;
   if (repo.value) store.set(`setup:${repo.value}`, value);
 }
-export function setLimits(patch: Partial<{ maxMinutes: number; maxSteps: number }>) {
+export function setLimits(patch: Partial<{ maxMinutes: number; maxSteps: number; maxTokens?: number; maxCostUsd?: number }>) {
   limits.value = { ...limits.value, ...patch };
   store.set("limits", JSON.stringify(limits.value));
 }
@@ -679,19 +681,27 @@ export function setOption(p: PatternInfo, id: string, value: number | boolean) {
 /** "Done when" check: remembered per repo; auto-detected until you edit it. */
 export async function loadCheck() {
   const r = repo.value;
+  const request = ++configRequest;
+  const selection = repoSelection;
+  const current = () => request === configRequest && selection === repoSelection && repo.value === r;
+  configChecking.value = !!r;
+  repoConfig.value = null;
   setupCmd.value = r ? store.get(`setup:${r}`) ?? "" : "";
+  checkCmd.value = r ? store.get(`check:${r}`) ?? "" : "";
+  checkHint.value = "";
   if (!r) {
-    checkCmd.value = "";
-    checkHint.value = "";
     return;
   }
+  let result: RepoConfiguration | null = null;
   try {
-    repoConfig.value = await api(`/api/repo-config?repo=${encodeURIComponent(r)}`);
+    result = await api(`/api/repo-config?repo=${encodeURIComponent(r)}`);
   } catch {
-    repoConfig.value = null;
+    // Repository commands remain editable even when configuration cannot be read.
   }
+  if (!current()) return;
+  repoConfig.value = result;
   const config = repoConfig.value?.config ?? {};
-  if (!store.get(`setup:${r}`) && config.setup) setupCmd.value = config.setup;
+  if (store.get(`setup:${r}`) === null && !setupCmd.value && config.setup) setupCmd.value = config.setup;
   if (config.trust && !store.get("trust")) trust.value = config.trust;
   const saved = store.get(`check:${r}`);
   // A detected setup (`uv sync`, `poetry install`) fills an empty setup you haven't edited.
@@ -699,13 +709,16 @@ export async function loadCheck() {
   if (saved !== null || config.check) {
     checkCmd.value = saved ?? config.check!;
     checkHint.value = saved !== null ? "" : "From .codeflow/config.json.";
-    if (!detectSetup) return;
+    if (!detectSetup) {
+      configChecking.value = false;
+      return;
+    }
   } else {
     checkCmd.value = "";
   }
   try {
     const d = await api<{ command: string | null; source?: string; setup?: string }>(`/api/check?repo=${encodeURIComponent(r)}`);
-    if (repo.value !== r) return;
+    if (!current()) return;
     // A late result fills only fields nobody touched during the lookup: it must neither replace
     // what you typed meanwhile nor land in the input while you are typing into it.
     if (detectSetup && d.setup && !setupCmd.value && store.get(`setup:${r}`) === null) setupCmd.value = d.setup;
@@ -713,7 +726,9 @@ export async function loadCheck() {
     checkCmd.value = d.command ?? "";
     checkHint.value = d.command ? `Detected from ${d.source}${d.setup ? `; each worktree is set up with “${d.setup}” (Settings)` : ""}.` : "No test command found in this repo.";
   } catch {
-    if (saved === null && !config.check) checkHint.value = "";
+    if (current() && saved === null && !config.check) checkHint.value = "";
+  } finally {
+    if (current()) configChecking.value = false;
   }
 }
 
@@ -747,6 +762,33 @@ export function upsertRun(run: RunSummary) {
  * (a list fetched while the stream moved on) never replaces a newer one.
  */
 const feed = { epoch: "", seq: 0, runSeq: new Map<string, number>() };
+interface RunPage { runs: RunSummary[]; total: number; nextCursor?: string }
+export const historyTotal = signal<number | null>(null);
+export const attentionTotal = signal<number | null>(null);
+export const attentionTruncated = signal(false);
+export const historyNextCursor = signal<string | null>(null);
+export const historyLoading = signal(false);
+export const historyLoadingMore = signal(false);
+export const historyError = signal("");
+let historyQuery = "";
+let historyGeneration = 0;
+let historyPages = 0;
+let historyRefresh = 0;
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+function prepareHistoryQuery(query: string) {
+  if (query === historyQuery) return;
+  historyQuery = query;
+  historyGeneration++;
+  historyPages = 0;
+  historyTotal.value = null;
+  historyNextCursor.value = null;
+  historyLoadingMore.value = false;
+  historyError.value = "";
+}
+export const connection = signal<{ state: "connecting" | "connected" | "reconnecting" | "offline"; since: number; lastReceived?: number }>({ state: "connecting", since: Date.now() });
+function connectionState(state: typeof connection.value.state) {
+  connection.value = { ...connection.value, state, since: connection.value.state === state ? connection.value.since : Date.now() };
+}
 /** Called when a run finishes, pauses for you, or a PR watch hands it back (see watchAllRuns). */
 let onFinished: ((run: RunSummary) => void) | undefined;
 
@@ -760,9 +802,9 @@ function noticeChange(before: RunSummary | undefined, run: RunSummary) {
 }
 
 /** A whole list of runs: `fresher` says which runs this list may not replace. */
-function applyRunList(list: RunSummary[], fresher: (id: string) => boolean) {
+function applyRunList(list: RunSummary[], fresher: (id: string) => boolean, preserve = false) {
   const before = runs.value;
-  const next = new Map<string, RunSummary>();
+  const next = preserve ? new Map(before) : new Map<string, RunSummary>();
   for (const run of list) next.set(run.id, fresher(run.id) && before.has(run.id) ? before.get(run.id)! : run);
   for (const [id, run] of before) if (!next.has(id) && fresher(id)) next.set(id, run);
   runs.value = next;
@@ -772,14 +814,47 @@ function applyRunList(list: RunSummary[], fresher: (id: string) => boolean) {
 
 export async function refreshRuns() {
   const { epoch, seq } = feed;
+  const query = runFilter.value.q.trim();
+  prepareHistoryQuery(query);
+  const generation = historyGeneration;
+  const request = ++historyRefresh;
+  historyLoading.value = true;
   try {
-    const list = await api<RunSummary[]>("/api/runs");
+    const page = await api<RunPage | RunSummary[]>(`/api/runs?limit=100${query ? `&q=${encodeURIComponent(query)}` : ""}`);
     // The server restarted while this was on its way: the stream's own list is newer.
-    if (feed.epoch !== epoch) return;
-    applyRunList(list, (id) => (feed.runSeq.get(id) ?? 0) > seq);
-  } catch {
-    // keep what we have; the event stream will catch up
+    if (feed.epoch !== epoch || generation !== historyGeneration || query !== runFilter.value.q.trim() || request !== historyRefresh) return;
+    const list = Array.isArray(page) ? page : page.runs;
+    applyRunList(list, (id) => (feed.runSeq.get(id) ?? 0) > seq, true);
+    historyTotal.value = Array.isArray(page) ? page.length : page.total;
+    if (historyPages <= 1) historyNextCursor.value = Array.isArray(page) ? null : page.nextCursor ?? null;
+    historyPages = Math.max(1, historyPages);
+    historyError.value = "";
+  } catch (error) {
+    if (generation === historyGeneration && request === historyRefresh) historyError.value = (error as Error).message;
+  } finally {
+    if (generation === historyGeneration && request === historyRefresh) historyLoading.value = false;
   }
+}
+
+export async function loadOlderRuns() {
+  const query = runFilter.value.q.trim();
+  prepareHistoryQuery(query);
+  const cursor = historyNextCursor.value;
+  if (!cursor || historyLoadingMore.value || historyLoading.value) return;
+  const generation = historyGeneration;
+  const { epoch, seq } = feed;
+  historyLoadingMore.value = true;
+  historyError.value = "";
+  try {
+    const page = await api<RunPage>(`/api/runs?limit=100&cursor=${encodeURIComponent(cursor)}${query ? `&q=${encodeURIComponent(query)}` : ""}`);
+    if (generation !== historyGeneration || query !== runFilter.value.q.trim() || feed.epoch !== epoch) return;
+    applyRunList(page.runs, (id) => (feed.runSeq.get(id) ?? 0) > seq, true);
+    historyNextCursor.value = page.nextCursor ?? null;
+    historyTotal.value = page.total;
+    historyPages++;
+  } catch (error) {
+    if (generation === historyGeneration) historyError.value = (error as Error).message;
+  } finally { if (generation === historyGeneration) historyLoadingMore.value = false; }
 }
 
 export const waitingCount = computed(() => [...runs.value.values()].filter(needsYou).length);
@@ -800,6 +875,11 @@ export function setRunFilter(patch: Partial<RunFilter>) {
   runFilter.value = { ...runFilter.value, ...patch };
   const { q: _q, ...kept } = runFilter.value;
   store.set("runFilter", JSON.stringify(kept));
+  if (patch.q !== undefined) {
+    prepareHistoryQuery(runFilter.value.q.trim());
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => void refreshRuns(), 250);
+  }
 }
 export const filterActive = computed(() => {
   const f = runFilter.value;
@@ -829,7 +909,7 @@ export function matchesFilter(r: RunSummary, f = runFilter.value): boolean {
   }
   const q = f.q.trim().toLowerCase();
   if (!q) return true;
-  const hay = [r.task, r.id, r.repo, r.pattern, r.branchPrefix, r.source ? `#${r.source.number} ${r.source.title}` : "", r.trigger?.name ?? "", r.group?.label ?? ""].join("\n").toLowerCase();
+  const hay = [r.task, r.id, r.repo, r.pattern, r.branchPrefix, r.source ? `#${r.source.number} ${r.source.title}` : "", r.trigger?.name ?? "", r.group?.label ?? "", r.externalSource?.title ?? ""].join("\n").toLowerCase();
   return q.split(/\s+/).every((word) => hay.includes(word));
 }
 export const isFlagged = flagged;
@@ -852,22 +932,38 @@ export function setRailView(patch: Partial<RailView>) {
 const fetchedFor = new Set<string>();
 
 type FeedMessage =
-  | { type: "hello"; epoch: string; seq: number; runs?: RunSummary[]; resumed?: boolean }
+  | { type: "hello"; epoch: string; seq: number; runs?: RunSummary[]; resumed?: boolean; nextCursor?: string; total?: number; attentionTotal?: number; attentionTruncated?: boolean; attentionNextCursor?: string }
+  | { type: "error"; status: number; message: string }
   | { type: "run"; seq: number; run: RunSummary };
 
 export function watchAllRuns(notify: (run: RunSummary) => void) {
   onFinished = notify;
-  subscribe(
+  const stopState = onStreamState((status) => {
+    connectionState(status.state);
+    if (status.lastReceived !== undefined) connection.value = { ...connection.value, lastReceived: status.lastReceived };
+  });
+  const stopRuns = subscribe(
     "runs",
     (data: FeedMessage) => {
+      if (data?.type === "error") { historyError.value = data.message; return; }
+      if (!data || (data.type !== "hello" && data.type !== "run") || !Number.isSafeInteger(data.seq) || (data.type === "hello" && typeof data.epoch !== "string") || (data.type === "run" && !data.run?.id)) return;
       if (data.type === "hello") {
+        if (typeof data.attentionTotal === "number") attentionTotal.value = data.attentionTotal;
+        if (typeof data.attentionTruncated === "boolean") attentionTruncated.value = data.attentionTruncated;
         // Another server start numbers its events afresh: what we kept from the last one says nothing.
+        const restarted = !!feed.epoch && data.epoch !== feed.epoch;
         if (data.epoch !== feed.epoch) feed.runSeq.clear();
         feed.epoch = data.epoch;
+        if (restarted) { feed.seq = data.seq; historyGeneration++; historyPages = 0; historyNextCursor.value = null; historyLoading.value = false; historyLoadingMore.value = false; }
         if (data.runs) {
           // The whole list, in step with the stream: every run in it is as new as this event.
           for (const run of data.runs) feed.runSeq.set(run.id, data.seq);
-          applyRunList(data.runs, () => false);
+          applyRunList(data.runs, () => false, !restarted);
+          if (!runFilter.value.q.trim()) {
+            if (typeof data.total === "number") historyTotal.value = data.total;
+            if (historyPages <= 1) historyNextCursor.value = data.nextCursor ?? null;
+            historyPages = Math.max(1, historyPages);
+          } else if (restarted) void refreshRuns();
         }
         // Resumed, the snapshots it missed follow, and move it on.
         if (data.runs) feed.seq = data.seq;
@@ -889,6 +985,7 @@ export function watchAllRuns(notify: (run: RunSummary) => void) {
     // Back after a drop: only what the stream missed, when the server still has it.
     () => (feed.epoch ? `${feed.epoch}:${feed.seq}` : undefined),
   );
+  return () => { stopRuns(); stopState(); };
 }
 
 /** A PR watch that gave up and handed the PR back to you. */
@@ -923,13 +1020,16 @@ export const templates = signal<Template[]>([]);
 export const sweepPicker = signal<Template | null>(null);
 /** The issue or PR the next run starts from. */
 export const source = signal<SourcePick | null>(null);
+export const externalSource = signal<import("../src/integrations.js").ExternalSource | null>(null);
 /** The GitHub picker, and the template waiting for its pick. */
 export const ghPicker = signal<{ kind: "issue" | "pr"; template?: Template } | null>(null);
 
 export function applyTemplate(t: Template, pick?: SourcePick) {
+  externalSource.value = null;
   setPattern(t.pattern);
   const fill = (text: string) => (pick ? text.replace(/\{number\}/g, String(pick.number)).replace(/\{title\}/g, pick.title) : text);
   setTask(fill(t.task));
+  setAcceptanceCriteria([]);
   source.value = pick ? { ...pick, ciLogs: !!t.ciLogs } : null;
 }
 

@@ -10,6 +10,15 @@ import {
   filterActive,
   health,
   healthOpen,
+  historyTotal,
+  attentionTotal,
+  attentionTruncated,
+  historyNextCursor,
+  historyLoading,
+  historyLoadingMore,
+  historyError,
+  loadOlderRuns,
+  refreshRuns,
   isFlagged,
   matchesFilter,
   needsYou,
@@ -365,6 +374,9 @@ export function Rail() {
         </div>
       ) : null}
       <div class="rail-nav">
+        <button type="button" class="nav-item" aria-current={route.value.view === "workspace" ? "page" : undefined} title="Repository files, verification and operations" onClick={() => go({ view: "workspace" })}>
+          <Icon name="files" /> <span class="t">Workspace</span>
+        </button>
         <button type="button" class="nav-item auto-nav" aria-current={route.value.view === "automations" ? "page" : undefined} title="Scheduled and webhook runs, their inbox, and the phone view (a)" onClick={() => go({ view: "automations" })}>
           <Icon name="clock" /> <span class="t">Automations</span>
           {pending ? <span class="count">{pending}</span> : null}
@@ -384,6 +396,13 @@ export function Rail() {
       <div class="rail-list">
         {body}
         {empty ? <div class="rail-empty">{filtering ? "No runs match" : "No runs yet — start one on the right"}</div> : null}
+      </div>
+      <div class="rail-history" role="region" aria-label="Run history pages">
+        <span class="help" role="status">{historyLoading.value ? "Searching history…" : historyTotal.value === null ? "Loading history…" : f.q.trim() ? `${list.length} loaded matches · ${historyTotal.value} in history` : runs.value.size > historyTotal.value ? `${runs.value.size} loaded · ${historyTotal.value} at last refresh` : `${runs.value.size} of ${historyTotal.value} runs loaded`}</span>
+        {historyNextCursor.value ? <button type="button" class="btn small" disabled={historyLoading.value || historyLoadingMore.value} onClick={() => void loadOlderRuns()}>{historyLoadingMore.value ? "Loading…" : "Load older runs"}</button> : null}
+        {attentionTruncated.value ? <span class="help" role="status">{attentionTotal.value} running or attention items at last refresh. Older attention is paged; use Load older runs to include more.</span> : null}
+        {historyError.value ? <div class="help" role="alert">{historyError.value}<button class="btn small" onClick={() => void refreshRuns()}>Retry history</button></div> : null}
+        {filtering && !f.q.trim() && historyNextCursor.value ? <span class="help">Filters apply to loaded pages. Load older runs to include more history.</span> : null}
       </div>
       <div class="rail-foot">
         <AgentDots />

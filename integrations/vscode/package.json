@@ -1,0 +1,31 @@
+{
+  "name": "code-flow",
+  "displayName": "Code Flow",
+  "description": "Start and review Code Flow runs from your local VS Code workspace.",
+  "version": "0.1.0",
+  "publisher": "codeflow-local",
+  "license": "MIT",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Other"],
+  "main": "./extension.cjs",
+  "extensionKind": ["ui"],
+  "activationEvents": ["onView:codeFlow.runs"],
+  "capabilities": { "untrustedWorkspaces": { "supported": "limited", "description": "Existing runs can be inspected; starting runs and opening worktrees require a trusted local workspace." }, "virtualWorkspaces": false },
+  "contributes": {
+    "commands": [
+      { "command": "codeFlow.connect", "title": "Code Flow: Connect to Local Server" },
+      { "command": "codeFlow.disconnect", "title": "Code Flow: Forget Server Token" },
+      { "command": "codeFlow.start", "title": "Code Flow: Start Task from Editor" },
+      { "command": "codeFlow.refresh", "title": "Code Flow: Refresh Runs" },
+      { "command": "codeFlow.open", "title": "Code Flow: Open Run" },
+      { "command": "codeFlow.cancel", "title": "Code Flow: Stop Run" },
+      { "command": "codeFlow.worktree", "title": "Code Flow: Open Result Worktree" }
+    ],
+    "configuration": { "title": "Code Flow", "properties": { "codeFlow.serverUrl": { "type": "string", "default": "http://127.0.0.1:4317", "scope": "application", "description": "Local Code Flow server URL. Tokens are stored in VS Code SecretStorage." } } },
+    "views": { "explorer": [{ "id": "codeFlow.runs", "name": "Code Flow Runs" }] },
+    "menus": {
+      "view/title": [{ "command": "codeFlow.refresh", "when": "view == codeFlow.runs", "group": "navigation" }, { "command": "codeFlow.start", "when": "view == codeFlow.runs && isWorkspaceTrusted", "group": "navigation" }],
+      "view/item/context": [{ "command": "codeFlow.open", "when": "view == codeFlow.runs && viewItem == codeFlowRun", "group": "inline" }, { "command": "codeFlow.cancel", "when": "view == codeFlow.runs && viewItem == codeFlowRun" }, { "command": "codeFlow.worktree", "when": "view == codeFlow.runs && viewItem == codeFlowRun" }]
+    }
+  }
+}

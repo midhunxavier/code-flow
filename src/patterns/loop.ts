@@ -1,4 +1,4 @@
-import { adapters, type AgentId } from "../adapters/index.js";
+import { getAdapter, adapters, type AgentId } from "../adapters/index.js";
 import { failureFingerprint, type CheckResult } from "../checks.js";
 import type { Pattern, StepOutcome } from "../engine.js";
 import { changedFiles, restorePaths } from "../git.js";
@@ -49,7 +49,7 @@ export const loopPattern: Pattern = {
     if (!workers.length) throw new Error("Pick at least one worker");
     const maxRounds = ctx.option("maxRounds", 6);
     const stuckAfter = ctx.option("stuckAfter", 2);
-    const name = (id: AgentId) => adapters[id].displayName;
+    const name = (id: AgentId) => getAdapter(id).displayName;
 
     const wt = await ctx.worktree("loop");
     const baseline = await ctx.check(wt, "Baseline check");

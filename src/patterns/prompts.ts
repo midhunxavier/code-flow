@@ -1,4 +1,4 @@
-import { adapters, type AgentId } from "../adapters/index.js";
+import { getAdapter, adapters, type AgentId } from "../adapters/index.js";
 import { failureExcerpt, type CheckResult } from "../checks.js";
 import { RejectedError, type Proof, type StepOutcome, type TeamContext } from "../engine.js";
 import { changedFiles, resolveCommit, restorePaths, type Worktree } from "../git.js";
@@ -7,7 +7,7 @@ import { changedFiles, resolveCommit, restorePaths, type Worktree } from "../git
 export function preamble(role: string, agent: AgentId, duty: string): string {
   return [
     `You are the ${role} on a team of AI coding agents (Claude Code, Codex, Antigravity) coordinated by code-flow.`,
-    `You are running as ${adapters[agent].displayName}, non-interactively: nobody can answer questions, so make reasonable assumptions and state them.`,
+    `You are running as ${getAdapter(agent).displayName}, non-interactively: nobody can answer questions, so make reasonable assumptions and state them.`,
     duty,
     "Do not run `git commit`, `git push` or change branches — code-flow commits your work after you finish.",
   ].join("\n");
@@ -171,7 +171,7 @@ export async function proveOrAsk(
   });
   const sha = await ctx.commit(opts.wt, `${opts.agent}: add a test that fails without the change`);
   if (!sha) {
-    ctx.log(`${adapters[opts.agent].displayName} added no test; the result stays unproven`, "warn");
+    ctx.log(`${getAdapter(opts.agent).displayName} added no test; the result stays unproven`, "warn");
     return { check, proof, session, asked: true };
   }
   const fixed = await fixUntilGreen(ctx, { agent: opts.agent, role: opts.role, wt: opts.wt, session, attempts: opts.attempts, context: opts.context });
@@ -179,9 +179,10 @@ export async function proveOrAsk(
   session = fixed.session ?? session;
   if (check && !check.ok) {
     // Asking for a proof mustn't cost a green result: undo what never passed, and it stays unproven.
-    ctx.log(`The check fails since ${adapters[opts.agent].displayName} added its test, and fixing didn't help; undoing that`, "warn");
+    ctx.log(`The check fails since ${getAdapter(opts.agent).displayName} added its test, and fixing didn't help; undoing that`, "warn");
     const changed = await ctx.remember("changed", `since proof test in ${opts.wt.name}`, async () => changedFiles(await ctx.gitAt(opts.wt), before));
     await ctx.remember("restore-before-proof", opts.wt.name, () => restorePaths(ctx.run.repo, opts.wt, before, changed).then(() => true));
+
     await ctx.commit(opts.wt, `code-flow: undo ${opts.agent}'s test that never passed`);
     check = await ctx.check(opts.wt);
     return { check, proof: check?.ok ? await ctx.prove(opts.wt) : null, session, asked: true };

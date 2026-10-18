@@ -5,6 +5,7 @@ import { CODEFLOW_HOME } from "./config.js";
 import type { Run, RunManager, RunSummary } from "./engine.js";
 import { untrustedBlock, type SourceInput } from "./github.js";
 import { logError, logInfo, logWarn } from "./log.js";
+import { readRepoConfig } from "./repo-config.js";
 import { findSweepItem, nextSweepItems, sourceKeys, sweepTakes, upgradeLegacyKeys, type SweepKind, type SweepList } from "./sweeps.js";
 
 /**
@@ -13,7 +14,7 @@ import { findSweepItem, nextSweepItems, sourceKeys, sweepTakes, upgradeLegacyKey
  * revise or reject — nothing is merged automatically.
  */
 
-export type Schedule = { every: number } | { at: string; days?: number[] };
+export type Schedule = { every: number } | { at: string; days?: number[]; timezone?: string };
 
 export interface Trigger {
   id: string;
@@ -48,6 +49,8 @@ export interface Trigger {
   deliveries?: string[];
   /** Webhook events that came in while this automation's run was going; each fires when it ends. */
   queued?: Omit<FireInput, "via">[];
+  /** Bounded delivery audit and dead-letter history; contains validated event data only. */
+  eventHistory?: AutomationEvent[];
   /** When webhooks started runs, over the last hour (they're capped per hour). */
   webhookStarts?: number[];
 }
@@ -65,6 +68,34 @@ export interface FireInput {
   /** code-flow's own line about the GitHub event that fired it ("GitHub: issue opened by @bob"). */
   event?: string;
   source?: SourceInput;
+  /** Internal reference used when draining a queued event. */
+  eventId?: string;
+}
+
+export interface AutomationEvent {
+  id: string;
+  at: number;
+  updatedAt: number;
+  via: FireInput["via"];
+  state: "received" | "queued" | "started" | "failed" | "dropped" | "deduplicated" | "skipped";
+  input: Omit<FireInput, "via" | "eventId">;
+  delivery?: string;
+  reason?: string;
+  runIds?: string[];
+  retries: number;
+}
+export interface AutomationPreview {
+  automation: string;
+  ready: boolean;
+  busy?: string;
+  wouldQueue: boolean;
+  nextTimes: number[];
+  selected: { key: string; task: string; source?: SourceInput }[];
+  skipped: { key: string; reason: string }[];
+  warnings: string[];
+  permissions: { trust: string; isolate: boolean; image?: string };
+  limits: { maxSteps?: number; maxInvocations?: number; maxMinutes?: number; startsPerHour: number; startsUsed: number };
+  commands: { setup?: string; check?: string };
 }
 
 /** How a webhook call proved it may fire the automation. */
@@ -88,6 +119,7 @@ const MAX_HANDLED = 2_000;
 const MAX_DELIVERIES = 500;
 /** Webhook events waiting for a run to end, per automation; the oldest are dropped first. */
 const MAX_QUEUED = 10;
+const MAX_EVENT_HISTORY = 100;
 /** Webhook-started runs per hour for an automation that isn't a sweep (a sweep's limit is its `max`). */
 const WEBHOOK_RUNS_PER_HOUR = 10;
 const HOUR = 3_600_000;
@@ -108,16 +140,65 @@ export function validateSchedule(input: unknown): Schedule | undefined {
   }
   if (typeof raw.at === "string") {
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(raw.at)) throw new Error('Time must look like "07:30"');
-    const days = Array.isArray(raw.days) ? [...new Set(raw.days.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort() : undefined;
-    return { at: raw.at, days: days?.length && days.length < 7 ? days : undefined };
+    if (raw.days !== undefined && (!Array.isArray(raw.days) || raw.days.length > 7 || !raw.days.length || raw.days.some((d) => !Number.isInteger(d) || d < 0 || d > 6))) throw new Error("Choose at least one valid day of the week");
+    const days = Array.isArray(raw.days) ? [...new Set<number>(raw.days)].sort() : undefined;
+    let timezone: string | undefined;
+    if (raw.timezone !== undefined) {
+      if (typeof raw.timezone !== "string" || !raw.timezone.trim() || raw.timezone.length > 100) throw new Error("Choose a valid IANA time zone, such as Europe/Stockholm");
+      try { timezone = new Intl.DateTimeFormat("en", { timeZone: raw.timezone.trim() }).resolvedOptions().timeZone; }
+      catch { throw new Error("Choose a valid IANA time zone, such as Europe/Stockholm"); }
+    }
+    return { at: raw.at, days: days?.length && days.length < 7 ? days : undefined, ...(timezone ? { timezone } : {}) };
   }
   throw new Error("A schedule needs every (minutes) or at (HH:MM)");
 }
 
-/** The next time `schedule` fires after `after` (local time), always on a day it allows. */
+const zoneFormats = new Map<string, Intl.DateTimeFormat>();
+function zonedParts(at: number, timezone: string) {
+  let format = zoneFormats.get(timezone);
+  if (!format) {
+    format = new Intl.DateTimeFormat("en-GB", { timeZone: timezone, calendar: "gregory", numberingSystem: "latn", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    if (zoneFormats.size >= 64) zoneFormats.clear();
+    zoneFormats.set(timezone, format);
+  }
+  const parts = Object.fromEntries(format.formatToParts(at).map((p) => [p.type, p.value]));
+  return { year: Number(parts.year), month: Number(parts.month), day: Number(parts.day), hour: Number(parts.hour), minute: Number(parts.minute) };
+}
+const wallTime = (p: ReturnType<typeof zonedParts>) => Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
+
+/** Resolve a wall clock time. Repeated times fire once; a DST gap shifts forward by the gap. */
+function zonedTime(day: Date, hour: number, minute: number, timezone: string): number | undefined {
+  const desired = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hour, minute);
+  const offsets = new Set([-36, -12, 0, 12, 36].map((h) => {
+    const sample = desired + h * HOUR;
+    return wallTime(zonedParts(sample, timezone)) - sample;
+  }));
+  const candidates = [...offsets].map((offset) => desired - offset).sort((a, b) => a - b);
+  const exact = candidates.find((at) => wallTime(zonedParts(at, timezone)) === desired);
+  if (exact !== undefined) return exact;
+  // A whole local date can be skipped by a time zone change. Skip that date, not its weekday policy.
+  return candidates.filter((at) => {
+    const p = zonedParts(at, timezone);
+    return p.year === day.getUTCFullYear() && p.month === day.getUTCMonth() + 1 && p.day === day.getUTCDate() && wallTime(p) > desired;
+  }).sort((a, b) => wallTime(zonedParts(a, timezone)) - wallTime(zonedParts(b, timezone)))[0];
+}
+
+/** The next instant after `after`, on an allowed day in the schedule's explicit zone. */
 export function nextFire(schedule: Schedule, after: number): number {
   if ("every" in schedule) return after + schedule.every * 60_000;
   const [h, m] = schedule.at.split(":").map(Number) as [number, number];
+  if (schedule.timezone) {
+    const local = zonedParts(after, schedule.timezone);
+    const day = new Date(Date.UTC(local.year, local.month - 1, local.day));
+    for (let i = 0; i < 14; i++) {
+      if (!schedule.days?.length || schedule.days.includes(day.getUTCDay())) {
+        const candidate = zonedTime(day, h, m, schedule.timezone);
+        if (candidate !== undefined && candidate > after) return candidate;
+      }
+      day.setUTCDate(day.getUTCDate() + 1);
+    }
+    throw new Error("Could not find the next scheduled time in this time zone");
+  }
   const d = new Date(after);
   // Set again after every day moved: on the day clocks spring forward, 02:30 becomes 03:30, and
   // the next day must still be 02:30.
@@ -131,6 +212,16 @@ export function nextFire(schedule: Schedule, after: number): number {
   return d.getTime();
 }
 
+/** Preview actual UTC instants; clients format them in both the chosen zone and their local zone. */
+export function previewSchedule(input: unknown, after = Date.now(), count = 5): number[] {
+  const schedule = validateSchedule(input);
+  if (!schedule) return [];
+  if (!Number.isFinite(after) || !Number.isInteger(count) || count < 1 || count > 10) throw new Error("Schedule preview needs a valid date and 1–10 occurrences");
+  const times: number[] = [];
+  for (let i = 0; i < count; i++) { after = nextFire(schedule, after); times.push(after); }
+  return times;
+}
+
 /**
  * Whether a time the schedule was due at (`due`) should still fire at `now`: code-flow was
  * closed or the computer asleep, and it's at most an hour late, and the day it was due on is
@@ -139,7 +230,10 @@ export function nextFire(schedule: Schedule, after: number): number {
  */
 export function stillDue(schedule: Schedule, due: number, now: number): boolean {
   if (now - due > MISSED_GRACE_MS) return false;
-  return "every" in schedule || !schedule.days?.length || schedule.days.includes(new Date(due).getDay());
+  if ("every" in schedule || !schedule.days?.length) return true;
+  const day = schedule.timezone ? zonedParts(due, schedule.timezone) : undefined;
+  const weekday = day ? new Date(Date.UTC(day.year, day.month - 1, day.day)).getUTCDay() : new Date(due).getDay();
+  return schedule.days.includes(weekday);
 }
 
 /**
@@ -160,7 +254,7 @@ export function describeSchedule(schedule?: Schedule): string {
   if ("every" in schedule) return schedule.every % 60 === 0 ? `every ${schedule.every / 60} h` : `every ${schedule.every} min`;
   const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const days = schedule.days?.length ? schedule.days.map((d) => names[d]).join(", ") : "every day";
-  return `${days} at ${schedule.at}`;
+  return `${days} at ${schedule.at}${schedule.timezone ? ` (${schedule.timezone})` : " (server local time)"}`;
 }
 
 export class Automations {
@@ -168,6 +262,8 @@ export class Automations {
   private timer?: ReturnType<typeof setInterval>;
   private unsubscribe?: () => void;
   private saving: Promise<unknown> = Promise.resolve();
+  private stopped = false;
+  private firing = new Set<Promise<FireResult>>();
   /**
    * False until triggers.json was read cleanly (or there was none). A file that couldn't be read
    * or set aside is never written over: that would lose every automation and webhook secret.
@@ -258,7 +354,7 @@ export class Automations {
   }
 
   async create(
-    input: Omit<Trigger, "id" | "token" | "createdAt" | "nextAt" | "handled" | "deliveries" | "queued" | "webhookStarts"> & { handled?: string[] },
+    input: Omit<Trigger, "id" | "token" | "createdAt" | "nextAt" | "handled" | "deliveries" | "queued" | "webhookStarts" | "eventHistory"> & { handled?: string[] },
   ): Promise<Trigger> {
     this.requireWritable();
     const trigger: Trigger = { ...input, id: `t-${randomBytes(4).toString("hex")}`, token: randomBytes(24).toString("hex"), createdAt: Date.now() };
@@ -280,7 +376,10 @@ export class Automations {
     if (JSON.stringify([t.enabled, t.schedule]) !== timing || (t.enabled && t.schedule && !t.nextAt)) {
       t.nextAt = t.enabled && t.schedule ? nextFire(t.schedule, Date.now()) : undefined;
     }
-    if (!t.enabled) t.queued = undefined;
+    if (!t.enabled) {
+      for (const queued of t.queued ?? []) this.updateEvent(t, queued.eventId, "dropped", "Automation was disabled before this event could run");
+      t.queued = undefined;
+    }
     await this.save();
     return { ...t };
   }
@@ -300,6 +399,8 @@ export class Automations {
   }
 
   start(tickMs = 30_000) {
+    if (this.timer) return;
+    this.stopped = false;
     this.timer = setInterval(() => void this.tick(), tickMs);
     this.timer.unref?.();
     // A webhook event that waited for a run fires as soon as that run ends.
@@ -307,10 +408,14 @@ export class Automations {
   }
 
   /** Stop firing; resolves once the last save is on disk. */
-  stop(): Promise<unknown> {
+  async stop(): Promise<void> {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
     this.unsubscribe?.();
-    return this.saving;
+    this.unsubscribe = undefined;
+    await Promise.allSettled([...this.firing]);
+    await this.saving;
   }
 
   /**
@@ -319,8 +424,10 @@ export class Automations {
    * skipped otherwise; it never fires on a day the schedule leaves out.
    */
   async tick(now = Date.now()) {
+    if (this.stopped) return;
     let changed = false;
     for (const t of this.triggers) {
+      if (this.stopped) return;
       if (t.queued?.length) void this.drain(t);
       if (!t.enabled || !t.schedule) continue;
       if (!t.nextAt) {
@@ -355,16 +462,24 @@ export class Automations {
    * carries, or none.
    */
   accept(id: string, input: Omit<FireInput, "via">, delivery?: string, signedBody?: Buffer): { accepted: true } | { ignored: string } {
+    if (this.stopped) return { ignored: "Automation dispatch is paused" };
     const t = this.require(id);
+    const validated = validateFireInput({ via: "webhook", ...input });
     const body = signedBody && `sha256:${createHash("sha256").update(signedBody).digest("hex")}`;
-    if (delivery && t.deliveries?.includes(delivery)) return { ignored: `Delivery ${delivery} was already handled` };
-    if (body && t.deliveries?.includes(body)) return { ignored: "This delivery was already handled: the same signed body came before" };
-    const seen = [delivery, body].filter((k): k is string => !!k);
+    const duplicateReason = delivery && t.deliveries?.includes(delivery) ? `Delivery ${delivery} was already handled` : body && t.deliveries?.includes(body) ? "This delivery was already handled: the same signed body came before" : undefined;
+    if (duplicateReason) {
+      const duplicate = this.recordEvent(t, validated, delivery);
+      this.updateEvent(t, duplicate.id, "deduplicated", duplicateReason);
+      void this.save();
+      return { ignored: duplicateReason };
+    }
+    const seen = [delivery, body].filter((key): key is string => !!key);
     if (seen.length) {
       t.deliveries = [...(t.deliveries ?? []), ...seen].slice(-MAX_DELIVERIES);
       void this.save();
     }
-    void this.fire(id, { via: "webhook", ...input }).then(
+    const event = this.recordEvent(t, validated, delivery);
+    void this.fire(id, { ...validated, eventId: event.id }).then(
       (result) => result.skipped && logInfo(`Webhook for automation "${t.name}": ${result.skipped}`),
       (err) => logWarn(`Webhook for automation "${t.name}" couldn't start a run`, { error: (err as Error).message }),
     );
@@ -376,8 +491,113 @@ export class Automations {
    * schedule or "Run now" is skipped, so automations never pile up; a webhook event waits and
    * fires once that run ends, so a push made meanwhile isn't lost.
    */
-  async fire(id: string, input: FireInput): Promise<FireResult> {
+  fire(id: string, input: FireInput): Promise<FireResult> {
+    if (this.stopped) return Promise.resolve({ skipped: "Automation dispatch is paused" });
+    const work = this.fireTracked(id, input); this.firing.add(work);
+    void work.finally(() => this.firing.delete(work)).catch(() => undefined);
+    return work;
+  }
+  private async fireTracked(id: string, input: FireInput): Promise<FireResult> {
     const t = this.require(id);
+    const validated = validateFireInput(input);
+    const event = input.eventId ? t.eventHistory?.find((e) => e.id === input.eventId) : undefined;
+    const tracked = event ?? this.recordEvent(t, validated);
+    try {
+      const result = await this.fireOne(t, { ...validated, eventId: tracked.id });
+      const runs = result.runs ?? (result.run ? [result.run] : []);
+      tracked.runIds = runs.map((run) => run.id);
+      const state = result.queued ? "queued" : result.skipped ? /already started \d+ runs from webhooks/.test(result.skipped) ? "dropped" : "skipped" : "started";
+      // A newer event can supersede this queued event while its disk save is pending.
+      if (!(result.queued && (tracked.state === "deduplicated" || tracked.state === "dropped"))) this.updateEvent(t, tracked.id, state, result.skipped);
+      return result;
+    } catch (err) {
+      this.updateEvent(t, tracked.id, "failed", (err as Error).message);
+      throw err;
+    } finally { await this.save(); }
+  }
+
+  /** Recent queue decisions, start failures and dropped deliveries, newest first. */
+  events(id: string): AutomationEvent[] {
+    return structuredClone([...(this.require(id).eventHistory ?? [])].reverse());
+  }
+
+  async retryEvent(id: string, eventId: string): Promise<FireResult> {
+    const t = this.require(id);
+    this.requireWritable();
+    if (!t.enabled) throw new Error("Enable this automation before retrying an event");
+    const event = t.eventHistory?.find((e) => e.id === eventId);
+    if (!event) throw new Error("Event is no longer in the bounded history");
+    if (event.state !== "failed" && event.state !== "dropped") throw new Error("Only failed or dropped events can be retried");
+    // Revalidate the persisted event, then use the normal queue, trust and rate-limit rules.
+    const input = validateFireInput({ via: event.via, ...event.input });
+    event.retries++;
+    this.updateEvent(t, event.id, "received", "Explicit retry requested");
+    return this.fire(id, { ...input, eventId: event.id });
+  }
+
+  /** List the same candidates and execution settings without claiming items or starting agents. */
+  async dryRun(id: string, raw: FireInput = { via: "manual" }): Promise<AutomationPreview> {
+    const t = this.require(id);
+    const input = validateFireInput(raw);
+    const { config, error: configError } = await readRepoConfig(t.run.repo);
+    const busy = this.busy(t);
+    const warnings: string[] = [];
+    if (configError) warnings.push(`Repository configuration: ${configError}`);
+    const selected: AutomationPreview["selected"] = [];
+    const skipped: AutomationPreview["skipped"] = [];
+    if (t.sweep) {
+      if (!this.listSweep) throw new Error("Sweeps aren't available here");
+      const list = await this.listSweep(t.run.repo, t.sweep.kind);
+      warnings.push(...list.notices);
+      const handled = new Set(t.handled ?? []);
+      upgradeLegacyKeys(list, handled);
+      const claims = this.claimed.get(t.id) ?? new Set<string>();
+      const items = input.source ? (sweepTakes(t.sweep.kind, input.source) ? [findSweepItem(list, input.source)].filter((i) => i !== undefined) : []) : nextSweepItems(list, new Set([...handled, ...claims]), t.sweep.max);
+      for (const item of items) {
+        if (item.source && item.task && (!("selected" in item) || item.selected) && (!("manual" in item) || !item.manual) && !sourceKeys(item.source).every((k) => handled.has(k)) && !sourceKeys(item.source).some((k) => claims.has(k))) selected.push({ key: item.key, task: item.task, source: item.source });
+      }
+      for (const item of list.items.slice(0, 100)) if (!selected.some((chosen) => chosen.key === item.key)) skipped.push({ key: item.key, reason: item.note ?? (item.manual ? "Requires manual action" : handled.has(item.key) ? "Already handled" : "Outside the current selection or limit") });
+      if (input.source && !items.length) warnings.push("The event's source is absent from the sweep's current list");
+    } else selected.push({ key: "saved-task", task: input.details?.trim() ? `${t.run.task}\n\n## Details from the ${input.via}\n${input.details}` : t.run.task, source: input.source ?? t.run.source });
+    const startsPerHour = t.sweep?.max ?? WEBHOOK_RUNS_PER_HOUR;
+    const startsUsed = (t.webhookStarts ?? []).filter((at) => Date.now() - at < HOUR).length;
+    if (!t.enabled && input.via !== "manual") warnings.push("This automation is disabled");
+    if (input.via === "webhook" && startsUsed >= startsPerHour) warnings.push("The webhook run limit has been reached for this hour");
+    if (!(t.run.loop?.check ?? config.check) && !t.run.loop?.verification && !t.run.verificationProfile) warnings.push("No independent verification command or profile is configured");
+    if (selected.some((item) => item.source)) warnings.push("Source permissions and isolation are rechecked against current GitHub authorship when the run starts");
+    const configuredTrust = t.run.trust ?? config.trust ?? "standard";
+    const effectiveTrust = configuredTrust === "full" ? "trusted" : configuredTrust;
+    return { automation: id, ready: !!selected.length && (t.enabled || input.via === "manual") && !(busy && input.via !== "webhook") && !(input.via === "webhook" && startsUsed >= startsPerHour), busy, wouldQueue: !!busy && input.via === "webhook" && !t.sweep,
+      nextTimes: t.schedule ? previewSchedule(t.schedule) : [], selected, skipped, warnings,
+      permissions: { trust: effectiveTrust, isolate: t.isolate, ...(t.isolate ? { image: t.image || "node:22" } : {}) },
+      limits: { maxSteps: t.run.loop?.maxSteps ?? config.limits?.maxSteps ?? 40, maxInvocations: t.run.loop?.maxInvocations ?? t.run.loop?.maxSteps ?? config.limits?.maxSteps ?? 40, maxMinutes: t.run.loop?.maxMinutes ?? config.limits?.maxMinutes ?? 60, startsPerHour, startsUsed },
+      commands: { setup: t.run.loop?.setup ?? config.setup, check: t.run.loop?.check ?? config.check } };
+  }
+
+  private recordEvent(t: Trigger, input: FireInput, delivery?: string): AutomationEvent {
+    const event: AutomationEvent = { id: `event-${randomBytes(6).toString("hex")}`, at: Date.now(), updatedAt: Date.now(), via: input.via, state: "received", input: { details: input.details, source: input.source }, delivery, retries: 0 };
+    // Keep queued records even when a busy automation receives a burst of duplicate deliveries.
+    const pinned = new Set((t.queued ?? []).map((q) => q.eventId));
+    const history = [...(t.eventHistory ?? []), event];
+    while (history.length > MAX_EVENT_HISTORY) {
+      const completed = history.findIndex((e) => !pinned.has(e.id) && e.state !== "received");
+      const index = completed >= 0 ? completed : history.findIndex((e) => !pinned.has(e.id));
+      history.splice(index < 0 ? 0 : index, 1);
+    }
+    t.eventHistory = history;
+    return event;
+  }
+
+  private updateEvent(t: Trigger, id: string | undefined, state: AutomationEvent["state"], reason?: string) {
+    const event = id && t.eventHistory?.find((e) => e.id === id);
+    if (!event) return;
+    event.state = state;
+    event.updatedAt = Date.now();
+    event.reason = reason?.slice(0, 1_000);
+  }
+
+  private async fireOne(t: Trigger, input: FireInput): Promise<FireResult> {
+    if (!t.enabled && input.via !== "manual") return { skipped: "This automation is disabled" };
     if (t.sweep) return this.fireSweep(t, input);
     // Everything up to `starting.add` is synchronous: two webhooks at once can't both get past it.
     const busy = this.busy(t);
@@ -422,7 +642,14 @@ export class Automations {
   private async enqueue(t: Trigger, input: FireInput, busy: string): Promise<FireResult> {
     const { via: _via, ...event } = input;
     const key = eventKey(event);
-    t.queued = [...(t.queued ?? []).filter((q) => eventKey(q) !== key), event].slice(-MAX_QUEUED);
+    const unique = (t.queued ?? []).filter((q) => {
+      if (eventKey(q) !== key) return true;
+      this.updateEvent(t, q.eventId, "deduplicated", "A newer delivery describes the same queued work");
+      return false;
+    });
+    const queue = [...unique, event];
+    for (const dropped of queue.slice(0, -MAX_QUEUED)) this.updateEvent(t, dropped.eventId, "dropped", `The queue limit of ${MAX_QUEUED} events was reached`);
+    t.queued = queue.slice(-MAX_QUEUED);
     await this.save();
     return { skipped: `${busy}; this event fires when it ends`, queued: true };
   }
@@ -434,6 +661,7 @@ export class Automations {
 
   /** Fire the oldest webhook event that waited, once nothing of this automation is running. */
   private async drain(t: Trigger) {
+    if (this.stopped) return;
     if (!t.queued?.length || this.busy(t)) return;
     const [next, ...rest] = t.queued;
     t.queued = rest.length ? rest : undefined;
@@ -502,6 +730,8 @@ export class Automations {
           this.handle(t, sourceKeys(item.source));
         } catch (err) {
           errors.push(`${item.key}: ${(err as Error).message}`);
+          const failed = this.recordEvent(t, { ...input, source: item.source });
+          this.updateEvent(t, failed.id, "failed", `${item.key}: ${(err as Error).message}`);
         }
       }
       t.lastRunId = runs.at(-1)?.id ?? t.lastRunId;
@@ -622,6 +852,24 @@ export class Automations {
   }
 }
 
+/** Only documented event fields may be retained or replayed. */
+export function validateFireInput(raw: unknown): FireInput {
+  if (!raw || typeof raw !== "object") throw new Error("Invalid automation event");
+  const input = raw as Record<string, any>;
+  if (!["manual", "schedule", "webhook"].includes(input.via)) throw new Error("Invalid automation event origin");
+  if (input.details !== undefined && typeof input.details !== "string") throw new Error("Automation event details must be text");
+  if (input.event !== undefined && typeof input.event !== "string") throw new Error("Automation event description must be text");
+  let source: SourceInput | undefined;
+  if (input.source !== undefined) {
+    const s = input.source;
+    if (!s || typeof s !== "object" || !["issue", "pr", "alert"].includes(s.kind) || !Number.isSafeInteger(s.number) || s.number < 1) throw new Error("Invalid automation event source");
+    if (s.kind === "alert" && !["dependabot", "code-scanning"].includes(s.tool)) throw new Error("Invalid automation alert tool");
+    if (s.numbers !== undefined && (!Array.isArray(s.numbers) || s.numbers.length > 20 || s.numbers.some((n: unknown) => !Number.isSafeInteger(n) || (n as number) < 1))) throw new Error("Invalid automation alert numbers");
+    source = { kind: s.kind, number: s.number, ...(s.kind === "alert" ? { tool: s.tool, ...(s.numbers ? { numbers: [...new Set<number>(s.numbers)] } : {}) } : { ciLogs: s.ciLogs === true }) };
+  }
+  return { via: input.via, details: input.details?.slice(0, 4_000), event: input.event?.slice(0, 1_000), source };
+}
+
 /** Two webhook events that would start the same run. */
 function eventKey(event: Omit<FireInput, "via">): string {
   return event.source ? sourceKeys(event.source).join(",") : `details:${event.details ?? ""}`;
@@ -664,16 +912,21 @@ function readTrigger(raw: any): Trigger | undefined {
   }
   const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : undefined);
   const time = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-  const queued = Array.isArray(raw.queued)
-    ? raw.queued
-        .filter((q: any) => q && typeof q === "object")
-        .map((q: any) => ({
-          details: typeof q.details === "string" ? q.details : undefined,
-          event: typeof q.event === "string" ? q.event : undefined,
-          source: q.source && typeof q.source === "object" ? q.source : undefined,
-        }))
-        .slice(-MAX_QUEUED)
-    : undefined;
+  const queued = Array.isArray(raw.queued) ? raw.queued.slice(-MAX_QUEUED).flatMap((q: any) => {
+    try { const { via: _via, ...input } = validateFireInput({ ...q, via: "webhook" }); return [{ ...input, ...(typeof q.eventId === "string" ? { eventId: q.eventId.slice(0, 100) } : {}) }]; }
+    catch { return []; }
+  }) : undefined;
+  const eventHistory: AutomationEvent[] | undefined = Array.isArray(raw.eventHistory) ? raw.eventHistory.slice(-MAX_EVENT_HISTORY).flatMap((event: any): AutomationEvent[] => {
+    try {
+      if (!event || typeof event.id !== "string" || !["received", "queued", "started", "failed", "dropped", "deduplicated", "skipped"].includes(event.state)) return [];
+      const { via, ...input } = validateFireInput({ ...event.input, via: event.via });
+      return [{ id: event.id.slice(0, 100), at: time(event.at) ?? Date.now(), updatedAt: time(event.updatedAt) ?? Date.now(), via, input,
+        state: event.state === "received" ? "failed" : event.state,
+        reason: event.state === "received" ? "code-flow restarted before this event finished starting" : typeof event.reason === "string" ? event.reason.slice(0, 1_000) : undefined,
+        delivery: typeof event.delivery === "string" ? event.delivery.slice(0, 200) : undefined,
+        runIds: strings(event.runIds)?.slice(0, 10), retries: Number.isSafeInteger(event.retries) && event.retries > 0 ? event.retries : 0 }];
+    } catch { return []; }
+  }) : undefined;
   if (problems.length) logWarn(`Automation "${raw.name ?? raw.id}" was turned off: ${problems.join("; ")}`);
   return {
     id: raw.id,
@@ -694,6 +947,7 @@ function readTrigger(raw: any): Trigger | undefined {
     handled: strings(raw.handled)?.slice(-MAX_HANDLED),
     deliveries: strings(raw.deliveries)?.slice(-MAX_DELIVERIES),
     queued: queued?.length ? queued : undefined,
+    eventHistory,
     webhookStarts: Array.isArray(raw.webhookStarts) ? raw.webhookStarts.filter((n: unknown) => time(n) !== undefined) : undefined,
   };
 }

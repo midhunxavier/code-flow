@@ -17,6 +17,8 @@ export interface CheckResult {
   ok: boolean;
   exitCode: number | null;
   timedOut: boolean;
+  /** Cancellation never counts as a successful check, even if the child exits zero. */
+  aborted?: boolean;
   durationMs: number;
   /** Combined stdout/stderr, trimmed to the end (where failures usually are). */
   output: string;
@@ -140,6 +142,7 @@ export function dockerArgs(cwd: string, command: string, container: Container, n
 /** Run a shell command in `cwd` with a timeout; the whole process group is killed on timeout/abort. */
 export function runCheck(cwd: string, command: string, opts: { timeoutMs: number; signal?: AbortSignal; container?: Container }): Promise<CheckResult> {
   const started = Date.now();
+  if (opts.signal?.aborted) return Promise.resolve({ command, ok: false, exitCode: null, timedOut: false, aborted: true, durationMs: 0, output: "[check cancelled before starting]" });
   const env: NodeJS.ProcessEnv = { ...childEnv(), CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" };
   // Inherited from whatever runs code-flow; a nested `node --test` would silently skip every
   // test and exit 0 — a false pass.
@@ -156,6 +159,7 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
     trackGroup(child.pid);
     let output = "";
     let timedOut = false;
+    let aborted = false;
     let settled = false;
     const collect = (chunk: Buffer) => {
       output += chunk.toString();
@@ -173,8 +177,9 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
       timedOut = true;
       stop();
     }, timerMs(opts.timeoutMs, 1));
-    const onAbort = () => stop();
+    const onAbort = () => { aborted = true; stop(); };
     opts.signal?.addEventListener("abort", onAbort, { once: true });
+    if (opts.signal?.aborted) onAbort();
 
     const finish = (exitCode: number | null) => {
       if (settled) return;
@@ -183,14 +188,16 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
       untrackGroup(child.pid);
       opts.signal?.removeEventListener("abort", onAbort);
       const trimmed = output.length > KEEP_OUTPUT ? `…\n${output.slice(-KEEP_OUTPUT)}` : output;
+      const summary = testCounts(output);
       resolve({
         command,
-        ok: exitCode === 0 && !timedOut,
+        ok: exitCode === 0 && !timedOut && !aborted && !(summary.failed ?? 0),
         exitCode,
         timedOut,
+        ...(aborted ? { aborted: true } : {}),
         durationMs: Date.now() - started,
         output: timedOut ? `${trimmed}\n[timed out after ${Math.round(opts.timeoutMs / 1000)}s]` : trimmed,
-        ...testCounts(output),
+        ...summary,
       });
     };
     child.on("error", (err) => {

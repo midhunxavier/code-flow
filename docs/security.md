@@ -2,12 +2,12 @@
 
 ## How code-flow uses your subscriptions
 
-code-flow never handles credentials. Each adapter launches the vendor's **official, unmodified CLI** in headless mode, and that CLI uses the login it already has:
+code-flow does not read agent login files. Each adapter launches the vendor's **official, unmodified CLI** in headless mode, and that CLI uses its own login. Explicit external integrations and notification destinations use server-side environment credential references; those variables are stripped from child processes and filtered from exports:
 
 | Agent | Command used | Login | Sandbox / permissions |
 |---|---|---|---|
 | Claude Code | `claude -p --output-format stream-json` | Pro/Max (or API key) via `claude` | read: edit tools disabled, git read-only commands allowed (never with `--output`, which writes anywhere, or `--no-index`, which reads anywhere) · write: `acceptEdits` + an allow-list of build/test commands (`bypassPermissions` with Full access) |
-| Codex | `codex app-server` (JSON-RPC over stdio: `thread/start` or `thread/resume`, `turn/start`, `turn/steer`); `codex exec --json` / `codex exec resume` when app-server isn't available | ChatGPT plan (or API key) via `codex login` | Codex sandbox: `read-only` / `workspace-write` (`danger-full-access` with Full access), approvals off |
+| Codex | `codex app-server` (JSON-RPC over stdio: `thread/start` or `thread/resume`, `turn/start`, `turn/steer`); `codex exec --json` / `codex exec resume` when app-server isn't available | ChatGPT plan (or API key) via `codex login` | Codex sandbox: `read-only` / `workspace-write` (`danger-full-access` with Full access); optional one-action approval inbox on supported app-server turns |
 | Antigravity | `agy -p --output-format stream-json` | Google AI Pro/Ultra via an interactive `agy` login | `--sandbox` (verified: blocks writes outside the worktree; dropped in write steps with Full access) + `--dangerously-skip-permissions` (see [caveats](#caveats)) |
 
 **Read-only is enforced by code-flow itself, for every agent.** Before a read-only step (plan, review, judge, debate) code-flow snapshots its worktree: the commit, uncommitted changes and untracked files. Afterwards it puts back anything the step changed, including commits, and logs a warning. A side chat's **Ask** is the exception: you may be working in that worktree at the same time, so what changed is named in a warning and left in place.
@@ -21,13 +21,43 @@ This is the boundary each vendor draws for personal use. Don't extend code-flow 
 - It listens on `127.0.0.1` only, checks the Host and Origin headers, and wants a session cookie or Bearer token on every API call (see [signing in](getting-started.md#signing-in)).
 - The first browser to open code-flow signs in without the link only when it connects directly from this machine, and only until a browser has signed in (that way, with the link, or with its cookie) or code-flow has started an agent, a check or an app. After that, a program here can't get a session by asking for the page. A tunnel (ngrok, cloudflared) forwarding to the port can rewrite the Host header to `localhost`, so a request carrying forwarding headers (`X-Forwarded-For`, `Forwarded`…) never signs in that way.
 - code-flow's pages are never shown inside another page (`X-Frame-Options: DENY`, `frame-ancestors 'none'`), so a page elsewhere can't lay them under a decoy and have you click. The side panel's Browser frames your app through its preview, on a port of its own, never code-flow itself.
-- The phone view and webhooks are only on your network when you turn on *Reachable from my Wi-Fi*, over plain HTTP. See [Automations](automations.md#phone-view).
+- The read-only phone view and webhooks are only on your network when you turn on *Reachable from my Wi-Fi*. That listener uses HTTPS when `CODEFLOW_TLS_CERT` and `CODEFLOW_TLS_KEY` are configured together. Full phone control requires HTTPS; `CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL=1` is an explicit development exception. See [Automations](automations.md#phone-view).
 - That network listener refuses connections from this computer itself, from loopback or any of its own addresses. Programs here, the agents code-flow runs among them, can read `~/.codeflow`, phone secrets included; through the network listener they could otherwise sign in with full control and run commands outside their sandboxes. (Binding it to the Wi-Fi addresses alone wouldn't stop that: a program here can connect to those too.)
-- *Full control from my phone* serves the whole app on that network listener, to a phone signed in with the phone link. That link has a secret of its own, apart from the read-only link's, so a read-only link someone saw never becomes a full-control one. The phone's cookie is bound to that address and lasts 30 days; **New link**, or turning off full control, *Reachable from my Wi-Fi* or the phone link, makes new secrets and signs every phone out, and turning it back on doesn't sign them back in. Cross-origin requests are refused there too. Whoever has the link can do everything you can, so treat it like a password. See [Full control from your phone](automations.md#full-control-from-your-phone).
+- *Full control from my phone* signs in with a separate pairing link that expires after ten minutes, including across restarts. Pairing creates a separate 30-day session for each device; only token hashes are stored, TLS cookies are Secure, and individual devices can be revoked. **New link** and disabling remote/full control rotate the generation and invalidate earlier sessions. Cross-origin requests are refused. Paired devices have the owner's full control; this is not a shared-project roles system. See [Full control from your phone](automations.md#full-control-from-your-phone).
 - Webhooks: each automation has its own secret (a Bearer token, or GitHub's signature). Secrets live in `~/.codeflow` (webhook secrets in `triggers.json`), which programs running as you can read, the agents included. So text a webhook sends (`details`) reaches the agents fenced as information, not instructions, and its run's reviews aren't learned as lessons. A GitHub delivery sent again is ignored, whatever its delivery id (the signature doesn't cover the id), and webhooks start a limited number of runs an hour. See [Webhooks](automations.md#webhooks).
 - The Browser's **Snapshot** loads pages in a headless Chrome on this computer, so it refuses addresses on this computer and link-local ones (where cloud machines keep their metadata service), checking every address a name resolves to. What the page asks for as it loads, redirects included, is checked the same way. The exception is a local app at its `http://localhost:<port>` address, as the Browser shows it, never code-flow's own port. Private network addresses are fine. Not covered: WebSockets, requests from workers, and a name that resolves differently a moment later (DNS rebinding).
 
 ## Running the agents' code
+
+Composer Improve uses an empty private Git repository for Quick mode and a bounded
+committed snapshot for repository mode. It copies no source Git history, remotes,
+hooks, working-copy drafts or executable provider configuration. Cleanup removes
+only that private directory and never resets the source checkout. Native Safe/read
+permissions remain a CLI boundary rather than an OS filesystem sandbox; filesystem
+restrictions block Improve entirely. See [Improve setup and limits](getting-started.md#your-first-run).
+App-managed subprocesses use absolute PATH entries, including explicit environment
+overrides. On macOS/Linux, an absent or unusable PATH falls back to `/usr/bin:/bin`
+so repository-owned tools cannot be selected through the current directory.
+
+Local shared-project accounts grant scoped viewer/reviewer access through a
+separate closed API surface. They do not delegate execution or the owner's
+phone capability. Sessions expire and revoke immediately; raw transcripts,
+private context and host paths are omitted. See [shared projects](shared-projects.md).
+
+Custom [filesystem policies](filesystem-policy.md) enforce application reads,
+writes and filtered diffs, and pause ordinary code execution globally where its
+backend cannot enforce those rules. Saved restrictions are checked before
+trusted extension code is imported. [Extensions](extensions.md) are explicit,
+version/hash-pinned owner-trusted server code with full process authority, not
+untrusted sandboxed plugins.
+
+[SSH workers](remote-workers.md) use provisioned targets, strict host keys,
+worker-local credentials and durable private receipts. A disconnected accepted
+turn is uncertain; reconnecting does not execute it again. [GitLab/Bitbucket
+code workflows](code-hosts.md) require prepared agent containers for fetched PR
+code and use exact-ref Git leases for publication. Provider-native approval
+policy and PR closure cannot be transacted atomically with a Git push; unknown
+policies and unsupported queues fail closed.
 
 A check runs the agents' code (tests, scripts) on your machine, outside Codex's and agy's sandboxes, as your CI would. With **Full access** the agents themselves run without a sandbox too (see [What agents may do](configuration.md#what-agents-may-do-while-building)). Use code-flow on repos and tasks you trust, or run checks in Docker ([isolation](automations.md#isolation)), or code-flow itself inside a container or VM.
 
@@ -49,7 +79,7 @@ A broken worktree is never mistaken for your checkout. Worktrees live inside you
 ## Caveats
 
 - **agy permissions** (tested with agy 1.3.5): when headless agy hits a tool it isn't allowed to use, it doesn't work around it. The turn ends with an empty answer, which code-flow reports as a failed step that names the denied action. That's why code-flow passes `--dangerously-skip-permissions` together with `--sandbox` by default. The sandbox confines writes to the worktree, and code-flow reverts any changes made during read-only steps. Older agy versions printed nothing when piped; code-flow reports that as an error too.
-- Native headless permission prompts remain denied. Auto team members can ask you or another member a structured question, end their turn, and receive an answer on a later turn. This does not grant tool permissions. Codex runs with approvals off (`approvalPolicy: "never"`); if it asks for an approval anyway, code-flow declines.
+- Native permission requests are declined by default. Interactive Codex app-server runs can explicitly enable the one-action approval inbox. Requests expire, are scoped to the active run/step/thread/turn and worktree, and cannot grant session-wide permission or policy amendments. Read-only work cannot gain file writes. Unattended and locked-down source runs never wait for native approvals. Other transports keep their existing denial behavior. Team questions remain separate from tool permissions.
 - **Mid-turn notes are Codex-only, and app-server is experimental.** Mid-turn delivery needs `codex app-server`, which Codex labels experimental (written against codex-cli 0.162). If the installed Codex lacks it, or speaks a protocol this client doesn't, code-flow falls back to `codex exec` and logs that once. It then sticks with exec until the server restarts, so restart code-flow after upgrading Codex. A note is marked delivered as soon as Codex accepts it into the turn. If Codex rejects it (the turn just ended), it goes to the next turn instead. A note for "anyone" goes to a running Codex turn, not to whoever starts next.
 - Claude's write mode can run allow-listed commands such as `npm`, `node` and `make`, and those can run arbitrary project scripts. Only run it on repos you trust. Codex is additionally confined by its own sandbox.
 - agy needs `--dangerously-skip-permissions` for read-only steps too, so for agy the snapshot-and-restore is what enforces read-only. A side chat's **Ask** isn't restored, so what agy changes there stays, and the next **Change** commits it: ask Claude or Codex when that matters. Changes to gitignored files during a read-only step aren't detected.

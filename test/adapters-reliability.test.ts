@@ -14,7 +14,7 @@ process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-reliability-hom
 // The one-shot transport for Codex here; app-server has its own tests (codex-app-server.test.ts).
 process.env.CODEFLOW_CODEX_TRANSPORT = "exec";
 
-const { adapters } = await import("../src/adapters/index.js");
+const { getAdapter, adapters } = await import("../src/adapters/index.js");
 const { lineSplitter, startJsonlProcess } = await import("../src/adapters/process.js");
 const { classifyError, resetFromText } = await import("../src/adapters/errors.js");
 type AgentEvent = import("../src/adapters/types.js").AgentEvent;
@@ -27,7 +27,7 @@ const tmp = (name: string) => mkdtempSync(join(tmpdir(), `codeflow-reliability-$
 async function turn(agent: AgentId, extra: Partial<RunOptions> = {}, prompt = "Look around") {
   const events: AgentEvent[] = [];
   const started = Date.now();
-  const result = await adapters[agent].run({ prompt, cwd: tmp("cwd"), mode: "read", ...extra }, (e) => events.push(e));
+  const result = await getAdapter(agent).run({ prompt, cwd: tmp("cwd"), mode: "read", ...extra }, (e) => events.push(e));
   return { result, events, ms: Date.now() - started };
 }
 

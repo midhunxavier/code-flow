@@ -88,10 +88,16 @@ test("reject: the run ends without building", async () => {
 test("the time budget pauses while the run waits for you", async () => {
   const budgetMs = 3_000;
   const m = new RunManager(findPattern);
-  const run = await start(m, "pipeline", pipelineRoles, { approvals: { plan: true }, loop: { maxMinutes: budgetMs / 60_000 } });
+  // Exercise the real checkpoint and clock without spending this deliberately short budget
+  // spawning three provider processes. Their startup time varies under the full test suite.
+  const pattern = { ...findPattern("pipeline")!, run: async (ctx: import("../src/engine.js").TeamContext) => {
+    await ctx.approve("plan", "Approve the plan", "Clock pause fixture");
+    return "Approved";
+  } };
+  const run = await m.start({ pattern, task: "Pause the budget", repo, roles: pipelineRoles, options: {}, approvals: { plan: true }, loop: { maxMinutes: budgetMs / 60_000 } });
   await until(() => !!run.awaiting);
   // Wait out more than the whole budget, watching all along that the run is still waiting. The
-  // budget leaves the rest of the run (after approving) ample time, even on a busy machine.
+  // checkpoint returns immediately after approval, independent of machine/provider load.
   const since = Date.now();
   await until(() => run.status !== "running" || Date.now() - since > budgetMs + 500, budgetMs + 10_000);
   assert.equal(run.status, "running", "still waiting, not stopped at the time limit");

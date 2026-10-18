@@ -73,7 +73,12 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     answer = json({ requirements: [{ id: "goal", description: "Implement the requested sample" }], members: [makeMember("coordinator", "coordinator", vendor), makeMember("builder", "worker", builder), ...(same ? [makeMember("builder-two", "worker", builder)] : []), makeMember("verifier", "reviewer", reviewer)], tasks: prompt.includes("AUTO-SUBPLAN") ? [] : tasks.map((task) => ({ ...task, dependencyTypes: [] })), ...(prompt.includes("AUTO-SUBPLAN") ? { subplans: [{ id: "sample", strategy: "investigate-implement", owner: "builder", requirements: ["goal"], acceptance: ["The requested behavior has evidence"], paths: ["*"], dependsOn: [], instructions: "Implement the requested sample" }] } : { subplans: [] }), contracts: ["Each task preserves the accepted dependency artifacts"], rationale: "A small team with independent review" });
   } else if (prompt.includes("AUTO_TEAM_TASK")) {
     const { task, member, attempt } = JSON.parse(prompt.match(/## Assignment JSON\n```json\n([\s\S]*?)\n```/)[1]);
-    if (task.instructions.includes("AUTO-SLOW-TURN")) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2500);
+    if (task.instructions.includes("AUTO-SLOW-TURN")) {
+      if (process.env.FAKE_AUTO_SLOW_RELEASE) {
+        const deadline = Date.now() + 60000;
+        while (!existsSync(process.env.FAKE_AUTO_SLOW_RELEASE) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      } else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2500);
+    }
     const needsInfo = attempt === 1 && task.id === "alpha" && /AUTO-(USER-)?QUESTION/.test(task.instructions);
     const failed = prompt.includes("AUTO-FAILURE") || prompt.includes("AUTO-CONTRACT-CHANGE") && task.id === "beta" && attempt === 1 || prompt.includes("AUTO-HANDOVER") && member.id === "builder";
     if (write && !needsInfo && !failed && !prompt.includes("AUTO-NO-CHANGE")) writeFileSync(`${vendor}-${task.id}.txt`, `${task.id} implementation\n`);

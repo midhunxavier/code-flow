@@ -184,3 +184,47 @@ test("a run view with a side chat, two terminals and a second tab still gets its
   await second.close();
   await streamsAre({ streams: 0, subscriptions: 0 }, "no tabs, no streams");
 });
+
+test("owner stream sharing stays private across shared-account sign-in and uses no secret in Web Lock names", async () => {
+  const projects = await api("/api/projects"); assert.ok(projects[0]?.id);
+  const state = await api("/api/accounts");
+  const created = await api("/api/accounts", { revision: state.revision, username: "stream-viewer", displayName: "Stream viewer", password: "a long stream boundary password", roles: { [projects[0].id]: "viewer" } });
+  assert.ok(created.users?.some((user: { username: string }) => user.username === "stream-viewer"), created.error);
+  const ownerPage = await context.newPage();
+  await ownerPage.goto(`${BASE}/?token=${TOKEN}`); await ownerPage.getByRole("button", { name: "New run", exact: true }).waitFor();
+  await streamsAre({ streams: 1, subscriptions: 1 }, "the owner watches its one private stream");
+  const before = await ownerPage.evaluate(async () => (await fetch("/api/auth/self")).json());
+  assert.match(before.streamSharing.channelKey, /^[a-f0-9]{64}$/); assert.match(before.streamSharing.lockId, /^[a-f0-9]{32}$/);
+  const locks = await ownerPage.evaluate(async () => (await navigator.locks.query()).held?.map((lock) => lock.name ?? "") ?? []);
+  assert.ok(locks.some((name) => name.includes(before.streamSharing.lockId)));
+  assert.ok(locks.every((name) => !name.includes(before.streamSharing.channelKey)), "enumerable lock names never disclose the private BroadcastChannel capability");
+  assert.equal(await ownerPage.evaluate((key) => [...Object.values(localStorage), ...Object.values(sessionStorage)].some((value) => String(value).includes(key)), before.streamSharing.channelKey), false, "the channel key stays in owner-page memory");
+
+  // A plain document on the same origin has the same BroadcastChannel namespace and Web Locks.
+  // It becomes a real shared viewer, then tries the upstream public broker names and known lock ID.
+  const sharedPage = await context.newPage(); await sharedPage.route("**/stream-boundary-surface", (route) => route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Stream boundary fixture</title><main>Shared viewer fixture</main>" }));
+  await sharedPage.goto(`${BASE}/stream-boundary-surface`);
+  const login = await sharedPage.evaluate(async () => (await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: "stream-viewer", password: "a long stream boundary password" }) })).status); assert.equal(login, 200);
+  const identity = await sharedPage.evaluate(async () => (await fetch("/api/auth/self")).json()); assert.equal(identity.kind, "shared"); assert.equal(identity.streamSharing, undefined);
+  assert.equal(await sharedPage.evaluate(async () => (await fetch("/api/stream?subs=%5B%7B%22id%22%3A1%2C%22topic%22%3A%22runs%22%7D%5D")).status), 403);
+  await streamsAre({ streams: 0, subscriptions: 0 }, "shared login closes the prior owner's transport before it can outlive the identity switch");
+  await ownerPage.getByRole("heading", { name: "Shared project review", exact: true }).waitFor({ timeout: 10000 });
+  await sharedPage.evaluate((lockId) => {
+    const root = window as unknown as { received: unknown[]; publicChannels: BroadcastChannel[] };
+    root.received = [];
+    root.publicChannels = ["codeflow-stream", "codeflow-stream:unprivileged", `codeflow-stream:${lockId}`, `codeflow-stream:${lockId}:unprivileged`].map((name) => { const channel = new BroadcastChannel(name); channel.onmessage = (event) => root.received.push(event.data); return channel; });
+    for (const channel of root.publicChannels) channel.postMessage({ kind: "subs", window: "unprivileged", subs: [[71, "runs", undefined]] });
+  }, before.streamSharing.lockId);
+
+  // Owner recovery creates a different private group. Public forged subscriptions cannot join it.
+  const recovered = await context.newPage(); await recovered.goto(`${BASE}/?token=${TOKEN}`); await recovered.getByRole("button", { name: "New run", exact: true }).waitFor();
+  const after = await recovered.evaluate(async () => (await fetch("/api/auth/self")).json()); assert.notEqual(after.streamSharing.channelKey, before.streamSharing.channelKey); assert.notEqual(after.streamSharing.lockId, before.streamSharing.lockId);
+  await streamsAre({ streams: 1, subscriptions: 1 }, "a recovered owner group has no forged subscriber");
+  await sharedPage.evaluate(() => { for (const channel of (window as unknown as { publicChannels: BroadcastChannel[] }).publicChannels) channel.postMessage({ kind: "subs", window: "unprivileged", subs: [[71, "runs", undefined]] }); });
+  // This round trip follows the forged messages and creates a real owner-feed update.
+  const list = await api("/api/runs"); const run = Array.isArray(list) ? list[0] : list.runs[0]; assert.ok(run?.id);
+  await api(`/api/runs/${run.id}/archive`, { archived: false });
+  await streamsAre({ streams: 1, subscriptions: 1 }, "public/lock-derived broker names cannot add subscriptions");
+  assert.deepEqual(await sharedPage.evaluate(() => (window as unknown as { received: unknown[] }).received), [], "a shared document receives no owner stream messages");
+  await recovered.close(); await ownerPage.close(); await sharedPage.close(); await streamsAre({ streams: 0, subscriptions: 0 }, "every owner broker was released");
+});

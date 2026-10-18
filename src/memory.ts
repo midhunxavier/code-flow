@@ -75,6 +75,8 @@ export interface MemoryEntry extends Omit<MemoryInput, "derivedFrom" | "tags" | 
   deletedAt?: number;
 }
 
+export type MemoryMaintenanceEntry = Pick<MemoryEntry, "id" | "revision" | "scope" | "repo" | "projectId" | "runId" | "status" | "tags" | "derivedFrom" | "origins" | "sourceRefs" | "createdAt" | "updatedAt">;
+
 /** Verification must be constructed from runtime check/review evidence, not model claims. */
 export interface MemoryVerification {
   passed: boolean;
@@ -137,7 +139,7 @@ export class MemoryStore {
 
   async load(): Promise<void> { await this.read(); }
 
-  async propose(raw: MemoryInput, authority: MemoryAuthority): Promise<MemoryEntry> {
+  async propose(raw: MemoryInput, authority: MemoryAuthority, options: { expectedSources?: MemoryRef[] } = {}): Promise<MemoryEntry> {
     return this.change((doc) => {
       const input = validateInput(raw);
       if (authority.kind === "run" && input.scope === "project") input.runId ??= authority.runId;
@@ -149,6 +151,21 @@ export class MemoryStore {
           authorize(previous, authority, true);
           if (previous.operationHash !== operationHash) throw new Error("Memory operation ID was already used for different content");
           return clone(previous);
+        }
+      }
+      // Publication previews need an atomic source check. Ordinary derivations may refer
+      // to historical revisions; guarded publication must use exactly the live revisions
+      // the user reviewed and must not race deletion, expiry or negative feedback.
+      if (options.expectedSources !== undefined) {
+        const expected = uniqueRefs(options.expectedSources);
+        if (JSON.stringify(expected) !== JSON.stringify(input.derivedFrom ?? [])) throw new Error("Guarded publication must identify every derivation source");
+        for (const sourceRef of expected) {
+          const source = doc.entries.find((entry) => entry.id === sourceRef.id);
+          if (!source) throw new Error("Memory publication source does not exist");
+          authorize(source, authority, false);
+          if (source.status === "deleted" || source.revision !== sourceRef.revision
+            || (source.expiresAt !== undefined && source.expiresAt <= Date.now())
+            || source.feedback?.some((item) => item.revision === source.revision && (item.rating === "stale" || item.rating === "incorrect"))) throw new MemoryConflictError(clone(source));
         }
       }
       const live = doc.entries.filter((entry) => entry.status !== "deleted");
@@ -276,6 +293,25 @@ export class MemoryStore {
         count++;
       }
       return count;
+    });
+  }
+
+  /** Offline maintenance reads provenance metadata without exporting private bodies/titles. */
+  async maintenanceEntries(): Promise<MemoryMaintenanceEntry[]> {
+    const doc = await this.read();
+    return doc.entries.map(({ id, revision, scope, repo, projectId, runId, status, tags, derivedFrom, origins, sourceRefs, createdAt, updatedAt }) => clone({ id, revision, scope, repo, projectId, runId, status, tags, derivedFrom, origins, sourceRefs, createdAt, updatedAt }));
+  }
+
+  /** One atomic offline retirement; project guidance and live source relations stay protected. */
+  async retireMaintenance(refs: MemoryRef[]): Promise<number> {
+    const selected = uniqueRefs(refs);
+    return this.change((doc) => {
+      const ids = new Set(selected.map((ref) => ref.id));
+      const entries = selected.map((ref) => current(doc, ref.id, ref.revision, { kind: "user" }, true));
+      if (entries.some((entry) => entry.scope === "project" || entry.tags.includes("pinned"))) throw new Error("Retention cannot erase project guidance or pinned memory");
+      if (doc.entries.some((entry) => entry.status !== "deleted" && entry.derivedFrom.some((source) => ids.has(source.id)))) throw new Error("Retention cannot erase a live memory provenance source");
+      for (const entry of entries) redact(entry);
+      return entries.length;
     });
   }
 

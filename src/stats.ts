@@ -21,6 +21,12 @@ export interface AgentStats {
   /** Finished runs with a check verdict where this agent wrote code, and how many passed. */
   judged: number;
   passed: number;
+  /** Verdicts with exactly one writing provider; shared outcomes do not identify a provider's contribution. */
+  attributedJudged: number;
+  attributedPassed: number;
+  sharedJudged: number;
+  /** Wilson 95% interval for attributable outcomes, not a prediction for a new task. */
+  confidence: { low: number; high: number; samples: number };
   raceEntries: number;
   raceWins: number;
   /** Loop until green: rounds that turned the check green. */
@@ -79,6 +85,8 @@ export interface Stats {
   agents: AgentStats[];
   patterns: PatternStats[];
   groups: { id: string; task: string; createdAt: number; runs: GroupRun[] }[];
+  /** Comparable context only; task difficulty is not inferred from text. */
+  cohorts: { key: string; repo: string; pattern: string; sourceKind: string; runs: number; judged: number; passed: number; tokens: number; costUsd: number; ms: number }[];
 }
 
 const tokensOf = (r: RunSummary) => (r.usage.inputTokens ?? 0) + (r.usage.outputTokens ?? 0);
@@ -88,16 +96,26 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
   const runs = all.filter((r) => (!filter.repo || r.repo === filter.repo) && (!filter.since || r.createdAt >= filter.since));
   const agents = new Map<AgentId, AgentStats>();
   const patterns = new Map<string, PatternStats>();
+  const cohorts = new Map<string, Stats["cohorts"][number]>();
   const agent = (id: AgentId) => {
     let a = agents.get(id);
     if (!a) {
-      a = { agent: id, runs: 0, steps: 0, writeSteps: 0, failures: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0, ms: 0, judged: 0, passed: 0, raceEntries: 0, raceWins: 0, loopSolves: 0, findings: 0, agreedFindings: 0 };
+      a = { agent: id, runs: 0, steps: 0, writeSteps: 0, failures: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0, ms: 0, judged: 0, passed: 0, attributedJudged: 0, attributedPassed: 0, sharedJudged: 0, confidence: { low: 0, high: 1, samples: 0 }, raceEntries: 0, raceWins: 0, loopSolves: 0, findings: 0, agreedFindings: 0 };
       agents.set(id, a);
     }
     return a;
   };
 
   for (const r of runs) {
+    const sourceKind = r.source?.kind ?? "task";
+    const key = JSON.stringify([r.repo, r.pattern, sourceKind]);
+    const cohort = cohorts.get(key) ?? { key, repo: r.repo, pattern: r.pattern, sourceKind, runs: 0, judged: 0, passed: 0, tokens: 0, costUsd: 0, ms: 0 };
+    cohorts.set(key, cohort);
+    cohort.runs++;
+    if (r.status === "done" && r.verdict) { cohort.judged++; if (r.verdict === "passed") cohort.passed++; }
+    cohort.tokens += tokensOf(r);
+    cohort.costUsd += r.usage.costUsd ?? 0;
+    cohort.ms += r.endedAt ? r.endedAt - r.createdAt : 0;
     const p = patterns.get(r.pattern) ?? { pattern: r.pattern, runs: 0, done: 0, passed: 0, failing: 0, failed: 0, stopped: 0, flagged: 0, proven: 0, weak: 0, unproven: 0, ended: 0, ms: 0, steps: 0, tokens: 0, costUsd: 0 };
     patterns.set(r.pattern, p);
     p.runs++;
@@ -118,6 +136,7 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
     p.tokens += tokensOf(r);
     p.costUsd += r.usage.costUsd ?? 0;
 
+    const writers = Object.values(r.usage.byAgent ?? {}).filter((u) => u && u.writeSteps > 0).length;
     for (const [id, u] of Object.entries(r.usage.byAgent ?? {}) as [AgentId, NonNullable<RunSummary["usage"]["byAgent"]>[AgentId]][]) {
       if (!u) continue;
       const a = agent(id);
@@ -133,6 +152,10 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
       if (u.writeSteps && r.verdict && r.status === "done") {
         a.judged++;
         if (r.verdict === "passed") a.passed++;
+        if (writers === 1) {
+          a.attributedJudged++;
+          if (r.verdict === "passed") a.attributedPassed++;
+        } else a.sharedJudged++;
       }
     }
     for (const id of r.facts?.entrants ?? []) agent(id).raceEntries++;
@@ -145,6 +168,7 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
       }
     }
   }
+  for (const a of agents.values()) a.confidence = { ...confidenceInterval(a.attributedPassed, a.attributedJudged), samples: a.attributedJudged };
 
   const groups = new Map<string, Stats["groups"][number]>();
   for (const r of runs) {
@@ -177,6 +201,7 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
     agents: [...agents.values()].sort((a, b) => b.runs - a.runs),
     patterns: [...patterns.values()].sort((a, b) => b.runs - a.runs),
     groups: [...groups.values()].sort((a, b) => b.createdAt - a.createdAt),
+    cohorts: [...cohorts.values()].sort((a, b) => b.runs - a.runs),
   };
 }
 
@@ -184,17 +209,28 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
 const MIN_SAMPLES = 3;
 
 /**
- * Agents ordered by how often their code passed the check in this repo (smoothed, so a lucky
- * first run doesn't dominate), for "Auto" routing. Empty until at least two agents have enough
- * history to compare.
+ * Rank attributable outcomes conservatively by their Wilson lower bound. Shared runs are
+ * descriptive evidence only. Callers may restrict to a workflow/source cohort; task difficulty
+ * is not inferred. Empty until at least two providers have enough attributable history.
  */
-export function rankAgents(runs: RunSummary[], repo: string): { order: AgentId[]; why: Record<string, string> } {
-  const stats = computeStats(runs, { repo }).agents.filter((a) => a.judged >= MIN_SAMPLES);
+export function rankAgents(runs: RunSummary[], repo: string, cohort: { pattern?: string; sourceKind?: string } = {}): { order: AgentId[]; why: Record<string, string> } {
+  const comparable = runs.filter((r) => (!cohort.pattern || r.pattern === cohort.pattern) && (!cohort.sourceKind || (r.source?.kind ?? "task") === cohort.sourceKind));
+  const stats = computeStats(comparable, { repo }).agents.filter((a) => a.attributedJudged >= MIN_SAMPLES);
   if (stats.length < 2) return { order: [], why: {} };
-  const score = (a: AgentStats) => (a.passed + 1) / (a.judged + 2);
-  const ranked = stats.sort((a, b) => score(b) - score(a));
+  const ranked = stats.sort((a, b) => b.confidence.low - a.confidence.low || b.attributedJudged - a.attributedJudged || a.agent.localeCompare(b.agent));
   return {
     order: ranked.map((a) => a.agent),
-    why: Object.fromEntries(ranked.map((a) => [a.agent, `${a.passed} of ${a.judged} runs passed in this repo`])),
+    why: Object.fromEntries(ranked.map((a) => [a.agent, `${a.attributedPassed} of ${a.attributedJudged} runs passed in this repo with this provider as the sole writer; 95% interval ${Math.round(100 * a.confidence.low)}–${Math.round(100 * a.confidence.high)}%${a.sharedJudged ? `; ${a.sharedJudged} shared outcomes excluded` : ""}${cohort.pattern ? `; ${cohort.pattern} tasks` : "; task difficulty varies"}`])),
   };
+}
+
+/** Wilson score interval for a binomial proportion; no history means no confidence. */
+export function confidenceInterval(passed: number, samples: number): { low: number; high: number } {
+  if (!samples) return { low: 0, high: 1 };
+  const z = 1.959963984540054;
+  const p = Math.max(0, Math.min(samples, passed)) / samples;
+  const denominator = 1 + z * z / samples;
+  const center = (p + z * z / (2 * samples)) / denominator;
+  const margin = z * Math.sqrt(p * (1 - p) / samples + z * z / (4 * samples * samples)) / denominator;
+  return { low: Math.max(0, center - margin), high: Math.min(1, center + margin) };
 }

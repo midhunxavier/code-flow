@@ -56,6 +56,13 @@ export async function serve(args) {
       const id = `srv-${nextServerRequest++}`;
       serverRequests.set(id, resolve);
       out({ id, method, params });
+      if (process.env.FAKE_CODEX_APPROVAL_RESOLVE_MS && method.endsWith("/requestApproval")) {
+        setTimeout(() => {
+          notify("serverRequest/resolved", { threadId: thread?.id, requestId: id });
+          serverRequests.get(id)?.({ decision: "decline" });
+          serverRequests.delete(id);
+        }, Number(process.env.FAKE_CODEX_APPROVAL_RESOLVE_MS));
+      }
     });
 
   const threadInfo = () => ({ id: thread.id, sessionId: thread.id, preview: "", ephemeral: false, modelProvider: "openai", model: thread.params.model ?? "gpt-a", cwd: thread.params.cwd ?? process.cwd(), status: { type: "idle" }, turns: [] });
@@ -103,13 +110,20 @@ export async function serve(args) {
       if (prompt.includes("ASK-APPROVAL")) {
         const cmd = { ...ls, id: "i3", command: "rm -rf build" };
         notify("item/started", { ...base, item: cmd, startedAtMs: Date.now() });
-        const { decision } = await ask("item/commandExecution/requestApproval", { ...base, itemId: "i3", command: cmd.command, cwd: process.cwd(), reason: "outside the sandbox" });
+        const { decision } = await ask("item/commandExecution/requestApproval", { ...base, itemId: "i3", command: cmd.command, cwd: process.cwd(), reason: "outside the sandbox", ...JSON.parse(process.env.FAKE_CODEX_APPROVAL_OVERRIDES || "{}") });
         const ran = decision === "accept" || decision === "acceptForSession";
         notify("item/completed", { ...base, item: { ...cmd, status: ran ? "completed" : "declined", exitCode: ran ? 0 : null, aggregatedOutput: "" }, completedAtMs: Date.now() });
       }
+      if (prompt.includes("ASK-FILE-APPROVAL")) {
+        const changes = JSON.parse(process.env.FAKE_CODEX_FILE_CHANGES || JSON.stringify([{ path: "approved.txt", kind: { type: "add" }, diff: "+approved" }]));
+        const patch = { type: "fileChange", id: "patch-approval", changes, status: "inProgress" };
+        notify("item/started", { ...base, item: patch, startedAtMs: Date.now() });
+        const { decision } = await ask("item/fileChange/requestApproval", { ...base, itemId: patch.id, reason: "Review this patch", ...JSON.parse(process.env.FAKE_CODEX_APPROVAL_OVERRIDES || "{}") });
+        notify("item/completed", { ...base, item: { ...patch, status: decision === "accept" ? "completed" : "declined" }, completedAtMs: Date.now() });
+      }
       if (process.env.FAKE_CODEX_SERVER_REQUEST) {
         const method = process.env.FAKE_CODEX_SERVER_REQUEST;
-        const answer = await ask(method, { ...base, itemId: "i4", reason: "wants to reach the network" });
+        const answer = await ask(method, { ...base, itemId: "i4", reason: "wants to reach the network", ...JSON.parse(process.env.FAKE_CODEX_SERVER_REQUEST_PARAMS || "{}") });
         item({ type: "agentMessage", id: "i4", text: `${method} got ${JSON.stringify(answer)}`, phase: "commentary", memoryCitation: null, delivery: null, questions: null });
       }
       if (forCodex("CRASH")) {

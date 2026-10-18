@@ -1,3 +1,4 @@
+import { PhoneDevices } from "./phone-devices.js";
 import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
@@ -7,7 +8,9 @@ import { ago, api, baseName, copy, post, showToast, STATUS_TEXT } from "./lib.js
 import { activeProject, ALL, currentProject, inScope, NONE, patterns, projectFor, projects, route, runs, runState, selectProject } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
 import { ProjectButton } from "./projects.js";
-import { automationNeedsAttention, teamAwaitingAnswer } from "./team-state.js";
+import { teamAwaitingAnswer } from "./team-state.js";
+import { prioritizedReviewRuns, groupReviewRuns, reviewReason, REVIEW_REASON_LABELS, type ReviewReason } from "../src/review-inbox.js";
+import type { AutomationEvent, AutomationPreview, Schedule } from "../src/automation.js";
 
 /** The project an automation's runs go in: the one it was saved with, or (deleted since) its repo's. */
 export const automationProject = (run: { project?: string; repo: string }) =>
@@ -25,7 +28,7 @@ export interface Automation {
   name: string;
   enabled: boolean;
   run: { repo: string; project?: string; pattern: string; task: string; roles: Record<string, string[]> };
-  schedule?: { every: number } | { at: string; days?: number[] };
+  schedule?: Schedule;
   scheduleText: string;
   webhook: boolean;
   token: string;
@@ -43,6 +46,9 @@ export interface Automation {
   queued?: unknown[];
 }
 interface RemoteInfo {
+  secure?: boolean;
+  insecureDevelopment?: boolean;
+  pairingUntil?: number;
   enabled: boolean;
   lan: boolean;
   /** The phone link opens the whole app (on the Wi-Fi listener), not the read-only view. */
@@ -66,9 +72,39 @@ export async function loadAutomations() {
   }
 }
 /** Automation results waiting for your decision. */
-export const inbox = () => [...runs.value.values()].filter(automationNeedsAttention).sort((a, b) => b.createdAt - a.createdAt);
+export const inbox = () => prioritizedReviewRuns([...runs.value.values()]);
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const localTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+function SchedulePreview({ schedule }: { schedule?: Schedule }) {
+  const [times, setTimes] = useState<number[]>([]);
+  const [error, setError] = useState("");
+  const key = JSON.stringify(schedule);
+  useEffect(() => {
+    let alive = true;
+    if (!schedule) { setTimes([]); setError(""); return; }
+    const timer = setTimeout(() => void post<{ times: number[] }>("/api/automations/schedule-preview", { schedule, after: Date.now(), count: 5 }).then((value) => { if (alive) { setTimes(value.times); setError(""); } }, (err) => { if (alive) { setTimes([]); setError(err.message); } }), 200);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [key]);
+  const timezone = schedule && "at" in schedule ? schedule.timezone : undefined;
+  const format = (at: number) => { try { return new Date(at).toLocaleString([], { timeZone: timezone, weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }); } catch { return "Choose a valid time zone"; } };
+  return <div aria-label="Next scheduled times"><p class="help">Next runs{timezone ? ` in ${timezone}` : ""}:</p>{times.length ? <ol class="help">{times.map((at) => <li key={at}>{format(at)}</li>)}</ol> : <p class="help">{schedule ? "Calculating…" : "No schedule"}</p>}{timezone ? <p class="help">Runs once per local day. A skipped daylight-saving time moves forward; a repeated time uses its first occurrence.</p> : null}{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
+}
+
+function ScheduleEditor({ automation: a, save }: { automation: Automation; save: (patch: object) => unknown }) {
+  const current = a.schedule;
+  const [mode, setMode] = useState<"daily" | "every" | "off">(!current ? "off" : "every" in current ? "every" : "daily");
+  const [at, setAt] = useState(current && "at" in current ? current.at : "07:00");
+  const [timezone, setTimezone] = useState(current && "at" in current ? current.timezone ?? localTimezone() : localTimezone());
+  const [every, setEvery] = useState(current && "every" in current ? current.every : 60);
+  const schedule: Schedule | undefined = mode === "off" ? undefined : mode === "every" ? { every } : { at, timezone, days: current && "at" in current ? current.days : undefined };
+  return <details><summary>Schedule and next times</summary>
+    <label>Schedule<select class="field" aria-label={`Schedule for ${a.name}`} value={mode} onChange={(event) => setMode(event.currentTarget.value as typeof mode)}><option value="off">Only when triggered</option><option value="daily">At a time</option><option value="every">Every N minutes</option></select></label>
+    {mode === "daily" ? <><label>Time<input class="field" type="time" value={at} onInput={(event) => setAt(event.currentTarget.value)} /></label><label>Time zone<input class="field" placeholder="Europe/Stockholm" value={timezone} onInput={(event) => setTimezone(event.currentTarget.value)} /></label></> : mode === "every" ? <label>Minutes<input class="field" type="number" min={5} max={10080} value={every} onInput={(event) => setEvery(Number(event.currentTarget.value))} /></label> : null}
+    <SchedulePreview schedule={schedule} /><button class="btn small" onClick={() => save({ schedule: schedule ?? null })}>Save schedule</button>
+  </details>;
+}
 
 // ---------------------------------------------------------------- page
 export function AutomationsView() {
@@ -79,8 +115,18 @@ export function AutomationsView() {
   }, []);
   // The project you're in, as in the sidebar; what's in other projects is a count and a link away.
   const scoped = currentProject.value !== ALL;
+  const [grouping, setGrouping] = useState("project");
+  const [filter, setFilter] = useState("");
+  const [query, setQuery] = useState("");
   const allPending = inbox();
   const pending = allPending.filter((r) => inScope(r));
+  const filtered = prioritizedReviewRuns(pending, { query, reason: filter ? filter as ReviewReason : undefined });
+  const groups = groupReviewRuns(filtered, (run) => {
+    if (grouping === "reason") { const reason = reviewReason(run)!; return { id: reason, label: REVIEW_REASON_LABELS[reason] }; }
+    if (grouping === "repo") return { id: run.repo, label: run.repo };
+    if (grouping === "none") return { id: "all", label: "All attention items" };
+    const project = projectFor(run); return { id: project?.id ?? "unassigned", label: project?.name ?? "Without a project" };
+  });
   const list = automations.value.filter((a) => automationInScope(a));
   const here = activeProject.value ? ` in ${activeProject.value.name}` : scoped ? " without a project" : "";
   return (
@@ -95,14 +141,12 @@ export function AutomationsView() {
 
       <div class="section">
         <div class="section-title">
-          Inbox {pending.length ? <span class="count">{pending.length}</span> : null}
+          Review inbox {pending.length ? <span class="count">{pending.length}</span> : null}
         </div>
         <Elsewhere count={allPending.length - pending.length} what={(n) => `${n} in other projects need${n === 1 ? "s" : ""} you`} />
-        {pending.length ? (
-          pending.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} />)
-        ) : (
-          <p class="help">Nothing to review{here}. Runs that changed nothing are archived on their own.</p>
-        )}
+        <p class="help">Higher run priorities come first, then questions, blocked work, failures and results. Older items come first within each priority. Open a run to answer approvals, resume work or review its evidence.</p>
+        <div class="wb-row"><label>Group by<select class="field" aria-label="Group review inbox" value={grouping} onChange={(event) => setGrouping(event.currentTarget.value)}><option value="project">Project</option><option value="repo">Repository</option><option value="reason">Attention needed</option><option value="none">No grouping</option></select></label><label>Show<select class="field" aria-label="Filter review inbox" value={filter} onChange={(event) => setFilter(event.currentTarget.value)}><option value="">All attention items</option>{Object.entries(REVIEW_REASON_LABELS).map(([id, label]) => <option value={id}>{label}</option>)}</select></label><label>Search<input class="field" aria-label="Search review inbox" value={query} onInput={(event) => setQuery(event.currentTarget.value)} placeholder="Task, repository or run ID" /></label></div>
+        {filtered.length ? groups.map((group) => <section key={group.id} aria-label={`Review group ${group.label}`}><h3>{group.label} <span class="count">{group.runs.length}</span></h3>{group.runs.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} />)}</section>) : <p class="help">{pending.length ? "No attention items match these filters." : `Nothing to review${here}. Runs that changed nothing are archived on their own.`}</p>}
       </div>
 
       <div class="section">
@@ -147,6 +191,7 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
   return (
     <div class="inbox-item">
       <div class="ih">
+        <span class="badge">{REVIEW_REASON_LABELS[reviewReason(run)!]}</span>{run.priority ? <span class="badge">Priority {run.priority > 0 ? "+" : ""}{run.priority}</span> : null}
         <span class={`dot ${runState(run)}`} />
         <a href={`#/run/${run.id}`} class="t">
           {run.task.split("\n")[0]}
@@ -159,6 +204,7 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
           {project ? <> · <Icon name="project" class="inline-icon" /> {project.name}</> : null} · {ago(run.createdAt)}
         </span>
       </div>
+      {run.awaiting ? <a class="btn small primary" href={`#/run/${run.id}`}>Open pending approval</a> : null}
       {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
       {run.team ? <div class="help">Team: {run.team.members.length} members · {run.team.tasks.filter((task) => task.status === "completed").length}/{run.team.tasks.length} tasks completed · {run.team.metrics.invocations} calls</div> : null}
       {teamAwaitingAnswer(run) ? <div class="at-notice"><b>The team needs your answer</b><p>{run.team?.messages.find((message) => message.id === run.team!.awaitingRequestId)?.body}</p><a class="btn small primary" href={`#/run/${run.id}`}>Answer team question</a></div> : run.team?.status === "blocked" ? <div class="at-notice"><p>{run.team.gaps.join(" ")}</p><a class="btn small" href={`#/run/${run.id}`}>Continue team work</a></div> : null}
@@ -237,6 +283,7 @@ export function TriageActions({ run }: { run: RunSummary }) {
 
 function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
   const [showHook, setShowHook] = useState(false);
+  const [inspect, setInspect] = useState(false);
   const last = a.lastRunId ? runs.value.get(a.lastRunId) : undefined;
   const project = projectLabel(automationProject(a.run), a.run.repo, scoped);
   const update = (patch: object) => post<Automation>(`/api/automations/${a.id}`, patch).then(loadAutomations, (e) => showToast(e.message, 5000));
@@ -255,6 +302,7 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
           {a.isolate ? ` · checks in ${a.image || "node:22"}` : ""}
         </span>
         <span class="spacer" />
+        <button class="btn small" aria-expanded={inspect} onClick={() => setInspect(!inspect)}>Preview and events</button>
         <button
           class="btn small"
           onClick={() =>
@@ -303,6 +351,8 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
         {a.queued?.length ? ` · ${a.queued.length} webhook event${a.queued.length === 1 ? "" : "s"} waiting for the run to end` : null}
         {a.lastError ? <span class="msg err inline"> · couldn't start: {a.lastError}</span> : null}
       </div>
+      <ScheduleEditor automation={a} save={update} />
+      {inspect ? <AutomationInspector automation={a} /> : null}
       {showHook ? (
         <div class="hook">
           <div>
@@ -328,6 +378,48 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
   );
 }
 
+function AutomationInspector({ automation: a }: { automation: Automation }) {
+  const [events, setEvents] = useState<AutomationEvent[]>([]);
+  const [preview, setPreview] = useState<AutomationPreview | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState("");
+  const reloadEvents = () => api<AutomationEvent[]>(`/api/automations/${a.id}/events`).then(setEvents);
+  const reloadPreview = () => post<AutomationPreview>(`/api/automations/${a.id}/preview`, { via: "manual" }).then(setPreview);
+  useEffect(() => {
+    let alive = true;
+    const load = () => Promise.all([api<AutomationEvent[]>(`/api/automations/${a.id}/events`), post<AutomationPreview>(`/api/automations/${a.id}/preview`, { via: "manual" })]).then(([history, dryRun]) => { if (alive) { setEvents(history); setPreview(dryRun); setError(""); } }, (err) => { if (alive) setError((err as Error).message); });
+    void load();
+    const timer = setInterval(() => void api<AutomationEvent[]>(`/api/automations/${a.id}/events`).then((history) => { if (alive) setEvents(history); }, () => {}), 15_000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [a.id]);
+  const retry = async (event: AutomationEvent) => {
+    setBusy(event.id);
+    try { await post(`/api/automations/${a.id}/events/${event.id}/retry`); await Promise.all([reloadEvents(), loadAutomations()]); showToast("Event retry requested"); }
+    catch (err) { setError((err as Error).message); }
+    finally { setBusy(""); }
+  };
+  return <section class="hook automation-inspector" aria-label={`Preview and events for ${a.name}`}>
+    <b>Dry run</b><p class="help">Preview current selections and settings before running.</p>
+    {preview ? <>
+      <p>{preview.ready ? "Ready to start" : "Cannot start immediately"}{preview.busy ? ` · ${preview.busy}` : ""}{preview.wouldQueue ? " · event would wait in the queue" : ""}</p>
+      <p class="help">Permissions: {preview.permissions.trust} · {preview.permissions.isolate ? `commands in ${preview.permissions.image}` : "commands on this machine"} · {preview.limits.maxInvocations ?? preview.limits.maxSteps ?? "default"} calls · {preview.limits.maxMinutes ?? "default"} minutes · webhooks {preview.limits.startsUsed}/{preview.limits.startsPerHour} this hour</p>
+      {preview.commands.setup ? <div class="help">Setup: <code>{preview.commands.setup}</code></div> : null}
+      {preview.commands.check ? <div class="help">Check: <code>{preview.commands.check}</code></div> : null}
+      {preview.warnings.map((warning) => <p class="msg warn" key={warning}>{warning}</p>)}
+      {preview.selected.length ? <ul>{preview.selected.map((item) => <li key={item.key}><b>{item.key}</b>: {item.task.split("\n")[0]}</li>)}</ul> : <p class="help">No work selected.</p>}
+      {preview.skipped.length ? <details><summary>{preview.skipped.length} items outside this run</summary><ul>{preview.skipped.map((item) => <li key={item.key}>{item.key}: {item.reason}</li>)}</ul></details> : null}
+      <button class="btn small" onClick={() => reloadPreview().catch((err) => setError(err.message))}>Refresh preview</button>
+    </> : <p class="help">Loading preview…</p>}
+    <p><b>Event history</b></p><p class="help">Keeps the latest 100 events, including queued, deduplicated, failed and dropped deliveries. Retrying uses the original validated event and current limits.</p>
+    {events.length ? <div class="table-wrap"><table class="ins-table"><thead><tr><th>Received</th><th>Origin</th><th>State</th><th>Details</th><th>Action</th></tr></thead><tbody>{events.map((event) => <tr key={event.id}>
+      <td>{new Date(event.at).toLocaleString()}</td><td>{event.via}</td><td>{event.state}{event.retries ? ` (${event.retries} ${event.retries === 1 ? "retry" : "retries"})` : ""}</td>
+      <td>{event.input.source ? `${event.input.source.kind} #${event.input.source.number}` : event.input.details?.slice(0, 160) || "Saved task"}{event.reason ? <div class="help">{event.reason}</div> : null}{event.runIds?.map((id) => <a href={`#/run/${id}`} key={id}>Open run </a>)}</td>
+      <td>{event.state === "failed" || event.state === "dropped" ? <button class="btn small" disabled={!a.enabled || !!busy} onClick={() => retry(event)}>{busy === event.id ? "Retrying…" : "Retry event"}</button> : "–"}</td>
+    </tr>)}</tbody></table></div> : <p class="help">No events recorded yet.</p>}
+    {error ? <p class="msg err" role="alert">{error}</p> : null}
+  </section>;
+}
+
 function PhoneView() {
   const [info, setInfo] = useState<RemoteInfo | null>(null);
   useEffect(() => {
@@ -351,18 +443,20 @@ function PhoneView() {
           <label class="checkpoint">
             <input type="checkbox" checked={info.lan} onChange={(e) => set({ lan: e.currentTarget.checked })} />
             <span>
-              <b>Reachable from my Wi-Fi</b> — also serve it on your local network (plain HTTP, so only on networks you trust, or over a VPN like Tailscale).
+              <b>Reachable from my Wi-Fi</b> — also serve it on your local network. HTTPS is required for full control; the read-only view can use HTTP on a network you trust.
             </span>
           </label>
           {info.lan ? (
             <label class={`checkpoint${info.control ? " danger" : ""}`}>
-              <input type="checkbox" checked={info.control} onChange={(e) => set({ control: e.currentTarget.checked })} />
+              <input type="checkbox" disabled={!info.secure && !info.insecureDevelopment} checked={info.control} onChange={(e) => set({ control: e.currentTarget.checked })} />
               <span>
                 <b>Full control from my phone</b> — the link opens all of code-flow, the same as on this computer: start runs, answer questions, review, approve, merge and open pull requests.
                 Anyone who gets the link can run agents and commands on this computer, so keep it to your own phone; <b>New link</b>, or turning this off, signs every phone out.
               </span>
             </label>
           ) : null}
+          {!info.secure ? <p class="help">{info.insecureDevelopment ? "Development override: this listener uses unencrypted HTTP." : "To enable full phone control, configure CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY with a certificate trusted by your phone, then restart code-flow."}</p> : <p class="help">Encrypted HTTPS · pairing links expire after 10 minutes.</p>}
+          <PhoneDevices />
           {info.lanError ? <p class="msg err">{info.lanError}</p> : null}
           <div class="phone-qr">
             {info.lanUrls[0] ? (
@@ -417,6 +511,7 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
   const [kind, setKind] = useState<Kind>("daily");
   const [every, setEvery] = useState(60);
   const [at, setAt] = useState("07:00");
+  const [timezone, setTimezone] = useState(localTimezone());
   const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [webhook, setWebhook] = useState(false);
   const [isolate, setIsolate] = useState(false);
@@ -432,7 +527,7 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
       const saved = await post<Automation>("/api/automations", {
         name,
         run,
-        schedule: kind === "every" ? { every } : kind === "daily" ? { at, days } : undefined,
+        schedule: kind === "every" ? { every } : kind === "daily" ? { at, days, timezone } : undefined,
         webhook: kind === "webhook" || webhook,
         isolate,
         image,
@@ -488,6 +583,8 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
               every <input class="field inline num" type="number" min={5} value={every} onInput={(e) => setEvery(Number(e.currentTarget.value) || 60)} /> minutes
             </div>
           ) : null}
+          {kind === "daily" ? <label>Time zone<input class="field" aria-label="Automation time zone" placeholder="Europe/Stockholm" value={timezone} onInput={(event) => setTimezone(event.currentTarget.value)} /></label> : null}
+          {kind !== "webhook" ? <SchedulePreview schedule={kind === "every" ? { every } : { at, days, timezone }} /> : null}
           {kind !== "webhook" ? (
             <label class="check">
               <input type="checkbox" checked={webhook} onChange={(e) => setWebhook(e.currentTarget.checked)} /> Also start it from a webhook
@@ -509,7 +606,7 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
           <button class="btn" onClick={onClose}>
             Cancel
           </button>
-          <button class="btn primary" disabled={saving || !name.trim()} onClick={save}>
+          <button class="btn primary" disabled={saving || !name.trim() || kind === "daily" && !days.length} onClick={save}>
             {saving ? "Saving…" : "Save automation"}
           </button>
         </div>

@@ -16,6 +16,28 @@ import { api, ApiError, post } from "./lib.js";
  */
 
 type OnData = (data: any) => void;
+export interface StreamSharing { channelKey: string; lockId: string }
+export interface StreamState { state: "connecting" | "connected" | "reconnecting" | "offline"; lastReceived?: number }
+let sharing: StreamSharing | undefined;
+let transport: StreamState = { state: "connecting" };
+const stateListeners = new Set<(state: StreamState) => void>();
+
+/** Owner bootstrap supplies this capability before rendering anything that subscribes. */
+export function configureStreamSharing(value?: StreamSharing) {
+  if (role) throw new Error("Configure stream sharing before subscribing");
+  sharing = value && /^[a-f0-9]{64}$/.test(value.channelKey) && /^[a-f0-9]{32}$/.test(value.lockId) ? { ...value } : undefined;
+}
+
+export function onStreamState(listener: (state: StreamState) => void): () => void {
+  stateListeners.add(listener); listener(transport);
+  return () => { stateListeners.delete(listener); };
+}
+
+function connection(state: StreamState) {
+  transport = typeof navigator !== "undefined" && navigator.onLine === false ? { ...state, state: "offline" } : state;
+  for (const listener of stateListeners) listener(transport);
+  if (role === "leader") shared?.postMessage({ kind: "state", state: transport } satisfies Shared);
+}
 interface Sub {
   topic: string;
   onData: OnData;
@@ -99,12 +121,18 @@ function connect() {
     source = undefined;
     return;
   }
+  connection({ ...transport, state: failures ? "reconnecting" : "connecting" });
   const initial = [...wire].map(([id, wired]) => request(id, wired));
   onServer = new Set(initial.map((s) => s.id));
   const es = new EventSource(`/api/stream?subs=${encodeURIComponent(JSON.stringify(initial))}`);
   source = es;
   es.onmessage = (msg) => {
-    const { s, d } = JSON.parse(msg.data) as { s: number; d: any };
+    if (source !== es) return;
+    let message: { s: number; d: any };
+    try { message = JSON.parse(msg.data); } catch { return; }
+    if (!message || !Number.isSafeInteger(message.s) || message.s < 0 || !message.d || typeof message.d !== "object") return;
+    const { s, d } = message;
+    connection({ state: "connected", lastReceived: Date.now() });
     if (s === 0) {
       if (d?.type === "hello") {
         client = d.client;
@@ -134,14 +162,22 @@ function reconnect() {
   source?.close();
   source = undefined;
   client = "";
+  connection({ ...transport, state: "reconnecting" });
   clearTimeout(retry);
   const wait = [500, 1_000, 2_000, 5_000][Math.min(failures++, 3)]!;
-  retry = setTimeout(() => {
-    // Find out first whether code-flow is there, and this browser still signed in (a 401 reloads).
-    api("/api/health").then(connect, () => {
-      retry = setTimeout(connect, 5_000);
-    });
-  }, wait);
+  const probe = async () => {
+    try {
+      if (sharing) {
+        const identity = await api<{ kind: string; streamSharing?: StreamSharing }>("/api/auth/self");
+        // Cookies are shared between tabs. A role switch or owner recovery must leave the old
+        // broker group rather than reconnect it with a different browser identity.
+        if (identity.kind !== "owner" || identity.streamSharing?.channelKey !== sharing.channelKey || identity.streamSharing?.lockId !== sharing.lockId) { location.reload(); return; }
+      }
+      await api("/api/health");
+      connect();
+    } catch { retry = setTimeout(() => void probe(), 5_000); }
+  };
+  retry = setTimeout(() => void probe(), wait);
 }
 
 function scheduleSync() {
@@ -171,12 +207,15 @@ async function sync() {
     if (client === forClient && (status === 0 || status === 404 || status >= 500)) reconnect();
   } finally {
     syncing = false;
-    if (client === forClient) scheduleSync();
+    // A replacement stream may have opened while this request was pending.
+    if (client) scheduleSync();
   }
 }
 
 // ---------------------------------------------------------------- one stream for every window
-const CHANNEL = "codeflow-stream";
+const PREFIX = "codeflow-stream";
+let channelName = "";
+let lockName = "";
 const WINDOW = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 /** Followers say what they watch this often (so a window that vanished without a word is dropped). */
 const HEARTBEAT_MS = 15_000;
@@ -185,33 +224,45 @@ let shared: BroadcastChannel | undefined;
 /** Leader: the other windows, what they watch (their ids → the stream's) and where each left off. */
 const windows = new Map<string, { ids: Map<number, number>; cursors: Map<number, string | undefined>; seen: number; out: BroadcastChannel }>();
 
-type Shared = { kind: "leader" } | { kind: "subs"; window: string; subs: [number, string, string | undefined][] } | { kind: "bye"; window: string };
+type Shared = { kind: "leader"; state: StreamState } | { kind: "state"; state: StreamState } | { kind: "subs"; window: string; subs: [number, string, string | undefined][] } | { kind: "bye"; window: string };
 
 function share() {
-  if (typeof BroadcastChannel !== "function" || typeof navigator === "undefined" || !navigator.locks?.request) {
+  window.addEventListener("offline", () => connection({ ...transport, state: "offline" }));
+  window.addEventListener("online", () => { connection({ ...transport, state: "reconnecting" }); if (role === "follower") announce(); else if (wire.size) connect(); });
+  // Static channel names let a shared-role tab impersonate a window and read owner events.
+  // Web Lock names are enumerable, so the channel capability is distinct from every lock ID.
+  if (!sharing || typeof BroadcastChannel !== "function" || typeof navigator === "undefined" || !navigator.locks?.request) {
     role = "solo";
     return;
   }
+  channelName = `${PREFIX}:${sharing.channelKey}`;
+  lockName = `${PREFIX}:${sharing.lockId}`;
   role = "follower";
-  shared = new BroadcastChannel(CHANNEL);
-  const mine = new BroadcastChannel(`${CHANNEL}:${WINDOW}`);
-  mine.onmessage = (e: MessageEvent<{ s: number; d: unknown }>) => subs.get(e.data.s)?.onData(e.data.d);
+  shared = new BroadcastChannel(channelName);
+  const mine = new BroadcastChannel(`${channelName}:${WINDOW}`);
+  mine.onmessage = (e: MessageEvent<{ s: number; d: any }>) => {
+    if (e.data.s === 0 && e.data.d?.type === "transport") connection(e.data.d.state);
+    else subs.get(e.data.s)?.onData(e.data.d);
+  };
   shared.onmessage = (e: MessageEvent<Shared>) => {
     const m = e.data;
     if (m.kind === "leader") {
+      connection(m.state);
       if (role === "follower") announce(); // a new leader: tell it what this window watches
+    } else if (m.kind === "state") {
+      if (role === "follower") connection(m.state);
     } else if (role === "leader") {
       adopt(m.window, m.kind === "subs" ? m.subs : []);
     }
   };
-  void navigator.locks.request(CHANNEL, () => {
+  void navigator.locks.request(lockName, () => {
     lead();
     return new Promise<never>(() => {}); // held for as long as this window is open
   });
   // A lock of this window's own, held while it's open: the window holding the stream waits for it,
   // so it hears at once when this one closes, or crashes.
-  void navigator.locks.request(`${CHANNEL}:${WINDOW}`, () => new Promise<never>(() => {}));
-  addEventListener("pagehide", () => role === "follower" && shared?.postMessage({ kind: "bye", window: WINDOW } satisfies Shared));
+  void navigator.locks.request(`${lockName}:${WINDOW}`, () => new Promise<never>(() => {}));
+  window.addEventListener("pagehide", () => role === "follower" && shared?.postMessage({ kind: "bye", window: WINDOW } satisfies Shared));
   setInterval(() => {
     if (role === "follower") announce();
     else if (role === "leader") for (const [id, w] of windows) if (Date.now() - w.seen > HEARTBEAT_MS * 3) adopt(id, []);
@@ -223,7 +274,7 @@ function lead() {
   role = "leader";
   for (const [id, sub] of subs) wire.set(id, { topic: sub.topic, cursor: () => sub.cursor?.(), deliver: sub.onData });
   connect();
-  shared!.postMessage({ kind: "leader" } satisfies Shared);
+  shared!.postMessage({ kind: "leader", state: transport } satisfies Shared);
 }
 
 let announcing = false;
@@ -243,12 +294,13 @@ function adopt(window: string, list: [number, string, string | undefined][]) {
   let w = windows.get(window);
   if (!w) {
     if (!list.length) return;
-    w = { ids: new Map(), cursors: new Map(), seen: 0, out: new BroadcastChannel(`${CHANNEL}:${window}`) };
+    w = { ids: new Map(), cursors: new Map(), seen: 0, out: new BroadcastChannel(`${channelName}:${window}`) };
     windows.set(window, w);
     // Granted once that window is gone (see share).
-    void navigator.locks.request(`${CHANNEL}:${window}`, () => windows.get(window) === w && adopt(window, []));
+    void navigator.locks.request(`${lockName}:${window}`, () => windows.get(window) === w && adopt(window, []));
   }
   const theirs = w;
+  theirs.out.postMessage({ s: 0, d: { type: "transport", state: transport } });
   theirs.seen = Date.now();
   const want = new Map(list.map(([id, topic, after]) => [id, { topic, after }]));
   for (const [id, wired] of theirs.ids) {

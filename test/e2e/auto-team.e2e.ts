@@ -58,11 +58,15 @@ after(async () => { await browser?.close(); server?.kill("SIGTERM"); });
 
 test("Auto team approval, addressed question, distinct members, and verified coverage work in the UI", { timeout: 120_000 }, async () => {
   await page.goto(base);
-  await page.getByRole("button", { name: /^Auto team/ }).click();
+  await page.getByLabel("Workflow", { exact: true }).selectOption("auto-team");
   const approval = page.getByRole("checkbox", { name: /Let me approve the team and plan/ });
   assert.equal(await approval.isChecked(), true, "Auto plans start with approval enabled");
   await page.getByLabel("Task", { exact: true }).fill("AUTO-USER-QUESTION AUTO-SAME-PROVIDER implement the sample");
+  // Wait for repository autodetection to settle before editing its controlled input. Filling
+  // while the asynchronous default arrives can append input to the newly inserted value.
+  await page.waitForFunction(() => document.querySelector<HTMLInputElement>("#checkCmd")?.value === "npm test");
   await page.locator("#checkCmd").fill("npm test");
+  assert.equal(await page.locator("#checkCmd").inputValue(), "npm test");
   await page.getByRole("button", { name: /^Start run/ }).click();
   await page.waitForURL(/#\/run\//);
   const runId = page.url().split("#/run/")[1]!;
@@ -73,6 +77,20 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   await page.getByPlaceholder(/What should change/).fill("Keep the implementation and test assignments separate.");
   await page.getByRole("button", { name: "Ask for changes" }).click();
   await page.locator(".awaiting-card").getByText("Approve Auto team revision 1", { exact: true }).waitFor({ timeout: 30_000 });
+  const beforeEdit = await read();
+  const editedTask = beforeEdit.team!.tasks.find((task) => task.kind === "implementation")!;
+  await page.getByRole("button", { name: "Edit pending plan", exact: true }).click();
+  await page.getByLabel(`Title for ${editedTask.id}`, { exact: true }).fill("Human-edited implementation assignment");
+  await page.getByLabel(`Instructions for ${editedTask.id}`, { exact: true }).fill(`${editedTask.instructions}\nPreserve the requested behavior and add focused tests.`);
+  await page.getByRole("button", { name: "Save plan changes", exact: true }).click();
+  await page.locator("dialog.team-plan-editor").waitFor({ state: "detached" });
+  await page.locator(".awaiting-card").getByText(/Human-edited implementation assignment/).waitFor();
+  const afterEdit = await read();
+  assert.equal(afterEdit.team!.revision, beforeEdit.team!.revision + 1);
+  assert.equal(afterEdit.team!.tasks.find((task) => task.id === editedTask.id)!.title, "Human-edited implementation assignment");
+  assert.equal(afterEdit.team!.status, "awaiting_approval", "saving a user edit preserves the approval gate");
+  await page.getByText(/Workflow graph and timing/).click();
+  await page.getByRole("img", { name: /Workflow dependencies/ }).waitFor();
   await page.locator("main .convo select").selectOption("member:builder-two");
   await page.locator("main .convo textarea").fill("Use the accepted alpha contract in the dependent component.");
   await page.locator("main .convo textarea").press("Enter");
@@ -167,7 +185,7 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   await fetch(`${base}/api/runs/${followupId}/cancel`, { method: "POST", headers });
 
   await page.goto(base);
-  await page.getByRole("button", { name: /^Auto team/ }).click();
+  await page.getByLabel("Workflow", { exact: true }).selectOption("auto-team");
   await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).uncheck();
   await page.reload();
   assert.equal(await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).isChecked(), false, "explicit approval preference persists");

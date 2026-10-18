@@ -66,7 +66,7 @@ Tick *Run checks and setup in a Docker container* and code-flow runs those comma
 - none of your environment variables or your home folder are visible inside;
 - the files it creates belong to you.
 
-Agents still run as their own CLIs (they need your subscription logins) inside their own sandboxes. The repo's own scripts are what run in the container. The image comes from `image` in [`.codeflow/config.json`](configuration.md#per-repo-config).
+Check isolation runs the repository's scripts in the selected image. Agents normally use their own CLI sandboxes; explicit [agent container isolation](agent-containers.md) is a separate setting with its own prebuilt image and optional authentication volume. The default check image comes from `image` in [`.codeflow/config.json`](configuration.md#per-repo-config).
 
 ## Phone view
 
@@ -74,18 +74,18 @@ Turn on the *Phone link* under **Phone** on the Automations page.
 
 - On its own it's a read-only view: what's running and what needs you, and each run's summary, review, results and steps. It refreshes itself and has no buttons.
 - Runs are listed under their project's name. Projects with runs that need you come first, then those with runs going; runs in no project come last.
-- *Reachable from my Wi-Fi* also serves it, and webhooks, on your network at port `PORT+1`. It's plain HTTP, so use it only on networks you trust, or over a VPN like Tailscale.
+- *Reachable from my Wi-Fi* also serves it, and webhooks, on your network at port `PORT+1`. Configure both `CODEFLOW_TLS_CERT` and `CODEFLOW_TLS_KEY` for HTTPS with a certificate your phone trusts. Without them the listener remains HTTP and full phone control is disabled.
 - With *Reachable from my Wi-Fi* on, the page shows a **QR code** for the Wi-Fi link: scan it with your phone's camera. (The `localhost` link only opens on the computer running code-flow, so there's no QR code until the Wi-Fi link exists.) If another program already has the port, the page says so instead; start code-flow with `CODEFLOW_REMOTE_PORT` set to a free one.
 - The network listener refuses connections from the computer itself, whichever of its addresses they use: programs on it, the agents included, can read `~/.codeflow`, phone secrets and all.
 - **New link** revokes the old one. So does turning off *Phone link* or *Reachable from my Wi-Fi*: turning it back on gives a new link.
 
 ### Full control from your phone
 
-With *Reachable from my Wi-Fi* on, you can also turn on *Full control from my phone*. Then the Wi-Fi link signs your phone in to the whole app, laid out for a phone: start runs (pick the repo, attach files, start from GitHub), answer plan approvals, message agents, review diffs and send comments, merge, open PRs, triage the inbox, and change automations.
+With *Reachable from my Wi-Fi* and HTTPS on, you can turn on *Full control from my phone*. The pairing link signs your phone in to the whole app: start runs, answer approvals, message agents, review diffs, merge results and manage automations. `CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL=1` explicitly permits HTTP for development; normal full control requires TLS.
 
-- The QR code is then a sign-in link with a secret of its own. The read-only link never signs a phone in, so someone who saw it can't get full control with it.
-- Scanning the QR code sets a cookie for that address and opens code-flow. The phone stays signed in for up to 30 days, across restarts too, until you make a **New link** or turn off full control, *Reachable from my Wi-Fi* or the phone link. Each of those signs every phone out and closes their open connections, and turning it back on doesn't sign them back in.
+- The QR code is a separate sign-in link that expires after ten minutes, including across server restarts. The read-only link never signs a phone in.
+- Scanning pairs one device with a separate 30-day session; the server stores only its token hash. The device list can revoke one phone immediately. **New link**, or disabling full control/network access, rotates the pairing generation and signs all devices out. TLS cookies are Secure. Legacy pairing links expire closed after upgrade.
 - *Terminal*, *Editor* and *Folder* on a result open on your computer, not the phone. *Run app* starts the app on your computer; its link uses the computer's Wi-Fi address, so it only opens if the app listens on your network too (e.g. `vite --host`).
-- Anyone who gets the link can run agents and commands on your computer, the same as you can. Keep it to your own phone, and to networks you trust or a VPN. The link isn't encrypted on plain HTTP.
+- Paired devices have owner control and can run commands on the computer. This pairing does not provide separate user identities or project roles.
 
 Automations live in `~/.codeflow/triggers.json` and the phone settings in `~/.codeflow/remote.json`. Both files are readable only by you, and are written whole (through a temporary file), so a crash can't leave half of one. One that can't be read is moved aside to `triggers.json.corrupt-<time>` (or `remote.json.corrupt-<time>`) and logged in `~/.codeflow/server.log`; code-flow then starts without those automations, or with phone access off, rather than write over it. Automations in it that can be read are kept, and one whose schedule can't be read is kept but turned off.

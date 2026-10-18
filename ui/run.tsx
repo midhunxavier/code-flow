@@ -36,6 +36,9 @@ import {
 import { ProjectChip } from "./projects.js";
 import { AutoTeam, TeamQuestionCard } from "./team.js";
 import { ProjectMemory } from "./memory.js";
+import { GithubReviewThreadsPanel } from "./github-review-threads.js";
+import { RemoteStepReceipt } from "./remote-workers.js";
+import type { MergeValidation } from "../src/merge-validation.js";
 import { useRunStream, type RunData } from "./run-feed.js";
 import { followupMinimumCalls, teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
 import type { AgentEvent, AgentId, Artifact, Attachment, CheckedReview, FindingCheck, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunSummary, Step } from "./types.js";
@@ -178,6 +181,7 @@ export function RunView({ id }: { id: string }) {
 
         <div class="thread">
           <RunMeta run={run} />
+          {run.source?.kind === "pr" && !Object.values(run.prs ?? {}).includes(run.source.url) ? <GithubReviewThreadsPanel runId={run.id} /> : null}
           {run.lockdown ? (
             <div class="lockdown" role="note">
               🔒 <b>Locked down.</b> {run.lockdown}, so agents run in Safe mode, files like .env aren't copied in, and checks{" "}
@@ -203,7 +207,7 @@ export function RunView({ id }: { id: string }) {
 
           {run.awaiting ? <AwaitingCard run={run} /> : null}
           {teamAwaitingAnswer(run) ? <TeamQuestionCard run={run} /> : null}
-          {run.team ? <AutoTeam run={run} /> : null}
+          {run.team ? <AutoTeam run={run} steps={steps} /> : null}
           {run.team && run.project ? <ProjectMemory projectId={run.project} repo={run.repo} refreshKey={`${run.status}:${run.team.revision}`} /> : null}
           {run.triage?.state === "pending" && run.status !== "running" ? (
             <div class="awaiting-card">
@@ -423,7 +427,7 @@ function ResultCard({ run, steps, onSelectStep, chat }: { run: RunSummary; steps
   const state = runState(run);
   const failedSteps = steps.filter((s) => s.status === "failed");
   const titles: Record<string, string> = {
-    done: run.verdict === "passed" ? "✓ Finished — the check passes" : "✓ Finished",
+    done: run.verdict === "passed" ? "✓ Finished — the check passes" : "Finished — no independent check passed",
     failing: "⚠ Finished — but the check still fails",
     unchecked: "⚠ Finished — but the check couldn't run, so nothing was tested",
     failed: "✕ Failed",
@@ -437,6 +441,7 @@ function ResultCard({ run, steps, onSelectStep, chat }: { run: RunSummary; steps
     <div class={`result ${state} ${chat ? "chat" : ""}`}>
       {title ? <div class="rh">{title}</div> : null}
       {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
+      {run.verification ? <details><summary>Verification profile: {run.verification.state} · {run.verification.checks.length} gates</summary>{run.verification.head ? <p class="help">Commit {run.verification.head.slice(0, 12)}</p> : null}<ul>{run.verification.checks.map((gate) => <li key={gate.check.id}>{gate.check.title ?? gate.check.id}: {gate.diagnosis}{gate.check.required ? " (required)" : ""}</li>)}</ul>{run.verification.risk ? <p class="help">Change risk: {run.verification.risk.level} · {run.verification.risk.reasons.join("; ") || "No configured sensitive-path rule matched."}</p> : null}{run.verification.review ? <p class="help">Human file review: {run.verification.review.reviewed}/{run.verification.review.changed} at this commit.</p> : null}{run.verification.requirements?.length ? <ul>{run.verification.requirements.map((requirement) => <li key={requirement.id}>{requirement.covered ? "Covered" : "Uncovered"}: {requirement.description}{requirement.missing.length ? ` · missing ${requirement.missing.join(", ")}` : ""}</li>)}</ul> : null}</details> : null}
       {failedSteps.length && run.status !== "done" ? (
         <div class="failures">
           <div class="lbl">What went wrong</div>
@@ -834,6 +839,7 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
         pr ? <PrMergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} />
       ) : null}
       {panel === "pr" ? <PrPanel run={run} branch={artifact.branch} /> : null}
+      {pr ? <GithubReviewThreadsPanel runId={run.id} branch={artifact.branch} /> : null}
       {pr && worktree && !merged.some((m) => m.pr === pr) ? <WatchPanel run={run} branch={artifact.branch} steps={steps} worktree={worktree.name} /> : null}
     </div>
   );
@@ -1078,13 +1084,25 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
   const [archiveAfter, setArchiveAfter] = useState(true);
   const [busy, setBusy] = useState(false);
   const [conflicts, setConflicts] = useState<string[] | null>(null);
+  const [requireValidation, setRequireValidation] = useState(!!run.loop.verification);
+  const [validation, setValidation] = useState<MergeValidation | null>(null);
   const [agent, setAgent] = useState<AgentId>(lastAgentIn(steps, worktree) ?? "claude");
   const target = into || initial;
+  const validated = validation?.branch === branch && validation.into === target && validation.report?.state === "verified" && !validation.conflicts.length;
+  const validateTarget = async (allowUntrusted = false) => {
+    setBusy(true);
+    setValidation(null);
+    try { setValidation(await post(`/api/runs/${run.id}/validate-merge`, { branch, into: target, allowUntrusted })); }
+    catch (error) {
+      if (error instanceof ApiError && error.confirm === "allowUntrusted" && confirm(`${error.message}\n\nRun validation on this computer?`)) { setBusy(false); await validateTarget(true); return; }
+      showToast((error as Error).message, 5000);
+    } finally { setBusy(false); }
+  };
   const merge = async () => {
     setBusy(true);
     setConflicts(null);
     try {
-      const outcome = await post<MergeOutcome>(`/api/runs/${run.id}/merge`, { branch, into: target, archiveAfter });
+      const outcome = await post<MergeOutcome>(`/api/runs/${run.id}/merge`, { branch, into: target, archiveAfter, requireValidation });
       if (outcome.ok) showToast(`Merged into ${target}${archiveAfter ? " and archived the run" : ""}`, 3000);
       else setConflicts(outcome.conflicts);
     } catch (err) {
@@ -1107,10 +1125,11 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
         <label class="check">
           <input type="checkbox" checked={archiveAfter} onChange={(e) => setArchiveAfter(e.currentTarget.checked)} /> archive the run afterwards (removes its worktrees, keeps branches)
         </label>
-        <button class="btn primary small" disabled={busy || !target} onClick={merge}>
+        <button class="btn primary small" disabled={busy || !target || requireValidation && !validated} onClick={merge}>
           {busy ? "Merging…" : `Merge into ${target || "…"}`}
         </button>
       </div>
+      {run.loop.check || run.loop.verification ? <div class="row"><label class="check"><input type="checkbox" checked={requireValidation} onChange={(event) => setRequireValidation(event.currentTarget.checked)} /> require verification of the current merge target</label><button class="btn small" disabled={busy || !target} onClick={() => validateTarget()}>Validate merge result</button>{validation?.into === target ? <span role="status" class="help">{validation.conflicts.length ? `Conflicts: ${validation.conflicts.join(", ")}` : `Merge verification: ${validation.report?.state ?? "unchecked"}`} · target {validation.target.slice(0, 12)}{validation.report ? ` · ${validation.report.checks.length} gates` : ""}</span> : null}</div> : null}
       <div class="help">If {target || "the branch"} is checked out, code-flow merges there only when it has no uncommitted changes, and aborts cleanly on conflicts.</div>
       {conflicts ? (
         <div class="conflicts">
@@ -1451,7 +1470,7 @@ function AwaitingCard({ run }: { run: RunSummary }) {
           <button class="btn primary" disabled={busy} onClick={() => answer("approve")}>
             ✓ Approve
           </button>
-          <button class="btn" disabled={busy || !note.trim()} onClick={() => answer("revise")} title={note.trim() ? "" : "Write what should change first"}>
+          <button class="btn" disabled={busy || !note.trim() || !!run.teamRerun} onClick={() => answer("revise")} title={run.teamRerun ? "Reject this pinned rerun and create another selection to change its tasks or instructions" : note.trim() ? "" : "Write what should change first"}>
             Ask for changes
           </button>
           <button class="btn danger" disabled={busy} onClick={() => answer("reject")}>
@@ -1727,11 +1746,13 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
   const model = modelNote(run, step.agent);
   return (
     <div class="transcript" aria-label={`Transcript of ${step.title}`}>
+      {step.remote ? <RemoteStepReceipt key={`${run.id}/${step.id}`} runId={run.id} step={step} /> : null}
       <div class="tr-head">
         {model ? <span>{model}</span> : null}
         <span>{(step.kind ?? "agent") === "agent" ? (step.mode === "write" ? "can edit files" : "read-only") : "run by code-flow"}</span>
         <span>worktree {step.worktree}</span>
         {step.usage ? <span title={usageTitle(step.usage)}>{fmtTokens(step.usage.inputTokens + step.usage.outputTokens)} tokens{step.usage.costUsd ? ` · ≈${fmtCost(step.usage.costUsd)}` : ""}</span> : null}
+        {step.contextInput ? <span title={`Measured assembled invocation input. Excludes: ${step.contextInput.excluded.join(", ")}. Input hash ${step.contextInput.hash}`}>{step.contextInput.bytes.toLocaleString()} input bytes · ≈{step.contextInput.approximateTokens.toLocaleString()} input tokens{step.contextInput.exceeded ? ` · ${step.contextInput.policy === "block" ? "blocked" : "budget warning"}` : ""}{step.contextInput.resumed ? " · earlier history excluded" : ""}</span> : null}
         {step.status !== "done" ? <span class={`status-pill ${step.status}`}>{STATUS_TEXT[step.status] ?? step.status}</span> : null}
       </div>
       <div

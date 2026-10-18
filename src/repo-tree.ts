@@ -1,6 +1,7 @@
 import { open, readdir, realpath, stat } from "node:fs/promises";
 import { basename, join, sep } from "node:path";
 import { git, type GitCwd } from "./git.js";
+import { assertProjectDirectoryAccess, assertProjectFileAccess, filePolicyMetadataOnly, filePolicyRegistryActive, filterAllowedProjectEntries } from "./filesystem-policy.js";
 
 export interface TreeEntry {
   name: string;
@@ -44,8 +45,9 @@ const folderOf = (repo: GitCwd) => (typeof repo === "string" ? repo : repo.path)
 /** Immediate children of a repo folder, minus .git and anything git ignores. */
 export async function listTree(repo: GitCwd, relDir = ""): Promise<{ path: string; entries: TreeEntry[]; truncated: boolean }> {
   const rel = normalizeRepoPath(relDir);
+  await assertProjectDirectoryAccess(folderOf(repo), rel || ".");
   const abs = await resolveInsideRepo(folderOf(repo), rel);
-  const dirents = (await readdir(abs, { withFileTypes: true })).filter((d) => d.name !== ".git");
+  const dirents = (await readdir(abs, { withFileTypes: true })).filter((d) => d.name !== ".git" && (!filePolicyRegistryActive() || !d.isSymbolicLink()));
 
   const candidates = await Promise.all(
     dirents.map(async (d) => {
@@ -56,9 +58,10 @@ export async function listTree(repo: GitCwd, relDir = ""): Promise<{ path: strin
   );
 
   const ignored = await ignoredPaths(repo, candidates.map((c) => (c.type === "dir" ? `${c.path}/` : c.path)));
-  const statuses = await childStatuses(repo, rel);
+  // git status may run repository fsmonitor and clean filters. Restricted browsing omits decoration.
+  const statuses = filePolicyMetadataOnly() ? new Map<string, TreeEntry["status"]>() : await childStatuses(repo, rel);
 
-  const entries = candidates
+  const entries = (await filterAllowedProjectEntries(folderOf(repo), candidates))
     .filter((c) => !ignored.has(c.type === "dir" ? `${c.path}/` : c.path))
     .map((c) => ({ ...c, status: statuses.get(c.name) }))
     .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) : a.type === "dir" ? -1 : 1));
@@ -70,7 +73,7 @@ export async function listTree(repo: GitCwd, relDir = ""): Promise<{ path: strin
 export async function searchFiles(repo: GitCwd, query: string, limit = 100): Promise<TreeEntry[]> {
   const q = query.trim().toLowerCase();
   if (!q) return [];
-  const res = await git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], repo, { timeoutMs: PANEL_TIMEOUT_MS });
+  const res = await git(["-c", "core.fsmonitor=false", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], repo, { timeoutMs: PANEL_TIMEOUT_MS });
   if (res.code !== 0) throw new Error(res.stderr.trim() || "git ls-files failed");
   const unique = [...new Set(res.stdout.split("\0").filter(Boolean))];
   const nameHits: string[] = [];
@@ -80,13 +83,13 @@ export async function searchFiles(repo: GitCwd, query: string, limit = 100): Pro
     if (basename(lower).includes(q)) nameHits.push(path);
     else if (lower.includes(q)) pathHits.push(path);
   }
-  return [...nameHits, ...pathHits].slice(0, limit).map((path) => ({ name: basename(path), path, type: "file" as const }));
+  return (await filterAllowedProjectEntries(folderOf(repo), [...nameHits, ...pathHits].map((path) => ({ name: basename(path), path, type: "file" as const })))).slice(0, limit);
 }
 
 async function ignoredPaths(repo: GitCwd, paths: string[]): Promise<Set<string>> {
   if (!paths.length) return new Set();
   // Exit 0 = some ignored, 1 = none ignored; anything else means git couldn't tell.
-  const res = await git(["check-ignore", "-z", "--stdin"], repo, { input: paths.join("\0") + "\0", timeoutMs: PANEL_TIMEOUT_MS });
+  const res = await git(["-c", "core.fsmonitor=false", "check-ignore", "-z", "--stdin"], repo, { input: paths.join("\0") + "\0", timeoutMs: PANEL_TIMEOUT_MS });
   // A timeout also exits 1; listing everything as not ignored would show node_modules and co.
   if (res.timedOut) throw new Error(res.stderr.split("\n")[0]);
   if (res.code !== 0 && res.code !== 1) return new Set();
@@ -132,6 +135,7 @@ const MAX_FILE_BYTES = 512 * 1024;
 
 /** A file's contents for the Files tab: text up to a limit, or that it's binary. */
 export async function readRepoFile(repo: GitCwd, relPath: string): Promise<FileContent> {
+  await assertProjectFileAccess(folderOf(repo), relPath, "read");
   const rel = normalizeRepoPath(relPath);
   if (!rel) throw new Error("Name a file");
   const abs = await resolveInsideRepo(folderOf(repo), rel);
@@ -141,6 +145,7 @@ export async function readRepoFile(repo: GitCwd, relPath: string): Promise<FileC
   try {
     const buf = Buffer.alloc(Math.min(info.size, MAX_FILE_BYTES));
     const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+    await assertProjectFileAccess(folderOf(repo), relPath, "read");
     const head = buf.subarray(0, Math.min(bytesRead, 8_000));
     if (head.includes(0)) return { path: rel, size: info.size, binary: true, truncated: false };
     return { path: rel, size: info.size, text: buf.subarray(0, bytesRead).toString("utf8"), binary: false, truncated: info.size > bytesRead };

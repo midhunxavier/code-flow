@@ -13,7 +13,7 @@ const fakeBin = fileURLToPath(new URL("./fake-bin", import.meta.url));
 process.env.PATH = `${fakeBin}:${process.env.PATH}`;
 process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-adapters-review-home-"));
 
-const { adapters } = await import("../src/adapters/index.js");
+const { adapters, getAdapter } = await import("../src/adapters/index.js");
 const { appServerCheck } = await import("../src/adapters/codex.js");
 const { classifyError, cliErrorLine } = await import("../src/adapters/errors.js");
 type AgentEvent = import("../src/adapters/types.js").AgentEvent;
@@ -25,7 +25,7 @@ const recorded = (dir: string) => readdirSync(dir).map((f) => JSON.parse(readFil
 
 async function turn(agent: AgentId, extra: Partial<RunOptions> = {}, prompt = "Look around") {
   const events: AgentEvent[] = [];
-  const result = await adapters[agent].run({ prompt, cwd: tmp("cwd"), mode: "read", ...extra }, (e) => events.push(e));
+  const result = await getAdapter(agent).run({ prompt, cwd: tmp("cwd"), mode: "read", ...extra }, (e) => events.push(e));
   return { result, events, statuses: events.flatMap((e) => (e.kind === "status" ? [e.text] : [])) };
 }
 
