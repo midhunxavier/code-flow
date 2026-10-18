@@ -8,6 +8,8 @@ export interface IntegrationConfig {
   name: string;
   provider: string;
   baseUrl: string;
+  /** Optional explicit Git HTTPS root for a self-hosted code provider. */
+  gitBaseUrl?: string;
   /** GitLab project path/ID, Bitbucket workspace/repository, Linear team key/ID, or Jira project key. */
   project: string;
   credentialEnv: string;
@@ -34,6 +36,14 @@ export interface ExternalSource extends ExternalSourceItem {
   expiresAt: number;
   trusted: false;
   untrusted: true;
+  /** Server-fetched code provenance; clients never establish these commit identities. */
+  code?: { previewId: string; head: string; target: string; base: string };
+}
+export interface CodeHostSession {
+  config: IntegrationConfig & { provider: "gitlab" | "bitbucket"; gitBaseUrl: string };
+  request(path: string, input?: { method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown; signal?: AbortSignal }): Promise<{ data: any; headers: Headers }>;
+  /** Scoped process-only Git headers; never pass these to an agent or persist them. */
+  gitEnvironment(remote: string): NodeJS.ProcessEnv;
 }
 export interface ExternalSourcePage { items: ExternalSourceItem[]; nextCursor?: string; truncated: boolean }
 export type IntegrationRequest = (path: string, query?: { query: string; variables: Record<string, unknown> }) => Promise<{ data: any; headers: Headers }>;
@@ -189,14 +199,43 @@ export class Integrations {
       try { base = new URL(raw.baseUrl ?? DEFAULTS[raw.provider]?.base); } catch { throw new Error("Integration needs a valid HTTPS API base URL"); }
       if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new Error("Integration API base URL must use HTTPS without credentials, query or fragment");
       if (!base.pathname.endsWith("/")) base.pathname += "/";
-      return { id: raw.id, name: text(raw.name, 80) || raw.id, provider: raw.provider, baseUrl: base.href, project: raw.project.trim(), credentialEnv: raw.credentialEnv, usernameEnv: raw.usernameEnv, auth };
+      let gitBaseUrl: string | undefined;
+      if (raw.gitBaseUrl !== undefined) { let gitBase: URL; try { gitBase = new URL(raw.gitBaseUrl); } catch { throw new Error("Code host Git root needs a valid HTTPS URL"); } if (!["gitlab", "bitbucket"].includes(raw.provider) || gitBase.protocol !== "https:" || gitBase.username || gitBase.password || gitBase.search || gitBase.hash) throw new Error("Code host Git root must use HTTPS without credentials, query or fragment"); if (!gitBase.pathname.endsWith("/")) gitBase.pathname += "/"; gitBaseUrl = gitBase.href; }
+      return { id: raw.id, name: text(raw.name, 80) || raw.id, provider: raw.provider, baseUrl: base.href, ...(gitBaseUrl ? { gitBaseUrl } : {}), project: raw.project.trim(), credentialEnv: raw.credentialEnv, usernameEnv: raw.usernameEnv, auth };
     });
     this.configs = configs;
     registerPrivateEnvNames(configs.flatMap((config) => [config.credentialEnv, ...(config.usernameEnv ? [config.usernameEnv] : [])]));
     this.imported.clear();
   }
   list() {
-    return this.configs.map((c) => ({ id: c.id, name: c.name, provider: c.provider, project: c.project, kinds: this.adapters[c.provider]!.kinds, configured: !!this.environment[c.credentialEnv] && (c.auth !== "basic" || !!this.environment[c.usernameEnv!]) }));
+    return this.configs.map((c) => ({ id: c.id, name: c.name, provider: c.provider, project: c.project, kinds: this.adapters[c.provider]!.kinds, codeHost: ["gitlab", "bitbucket"].includes(c.provider), configured: !!this.environment[c.credentialEnv] && (c.auth !== "basic" || !!this.environment[c.usernameEnv!]) }));
+  }
+  /** Built-in owner code-host operations are separate from the read-only extension client. */
+  codeHost(id: string): CodeHostSession {
+    const stored = this.config(id, "pr"); if (stored.provider !== "gitlab" && stored.provider !== "bitbucket") throw new Error("Choose a GitLab or Bitbucket Cloud code host");
+    let gitBaseUrl = stored.gitBaseUrl;
+    if (!gitBaseUrl) { const base = new URL(stored.baseUrl); if (stored.provider === "gitlab" && base.pathname.endsWith("/api/v4/")) gitBaseUrl = new URL(base.pathname.slice(0, -"api/v4/".length), base.origin).href; else if (stored.provider === "bitbucket" && base.origin === "https://api.bitbucket.org") gitBaseUrl = "https://bitbucket.org/"; else throw new Error("Configure an explicit gitBaseUrl for this code host"); }
+    const config: CodeHostSession["config"] = { ...stored, provider: stored.provider, gitBaseUrl };
+    const headers = () => { const token = this.environment[stored.credentialEnv]; if (!token) throw new Error(`Credentials are unavailable for integration ${stored.id}`); const result: Record<string, string> = { accept: "application/json" }; if (stored.auth === "private-token") result["PRIVATE-TOKEN"] = token; else if (stored.auth === "basic") { const username = this.environment[stored.usernameEnv!]; if (!username) throw new Error(`Credentials are unavailable for integration ${stored.id}`); result.authorization = `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`; } else result.authorization = stored.auth === "api-key" ? token : `Bearer ${token}`; return result; };
+    return {
+      config: structuredClone(config),
+      request: async (path, input = {}) => {
+        if (this.configs.find((entry) => entry.id === id) !== stored) throw new Error("Code host configuration changed; review it again"); const base = new URL(stored.baseUrl), url = new URL(path, base);
+        if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname) || url.username || url.password || url.hash) throw new Error("Code host requests must stay within the configured API base");
+        const requestHeaders = headers(); if (input.body !== undefined) requestHeaders["content-type"] = "application/json";
+        let response: Response; try { response = await this.fetcher(url, { method: input.method ?? "GET", headers: requestHeaders, body: input.body === undefined ? undefined : JSON.stringify(input.body), redirect: "error", signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000) }); } catch { throw new Error("Code host connection, TLS or timeout failure; inspect any attempted mutation before retrying"); }
+        if (!response.ok) { await response.body?.cancel(); throw Object.assign(new Error(`Code host request failed (HTTP ${response.status}); check credentials, policy and permissions`), { status: response.status }); }
+        if (response.status === 204) { await response.body?.cancel(); return { data: null, headers: response.headers }; }
+        const reader = response.body?.getReader(), chunks: Uint8Array[] = []; let bytes = 0;
+        if (reader) try { for (;;) { const { value, done } = await reader.read(); if (done) break; bytes += value.byteLength; if (bytes > RESPONSE_LIMIT) { await reader.cancel(); throw new Error("Code host response exceeded 2 MiB"); } chunks.push(value); } } finally { reader.releaseLock(); }
+        let data: any; try { data = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new Error("Code host returned invalid JSON"); } return { data, headers: response.headers };
+      },
+      gitEnvironment: (remote) => {
+        if (this.configs.find((entry) => entry.id === id) !== stored) throw new Error("Code host configuration changed"); const allowed = new URL(gitBaseUrl!), url = new URL(remote); if (url.protocol !== "https:" || url.origin !== allowed.origin || !url.pathname.startsWith(allowed.pathname) || url.username || url.password || url.search || url.hash) throw new Error("Git credentials cannot leave the explicitly configured HTTPS Git root");
+        const token = this.environment[stored.credentialEnv]; if (!token) throw new Error("Code host Git credentials are unavailable"); const username = stored.auth === "basic" ? this.environment[stored.usernameEnv!] : stored.provider === "gitlab" ? "oauth2" : "x-token-auth"; if (!username) throw new Error("Code host Git username is unavailable");
+        return { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: `http.${url.href}.extraHeader`, GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_TRACE: undefined, GIT_TRACE_CURL: undefined, GIT_CURL_VERBOSE: undefined };
+      },
+    };
   }
   private config(id: string, kind: ExternalSourceKind): IntegrationConfig {
     const config = this.configs.find((c) => c.id === id);

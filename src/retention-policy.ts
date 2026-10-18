@@ -8,6 +8,8 @@ import { git } from "./git.js";
 import { readOnlyGitMetadata } from "./agent-container.js";
 import { MemoryStore, type MemoryMaintenanceEntry, type MemoryRef } from "./memory.js";
 import { validateDeferredDocument } from "./deferred-runs.js";
+import { validateCodeHostDocument } from "./code-hosts.js";
+import { validateCoordinationDocument } from "./repo-coordination.js";
 
 export type RetentionKind = "archivedRuns" | "attachments" | "memory" | "worktrees";
 export interface RetentionPolicy { version: 1; revision: number; days: Record<RetentionKind, number | null>; keepRunIds: string[]; keepMemoryIds: string[] }
@@ -152,6 +154,8 @@ export async function previewRetention(input: { home: string; now?: number }): P
   try {
     const file = join(home, "deferred-runs.json"); if (await exists(file)) { const data = await readFingerprint(file, budget, 32 * 1024 * 1024); plan.sources[file] = data.file.fingerprint; for (const job of validateDeferredDocument(JSON.parse(data.text)).jobs) if (["queued", "waiting-time", "waiting-provider", "claimed", "unknown"].includes(job.status) && job.run.parentRunId) heldRuns.set(job.run.parentRunId, `Source of pending deferred job ${job.id}`); }
     const triggerFile = join(home, "triggers.json"); if (await exists(triggerFile)) { const data = await readFingerprint(triggerFile, budget, 16 * 1024 * 1024); plan.sources[triggerFile] = data.file.fingerprint; const triggers = JSON.parse(data.text); if (!Array.isArray(triggers)) throw new Error("Invalid automation settings"); for (const trigger of triggers) if (trigger?.enabled && typeof trigger.run?.parentRunId === "string") heldRuns.set(trigger.run.parentRunId, "Source of an enabled automation"); }
+    const coordinationFile = join(home, "coordinated-changes.json"); if (await exists(coordinationFile)) { const data = await readFingerprint(coordinationFile, budget, 32 * 1024 * 1024); plan.sources[coordinationFile] = data.file.fingerprint; for (const job of validateCoordinationDocument(JSON.parse(data.text)).jobs) for (const node of job.nodes) for (const runId of [node.runId, node.result?.runId, ...(node.dependencies ?? []).map((receipt) => receipt.runId)].filter((id): id is string => !!id)) heldRuns.set(runId, `Exact launch, dependency or shipping receipt for retained coordinated change ${job.id}`); }
+    const codeHostFile = join(home, "code-host-operations.json"); if (await exists(codeHostFile)) { const data = await readFingerprint(codeHostFile, budget, 512_000); plan.sources[codeHostFile] = data.file.fingerprint; for (const receipt of validateCodeHostDocument(JSON.parse(data.text)).operations) if (receipt.runId) heldRuns.set(receipt.runId, `Exact code host action receipt ${receipt.id}`); }
   } catch (error) { incomplete("archivedRuns", "pending-launch-sources", error); }
   for (const entry of memory) {
     const owner = entry.runId ? records.get(entry.runId)?.run : undefined;
@@ -168,7 +172,7 @@ export async function previewRetention(input: { home: string; now?: number }): P
     if (reason) { for (const kind of ["archivedRuns", "attachments", "worktrees"] as RetentionKind[]) protect(kind, id, reason); continue; }
     if (cutoffs.archivedRuns !== null && mtime < cutoffs.archivedRuns) {
       try {
-        const files = [log]; for (const suffix of [".journal.jsonl", ".checkpoint.json"]) { const path = join(home, "runs", id + suffix); if (await exists(path)) { const file = await readFingerprint(path, budget); if (file.mtime >= cutoffs.archivedRuns) throw new Error("A recovery record was updated after the retention cutoff"); files.push(file.file); } }
+        const files = [log]; for (const suffix of [".journal.jsonl", ".checkpoint.json", ".cold-index.json", ".cold-detail.json"]) { const path = join(home, "runs", id + suffix); if (await exists(path)) { const file = await readFingerprint(path, budget); if (!suffix.startsWith(".cold-") && file.mtime >= cutoffs.archivedRuns) throw new Error("A recovery record was updated after the retention cutoff"); files.push(file.file); } }
         target({ id: `archivedRuns:${id}`, kind: "archivedRuns", runId: id, files, fingerprint: sha(canonical(files)), bytes: files.reduce((sum, file) => sum + file.bytes, 0), detail: "Delete this archived terminal log, journal and optional checkpoint" });
       } catch (error) { incomplete("archivedRuns", id, error); }
     } else protect("archivedRuns", id, "Run-log retention is disabled or the run was recently updated");

@@ -34,6 +34,7 @@ interface Failing {
 export class PrWatcher {
   private timer?: ReturnType<typeof setInterval>;
   private polling?: Promise<void>;
+  private stopped = false;
   /** Watches whose polls are failing, by `<run id>/<branch>`; forgotten on restart. */
   private readonly failing = new Map<string, Failing>();
 
@@ -43,16 +44,22 @@ export class PrWatcher {
   ) {}
 
   start() {
+    if (this.timer) return;
+    this.stopped = false;
     this.timer = setInterval(() => void this.poll(), this.intervalMs);
     this.timer.unref?.();
   }
 
   stop() {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    return this.polling;
   }
 
   /** One pass over every active watch; concurrent calls share the pass in progress. `now` is for tests. */
   poll(now?: number): Promise<void> {
+    if (this.stopped) return Promise.resolve();
     this.polling ??= this.pollAll(now).finally(() => (this.polling = undefined));
     return this.polling;
   }
@@ -60,6 +67,7 @@ export class PrWatcher {
   private async pollAll(now = Date.now()) {
     for (const run of this.manager.watchedRuns()) {
       for (const watch of Object.values(run.watches)) {
+        if (this.stopped) return;
         const key = `${run.id}/${watch.branch}`;
         const failing = this.failing.get(key);
         // A watch handed back to you for failing polls is still retried, so it recovers on its own.

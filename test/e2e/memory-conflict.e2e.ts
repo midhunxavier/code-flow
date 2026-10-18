@@ -167,3 +167,19 @@ test("memory analysis publishes canonical source revisions and deletion preview 
   assert.equal(remaining.find((entry) => entry.id === summary.id)?.body, summary.body);
   assert.equal(remaining.some((entry) => entry.id === source.id), false);
 });
+
+test("memory semantic review compares overlapping policy and normalized settings with exact source evidence", { timeout: 30_000 }, async () => {
+  for (const existing of await api<MemoryEntry[]>(endpoint)) await api(endpoint + "/commands", { op: "delete", id: existing.id, expectedRevision: existing.revision });
+  const allow = await api<MemoryEntry>(endpoint + "/commands", { op: "create", repo, title: "Guest requests permitted", body: "Always permit guest requests.", paths: ["README.md"] });
+  const deny = await api<MemoryEntry>(endpoint + "/commands", { op: "create", repo, title: "Guest requests forbidden", body: "Never allow guest requests.", paths: ["README.md"] });
+  await api(endpoint + "/commands", { op: "create", repo, title: "Separate component policy", body: "Always allow guest requests.", paths: ["unrelated.ts"] });
+  await api(endpoint + "/commands", { op: "create", repo, title: "Cache TTL minutes", body: "Set cache TTL to 5 minutes." });
+  await api(endpoint + "/commands", { op: "create", repo, title: "Cache TTL explicit seconds", body: '```codeflow-claims\n[{"subject":"cache ttl","predicate":"setting","value":300,"unit":"seconds"}]\n```' });
+  const report = await api<MemoryAnalysis>(endpoint + "/analysis"); assert.equal(report.claims.findings.filter((finding) => finding.kind === "contradiction").length, 1); assert.equal(report.claims.findings.filter((finding) => finding.kind === "equivalent").length, 1);
+  const conflict = report.claims.findings.find((finding) => finding.kind === "contradiction")!; assert.deepEqual(new Set([conflict.a.id, conflict.b.id]), new Set([allow.id, deny.id]));
+  await page.goto(base + "/memory-fixture"); await page.getByText("Project memory", { exact: true }).click(); await page.getByText("Memory health, provenance and onboarding", { exact: true }).click(); const panel = page.locator(".memory-analysis");
+  await panel.getByText("Semantic claim review · 1 conflicts · 1 equivalent pairs", { exact: true }).click(); const item = panel.getByRole("listitem").filter({ hasText: "Potential contradiction: allow · guest request" }); await item.getByText("Compare claim evidence", { exact: true }).click(); assert.match(await item.innerText(), /Always permit guest requests/); assert.match(await item.innerText(), /Never allow guest requests/);
+  const target = item.getByRole("button", { name: "Guest requests permitted", exact: true }); await target.focus(); await page.keyboard.press("Enter"); assert.equal(await page.locator(`#memory-${allow.id}`).evaluate((element) => element === document.activeElement), true, "source navigation restores keyboard focus to the exact entry");
+  await panel.getByText("Write explicit semantic facts", { exact: true }).click(); assert.match(await panel.innerText(), /codeflow-claims/); assert.match(await panel.innerText(), /unsupported prose/);
+  const after = await api<MemoryEntry[]>(endpoint); assert.equal(after.length, 5); assert.equal(after.find((entry) => entry.id === allow.id)!.body, allow.body, "analysis and evidence navigation never merge or rewrite guidance");
+});

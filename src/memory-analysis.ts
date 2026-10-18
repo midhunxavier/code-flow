@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { git } from "./git.js";
 import type { MemoryEntry, MemoryRef } from "./memory.js";
+import { analyzeMemoryClaims, type MemoryClaimsAnalysis } from "./memory-claims.js";
 
 export interface MemoryAnalysisInput {
   repo: string;
@@ -22,6 +23,7 @@ export interface MemoryAnalysis {
   deletionImpact: { id: string; revision: number; direct: MemoryRef[]; transitive: MemoryRef[]; retained: string }[];
   stale: { id: string; revision: number; reasons: { kind: "expired" | "feedback" | "missing-path" | "branch-mismatch" | "commit-unavailable" | "commit-not-ancestor" | "paths-changed"; detail: string }[] }[];
   duplicates: { a: MemoryRef; b: MemoryRef; kind: "exact" | "lexical-overlap"; similarity: number }[];
+  claims: MemoryClaimsAnalysis;
   onboarding: { title: string; body: string; sourceRefs: MemoryRef[]; omitted: number; reasons: { id: string; reason: string }[] };
   limits: { entries: number; references: number; paths: number; commitBaselines: number; comparedPairs: number; duplicatePairs: number; onboardingEntries: number; onboardingChars: number };
   truncated: boolean;
@@ -45,7 +47,7 @@ export async function analyzeProjectMemory(input: MemoryAnalysisInput): Promise<
   const entries = scoped.slice(0, LIMITS.entries);
   const now = input.now ?? Date.now();
   const result: MemoryAnalysis = {
-    scope: { repo: input.repo, projectId: input.projectId }, git: { available: false }, graph: { nodes: [], edges: [] }, deletionImpact: [], stale: [], duplicates: [],
+    scope: { repo: input.repo, projectId: input.projectId }, git: { available: false }, graph: { nodes: [], edges: [] }, deletionImpact: [], stale: [], duplicates: [], claims: analyzeMemoryClaims({ repo: input.repo, projectId: input.projectId, entries }),
     onboarding: { title: `Project onboarding · ${basename(input.repo)}`.slice(0, 200), body: "", sourceRefs: [], omitted: 0, reasons: [] },
     limits: { ...LIMITS }, truncated: entries.length !== scoped.length, notes: [],
   };
@@ -162,7 +164,7 @@ export async function analyzeProjectMemory(input: MemoryAnalysisInput): Promise<
       if (overlap >= 5 && similarity >= 0.65) result.duplicates.push({ a: ref(entries[a]!), b: ref(entries[b]!), kind: "lexical-overlap", similarity: Math.round(similarity * 1000) / 1000 });
     }
   }
-  result.notes.push("Overlap is a lexical review hint; it does not detect semantic contradictions or decide which guidance is correct.");
+  result.notes.push("Lexical overlap and supported semantic claims are separate review hints. Claim analysis is bounded to its explicit grammar and never decides which guidance is correct.");
   result.notes.push("Path changes require a recorded commit baseline. User guidance without one is checked for missing paths, expiry and feedback only.");
   const onboarding: string[] = ["# Project onboarding", "Curated from accepted guidance written by you. Review the sources and applicability before using it."];
   let size = onboarding.join("\n\n").length;

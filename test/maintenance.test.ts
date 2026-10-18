@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createCipheriv, createHash, randomBytes, scryptSync } from "node:crypto";
-import { spawn } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +28,7 @@ test("encrypted backups round-trip application data while excluding live session
   await writeFile(join(home, "phone-devices.json"), '{"devices":[]}');
   await writeFile(join(home, "shared-accounts.json"), '{"users":[{"password":"credential-hash"}],"sessions":[{"hash":"live-authority"}]}');
   await writeFile(join(home, "connection.json"), '{"token":"team-token"}');
+  await mkdir(join(home, "extension-cache")); await writeFile(join(home, "extension-cache", "pinned.mjs"), 'throw new Error("must-not-restore-executable-code");');
   await mkdir(join(home, "remote-worker-private")); await writeFile(join(home, "remote-worker-private", "request.json"), '{"capability":"must-not-restore-worker-authority"}');
   await writeFile(join(root, "outside.txt"), "not part of code-flow");
   await symlink(join(root, "outside.txt"), join(home, "outside-link"));
@@ -36,6 +37,7 @@ test("encrypted backups round-trip application data while excluding live session
   assert.equal(backup.files, 4);
   assert.ok(backup.omitted.some((path) => path.includes("remote.json")));
   assert.ok(backup.omitted.some((path) => path.includes("remote-worker-private")));
+  assert.ok(backup.omitted.some((path) => path.includes("extension-cache")));
   assert.ok(backup.omitted.some((path) => path.includes("shared-accounts.json")));
   assert.ok(backup.omitted.some((path) => path.includes("symbolic link")));
   assert.equal((await readFile(archive)).includes(Buffer.from("super-secret-note")), false);
@@ -55,6 +57,7 @@ test("encrypted backups round-trip application data while excluding live session
   assert.equal(await readFile(join(restored, "notes.json"), "utf8"), '{"private":"super-secret-note"}');
   assert.equal(await lstat(join(restored, "remote.json")).then(() => true, () => false), false);
   assert.equal(await lstat(join(restored, "remote-worker-private")).then(() => true, () => false), false);
+  assert.equal(await lstat(join(restored, "extension-cache")).then(() => true, () => false), false);
   assert.equal(await lstat(join(restored, "shared-accounts.json")).then(() => true, () => false), false);
   assert.equal(await lstat(join(restored, "outside-link")).then(() => true, () => false), false);
   await assert.rejects(restoreEncryptedBackup({ input: archive, destination: restored, password: PASSWORD }), /already exists/);
@@ -81,6 +84,21 @@ test("restoring encrypted backups cancels queued and ambiguous deferred work wit
   assert.equal(calls, 0); const jobs = await restored.list(); assert.equal(jobs.filter((job) => job.status === "cancelled").length, 3);
   assert.equal(jobs.find((job) => job.status === "started")!.runId, "run-existing");
   assert.ok(jobs.filter((job) => job.status === "cancelled").every((job) => /backup restore/.test(job.reason!)));
+});
+
+test("encrypted restore disables coordinated dispatch while retaining exact unknown launch receipts", async (t) => {
+  const { root, home } = await fixture(t); const { CoordinatedChanges } = await import("../src/repo-coordination.js");
+  const canonical = await realpath(root), repos = [join(canonical, "api"), join(canonical, "web")]; for (const repo of repos) { await mkdir(repo); execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo }); }
+  const file = join(home, "coordinated-changes.json"), options = { file, pin: async (run: { repo: string }) => ({ repo: run.repo, commit: "a".repeat(40) }), launch: async () => ({ runId: "unexpected" }), validateResult: async () => ({ status: "running" as const }), previewShipping: async () => { throw new Error("unexpected shipping"); }, ship: async () => { throw new Error("unexpected shipping"); } };
+  const coordinator = new CoordinatedChanges(options); await coordinator.load(); await coordinator.create({ project: "p-fixture", name: "Pending recovery", nodes: repos.map((repo, index) => ({ id: `repo${index}`, dependsOn: index ? ["repo0"] : [], run: { repo, pattern: "solo", task: "Pending repository work", roles: { agent: ["claude"] }, options: {} } })) });
+  const saved = JSON.parse(await readFile(file, "utf8")); Object.assign(saved.jobs[0].nodes[0], { status: "claimed", claimId: "crashed-owned-claim", claimedAt: Date.now(), attempts: 1, dependencies: [] }); await writeFile(file, JSON.stringify(saved));
+  const backup = join(root, "coordinated.cfb"); await createEncryptedBackup({ home, output: backup, password: PASSWORD }); const destination = join(root, "restored-coordination"); const report = await restoreEncryptedBackup({ input: backup, destination, password: PASSWORD }); assert.equal(report.cancelledCoordinatedChanges, 1);
+  let launches = 0; const restored = new CoordinatedChanges({ ...options, file: join(destination, "coordinated-changes.json"), launch: async () => { launches++; return { runId: "unexpected" }; } }); await restored.load(); await restored.tick(); assert.equal(launches, 0); const job = (await restored.list())[0]!; assert.equal(job.status, "cancelled"); assert.equal(job.nodes[0]!.status, "unknown"); assert.equal(job.nodes[0]!.claimId, "crashed-owned-claim"); assert.equal(job.nodes[1]!.status, "cancelled");
+});
+
+test("encrypted restore retains code-host receipt facts but turns in-flight remote mutations into unknown non-replaying metadata", async (t) => {
+  const { root, home } = await fixture(t), receipt = { id: "a".repeat(40), previewId: "b".repeat(40), integration: "fixture", key: "new", kind: "create", status: "claimed", at: 1, commit: "c".repeat(40), target: "d".repeat(40), sourceBranch: `codeflow/pr/${"e".repeat(20)}`, runId: "owned-source", detail: "Native request may have reached provider" };
+  await writeFile(join(home, "code-host-operations.json"), JSON.stringify({ version: 1, operations: [receipt] })); const backup = join(root, "code-host.cfb"); await createEncryptedBackup({ home, output: backup, password: PASSWORD }); const destination = join(root, "restored-code-host"); await restoreEncryptedBackup({ input: backup, destination, password: PASSWORD }); const restored = JSON.parse(await readFile(join(destination, "code-host-operations.json"), "utf8")); assert.equal(restored.operations[0].status, "unknown"); assert.equal(restored.operations[0].runId, receipt.runId); assert.equal(restored.operations[0].sourceBranch, receipt.sourceBranch); assert.match(restored.operations[0].detail, /no automatic replay/);
 });
 
 test("incorrect passwords and tampered archives leave no restored directory", async (t) => {
@@ -112,13 +130,14 @@ test("authenticated malicious backups cannot escape the destination or restore o
   await writeFile(archive, archiveManifest({ version: 1, createdAt: 1, omitted: [], files: [file] }));
   await assert.rejects(restoreEncryptedBackup({ input: archive, destination: join(root, "unsafe"), password: PASSWORD }), /unsafe/);
   assert.equal(await lstat(join(root, "escape")).then(() => true, () => false), false);
-  await writeFile(archive, archiveManifest({ version: 1, createdAt: 1, omitted: [], files: [{ ...file, path: "remote.json" }, { ...file, path: "phone-devices.json" }, { ...file, path: "shared-accounts.json.old" }, { ...file, path: "remote-worker-private/request.json" }, { ...file, path: "notes.json" }] }));
+  await writeFile(archive, archiveManifest({ version: 1, createdAt: 1, omitted: [], files: [{ ...file, path: "remote.json" }, { ...file, path: "phone-devices.json" }, { ...file, path: "shared-accounts.json.old" }, { ...file, path: "remote-worker-private/request.json" }, { ...file, path: "extension-cache/pinned.mjs" }, { ...file, path: "notes.json" }] }));
   const destination = join(root, "clean");
   const restored = await restoreEncryptedBackup({ input: archive, destination, password: PASSWORD });
   assert.equal(restored.files, 1);
   assert.equal(await lstat(join(destination, "phone-devices.json")).then(() => true, () => false), false);
   assert.equal(await lstat(join(destination, "shared-accounts.json.old")).then(() => true, () => false), false);
   assert.equal(await lstat(join(destination, "remote-worker-private")).then(() => true, () => false), false);
+  assert.equal(await lstat(join(destination, "extension-cache")).then(() => true, () => false), false);
 });
 
 const log = (id: string, status: string, archived: boolean) => JSON.stringify({ seq: 1, type: "run", run: { id, status, archived } }) + "\n";
@@ -158,6 +177,7 @@ test("compaction preserves transcript, step and recovery evidence while removing
   const journal = '{"key":"recovery","value":{"ok":true}}\n';
   await writeFile(join(home, "runs", "compact.journal.jsonl"), journal);
   await writeFile(join(home, "runs", "compact.checkpoint.json"), "{}");
+  for (const suffix of [".cold-index.json", ".cold-detail.json"]) await writeFile(join(home, "runs", "compact" + suffix), "{}");
   const preview = await compactRunLog({ home, runId: "compact" });
   assert.equal(preview.snapshotsRemoved, 1); assert.ok(preview.savedBytes > 10000);
   assert.equal(await readFile(file, "utf8"), original);
@@ -165,6 +185,7 @@ test("compaction preserves transcript, step and recovery evidence while removing
   assert.deepEqual((await readFile(file, "utf8")).trim().split("\n").map((line) => JSON.parse(line).seq), [1, 2, 3, 5, 6]);
   assert.equal(await readFile(join(home, "runs", "compact.journal.jsonl"), "utf8"), journal);
   assert.equal(await lstat(join(home, "runs", "compact.checkpoint.json")).then(() => true, () => false), false);
+  for (const suffix of [".cold-index.json", ".cold-detail.json"]) assert.equal(await lstat(join(home, "runs", "compact" + suffix)).then(() => true, () => false), false);
   await writeFile(join(home, "runs", "running.jsonl"), log("running", "running", false));
   await assert.rejects(compactRunLog({ home, runId: "running", apply: true }), /Resumable/);
 });

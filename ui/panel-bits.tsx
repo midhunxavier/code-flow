@@ -81,7 +81,7 @@ export interface StripItem {
 export function Strip({ items, active, onPick, onClose, label, children }: { items: StripItem[]; active?: string; onPick: (key: string) => void; onClose?: (key: string) => void; label: string; children?: ComponentChildren }) {
   return (
     <div class="sess-strip">
-      <div class="sess-list" role="tablist" aria-label={label}>
+      <div class="sess-list" role={items.length ? "tablist" : undefined} aria-label={items.length ? label : undefined}>
         {items.map((it) => (
           <span key={it.key} class={`sess ${it.key === active ? "on" : ""} ${it.below ? "below" : ""} ${it.state === "failed" ? "failed" : ""}`}>
             <button type="button" role="tab" aria-selected={it.key === active} class="sess-pick" title={it.title ?? it.label} onClick={() => onPick(it.key)}>

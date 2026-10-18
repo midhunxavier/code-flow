@@ -36,6 +36,8 @@ import {
 import { ProjectChip } from "./projects.js";
 import { AutoTeam, TeamQuestionCard } from "./team.js";
 import { ProjectMemory } from "./memory.js";
+import { GithubReviewThreadsPanel } from "./github-review-threads.js";
+import { RemoteStepReceipt } from "./remote-workers.js";
 import type { MergeValidation } from "../src/merge-validation.js";
 import { reconcileStreamSnapshot, type StreamSnapshot } from "./run-stream.js";
 import { followupMinimumCalls, teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
@@ -290,6 +292,7 @@ export function RunView({ id }: { id: string }) {
 
         <div class="thread">
           <RunMeta run={run} />
+          {run.source?.kind === "pr" && !Object.values(run.prs ?? {}).includes(run.source.url) ? <GithubReviewThreadsPanel runId={run.id} /> : null}
           {run.lockdown ? (
             <div class="lockdown" role="note">
               🔒 <b>Locked down.</b> {run.lockdown}, so agents run in Safe mode, files like .env aren't copied in, and checks{" "}
@@ -947,6 +950,7 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
         pr ? <PrMergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} />
       ) : null}
       {panel === "pr" ? <PrPanel run={run} branch={artifact.branch} /> : null}
+      {pr ? <GithubReviewThreadsPanel runId={run.id} branch={artifact.branch} /> : null}
       {pr && worktree && !merged.some((m) => m.pr === pr) ? <WatchPanel run={run} branch={artifact.branch} steps={steps} worktree={worktree.name} /> : null}
     </div>
   );
@@ -1850,6 +1854,7 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
   const model = modelNote(run, step.agent);
   return (
     <div class="transcript" aria-label={`Transcript of ${step.title}`}>
+      {step.remote ? <RemoteStepReceipt key={`${run.id}/${step.id}`} runId={run.id} step={step} /> : null}
       <div class="tr-head">
         {model ? <span>{model}</span> : null}
         <span>{(step.kind ?? "agent") === "agent" ? (step.mode === "write" ? "can edit files" : "read-only") : "run by code-flow"}</span>

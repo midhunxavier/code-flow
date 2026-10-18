@@ -1,4 +1,9 @@
 import { readFileSync } from "node:fs";
+import { ProjectFilePolicies, FilePolicyError, assertPolicyExecution, configureFilePolicyResolver, filterPolicyDiff, policyIsRestrictive } from "./filesystem-policy.js";
+import { FilesystemAccess } from "./filesystem-access.js";
+import { createCodeHostsApi } from "./code-hosts-api.js";
+import { FilteredTasks, FilteredTaskError } from "./filtered-tasks.js";
+import { handleFilteredTasksApi } from "./filtered-tasks-api.js";
 import { createServer as createSecureServer } from "node:https";
 import { PhoneSessions } from "./phone-sessions.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -7,8 +12,11 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
   agentAvailability,
+  AGENT_IDS,
+  registerProviderAdapters,
   agentCatalog,
   adapters,
+  getAdapter,
   isAgentId,
   validateAgentSettings,
   type AgentId,
@@ -25,15 +33,23 @@ import { DeferredRunConflictError, sanitizeDeferredRequest } from "./deferred-ru
 import { createDeferredRuns, persistDeferredReceipt, recoverDeferredRuns } from "./deferred-launch.js";
 import { validateContextBudget } from "./context-budget.js";
 import { RetentionPolicyStore, RetentionPolicyConflictError, previewRetention } from "./retention-policy.js";
+import { SharedAccounts, SharedAccountError, type SharedPrincipal } from "./shared-accounts.js";
+import { canonicalSharedPath, SharedPathError } from "./shared-access.js";
+import { CollaborationReviews, CollaborationReviewError } from "./collaboration-reviews.js";
+import { handleSharedApi } from "./shared-api.js";
+import { RemoteWorkers } from "./remote-workers/client.js";
+import { createCoordinatedApi } from "./coordinated-api.js";
+import { Extensions } from "./extensions.js";
 import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
 import { Previews } from "./preview.js";
 import { SnapshotError, takeSnapshot } from "./snapshot.js";
 import { Integrations } from "./integrations.js";
 import { Notifications } from "./notifications.js";
+import { GithubReviewThreads, ReviewThreadError } from "./github-review-threads.js";
 import { approvals } from "./approvals.js";
 import { validateAgentContainer } from "./agent-container.js";
 import { Notes, NotesConflictError } from "./notes.js";
-import { HttpError, readJson, send } from "./http.js";
+import { HttpError, readJson, readLoginJson, send } from "./http.js";
 import { handleWorkspaceApi } from "./workspace-api.js";
 import { TeamPlanEditError } from "./workflow-control.js";
 import { analyzeProjectMemory } from "./memory-analysis.js";
@@ -70,6 +86,7 @@ const releaseLock = await acquireLock().catch((err: Error) => {
   console.error(err.message);
   process.exit(1);
 });
+const reviewThreads = new GithubReviewThreads();
 process.once("exit", releaseLock);
 
 // A stray rejection or throw must not take every live run down with it: log it and keep
@@ -90,22 +107,57 @@ process.on("uncaughtException", (err) => {
 const reaped = await reapOrphanGroups();
 if (reaped) logInfo(`Stopped ${reaped} process group(s) a previous code-flow left running`);
 
+const extensions = new Extensions({ register: (providers, workflows) => {
+  const ids = workflows.map((workflow) => workflow.id);
+  if (new Set(ids).size !== ids.length || ids.some((id) => !!findPattern(id))) throw new Error("Workflow IDs must be unique and cannot replace installed patterns");
+  const available = new Set([...AGENT_IDS, ...providers.map((provider) => provider.id)]);
+  if (workflows.some((workflow) => workflow.roles.some((role) => role.default.some((id) => !available.has(id))))) throw new Error("Workflow default roles must name registered providers");
+  registerProviderAdapters(providers); patterns.push(...workflows);
+} });
 const projects = new Projects();
-const manager = new RunManager(findPattern, projects);
+const remoteWorkers = new RemoteWorkers();
+await remoteWorkers.load().catch((error) => logError("SSH workers disabled; repair their configuration to enable remote execution", error));
+const manager = new RunManager(findPattern, projects, remoteWorkers);
+const filePolicies = new ProjectFilePolicies();
+const fileAccess = new FilesystemAccess(filePolicies, projects, manager);
+const filteredTasks = new FilteredTasks({
+  authorize: async (project, repo) => {
+    if (!projects.get(project)?.repos.includes(repo)) throw new FilteredTaskError("The project or its explicit repository membership changed", 409);
+    const policies = await fileAccess.forRepo(repo);
+    if (!projects.get(project)?.repos.includes(repo)) throw new FilteredTaskError("The project or its explicit repository membership changed", 409);
+    return policies;
+  },
+  withRepository: (repo, operation) => manager.withIdleRepository(repo, operation, { kind: "filtered task", owner: "filtered-tasks" }),
+});
+let filteredTasksReady = false;
+configureFilePolicyResolver((repo) => fileAccess.forRepo(repo), { suppressRepositoryCommands: () => fileAccess.hasRestrictions() });
+manager.setFilesystemPolicyGuard((repo, run) => fileAccess.execution(repo, run));
+let filesystemFeedRevision = 0;
+filePolicies.onChange(() => { filesystemFeedRevision++; });
+const policyPreparations = new Set<Promise<unknown>>();
+function trackPolicyPreparation<T>(operation: () => Promise<T>): Promise<T> {
+  const work = Promise.resolve().then(operation); policyPreparations.add(work);
+  void work.finally(() => policyPreparations.delete(work)).catch(() => undefined); return work;
+}
 const conventions = new ConventionsStore();
 const retentionPolicy = new RetentionPolicyStore();
-const deferredRuns = createDeferredRuns(manager, {
-  build: buildStartInput,
-  resolveProviders: async (request) => {
+const sharedAccounts = new SharedAccounts();
+await sharedAccounts.load().catch((error) => logError("Shared accounts unavailable; owner recovery remains available", error));
+const collaborationReviews = new CollaborationReviews();
+const resolveQueuedProviders: Parameters<typeof createDeferredRuns>[1]["resolveProviders"] = (request) => trackPolicyPreparation(async () => {
     const pattern = findPattern(request.pattern);
     if (!pattern) throw new Error("This pattern no longer exists; cancel and review the saved request");
-    const { roles } = await validateRoles(pattern, request.roles, request.repo);
-    return { roles, installed: new Set((await agentAvailability()).filter((entry) => entry.available).map((entry) => entry.id)) };
-  },
+    const selection = request.loop?.remoteWorker;
+    const { roles } = await validateRoles(pattern, request.roles, request.repo, selection);
+    const inventory = selection ? (await manager.remoteInventory(selection)).providers : await agentAvailability();
+    return { roles, installed: new Set(inventory.filter((entry) => entry.available).map((entry) => entry.id)) };
 });
+const deferredRuns = createDeferredRuns(manager, { build: buildStartInput, resolveProviders: resolveQueuedProviders });
+const coordinatedApi = createCoordinatedApi({ manager, projects, build: buildStartInput, resolveProviders: resolveQueuedProviders });
 const launchProfiles = new LaunchProfiles(manager.devServers);
 manager.onWorkspaceStop((runId) => launchProfiles.stopMatching(`${runId}/`));
 const integrations = new Integrations();
+const codeHostsApi = createCodeHostsApi({ integrations, manager, projects, build: buildStartInput });
 await integrations.load().catch((error) => logError("External sources disabled: invalid integration configuration", error));
 const notifications = new Notifications();
 const notificationsReady = await notifications.load().then(() => true, (error) => { logError("Notifications disabled: configuration or delivery state cannot be read", error); return false; });
@@ -113,7 +165,17 @@ const notificationsReady = await notifications.load().then(() => true, (error) =
 const shells = new Shells();
 const notes = new Notes();
 const watcher = new PrWatcher(manager);
-const automations = new Automations(manager, (body, extra) => startFromBody(body, extra), (repo, kind) => listSweep(repo, kind, manager.list()));
+const automations = new Automations(manager, (body, extra) => trackPolicyPreparation(() => startFromBody(body, extra)), (repo, kind) => trackPolicyPreparation(async () => { assertPolicyExecution(await fileAccess.execution(repo), "Automation source discovery"); return listSweep(repo, kind, manager.list()); }));
+async function pausePolicyBackground() {
+  const results = await Promise.allSettled([watcher.stop(), automations.stop(), deferredRuns.stop(), coordinatedApi.service.stop(), ...(notificationsReady ? [notifications.stop()] : [])]);
+  // Queue deadlines do not prove a child readiness request ended. Retain the underlying work too.
+  while (policyPreparations.size) await Promise.allSettled([...policyPreparations]);
+  const failure = results.find((result) => result.status === "rejected"); if (failure?.status === "rejected") throw failure.reason;
+}
+function startPolicyBackground() {
+  watcher.start(); automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 })); deferredRuns.start(); coordinatedApi.service.start();
+  if (notificationsReady) notifications.start();
+}
 let remote: RemoteSettings;
 let changingRemote: Promise<unknown> = Promise.resolve();
 /** Apply each patch to the latest saved generation so concurrent tabs cannot revive old links. */
@@ -166,10 +228,12 @@ function checkOrigin(req: IncomingMessage) {
  */
 const auth = {
   token: process.env.CODEFLOW_TOKEN || randomBytes(24).toString("hex"),
-  claimable: true,
+  claimable: sharedAccounts.available && !sharedAccounts.hasUsers,
 };
+sharedAccounts.onChange(() => { auth.claimable = false; });
 manager.onActivity(() => (auth.claimable = false));
 const COOKIE = "codeflow_session";
+const SHARED_COOKIE = `codeflow_shared_${PORT}`;
 /**
  * Room for a big Cookie header. Cookies ignore ports, so every app on this host name (one in the
  * Browser's preview too) adds to what the browser sends code-flow; Chrome keeps up to 180 of 4 KB
@@ -188,6 +252,22 @@ function mayClaim(req: IncomingMessage): boolean {
   const forwarded = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip", "cf-connecting-ip", "true-client-ip"].some((h) => req.headers[h] !== undefined);
   const address = (req.socket.remoteAddress ?? "").replace(/^::ffff:/i, "");
   return auth.claimable && !forwarded && (address === "::1" || address.startsWith("127."));
+}
+
+function sharedTransport(req: IncomingMessage) {
+  const forwarded = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip", "cf-connecting-ip", "true-client-ip"].some((header) => req.headers[header] !== undefined);
+  const address = (req.socket.remoteAddress ?? "").replace(/^::ffff:/i, "");
+  return { address, secure: (req.socket as typeof req.socket & { encrypted?: boolean }).encrypted === true, loopback: !forwarded && (address === "::1" || /^127\./.test(address)) };
+}
+function sharedMutation(req: IncomingMessage) {
+  if (!req.headers.origin || !/^application\/json(?:\s*;|$)/i.test(String(req.headers["content-type"] ?? ""))) throw new HttpError(403, "Shared sign-in and mutations require same-origin JSON requests");
+}
+const clearCookie = (name: string) => `${name}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
+function sharedCookie(token: string, secure: boolean) { return `${SHARED_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure ? "; Secure" : ""}`; }
+function sharedSession(req: IncomingMessage): { token: string; identity: SharedPrincipal } | undefined {
+  const transport = sharedTransport(req);
+  if (!transport.secure && !transport.loopback) return;
+  for (const token of readCookies(req, SHARED_COOKIE)) { const identity = sharedAccounts.authenticate(token); if (identity) return { token, identity }; }
 }
 
 function sessionCookie(): string {
@@ -283,7 +363,7 @@ async function attempt<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err) {
-    throw err instanceof HttpError ? err : new HttpError(err instanceof TeamPlanEditError || err instanceof TeamRerunError || err instanceof ConventionsError ? err.status : err instanceof MemoryConflictError || err instanceof RunConflictError || err instanceof DeferredRunConflictError || err instanceof RetentionPolicyConflictError ? 409 : 400, (err as Error).message);
+    throw err instanceof HttpError ? err : new HttpError(err instanceof TeamPlanEditError || err instanceof TeamRerunError || err instanceof ConventionsError || err instanceof SharedAccountError || err instanceof SharedPathError || err instanceof CollaborationReviewError || err instanceof FilePolicyError ? err.status : err instanceof MemoryConflictError || err instanceof RunConflictError || err instanceof DeferredRunConflictError || err instanceof RetentionPolicyConflictError ? 409 : 400, (err as Error).message);
   }
 }
 
@@ -313,9 +393,11 @@ function requestedRoles(pattern: Pattern, input: unknown): Record<string, string
 }
 
 /** Who fills each role; "auto" picks an installed agent whose plan has room (see routing.ts). */
-async function validateRoles(pattern: Pattern, input: unknown, repo?: string): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
+async function validateRoles(pattern: Pattern, input: unknown, repo?: string, remoteWorker?: LoopSettings["remoteWorker"]): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
+  assertPolicyExecution(await fileAccess.execution(repo ?? ""), "Provider selection");
   const requested = requestedRoles(pattern, input);
-  const installed = new Set((await agentAvailability()).filter((a) => a.available).map((a) => a.id));
+  const inventory = remoteWorker ? (await manager.remoteInventory(remoteWorker)).providers : await agentAvailability();
+  const installed = new Set(inventory.filter((a) => a.available).map((a) => a.id));
   if (pattern.id === "auto-team") {
     const supplied = input && typeof input === "object" ? input as Record<string, unknown> : {};
     if (!Array.isArray(supplied.coordinator)) requested.coordinator = ["auto"];
@@ -323,19 +405,20 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string): P
   }
   const wantsAuto = Object.values(requested).some((list) => list.includes("auto"));
   const rank = wantsAuto && repo ? rankAgents(manager.list(), repo, { pattern: pattern.id }) : undefined;
-  const resolved = resolveAuto(requested, manager.quota, installed, rank);
+  const resolved = resolveAuto(requested, manager.quotaForWorker(remoteWorker?.workerId), installed, rank);
   const roles: Record<string, AgentId[]> = {};
   const needed = new Set<AgentId>();
   for (const spec of pattern.roles) {
     const list = resolved.roles[spec.id] ?? [];
     const agents = spec.multiple ? [...new Set(list)] : list.slice(0, 1);
     if (agents.length === 0 && !spec.optional) throw new HttpError(400, `Pick an agent for "${spec.label}"`);
-    agents.forEach((a) => needed.add(a));
+    if (pattern.id !== "auto-team" || spec.id !== "pool") agents.forEach((a) => needed.add(a));
     roles[spec.id] = agents;
   }
+  if (pattern.id === "auto-team" && !roles.pool?.some((agent) => installed.has(agent))) throw new HttpError(400, "Select at least one available provider for the worker pool");
   for (const agent of needed) {
-    if (!(await adapters[agent].available())) {
-      throw new HttpError(400, `${adapters[agent].displayName} (\`${adapters[agent].binary}\`) is not installed or not on PATH`);
+    if (!installed.has(agent)) {
+      throw new HttpError(400, `${getAdapter(agent).displayName} (\`${getAdapter(agent).binary}\`) is not installed or not on PATH`);
     }
   }
   return { roles, notes: resolved.notes };
@@ -426,6 +509,12 @@ function validateRoleSettings(input: unknown): Record<string, ReturnType<typeof 
 /** "Done when" check and budgets from the client; commands are the user's own shell commands. */
 function validateLoop(input: unknown): Partial<LoopSettings> {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  let remoteWorker: LoopSettings["remoteWorker"];
+  if (raw.remoteWorker !== undefined) {
+    const value = raw.remoteWorker as Record<string, unknown>;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["workerId", "repoMapping"].includes(key)) || typeof value.workerId !== "string" || typeof value.repoMapping !== "string" || !remoteWorkers.list().some((worker) => worker.id === value.workerId && worker.repoMappings.includes(value.repoMapping as string))) throw new HttpError(400, "Choose an explicitly registered remote worker and repository mapping");
+    remoteWorker = { workerId: value.workerId, repoMapping: value.repoMapping };
+  }
   const text = (key: string) => {
     const value = typeof raw[key] === "string" ? (raw[key] as string).trim() : "";
     if (value.length > 1_000) throw new HttpError(400, `${key} command is too long`);
@@ -437,6 +526,7 @@ function validateLoop(input: unknown): Partial<LoopSettings> {
     return raw[key] === undefined || raw[key] === "" || !Number.isFinite(n) ? undefined : Math.min(max, Math.max(min, n));
   };
   return {
+    remoteWorker,
     check: text("check"),
     setup: text("setup"),
     copy: Array.isArray(raw.copy) ? raw.copy.filter((p): p is string => typeof p === "string" && !!p.trim()).slice(0, 50) : undefined,
@@ -469,16 +559,18 @@ function validateOptions(pattern: Pattern, input: unknown): Record<string, numbe
 
 /** Validate a run request (from the composer or an automation) into what the engine starts. */
 async function buildStartInput(body: Record<string, any>): Promise<StartRunInput> {
-  if (body.deferred !== undefined || body.teamRerun !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
+  if (body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
   const pattern = findPattern(String(body.pattern ?? ""));
   if (!pattern) throw new HttpError(400, "Unknown pattern");
   const task = String(body.task ?? "").trim();
   const repo = String(body.repo ?? "").trim();
   if (!task) throw new HttpError(400, "Describe the task");
   if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
+  await attempt(async () => assertPolicyExecution(await fileAccess.execution(repo), "Run preparation"));
   if (body.externalSource !== undefined || (body.externalSourceId !== undefined && typeof body.externalSourceId !== "string")) throw new HttpError(400, "Import the external source through its configured integration first");
   if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
-  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo));
+  const loop = validateLoop(body.loop);
+  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), loop.remoteWorker);
   let externalSource = typeof body.externalSourceId === "string" ? await attempt(async () => integrations.resolveSource(body.externalSourceId)) : undefined;
   if (body.externalSourceRef) {
     const ref = body.externalSourceRef;
@@ -486,9 +578,9 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
     externalSource = await attempt(() => integrations.importSource(ref.integration, ref.kind, ref.key));
   }
   if (externalSource && body.source) throw new HttpError(400, "Choose one external source for this run");
-  const loop = validateLoop(body.loop);
   if (body.loop?.verification) loop.verification = await attempt(async () => validateVerificationProfile(body.loop.verification));
   if (body.loop?.agentContainer) loop.agentContainer = await attempt(async () => validateAgentContainer(body.loop.agentContainer));
+  if (loop.remoteWorker && (body.approvals?.tools || loop.agentContainer)) throw new HttpError(400, "Remote workers use their provisioned isolation profile and cannot wait for native tool approvals");
   const container = body.loop?.container;
   if (container && typeof container.image === "string" && /^[\w./:@-]{1,200}$/.test(container.image)) {
     loop.container = { image: container.image, network: container.network !== false };
@@ -594,6 +686,7 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
     }
     // The read-only link only ever shows the read-only view, whatever is turned on.
     if (!tokenMatches(token, remote.token)) throw new HttpError(404, "Not found");
+    if (fileAccess.hasRestrictions()) throw new HttpError(403, "Phone views are unavailable under custom filesystem restrictions");
     const html = renderRemote(manager, projects.list(), base, url.pathname.slice(base.length));
     if (!html) throw new HttpError(404, "Not found");
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
@@ -736,7 +829,8 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, runId: st
   };
   let waiting: RunEvent[] | undefined = [];
   const unsubscribe = manager.subscribe(runId, (e) => (waiting ? waiting.push(e) : deliver(e)));
-  res.on("close", unsubscribe);
+  const stopPolicy = filePolicies.onChange(() => res.end());
+  res.on("close", () => { unsubscribe(); stopPolicy(); });
   try {
     const history = await manager.events(runId);
     const newest = Math.max(0, history.at(-1)?.seq ?? 0, waiting.at(-1)?.seq ?? 0);
@@ -775,22 +869,24 @@ manager.subscribeAll((run) => {
  * stream; a reconnect gets the snapshots it missed.
  */
 function streamAllRuns(req: IncomingMessage, res: ServerResponse, limit?: number) {
-  const page = limit === undefined ? undefined : manager.page({ limit });
-  const stream = openStream(res);
-  const after = lastEventSeq(req);
+  const page = limit === undefined ? undefined : fileAccess.page({ limit });
+  const epoch = `${EPOCH}-fs${filesystemFeedRevision}`;
+  const stream = openStream(res, epoch);
+  const after = lastEventSeq(req, epoch);
   const oldest = runFeed.recent[0]?.seq ?? runFeed.seq + 1;
   if (after !== undefined && after >= oldest - 1 && after <= runFeed.seq) {
-    stream.send({ type: "hello", epoch: EPOCH, seq: runFeed.seq, resumed: true });
-    for (const e of runFeed.recent) if (e.seq > after) stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq);
+    stream.send({ type: "hello", epoch, seq: runFeed.seq, resumed: true });
+    for (const e of runFeed.recent) if (e.seq > after && !fileAccess.restrictedRun(e.run)) stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq);
   } else {
     // Active and attention items remain visible even when their creation is outside the recent page.
-    const attention = page ? manager.list().filter((run) => run.status === "running" || !run.archived && (!run.seen || run.status === "interrupted" || !!run.awaiting || !!run.team?.awaitingRequestId || run.triage?.state === "pending")) : [];
-    const runs = page ? [...new Map([...page.runs, ...attention].map((run) => [run.id, run])).values()] : manager.list();
-    stream.send({ type: "hello", epoch: EPOCH, seq: runFeed.seq, runs, ...(page ? { nextCursor: page.nextCursor, total: page.total } : {}) }, runFeed.seq);
+    const attention = page ? manager.attentionPage({ limit: 100, predicate: (run) => !fileAccess.restrictedRun(run) }) : undefined;
+    const runs = page ? [...new Map([...page.runs, ...attention!.runs].map((run) => [run.id, run])).values()] : fileAccess.list();
+    stream.send({ type: "hello", epoch, seq: runFeed.seq, runs, ...(page ? { nextCursor: page.nextCursor, total: page.total, attentionTotal: attention!.total, attentionTruncated: attention!.truncated, attentionNextCursor: attention!.nextCursor } : {}) }, runFeed.seq);
   }
-  const client = (e: { seq: number; run: RunSummary }) => stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq);
+  const client = (e: { seq: number; run: RunSummary }) => { if (!fileAccess.restrictedRun(e.run)) stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq); };
   runFeed.clients.add(client);
-  res.on("close", () => runFeed.clients.delete(client));
+  const stopPolicy = filePolicies.onChange(() => res.end());
+  res.on("close", () => { runFeed.clients.delete(client); stopPolicy(); });
 }
 
 /** Which listener a request came in on: this machine's, or the one on your network. */
@@ -798,44 +894,106 @@ type Via = "local" | "lan";
 
 async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   const url = new URL(req.url ?? "/", "http://localhost");
-  const parts = url.pathname.split("/").filter(Boolean);
-  if (parts[0] === "api" && parts[1] === "v1" && parts[2] !== "capabilities") parts.splice(1, 1);
+  let parts = url.pathname.split("/").filter(Boolean);
+  if (parts[0] === "api") parts = await attempt(async () => canonicalSharedPath(req.url ?? "/").parts);
   if (await handlePublic(req, res, url, parts, via)) return;
-  if (via === "lan") {
-    checkLanOrigin(req);
-    if (req.method === "GET" && url.pathname === "/") {
-      const ok = phoneSignedIn(req);
-      res.writeHead(ok ? 200 : 401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
-      return res.end(ok ? await readFile(indexHtml) : PHONE_LOCKED_PAGE);
-    }
-    // Without phone control, the network listener serves only the phone view and webhooks.
-    if (!phoneControl()) throw new HttpError(404, "Not found");
-  } else {
-    checkOrigin(req);
-  }
+  if (via === "lan") checkLanOrigin(req); else checkOrigin(req);
+  const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+  const explicitOwner = via === "local" && !!bearer && tokenMatches(bearer, auth.token);
+  const shared = explicitOwner ? undefined : sharedSession(req);
+  // A revoked shared cookie must never silently fall back to an older owner cookie.
+  const sharedPresent = readCookies(req, SHARED_COOKIE).length > 0;
+  const owner = explicitOwner || !sharedPresent && (via === "lan" ? phoneSignedIn(req) : signedIn(req));
 
+  if (parts.join("/") === "api/auth/login" && req.method === "POST") {
+    sharedMutation(req);
+    const body = await readLoginJson(req);
+    const session = await attempt(() => sharedAccounts.login({ username: body.username, password: body.password, ...sharedTransport(req) }));
+    res.setHeader("set-cookie", [sharedCookie(session.token, sharedTransport(req).secure), clearCookie(COOKIE), clearCookie(PHONE_COOKIE)]);
+    return send(res, 200, { user: session.user, expiresAt: session.expiresAt });
+  }
+  if (parts.join("/") === "api/auth/self" && req.method === "GET") return send(res, 200, owner ? { kind: "owner" } : shared?.identity ?? { kind: "anonymous" });
+  if (parts.join("/") === "api/auth/logout" && req.method === "POST") {
+    sharedMutation(req);
+    for (const token of readCookies(req, SHARED_COOKIE)) await attempt(() => sharedAccounts.logout(token));
+    auth.claimable = false;
+    res.setHeader("set-cookie", [clearCookie(SHARED_COOKIE), clearCookie(COOKIE), clearCookie(PHONE_COOKIE)]);
+    return send(res, 200, { signedOut: true });
+  }
   if (req.method === "GET" && url.pathname === "/") {
     const given = url.searchParams.get("token");
     if (given) {
+      if (via === "lan") throw new HttpError(403, "Use a phone pairing link or shared-project account on this listener");
       if (!tokenMatches(given, auth.token)) throw new HttpError(403, "That link is from an earlier code-flow session; use the one printed when it last started");
-      // Drop the token from the address bar (and history); the cookie carries it from here.
-      res.writeHead(302, { location: "/", "set-cookie": sessionCookie(), "cache-control": "no-store", "referrer-policy": "no-referrer" });
+      res.writeHead(302, { location: "/", "set-cookie": [sessionCookie(), clearCookie(SHARED_COOKIE)], "cache-control": "no-store", "referrer-policy": "no-referrer" });
       return res.end();
     }
-    const claim = !signedIn(req) && mayClaim(req);
-    if (!signedIn(req) && !claim) {
+    const sharedLogin = sharedAccounts.available && sharedAccounts.hasUsers && (via === "local" || !!phoneTls);
+    const claim = via === "local" && !owner && !sharedPresent && mayClaim(req);
+    if (!owner && !shared && !claim && !sharedLogin) {
       res.writeHead(401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      return res.end(LOCKED_PAGE);
+      return res.end(via === "lan" ? PHONE_LOCKED_PAGE : LOCKED_PAGE);
     }
+    if (via === "lan" && owner && !phoneControl()) throw new HttpError(404, "Not found");
     if (claim) auth.claimable = false;
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...(claim ? { "set-cookie": sessionCookie() } : {}) });
-    res.end(await readFile(indexHtml));
-    return;
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY", ...(claim ? { "set-cookie": sessionCookie() } : {}) });
+    return res.end(await readFile(indexHtml));
   }
-
   if (parts[0] !== "api") throw new HttpError(404, "Not found");
-  if (via === "lan" ? !phoneSignedIn(req) : !signedIn(req)) {
-    throw Object.assign(new HttpError(401, via === "lan" ? "Not signed in: scan the phone QR code again" : "Not signed in: reload code-flow, or open it from the link printed at startup"), { signIn: true });
+  if (shared) {
+    await attempt(() => fileAccess.sharedGate(req));
+    if (req.method !== "GET") sharedMutation(req);
+    return attempt(() => handleSharedApi(req, res, url, parts, { accounts: sharedAccounts, token: shared.token, identity: shared.identity, manager, projects, comments: collaborationReviews, canReadFilePolicy: (run) => !fileAccess.restrictedRun(run), onFilePolicyChange: (listener) => filePolicies.onChange(listener), patterns: patterns.map(describePattern), templates }));
+  }
+  if (via === "lan" && !phoneControl()) throw new HttpError(404, "Not found");
+  if (!owner) throw Object.assign(new HttpError(401, "Not signed in: use the owner link or sign in to shared projects"), { signIn: true });
+  if (parts[1] === "projects" && parts[2] && parts[3] === "filesystem-policy") {
+    const project = projects.get(parts[2]); if (!project) throw new HttpError(404, "Project not found");
+    if (parts.length !== 4) throw new HttpError(404, "Unknown filesystem policy operation");
+    if (req.method === "GET") return send(res, 200, await attempt(() => filePolicies.get(project.id)));
+    if (req.method === "PUT") {
+      const body = await readJson(req, 64 * 1024);
+      return send(res, 200, await attempt(() => fileAccess.update(project.id, body, async (commit, next) => {
+        if (!filteredTasksReady || filteredTasks.active()) throw new FilePolicyError("Finish or explicitly cancel and reconcile filtered tasks before changing policy; unavailable task storage must be repaired first", 409);
+        if (policyIsRestrictive(next) && extensions.list().length) throw new FilePolicyError("Disable configured extensions and restart before applying a restriction. Previously imported trusted JavaScript can retain background host authority, including a bundle rejected after initialization.", 409);
+        if (shells.list().length || manager.devServers.list().some((service) => service.status === "running")) throw new FilePolicyError("Close terminals and stop development services before changing filesystem policy", 409);
+        try { await manager.withIdleExecution(async () => { await pausePolicyBackground(); previews.closeAll(); await commit(); }); }
+        finally { if (!fileAccess.hasRestrictions()) startPolicyBackground(); }
+      })));
+    }
+    throw new HttpError(405, "Use GET or PUT for filesystem policy");
+  }
+  if (parts[1] === "filtered-tasks") {
+    await attempt(() => fileAccess.sharedGate(req));
+    if (!filteredTasksReady) throw new HttpError(503, "Filtered task storage is unavailable; repair its private records before execution or policy changes");
+    auth.claimable = false;
+    if (req.method === "POST" && parts.length === 2) manager.noteActivity();
+    if (await handleFilteredTasksApi(req, res, url, parts.slice(1), filteredTasks)) return;
+  }
+  await attempt(() => fileAccess.ownerGate(req, url, parts));
+  if (parts[1] === "accounts") {
+    if (!parts[2] && req.method === "GET") return send(res, 200, await attempt(async () => sharedAccounts.snapshot()));
+    const body = await readJson(req);
+    if (body.roles) for (const id of Object.keys(body.roles)) if (!projects.get(id)) throw new HttpError(400, "Choose existing projects for shared roles");
+    if (!parts[2] && req.method === "POST") return send(res, 201, await attempt(() => sharedAccounts.create(body)));
+    if (parts.length === 3 && req.method === "PUT") return send(res, 200, await attempt(() => sharedAccounts.update(parts[2]!, body)));
+    if (parts.length === 4 && parts[3] === "revoke-sessions" && req.method === "POST") return send(res, 200, await attempt(() => sharedAccounts.revokeSessions(parts[2]!, body)));
+    throw new HttpError(404, "Unknown shared account operation");
+  }
+  if (await codeHostsApi.handle(req, res, parts.slice(1))) return;
+  if (parts[1] === "remote-workers") {
+    if (parts.length === 2 && req.method === "GET") return send(res, 200, remoteWorkers.list());
+    if (parts.length === 4 && parts[3] === "probe" && req.method === "POST") {
+      const body = await readJson(req, 8192);
+      if (typeof body.repoMapping !== "string") throw new HttpError(400, "Choose a registered repository mapping");
+      return send(res, 200, await attempt(() => remoteWorkers.probe(parts[2]!, { repoMapping: body.repoMapping })));
+    }
+    throw new HttpError(404, "Unknown remote worker operation");
+  }
+  if (parts.join("/") === "api/extensions" && req.method === "GET") return send(res, 200, { api: { major: 1, minor: 0 }, extensions: extensions.list() });
+  if (parts[1] === "coordinated-changes") return coordinatedApi.handle(req, res, parts);
+  if (parts[1] === "runs" && parts.length === 6 && parts[3] === "remote-steps" && ["receipt", "cancel"].includes(parts[5]!) && req.method === "POST") {
+    return send(res, 200, redactExport(await attempt(() => manager.inspectRemoteStep(parts[2]!, parts[4]!, { cancel: parts[5] === "cancel" }))));
   }
 
   if (["readiness", "verification", "workspace", "diagnostics", "v1"].includes(parts[1] ?? "")) {
@@ -884,7 +1042,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     throw new HttpError(404, "Unknown approval operation");
   }
 
-  if (req.method === "GET" && parts[1] === "team-capabilities") return send(res, 200, await Promise.all((["claude", "codex", "agy"] as const).map(adapterTeamCapabilities)));
+  if (req.method === "GET" && parts[1] === "team-capabilities") return send(res, 200, await Promise.all(AGENT_IDS.map(adapterTeamCapabilities)));
   if (parts[1] === "team-rollout") {
     if (req.method === "GET") return send(res, 200, await teamEvaluationStore.rollout(autoTeamEnabled()));
     if (req.method === "POST") {
@@ -897,7 +1055,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     const reports = await teamEvaluationStore.list();
     return send(res, 200, { reports, assessment: assessTeamRollout(reports), rollout: await teamEvaluationStore.rollout(autoTeamEnabled()) });
   }
-  if (req.method === "GET" && parts[1] === "agents") return send(res, 200, await agentAvailability());
+  if (req.method === "GET" && parts[1] === "agents") return send(res, 200, fileAccess.hasRestrictions() ? Object.values(adapters).map((adapter) => ({ id: adapter.id, displayName: adapter.displayName, binary: adapter.binary, available: false })) : await agentAvailability());
   if (req.method === "GET" && parts[1] === "events") {
     const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : undefined;
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) throw new HttpError(400, "History page size must be between 1 and 100");
@@ -919,6 +1077,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (req.method === "GET" && parts[1] === "tree") {
     const repo = await requestedRepo(url);
     const listing = await listTree(repo, url.searchParams.get("path") ?? "").catch((err: NodeJS.ErrnoException) => {
+      if (err instanceof FilePolicyError) throw new HttpError(err.status, err.message);
       throw new HttpError(err.code === "ENOENT" ? 404 : 400, err.code === "ENOENT" ? "Folder not found" : err.message);
     });
     return send(res, 200, listing);
@@ -936,7 +1095,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (req.method === "GET" && parts[1] === "health") {
     // interactiveTerminal: false when there's no python3 for the Terminal's pseudo-terminal (src/shell.ts).
-    return send(res, 200, { busy: manager.busy, activity: manager.inspectRepositoryActivity(), writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length, interactiveTerminal: await shells.interactive() });
+    return send(res, 200, { busy: manager.busy, activity: manager.inspectRepositoryActivity(), writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length, interactiveTerminal: !fileAccess.hasRestrictions() && await shells.interactive() });
   }
   if (req.method === "GET" && parts[1] === "stats") {
     const since = Number(url.searchParams.get("since")) || undefined;
@@ -1199,6 +1358,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (req.method === "GET" && parts[1] === "file") {
     const repo = await requestedRepo(url);
     const content = await readRepoFile(repo, url.searchParams.get("path") ?? "").catch((err: NodeJS.ErrnoException) => {
+      if (err instanceof FilePolicyError) throw new HttpError(err.status, err.message);
       throw new HttpError(err.code === "ENOENT" ? 404 : 400, err.code === "ENOENT" ? "File not found" : err.message);
     });
     return send(res, 200, content);
@@ -1308,7 +1468,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (parts[1] === "runs") {
     const runId = parts[2];
     if (!runId) {
-      if (req.method === "GET") return send(res, 200, url.searchParams.has("limit") ? await attempt(async () => manager.page({ limit: Number(url.searchParams.get("limit")), cursor: url.searchParams.get("cursor") ?? undefined, before: url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined, query: url.searchParams.get("q") ?? undefined, project: url.searchParams.get("project") ?? undefined })) : manager.list());
+      if (req.method === "GET") return send(res, 200, url.searchParams.has("limit") ? await attempt(async () => fileAccess.page({ limit: Number(url.searchParams.get("limit")), cursor: url.searchParams.get("cursor") ?? undefined, before: url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined, query: url.searchParams.get("q") ?? undefined, project: url.searchParams.get("project") ?? undefined })) : fileAccess.list());
       if (req.method === "POST") {
         const body = await readJson(req);
         const run = await startFromBody(body);
@@ -1323,6 +1483,28 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
 
     const run = runId ? manager.get(runId) : undefined;
     if (!run) throw new HttpError(404, "Run not found");
+    if (parts[3] === "collaboration" && parts.length === 4) {
+      if (req.method === "GET") return send(res, 200, await attempt(() => collaborationReviews.list(run.id)));
+      if (req.method === "POST") {
+        const body = await readJson(req, 16 * 1024, { timeoutMs: 10_000 });
+        if (typeof body.branch !== "string" || !run.worktrees.some((tree) => tree.branch === body.branch)) throw new HttpError(400, "Choose an owned result branch");
+        return send(res, 201, await attempt(() => collaborationReviews.add(run.id, { branch: body.branch, expectedHead: body.expectedHead, text: body.text }, { id: "owner", name: "Owner" }, async () => (await manager.reviewCoverage(run.id, body.branch)).head)));
+      }
+      throw new HttpError(405, "Use GET or POST for human collaboration comments");
+    }
+    if (parts[3] === "pr-threads" && parts.length === 4 && ["GET", "POST"].includes(req.method ?? "")) {
+      const branch = url.searchParams.get("branch") ?? "", prUrl = branch ? run.prs[branch] : run.source?.kind === "pr" ? run.source.url : Object.values(run.prs).length === 1 ? Object.values(run.prs)[0] : undefined;
+      if (!prUrl) throw new HttpError(400, "Choose a pull request stored on this run");
+      const abort = new AbortController(); res.once("close", () => abort.abort());
+      try {
+        if (req.method === "GET") return send(res, 200, await reviewThreads.list(run.repo, prUrl, abort.signal));
+        const body = await readJson(req);
+        if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "Provide a review thread action object");
+        if (body.action === "load") return send(res, 200, await reviewThreads.detail(run.repo, prUrl, { snapshotId: body.snapshotId, threadId: body.threadId }, abort.signal));
+        if (body.action !== "resolve") throw new HttpError(400, "Choose load or an explicit resolve action");
+        return send(res, 200, await reviewThreads.setResolved(run.repo, prUrl, body, abort.signal));
+      } catch (error) { if (error instanceof HttpError) throw error; if (error instanceof ReviewThreadError) throw new HttpError(error.status, error.message); throw new HttpError(502, (error as Error).message); }
+    }
     if (req.method === "GET" && parts.length === 3) return send(res, 200, run);
     if (req.method === "GET" && parts[3] === "evaluation") {
       const report = (await teamEvaluationStore.list()).find((item) => item.runId === run.id && item.at === run.endedAt);
@@ -1416,7 +1598,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       return send(res, 200, { archived: true, ...result });
     }
     if (req.method === "GET" && parts[3] === "diff") {
-      return send(res, 200, await attempt(() => manager.diff(run.id, url.searchParams.get("branch") ?? "", url.searchParams.get("last") === "1")));
+      const files = await attempt(() => manager.diff(run.id, url.searchParams.get("branch") ?? "", url.searchParams.get("last") === "1"));
+      return send(res, 200, filterPolicyDiff(await fileAccess.forRepo(run.repo, run), files));
     }
     if (req.method === "POST" && parts[3] === "followups") {
       const body = await readJson(req);
@@ -1551,8 +1734,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
 
 await manager.load();
 await projects.load(manager.list());
+await fileAccess.all().catch((error) => logError("Filesystem policy is unavailable; protected operations and extension loading remain disabled until the private policy file is repaired", error));
+filteredTasksReady = await filteredTasks.load().then(() => true, (error) => { logError("Filtered tasks unavailable; policy activation remains blocked until task receipts are repaired", error); return false; });
+if (!fileAccess.hasRestrictions()) await extensions.load().catch((error) => logError("Extension configuration could not be loaded; built-in workflows remain available", error));
+else logWarn("Extensions deferred: custom filesystem policy cannot isolate trusted plugin initialization; clear the policy and restart to load extensions");
+await codeHostsApi.service.load();
 await automations.load();
 await deferredRuns.load();
+await coordinatedApi.service.load();
+await coordinatedApi.recover().catch((error) => logError("A coordinated launch requires manual recovery", error));
 await recoverDeferredRuns(deferredRuns, manager).catch((error) => logError("A deferred launch requires manual recovery", error));
 remote = await loadRemote();
 await phoneSessions.load().catch((error) => logError("Phone pairing disabled: session storage cannot be read", error));
@@ -1564,11 +1754,9 @@ if (notificationsReady) {
       if (run) void notifications.observe(run, `tool-approval:${request.id}`).catch((error) => logError("Approval notification could not be retained", error));
     }
   });
-  notifications.start();
 }
-watcher.start();
-automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 }));
-deferredRuns.start();
+if (!fileAccess.hasRestrictions()) startPolicyBackground();
+else await pausePolicyBackground();
 void syncLanServer();
 
 function listener(via: Via) {
@@ -1578,12 +1766,12 @@ function listener(via: Via) {
       if (status >= 500) logError(`${req.method} ${req.url?.split("?")[0]} failed`, err);
       if (res.headersSent) return res.end();
       send(res, status, { error: err.message, confirm: err.confirm, signIn: err.signIn });
-    });
+    }).finally(() => fileAccess.end(req));
   };
 }
 
 const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("local")).listen(PORT, HOST, async () => {
-  const agents = await agentAvailability();
+  const agents = fileAccess.hasRestrictions() ? [] : await trackPolicyPreparation(() => agentAvailability());
   const runs = manager.list();
   console.log(`code-flow running at http://localhost:${PORT}  (${runs.length} runs loaded from ${CODEFLOW_HOME})`);
   console.log(`  Open http://localhost:${PORT}/?token=${auth.token}  (the first browser to open code-flow signs in without it)`);
@@ -1708,7 +1896,9 @@ async function stop(reason: string, code = 0) {
   } catch {
     // still starting up: nothing is listening yet
   }
+  await coordinatedApi.service.stop().catch((err) => logError("Coordinated changes shutdown failed", err));
   await deferredRuns.stop().catch((err) => logError("Deferred queue shutdown failed", err));
+  await filteredTasks.close().catch((err) => logError("Filtered task shutdown failed; inspect its durable unknown receipt before retrying", err));
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));
   await teamToolBridge.close().catch(() => undefined);
   await automationsSaved;

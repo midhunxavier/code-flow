@@ -245,6 +245,8 @@ export class Automations {
   private timer?: ReturnType<typeof setInterval>;
   private unsubscribe?: () => void;
   private saving: Promise<unknown> = Promise.resolve();
+  private stopped = false;
+  private firing = new Set<Promise<FireResult>>();
   /**
    * False until triggers.json was read cleanly (or there was none). A file that couldn't be read
    * or set aside is never written over: that would lose every automation and webhook secret.
@@ -377,6 +379,8 @@ export class Automations {
   }
 
   start(tickMs = 30_000) {
+    if (this.timer) return;
+    this.stopped = false;
     this.timer = setInterval(() => void this.tick(), tickMs);
     this.timer.unref?.();
     // A webhook event that waited for a run fires as soon as that run ends.
@@ -384,10 +388,14 @@ export class Automations {
   }
 
   /** Stop firing; resolves once the last save is on disk. */
-  stop(): Promise<unknown> {
+  async stop(): Promise<void> {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
     this.unsubscribe?.();
-    return this.saving;
+    this.unsubscribe = undefined;
+    await Promise.allSettled([...this.firing]);
+    await this.saving;
   }
 
   /**
@@ -396,8 +404,10 @@ export class Automations {
    * skipped otherwise; it never fires on a day the schedule leaves out.
    */
   async tick(now = Date.now()) {
+    if (this.stopped) return;
     let changed = false;
     for (const t of this.triggers) {
+      if (this.stopped) return;
       if (t.queued?.length) void this.drain(t);
       if (!t.enabled || !t.schedule) continue;
       if (!t.nextAt) {
@@ -427,6 +437,7 @@ export class Automations {
    * recorded on the automation (lastError). A delivery GitHub sends again is ignored.
    */
   accept(id: string, input: Omit<FireInput, "via">, delivery?: string): { accepted: true } | { ignored: string } {
+    if (this.stopped) return { ignored: "Automation dispatch is paused" };
     const t = this.require(id);
     const validated = validateFireInput({ via: "webhook", ...input });
     if (delivery) {
@@ -452,7 +463,13 @@ export class Automations {
    * schedule or "Run now" is skipped, so automations never pile up; a webhook event waits and
    * fires once that run ends, so a push made meanwhile isn't lost.
    */
-  async fire(id: string, input: FireInput): Promise<FireResult> {
+  fire(id: string, input: FireInput): Promise<FireResult> {
+    if (this.stopped) return Promise.resolve({ skipped: "Automation dispatch is paused" });
+    const work = this.fireTracked(id, input); this.firing.add(work);
+    void work.finally(() => this.firing.delete(work)).catch(() => undefined);
+    return work;
+  }
+  private async fireTracked(id: string, input: FireInput): Promise<FireResult> {
     const t = this.require(id);
     const validated = validateFireInput(input);
     const event = input.eventId ? t.eventHistory?.find((e) => e.id === input.eventId) : undefined;
@@ -616,6 +633,7 @@ export class Automations {
 
   /** Fire the oldest webhook event that waited, once nothing of this automation is running. */
   private async drain(t: Trigger) {
+    if (this.stopped) return;
     if (!t.queued?.length || this.busy(t)) return;
     const [next, ...rest] = t.queued;
     t.queued = rest.length ? rest : undefined;

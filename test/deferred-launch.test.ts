@@ -29,6 +29,14 @@ test("bridge pins unattended policy and launch identity and waits for a durable 
   assert.deepEqual(events, ["persist:run-1"]); assert.equal((await queue.list())[0]!.status, "started");
 });
 
+test("remote deferred readiness uses the selected worker quota lane rather than host credentials", async () => {
+  const { host, inputs } = fakeHost(); host.quota = { claude: { status: "limited", at: Date.now(), windows: {} } }; let inspected = "";
+  host.quotaForWorker = (workerId) => { inspected = workerId!; return {}; };
+  const run = sanitizeDeferredRequest({ ...request(), loop: { check: "true", remoteWorker: { workerId: "worker", repoMapping: "project" } } });
+  const queue = createDeferredRuns(host, { file: join(await directory(), "remote-queue.json"), resolveProviders: resolved, build, persist: async () => {} });
+  await queue.load(); await queue.enqueue({ run }); await queue.tick(); assert.equal(inspected, "worker"); assert.equal(inputs.length, 1); assert.equal((await queue.list())[0]!.status, "started");
+});
+
 test("build rejection and missing parents are safe failures, while post-start or persistence errors remain unknown", async () => {
   for (const phase of ["build", "parent", "start", "persist"] as const) {
     const { host, runs, inputs } = fakeHost();

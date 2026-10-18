@@ -55,11 +55,13 @@ test("revisioned policies default to keeping all types and conflicts preserve th
 test("one reviewed offline plan retires each enabled type while preserving branch and provenance tombstone", async () => {
   const f = await fixture(); const run = await writeRun(f, "old", {}, true); const { store, entry } = await privateMemory(f, run.id);
   for (const suffix of [".journal.jsonl", ".checkpoint.json"]) { const path = join(f.home, "runs", run.id + suffix); await writeFile(path, "{}\n"); await utimes(path, old, old); }
+  for (const suffix of [".cold-index.json", ".cold-detail.json"]) await writeFile(join(f.home, "runs", run.id + suffix), "{}\n");
   const plan = await previewRetention({ home: f.home, now });
   assert.equal(plan.truncated, false, JSON.stringify(plan.protected)); assert.deepEqual({ ...plan.summary, bytes: 0 }, { archivedRuns: 1, attachments: 1, memory: 1, worktrees: 1, bytes: 0 });
   assert.doesNotMatch(JSON.stringify(plan), /PRIVATE BODY|PRIVATE TITLE/); assert.ok(plan.targets.every((target) => /^[a-f0-9]{64}$/.test(target.fingerprint)));
   const applied = await applyRetention({ home: f.home, plan, now: now + 1000 }); assert.deepEqual(applied.failed, []); assert.equal(applied.applied.length, 4);
   await assert.rejects(access(join(f.home, "runs/old.jsonl")), /ENOENT/); await assert.rejects(access(join(run.worktreeDir, ".context/attachments/upload.txt")), /ENOENT/); await assert.rejects(access(run.worktrees[0]!.path), /ENOENT/);
+  for (const suffix of [".cold-index.json", ".cold-detail.json"]) await assert.rejects(access(join(f.home, "runs", run.id + suffix)), /ENOENT/);
   assert.ok(f.git("show-ref", "--verify", `refs/heads/${run.worktrees[0]!.branch}`));
   const stored = JSON.parse(await readFile(store.file, "utf8")); assert.equal(stored.entries[0].id, entry.id); assert.equal(stored.entries[0].status, "deleted"); assert.doesNotMatch(await readFile(store.file, "utf8"), /PRIVATE BODY|PRIVATE TITLE/);
 });
@@ -80,6 +82,18 @@ test("project guidance and any live derived reference protect memory bodies and 
   const plan = await previewRetention({ home: f.home, now }); assert.equal(plan.targets.length, 0);
   assert.match(plan.protected.find((item) => item.kind === "memory" && item.id === entry.id)!.reason, /Provenance source/); assert.match(plan.protected.find((item) => item.kind === "memory" && item.id === project.id)!.reason, /never bulk-deleted/);
   await assert.rejects(store.retireMaintenance([{ id: entry.id, revision: entry.revision }]), /provenance source/); await assert.rejects(store.retireMaintenance([{ id: project.id, revision: project.revision }]), /project guidance/);
+});
+
+test("retained coordination launch and dependency receipts preserve exact source records", async () => {
+  const f = await fixture(); await writeRun(f, "coordinated-source"); const otherRepo = join(f.directory, "other-repo"); await mkdir(otherRepo); execFileSync("git", ["init", "-q", "-b", "main"], { cwd: otherRepo });
+  const { CoordinatedChanges } = await import("../src/repo-coordination.js");
+  const coordinator = new CoordinatedChanges({ file: join(f.home, "coordinated-changes.json"), pin: async (run) => ({ repo: run.repo, commit: "a".repeat(40) }), launch: async () => ({ runId: "coordinated-source" }), validateResult: async () => ({ status: "running" }), previewShipping: async () => { throw new Error("not used"); }, ship: async () => { throw new Error("not used"); } });
+  await coordinator.load(); await coordinator.create({ project: "p-fixture", name: "Keep exact receipts", nodes: [f.repo, otherRepo].map((repo, index) => ({ id: `repo${index}`, dependsOn: index ? ["repo0"] : [], run: { repo, pattern: "solo", task: "Implement coordinated fixture", roles: {}, options: {} } })) }); await coordinator.tick();
+  const plan = await previewRetention({ home: f.home, now }); assert.equal(plan.targets.length, 0); assert.ok(plan.protected.some((item) => item.id === "coordinated-source" && /retained coordinated change/.test(item.reason)));
+});
+
+test("retained code-host push and creation receipts preserve their exact archived run evidence", async () => {
+  const f = await fixture(); await writeRun(f, "code-host-source"); await writeFile(join(f.home, "code-host-operations.json"), JSON.stringify({ version: 1, operations: [{ id: "a".repeat(40), previewId: "b".repeat(40), integration: "fixture", key: "new", kind: "create", status: "unknown", at: 1, runId: "code-host-source", commit: "c".repeat(40), target: "d".repeat(40), sourceBranch: `codeflow/pr/${"e".repeat(20)}`, detail: "Inspect native outcome" }] })); const plan = await previewRetention({ home: f.home, now }); assert.equal(plan.targets.length, 0); assert.ok(plan.protected.some((item) => item.id === "code-host-source" && /code host action receipt/.test(item.reason)));
 });
 
 test("any changed policy, file, reference or forged manifest aborts before deleting any target", async () => {

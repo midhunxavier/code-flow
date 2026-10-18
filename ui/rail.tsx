@@ -11,6 +11,8 @@ import {
   health,
   healthOpen,
   historyTotal,
+  attentionTotal,
+  attentionTruncated,
   historyNextCursor,
   historyLoading,
   historyLoadingMore,
@@ -398,6 +400,7 @@ export function Rail() {
       <div class="rail-history" role="region" aria-label="Run history pages">
         <span class="help" role="status">{historyLoading.value ? "Searching history…" : historyTotal.value === null ? "Loading history…" : f.q.trim() ? `${list.length} loaded matches · ${historyTotal.value} in history` : runs.value.size > historyTotal.value ? `${runs.value.size} loaded · ${historyTotal.value} at last refresh` : `${runs.value.size} of ${historyTotal.value} runs loaded`}</span>
         {historyNextCursor.value ? <button type="button" class="btn small" disabled={historyLoading.value || historyLoadingMore.value} onClick={() => void loadOlderRuns()}>{historyLoadingMore.value ? "Loading…" : "Load older runs"}</button> : null}
+        {attentionTruncated.value ? <span class="help" role="status">{attentionTotal.value} running or attention items at last refresh. Older attention is paged; use Load older runs to include more.</span> : null}
         {historyError.value ? <div class="help" role="alert">{historyError.value}<button class="btn small" onClick={() => void refreshRuns()}>Retry history</button></div> : null}
         {filtering && !f.q.trim() && historyNextCursor.value ? <span class="help">Filters apply to loaded pages. Load older runs to include more history.</span> : null}
       </div>

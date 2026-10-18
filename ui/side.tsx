@@ -24,6 +24,7 @@ import {
   sideMemo,
   sideMemory,
   sideOpen,
+  sideWidth,
   sideScope,
   sideTab,
   type SideTab,
@@ -82,8 +83,8 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
     notes: () => <NotesTab />,
   };
   return (
-    <aside class={`side ${sideOpen.value ? "open" : ""} ${popped ? "popped" : ""}`} aria-label="Side panel" aria-hidden={!sideOpen.value}>
-      {popped ? null : <div class={`side-handle ${dragging ? "dragging" : ""}`} role="separator" aria-orientation="vertical" aria-label="Resize the side panel" title="Drag to resize" onPointerDown={startDrag} />}
+    <aside class={`side ${sideOpen.value ? "open" : ""} ${popped ? "popped" : ""}`} aria-label="Side panel" aria-hidden={!sideOpen.value} inert={!sideOpen.value}>
+      {popped ? null : <div class={`side-handle ${dragging ? "dragging" : ""}`} role="separator" tabIndex={0} aria-orientation="vertical" aria-label="Resize the side panel" aria-valuemin={300} aria-valuemax={900} aria-valuenow={sideWidth.value} title="Drag or use arrow keys to resize" onPointerDown={startDrag} onKeyDown={(event) => { const width = event.key === "ArrowLeft" ? sideWidth.value + 24 : event.key === "ArrowRight" ? sideWidth.value - 24 : event.key === "Home" ? 300 : event.key === "End" ? 900 : undefined; if (width !== undefined) { event.preventDefault(); setSideWidth(width); } }} />}
       <ScopeHeader popped={popped} />
       <div class="side-tabs" role="tablist" aria-label="Side panel tabs">
         {tabs.map((t) => (

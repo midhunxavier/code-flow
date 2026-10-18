@@ -27,6 +27,26 @@ This is the boundary each vendor draws for personal use. Don't extend code-flow 
 
 ## Running the agents' code
 
+Local shared-project accounts grant scoped viewer/reviewer access through a
+separate closed API surface. They do not delegate execution or the owner's
+phone capability. Sessions expire and revoke immediately; raw transcripts,
+private context and host paths are omitted. See [shared projects](shared-projects.md).
+
+Custom [filesystem policies](filesystem-policy.md) enforce application reads,
+writes and filtered diffs, and pause ordinary code execution globally where its
+backend cannot enforce those rules. Saved restrictions are checked before
+trusted extension code is imported. [Extensions](extensions.md) are explicit,
+version/hash-pinned owner-trusted server code with full process authority, not
+untrusted sandboxed plugins.
+
+[SSH workers](remote-workers.md) use provisioned targets, strict host keys,
+worker-local credentials and durable private receipts. A disconnected accepted
+turn is uncertain; reconnecting does not execute it again. [GitLab/Bitbucket
+code workflows](code-hosts.md) require prepared agent containers for fetched PR
+code and use exact-ref Git leases for publication. Provider-native approval
+policy and PR closure cannot be transacted atomically with a Git push; unknown
+policies and unsupported queues fail closed.
+
 A check runs the agents' code (tests, scripts) on your machine, outside Codex's and agy's sandboxes, as your CI would. With **Full access** the agents themselves run without a sandbox too (see [What agents may do](configuration.md#what-agents-may-do-while-building)). Use code-flow on repos and tasks you trust, or run checks in Docker ([isolation](automations.md#isolation)), or code-flow itself inside a container or VM.
 
 Text from issues, PRs, comments and CI logs is treated as untrusted, and runs started from people outside the repo are locked down. Dependabot's PR descriptions and CI logs are fenced as untrusted text too. **▶ Run app** on a locked-down run asks before it starts that code on your machine. See [Untrusted text](github.md#untrusted-text).

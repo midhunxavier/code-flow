@@ -85,7 +85,7 @@ export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
     if (typeof value !== "boolean" && (typeof value !== "number" || !Number.isFinite(value))) throw new Error("Invalid deferred pattern option");
     return value;
   }, "options");
-  const loopRaw = raw.loop === undefined ? {} : keys(raw.loop, ["check", "setup", "copy", "maxMinutes", "maxSteps", "maxInvocations", "maxTokens", "maxCostUsd", "checkTimeoutMin", "verification", "container", "agentContainer", "contextBudget"], "loop");
+  const loopRaw = raw.loop === undefined ? {} : keys(raw.loop, ["check", "setup", "copy", "maxMinutes", "maxSteps", "maxInvocations", "maxTokens", "maxCostUsd", "checkTimeoutMin", "verification", "container", "agentContainer", "contextBudget", "remoteWorker"], "loop");
   const loop: DeferredRunRequest["loop"] = { copy: [] };
   for (const key of ["check", "setup"] as const) if (loopRaw[key] !== undefined && loopRaw[key] !== "") loop[key] = text(loopRaw[key], 4000, `${key} command`);
   const bounds = { maxMinutes: [1, 720], maxSteps: [1, 200], maxInvocations: [1, 200], maxTokens: [1, 1_000_000_000], maxCostUsd: [0.001, 1_000_000], checkTimeoutMin: [1, 120] };
@@ -94,6 +94,7 @@ export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
     if (typeof number !== "number" || !Number.isFinite(number) || number < min! || number > max!) throw new Error(`Invalid deferred ${key}`);
     loop[key] = number;
   }
+  if (loopRaw.remoteWorker !== undefined) loop.remoteWorker = validateWorkerSelection(loopRaw.remoteWorker);
   if (loopRaw.verification !== undefined) loop.verification = validateVerificationProfile(loopRaw.verification);
   if (loopRaw.contextBudget !== undefined) loop.contextBudget = validateContextBudget(loopRaw.contextBudget);
   if (loopRaw.agentContainer !== undefined) loop.agentContainer = validateAgentContainer(loopRaw.agentContainer);
@@ -392,3 +393,4 @@ async function writeDocument(file: string, document: Document) {
   try { const handle = await open(temporary, "wx", 0o600); try { await handle.writeFile(body); await handle.sync(); } finally { await handle.close(); } await rename(temporary, file); const folder = await open(dirname(file), "r"); try { await folder.sync(); } finally { await folder.close(); } }
   finally { await rm(temporary, { force: true }); }
 }
+import { validateWorkerSelection } from "./remote-workers/protocol.js";

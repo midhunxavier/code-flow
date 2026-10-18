@@ -7,6 +7,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build-ui.mjs",
+    "build:worker": "node scripts/build-worker.mjs",
     "start": "node scripts/build-ui.mjs && tsx src/server.ts",
     "dev": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs --fake-agents",
     "dev:real": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs",
@@ -18,13 +19,14 @@
     "evaluate:teams": "tsx scripts/evaluate-teams.ts",
     "client": "node scripts/codeflow.mjs",
     "maintenance": "tsx scripts/maintenance.ts",
-    "test:containers": "CODEFLOW_TEST_DOCKER=1 tsx --test test/agent-container-docker.test.ts"
+    "test:containers": "CODEFLOW_TEST_DOCKER=1 tsx --test --test-concurrency=1 test/agent-container-docker.test.ts test/filtered-tasks-docker.test.ts"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "axe-core": "4.14.0",
     "playwright-core": "^1.64.1"
   },
   "dependencies": {

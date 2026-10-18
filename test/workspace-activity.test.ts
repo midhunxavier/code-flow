@@ -71,3 +71,26 @@ test("shutdown lets an already claimed workspace mutation settle before releasin
   await new Promise((resolve) => setTimeout(resolve, 30)); assert.equal(stopped, false);
   release.resolve(); await mutation; await stopping; assert.equal(manager.inspectRepositoryActivity().leases.length, 0);
 });
+
+test("global execution activation excludes starts, resumes and workspace mutations until durable publication settles", async () => {
+  const { repo, manager, input } = fixture(), run = await manager.start(input); await until(() => run.status !== "running");
+  const entered = deferred(), release = deferred();
+  const activation = manager.withIdleExecution(async () => { entered.resolve(); await release.promise; }); await entered.promise;
+  await assert.rejects(manager.start(input), /global execution lease/);
+  await assert.rejects(manager.resume(run.id), /global execution lease/);
+  await assert.rejects(manager.withIdleRepository(repo, async () => {}), /global execution lease/);
+  await assert.rejects(manager.assertExecutionAllowed(repo), /global execution lease/);
+  await assert.rejects(manager.withIdleExecution(async () => {}), /Wait for every run/);
+  release.resolve(); await activation; await manager.assertExecutionAllowed(repo);
+  await assert.rejects(manager.withIdleExecution(async () => { throw new Error("publication failed"); }), /publication failed/);
+  await manager.withIdleExecution(async () => {});
+});
+
+test("global execution activation cannot race a start awaiting its policy snapshot", async () => {
+  const { repo, manager, input } = fixture(), entered = deferred(), release = deferred();
+  manager.setFilesystemPolicyGuard(async () => { entered.resolve(); await release.promise; return []; });
+  const starting = manager.start(input); await entered.promise;
+  await assert.rejects(manager.withIdleExecution(async () => {}), /Wait for every run/);
+  release.resolve(); const run = await starting; await until(() => run.status !== "running");
+  await manager.withIdleExecution(async () => {}); assert.equal(manager.isRepositoryIdle(repo), true);
+});

@@ -247,6 +247,22 @@ export async function readJsonLines<T = any>(file: string, stats?: { skipped: nu
   return out;
 }
 
+/** Startup projections consume one record at a time, without retaining whole event logs. */
+export async function visitJsonLines<T>(file: string, visit: (entry: T) => void): Promise<void> {
+  const path = join(RUNS_DIR, file); if (!existsSync(path)) return;
+  const stream = createReadStream(path, { encoding: "utf8", highWaterMark: 64 * 1024 }); let buffer = "", skipped = 0;
+  const parse = (line: string) => { if (!line.trim()) return; let value: T; try { value = JSON.parse(line); } catch { skipped++; return; } visit(value); };
+  try {
+    for await (const chunk of stream) {
+      buffer += chunk;
+      let index: number; while ((index = buffer.indexOf("\n")) >= 0) { const line = buffer.slice(0, index); buffer = buffer.slice(index + 1); if (Buffer.byteLength(line) > 64 * 1024 * 1024) throw new Error(`Run log ${file} contains a record larger than 64 MiB`); parse(line); }
+      if (Buffer.byteLength(buffer) > 64 * 1024 * 1024) throw new Error(`Run log ${file} contains a record larger than 64 MiB`);
+    }
+    parse(buffer);
+  } finally { stream.destroy(); }
+  if (skipped && !reportedBadLines.has(file)) { reportedBadLines.add(file); logWarn(`skipped ${skipped} unreadable line${skipped === 1 ? "" : "s"} in a run log`, { file }); }
+}
+
 export async function listRunIds(): Promise<string[]> {
   if (!existsSync(RUNS_DIR)) return [];
   return (await readdir(RUNS_DIR))

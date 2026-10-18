@@ -19,6 +19,13 @@ export interface AgentContainerLaunch {
   args: string[];
   name: string;
 }
+// Object identity, never a serialized/client field, carries this internal containment receipt.
+const filteredContainers = new WeakMap<AgentContainer, { id: string; readOnly: string[] }>();
+export function filteredTaskContainer(raw: AgentContainer, id: string, readOnly: string[] = []): AgentContainer {
+  if (raw.authVolume || !/^sha256:[a-f0-9]{64}$/.test(raw.image)) throw new Error("Filtered containers require an immutable image and no authentication volume");
+  if (!/^filtered-[a-f0-9]{24}$/.test(id) || readOnly.length > 500 || readOnly.some((path) => !path || path.startsWith("/") || /[\\\x00-\x1f]/.test(path) || path.split("/").some((part) => !part || part === "." || part === ".." || part === ".git"))) throw new Error("Invalid filtered container receipt");
+  const config = validateAgentContainer(raw); filteredContainers.set(config, { id, readOnly: [...readOnly] }); return config;
+}
 
 export function validateAgentContainer(raw: unknown): AgentContainer {
   const value = raw as Partial<AgentContainer> | null;
@@ -41,6 +48,7 @@ export function validateAgentContainer(raw: unknown): AgentContainer {
  * Container team-tool bridges are unsupported; adapters must use structured outcomes.
  */
 export function agentContainerLaunch(command: string, args: string[], cwd: string, mode: AccessMode, raw: AgentContainer, extraReadOnly: string[] = []): AgentContainerLaunch {
+  const filtered = filteredContainers.get(raw);
   const container = validateAgentContainer(raw);
   if (!["claude", "codex", "agy"].includes(command)) throw new Error("Only supported official agent CLIs can run in an agent container");
   const root = realpathSync(cwd);
@@ -48,6 +56,9 @@ export function agentContainerLaunch(command: string, args: string[], cwd: strin
   const mounts = new Map<string, boolean>([[root, mode === "read"]]);
   for (const path of readOnlyGitMetadata(root)) mounts.set(path, true);
   for (const path of extraReadOnly) mounts.set(realpathSync(path), true);
+  for (const relative of filtered?.readOnly ?? []) {
+    const target = realpathSync(join(root, relative)); if (!target.startsWith(`${root}/`) || !lstatSync(target).isFile()) throw new Error("Filtered read-only mounts must be regular files inside the export"); mounts.set(target, true);
+  }
   for (const path of mounts.keys()) if (!isAbsolute(path) || /[,\n\r\0]/.test(path)) throw new Error("Docker isolation cannot mount paths containing commas or line breaks");
   const name = `codeflow-agent-${randomUUID().replace(/-/g, "")}`;
   const user = typeof process.getuid === "function" ? ["--user", `${process.getuid()}:${process.getgid!()}`] : ["--user", "65532:65532"];
@@ -56,6 +67,8 @@ export function agentContainerLaunch(command: string, args: string[], cwd: strin
     args: [
       "run", "--rm", "--init", "--interactive", "--pull=never", "--name", name,
       "--label", "codeflow.managed-agent=true", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+      ...(filtered ? ["--label", `codeflow.filtered-task=${filtered.id}`] : []),
+      ...(filtered ? ["--read-only", "--tmpfs", `/home/codeflow:rw,nosuid,nodev,size=134217728,uid=${typeof process.getuid === "function" ? process.getuid() : 65532},gid=${typeof process.getgid === "function" ? process.getgid() : 65532},mode=0700`] : []),
       "--pids-limit", "256", "--memory", `${container.memoryMb ?? 4096}m`, "--cpus", String(container.cpus ?? 2),
       ...user, "--workdir", root,
       ...[...mounts].flatMap(([path, readOnly]) => ["--mount", `type=bind,source=${path},target=${path}${readOnly ? ",readonly" : ""}`]),

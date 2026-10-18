@@ -115,7 +115,7 @@ export function buildTeamEvaluation(run: Run, options: { mode?: EvaluationMode; 
     taskHash: createHash("sha256").update(run.task).digest("hex"), baseRef: run.baseRef, pattern: run.pattern,
     cliVersions: { ...options.cliVersions }, status: run.status, verified,
     reproducibility: { nodeVersion: process.version, platform: `${process.platform}/${process.arch}`, ...options.reproducibility,
-      requestedSettings: structuredClone(run.agentSettings ?? {}),
+      requestedSettings: Object.fromEntries(Object.entries(run.agentSettings ?? {}).filter((entry): entry is [string, {model?: string; effort?: string}] => entry[1] !== undefined).map(([id, settings]) => [id, structuredClone(settings)])),
       stepSettings: [...new Map(turns.filter((step) => step.agent).map((step) => { const settings = { provider: step.agent!, model: step.settings?.model, effort: step.settings?.effort }; return [JSON.stringify(settings), settings] as const; })).values()] },
     verification: { checks: check, review: approved ? "approved" : run.facts?.approved === false || team?.verification?.reviewed ? "rejected" : "unknown", proof: run.facts?.proof, gaps, requirements, covered, integrityFlags, ...(run.teamRerun ? { proofNotRequired: run.facts?.proofNotRequired, retainedTasks: team?.tasks.filter((task) => task.retainedBaseline).length ?? 0, newlyExecutedTasks: team?.tasks.filter((task) => !task.retainedBaseline && (task.attempts ?? 0) > 0).length ?? 0, requirementsUsingBaseline: team?.requirements.filter((requirement) => team.tasks.some((task) => task.retainedBaseline && task.requirements.includes(requirement.id))).length ?? 0 } : {}) },
     metrics: {

@@ -69,7 +69,7 @@ export function GitHubPicker() {
   const shown = (items ?? []).filter((i) => !q || `#${i.number} ${i.title} ${(i.labels ?? []).join(" ")} ${i.author ?? ""}`.toLowerCase().includes(q));
 
   return (
-    <dialog class="picker" ref={ref}>
+    <dialog class="picker" ref={ref} aria-label="Choose a GitHub issue or pull request">
       {open ? (
         <div class="picker-inner">
           <div class="picker-head">

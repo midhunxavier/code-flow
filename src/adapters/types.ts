@@ -6,7 +6,8 @@
  * what keeps subscription use within each vendor's terms.
  */
 
-export type AgentId = "claude" | "codex" | "agy";
+export type BuiltinAgentId = "claude" | "codex" | "agy";
+export type AgentId = BuiltinAgentId | `plugin:${string}`;
 
 /**
  * read  — may inspect files and run read-only commands, must not modify the tree.

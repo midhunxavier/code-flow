@@ -67,6 +67,10 @@ A pattern with a reviewer asks for `REVIEW_SCHEMA` with `reproRule()` and `REVIE
 
 Implement `AgentAdapter` in `src/adapters/`, then register it in `src/adapters/index.ts`. Add a fake for it in `test/fake-agent.mjs`.
 
+Owner-configured providers and workflows can also use [versioned extensions](extensions.md) without modifying the built-in registry. They use namespaced IDs, explicit capability/API negotiation, reviewed bundle hashes and per-run version pins. Additional provider capabilities remain unknown until separately verified.
+
+The HTTP boundaries for shared access, filesystem policy, coordinated changes, code hosts and workspace operations live in separate modules. SSH framing/artifacts/receipts, durable queues, memory claim analysis and Git shipping each have independent contracts and focused tests. [Run storage](run-storage.md) separates recovery/projection from execution and bounds archived detail hydration. These boundaries retain server-owned authority and replay identities rather than moving them into client request bodies.
+
 ## Development
 
 `npm start` is your server (port 4317, `~/.codeflow`). `npm run dev` is a development server (port 4318, `.codeflow-dev/`) with **fake agents**, so working on code-flow never touches your real runs or quota. It puts `test/fake-bin` on `PATH` by absolute path and refuses to start if `claude`, `codex` or `agy` would still resolve to a real CLI. `npm run dev:real` is the same dev server with the real CLIs. Both rebuild the UI and restart the server as you edit.
@@ -83,13 +87,13 @@ npm test           # unit + workflow tests against fake CLIs
 npm run test:e2e   # the real UI in Chrome (headless) against a server with fake agents
 ```
 
-CI (`.github/workflows/ci.yml`) runs the typecheck and `npm test` on every push and pull request: Ubuntu with Node 20 and 22, macOS with Node 22. The e2e test runs there too, in its own job that doesn't fail the build.
+CI (`.github/workflows/ci.yml`) runs the typecheck and `npm test` on every push and pull request: Ubuntu with Node 20 and 22, macOS with Node 22. The required browser job exercises critical workflows and accessibility. A separate job tests the packaged VS Code extension in the actual editor host. [Provider compatibility](provider-compatibility.md) continuously probes official version/help contracts without account or inference requests.
 
 The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota.
 
 - The fake `codex` also serves the app-server protocol (`test/fake-codex-app-server.mjs`). Its threads persist across processes, so resume and per-turn token counts are tested. A prompt containing `WAIT-FOR-STEER` keeps a turn open until a note is steered in. `test/codex-app-server.test.ts` covers mid-turn notes, declined approvals, cancellation, and the `exec` fallback.
 - A fake `gh` keeps issues, PRs, checks, comments and security alerts in a JSON file and pushes to a local bare repository, so the GitHub flows (fix CI → push → watch → fix again, and sweeps of issues, Dependabot PRs and alerts) are tested without touching GitHub.
-- A fake `docker` records its arguments and runs the command in place, so isolation is tested without Docker.
+- A fake `docker` records arguments for deterministic orchestration tests. Opt-in native Docker cases separately test actual filesystem mounts, credentials and cancellation; fixtures alone do not establish container isolation.
 - The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, and the guarantee that your checkout is untouched.
 - `test/ship.test.ts` covers side chats too: sessions and messages kept apart from the run's thread, a budget of their own behind the team, an Ask that keeps the verdict and your edits, and files sent to a run whose worktrees were removed.
 

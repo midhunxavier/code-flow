@@ -27,9 +27,10 @@ const MAX_PATCH = 200_000;
 /** Changes on `branch` since `base`, split per file. */
 export async function branchDiff(repo: string, base: string, branch: string): Promise<DiffFile[]> {
   const range = `${base}..${branch}`;
-  const numstat = await gitOrThrow(["diff", "--numstat", "-M", "-z", range], repo);
-  const status = await gitOrThrow(["diff", "--name-status", "-M", "-z", range], repo);
-  const patch = await gitOrThrow(["diff", "--no-color", "-M", range], repo);
+  const safeDiff = ["-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv"];
+  const numstat = await gitOrThrow([...safeDiff, "--numstat", "-M", "-z", range], repo);
+  const status = await gitOrThrow([...safeDiff, "--name-status", "-M", "-z", range], repo);
+  const patch = await gitOrThrow([...safeDiff, "--no-color", "-M", range], repo);
 
   // --name-status -z: STATUS\0path\0 (renames: R100\0old\0new\0)
   const statusTokens = status.split("\0").filter((t) => t !== "");

@@ -758,6 +758,8 @@ export function upsertRun(run: RunSummary) {
 const feed = { epoch: "", seq: 0, runSeq: new Map<string, number>() };
 interface RunPage { runs: RunSummary[]; total: number; nextCursor?: string }
 export const historyTotal = signal<number | null>(null);
+export const attentionTotal = signal<number | null>(null);
+export const attentionTruncated = signal(false);
 export const historyNextCursor = signal<string | null>(null);
 export const historyLoading = signal(false);
 export const historyLoadingMore = signal(false);
@@ -924,7 +926,7 @@ export function setRailView(patch: Partial<RailView>) {
 const fetchedFor = new Set<string>();
 
 type FeedMessage =
-  | { type: "hello"; epoch: string; seq: number; runs?: RunSummary[]; resumed?: boolean; nextCursor?: string; total?: number }
+  | { type: "hello"; epoch: string; seq: number; runs?: RunSummary[]; resumed?: boolean; nextCursor?: string; total?: number; attentionTotal?: number; attentionTruncated?: boolean; attentionNextCursor?: string }
   | { type: "run"; seq: number; run: RunSummary };
 
 export function watchAllRuns(notify: (run: RunSummary) => void) {
@@ -939,6 +941,8 @@ export function watchAllRuns(notify: (run: RunSummary) => void) {
       if (!data || (data.type !== "hello" && data.type !== "run") || !Number.isSafeInteger(data.seq) || (data.type === "run" && !data.run?.id)) return;
       connection.value = { state: "connected", since: connection.value.state === "connected" ? connection.value.since : Date.now(), lastReceived: Date.now() };
       if (data.type === "hello") {
+        if (typeof data.attentionTotal === "number") attentionTotal.value = data.attentionTotal;
+        if (typeof data.attentionTruncated === "boolean") attentionTruncated.value = data.attentionTruncated;
         // Another server start numbers its events afresh: what we kept from the last one says nothing.
         const restarted = !!feed.epoch && data.epoch !== feed.epoch;
         if (data.epoch !== feed.epoch) feed.runSeq.clear();

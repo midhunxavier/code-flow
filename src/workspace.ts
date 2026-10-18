@@ -3,6 +3,7 @@ import { lstat, readFile, realpath, rename, unlink, writeFile } from "node:fs/pr
 import { dirname, join, posix, sep } from "node:path";
 import { git, repoRoot, resolveCommit, withRepoLock } from "./git.js";
 import { normalizeRepoPath } from "./repo-tree.js";
+import { assertProjectFileAccess } from "./filesystem-policy.js";
 
 const MAX_EDIT_BYTES = 512 * 1024;
 export class WorkspaceConflictError extends Error { constructor(readonly currentHash: string) { super("This file changed since it was loaded. Reload and compare your draft before saving."); } }
@@ -27,13 +28,16 @@ async function editablePath(repo: string, path: string): Promise<{ root: string;
 }
 
 export async function readEditableFile(repo: string, path: string) {
+  await assertProjectFileAccess(repo, path, "read");
   const file = await editablePath(repo, path);
   const text = await readFile(file.absolute, "utf8");
   if (text.includes("\0")) throw new Error("Binary files cannot be edited as text");
+  await assertProjectFileAccess(repo, path, "read");
   return { path: file.path, text, hash: hash(text), bytes: Buffer.byteLength(text) };
 }
 
 export async function saveEditableFile(repo: string, path: string, text: string, expectedHash: string) {
+  await assertProjectFileAccess(repo, path, "write");
   if (typeof text !== "string" || Buffer.byteLength(text) > MAX_EDIT_BYTES || text.includes("\0")) throw new Error("The file must be text under 512 KB without binary NUL characters");
   if (!/^[a-f0-9]{64}$/.test(expectedHash)) throw new Error("Saving needs the hash of the loaded version");
   return withRepoLock(await repoRoot(repo), async () => {
@@ -47,6 +51,7 @@ export async function saveEditableFile(repo: string, path: string, text: string,
       // Recheck after creating the draft, before replacing the loaded file.
       const current = await readEditableFile(repo, path);
       if (current.hash !== expectedHash) throw new WorkspaceConflictError(current.hash);
+      await assertProjectFileAccess(repo, path, "write");
       await rename(temp, file.absolute);
       return { path: file.path, hash: hash(text), bytes: Buffer.byteLength(text), savedAt: Date.now() };
     } finally { await unlink(temp).catch(() => undefined); }
@@ -58,7 +63,7 @@ const definition = /^\s*(?:(?:export|default|public|private|protected|static|asy
 
 export async function searchCode(repo: string, query: string, mode: "text" | "symbols" = "text") {
   const root = await repoRoot(repo);
-  const listing = await git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], root);
+  const listing = await git(["-c", "core.fsmonitor=false", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], root);
   if (listing.code !== 0) throw new Error("Cannot list repository files");
   const files = [...new Set(listing.stdout.split("\0").filter(Boolean))];
   const needle = query.trim().toLowerCase();

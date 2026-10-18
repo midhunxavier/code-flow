@@ -664,7 +664,18 @@ const GH_TIMEOUT_MS = 60_000;
 /** CI logs can be huge; nothing code-flow reads from gh needs more than this. */
 const GH_MAX_OUTPUT = 32 * 1024 * 1024;
 
-function ghRaw(cwd: string, args: string[], input?: string): Promise<{ code: number; stdout: string; stderr: string }> {
+export interface GithubCommandOptions { signal?: AbortSignal; timeoutMs?: number; maxOutputBytes?: number }
+/** Fixed GraphQL endpoint on an explicit server-held GitHub host, with caller-bounded execution. */
+export async function githubGraphql(repo: string, host: string, query: string, variables: Record<string, unknown>, options: GithubCommandOptions = {}): Promise<any> {
+  if (!/^[a-z0-9][a-z0-9.-]*(?::\d{1,5})?$/i.test(host) || typeof query !== "string" || !query.trim() || query.length > 64 * 1024) throw new Error("Invalid GitHub GraphQL endpoint or query");
+  const input = JSON.stringify({ query, variables }); if (Buffer.byteLength(input) > 1024 * 1024) throw new Error("GitHub GraphQL input exceeds 1 MiB");
+  const args = ["api", "graphql", "--hostname", host, "--method", "POST", "--input", "-"];
+  const result = await ghRaw(repo, args, input, options); if (result.code) throw ghFailure(args, result);
+  const value = JSON.parse(result.stdout); if (Array.isArray(value.errors) && value.errors.length) throw new Error(`GitHub GraphQL: ${value.errors.map((error: any) => String(error?.message ?? "Request failed")).join("; ").slice(0, 2000)}`);
+  if (!value.data || typeof value.data !== "object") throw new Error("GitHub returned no GraphQL data"); return value.data;
+}
+
+function ghRaw(cwd: string, args: string[], input?: string, options: GithubCommandOptions = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn("gh", args, {
       cwd,
@@ -673,16 +684,20 @@ function ghRaw(cwd: string, args: string[], input?: string): Promise<{ code: num
       env: { ...childEnv(), GH_PROMPT_DISABLED: "1", NO_COLOR: "1", GH_NO_UPDATE_NOTIFIER: "1" },
     });
     trackGroup(child.pid);
-    let stdout = "";
+    const output: Buffer[] = []; let bytes = 0;
     let stderr = "";
     let failure: string | undefined;
+    let finished = false;
+    const maxOutput = Number.isFinite(options.maxOutputBytes) ? Math.min(GH_MAX_OUTPUT, Math.max(1024, options.maxOutputBytes!)) : GH_MAX_OUTPUT;
+    const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.min(GH_TIMEOUT_MS, Math.max(100, options.timeoutMs!)) : GH_TIMEOUT_MS;
     const stop = (why: string) => {
       failure ??= why;
       killGroup(child.pid, 2_000);
     };
     child.stdout!.on("data", (d) => {
-      stdout += d;
-      if (stdout.length > GH_MAX_OUTPUT) stop(`gh printed more than ${GH_MAX_OUTPUT / 1024 / 1024} MB`);
+      bytes += d.length;
+      if (bytes > maxOutput) stop(`gh printed more than ${maxOutput / 1024 / 1024} MB`);
+      else if (!failure) output.push(d);
     });
     child.stderr!.on("data", (d) => {
       stderr += d;
@@ -692,13 +707,17 @@ function ghRaw(cwd: string, args: string[], input?: string): Promise<{ code: num
       child.stdin!.on("error", () => {});
       child.stdin!.end(input);
     }
-    const timer = setTimeout(() => stop(`gh ${args.slice(0, 2).join(" ")} timed out after ${GH_TIMEOUT_MS / 1000}s`), GH_TIMEOUT_MS);
+    const abort = () => stop(`gh ${args.slice(0, 2).join(" ")} cancelled`);
+    options.signal?.addEventListener("abort", abort, { once: true }); if (options.signal?.aborted) abort();
+    const timer = setTimeout(() => stop(`gh ${args.slice(0, 2).join(" ")} timed out after ${timeoutMs / 1000}s`), timeoutMs);
     const done = (result: { code: number; stdout: string; stderr: string }) => {
+      if (finished) return; finished = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       untrackGroup(child.pid);
       resolve(failure ? { code: 124, stdout: "", stderr: failure } : result);
     };
-    child.on("error", (err) => done({ code: 127, stdout, stderr: err.message }));
-    child.on("close", (code) => done({ code: code ?? 1, stdout, stderr }));
+    child.on("error", (err) => done({ code: 127, stdout: "", stderr: err.message }));
+    child.on("close", (code) => done({ code: code ?? 1, stdout: Buffer.concat(output).toString("utf8"), stderr }));
   });
 }

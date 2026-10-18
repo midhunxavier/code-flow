@@ -67,8 +67,13 @@ Cancellation, timeout, stall, and shutdown remove the daemon-owned container as 
 Docker client. Container names are recorded in the process recovery journal so startup can
 also remove containers left behind by a server crash before recovering worktrees.
 
-Run `CODEFLOW_TEST_DOCKER=1 node --import tsx --test test/agent-container-docker.test.ts` for
-native runtime checks. The tests build and remove a small fake-CLI fixture image and never
+Run `npm run test:containers` for native ordinary and filtered runtime checks.
+The tests build and remove small fake-CLI fixture images and never
 use provider credentials or model quota. The regular suite also tests launch arguments,
 all adapter transports, daemon/client separation, cancellation, and timeout with a fake
 Docker runtime.
+
+Per-project read/write restrictions use the separate [filtered task
+backend](filesystem-policy.md), with a fresh allowed-file Git namespace and
+explicit review-branch import. Ordinary agent containers mount their worktree's
+full Git common directory and cannot enforce those restricted reads.

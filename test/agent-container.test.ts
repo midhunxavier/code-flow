@@ -5,7 +5,7 @@ import { chmod, mkdtemp, readFile, readdir, realpath, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { agentContainerCapabilities, agentContainerLaunch, validateAgentContainer } from "../src/agent-container.js";
+import { agentContainerCapabilities, agentContainerLaunch, filteredTaskContainer, validateAgentContainer } from "../src/agent-container.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const home = await mkdtemp(join(tmpdir(), "codeflow-container-home-"));
@@ -36,6 +36,12 @@ before(async () => {
 after(() => { process.env.PATH = originalPath; });
 
 function mounts(args: string[]) { return args.filter((_arg, index) => args[index - 1] === "--mount"); }
+test("filtered Docker containment receipts require immutable server-owned capability identity and never survive serialization", () => {
+  const image = "sha256:" + "a".repeat(64), id = "filtered-" + "b".repeat(24);
+  assert.throws(() => filteredTaskContainer({ image: "mutable:tag" }, id), /immutable/); assert.throws(() => filteredTaskContainer({ image, authVolume: "host-login-cache" }, id), /authentication volume/);
+  const config = filteredTaskContainer({ image, network: false }, id, ["README.md"]); const launch = agentContainerLaunch("claude", [], worktree, "write", config); assert.ok(launch.args.includes(`codeflow.filtered-task=${id}`)); assert.ok(launch.args.includes("--read-only")); assert.ok(mounts(launch.args).includes(`type=bind,source=${join(worktree, "README.md")},target=${join(worktree, "README.md")},readonly`));
+  const serialized = { ...JSON.parse(JSON.stringify(config)), filteredTaskId: id }; const untrusted = agentContainerLaunch("claude", [], worktree, "write", serialized); assert.equal(untrusted.args.some((arg) => arg.includes("codeflow.filtered-task=")), false, "client JSON cannot claim a filtered service container receipt"); assert.equal(untrusted.args.includes("--read-only"), false);
+});
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 async function until(condition: () => Promise<boolean> | boolean) {
   const deadline = Date.now() + 10_000;

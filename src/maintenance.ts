@@ -6,6 +6,8 @@ import { gzip, gunzip } from "node:zlib";
 import { promisify } from "node:util";
 import { acquireLock } from "./store.js";
 import { disableRestoredDeferredRuns } from "./deferred-runs.js";
+import { disableRestoredCodeHostActions } from "./code-hosts.js";
+import { disableRestoredCoordinatedChanges } from "./repo-coordination.js";
 
 const compress = promisify(gzip);
 const decompress = promisify(gunzip);
@@ -14,7 +16,7 @@ const MAX_BYTES = 256 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = Math.ceil(MAX_BYTES * 1.4);
 const MAX_FILES = 20000;
 const MAX_LOG_BYTES = 64 * 1024 * 1024;
-const sessionPath = /(^|\/)(remote-worker-private|shared-accounts\.json(?:[.-].*)?|remote\.json(?:[.-].*)?|phone-devices\.json(?:[.-].*)?|processes\.json|sessions?\.json|(?:team[-_])?(?:credentials?|capabilit(?:y|ies))(?:\.[^/]*)?|connection\.json|[^/]*\.(?:pem|key)|\.env(?:\.[^/]*)?)(\/|$)/i;
+const sessionPath = /(^|\/)(remote-worker-private|extension-cache|shared-accounts\.json(?:[.-].*)?|remote\.json(?:[.-].*)?|phone-devices\.json(?:[.-].*)?|processes\.json|sessions?\.json|(?:team[-_])?(?:credentials?|capabilit(?:y|ies))(?:\.[^/]*)?|connection\.json|[^/]*\.(?:pem|key)|\.env(?:\.[^/]*)?)(\/|$)/i;
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const validId = (value: string) => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(value);
 interface BackupEntry { path: string; bytes: number; sha256: string; data: string }
@@ -134,7 +136,7 @@ export async function restoreEncryptedBackup(input: { input: string; destination
   const finalPath = join(parent, basename(destination));
   const staging = join(parent, `.${basename(destination)}.restore-${randomBytes(8).toString("hex")}`);
   await mkdir(staging, { mode: 0o700 });
-  let disabledAutomations = 0; let disabledNotifications = 0; let cancelledDeferredRuns = 0; let restoredBytes = 0;
+  let disabledAutomations = 0; let disabledNotifications = 0; let cancelledDeferredRuns = 0; let cancelledCoordinatedChanges = 0; let restoredBytes = 0;
   try {
     for (const file of manifest.files) {
       const target = join(staging, file.path);
@@ -158,6 +160,12 @@ export async function restoreEncryptedBackup(input: { input: string; destination
         cancelledDeferredRuns = restored.cancelled;
         data = Buffer.from(JSON.stringify(restored.document, null, 2));
       }
+      if (file.path === "coordinated-changes.json") {
+        const restored = disableRestoredCoordinatedChanges(JSON.parse(data.toString("utf8")));
+        cancelledCoordinatedChanges = restored.cancelled;
+        data = Buffer.from(JSON.stringify(restored.document, null, 2));
+      }
+      if (file.path === "code-host-operations.json") data = Buffer.from(JSON.stringify(disableRestoredCodeHostActions(JSON.parse(data.toString("utf8"))), null, 2));
       const handle = await open(target, "wx", 0o600);
       try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
       await syncDirectory(dirname(target));
@@ -168,7 +176,7 @@ export async function restoreEncryptedBackup(input: { input: string; destination
     await rename(staging, finalPath);
     await syncDirectory(parent);
   } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
-  return { destination: finalPath, files: manifest.files.length, bytes: restoredBytes, createdAt: manifest.createdAt, omitted: manifest.omitted, disabledAutomations, disabledNotifications, cancelledDeferredRuns };
+  return { destination: finalPath, files: manifest.files.length, bytes: restoredBytes, createdAt: manifest.createdAt, omitted: manifest.omitted, disabledAutomations, disabledNotifications, cancelledDeferredRuns, cancelledCoordinatedChanges };
 }
 
 interface LogData { text: string; lines: string[]; events: Array<Record<string, any>>; snapshot: Record<string, any>; bytes: number; mtimeMs: number }
@@ -201,7 +209,7 @@ async function retentionPlan(home: string, days: number, now: number): Promise<R
       const log = await readRunLog(home, id);
       if (log.snapshot.archived !== true || log.mtimeMs >= result.cutoff) continue;
       const files: string[] = []; let bytes = 0;
-      for (const name of [`${id}.jsonl`, `${id}.journal.jsonl`, `${id}.checkpoint.json`]) {
+      for (const name of [`${id}.jsonl`, `${id}.journal.jsonl`, `${id}.checkpoint.json`, `${id}.cold-index.json`, `${id}.cold-detail.json`]) {
         const info = await lstat(join(home, "runs", name)).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
         if (info?.isFile()) { files.push(name); bytes += info.size; }
       }
@@ -237,7 +245,7 @@ export function compactRunLog(input: { home: string; runId: string; apply?: bool
         const current = await lstat(path);
         if (current.size !== log.bytes || current.mtimeMs !== log.mtimeMs || !current.isFile()) throw new Error("Run log changed during compaction; no change was applied.");
         await rename(temp, path); await syncDirectory(dirname(path));
-        await unlink(join(home, "runs", `${input.runId}.checkpoint.json`)).catch(() => undefined);
+        for (const suffix of [".checkpoint.json", ".cold-index.json", ".cold-detail.json"]) await unlink(join(home, "runs", input.runId + suffix)).catch(() => undefined);
       } finally { await unlink(temp).catch(() => undefined); }
     }
     return { runId: input.runId, applied: input.apply === true, snapshotsRemoved: removable.size, beforeBytes: log.bytes, afterBytes, savedBytes: log.bytes - afterBytes };

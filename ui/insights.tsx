@@ -101,7 +101,7 @@ export function InsightsView({ group }: { group?: string }) {
               {groups.map((g) => (
                 <div key={g.id} class={`ins-group ${g.id === group ? "focus" : ""}`}>
                   <div class="ig-title">{g.task.split("\n")[0]}</div>
-                  <div class="table-wrap">
+                  <div class="table-wrap" tabIndex={0} role="region" aria-label="Scrollable results table">
                     <table class="ins-table">
                       <thead>
                         <tr>
@@ -163,7 +163,7 @@ export function InsightsView({ group }: { group?: string }) {
               <b>Passed</b> includes shared run outcomes. Provider comparisons and “Auto” routing use runs with a single writing provider, with at least three samples per provider.
               The 95% interval shows uncertainty in that observed rate. Task difficulty can still vary.
             </p>
-            <div class="table-wrap">
+            <div class="table-wrap" tabIndex={0} role="region" aria-label="Scrollable results table">
               <table class="ins-table">
                 <thead>
                   <tr>
@@ -215,7 +215,7 @@ export function InsightsView({ group }: { group?: string }) {
           {stats.cohorts?.length ? <section class="ins-section" aria-labelledby="ins-cohorts">
             <h2 id="ins-cohorts">Task cohorts</h2>
             <p class="help">Compare runs in the same repository, workflow and source category. These groups do not estimate task difficulty.</p>
-            <div class="table-wrap"><table class="ins-table">
+            <div class="table-wrap" tabIndex={0} role="region" aria-label="Scrollable results table"><table class="ins-table">
               <thead><tr><th>Repository</th><th>Workflow</th><th>Source</th><th class="num">Runs</th><th class="num">Passed / checked</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead>
               <tbody>{stats.cohorts.map((c) => <tr key={c.key}><td title={c.repo}>{baseName(c.repo)}</td><td>{patternName(c.pattern)}</td><td>{c.sourceKind}</td><td class="num">{c.runs}</td><td class="num">{c.passed}/{c.judged}</td><td class="num">{fmtTokens(c.tokens)}</td><td class="num">{c.costUsd ? fmtCost(c.costUsd) : "–"}</td></tr>)}</tbody>
             </table></div>
@@ -223,7 +223,7 @@ export function InsightsView({ group }: { group?: string }) {
 
           <section class="ins-section" aria-labelledby="ins-patterns">
             <h2 id="ins-patterns">Patterns</h2>
-            <div class="table-wrap">
+            <div class="table-wrap" tabIndex={0} role="region" aria-label="Scrollable results table">
               <table class="ins-table">
                 <thead>
                   <tr>
@@ -338,7 +338,7 @@ function DiskPanel({ scope }: { scope: URLSearchParams }) {
         </button>
       </div>
       {disk?.runs.length ? (
-        <div class="table-wrap">
+        <div class="table-wrap" tabIndex={0} role="region" aria-label="Scrollable results table">
           <table class="ins-table">
             <tbody>
               {disk.runs.slice(0, 10).map((r) => (

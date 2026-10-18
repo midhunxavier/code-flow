@@ -134,7 +134,7 @@ test("overlap flags exact normalized text and lexical similarity without pretend
   assert.equal(between("one", "similar")?.kind, "lexical-overlap");
   assert.ok(between("one", "similar")!.similarity < 1);
   assert.equal(between("one", "opposite"), undefined);
-  assert.ok(result.notes.some((note) => note.includes("does not detect semantic contradictions")));
+  assert.ok(result.notes.some((note) => note.includes("Lexical overlap and supported semantic claims are separate")));
 });
 
 test("onboarding curates only accepted fresh guidance with exclusively trusted user origins", async () => {

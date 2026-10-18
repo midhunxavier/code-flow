@@ -180,7 +180,7 @@ test("/api/events: a hello with the server's epoch and every run, ids on every e
   const first = await readEvents(`${a.base}/api/events`, bearer, (e) => e.length >= 1);
   const hello = first[0]!.data;
   assert.equal(hello.type, "hello");
-  assert.match(hello.epoch, /^[0-9a-f]{12}$/);
+  assert.match(hello.epoch, /^[0-9a-f]{12}-fs\d+$/, "feed identity includes the server instance and filesystem-policy generation");
   assert.ok(Array.isArray(hello.runs), "a first connection gets the whole list");
   assert.equal(first[0]!.id, `${hello.epoch}:${hello.seq}`);
 
@@ -382,4 +382,13 @@ test("the health check tells Auto when an agent is signed out", async () => {
   const second = (await api(b, "/api/doctor")).body;
   assert.equal(second.find((e: { id: string }) => e.id === "codex").quota?.status, "signed_out");
   assert.notEqual(second.find((e: { id: string }) => e.id === "claude").quota?.status, "signed_out");
+});
+
+test("a filesystem-policy generation invalidates an old feed cursor and sends a fresh authorized snapshot", async () => {
+  const initial = (await readEvents(`${b.base}/api/events?limit=100`, bearer, (events) => events.length > 0))[0]!;
+  const created = await api(b, "/api/projects", { name: "Policy generation fixture", repos: [repo] }); assert.equal(created.status, 201);
+  const changed = await fetch(`${b.base}/api/projects/${created.body.id}/filesystem-policy`, { method: "PUT", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ revision: 0, read: { allow: ["."], deny: ["private"] }, write: { allow: ["."], deny: [] } }) }); assert.equal(changed.status, 200, await changed.text());
+  const refreshed = (await readEvents(`${b.base}/api/events?limit=100`, { ...bearer, "last-event-id": initial.id! }, (events) => events.length > 0))[0]!;
+  assert.notEqual(refreshed.data.epoch, initial.data.epoch); assert.equal(refreshed.data.epoch.split("-fs")[0], initial.data.epoch.split("-fs")[0], "the instance remains the same while its authorization generation changes"); assert.equal(Number(refreshed.data.epoch.split("-fs")[1]), Number(initial.data.epoch.split("-fs")[1]) + 1);
+  assert.ok(Array.isArray(refreshed.data.runs)); assert.notEqual(refreshed.data.resumed, true, "a cursor from an earlier policy must never preserve old visible results"); assert.equal(refreshed.id, `${refreshed.data.epoch}:${refreshed.data.seq}`);
 });

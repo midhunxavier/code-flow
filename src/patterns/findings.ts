@@ -1,4 +1,4 @@
-import { adapters, type AgentId } from "../adapters/index.js";
+import { getAdapter, adapters, type AgentId } from "../adapters/index.js";
 import { blocks, type FindingCheck, type Repro, type ReviewFinding, type TeamContext } from "../engine.js";
 import type { Worktree } from "../git.js";
 import { fence, section } from "./prompts.js";
@@ -115,7 +115,7 @@ export function findingsForBuilder(reviewer: AgentId, findings: ReviewFinding[])
   const suggestions = findings.filter((f) => f.severity === "low");
   const item = (f: ReviewFinding, i: number) => `${i + 1}. **${f.severity}** \`${f.file || "general"}\` — ${f.problem}\n   Suggested fix: ${f.fix || "(none given)"}`;
   return (
-    `The ${adapters[reviewer].displayName} reviewer's findings, checked by code-flow. Fix what blocks, re-run the tests, then summarize what you fixed and anything you dispute.` +
+    `The ${getAdapter(reviewer).displayName} reviewer's findings, checked by code-flow. Fix what blocks, re-run the tests, then summarize what you fixed and anything you dispute.` +
     (confirmed.length
       ? section(
           "Confirmed: the reviewer's test fails on your code (these block)",

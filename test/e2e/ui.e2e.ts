@@ -353,6 +353,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   assert.equal((await fetch(`${PHONE}/api/runs`, { headers: { cookie } })).status, 200, "the phone's cookie opens the API");
   assert.equal((await fetch(`${PHONE}/api/runs`)).status, 401);
   assert.equal((await fetch(`${PHONE}/api/runs`, { headers: bearer })).status, 401, "the computer's token isn't a phone sign-in");
+  assert.equal((await fetch(`${PHONE}/?token=${TOKEN}`, { redirect: "manual" })).status, 403, "the network listener must never issue a local owner cookie");
   assert.equal((await fetch(`${BASE}/api/runs`, { headers: { cookie } })).status, 401, "nor is the phone's cookie a sign-in on the computer's listener");
   const crossSite = await fetch(`${PHONE}/api/remote`, { method: "POST", headers: { cookie, origin: "http://evil.example", "content-type": "application/json" }, body: "{}" });
   assert.equal(crossSite.status, 403);

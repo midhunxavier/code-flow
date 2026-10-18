@@ -26,6 +26,7 @@ before(async () => {
     writeFileSync(join(repo, id, "service.mjs"), `import {createServer} from 'node:http';\nif(process.env.SERVICE_NAME==='web') { const dependency=await fetch(process.env.API_URL+'/health'); if(!dependency.ok) process.exit(8); }\ncreateServer((req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({service:process.env.SERVICE_NAME,api:process.env.API_URL}));}).listen(Number(process.env.PORT),process.env.HOST,()=>console.log('ready '+process.env.SERVICE_NAME));\n`);
   }
   writeFileSync(join(repo, ".codeflow", "launch.json"), JSON.stringify({ version: 1, profiles: [{ id: "development", name: "API and web", services: [{ id: "api", command, cwd: "api", health: { path: "/health", timeoutMs: 5000 } }, { id: "web", command, cwd: "web", dependsOn: ["api"], health: { path: "/health", timeoutMs: 5000 } }] }] }));
+  mkdirSync(join(repo, "private")); writeFileSync(join(repo, "private", "credentials.txt"), "POLICY_PRIVATE_CONTENT");
   const git = (...args: string[]) => execFileSync("git", args, { cwd: repo });
   git("init", "-q", "-b", "main"); git("add", "."); git("add", "-f", ".codeflow/launch.json"); git("-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "initial");
   mkdirSync(join(fixture, "worktrees", "history-125"), { recursive: true }); git("worktree", "add", "-q", "--detach", worktree, "main");
@@ -36,7 +37,7 @@ before(async () => {
     writeFileSync(join(home, "runs", `${id}.jsonl`), JSON.stringify({ seq: index + 1, ts: timestamp, runId: id, type: "run", run }) + "\n");
   }
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
-  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, FAKE_RECORD_DIR: records, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: process.env.E2E_DEBUG ? "inherit" : "ignore" });
+  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, FAKE_RECORD_DIR: records, FAKE_SLEEP_MS: "1000", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: process.env.E2E_DEBUG ? "inherit" : "ignore" });
   let healthy = false; for (let retry = 0; retry < 150; retry++) { healthy = await fetch(`${base}/api/health`, { headers }).then((response) => response.ok, () => false); if (healthy) break; await new Promise((resolve) => setTimeout(resolve, 100)); } assert.ok(healthy, "fixture server started");
   browser = await chromium.launch({ channel: "chrome", headless: true }); page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await page.addInitScript((path) => { localStorage.setItem("repo", path); localStorage.setItem("sideOpen", "0"); }, repo);
@@ -202,4 +203,39 @@ test("context directories preview committed sources and explicit budgets block a
   const recording = readdirSync(records).filter((file) => file.startsWith("claude-")).map((file) => JSON.parse(readFileSync(join(records, file), "utf8"))).at(-1);
   assert.equal(evidence.promptBytes, Buffer.byteLength(recording.prompt), "size evidence measures the actual assembled text sent to the adapter");
   assert.match(evidence.hash, /^[a-f0-9]{64}$/);
+});
+
+test("filesystem policy enforces scoped app reads/writes and globally blocks execution until explicitly removed", async () => {
+  const project = (await fetch(`${base}/api/projects`, { headers }).then((response) => response.json()) as { id: string; repos: string[] }[]).find((project) => project.repos.includes(repo)); assert.ok(project);
+  const otherRepo = join(fixture, "other-repo"); mkdirSync(otherRepo); execFileSync("git", ["init", "-q", "-b", "main"], { cwd: otherRepo }); writeFileSync(join(otherRepo, "README.md"), "Other repository\n"); execFileSync("git", ["add", "."], { cwd: otherRepo }); execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "initial"], { cwd: otherRepo });
+  await fetch(`${base}/api/projects`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ name: "Other repository", repos: [otherRepo] }) });
+  const bootReady = Promise.all(["/api/models", "/api/doctor", "/api/doctor/git"].map((path) => page.waitForResponse((response) => new URL(response.url()).pathname === path)));
+  await page.goto(`${base}/?policy-check=1#/workspace`); await bootReady; await page.getByRole("button", { name: "Filesystem policy", exact: true }).click(); await page.getByLabel("Filesystem policy project", { exact: true }).selectOption(project.id); const panel = page.getByRole("region", { name: "Project filesystem policy", exact: true });
+  await panel.getByLabel("Read deny paths", { exact: true }).fill("private"); await panel.getByLabel("Write allow paths", { exact: true }).fill("api"); const applying = page.waitForResponse((response) => response.url().endsWith("/filesystem-policy") && response.request().method() === "PUT"); await panel.getByRole("button", { name: "Stop execution and apply policy", exact: true }).click(); const applied = await applying; assert.equal(applied.status(), 200, await applied.text()); await panel.getByRole("status").getByText("Filesystem policy revision 1 applied.", { exact: true }).waitFor();
+  const request = (path: string, body?: unknown, method = "POST") => fetch(base + path, { headers: { ...headers, "content-type": "application/json" }, ...(body !== undefined ? { method, body: JSON.stringify(body) } : {}) });
+  for (const prefix of ["/api", "/api/v1"]) {
+    for (const path of ["/stats", "/memory", "/automations", "/deferred-runs", "/coordinated-changes", "/notifications", "/maintenance"]) assert.equal((await request(prefix + path)).status, 403, `unscoped private data ${path}`);
+    assert.equal((await request(`${prefix}/file?repo=${encodeURIComponent(repo)}&path=private/credentials.txt`)).status, 403);
+    assert.equal((await request(`${prefix}/repo-config?repo=${encodeURIComponent(join(repo, "api"))}`)).status, 403, "subdirectory aliases cannot bypass repository policy");
+    assert.equal((await request(`${prefix}/runs/history-125/export?transcript=1`)).status, 403); assert.equal((await request(`${prefix}/runs/history-125/events`)).status, 403);
+    for (const path of ["/runs", "/readiness", "/verification", "/shells", "/preview", "/snapshot", "/automations", "/deferred-runs", "/coordinated-changes", "/remote-workers/worker/probe", "/code-hosts/source/preview"]) { const response = await request(prefix + path, { repo: otherRepo, pattern: "solo", task: "A different repository cannot read protected host files", roles: { agent: ["claude"] }, trust: "full", execute: true }); assert.equal(response.status, 409, path); }
+  }
+  assert.equal((await request("/api/health").then((response) => response.json())).interactiveTerminal, false, "health does not launch an interpreter under restrictions");
+  const before = readdirSync(records).length;
+  const listing = await request(`/api/tree?repo=${encodeURIComponent(repo)}`).then((response) => response.json()); assert.equal(listing.entries.some((entry: { path: string }) => entry.path === "private"), false);
+  const search = await request(`/api/workspace/search?repo=${encodeURIComponent(repo)}&q=POLICY_PRIVATE_CONTENT`).then((response) => response.json()); assert.deepEqual(search.hits, []);
+  const file = await request(`/api/workspace/file?repo=${encodeURIComponent(repo)}&path=api/service.mjs`).then((response) => response.json()); assert.equal(typeof file.hash, "string"); assert.equal((await request("/api/workspace/file", { repo, path: "api/service.mjs", text: file.text + "\n// reviewed policy edit\n", expectedHash: file.hash })).status, 200);
+  const web = await request(`/api/workspace/file?repo=${encodeURIComponent(repo)}&path=web/service.mjs`).then((response) => response.json()); assert.equal((await request("/api/workspace/file", { repo, path: "web/service.mjs", text: "forbidden", expectedHash: web.hash })).status, 403);
+  assert.equal(readdirSync(records).length, before, "policy refusal invokes no agent process");
+  const runs = await request("/api/runs?limit=100").then((response) => response.json()); assert.equal(runs.runs.some((run: { repo: string }) => run.repo === repo), false, "raw historical content is omitted under the restricted project");
+  const saved = await request(`/api/projects/${project.id}/filesystem-policy`).then((response) => response.json()); assert.equal((await request(`/api/projects/${project.id}/filesystem-policy`, { ...saved, revision: 0 }, "PUT")).status, 409);
+  if (process.env.CODEFLOW_UI_SCREENSHOTS) { mkdirSync(join(root, "output/playwright"), { recursive: true }); await page.screenshot({ path: join(root, "output/playwright/filesystem-policy-desktop.png") }); }
+  await page.setViewportSize({ width: 390, height: 844 }); assert.equal(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
+  if (process.env.CODEFLOW_UI_SCREENSHOTS) await page.screenshot({ path: join(root, "output/playwright/filesystem-policy-mobile.png") });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await panel.getByLabel("Read deny paths", { exact: true }).fill(""); await panel.getByLabel("Write allow paths", { exact: true }).fill("."); await panel.getByRole("button", { name: "Stop execution and apply policy", exact: true }).click(); await panel.getByRole("status").getByText("Filesystem policy revision 2 applied.", { exact: true }).waitFor();
+  const started = await request("/api/runs", { repo: otherRepo, pattern: "solo", task: "Exercise the deliberate policy execution restart", roles: { agent: ["claude"] }, loop: { check: `"${process.execPath}" -e 'setTimeout(()=>{},5000)'` } }); assert.equal(started.status, 201); const id = (await started.json()).id;
+  assert.equal((await request(`/api/runs/${id}`).then((response) => response.json())).status, "running", "the activation race exercises an actually live run");
+  const busy = await request(`/api/projects/${project.id}/filesystem-policy`, { revision: 2, read: { allow: ["."], deny: ["private"] }, write: { allow: ["."], deny: [] } }, "PUT"); assert.equal(busy.status, 409, "policy cannot activate while another project's host agent is active");
+  let run = await request(`/api/runs/${id}`).then((response) => response.json()); for (let attempt = 0; run.status === "running" && attempt < 600; attempt++) { await new Promise((resolve) => setTimeout(resolve, 50)); run = await request(`/api/runs/${id}`).then((response) => response.json()); } assert.equal(run.status, "done", run.error);
 });

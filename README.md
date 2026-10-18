@@ -46,6 +46,15 @@ The **Workspace** page adds verification profiles and requirement mappings, code
 
 Additional workflows include [selective task reruns](docs/task-reruns.md), [deferred starts](docs/deferred-runs.md), [context budgets](docs/context-inspection.md), [versioned conventions](docs/project-conventions.md), [reviewed commit reversions](docs/checkpoint-review.md), and a [local VS Code extension](integrations/vscode/README.md). The [review inbox](docs/review-inbox.md) groups questions, blocked work, failures and results across projects.
 
+Use [shared project accounts](docs/shared-projects.md) for scoped human review,
+[SSH workers](docs/remote-workers.md) for provisioned remote execution and
+[coordinated changes](docs/coordinated-changes.md) for repository dependency
+workflows. [GitLab/Bitbucket code workflows](docs/code-hosts.md), [GitHub review
+threads](docs/github-review-threads.md), [architecture exploration](docs/architecture-explorer.md)
+and [semantic memory claims](docs/memory-claims.md) provide bounded evidence for
+review. [Filesystem policies](docs/filesystem-policy.md) and explicit trusted
+[extensions](docs/extensions.md) document their execution boundaries.
+
 - **A team, not one agent.** Seven patterns, from Plan → Build → Review to a Best-of-N race judged blind, with any agent in any role and a model and effort per role. Having a different vendor review or judge catches what a model misses in its own work.
 - **Auto team (experimental, opt-in).** [Auto team](docs/auto-team.md) proposes members, tasks and acceptance criteria, asks for plan approval, then adapts within your limits. Members ask each other addressed questions and keep private, team and project memory. It is kept opt-in until its [measured evidence](docs/dynamic-teams-evaluation.md) supports more.
 - **Your subscriptions, their official CLIs.** code-flow launches `claude`, `codex` and `agy` headless, as they ship. It never reads or stores credentials.
@@ -90,6 +99,8 @@ code-flow enforces the team's read-only steps itself, for every agent (a side ch
 ## Docs
 
 - [Getting started](docs/getting-started.md): install, your first run, context, models, worktrees
+- [Application improvement checklist](docs/application-improvements.md): all six priority packages, 14 product issues and 73 feature acceptance items
+- [Expanded workspace workflows](docs/README.md): remote workers, shared reviews, coordinated repositories, semantic memory, extensions and verification
 - [Team patterns, checks and limits](docs/patterns.md)
 - [Auto team](docs/auto-team.md): dynamic workflows, messages, private/team/project memory, budgets and recovery
 - [Runs](docs/runs.md): the run view, talking to a run, projects, the side panel, restarts and resume, Insights

@@ -16,6 +16,7 @@ import { verificationIntegrity, VerificationIntegrityError } from "./verificatio
 import { inspectContext, ContextInspectionError } from "./context-inspection.js";
 import { applyCommitRevert, compareCheckpoint, previewCommitRevert } from "./checkpoint-review.js";
 import { searchSemanticSymbols, findCodeReferences } from "./code-intelligence.js";
+import { inspectArchitecture } from "./architecture.js";
 
 interface Result { status: number; body: unknown }
 async function diagnosticTail(path: string) {
@@ -41,7 +42,7 @@ export async function handleWorkspaceApi(req: IncomingMessage, url: URL, parts: 
     if (typeof value !== "string" || value.length > 4000 || value.includes("\0")) throw new HttpError(400, "Commands must be text under 4,000 characters");
     return value;
   };
-  if (parts[1] === "v1" && parts[2] === "capabilities" && req.method === "GET") return { status: 200, body: { version: 1, features: ["readiness", "verification", "file-editing", "code-search", "dependencies", "checkpoints", "diagnostics", "run-export"], authentication: "Bearer CODEFLOW_TOKEN", api: "/api", docs: "docs/api.md" } };
+  if (parts[1] === "v1" && parts[2] === "capabilities" && req.method === "GET") return { status: 200, body: { version: 1, features: ["readiness", "verification", "file-editing", "code-search", "dependencies", "checkpoints", "diagnostics", "run-export", "cursor-history", "shared-projects", "ssh-workers", "coordinated-changes", "code-hosts", "github-review-threads", "filesystem-policies", "filtered-tasks", "provider-workflow-extensions"], authentication: "Bearer CODEFLOW_TOKEN", api: "/api", docs: "docs/api.md" } };
   if (parts[1] === "readiness" && req.method === "POST") {
     if (body.execute === true) manager.noteActivity();
     return { status: 200, body: await inspectReadiness({ repo: requireRepo(), baseRef: typeof body.baseRef === "string" ? body.baseRef : undefined, setup: boundedCommand(body.setup), check: boundedCommand(body.check), execute: body.execute === true, signal }) };
@@ -116,7 +117,7 @@ export async function handleWorkspaceApi(req: IncomingMessage, url: URL, parts: 
     }
     if (parts[2] === "search" && req.method === "GET") return { status: 200, body: url.searchParams.get("mode") === "semantic" ? await searchSemanticSymbols(selectedRepo, url.searchParams.get("q") ?? "", signal) : await searchCode(selectedRepo, url.searchParams.get("q") ?? "", url.searchParams.get("mode") === "symbols" ? "symbols" : "text") };
     if (parts[2] === "references" && req.method === "GET") return { status: 200, body: await findCodeReferences(selectedRepo, { path: url.searchParams.get("path") ?? "", line: Number(url.searchParams.get("line")), column: Number(url.searchParams.get("column")) }, signal) };
-    if (parts[2] === "dependencies" && req.method === "GET") return { status: 200, body: await dependencyGraph(selectedRepo) };
+    if (parts[2] === "dependencies" && req.method === "GET") return { status: 200, body: await inspectArchitecture(selectedRepo, signal) };
     if (parts[2] === "checkpoints" && req.method === "GET") return { status: 200, body: { head: await resolveCommit(selectedRepo), checkpoints: await checkpoints(selectedRepo, url.searchParams.get("ref") || "HEAD") } };
     if (parts[2] === "apply-checkpoint" && req.method === "POST") {
       const run = typeof body.runId === "string" ? manager.get(body.runId) : undefined;

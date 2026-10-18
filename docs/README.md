@@ -20,6 +20,19 @@
 - [Commit comparison and revert](checkpoint-review.md): complete comparisons and reviewed staged inverse changes.
 - [Review inbox](review-inbox.md): grouped and prioritized attention across manual and unattended runs.
 - [Code intelligence](code-intelligence.md): isolated JavaScript/TypeScript symbol and reference resolution.
+- [Architecture explorer](architecture-explorer.md): static imports, packages, cycles and directory boundaries across six languages.
+- [Semantic memory claims](memory-claims.md): bounded duplicate/contradiction evidence with source revisions and overlapping applicability.
+- [Shared projects](shared-projects.md): local viewer/reviewer accounts, scoped results, reviews and immediate revocation.
+- [SSH workers](remote-workers.md): explicit remote targets, source/result bundles, durable receipts and recovery.
+- [Coordinated changes](coordinated-changes.md): pinned dependencies and per-repository validation/shipping.
+- [GitHub review threads](github-review-threads.md): inspect, reply, resolve and reopen real review threads with stale-state checks.
+- [GitLab and Bitbucket code workflows](code-hosts.md): fetch, isolated review, comments, guarded pushes, PR creation and pinned Git merges.
+- [Provider/workflow extensions](extensions.md): explicit trusted bundles, API negotiation and immutable version pins.
+- [Provider compatibility](provider-compatibility.md): continuous official CLI version/help probes and separate protocol fixtures.
+- [Accessibility](accessibility.md): browser audits, keyboard/focus behavior, contrast and mobile acceptance.
+- [Run storage](run-storage.md): streamed recovery and bounded archived detail caches.
+- [Filesystem policies](filesystem-policy.md): literal per-project allow/deny rules and conservative execution pauses.
+- [Filtered Docker tasks](filtered-tasks.md): allowed-file snapshots, private runtime provisioning and explicit review-branch imports.
 - [VS Code integration](../integrations/vscode/README.md): local authenticated task creation, run inspection and result worktrees.
 - [External sources](external-sources.md): read-only GitLab, Bitbucket, Linear and Jira imports.
 - [Notifications](notifications.md): opt-in outbound destinations, scopes, retries and delivery history.

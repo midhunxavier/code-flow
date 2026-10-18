@@ -83,7 +83,9 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 | `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view (or the full app, with phone control) and webhooks on your network, when *Reachable from my Wi-Fi* is on |
 | `CODEFLOW_TLS_CERT`, `CODEFLOW_TLS_KEY` | unset | Configure both certificate/key file paths for the HTTPS network listener; normal full phone control requires TLS |
 | `CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL` | unset | Explicit `1` permits full phone control over HTTP for development |
-| `CODEFLOW_INTEGRATIONS_FILE`, `CODEFLOW_INTEGRATIONS_JSON` | unset | Explicit read-only external source definitions with server credential references; see [sources](external-sources.md) |
+| `CODEFLOW_INTEGRATIONS_FILE`, `CODEFLOW_INTEGRATIONS_JSON` | unset | Explicit external source definitions with server credential references; imports are read-only, while [GitLab/Bitbucket code actions](code-hosts.md) require separate explicit previews/actions |
+| `CODEFLOW_REMOTE_WORKERS_FILE`, `CODEFLOW_REMOTE_WORKERS_JSON` | unset | Explicit provisioned SSH targets and repository mapping names; see [remote workers](remote-workers.md) |
+| `CODEFLOW_EXTENSIONS_FILE`, `CODEFLOW_EXTENSIONS_JSON` | unset | Explicit trusted bundled provider/workflow plugins with API negotiation and SHA-256 pins; choose one configuration source; see [extensions](extensions.md) |
 | `CODEFLOW_NOTIFICATIONS_FILE`, `CODEFLOW_NOTIFICATIONS_JSON` | unset | Explicit outbound destinations; targets remain disabled until event/project opt-in; see [notifications](notifications.md) |
 | `CODEFLOW_SCHEDULER_TICK_MS` | `30000` | How often due automations are checked |
 | `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments |
@@ -102,6 +104,14 @@ Child processes exclude the application API token, scoped team capabilities, int
 |---|---|
 | `runs/<run>.jsonl` | Each run's event log, appended as it happens; runs are rebuilt from it at startup. Unreadable lines (a crash mid-write) are skipped and noted in `server.log` |
 | `runs/<run>.journal.jsonl` | The result of each completed step, written to disk at once, so **Resume** replays them instead of running them again |
+| `runs/<run>.cold-index.json`, `runs/<run>.cold-detail.json` | Optional source-validated archived projections; corrupt/stale projections rebuild from the event log. Full archived detail uses a bounded cache; see [run storage](run-storage.md) |
+| `shared-accounts.json` | Private password/session hashes, expiring accounts and project roles. Never exported in backups; see [shared projects](shared-projects.md) |
+| `shared-reviews/<run>.json` | Commit-anchored human comments, separate from agent notes and prompts |
+| `filesystem-policies/<project>.json` | Revisioned read/write rules and content hashes; see [filesystem policy](filesystem-policy.md) |
+| `filtered-tasks/` | Private filtered exports, exact policy/source/result records and explicit import receipts; never a startup execution queue |
+| `remote-worker-private/` | Private SSH receipt capabilities; excluded from ordinary result projections and restore authority |
+| `code-host-operations.json` | Safe confirmed/unknown code-host mutation receipts; no automatic replay after restart or restore |
+| `extension-cache/` | Captured trusted plugin bundles; excluded from backup/restore and rebuilt only from explicit reviewed configuration |
 | `projects.json` | Your [projects](runs.md#projects): names, repositories, and the team each one last used. Written whole (through a temporary file); a change that can't be saved fails and is undone. One that can't be read is moved aside to `projects.json.corrupt-<time>` and logged; if it can't be moved either, projects are off (runs start without one) until it's fixed |
 | `server.log` | code-flow's own log, one JSON line per entry: failed requests, unhandled errors, failed writes, processes it cleaned up. Past 5 MB it moves to `server.log.1` (one old file is kept) |
 | `processes.json` | The process groups code-flow has started and not seen finish. If code-flow dies without a clean exit (a crash, `kill -9`, a closed terminal), the next start stops what's left before resuming anything, so an orphaned agent can't keep editing a worktree. Pids from before a reboot, or reused by another program, are left alone |

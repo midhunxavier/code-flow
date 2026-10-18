@@ -67,6 +67,15 @@ test("a run belongs to the project it recorded; runs from before projects, to th
   assert.equal(projectOf({ repo: "/r/three" }, list), undefined);
 });
 
+test("strict coordinated placement cannot revive membership revoked ahead of it in the project queue", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "codeflow-projects-strict-")), "projects.json"), projects = new Projects(file); await projects.load(); const project = await projects.create({ name: "Strict coordinated project", repos: [api, web] });
+  const removed = projects.update(project.id, { repos: [api] });
+  const placement = projects.place(web, { requested: project.id, lenient: true, requireRepo: true });
+  await removed; await assert.rejects(placement, /no longer an explicit member/); assert.deepEqual(projects.get(project.id)!.repos, [api]);
+  const restarted = new Projects(file); await restarted.load(); assert.deepEqual(restarted.get(project.id)!.repos, [api]);
+  await projects.remove(project.id); await assert.rejects(projects.place(api, { requested: project.id, lenient: true, requireRepo: true }), /no longer an explicit member/); assert.equal(projects.list().length, 0);
+});
+
 test("the first load makes a project per repo that has runs; later loads never bring a deleted one back", async () => {
   const projects = fresh();
   const runs = [
@@ -321,4 +330,18 @@ test("a projects.json that can't be read is set aside, never written over", asyn
   const run = await start(new RunManager(findPattern, c), api);
   assert.equal(run.status, "done");
   assert.equal(run.project, undefined);
+});
+
+test("project readers and authorization notifications see only committed membership changes", async () => {
+  const projects = fresh(); await projects.load(); const project = await projects.create({ name: "Committed", repos: [api] });
+  let notify = 0; const unsubscribe = projects.onChange(() => { notify++; assert.notEqual(projects.get(project.id)!.name, "Committed", "callbacks observe the newly committed state"); });
+  const storage = projects as unknown as { write: () => Promise<void> }; const originalWrite = storage.write.bind(projects);
+  let writing!: () => void, release!: () => void; const entered = new Promise<void>((resolve) => { writing = resolve; }); const gate = new Promise<void>((resolve) => { release = resolve; });
+  storage.write = async () => { writing(); await gate; await originalWrite(); };
+  const saving = projects.update(project.id, { name: "Published", repos: [api, web] }); await entered;
+  assert.equal(projects.list()[0]!.name, "Committed"); assert.deepEqual(projects.get(project.id)!.repos, [api]); assert.equal(projects.forRepo(web), undefined); assert.equal(notify, 0, "permissions never expand before durable publication");
+  release(); await saving; assert.equal(projects.get(project.id)!.name, "Published"); assert.equal(projects.forRepo(web)!.id, project.id); assert.equal(notify, 1);
+  storage.write = async () => { throw new Error("disk full"); };
+  await assert.rejects(projects.update(project.id, { name: "Failed" }), /disk full/); assert.equal(projects.get(project.id)!.name, "Published"); assert.equal(notify, 1, "failed writes never publish membership events");
+  storage.write = originalWrite; await projects.update(project.id, { name: "Published" }); assert.equal(notify, 1, "no-op changes do not wake streams"); unsubscribe(); await projects.update(project.id, { name: "After unsubscribe" }); assert.equal(notify, 1);
 });

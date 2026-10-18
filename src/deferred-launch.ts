@@ -11,6 +11,7 @@ export interface DeferredLaunchHost {
   get(id: string): Run | undefined;
   list(): RunSummary[];
   quota: Quota;
+  quotaForWorker?(workerId?: string): Quota;
   start(input: StartRunInput): Promise<Run>;
   cancel(id: string): unknown;
 }
@@ -52,7 +53,7 @@ export function createDeferredRuns(host: DeferredLaunchHost, options: {
       const resolved = await options.resolveProviders(request);
       signal.throwIfAborted();
       const needed = [...new Set([...providers, ...Object.values(resolved.roles).flat()])];
-      return deferredProviderReadiness(needed, host.quota, resolved.installed);
+      return deferredProviderReadiness(needed, request.loop.remoteWorker ? host.quotaForWorker?.(request.loop.remoteWorker.workerId) ?? {} : host.quota, resolved.installed);
     },
     launch: async (request, claim, signal) => {
       let input: StartRunInput;

@@ -4,6 +4,8 @@ import { AgentTag } from "./bits.js";
 import { api, ApiError, baseName, enc, fmtSize, FLOWS, post, readBase64, SHORT, store } from "./lib.js";
 import { useDialog } from "./app.js";
 import { AcceptanceEditor, ComposerLibraryEditor, ContextInspector, EffectiveSettings, FirstRunGuide, RepositoryReadiness } from "./onboarding.js";
+import { RemoteWorkerSelect, type WorkerChoice } from "./remote-workers.js";
+import type { WorkerCapabilities } from "../src/remote-workers/protocol.js";
 import { DeferredRunsPanel } from "./deferred-runs.js";
 import { contextBudget } from "./context-budget.js";
 import { taskWithCriteria } from "./composer-tools.js";
@@ -79,6 +81,10 @@ const fileIcon = (type: string) => (type === "dir" ? "📁" : "📄");
 
 // ================================================================= composer
 export function Composer() {
+  const [remoteWorker, setRemoteWorker] = useState<WorkerChoice>();
+  const [remoteAgents, setRemoteAgents] = useState<AgentInfo[]>();
+  const [remoteError, setRemoteError] = useState("");
+  useEffect(() => { let alive = true; setRemoteAgents(undefined); setRemoteError(""); if (remoteWorker) void post<{ capabilities: WorkerCapabilities }>(`/api/remote-workers/${encodeURIComponent(remoteWorker.workerId)}/probe`, { repoMapping: remoteWorker.repoMapping }).then(({ capabilities }) => { if (alive) setRemoteAgents(agents.value.map((agent) => ({ ...agent, available: capabilities.providers.some((provider) => provider.id === agent.id && provider.available) }))); }, (error) => { if (alive) setRemoteError(error.message); }); return () => { alive = false; }; }, [remoteWorker?.workerId, remoteWorker?.repoMapping, agents.value]);
   const [containerEnabled, setContainerEnabled] = useState(false);
   const [containerImage, setContainerImage] = useState("");
   const [containerVolume, setContainerVolume] = useState("");
@@ -99,7 +105,7 @@ export function Composer() {
     attachments.value = [...attachments.value, ...drafts.flatMap((d) => d.images)];
   }, [chatDrafts.value]);
   const roles = rolesFor(p);
-  const problem = startProblem(p, roles) || (profileLoading ? "Loading verification profile…" : "");
+  const problem = (remoteWorker ? remoteError || (!remoteAgents ? "Checking remote worker…" : startProblem(p, roles, true, remoteAgents)) : startProblem(p, roles)) || (profileLoading ? "Loading verification profile…" : "");
 
   const [saving, setSaving] = useState(false);
   const runBody = (p: PatternInfo) => ({
@@ -118,7 +124,7 @@ export function Composer() {
       attachments: attachments.value.map((a) => ({ name: a.name, data: a.data })),
     },
     agentSettings: agentSettings.value,
-    approvals: { plan: !!CHECKPOINTS[p.id] && planApprovalFor(p.id), tools: toolApprovals },
+    approvals: { plan: !!CHECKPOINTS[p.id] && planApprovalFor(p.id), tools: remoteWorker ? false : toolApprovals },
     trust: trust.value,
     roleSettings: roleModels.value[p.id] ?? {},
     loop: {
@@ -130,14 +136,15 @@ export function Composer() {
       maxCostUsd: limits.value.maxCostUsd,
       contextBudget: contextBudget.value,
       verification: verificationProfile,
-      agentContainer: containerEnabled ? { image: containerImage.trim(), authVolume: containerVolume.trim() || undefined, network: true } : undefined,
-      copy: repoConfig.value?.config.copy,
+      remoteWorker,
+      agentContainer: containerEnabled && !remoteWorker ? { image: containerImage.trim(), authVolume: containerVolume.trim() || undefined, network: true } : undefined,
+      copy: remoteWorker ? [] : repoConfig.value?.config.copy,
     },
   });
   const [comparing, setComparing] = useState(false);
   const start = async () => {
     if (problem || !p || starting || profileLoading) return;
-    if (containerEnabled && !containerImage.trim()) { setError("Choose a prebuilt agent image"); return; }
+    if (containerEnabled && !remoteWorker && !containerImage.trim()) { setError("Choose a prebuilt agent image"); return; }
     setStarting(true);
     setError("");
     try {
@@ -241,7 +248,9 @@ export function Composer() {
           ))}
         </div>
         {p ? <p class="pattern-why">{p.description}</p> : null}
-        {p ? <Team p={p} roles={roles} /> : null}
+        <RemoteWorkerSelect value={remoteWorker} onChange={setRemoteWorker} disabled={starting} />
+        {remoteWorker ? <p class="help">Provider availability comes from this worker. Checks and setup run on the application server. Copied workspace files and native interactive approvals are unavailable; use explicitly staged references.</p> : null}
+        {p ? <Team p={p} roles={roles} providers={remoteAgents} remote={!!remoteWorker} /> : null}
         <div class="section"><label class="lbl" for="verification-profile">Verification gates</label><select class="field" id="verification-profile" value={verificationPreset} disabled={!repo.value} onChange={async (event) => { const selected = event.currentTarget.value; const request = ++profileRequest.current; setVerificationPreset(selected); if (!selected) { setVerificationProfile(null); setProfileLoading(false); return; } const current = repo.value; setProfileLoading(true); try { const profile = await api<VerificationProfile>(`/api/verification/profile?repo=${enc(current)}&preset=${selected}`); if (repo.value === current && request === profileRequest.current) setVerificationProfile(profile); } catch (error) { if (repo.value === current && request === profileRequest.current) { setError((error as Error).message); setVerificationPreset(""); setVerificationProfile(null); } } finally { if (request === profileRequest.current) setProfileLoading(false); } }}><option value="">Single configured check</option><option value="lightweight">Lightweight profile</option><option value="standard">Standard profile</option><option value="thorough">Thorough profile</option></select>{verificationProfile ? <p class="help">Required gates: {verificationProfile.checks.map((gate) => gate.command).join(" · ") || "No runnable gates detected"}. Each gate appears in the run's evidence.</p> : null}</div>
       {p ? <Settings p={p} roles={roles} /> : null}
         </div>
@@ -252,8 +261,8 @@ export function Composer() {
       <ContextInspector />
       {p && repo.value && task.value.trim() ? <details class="settings"><summary>Start later or wait for provider capacity</summary><div class="settings-body"><DeferredRunsPanel runRequest={runBody(p)} project={target.value.project?.id} repo={repo.value} /></div></details> : null}
 
-      <details class="settings"><summary>Agent isolation</summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} onChange={(event) => setContainerEnabled(event.currentTarget.checked)} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label>Image<input class="field" placeholder="Your prepared image:tag" value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label>Authentication volume<input class="field" placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is enabled for inference. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
-      <label class="checkpoint"><input type="checkbox" checked={toolApprovals} onChange={(event) => { setToolApprovals(event.currentTarget.checked); store.set("interactiveApprovals", event.currentTarget.checked ? "1" : "0"); }} /><span><b>Ask me for tool permissions</b> · Supported Codex requests appear in an approval inbox. Unattended and locked-down runs always decline them.</span></label>
+      <details class="settings"><summary>Agent isolation</summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} disabled={!!remoteWorker} onChange={(event) => setContainerEnabled(event.currentTarget.checked)} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label>Image<input class="field" placeholder="Your prepared image:tag" value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label>Authentication volume<input class="field" placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is enabled for inference. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
+      <label class="checkpoint"><input type="checkbox" checked={!remoteWorker && toolApprovals} disabled={!!remoteWorker} onChange={(event) => { setToolApprovals(event.currentTarget.checked); store.set("interactiveApprovals", event.currentTarget.checked ? "1" : "0"); }} /><span><b>Ask me for tool permissions</b> · Supported Codex requests appear in an approval inbox. Unattended and locked-down runs always decline them.</span></label>
       <div class="start-row">
         <button class="btn primary" disabled={!!problem || starting} onClick={start}>
           {starting ? "Starting…" : "Start run"} <span class="kbd">⌘↵</span>
@@ -399,7 +408,7 @@ function CompareDialog({ base, onClose, onStarted }: { base: Record<string, any>
 }
 
 /** Why the run can't start yet ("" when it can); `needsTask: false` for sweeps, whose items bring their tasks. */
-export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true): string {
+export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true, inventory?: AgentInfo[]): string {
   if (p?.id === "auto-team" && teamRollout.value?.enabled === false) return "New Auto teams are disabled. Existing teams can still be resumed.";
   if (repoChecking.value) return "Checking repository…";
   if (!repo.value) return "Choose a repository first";
@@ -415,6 +424,12 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
   // An Auto pool is permission to choose from these providers; availability is checked by
   // the coordinator before building its roster, so one signed-out candidate needn't block it.
   const used = new Set<RoleValue>(p.id === "auto-team" ? roles.coordinator ?? [] : Object.values(roles).flat());
+  if (inventory) {
+    const installed = new Set(inventory.filter((agent) => agent.available).map((agent) => agent.id));
+    for (const id of used) if (id !== "auto" && !installed.has(id)) return `${SHORT[id]} is unavailable on the selected remote worker`;
+    if (used.has("auto") && !installed.size) return "No configured provider CLI is available on this remote worker";
+    return "";
+  }
   const signedOut = health.value?.find((h) => used.has(h.id) && h.installed && h.signedIn === false);
   if (signedOut) return `${signedOut.name} isn't signed in — open Health in the top bar`;
   return "";
@@ -595,7 +610,7 @@ async function addAttachments(files: File[], folders: string[] = []) {
 }
 
 // ---------------------------------------------------------------- team
-function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]> }) {
+function Team({ p, roles, providers, remote }: { p: PatternInfo; roles: Record<string, RoleValue[]>; providers?: AgentInfo[]; remote?: boolean }) {
   return (
     <div class="team">
       {p.roles.map((role) => {
@@ -611,7 +626,7 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
             </div>
             <div class="role-pick">
               <div class="pills">
-                {agents.value.map((a) => {
+                {(providers ?? agents.value).map((a) => {
                   const on = selected.includes(a.id);
                   return (
                     <button
@@ -619,7 +634,7 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
                       type="button"
                       class="pill"
                       aria-pressed={on}
-                      disabled={!a.available}
+                      disabled={!a.available && !on}
                       title={a.available ? `${role.multiple ? "Toggle" : "Choose"} ${a.displayName}` : `${a.displayName} isn't installed`}
                       onClick={() => setRoles(p.id, role.id, role.multiple ? (on ? selected.filter((x) => x !== a.id) : [...selected, a.id]) : [a.id])}
                     >
@@ -646,7 +661,7 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
                 ) : null}
               </div>
               {selected.some((id) => id !== "auto") ? (
-                <RoleModels p={p} roleId={role.id} roleLabel={role.label.toLowerCase()} agents={selected.filter((id): id is AgentId => id !== "auto")} />
+                <RoleModels p={p} roleId={role.id} roleLabel={role.label.toLowerCase()} agents={selected.filter((id): id is AgentId => id !== "auto")} remote={remote} />
               ) : null}
             </div>
           </div>
@@ -723,11 +738,12 @@ function configSummary(config: Record<string, any>): string {
  * Model and effort for each agent in a role, right under its pills (e.g. Opus to plan, Sonnet to
  * review). Empty means the agent's own setting from Settings, or the CLI's default.
  */
-function RoleModels({ p, roleId, roleLabel, agents: ids }: { p: PatternInfo; roleId: string; roleLabel: string; agents: AgentId[] }) {
+function RoleModels({ p, roleId, roleLabel, agents: ids, remote }: { p: PatternInfo; roleId: string; roleLabel: string; agents: AgentId[]; remote?: boolean }) {
   const current = roleModels.value[p.id]?.[roleId] ?? {};
   return (
     <div class="role-models">
       {ids.map((id) => {
+        if (remote) return <span key={id} class="mpick"><AgentTag id={id} /><input class="field" aria-label={`${SHORT[id]} model for the ${roleLabel}`} placeholder="Worker CLI default model" value={current[id]?.model ?? ""} onChange={(event) => setRoleModel(p.id, roleId, id, { model: event.currentTarget.value })} /><input class="field" aria-label={`${SHORT[id]} effort for the ${roleLabel}`} placeholder="Worker CLI default effort" value={current[id]?.effort ?? ""} onChange={(event) => setRoleModel(p.id, roleId, id, { effort: event.currentTarget.value })} /></span>;
         const cat = catalogs.value[id];
         if (!cat) return null; // still loading
         if ("error" in cat) {

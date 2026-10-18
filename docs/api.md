@@ -25,7 +25,7 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 | `POST /workspace/file` | `repo`, `path`, `text`, `expectedHash` | Save only the loaded version; conflicts return 409. Active run worktrees and symlinks are refused. |
 | `POST /workspace/merge-file` | `repo`, `path`, `base`, `draft` | Compute a three-way merge against the current file without writing. Returns `current`, merged `text`, `conflicts`, and `clean`; conflict markers need manual resolution before saving. |
 | `GET /workspace/search` | `repo`, `q`, `mode=text\|symbols` query | Bounded text or declaration search with source line numbers. |
-| `GET /workspace/dependencies` | `repo` query | Bounded JavaScript/TypeScript relative import graph; dynamic/package edges are not inferred. |
+| `GET /workspace/dependencies` | `repo` query | Bounded static architecture graph across JavaScript/TypeScript, Python, Go, Rust and Java; packages, cycles and unresolved/computed edges are explicit. |
 | `POST /workspace/context` | `repo`, `paths` | Preview explicit file context, approximate token size and sensitive-file omissions. |
 | `GET /workspace/checkpoints` | `repo`, optional `ref` query | List exact commit checkpoints. |
 | `POST /workspace/apply-checkpoint` | `repo`, `runId`, `source`, `paths`, `expectedHead` | Apply selected files to an idle, clean run worktree without committing. |
@@ -85,9 +85,11 @@ supported but can omit timestamp ties; prefer `cursor`. Keep filters consistent
 between pages. Invalid cursors and page sizes return 400.
 
 `GET /events?limit=1..100` is the bounded SSE run feed. Its initial `hello`
-contains the recent page plus older active or attention runs, `total`, and
-`nextCursor`. Thus attention items can make the initial array larger than the
-page limit. Without `limit`, the legacy full initial list remains available.
+contains the recent page, every running run and at most 100 older attention
+items, `total`, `nextCursor`, `attentionTotal`, `attentionTruncated`, and an
+optional `attentionNextCursor`. Older attention remains accessible through
+history; the rail displays the truncation. Without `limit`, the legacy full
+initial list remains available. Policy changes invalidate the feed generation.
 Reconnect using `Last-Event-ID`; a valid retained cursor resumes snapshots, while
 a stale cursor triggers a fresh `hello`. `GET /runs/:id/events` streams that run's
 retained events with a run-bound replay cursor. These are live feeds, not durable
@@ -136,7 +138,7 @@ limitations](notifications.md).
 | --- | --- | --- |
 | `GET /projects/:id/memory` | optional `repo` query | List authorized project entries. A supplied repository must belong to the project. |
 | `POST /projects/:id/memory/commands` | `op=create\|approve\|update\|delete\|feedback` plus operation fields | Run user-authorized revision commands. All existing-entry mutations require exact `id` and `expectedRevision`; conflicts return 409. Client authority/origins are not forwarded. |
-| `GET /projects/:id/memory/analysis` | `repo` query (optional for a single-repo project) | Return bounded provenance graph, freshness/applicability signals, lexical duplicates, deletion impact, and curated onboarding preview with source revisions and truncation indicators. |
+| `GET /projects/:id/memory/analysis` | `repo` query (optional for a single-repo project) | Return bounded provenance, freshness, duplicates/semantic claims, deletion impact and curated onboarding with exact source revisions and truncation indicators. |
 | `POST /projects/:id/memory/analysis/publish` | `repo`, `expectedSources` from `analysis.onboarding.sourceRefs` | Recompute and publish eligible user-authored onboarding guidance with pinned provenance. Changed sources return 409; no eligible sources returns 400. |
 
 Create accepts `repo`, `title`, `body`, optional `paths`, `tags`, and
@@ -144,9 +146,13 @@ Create accepts `repo`, `title`, `body`, optional `paths`, `tags`, and
 ordinary edit never accepts a proposal automatically. Feedback accepts `rating`,
 optional `note` and `runId`; a run reference must have selected that exact entry
 revision. Analysis is heuristic and bounded: lexical similarity does not infer
-contradictions, and Git freshness checks do not establish semantic correctness.
+contradictions on its own. Deterministic semantic claims compare supported
+policies and structured boolean/text/numeric intervals only across overlapping
+applicability; unsupported prose is counted. Git freshness checks do not
+establish semantic correctness. See [supported claims](memory-claims.md).
 Publication excludes imported/private/untrusted material and prior onboarding
-summaries. This API does not add multi-user project authorization.
+summaries. Memory APIs remain owner-only; shared project roles use the separate
+closed review surface described below.
 
 ## Multi-service launch profiles
 
@@ -194,3 +200,108 @@ native tool permissions. See [agent containers](agent-containers.md),
 
 The client has no automatic retry for mutations. A dropped response is not proof
 that an operation did not execute; inspect the run before repeating a creation.
+
+## Shared identities and project review
+
+`GET /auth/self`, `POST /auth/login {username,password}` and `POST /auth/logout`
+bootstrap the local viewer/reviewer dashboard. Login sets a distinct session
+cookie; tokens and password/session hashes are never returned. Shared sessions
+require actual TLS or a direct loopback connection without forwarding headers.
+Owner account administration uses `GET/POST /accounts`, `PUT /accounts/:id`, and
+`POST /accounts/:id/revoke-sessions`, with the current account-state `revision`.
+
+Shared routing is a closed allowlist. Project/run lists, result detail, safe
+events, diffs, coverage and exports are scoped before counts and cursors.
+Reviewers may record file coverage and `POST /runs/:id/collaboration
+{branch,expectedHead,text}`; both recheck current project membership and owned
+result HEAD. `GET` returns the separate human discussion. These comments never
+resume an agent. All execution, administrative and private-context operations
+remain owner-only. See [roles, projections and session limits](shared-projects.md).
+
+## Explicit workers, coordination and extensions
+
+| Operation | Request | Behavior |
+| --- | --- | --- |
+| `GET /remote-workers` | none | List explicitly configured SSH targets without private capabilities. |
+| `POST /remote-workers/:id/probe` | `repoMapping` | Probe the provisioned worker and its own provider inventory. |
+| `POST /runs/:id/remote-steps/:step/receipt` | empty body | Inspect an accepted execution receipt; never replay the turn. |
+| `POST /runs/:id/remote-steps/:step/cancel` | empty body | Explicitly request cancellation and inspect its receipt. |
+| `GET /coordinated-changes` | none | List durable multi-repository jobs and their current claims. |
+| `POST /coordinated-changes` | `project`, `name`, `nodes`, optional `operationId` | Create 2–10 explicitly configured repository tasks with a verified dependency DAG. |
+| `POST /coordinated-changes/:id/cancel` | `expectedRevision` | Cancel further dispatch; preserve accepted execution receipts. |
+| `POST /coordinated-changes/:id/shipping-preview` | `expectedRevision`, `targets` | Validate the current source/target/tree matrix without merging. |
+| `POST /coordinated-changes/:id/nodes/:node/retry` | `expectedRevision`, optional `acknowledgeUnknown` | Explicitly retry after inspecting an uncertain claim. |
+| `POST /coordinated-changes/:id/nodes/:node/attach` | `expectedRevision`, `runId` | Attach only an exact matching durable launch receipt. |
+| `POST /coordinated-changes/:id/nodes/:node/ship` | `expectedRevision`, `previewId` | Merge one unchanged verified local candidate; no automatic remote push. |
+| `POST /coordinated-changes/:id/nodes/:node/recover-shipping` | `expectedRevision`, `commit` | Confirm the exact reviewed parents/tree after an uncertain local merge. |
+| `GET /extensions` | none | Inspect host API version and explicitly configured trusted provider/workflow bundles. |
+
+Runs select SSH using `loop.remoteWorker: {workerId,repoMapping}`. Worker
+credentials stay on the provisioned worker; accepted turns are never retried
+automatically after a disconnected transport. See [worker setup and receipt
+recovery](remote-workers.md). Coordination ships each repository separately;
+there is no atomic transaction across repositories. See [coordinated
+changes](coordinated-changes.md). Extension installation is server configuration,
+not an HTTP operation; immutable version/hash pins are rechecked before
+execution. See [trusted extension contracts](extensions.md).
+
+## Code-host review and publication
+
+Owner-only `GET /code-hosts` lists configured GitLab/Bitbucket code adapters and
+safe operation receipts. `POST /code-hosts/preview {integration,key,repo,project?}`
+creates a short-lived server snapshot. `POST /code-hosts/:id/fetch` imports exact
+source/target Git objects without executing them; `/:id/run` accepts the prepared
+agent container and required verification configuration. `/:id/review` performs
+an explicit supported comment, reply, thread resolution or GitLab approval.
+
+Push and merge each have distinct `/:id/push-preview` or `/:id/merge-preview`
+operations taking `runId` and an owned `branch`; their actions require the
+returned `planId`. `POST /code-hosts/create-preview` takes `integration`, `runId`,
+`branch`, `targetBranch`, `title`, and `body`; `/:id/create` explicitly creates
+the expected-absent source branch and native PR. An unknown receipt can only be
+acknowledged explicitly at `/code-hosts/history/:id/acknowledge` with
+`{acknowledge:true}`. No startup replay occurs.
+
+Git updates use exact expected-ref leases. Merge is a pinned Git merge and may
+leave provider PR closure pending; native merge queues and atomic provider-policy
+snapshots are not claimed. Unsupported/unknown protected-branch policies fail
+closed. See [provider-specific operations and limits](code-hosts.md).
+
+GitHub threads use `GET /runs/:id/pr-threads?branch=<owned-branch>` and `POST` with
+`{action:"load",snapshotId,threadId}` or
+`{action:"resolve",snapshotId,threadId,expectedHead,expectedRevision,resolved}`.
+Resolution rechecks fresh remote state and reports postflight uncertainty.
+See [thread pagination, permissions and mutation races](github-review-threads.md).
+
+## Filesystem policies
+
+Owner-only `GET /projects/:id/filesystem-policy` returns the committed policy.
+`PUT` accepts `{revision,read:{allow,deny},write:{allow,deny}}` with literal
+repository-relative paths. Policies intersect across matching projects and
+pinned run snapshots. App file/tree/search/write/diff access rechecks current
+rules; raw history and other unfilterable evidence are withheld. Custom
+restrictions pause ordinary application-managed execution globally, including
+background preparation. See [activation, execution boundaries and HTTP error
+semantics](filesystem-policy.md).
+
+Restricted execution uses a separate owner-only manual task surface:
+
+| Operation | Request | Behavior |
+| --- | --- | --- |
+| `GET /filtered-tasks` | optional `project` query | Return bounded lifecycle/receipt metadata; historical source/output content is not listed. |
+| `POST /filtered-tasks` | `project`, `repo`, `task`, `agent`, `image`, optional `network`, `maxMinutes` | Prepare a filtered committed snapshot and return 202 after a durable claim; only built-in providers and an explicit local immutable image are supported. |
+| `GET /filtered-tasks/:id` | none | Read task/output under unchanged current canonical policy and project membership. |
+| `POST /filtered-tasks/:id/preview-import` | empty body | Validate source/result/policy and preview bounded allowed file changes. |
+| `POST /filtered-tasks/:id/import` | `revision`, `expectedHead`, `resultHash` | Create a new review branch with an atomic exact-source ref transaction; leave checkout and index unchanged. |
+| `POST /filtered-tasks/:id/cancel` | `revision` | Cancel preparation/execution and confirm the owned daemon container is absent. |
+| `POST /filtered-tasks/:id/receipt` | `revision` | Explicitly inspect an interrupted branch-import receipt; never replay a provider turn. |
+| `DELETE /filtered-tasks/:id` | JSON `revision` | Remove a stopped terminal task's private export/record; preserve any imported review branch. |
+
+The task container receives only permitted committed regular files and a new Git
+object database. It mounts no original repository metadata, host login directory,
+authentication volume or application memory. The image layer and copied files
+denied writes are read-only. Network starts off; enabling inference access is an
+explicit owner choice. Input/output limits are 500 files, 512 KiB per file and
+16 MiB total; live monitoring is a polling safeguard, not a filesystem quota.
+Restarted effectful phases become unknown and require explicit inspection or
+cancellation. See [runtime provisioning, recovery and limitations](filesystem-policy.md).

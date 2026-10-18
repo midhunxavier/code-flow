@@ -108,12 +108,13 @@ function MainApp() {
 
   return (
     <>
+      <a class="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to main content</a>
       <TopBar />
       <ApprovalInbox />
       <div class={`app ${sideOpen.value ? "with-side" : ""}`} style={`--side-w:${sideWidth.value}px`}>
         <Rail />
         {railOpen.value ? <div class="rail-scrim" aria-hidden="true" onClick={() => (railOpen.value = false)} /> : null}
-        <main>
+        <main id="main-content" tabIndex={-1}>
           {route.value.view === "run" ? (
             <RunView key={route.value.id} id={route.value.id} />
           ) : route.value.view === "review" ? (
@@ -390,7 +391,7 @@ function HealthDialog() {
   const pct = (u?: number) => (u === undefined ? "?" : `${Math.round(u * 100)}%`);
   const when = (t?: number) => (t ? new Date(t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "");
   return (
-    <dialog class="picker small-dialog health" ref={ref}>
+    <dialog class="picker small-dialog health" ref={ref} aria-label="Provider and Git health">
       <div class="picker-inner">
         <div class="picker-head">
           <h3>Health</h3>
@@ -530,7 +531,7 @@ function FolderPicker() {
   );
 
   return (
-    <dialog class="picker" ref={dialog}>
+    <dialog class="picker" ref={dialog} aria-label={adding ? adding.title : "Choose a repository"}>
       <div class="picker-inner">
         <div class="picker-head">
           <h3>{adding ? adding.title : "Choose a repository"}</h3>
