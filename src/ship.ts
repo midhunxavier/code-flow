@@ -1,7 +1,18 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { classifyGitFailure, describeGitFailure, git, gitAtLeast, gitError, withRepoLock, type GitFailure, type GitResult } from "./git.js";
+import { isAbsolute, relative, resolve } from "node:path";
+import {
+  assertWorktree,
+  classifyGitFailure,
+  describeGitFailure,
+  git,
+  gitAtLeast,
+  gitError,
+  withRepoLock,
+  worktreeRoot,
+  type GitFailure,
+  type GitResult,
+} from "./git.js";
 import { createPullRequest } from "./github.js";
 import { logWarn } from "./log.js";
 
@@ -113,12 +124,15 @@ export async function mergeInto(repo: string, branch: string, into: string, mess
   // Nothing else code-flow does may change worktrees or refs meanwhile (the lock isn't re-entrant).
   return withRepoLock(repo, async () => {
     const checkout = await checkedOutAt(repo, into);
-    return checkout ? mergeInCheckout(checkout, branch, into, message) : mergeByRef(repo, branch, into, message);
+    return checkout ? mergeInCheckout(repo, checkout, branch, into, message) : mergeByRef(repo, branch, into, message);
   });
 }
 
-async function mergeInCheckout(checkout: string, branch: string, into: string, message: string): Promise<MergeOutcome> {
+async function mergeInCheckout(repo: string, checkout: string, branch: string, into: string, message: string): Promise<MergeOutcome> {
   if (!existsSync(checkout)) throw new Error(`"${into}" is checked out at ${checkout}, which no longer exists`);
+  // `into` can be a run's own branch, checked out in its worktree (catching a result up with its
+  // pull request's base), where an agent may have broken `.git`.
+  await assertWorktree(repo, { path: checkout, branch: into });
   // Changes to tracked files, staged or not. Untracked files only matter when the merge would
   // overwrite them, and git refuses that itself (told apart below).
   const status = await git(["status", "--porcelain", "--untracked-files=no"], checkout);
@@ -133,7 +147,8 @@ async function mergeInCheckout(checkout: string, branch: string, into: string, m
   const lock = lockPath && resolve(checkout, lockPath);
   if (lock && existsSync(lock)) throw new Error(`Couldn't merge into ${into}: ${describeGitFailure("locked")} (${lock})`);
 
-  const res = await git(["merge", "--no-ff", "-m", message, branch], checkout);
+  // Your hooks run on a merge into your checkout, as on your own merges; not in code-flow's worktrees.
+  const res = await git(["merge", "--no-ff", "-m", message, branch], checkout, { hooks: !isInside(worktreeRoot(repo), checkout) });
   if (res.code === 0) return { ok: true, commit: (await gitOrThrow(["rev-parse", "HEAD"], checkout)).trim(), method: "checkout" };
   let kind = mergeFailure(res);
   const conflicts = kind === "conflict" ? (await git(["diff", "--name-only", "--diff-filter=U"], checkout)).stdout.trim().split("\n").filter(Boolean) : [];
@@ -176,6 +191,11 @@ async function mergeByRef(repo: string, branch: string, into: string, message: s
   }
   return { ok: true, commit: commit.stdout.trim(), method: "ref" };
 }
+
+const isInside = (dir: string, path: string) => {
+  const rel = relative(resolve(dir), resolve(path));
+  return !!rel && !rel.startsWith("..") && !isAbsolute(rel);
+};
 
 /** True while a merge in `checkout` is started but not committed. */
 async function midMerge(checkout: string): Promise<boolean> {
@@ -249,7 +269,8 @@ export async function openPullRequest(
     throw new Error(`"${into}" isn't a branch on GitHub (it may have been merged and deleted), so a pull request can't go into it. Pick another branch${instead}.`);
   }
   const caught = base ? await catchUpWithSquashedBase(repo, branch, into, base) : {};
-  const push = await git(["push", "-u", "origin", branch], repo);
+  // Your pre-push hooks run, as on your own pushes (Git LFS uploads its files in one).
+  const push = await git(["push", "-u", "origin", branch], repo, { hooks: true });
   if (push.code !== 0) {
     const kind = classifyGitFailure(push);
     throw new Error(`Pushing ${branch} failed: ${kind === "other" ? push.stderr.trim().split("\n").slice(-2).join(" ") : describeGitFailure(kind)}`);
@@ -305,6 +326,15 @@ export async function removeWorktrees(
     const failed: string[] = [];
     for (const wt of worktrees) {
       if (existsSync(wt.path)) {
+        // Any branch will do: it's the folder that goes.
+        const unsafe = await assertWorktree(repo, { path: wt.path }).then(
+          () => undefined,
+          (err: Error) => err.message,
+        );
+        if (unsafe) {
+          failed.push(unsafe);
+          continue;
+        }
         let res = await git(["worktree", "remove", "--force", wt.path], repo);
         // A worktree with submodules, or a locked one, takes --force twice.
         if (res.code !== 0) res = await git(["worktree", "remove", "--force", "--force", wt.path], repo);

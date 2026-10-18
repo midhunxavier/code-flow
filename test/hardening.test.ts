@@ -124,6 +124,26 @@ test("a read-only step that commits has its commit undone", async () => {
   assert.ok(!sh(repo, "ls-tree", "-r", "--name-only", branch).includes("committed-in-read.txt"));
 });
 
+test("a read-only step that deletes its worktree's .git fails, says why, and your checkout is untouched", async () => {
+  const yours = newRepo({ "a.txt": "one\n" });
+  writeFileSync(join(yours, "a.txt"), "two\n");
+  commitAllIn(yours, "second");
+  writeFileSync(join(yours, "a.txt"), "my uncommitted edit\n");
+  const head = sh(yours, "rev-parse", "HEAD");
+  const manager = new RunManager(findPattern);
+  const run = await idle(manager, await manager.start({ pattern: findPattern("pipeline")!, task: "DELETES-GIT-IN-READ task", repo: yours, roles: pipeline as Record<string, any>, options: {} }));
+  assert.equal(run.status, "failed");
+  assert.match(run.error ?? "", /Couldn't undo what this read-only step changed: .* isn't the checkout code-flow expects \(its \.git is missing\)/);
+  assert.match(await logs(manager, run), /Plan \(claude\) is read-only, but what it changed couldn't be undone: .*its \.git is missing.*Nothing was changed/);
+  assert.equal(run.steps.find((s) => s.title === "Plan")?.status, "failed");
+  assert.ok(!run.steps.some((s) => s.title === "Implement plan"), "nothing ran after it");
+  // Restoring would have reset your checkout to the worktree's commit and dropped your edit.
+  assert.equal(sh(yours, "rev-parse", "HEAD"), head);
+  assert.equal(sh(yours, "symbolic-ref", "--short", "HEAD"), "main");
+  assert.equal(readFileSync(join(yours, "a.txt"), "utf8"), "my uncommitted edit\n");
+  assert.equal(sh(yours, "status", "--porcelain", "--untracked-files=no"), "M a.txt");
+});
+
 // ---------------------------------------------------------------- evidence
 test("loop: a pass that comes from deleting the failing test isn't accepted until the agent is told; the result is flagged", async () => {
   const tampered = newRepo({

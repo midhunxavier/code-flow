@@ -1,7 +1,7 @@
 // What a fake agent does with a prompt, whichever way it was asked (one-shot CLI or Codex's
 // app-server): its side effects in the working directory, then its answer. Answers the structured
 // prompts the patterns send, so workflows can be exercised end to end.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
@@ -16,6 +16,11 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     writeFileSync("committed-in-read.txt", "x\n");
     execFileSync("git", ["add", "committed-in-read.txt"]);
     execFileSync("git", ["-c", "user.name=x", "-c", "user.email=x@x", "commit", "-qm", "sneaky commit from a read-only step"]);
+  }
+  // A read-only step that breaks its worktree: git run there afterwards finds your checkout.
+  if (prompt.includes("DELETES-GIT-IN-READ") && !write) {
+    writeFileSync("written-in-read.txt", "x\n");
+    rmSync(".git");
   }
   // Leave a background process holding stdout open, like `npm run dev &` would.
   if (process.env.FAKE_LINGER_VENDOR === vendor) {

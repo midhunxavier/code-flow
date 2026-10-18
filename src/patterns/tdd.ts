@@ -186,7 +186,7 @@ export const tddPattern: Pattern = {
       let tamperNote = "";
       if (touched.length) {
         ctx.log(`Builder modified test files: ${touched.join(", ")}; code-flow put them back`, "warn");
-        await ctx.remember("restore-tests", `round ${round}`, () => restorePaths(wt.path, before, touched).then(() => true));
+        await ctx.remember("restore-tests", `round ${round}`, () => restorePaths(ctx.run.repo, wt, before, touched).then(() => true));
         await ctx.commit(wt, `code-flow: restore tests changed by ${builder} (round ${round})`);
         tamperNote = `\nNote: the builder changed ${touched.join(", ")}; code-flow put those test files back as you wrote them.`;
         feedback = `You changed the test files ${touched.join(", ")}. code-flow put them back: the tests are the spec. Make them pass by changing the implementation.\n\n`;
@@ -227,7 +227,7 @@ export const tddPattern: Pattern = {
       for (const f of probeChanges) if (!outside.includes(f) && !testFiles.includes(f)) testFiles.push(f);
       if (outside.length) {
         ctx.log(`Tester changed files outside the tests: ${outside.join(", ")}; code-flow undid that`, "warn");
-        await ctx.remember("restore-implementation", `round ${round}`, () => restorePaths(wt.path, beforeProbe, outside).then(() => true));
+        await ctx.remember("restore-implementation", `round ${round}`, () => restorePaths(ctx.run.repo, wt, beforeProbe, outside).then(() => true));
         await ctx.commit(wt, `code-flow: undo ${tester}'s changes outside the tests (round ${round})`);
       }
       testerStep = probed.outcome;
