@@ -1,5 +1,5 @@
 import { Component } from "preact";
-import { useEffect, useReducer, useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote, Markdown } from "./bits.js";
 import { TriageActions } from "./automations.js";
@@ -36,126 +36,15 @@ import {
 import { ProjectChip } from "./projects.js";
 import { AutoTeam, TeamQuestionCard } from "./team.js";
 import { ProjectMemory } from "./memory.js";
-import { reconcileStreamSnapshot, type StreamSnapshot } from "./run-stream.js";
+import { useRunStream, type RunData } from "./run-feed.js";
 import { followupMinimumCalls, teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
-import type { AgentEvent, AgentId, Artifact, Attachment, CheckedReview, FindingCheck, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
+import type { AgentEvent, AgentId, Artifact, Attachment, CheckedReview, FindingCheck, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
 const modelNote = (run: RunSummary | null, id?: AgentId) =>
   run && id ? [run.agentSettings?.[id]?.model, run.agentSettings?.[id]?.effort].filter(Boolean).join(" · ") : "";
 
-export interface RunData {
-  steps: Map<string, Step>;
-  events: Map<string, AgentEvent[]>;
-  /** Transcript items per step, built incrementally as events arrive (see itemsFor). */
-  built: Map<string, Built>;
-  logs: { ts: number; level: string; text: string }[];
-  seen: Set<number>;
-  /** The event the shown run snapshot, and each step's, came with: an older one never replaces it. */
-  runSeq: number;
-  stepSeq: Map<string, number>;
-  /** The server start the events are from; another one numbers its events afresh. */
-  epoch: string;
-}
-
-const emptyData = (): RunData => ({ steps: new Map(), events: new Map(), built: new Map(), logs: [], seen: new Set(), runSeq: 0, stepSeq: new Map(), epoch: "" });
-
-/**
- * A run's event stream: its snapshot, every step and agent event, kept in `data` (mutated in
- * place; `version` changes as events arrive so components re-render). The run view and the side
- * panel's chat both read a run this way. `onStep` sees each step update as it lands.
- */
-export function useRunStream(id: string, onStep?: (step: Step) => void) {
-  const [run, setRun] = useState<RunSummary | null>(null);
-  /** Why the run can't be shown (it doesn't exist, or the server said no). */
-  const [problem, setProblem] = useState("");
-  const data = useRef<RunData>(emptyData());
-  const [version, bump] = useReducer((x: number) => x + 1, 0);
-  const stepHandler = useRef(onStep);
-  stepHandler.current = onStep;
-
-  useEffect(() => {
-    let source: EventSource | undefined;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let closed = false;
-    let scheduled = false;
-    setProblem("");
-    setRun(null);
-    data.current = emptyData();
-    const connect = () => {
-      source = new EventSource(`/api/runs/${id}/events`);
-      source.onmessage = onMessage;
-      // The browser reconnects by itself after a drop; a refused stream (an unknown run, the
-      // server restarted and this session ended) closes for good: find out why.
-      source.onerror = () => {
-        if (source?.readyState !== EventSource.CLOSED || closed) return;
-        api<RunSummary>(`/api/runs/${id}`).then(
-          () => (retry = setTimeout(connect, 2_000)),
-          (err: ApiError | Error) => {
-            if (err instanceof ApiError && err.status === 404) setProblem("This run doesn't exist. It may have been started by another code-flow, or its files were removed.");
-            else if (err instanceof ApiError) setProblem(`Couldn't load this run: ${err.message}`);
-            else retry = setTimeout(connect, 5_000); // code-flow isn't reachable right now
-          },
-        );
-      };
-    };
-    const onMessage = (msg: MessageEvent<string>) => {
-      const ev = JSON.parse(msg.data) as RunEvent | { type: "hello"; epoch: string; resumed?: boolean; snapshot?: StreamSnapshot };
-      if (ev.type === "hello") {
-        // Not resumed means the whole history follows: start over rather than mix two of them.
-        if (ev.epoch !== data.current.epoch || !ev.resumed) data.current = { ...emptyData(), epoch: ev.epoch };
-        if (ev.snapshot) {
-          data.current = reconcileStreamSnapshot(data.current, ev.snapshot);
-          // The run list is the global feed's (watchAllRuns), as for every other event of this stream.
-          setRun(ev.snapshot.run);
-          for (const step of ev.snapshot.steps) stepHandler.current?.(step);
-          bump(0);
-        }
-        return;
-      }
-      const d = data.current;
-      if (d.seen.has(ev.seq)) return;
-      d.seen.add(ev.seq);
-      if (ev.type === "run") {
-        if (ev.seq < d.runSeq) return;
-        d.runSeq = ev.seq;
-        // The run list is the global feed's (watchAllRuns): this stream numbers its events differently,
-        // and its replayed history would put old snapshots over newer ones there.
-        setRun(ev.run);
-      } else if (ev.type === "step") {
-        if (ev.seq < (d.stepSeq.get(ev.step.id) ?? 0)) return;
-        d.stepSeq.set(ev.step.id, ev.seq);
-        d.steps.set(ev.step.id, ev.step);
-        stepHandler.current?.(ev.step);
-      } else if (ev.type === "agent") {
-        if (!d.events.has(ev.stepId)) d.events.set(ev.stepId, []);
-        d.events.get(ev.stepId)!.push(ev.event);
-      } else if (ev.type === "log") {
-        d.logs.push(ev);
-      }
-      // Batch bursts of events into one render per frame. Browsers pause animation frames in
-      // background tabs and hidden panes, so a timer renders there too (throttled, but it renders).
-      if (!scheduled) {
-        scheduled = true;
-        const flush = () => {
-          if (!scheduled) return;
-          scheduled = false;
-          bump(0);
-        };
-        requestAnimationFrame(flush);
-        setTimeout(flush, 250);
-      }
-    };
-    connect();
-    return () => {
-      closed = true;
-      clearTimeout(retry);
-      source?.close();
-    };
-  }, [id]);
-
-  return { run, problem, data, version };
-}
+export { useRunStream, type RunData } from "./run-feed.js";
 
 export function RunView({ id }: { id: string }) {
   /** The step whose transcript is open; "" when you closed it. */
@@ -1951,7 +1840,7 @@ type Item = (
   | { kind: "tool"; name: string; input: string; output?: string; isError?: boolean }
 ) & { /** bumped when the item changes in place */ v: number };
 
-interface Built {
+export interface Built {
   items: Item[];
   tools: Map<string, Extract<Item, { kind: "tool" }>>;
   /** Events already turned into items. */

@@ -104,7 +104,7 @@ async function truncateIncompleteTail(path: string): Promise<void> {
  * the line to reach the disk (fsync) before the next write: for lines that must survive a
  * power loss, not for every event (`flushWrites` syncs those at shutdown).
  */
-export function appendLine(file: string, value: unknown, opts: { sync?: boolean; strict?: boolean } = {}): Promise<void> {
+export function appendLine(file: string, value: unknown, opts: { sync?: boolean; strict?: boolean; onFailed?: () => void } = {}): Promise<void> {
   const line = `${JSON.stringify(value)}\n`;
   const written = writeQueue
     .then(async () => {
@@ -125,6 +125,7 @@ export function appendLine(file: string, value: unknown, opts: { sync?: boolean;
       else unsynced.add(file);
     });
   const observed = written.catch((err: Error) => {
+      opts.onFailed?.();
       writeHealth.failures++;
       writeHealth.lastError = err.message;
       writeHealth.at = Date.now();
@@ -218,6 +219,32 @@ export async function loadJournal(runId: string, opts: { strict?: boolean } = {}
   }
   const entries = await readJsonLines<{ key: string; value: unknown; v?: number }>(`${runId}.journal.jsonl`);
   return new Map(entries.filter((e) => (e.v ?? 1) <= JOURNAL_VERSION).map((e) => [e.key, e.value]));
+}
+
+/**
+ * Write a file's lines anew: `make` gets them as they are by then (in turn with appends, so none
+ * is lost) and returns the new ones, or undefined to leave the file as it is. The new file is
+ * synced and then renamed over the old one, so a crash leaves one or the other. True if rewritten.
+ */
+export function rewriteLines(file: string, make: (lines: unknown[]) => unknown[] | undefined): Promise<boolean> {
+  const done = writeQueue.then(async () => {
+    const path = join(RUNS_DIR, file);
+    const lines = make(await readJsonLines(file));
+    if (!lines) return false;
+    const temp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
+    try {
+      await appendSynced(temp, lines.map((l) => `${JSON.stringify(l)}\n`).join(""));
+      await rename(temp, path);
+    } catch (err) {
+      await unlink(temp).catch(() => {});
+      throw err;
+    }
+    repaired.add(file);
+    unsynced.delete(file);
+    return true;
+  });
+  writeQueue = done.catch(() => undefined);
+  return done;
 }
 
 /**

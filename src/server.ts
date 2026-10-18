@@ -15,6 +15,8 @@ import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig } from "./repo-config.js";
 import { openFolder } from "./serve.js";
 import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
+import { cursorSeq, StreamHub, TopicError, type TopicSource } from "./stream.js";
+import { replayEvents } from "./run-log.js";
 import { Previews } from "./preview.js";
 import { SnapshotError, takeSnapshot } from "./snapshot.js";
 import { Notes } from "./notes.js";
@@ -729,47 +731,7 @@ function openStream(res: ServerResponse, epoch = EPOCH): { send(event: unknown, 
 
 /** The last event a reconnecting client got (its Last-Event-ID), if it's from this server start. */
 function lastEventSeq(req: IncomingMessage, expectedEpoch = EPOCH): number | undefined {
-  const [epoch, seq] = String(req.headers["last-event-id"] ?? "").split(":");
-  const n = Number(seq);
-  return epoch === expectedEpoch && seq !== "" && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
-}
-
-/**
- * A run's events: its history, then live ones. Live events that arrive while the history is
- * still being read wait for it, so the client never gets an older snapshot after a newer one.
- */
-async function streamEvents(req: IncomingMessage, res: ServerResponse, runId: string) {
-  // Run event sequences are recovered from disk. Their cursor is bound to the run,
-  // rather than the server process; the sidebar's transient feed still uses EPOCH.
-  const epoch = `run-${runId}`;
-  const stream = openStream(res, epoch);
-  const requested = lastEventSeq(req, epoch);
-  let last = 0;
-  const deliver = (e: RunEvent) => {
-    if (e.seq <= last) return;
-    last = e.seq;
-    stream.send(e, e.seq);
-  };
-  let waiting: RunEvent[] | undefined = [];
-  const unsubscribe = manager.subscribe(runId, (e) => (waiting ? waiting.push(e) : deliver(e)));
-  res.on("close", unsubscribe);
-  try {
-    const history = await manager.events(runId);
-    const newest = Math.max(0, history.at(-1)?.seq ?? 0, waiting.at(-1)?.seq ?? 0);
-    const after = requested !== undefined && requested <= newest ? requested : undefined;
-    last = after ?? 0;
-    const current = manager.get(runId)!;
-    const { steps, ...run } = current;
-    // An event may have reached a client before a crash lost its best-effort log write.
-    // The snapshot is the control state as of `newest`, whether or not the client resumes:
-    // a fresh connection then never depends on the event log holding the latest state.
-    stream.send({ type: "hello", epoch, resumed: after !== undefined, snapshot: { run, steps, seq: newest } });
-    for (const event of history) deliver(event);
-  } finally {
-    const live = waiting.sort((a, b) => a.seq - b.seq);
-    waiting = undefined;
-    for (const event of live) deliver(event);
-  }
+  return cursorSeq(String(req.headers["last-event-id"] ?? ""), expectedEpoch);
 }
 
 /**
@@ -786,23 +748,116 @@ manager.subscribeAll((run) => {
 });
 
 /**
- * Every run's status changes, for the sidebar and notifications. A first connection (or one
- * from before a restart, or that missed too much) starts with the whole list, in step with the
- * stream; a reconnect gets the snapshots it missed.
+ * What a window watches (see src/stream.ts). Each starts with what the window needs and then sends
+ * live events; `after` is the cursor (`<epoch>:<seq>`) of the last event it got before reconnecting.
  */
-function streamAllRuns(req: IncomingMessage, res: ServerResponse) {
-  const stream = openStream(res);
-  const after = lastEventSeq(req);
-  const oldest = runFeed.recent[0]?.seq ?? runFeed.seq + 1;
-  if (after !== undefined && after >= oldest - 1 && after <= runFeed.seq) {
-    stream.send({ type: "hello", epoch: EPOCH, seq: runFeed.seq, resumed: true });
-    for (const e of runFeed.recent) if (e.seq > after) stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq);
-  } else {
-    stream.send({ type: "hello", epoch: EPOCH, seq: runFeed.seq, runs: manager.list() }, runFeed.seq);
+const topics: Record<string, TopicSource> = {
+  /**
+   * Every run's status changes, for the sidebar and notifications. A first connection (or one
+   * from before a restart, or that missed too much) starts with the whole list, in step with the
+   * stream; a reconnect gets the snapshots it missed.
+   */
+  runs(_name, after, deliver) {
+    const from = cursorSeq(after, EPOCH);
+    const oldest = runFeed.recent[0]?.seq ?? runFeed.seq + 1;
+    if (from !== undefined && from >= oldest - 1 && from <= runFeed.seq) {
+      deliver({ type: "hello", epoch: EPOCH, seq: runFeed.seq, resumed: true });
+      for (const e of runFeed.recent) if (e.seq > from) deliver({ type: "run", seq: e.seq, run: e.run }, e.seq);
+    } else {
+      deliver({ type: "hello", epoch: EPOCH, seq: runFeed.seq, runs: manager.list() }, runFeed.seq);
+    }
+    const client = (e: { seq: number; run: RunSummary }) => deliver({ type: "run", seq: e.seq, run: e.run }, e.seq);
+    runFeed.clients.add(client);
+    return () => runFeed.clients.delete(client);
+  },
+
+  /**
+   * A run's events. The hello carries the run as it is now (with its steps), so a window never
+   * depends on the log holding the latest state (an event may have reached it before a crash lost
+   * its best-effort write). Then what it takes to show the run (its latest snapshots, every agent
+   * event and log line; see replayEvents), then live ones. Run event numbers are recovered from
+   * disk, so a cursor is the run's (`run-<id>:<seq>`), not this server start's: a window that
+   * reconnects, even to a restarted server, gets only what it missed. Live events that arrive
+   * while the history is still being read wait for it, so the window never gets an older snapshot
+   * after a newer one.
+   */
+  async run(id, after, deliver) {
+    if (!manager.get(id)) throw new TopicError(404, "This run doesn't exist. It may have been started by another code-flow, or its files were removed.");
+    const epoch = `run-${id}`;
+    const requested = cursorSeq(after, epoch);
+    let last = 0;
+    const send = (e: RunEvent) => {
+      if (e.seq <= last) return;
+      last = e.seq;
+      deliver(e, e.seq);
+    };
+    let waiting: RunEvent[] | undefined = [];
+    const stop = manager.subscribe(id, (e) => (waiting ? waiting.push(e) : send(e)));
+    try {
+      const history = await manager.events(id);
+      const newest = Math.max(0, history.at(-1)?.seq ?? 0, waiting.at(-1)?.seq ?? 0);
+      // A cursor past what's on disk (events lost in a crash) starts over.
+      const from = requested !== undefined && requested <= newest ? requested : undefined;
+      last = from ?? 0;
+      const { steps, ...run } = manager.get(id)!;
+      deliver({ type: "hello", epoch, resumed: from !== undefined, snapshot: { run, steps, seq: newest } });
+      for (const event of replayEvents(history.filter((e) => e.seq > last))) send(event);
+    } catch (err) {
+      stop();
+      throw err;
+    } finally {
+      const live = waiting.sort((a, b) => a.seq - b.seq);
+      waiting = undefined;
+      for (const event of live) send(event);
+    }
+    return stop;
+  },
+
+  /** A terminal of the side panel: what it showed so far, then its output as it comes. */
+  shell(id, _after, deliver) {
+    const shell = shells.get(id);
+    if (!shell) throw new TopicError(404, "That terminal is gone (code-flow restarted?)");
+    deliver({ type: "hello", shell, history: shells.history(id) });
+    return shells.subscribe(id, (e: ShellEvent) => deliver(e)) ?? (() => {});
+  },
+};
+const hub = new StreamHub(topics);
+
+/** A window's one stream (see src/stream.ts), opened with what it watches already. */
+function openHubStream(res: ServerResponse, url: URL) {
+  const raw = url.searchParams.get("subs") ?? "[]";
+  if (raw.length > 16_384) throw new HttpError(400, "Too many subscriptions");
+  let subs: unknown;
+  try {
+    subs = JSON.parse(raw);
+  } catch {
+    throw new HttpError(400, "subs must be JSON");
   }
-  const client = (e: { seq: number; run: RunSummary }) => stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq);
-  runFeed.clients.add(client);
-  res.on("close", () => runFeed.clients.delete(client));
+  const stream = openStream(res);
+  const client = hub.open((message) => stream.send(message), subs);
+  res.on("close", () => hub.close(client));
+}
+
+/**
+ * One topic as an event stream of its own, as code-flow served them before src/stream.ts (an
+ * older page still open after an update uses these). Events carry `id: <epoch>:<seq>`, so a
+ * reconnect (with Last-Event-ID) gets only what it missed.
+ */
+async function streamTopic(req: IncomingMessage, res: ServerResponse, kind: "runs" | "run" | "shell", name = "") {
+  const epoch = kind === "run" ? `run-${name}` : EPOCH;
+  const after = lastEventSeq(req, epoch);
+  const stream = openStream(res, epoch);
+  let closed = false;
+  res.on("close", () => (closed = true));
+  try {
+    const stop = await topics[kind]!(name, after === undefined ? undefined : `${epoch}:${after}`, (data, seq) => stream.send(data, kind === "shell" ? undefined : seq));
+    if (closed) stop();
+    else res.on("close", stop);
+  } catch (err) {
+    // As these streams always did: an unknown run or terminal ends the stream.
+    if (err instanceof TopicError) return res.end();
+    throw err;
+  }
 }
 
 /** Which listener a request came in on: this machine's, or the one on your network. */
@@ -863,7 +918,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, { reports, assessment: assessTeamRollout(reports), rollout: await teamEvaluationStore.rollout(autoTeamEnabled()) });
   }
   if (req.method === "GET" && parts[1] === "agents") return send(res, 200, await agentAvailability());
-  if (req.method === "GET" && parts[1] === "events") return streamAllRuns(req, res);
+  if (req.method === "GET" && parts[1] === "events") return streamTopic(req, res, "runs");
+  if (req.method === "GET" && parts[1] === "stream" && !parts[2]) return openHubStream(res, url);
+  if (req.method === "POST" && parts[1] === "stream" && parts[2]) {
+    const body = await readJson(req);
+    if (!hub.update(parts[2], body)) throw new HttpError(404, "That stream has closed; open a new one");
+    return send(res, 200, { ok: true });
+  }
   if (req.method === "GET" && parts[1] === "patterns") return send(res, 200, patterns.map(describePattern));
   if (req.method === "GET" && parts[1] === "fs") {
     const listing = await listDirectories(url.searchParams.get("path") ?? undefined, url.searchParams.get("hidden") === "1")
@@ -896,7 +957,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (req.method === "GET" && parts[1] === "health") {
     // interactiveTerminal: false when there's no python3 for the Terminal's pseudo-terminal (src/shell.ts).
-    return send(res, 200, { busy: manager.busy, writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length, interactiveTerminal: await shells.interactive() });
+    // streams: windows' event streams open, and the topics they watch (src/stream.ts).
+    return send(res, 200, { busy: manager.busy, writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length, interactiveTerminal: await shells.interactive(), streams: hub.stats });
   }
   if (req.method === "GET" && parts[1] === "stats") {
     const since = Number(url.searchParams.get("since")) || undefined;
@@ -1126,13 +1188,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       }
     }
     if (id && !shells.get(id)) throw new HttpError(404, "That terminal is gone (code-flow restarted?)");
-    if (id && req.method === "GET" && parts[3] === "events") {
-      const stream = openStream(res);
-      stream.send({ type: "hello", shell: shells.get(id), history: shells.history(id) });
-      const unsubscribe = shells.subscribe(id, (e: ShellEvent) => stream.send(e));
-      res.on("close", () => unsubscribe?.());
-      return;
-    }
+    if (id && req.method === "GET" && parts[3] === "events") return streamTopic(req, res, "shell", id);
     if (id && req.method === "GET") return send(res, 200, shells.get(id));
     if (id && req.method === "POST" && parts[3] === "input") {
       const body = await readJson(req);
@@ -1197,7 +1253,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const memoryEntries = run.project && projects.get(run.project)?.repos.includes(run.repo) ? await memoryStore.list({ repo: run.repo, projectId: run.project, scope: "project" }, { kind: "user", repo: run.repo, projectId: run.project }) : [];
       return send(res, 200, buildTeamEvaluation(run, { replay: run.recovery, journal, memoryEntries }));
     }
-    if (req.method === "GET" && parts[3] === "events") return await streamEvents(req, res, run.id);
+    if (req.method === "GET" && parts[3] === "events") return await streamTopic(req, res, "run", run.id);
     if (req.method === "POST" && parts[3] === "revise-goal") {
       const body = await readJson(req);
       const revised = await attempt(() => manager.reviseGoal(run.id, { message: body.message, budget: body.budget === undefined ? undefined : { maxSteps: body.budget?.maxSteps, maxInvocations: body.budget?.maxInvocations, maxMinutes: body.budget?.maxMinutes } }));

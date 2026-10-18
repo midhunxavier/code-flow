@@ -1,6 +1,7 @@
 import { computed, signal } from "@preact/signals";
 import { api, ApiError, post, showToast, store } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
+import { subscribe } from "./stream.js";
 import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
 import type { TeamRollout } from "../src/team-evaluation.js";
 import type {
@@ -852,11 +853,9 @@ type FeedMessage =
 
 export function watchAllRuns(notify: (run: RunSummary) => void) {
   onFinished = notify;
-  const connect = () => {
-    const source = new EventSource("/api/events");
-    let dropped = false;
-    source.onmessage = (msg) => {
-      const data = JSON.parse(msg.data) as FeedMessage;
+  subscribe(
+    "runs",
+    (data: FeedMessage) => {
       if (data.type === "hello") {
         // Another server start numbers its events afresh: what we kept from the last one says nothing.
         if (data.epoch !== feed.epoch) feed.runSeq.clear();
@@ -866,7 +865,8 @@ export function watchAllRuns(notify: (run: RunSummary) => void) {
           for (const run of data.runs) feed.runSeq.set(run.id, data.seq);
           applyRunList(data.runs, () => false);
         }
-        feed.seq = Math.max(data.runs ? 0 : feed.seq, data.seq);
+        // Resumed, the snapshots it missed follow, and move it on.
+        if (data.runs) feed.seq = data.seq;
         return;
       }
       const { run, seq } = data;
@@ -881,28 +881,10 @@ export function watchAllRuns(notify: (run: RunSummary) => void) {
         void loadProjects();
       }
       noticeChange(before, run);
-    };
-    // Back after a drop (the browser reconnects by itself): catch up on what the stream may have missed.
-    source.onopen = () => {
-      if (dropped) void refreshRuns();
-      dropped = false;
-    };
-    // A closed stream (the server restarted, or this session ended): find out which, then reconnect.
-    source.onerror = () => {
-      dropped = true;
-      if (source.readyState !== EventSource.CLOSED) return;
-      setTimeout(() => {
-        api("/api/health").then(
-          () => {
-            void refreshRuns();
-            connect();
-          },
-          () => setTimeout(connect, 5_000),
-        );
-      }, 1_000);
-    };
-  };
-  connect();
+    },
+    // Back after a drop: only what the stream missed, when the server still has it.
+    () => (feed.epoch ? `${feed.epoch}:${feed.seq}` : undefined),
+  );
 }
 
 /** A PR watch that gave up and handed the PR back to you. */
