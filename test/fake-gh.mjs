@@ -21,7 +21,14 @@ if (!statePath) {
 const state = JSON.parse(readFileSync(statePath, "utf8"));
 const save = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
 const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
-const print = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+const print = (value) => {
+  const bytes = Buffer.from(JSON.stringify(value) + "\n");
+  // `splitUtf8`: written in two pieces cut inside a multi-byte character, the way a pipe can deliver it.
+  const cut = state.splitUtf8 ? bytes.findIndex((b) => b >= 0xc0) + 1 : 0;
+  if (cut <= 0) return process.stdout.write(bytes);
+  process.stdout.write(bytes.subarray(0, cut));
+  setTimeout(() => process.stdout.write(bytes.subarray(cut)), 50);
+};
 const fail = (message) => {
   process.stderr.write(`${message}\n`);
   process.exit(1);

@@ -1,7 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { brotliCompress, constants as zlib, gzip } from "node:zlib";
 import {
   agentAvailability,
   agentCatalog,
@@ -17,7 +19,7 @@ import { openFolder } from "./serve.js";
 import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
 import { cursorSeq, StreamHub, TopicError, type TopicSource } from "./stream.js";
 import { replayEvents } from "./run-log.js";
-import { Previews } from "./preview.js";
+import { previewTarget, Previews } from "./preview.js";
 import { SnapshotError, takeSnapshot } from "./snapshot.js";
 import { Notes } from "./notes.js";
 import { CODEFLOW_HOME, autoTeamEnabled, envNumber, PORT } from "./config.js";
@@ -137,8 +139,9 @@ function checkOrigin(req: IncomingMessage) {
  * session cookie that only a browser holds.
  *
  * The token lives only in this process's memory. The first browser to open code-flow gets the
- * cookie ("claims" it) — until the moment code-flow first starts an agent, a check, or an app,
- * after which nothing on this machine that isn't already signed in can claim it. Any other
+ * cookie ("claims" it) — until a browser has signed in (by claiming it, with the link or with a
+ * cookie it already has) or code-flow first starts an agent, a check, or an app, whichever comes
+ * first. After that nothing on this machine that isn't already signed in can claim it. Any other
  * browser uses the link printed at startup (`/?token=…`). Scripts can send the token as a
  * Bearer header.
  */
@@ -255,6 +258,86 @@ const PHONE_LOCKED_PAGE = lockedPage(
  */
 const signingInPage = (target: string) =>
   lockedPage("signing in", `<h1>Signing in…</h1><p><a href="${target}">Open code-flow</a></p><script>location.replace(${JSON.stringify(target)})</script>`);
+
+/**
+ * code-flow's pages are never shown inside another page: one elsewhere could lay the app under a
+ * decoy and have you click its buttons. The side panel's Browser never frames this page either:
+ * it frames apps through their previews, each on a port of its own (src/preview.ts), and a panel
+ * popped out is a window of its own.
+ */
+const NO_FRAMES = { "x-frame-options": "DENY", "content-security-policy": "frame-ancestors 'none'" };
+
+/**
+ * The app page, public/index.html: the whole UI in one file, about 800 KB, and a third of that
+ * compressed. It's compressed once per version of the file rather than per request, and read
+ * again once the file changes, so a rebuild shows on the next reload without a restart. The ETag
+ * is a hash of the page: with `no-cache` a reload asks again, and gets a 304 instead of the bundle
+ * when nothing changed.
+ */
+interface AppPage {
+  hash: string;
+  identity: Buffer;
+  br: Buffer;
+  gzip: Buffer;
+}
+let appPage: { version: string; page: Promise<AppPage> } | undefined;
+const compressBrotli = promisify(brotliCompress);
+const compressGzip = promisify(gzip);
+
+async function loadAppPage(): Promise<AppPage> {
+  const file = await stat(indexHtml);
+  const version = `${file.mtimeMs}:${file.size}`;
+  if (appPage?.version !== version) {
+    const page = (async () => {
+      const identity = await readFile(indexHtml);
+      const [br, gz] = await Promise.all([
+        // Quality 9 rather than brotli's 11: about as small, and ready in a fraction of the time after a rebuild.
+        compressBrotli(identity, { params: { [zlib.BROTLI_PARAM_QUALITY]: 9, [zlib.BROTLI_PARAM_SIZE_HINT]: identity.length } }),
+        compressGzip(identity, { level: 9 }),
+      ]);
+      return { hash: createHash("sha256").update(identity).digest("base64url").slice(0, 32), identity, br, gzip: gz };
+    })();
+    appPage = { version, page };
+    // A failed read isn't kept: the next request reads the file again.
+    page.catch(() => appPage?.page === page && (appPage = undefined));
+  }
+  return appPage.page;
+}
+
+/** Whether the request takes this content coding: Accept-Encoding names it (or `*`), and not with q=0. */
+function acceptsCoding(req: IncomingMessage, coding: string): boolean {
+  let any = false;
+  for (const part of String(req.headers["accept-encoding"] ?? "").split(",")) {
+    const [name, ...params] = part.split(";").map((p) => p.trim().toLowerCase());
+    const q = params.find((p) => p.startsWith("q="));
+    const ok = !q || Number(q.slice(2)) > 0;
+    if (name === coding) return ok;
+    if (name === "*") any = ok;
+  }
+  return any;
+}
+
+/**
+ * The app page, compressed when the browser takes it, or a 304 when the copy it has is current.
+ * Each coding has an ETag of its own (they're different bytes). A response that signs the browser
+ * in always has the page, so the cookie isn't left to how a browser treats one on a 304.
+ */
+async function sendAppPage(req: IncomingMessage, res: ServerResponse, headers: Record<string, string>) {
+  const page = await loadAppPage();
+  const coding = acceptsCoding(req, "br") ? "br" : acceptsCoding(req, "gzip") ? "gzip" : undefined;
+  const etag = `"${page.hash}${coding ? `-${coding}` : ""}"`;
+  const common = { ...headers, etag, vary: "Accept-Encoding", "cache-control": "private, no-cache" };
+  const cached = String(req.headers["if-none-match"] ?? "")
+    .split(",")
+    .some((tag) => tag.trim().replace(/^W\//, "") === etag);
+  if (cached && !headers["set-cookie"]) {
+    res.writeHead(304, common);
+    return res.end();
+  }
+  const body = coding ? page[coding] : page.identity;
+  res.writeHead(200, { ...common, "content-type": "text/html; charset=utf-8", "content-length": body.length, ...(coding ? { "content-encoding": coding } : {}) });
+  res.end(body);
+}
 
 /** Run an action whose errors are the user's to fix (shown as 400 with the message). */
 async function attempt<T>(fn: () => Promise<T>): Promise<T> {
@@ -549,7 +632,11 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   };
 }
 
-async function startFromBody(body: Record<string, any>, extra: { trigger?: Run["trigger"]; group?: Run["group"] } = {}): Promise<Run> {
+/**
+ * `untrustedText`: the task carries a webhook caller's text (fenced there already, see
+ * automation.ts), so the run is marked the way the engine marks a Dependabot PR's words.
+ */
+async function startFromBody(body: Record<string, any>, extra: { trigger?: Run["trigger"]; group?: Run["group"]; untrustedText?: boolean } = {}): Promise<Run> {
   const input = await buildStartInput(body);
   return manager.start({ ...input, ...extra }).catch((err: Error) => {
     if (err instanceof UntrustedSourceError) throw Object.assign(new HttpError(409, err.message), { confirm: "allowUntrusted" });
@@ -580,9 +667,9 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
       chunks.push(chunk);
     }
     const raw = Buffer.concat(chunks);
-    let trigger;
+    let caller;
     try {
-      trigger = automations.authorize(parts[1], req.headers, raw);
+      caller = automations.authorize(parts[1], req.headers, raw);
     } catch (err) {
       throw new HttpError((err as { status?: number }).status ?? 401, (err as Error).message);
     }
@@ -597,9 +684,10 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
     if (!wanted) return send(res, 200, { ignored: "This event doesn't start a run" }), true;
     // Answered before the run starts: GitHub gives up on a delivery after 10 seconds. Whether it
     // started, waits for a running run, or why not, shows on the automation.
+    // A signed body is checked for replays too, with or without a delivery id: the id isn't signed.
     const delivery = typeof req.headers["x-github-delivery"] === "string" ? req.headers["x-github-delivery"].slice(0, 100) : undefined;
-    const accepted = automations.accept(trigger.id, wanted, delivery);
-    send(res, "ignored" in accepted ? 200 : 202, "ignored" in accepted ? accepted : { accepted: true, automation: trigger.id });
+    const accepted = automations.accept(caller.trigger.id, wanted, delivery, caller.signed ? raw : undefined);
+    send(res, "ignored" in accepted ? 200 : 202, "ignored" in accepted ? accepted : { accepted: true, automation: caller.trigger.id });
     return true;
   }
   if (parts[0] === "r" && req.method === "GET") {
@@ -870,9 +958,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (via === "lan") {
     checkLanOrigin(req);
     if (req.method === "GET" && url.pathname === "/") {
-      const ok = phoneSignedIn(req);
-      res.writeHead(ok ? 200 : 401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
-      return res.end(ok ? await readFile(indexHtml) : PHONE_LOCKED_PAGE);
+      if (!phoneSignedIn(req)) {
+        res.writeHead(401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...NO_FRAMES, "referrer-policy": "no-referrer" });
+        return res.end(PHONE_LOCKED_PAGE);
+      }
+      return sendAppPage(req, res, { ...NO_FRAMES, "referrer-policy": "no-referrer" });
     }
     // Without phone control, the network listener serves only the phone view and webhooks.
     if (!phoneControl()) throw new HttpError(404, "Not found");
@@ -884,19 +974,21 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     const given = url.searchParams.get("token");
     if (given) {
       if (!tokenMatches(given, auth.token)) throw new HttpError(403, "That link is from an earlier code-flow session; use the one printed when it last started");
+      auth.claimable = false; // signed in: see below
       // Drop the token from the address bar (and history); the cookie carries it from here.
       res.writeHead(302, { location: "/", "set-cookie": sessionCookie(), "cache-control": "no-store", "referrer-policy": "no-referrer" });
       return res.end();
     }
-    const claim = !signedIn(req) && mayClaim(req);
-    if (!signedIn(req) && !claim) {
-      res.writeHead(401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    const signed = signedIn(req);
+    const claim = !signed && mayClaim(req);
+    if (!signed && !claim) {
+      res.writeHead(401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...NO_FRAMES });
       return res.end(LOCKED_PAGE);
     }
-    if (claim) auth.claimable = false;
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...(claim ? { "set-cookie": sessionCookie() } : {}) });
-    res.end(await readFile(indexHtml));
-    return;
+    // You've opened code-flow, however you signed in: from now on nothing else claims the session.
+    // Otherwise any program here could still get a cookie (a `curl /`) until the first run starts.
+    auth.claimable = false;
+    return sendAppPage(req, res, { ...NO_FRAMES, ...(claim ? { "set-cookie": sessionCookie() } : {}) });
   }
 
   if (parts[0] !== "api") throw new HttpError(404, "Not found");
@@ -1153,11 +1245,17 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     // On the host name this page was opened with (checkOrigin allows only code-flow's own), so the app is same-site with it.
     return send(res, 200, await attempt(() => previews.show(String(body.url ?? ""), req.headers.host)));
   }
-  // Snapshot mode: a screenshot of any page, in a headless Chrome of its own (src/snapshot.ts).
+  // Snapshot mode: a screenshot of any page, in a headless Chrome of its own (src/snapshot.ts). It
+  // keeps away from this computer, except a local app at the address the Browser's preview takes
+  // (http://localhost:<port>), never code-flow's own.
   if (parts[1] === "snapshot" && req.method === "POST") {
     const body = await readJson(req);
+    const localApp = (url: URL) => {
+      const target = previewTarget(url.href);
+      return !!target && target.port !== PORT && target.port !== REMOTE_PORT;
+    };
     try {
-      return send(res, 200, await takeSnapshot({ url: String(body.url ?? ""), width: Number(body.width), height: body.height === undefined ? undefined : Number(body.height), full: body.full === true }));
+      return send(res, 200, await takeSnapshot({ url: String(body.url ?? ""), width: Number(body.width), height: body.height === undefined ? undefined : Number(body.height), full: body.full === true }, { localApp }));
     } catch (err) {
       if (err instanceof SnapshotError) throw new HttpError(err.status, err.message);
       throw err;

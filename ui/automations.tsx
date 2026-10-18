@@ -451,10 +451,10 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
     }
   };
   return (
-    <dialog class="picker small-dialog" ref={ref}>
+    <dialog class="picker small-dialog" ref={ref} aria-labelledby="save-automation-title">
       <div class="picker-inner">
         <div class="picker-head">
-          <h3>Save as automation</h3>
+          <h3 id="save-automation-title">Save as automation</h3>
           <div class="help">Runs this task with this team and these settings, unattended. Results wait in your inbox; nothing merges by itself.</div>
         </div>
         <div class="dialog-body">

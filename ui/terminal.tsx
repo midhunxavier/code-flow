@@ -2,7 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
-import { api, baseName, copy, enc, post, showToast, store } from "./lib.js";
+import { api, baseName, copy, enc, post, showToast, store, usePoll } from "./lib.js";
 import { defaultPlace, Menu, MenuItem, MenuTitle, placeName, placesFor, Strip, type StripItem } from "./panel-bits.js";
 import { rememberSide, sideMemo, sideOpen, sideScope, sideTab } from "./state.js";
 import { subscribe } from "./stream.js";
@@ -27,13 +27,8 @@ export function TerminalTab() {
   const [ratio, setRatio] = useState(0.5);
   const panes = useRef<HTMLDivElement>(null);
   const refresh = () => api<ShellInfo[]>("/api/shell").then(setList, () => {});
-  useEffect(() => {
-    void refresh();
-    const poll = () => api<Omit<DevServer, "logs">[]>("/api/serve").then(setApps, () => {});
-    void poll();
-    const timer = setInterval(() => void (refresh(), poll()), 3_000);
-    return () => clearInterval(timer);
-  }, []);
+  // Only while you can see the tab: a closed panel, another tab or a hidden window asks for nothing.
+  usePoll(() => Promise.all([refresh(), api<Omit<DevServer, "logs">[]>("/api/serve").then(setApps, () => {})]), 3_000, [], sideOpen.value && sideTab.value === "terminal");
 
   // The apps this run started with Run app: their logs can be shown like a terminal, an app that
   // exited too (its last output says why).
@@ -567,16 +562,12 @@ function AppLog({ appKey, split, focused, onFocus }: { appKey: string; split: bo
   const [runId, name] = [appKey.slice(0, appKey.indexOf("/")), appKey.slice(appKey.indexOf("/") + 1)];
   const [server, setServer] = useState<DevServer | null>(null);
   const out = useRef<HTMLPreElement>(null);
-  useEffect(() => {
-    let alive = true;
-    const load = () => api<DevServer | null>(`/api/runs/${enc(runId)}/worktrees/${enc(name)}/serve`).then((s) => alive && setServer(s), () => {});
-    void load();
-    const timer = setInterval(load, 2_000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [appKey]);
+  usePoll(
+    (current) => api<DevServer | null>(`/api/runs/${enc(runId)}/worktrees/${enc(name)}/serve`).then((s) => current() && setServer(s), () => {}),
+    2_000,
+    [appKey],
+    sideOpen.value && sideTab.value === "terminal",
+  );
   useEffect(() => {
     const el = out.current;
     if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 200) el.scrollTop = el.scrollHeight;
@@ -587,10 +578,13 @@ function AppLog({ appKey, split, focused, onFocus }: { appKey: string; split: bo
         <span class="th-name" title={server ? `${server.command} in ${server.cwd}` : undefined}>
           ▶ {server ? `${server.command} · :${server.port}` : "app"}
         </span>
-        <span class="help">{server?.status === "exited" ? `exited${server.exitCode == null ? "" : ` with ${server.exitCode}`}` : "read-only log"}</span>
+        {/* Read out when the app exits; the log itself isn't (it's replaced every poll). */}
+        <span class="help" role="status">
+          {server?.status === "exited" ? `exited${server.exitCode == null ? "" : ` with ${server.exitCode}`}` : "read-only log"}
+        </span>
       </div>
       <div class="term">
-        <pre class="term-out" ref={out} aria-live="polite" aria-label="App log">
+        <pre class="term-out" ref={out} tabIndex={0} aria-label="App log">
           {server?.logs.length ? server.logs.join("\n") : <span class="help">{server ? "No output yet." : "Loading…"}</span>}
         </pre>
       </div>

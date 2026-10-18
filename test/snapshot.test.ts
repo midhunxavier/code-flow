@@ -17,7 +17,8 @@ const home = mkdtempSync(join(tmpdir(), "codeflow-test-snapshot-home-"));
 const temp = mkdtempSync(join(tmpdir(), "codeflow-test-snapshot-tmp-"));
 process.env.CODEFLOW_HOME = home;
 process.env.TMPDIR = temp;
-const { findChrome, SnapshotError, snapshotUrl, takeSnapshot } = await import("../src/snapshot.js");
+const { addressKind, findChrome, refusal, SnapshotError, snapshotUrl, takeSnapshot } = await import("../src/snapshot.js");
+type SnapshotRequest = import("../src/snapshot.js").SnapshotRequest;
 // After the process groups' own exit hook (registered by that import), which writes into the home.
 process.once("exit", () => {
   for (const dir of [home, temp]) rmSync(dir, { recursive: true, force: true });
@@ -77,6 +78,12 @@ async function serve(handle: (req: IncomingMessage, res: ServerResponse) => void
   return { server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/` };
 }
 const page = (html: string) => serve((_req, res) => res.writeHead(200, { "content-type": "text/html" }).end(html));
+/**
+ * These tests' pages are on 127.0.0.1, which snapshots keep away from unless it's a local app the
+ * Browser shows (the server says which): here, any http://127.0.0.1 address is one.
+ */
+const snap = (request: SnapshotRequest) => takeSnapshot(request, { localApp: (u) => u.protocol === "http:" && u.hostname === "127.0.0.1" });
+const refused = (status: number, message: RegExp) => (e: unknown) => e instanceof SnapshotError && e.status === status && message.test(e.message);
 
 test("snapshot requests: http(s) only, a sensible size, and a clear word when there's no Chrome", async () => {
   assert.equal(snapshotUrl("https://example.com/a?b=1"), "https://example.com/a?b=1");
@@ -89,18 +96,82 @@ test("snapshot requests: http(s) only, a sensible size, and a clear word when th
   assert.equal(findChrome({ CODEFLOW_CHROME: tmpdir() }), undefined, "nor one that's a folder (an .app bundle, say)");
 });
 
+test("snapshots keep away from this computer and link-local addresses, every address a name has; private networks are fine", async () => {
+  for (const ip of ["127.0.0.1", "127.8.9.10", "0.0.0.0", "::1", "::", "::ffff:127.0.0.1", "::ffff:7f00:1", "[::1]"]) assert.equal(addressKind(ip), "loopback", ip);
+  for (const ip of ["169.254.169.254", "169.254.0.1", "fe80::1", "fe80::1%en0", "febf::1", "fd00:ec2::254", "::ffff:169.254.169.254"]) assert.equal(addressKind(ip), "link-local", ip);
+  for (const ip of ["192.168.1.20", "10.0.0.5", "172.16.3.4", "100.64.0.1", "fd12:3456::1", "8.8.8.8", "2606:4700::1111", "::ffff:192.168.1.20"]) assert.equal(addressKind(ip), undefined, ip);
+
+  // Refused before any Chrome starts: there's none here, and the answer is still 403, not 501.
+  process.env.CODEFLOW_CHROME = "/no/such/chrome";
+  try {
+    for (const url of [
+      "http://localhost:3000/",
+      "http://127.0.0.1:9/",
+      "http://[::1]:8080/",
+      "http://0.0.0.0/",
+      "http://2130706433/", // 127.0.0.1, written as a number
+      "http://[::ffff:127.0.0.1]/",
+      "http://app.localhost/", // Chrome answers *.localhost itself
+      "https://localhost./",
+    ]) {
+      await assert.rejects(takeSnapshot({ url, width: 800 }), refused(403, /is this computer, and snapshots don't open those\. For an app running here, open its http:\/\/localhost address in the Browser tab/), url);
+    }
+    for (const url of ["http://169.254.169.254/latest/meta-data/", "http://[fe80::1]/"]) {
+      await assert.rejects(takeSnapshot({ url, width: 800 }), refused(403, /is a link-local address \(where cloud machines keep their metadata service\)/), url);
+    }
+    // A local app the server vouches for is let through (here to the missing Chrome); code-flow's own port isn't one.
+    const localApp = (u: URL) => u.hostname === "localhost" && u.port !== "4317";
+    await assert.rejects(takeSnapshot({ url: "http://localhost:5173/", width: 800 }, { localApp }), refused(501, /need Google Chrome/));
+    await assert.rejects(takeSnapshot({ url: "http://localhost:4317/", width: 800 }, { localApp }), refused(403, /localhost:4317 is this computer/));
+  } finally {
+    delete process.env.CODEFLOW_CHROME;
+  }
+
+  // A host name is checked by every address it has, not just the first.
+  const names: Record<string, string[]> = { "rebind.example": ["93.184.215.14", "127.0.0.1"], "meta.example": ["169.254.169.254"], "staging.lan": ["192.168.1.20"], "both.example": ["::1", "fe80::2"] };
+  const lookup = async (name: string) => names[name] ?? Promise.reject(Object.assign(new Error("not found"), { code: "ENOTFOUND" }));
+  assert.deepEqual(await refusal(new URL("https://rebind.example/"), undefined, lookup), { host: "rebind.example", kind: "loopback" });
+  assert.deepEqual(await refusal(new URL("http://meta.example:8080/x"), undefined, lookup), { host: "meta.example:8080", kind: "link-local" });
+  assert.deepEqual(await refusal(new URL("http://both.example/"), undefined, lookup), { host: "both.example", kind: "link-local" }, "the worse of the two");
+  assert.equal(await refusal(new URL("http://staging.lan/"), undefined, lookup), undefined, "LAN staging sites are fine");
+  await assert.rejects(refusal(new URL("https://nowhere.example/"), undefined, lookup), refused(502, /nowhere\.example wasn't found \(ENOTFOUND\)/), "a name that can't be checked isn't opened");
+});
+
+test("a page can't take a snapshot on to this computer: a redirect there fails, and what it would load from there is never asked for", { skip: noChrome }, async () => {
+  let reached = 0;
+  const inside = await serve((_req, res) => {
+    reached++;
+    res.writeHead(200, { "content-type": "text/html" }).end("<title>Inside</title>");
+  });
+  const insidePort = new URL(inside.url).port;
+  const there = `http://localhost:${insidePort}`; // this computer by another name than the one the page is allowed on
+  const outside = await serve((req, res) => {
+    if (req.url === "/") return void res.writeHead(302, { location: `${there}/secret` }).end();
+    res.writeHead(200, { "content-type": "text/html" }).end(`<title>Outside</title><img src="${there}/pixel.png"><iframe src="${there}/frame"></iframe><script>fetch("${there}/api").catch(() => {})</script>`);
+  });
+  try {
+    await assert.rejects(snap({ url: outside.url, width: 800 }), refused(403, new RegExp(`it went on to localhost:${insidePort}, which is this computer, and snapshots don't open those`)));
+    const shot = await snap({ url: `${outside.url}page`, width: 800 });
+    assert.equal(shot.title, "Outside", "the page itself is fine");
+    assert.equal(reached, 0, "nothing reached the address on this computer");
+  } finally {
+    inside.server.close();
+    outside.server.close();
+  }
+});
+
 test("a snapshot of the viewport, and a whole-page one that has all of the page", { skip: noChrome }, async () => {
   const bands = `<div style="height:600px;background:#f00"></div><div style="height:600px;background:#0f0"></div><div style="height:600px;background:#00f"></div>`;
   const { server, url } = await page(`<html><head><title>Snap</title><meta name="viewport" content="width=device-width"></head><body style="margin:0">${bands}</body></html>`);
   try {
-    const view = await takeSnapshot({ url, width: 390, height: 700 });
+    const view = await snap({ url, width: 390, height: 700 });
     assert.deepEqual([view.width, view.height, view.title, view.url], [390, 700, "Snap", url]);
     const shown = decode(view.image);
     assert.deepEqual([shown.width, shown.height], [390, 700]);
     near(shown.px(195, 300), RED, "the top of the viewport");
     near(shown.px(195, 650), GREEN, "the bottom of the viewport");
 
-    const full = await takeSnapshot({ url, width: 390, height: 700, full: true });
+    const full = await snap({ url, width: 390, height: 700, full: true });
     const whole = decode(full.image);
     assert.deepEqual([whole.width, whole.height], [full.width, full.height]);
     assert.deepEqual([full.width, full.height], [390, 1800]);
@@ -117,7 +188,7 @@ test("a whole-page snapshot at phone width of a page made for desktops is the zo
   const half = (colour: string) => `<div style="width:490px;height:3000px;background:${colour}"></div>`;
   const { server, url } = await page(`<html><body style="margin:0;width:980px;display:flex">${half("#f00")}${half("#00f")}</body></html>`);
   try {
-    const full = await takeSnapshot({ url, width: 390, height: 844, full: true });
+    const full = await snap({ url, width: 390, height: 844, full: true });
     const whole = decode(full.image);
     assert.deepEqual([whole.width, whole.height], [full.width, full.height]);
     assert.ok(Math.abs(full.width - 390) <= 1, `as wide as the phone: ${full.width}`);
@@ -132,7 +203,7 @@ test("a whole-page snapshot at phone width of a page made for desktops is the zo
   const zoomed = await page(`<html><head><meta name="viewport" content="width=device-width, initial-scale=1.5"></head><body style="margin:0"><div style="height:2000px;background:#f00"></div></body></html>`);
   try {
     for (const full of [false, true]) {
-      const shot = await takeSnapshot({ url: zoomed.url, width: 412, height: 800, full });
+      const shot = await snap({ url: zoomed.url, width: 412, height: 800, full });
       const png = decode(shot.image);
       assert.deepEqual([png.width, png.height], [shot.width, shot.height], `full: ${full}`);
     }
@@ -153,7 +224,7 @@ test("snapshots take turns: one Chrome at a time", { skip: noChrome }, async () 
     }, 300);
   });
   try {
-    const [a, b] = await Promise.all([takeSnapshot({ url, width: 800 }), takeSnapshot({ url, width: 600 })]);
+    const [a, b] = await Promise.all([snap({ url, width: 800 }), snap({ url, width: 600 })]);
     assert.deepEqual([a.width, b.width], [800, 600]);
     assert.equal(most, 1, "the second waited for the first");
   } finally {
@@ -162,12 +233,12 @@ test("snapshots take turns: one Chrome at a time", { skip: noChrome }, async () 
 });
 
 test("a page that can't be reached, an alert(), and a Chrome that dies each end the snapshot, and the next one still works", { skip: noChrome }, async () => {
-  await assert.rejects(takeSnapshot({ url: "http://127.0.0.1:9/", width: 800 }), (e: unknown) => e instanceof SnapshotError && e.status === 502 && /Couldn't open/.test(e.message));
+  await assert.rejects(snap({ url: "http://127.0.0.1:9/", width: 800 }), (e: unknown) => e instanceof SnapshotError && e.status === 502 && /Couldn't open/.test(e.message));
 
   const { server, url } = await page("<title>Hello</title><p>hi</p><script>alert('welcome'); confirm('sure?')</script>");
   try {
     const started = Date.now();
-    const shot = await takeSnapshot({ url, width: 800 });
+    const shot = await snap({ url, width: 800 });
     assert.equal(shot.title, "Hello");
     assert.ok(Date.now() - started < 15_000, `the dialogs were answered, not waited out: ${Date.now() - started}ms`);
   } finally {
@@ -182,18 +253,18 @@ test("a page that can't be reached, an alert(), and a Chrome that dies each end 
     process.env.CODEFLOW_CHROME = fake;
     try {
       const started = Date.now();
-      await assert.rejects(takeSnapshot({ url: "https://example.com/", width: 800 }), (e: unknown) => e instanceof SnapshotError && e.status === 502 && /exit 3/.test(e.message));
+      await assert.rejects(snap({ url: "http://127.0.0.1:9/", width: 800 }), (e: unknown) => e instanceof SnapshotError && e.status === 502 && /exit 3/.test(e.message));
       assert.ok(Date.now() - started < 10_000, `said so at once: ${Date.now() - started}ms`);
       // A file that isn't a program: spawn throws on macOS; Linux runs it with /bin/sh, which fails.
       writeFileSync(fake, "garbage, not a program\n");
-      await assert.rejects(takeSnapshot({ url: "https://example.com/", width: 800 }), (e: unknown) => e instanceof SnapshotError && e.status === 502 && /Couldn't start|exit 127/.test(e.message));
+      await assert.rejects(snap({ url: "http://127.0.0.1:9/", width: 800 }), (e: unknown) => e instanceof SnapshotError && e.status === 502 && /Couldn't start|exit 127/.test(e.message));
     } finally {
       delete process.env.CODEFLOW_CHROME;
     }
   }
   const again = await page("<title>Again</title>");
   try {
-    assert.equal((await takeSnapshot({ url: again.url, width: 600 })).title, "Again");
+    assert.equal((await snap({ url: again.url, width: 600 })).title, "Again");
   } finally {
     again.server.close();
   }
@@ -208,7 +279,7 @@ test("a page whose renderer crashes ends the snapshot at once, not at the timeou
   });
   try {
     const started = Date.now();
-    const shot = takeSnapshot({ url, width: 800 });
+    const shot = snap({ url, width: 800 });
     for (let i = 0; i < 100 && !asked; i++) await new Promise((r) => setTimeout(r, 100));
     assert.ok(asked, "the page loaded far enough to ask for its image");
     // Every renderer of the Chrome this snapshot started (its profile is in this test's temp folder),

@@ -17,7 +17,7 @@ npm start            # http://localhost:4317
 
 ### Signing in
 
-The first browser that opens code-flow is signed in automatically. That stays possible until code-flow first starts an agent, a check or an app. After that, other browsers need the link code-flow prints when it starts (`Open http://localhost:4317/?token=…`).
+The first browser that opens code-flow is signed in automatically. That stays possible until a browser signs in (with or without the link) or code-flow first starts an agent, a check or an app. After that, other browsers need the link code-flow prints when it starts (`Open http://localhost:4317/?token=…`).
 
 The session token exists only in the server's memory, so the agents code-flow runs can't use its API, even sandboxed ones with network access. A restart starts a new session, and reloading the page signs you in again.
 

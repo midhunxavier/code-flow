@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { cp, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -21,7 +21,7 @@ import { CODEFLOW_HOME, MAX_DIFF_CHARS, STEP_IDLE_MS, STEP_TIMEOUT_MS, timerMs }
 import { logInfo, logWarn } from "./log.js";
 import { cantRunMessage, cantRunReason, isPlainTestCommand, proofOutcome, reproOutcome, runCheck, type CheckResult, type Container } from "./checks.js";
 import { commandExists } from "./adapters/process.js";
-import { contextPrompt, copyMessageFiles, hasStagedFiles, prepareContext, stageMessageFiles, type ContextInput, type RunContext } from "./context.js";
+import { contextPrompt, copyMessageFiles, copyStagedContext, hasStagedFiles, prepareContext, stageMessageFiles, type ContextInput, type RunContext } from "./context.js";
 import { fitDiff } from "./diff.js";
 import { writeFileInside } from "./fs.js";
 import { describeIssues, inspectChanges, isTestFile, isTestSide, unverifiedIssue, type IntegrityIssue } from "./integrity.js";
@@ -39,6 +39,7 @@ import {
   diffStat,
   ensureCodeflowExcludes,
   git,
+  gitError,
   isAncestor,
   isClean,
   isMerging,
@@ -282,6 +283,8 @@ export function reproProblem(repro: Repro): string | undefined {
 
 /** Scratch checkouts code-flow runs tests in (see TeamContext.scratchAt). */
 type Scratch = "proof" | "repro";
+/** Their folders in the run's folder, and the base commit's throwaway checkout's (see `checkOnBase`). */
+const SCRATCH_DIRS = [".proof-check", ".repro-check", ".base-check"];
 
 /** Files that say which dependencies to install: when one changes, a scratch checkout is set up again. */
 const DEPENDENCY_FILE =
@@ -442,7 +445,8 @@ export interface Note {
   memberId?: string;
   /** User answer to this team question; consumed by its dedicated waiter. */
   requestId?: string;
-  status: "queued" | "delivered";
+  /** undelivered: the run finished before any turn took it; it's never handed to a later one. */
+  status: "queued" | "delivered" | "undelivered";
   /** midTurn: it went into that step's turn while it ran, not into the turn's opening prompt. */
   deliveredTo?: { stepId: string; agent: AgentId; midTurn?: boolean };
   /** No turn took it before the chat's turn ended, so it became this follow-up (your next message). */
@@ -507,6 +511,8 @@ export interface CouncilFinding {
   raisedBy: AgentId[];
   /** What code-flow found running its repro (see FindingCheck). */
   check?: FindingCheck;
+  /** The chair left out (or rated lower) this confirmed finding, and code-flow put it back: from whom, and why. */
+  restored?: string;
 }
 
 export interface CouncilReview {
@@ -816,11 +822,15 @@ export class TeamContext {
   }
 
   private clock?: { timer?: ReturnType<typeof setTimeout>; remaining: number; startedAt: number };
+  /** Why the clock is paused right now (you deciding, the run only waiting for slots): it runs when nothing holds it. */
+  private clockHolds = 0;
+  /** This run's turns and commands waiting for a slot, holding one, and whether that paused the clock. */
+  private readonly slotUse = { waiting: 0, holding: 0, paused: false };
 
-  /** Start the run's time budget; it pauses while the run waits for you. */
+  /** Start the run's time budget; it pauses while the run waits for you, or only for slots. */
   startClock(minutes: number) {
     this.clock = { remaining: minutes * 60_000, startedAt: Date.now() };
-    this.armClock();
+    if (!this.clockHolds) this.armClock();
   }
   private armClock() {
     if (!this.clock) return;
@@ -829,14 +839,53 @@ export class TeamContext {
     this.clock.timer = setTimeout(() => this.stop(`time limit (${this.run.loop.maxMinutes} min)`), timerMs(this.clock.remaining));
     this.clock.timer.unref?.();
   }
+  /** Pause the clock until a matching `resumeClock`; pauses nest (a checkpoint while a branch waits for a slot). */
   pauseClock() {
-    if (!this.clock?.timer) return;
+    if (this.clockHolds++ || !this.clock?.timer) return;
     clearTimeout(this.clock.timer);
     this.clock.timer = undefined;
     this.clock.remaining -= Date.now() - this.clock.startedAt;
   }
   resumeClock() {
-    if (this.clock && !this.clock.timer) this.armClock();
+    if (this.clockHolds > 0) this.clockHolds--;
+    if (!this.clockHolds && this.clock && !this.clock.timer) this.armClock();
+  }
+
+  /**
+   * A slot from `slots`, or undefined when the run stops first. While everything of this run that
+   * wants one waits (a run queued behind others, a sweep's runs), its time budget is paused:
+   * waiting its turn on this machine isn't time the run took. A wait beside a turn that runs counts.
+   */
+  private async takeSlot(slots: Slots): Promise<(() => void) | undefined> {
+    const queued = slots.busy >= slots.size;
+    if (queued) this.slotUse.waiting++;
+    this.slotClock();
+    let release: (() => void) | undefined;
+    try {
+      release = await slots.acquire(this.signal).catch(() => undefined);
+    } finally {
+      if (queued) this.slotUse.waiting--;
+    }
+    if (release) this.slotUse.holding++;
+    this.slotClock();
+    if (!release) return undefined;
+    const free = release;
+    let given = false;
+    return () => {
+      if (given) return;
+      given = true;
+      free();
+      this.slotUse.holding--;
+      this.slotClock();
+    };
+  }
+
+  private slotClock() {
+    const onlyWaiting = this.slotUse.waiting > 0 && this.slotUse.holding === 0;
+    if (onlyWaiting === this.slotUse.paused) return;
+    this.slotUse.paused = onlyWaiting;
+    if (onlyWaiting) this.pauseClock();
+    else this.resumeClock();
   }
   stopClock() {
     if (this.clock?.timer) clearTimeout(this.clock.timer);
@@ -1317,9 +1366,11 @@ export class TeamContext {
    * instead. Keys are kind + identity + occurrence, which stay stable across parallel
    * branches as long as identities differ (titles, worktree names). `valid` can reject a
    * recorded result that no longer applies (e.g. a check recorded for different code); the
-   * step is then run again and its new result recorded.
+   * step is then run again and its new result recorded. `keep` can decline to record a result
+   * that isn't the step's own (a turn that failed because its CLI was signed out): it's
+   * returned, and a resumed run takes the step again.
    */
-  async remember<T>(kind: string, identity: string, fn: () => Promise<T>, valid?: (recorded: T) => boolean | Promise<boolean>): Promise<T> {
+  async remember<T>(kind: string, identity: string, fn: () => Promise<T>, valid?: (recorded: T) => boolean | Promise<boolean>, keep?: (value: T) => boolean): Promise<T> {
     const base = `${kind}:${identity}`;
     const n = (this.counters.get(base) ?? 0) + 1;
     this.counters.set(base, n);
@@ -1335,7 +1386,7 @@ export class TeamContext {
     const value = await fn();
     // On disk before the pattern goes on: killed right after, a resume replays this step
     // instead of running (and paying for) it again.
-    await this.persist(key, value);
+    if (!keep || keep(value)) await this.persist(key, value);
     return value;
   }
 
@@ -1597,11 +1648,9 @@ export class TeamContext {
         });
         this.run.usage.checks++;
         const outcome = reproOutcome(result);
-        // Run with the check, a test the runner never picked up passes too: that refutes nothing.
-        const without = this.lastChecks.get(wt.name);
-        if (outcome.status === "refuted" && repro.path && repro.command === this.run.loop.check && without?.head === head && result.tests !== undefined && without.tests !== undefined && result.tests <= without.tests) {
-          return make("unverified", `\`${repro.command}\` ran ${result.tests} tests with it, as many as without, so it didn't run ${repro.path}`);
-        }
+        // A test the runner never picked up passes too: that refutes nothing.
+        const missed = outcome.status === "refuted" && repro.path ? await this.reproMissed(wt, head, checkout, repro, result, title) : undefined;
+        if (missed) return make("unverified", missed);
         return make(outcome.status, outcome.detail);
       } catch (err) {
         if (this.signal.aborted || err instanceof CancelledError) throw err;
@@ -1609,6 +1658,37 @@ export class TeamContext {
       }
     };
     return this.inScratch("repro", run);
+  }
+
+  /**
+   * Why a passing run of a reviewer's test file doesn't show the test ran (undefined: it does).
+   * With the run's check: as many tests ran with it as without (the check's last run here). With
+   * the reviewer's own command: no tests ran; or, when the command doesn't name the test, as many
+   * ran as without it (run once more, the test taken out); or, when the runner doesn't say how many
+   * ran, nothing in its output mentions the test.
+   */
+  private async reproMissed(wt: Worktree, head: string, checkout: Worktree, repro: Repro, result: CheckResult, title: string): Promise<string | undefined> {
+    const name = basename(repro.path);
+    const mentions = (text: string) => text.includes(repro.path) || text.includes(name);
+    const asMany = `\`${repro.command}\` ran ${result.tests} tests with it, as many as without, so it didn't run ${repro.path}`;
+    if (repro.command === this.run.loop.check) {
+      const without = this.lastChecks.get(wt.name);
+      return without?.head === head && result.tests !== undefined && without.tests !== undefined && result.tests <= without.tests ? asMany : undefined;
+    }
+    if (result.tests === 0) return `\`${repro.command}\` ran no tests, so it didn't run ${repro.path}`;
+    if (mentions(repro.command)) return undefined;
+    if (result.tests === undefined) {
+      return mentions(result.output) ? undefined : `\`${repro.command}\` doesn't say how many tests it ran, and its output doesn't mention ${repro.path}, so it may not have run it`;
+    }
+    // Taken out by git (the test's run may have left anything in the checkout, symlinks too), and
+    // a test file the reviewer replaced comes back as it was.
+    await discardChanges(this.run.repo, checkout, head);
+    const without = await this.command("check", `${title} (without the test)`, checkout, repro.command, (r) => ({
+      ok: r.tests !== undefined,
+      text: r.tests !== undefined ? `${r.tests} tests without the reviewer's test` : "Couldn't count the tests without it",
+    }));
+    this.run.usage.checks++;
+    return without.tests !== undefined && result.tests <= without.tests ? asMany : undefined;
   }
 
   /** Run `fn` when the scratch checkout `kind` is free: one checkout serves every run of its kind. */
@@ -1717,7 +1797,7 @@ export class TeamContext {
       if (this.run.lockdown && !container && !this.run.lockdownOnHost) {
         throw new Error(`${this.run.lockdown}, and Docker isn't available, so code-flow won't run \`${command}\` on this machine`);
       }
-      release = await checkSlots.acquire(this.signal).catch(() => undefined);
+      release = await this.takeSlot(checkSlots);
       result = release
         ? await runCheck(wt.path, command, { timeoutMs: timerMs(this.run.loop.checkTimeoutMin * 60_000, 1_000), signal: this.signal, container })
         : { command, ok: false, exitCode: null, timedOut: false, durationMs: 0, output: "Cancelled before it started" };
@@ -1823,8 +1903,11 @@ export class TeamContext {
    */
   private async prepareWorktree(wt: Worktree) {
     if (hasStagedFiles(this.run.context)) {
-      // Git-excluded, so it is never committed and doesn't count as a change.
-      await cp(join(this.run.worktreeDir, STAGE_DIR), join(wt.path, CONTEXT_DIR), { recursive: true });
+      // Git-excluded, so it is never committed and doesn't count as a change. Never written through
+      // a symbolic link: a re-attached worktree holds whatever the agents committed.
+      for (const r of await copyStagedContext(join(this.run.worktreeDir, STAGE_DIR), wt.path)) {
+        this.manager.log(this.run.id, `Didn't copy ${r.path} into ${wt.name}: ${r.why}`, "warn");
+      }
     }
     if (this.run.loop.copy?.length) {
       const { copied, refused } = await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
@@ -1847,7 +1930,7 @@ export class TeamContext {
       "commit",
       `${wt.name}|${message}`,
       async () => {
-        const sha = (await commitAll(this.run.repo, wt, message)) ?? (await this.recoverCommit(wt, message));
+        const sha = (await commitAll(this.run.repo, wt, message, (warning) => this.log(warning, "warn"))) ?? (await this.recoverCommit(wt, message));
         if (sha) this.log(`Committed ${sha.slice(0, 8)} on ${wt.branch}: ${message}`);
         return sha;
       },
@@ -1890,6 +1973,21 @@ export class TeamContext {
   }
 
   /**
+   * The commit to read `wt`'s changes at. Replaying, the worktree on disk already has every later
+   * commit: reading HEAD would show this pass the work of steps it hasn't reached yet, and a
+   * pattern acting on that (undoing what looks like a tester's change to the code) would undo
+   * that work for real. So it reads at this pass's commit until the replay is over.
+   */
+  private readAt(wt: Worktree): string {
+    return (this.replaying && this.heads.get(wt.name)) || "HEAD";
+  }
+
+  /** Files changed in `wt` since `from`, as the pattern's pass through it sees them (see `readAt`). */
+  async changedFiles(wt: Worktree, from: string): Promise<string[]> {
+    return changedFiles(await this.gitAt(wt), from, this.readAt(wt));
+  }
+
+  /**
    * Changes since `from` that could make the check pass without fixing anything: deleted or
    * skipped tests, weakened assertions, a changed test script or config, fewer tests running.
    * Fewer tests is told from the check's counts at `from` and at the current commit, so check
@@ -1901,7 +1999,7 @@ export class TeamContext {
     const before = this.testsAt.get(from) ?? counts?.first;
     const after = (head ? this.testsAt.get(head) : undefined) ?? counts?.last;
     return this.gitAt(wt)
-      .then((at) => inspectChanges(at, from, "HEAD", { check: this.run.loop.check, tests: { before, after } }))
+      .then((at) => inspectChanges(at, from, this.readAt(wt), { check: this.run.loop.check, tests: { before, after } }))
       .catch((err: Error) => [unverifiedIssue(err.message)]); // not knowing isn't the same as no issues
   }
 
@@ -1968,6 +2066,12 @@ export class TeamContext {
     if (params.resume?.memberId && params.resume.memberId !== params.memberId) throw new Error("Cannot resume another member's private session");
     if (params.memberId && params.resume?.worktree && params.resume.worktree !== params.cwd.name) throw new Error("A member changing workspaces must start a fresh session with its checkpoint");
     if (params.settings) params = { ...params, settings: validateAgentSettings({ [params.agent]: params.settings })[params.agent] };
+    // A turn that may fail (a race contestant, a worker) and failed because its CLI was signed out
+    // or stalled says nothing about the task: recorded, every resume would replay that failure, and
+    // the race would go on judging one candidate fewer. It's taken again instead. (A usage limit
+    // stops the run before anything is recorded.) An Auto team keeps its failures: its later
+    // decisions were made from them, and it retries a failed task as a new attempt.
+    const keep = (outcome: StepOutcome) => outcome.ok || !!this.run.team || !UNRECORDED.has(failureKind(outcome, !!params.resume));
     return this.remember("ask", `${params.role}|${params.agent}|${params.cwd.name}|${params.identity ?? params.title}`, async () => {
       const member = params.memberId;
       const workspace = params.cwd.path;
@@ -1984,7 +2088,7 @@ export class TeamContext {
         this.activeWorkspaces.delete(workspace);
         if (session) this.activeSessions.delete(session);
       }
-    });
+    }, undefined, keep);
   }
 
   private async askLive(params: AskParams): Promise<StepOutcome> {
@@ -2033,7 +2137,7 @@ export class TeamContext {
     const slot: AgentSlot = {
       take: async () => {
         if (agentSlots.busy >= agentSlots.size) onEvent({ kind: "status", text: `Waiting for a free agent slot (${agentSlots.size} agents run at once; CODEFLOW_MAX_AGENTS)` });
-        release = await agentSlots.acquire(this.signal).catch(() => undefined);
+        release = await this.takeSlot(agentSlots);
         return !!release;
       },
       give: () => {
@@ -2090,8 +2194,10 @@ export class TeamContext {
     // Your notes didn't land in a turn that finished: they go to the next one (its retry, or the resumed run).
     if (step.status !== "done") this.manager.requeueNotes(this.run, step.id);
 
-    // Out of plan usage: retrying won't help for hours. Stop (resumable) instead of failing.
-    if (usageLimit && !params.allowFailure && !this.signal.aborted) {
+    // Out of plan usage: retrying won't help for hours. Stop (resumable) instead of failing, also
+    // for a turn that may fail: a race or a split would go on without it, and a resume after the
+    // reset gives it its turn.
+    if (usageLimit && !this.signal.aborted) {
       this.stop(`usage limit of ${adapters[params.agent].displayName}`);
     }
     this.checkCancelled();
@@ -2370,6 +2476,8 @@ const TRANSIENT = new RegExp(
 const SESSION_GONE = /no conversation found|(?:session|thread|conversation)\b[^\n]{0,40}\bnot found/i;
 /** Failures a retry in a minute can fix. */
 const RETRYABLE = new Set<ErrorKind | undefined>(["transient", "rate_limit", "stalled"]);
+/** Failures that say nothing about the task, so they aren't a turn's recorded result (see `ask`). */
+const UNRECORDED = new Set<ErrorKind | undefined>(["usage_limit", "auth", "stalled"]);
 
 /**
  * Why a turn failed: the adapter's own `errorKind` when it set one; otherwise read from the error
@@ -2457,6 +2565,11 @@ export interface StartRunInput {
    * Docker). Agents are still locked down to Safe mode.
    */
   allowUntrusted?: boolean;
+  /**
+   * The task carries someone else's words (a webhook caller's text, fenced in the task). Marked
+   * like a Dependabot PR's text: its reviews aren't learned, and memory it proposes waits for you.
+   */
+  untrustedText?: boolean;
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
 }
@@ -2717,15 +2830,51 @@ export class RunManager {
     this.devServers.stopMatching(`${id}/`);
     if (!opts.cleanup) return { removed: [], deletedBranches: [] };
     const result = await removeWorktrees(run.repo, run.worktrees, !!opts.deleteBranches);
+    const tidied = await this.tidyRunFolder(run, !!opts.deleteBranches);
+    result.failed.push(...tidied.failed);
     // Private checkpoints and team records served this run only; project knowledge stays.
     const retired = await memoryStore.purgeRun(run.id).catch((err: Error) => { logWarn(`Couldn't retire run memory for ${run.id}: ${err.message}`); return 0; });
     this.emit(run, {
       type: "log",
       level: "info",
-      text: `Archived: removed ${result.removed.length} worktree(s)${result.deletedBranches.length ? ` and ${result.deletedBranches.length} branch(es)` : "; branches kept"}${retired ? `; retired ${retired} private/team memory record(s)` : ""}`,
+      text:
+        `Archived: removed ${result.removed.length} worktree(s)${result.deletedBranches.length ? ` and ${result.deletedBranches.length} branch(es)` : "; branches kept"}` +
+        `${tidied.folder ? "; removed the run's folder" : ""}${tidied.prBranch ? `; deleted ${tidied.prBranch} (fetched for the run)` : ""}` +
+        `${retired ? `; retired ${retired} private/team memory record(s)` : ""}`,
     });
     if (result.failed.length) this.emit(run, { type: "log", level: "warn", text: `Couldn't remove: ${result.failed.join("; ")}` });
     return result;
+  }
+
+  /**
+   * Once a run's worktrees are gone, what else it keeps in its folder (`<repo>/.worktrees/<run>/`)
+   * goes too: scratch checkouts an attempt left behind (code-flow stopped before removing them),
+   * and, with the branches, the context staged for its agents. With the branches kept, a resume or
+   * a reply checks the worktrees out again and copies that context in, so it stays until then. The
+   * folder itself goes once nothing else is in it. So does the pull request's head code-flow
+   * fetched for the run (`codeflow-pr/<n>`): it can be fetched again, and it's kept while another
+   * run started from it is still around or it's checked out somewhere.
+   */
+  private async tidyRunFolder(run: Run, deleteBranches: boolean): Promise<{ folder: boolean; prBranch?: string; failed: string[] }> {
+    const failed: string[] = [];
+    let folder = false;
+    if (existsSync(run.worktreeDir) && !run.worktrees.some((w) => existsSync(w.path))) {
+      for (const scratch of SCRATCH_DIRS) {
+        const path = join(run.worktreeDir, scratch);
+        if (existsSync(path)) await removeDetachedWorktree(run.repo, path).catch((err: Error) => failed.push(`${path}: ${err.message}`));
+      }
+      if (deleteBranches) await rm(join(run.worktreeDir, STAGE_DIR), { recursive: true, force: true }).catch((err: Error) => failed.push(`${STAGE_DIR}: ${err.message}`));
+      // Only an empty folder: anything that isn't code-flow's own stays where it is.
+      folder = await rmdir(run.worktreeDir).then(() => true, () => false);
+    }
+    const prBranch = run.source?.kind === "pr" && run.baseLabel === `codeflow-pr/${run.source.number}` ? run.baseLabel : undefined;
+    if (!prBranch || !(await branchExists(run.repo, prBranch))) return { folder, failed };
+    const sharing = [...this.runs.values()].some((r) => r !== run && !r.archived && r.repo === run.repo && r.baseLabel === prBranch);
+    const checkedOut = (await git(["worktree", "list", "--porcelain"], run.repo)).stdout.split("\n").includes(`branch refs/heads/${prBranch}`);
+    if (sharing || checkedOut) return { folder, failed };
+    const deleted = await git(["branch", "-D", prBranch], run.repo);
+    if (deleted.code !== 0) failed.push(`branch ${prBranch}: ${gitError(["branch", "-D", prBranch], deleted)}`);
+    return { folder, prBranch: deleted.code === 0 ? prBranch : undefined, failed };
   }
 
   /** Per-file diff of one of the run's branches against the run's base. */
@@ -2859,6 +3008,7 @@ export class RunManager {
     if (outcome.ok) {
       run.merges.push({ branch: input.branch, into: input.into, commit: outcome.commit, at: Date.now() });
       this.emit(run, { type: "log", level: "info", text: `Merged ${input.branch} into ${input.into} (${outcome.commit.slice(0, 8)})` });
+      if (outcome.warning) this.emit(run, { type: "log", level: "warn", text: outcome.warning });
       this.emitRun(run);
       if (input.archiveAfter) await this.archive(id, { cleanup: true });
     }
@@ -2927,6 +3077,9 @@ export class RunManager {
   /** Push a result branch and open a pull request for it. */
   async pullRequest(id: string, input: { branch: string; into: string }) {
     const run = this.require(id);
+    // Opening one can merge into the branch (to catch up with a squash-merged base) and pushes it:
+    // not under a turn that's still working on it (a follow-up, a side chat), whoever asks.
+    if (this.busyRun(run)) throw new Error("Wait for the run to finish before opening a pull request");
     if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
     const title = run.task.split("\n")[0]!.slice(0, 72) || `code-flow run ${run.id}`;
     const agents = [...new Set(Object.values(run.roles).flat())].join(", ");
@@ -3079,8 +3232,14 @@ export class RunManager {
    */
   recordLimit(agent: AgentId, resetsAt?: number) {
     const now = Date.now();
-    const known = Object.fromEntries(Object.entries(this.quota[agent]?.windows ?? {}).filter(([, w]) => !!w.resetsAt && w.resetsAt > now));
-    this.recordQuota(agent, "limited", resetsAt ? { limit: { resetsAt } } : known);
+    // Without a reset time from the CLI, the known windows say how long the limit lasts: a window it
+    // reported full, or else the one that resets soonest. Keeping every window would bench the
+    // agent until the last of them (its weekly reset) on a guess; with none known, routing's
+    // one-hour default applies.
+    const known = Object.entries(this.quota[agent]?.windows ?? {}).filter(([, w]) => !!w.resetsAt && w.resetsAt > now);
+    const full = known.filter(([, w]) => (w.utilization ?? 0) >= 1);
+    const soonest = known.sort(([, a], [, b]) => a.resetsAt! - b.resetsAt!).slice(0, 1);
+    this.recordQuota(agent, "limited", resetsAt ? { limit: { resetsAt } } : Object.fromEntries(full.length ? full : soonest));
   }
 
   private quotaSave?: ReturnType<typeof setTimeout>;
@@ -3448,10 +3607,12 @@ export class RunManager {
       approvals: input.trigger ? {} : input.approvals ?? (input.pattern.id === "auto-team" ? { plan: true } : {}),
       trigger: input.trigger,
       parentRunId: input.parentRunId,
-      inheritedSourceTrust: parent ? (memoryAuthorityForRun(parent) as { sourceTrust: "trusted" | "untrusted" | "unknown" }).sourceTrust : undefined,
+      // With no source to mark, a run on someone else's words says so in its source trust.
+      inheritedSourceTrust:
+        input.untrustedText && !source ? "untrusted" : parent ? (memoryAuthorityForRun(parent) as { sourceTrust: "trusted" | "untrusted" | "unknown" }).sourceTrust : undefined,
       merges: [],
       prs: {},
-      source,
+      source: input.untrustedText && source ? { ...source, untrustedText: true } : source,
       reviewBase,
       watches: {},
       routing: input.routing?.length ? input.routing : undefined,
@@ -3514,10 +3675,17 @@ export class RunManager {
 
   private async resumeClaimed(run: Run, pattern: Pattern): Promise<Run> {
     const id = run.id;
-    if (!this.history.has(id)) this.history.set(id, await this.events(id));
+    const loaded = !this.history.has(id);
+    if (loaded) this.history.set(id, await this.events(id));
     const recoveryStarted = performance.now();
     const journal = await loadJournal(id, { strict: run.pattern === "auto-team" });
     if (run.pattern === "auto-team") run.recovery = { bytes: await stat(join(RUNS_DIR, `${id}.journal.jsonl`)).then((info) => info.size, () => 0), records: journal.size, durationMs: performance.now() - recoveryStarted, kind: "journal-load" };
+    // Stop pressed while the log and journal were read: Stop already said yes, so the run doesn't
+    // start, and stays as it was (nothing below awaits before the run is started).
+    if (this.stoppedWhileStarting.has(id)) {
+      if (loaded) this.history.delete(id);
+      return run;
+    }
     if (run.pattern === "auto-team") {
       for (const [key, value] of journal) {
         if (!key.startsWith("team-note:") && !key.startsWith("team-user-answer:")) continue;
@@ -3580,7 +3748,10 @@ export class RunManager {
           run.status = "stopped";
           run.stopReason = "unresolved team work";
           run.error = run.team.gaps.join("; ") || "The team needs more work or information. Resume to continue.";
-        } else run.status = "done";
+        } else {
+          run.status = "done";
+          this.endUndelivered(run);
+        }
       })
       .catch((err: Error) => {
         const aborted = controller.signal.aborted || err instanceof CancelledError;
@@ -3621,6 +3792,24 @@ export class RunManager {
         this.history.delete(run.id);
       });
     this.active.set(run.id, done);
+  }
+
+  /**
+   * The run finished with notes no turn took (sent during the last turn, which couldn't take them
+   * as it ran). Left queued, the next follow-up, days later, would get them as if just sent while
+   * the team worked; so they end here, and the log says to reply to send them. (A chat makes them
+   * its next turn instead; a run that stops keeps them for its resume.)
+   */
+  private endUndelivered(run: Run) {
+    const left = run.notes.filter((n) => n.status === "queued" && !n.requestId);
+    if (!left.length) return;
+    for (const n of left) n.status = "undelivered";
+    const what = left.length === 1 ? "Your message" : `${left.length} of your messages`;
+    this.emit(run, {
+      type: "log",
+      level: "warn",
+      text: `${what} didn't reach an agent: the run finished before another turn could take ${left.length === 1 ? "it" : "them"}. Reply to send ${left.length === 1 ? "it" : "them"}: ${left.map((n) => `“${n.text}”`).join("; ")}`,
+    });
   }
 
   /**
@@ -3857,10 +4046,12 @@ async function runFollowUpInWorktree(ctx: TeamContext, run: Run, f: FollowUp, wt
               "Address each one, run the relevant tests, and summarize what you changed. Don't commit; code-flow does."),
   });
   f.stepId = outcome.stepId; // also when the turn was replayed
+  // Every message names the follow-up: it keys the commit's journal entry, and a second merge of the
+  // same branch must not replay the first one's commit (its merge would be left uncommitted).
   const sha = await ctx.commit(
     wt,
     f.kind === "resolve-conflicts"
-      ? `Merge ${f.mergeFrom} (conflicts resolved by ${f.agent})`
+      ? `Merge ${f.mergeFrom} (conflicts resolved by ${f.agent}, ${f.id})`
       : f.kind === "reply"
         ? `${f.agent}: follow-up to your reply (${f.id})`
         : f.kind === "ci-fix"

@@ -252,7 +252,7 @@ export function notifyFinished(run: RunSummary) {
   }
   n.onclick = () => {
     window.focus();
-    route.value = { view: "run", id: run.id };
+    navigate({ view: "run", id: run.id });
     n.close();
   };
 }
@@ -278,7 +278,7 @@ function onShortcut(e: KeyboardEvent) {
   if (target?.closest("input, textarea, select, [contenteditable=true], dialog")) return;
   const go = (r: typeof route.value) => {
     e.preventDefault();
-    route.value = r;
+    navigate(r);
   };
   switch (e.key) {
     case "/": {
@@ -365,10 +365,10 @@ function HealthDialog() {
   const pct = (u?: number) => (u === undefined ? "?" : `${Math.round(u * 100)}%`);
   const when = (t?: number) => (t ? new Date(t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "");
   return (
-    <dialog class="picker small-dialog health" ref={ref}>
+    <dialog class="picker small-dialog health" ref={ref} aria-labelledby="health-title">
       <div class="picker-inner">
         <div class="picker-head">
-          <h3>Health</h3>
+          <h3 id="health-title">Health</h3>
           <div class="help">What code-flow can see about each CLI — it uses the CLIs' own commands and never reads their credentials.</div>
         </div>
         <div class="dialog-body">
@@ -502,10 +502,10 @@ function FolderPicker() {
   );
 
   return (
-    <dialog class="picker" ref={dialog}>
+    <dialog class="picker" ref={dialog} aria-labelledby="folder-picker-title">
       <div class="picker-inner">
         <div class="picker-head">
-          <h3>{adding ? adding.title : "Choose a repository"}</h3>
+          <h3 id="folder-picker-title">{adding ? adding.title : "Choose a repository"}</h3>
           <div class="row">
             <button class="btn small" type="button" title="Parent folder" disabled={!dir?.parent} onClick={() => dir?.parent && browse(dir.parent)}>
               ↑
@@ -535,10 +535,14 @@ function FolderPicker() {
             </button>
           </div>
           <div class="crumbs">
-            <a onClick={() => browse("/")}>/</a>
+            <button type="button" class="link" aria-label="The root folder" onClick={() => browse("/")}>
+              /
+            </button>
             {parts.map((part, i) => (
               <span key={i}>
-                <a onClick={() => browse("/" + parts.slice(0, i + 1).join("/"))}>{part}</a>
+                <button type="button" class="link" onClick={() => browse("/" + parts.slice(0, i + 1).join("/"))}>
+                  {part}
+                </button>
                 {i < parts.length - 1 ? "/" : ""}
               </span>
             ))}

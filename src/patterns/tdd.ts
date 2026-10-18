@@ -195,7 +195,7 @@ export const tddPattern: Pattern = {
       // The tests are the spec: the builder's changes to them are undone, not just reported. So
       // are its changes to the test runner's own config, a new conftest.py or vitest.config too:
       // those can make the tests pass as surely as editing them.
-      const touched = (await changedFiles(await ctx.gitAt(wt), before)).filter((f) => testFiles.includes(f) || isRunnerConfig(f));
+      const touched = (await ctx.changedFiles(wt, before)).filter((f) => testFiles.includes(f) || isRunnerConfig(f));
       let tamperNote = "";
       if (touched.length) {
         ctx.log(`Builder modified test files: ${touched.join(", ")}; code-flow put them back`, "warn");
@@ -249,7 +249,7 @@ export const tddPattern: Pattern = {
       });
       await ctx.commit(wt, `${tester}: edge-case tests round ${round}`);
       // The tester probes with tests; changes it makes to the implementation are undone.
-      const probeChanges = await changedFiles(await ctx.gitAt(wt), beforeProbe);
+      const probeChanges = await ctx.changedFiles(wt, beforeProbe);
       const outside = probeChanges.filter((f) => !isTestFile(f) && !testFiles.includes(f));
       for (const f of probeChanges) if (!outside.includes(f) && !testFiles.includes(f)) testFiles.push(f);
       if (outside.length) {

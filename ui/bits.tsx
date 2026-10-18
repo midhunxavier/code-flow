@@ -1,4 +1,5 @@
 import type { ComponentChildren } from "preact";
+import { useMemo } from "preact/hooks";
 import { encode } from "uqr";
 import { SHORT } from "./lib.js";
 import type { AgentId, RunSummary } from "./types.js";
@@ -43,12 +44,20 @@ export function QrCode({ text, size = 168 }: { text: string; size?: number }) {
  * fenced code, and inline bold, italics, code and http(s) links. Text is never parsed as HTML.
  */
 export function Markdown({ text }: { text: string }) {
+  // Parsed once per text: a long thread re-renders often, and its messages rarely change (the same
+  // elements back also let Preact skip comparing them).
+  const nodes = useMemo(() => markdownNodes(text), [text]);
+  return <div class="md">{nodes}</div>;
+}
+
+/** The elements `Markdown` shows for a text. */
+export function markdownNodes(text: string): ComponentChildren[] {
   const nodes: ComponentChildren[] = [];
   text.split(/^```[^\n]*\n?/m).forEach((chunk, i) => {
     if (i % 2 === 1) nodes.push(<pre key={`c${i}`}>{chunk.replace(/\n$/, "")}</pre>);
     else blocks(chunk, `b${i}`, nodes);
   });
-  return <div class="md">{nodes}</div>;
+  return nodes;
 }
 
 const LIST = /^(\s*)([-*+]|\d+[.)])\s+(.*)/;

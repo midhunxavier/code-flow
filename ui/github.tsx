@@ -69,11 +69,11 @@ export function GitHubPicker() {
   const shown = (items ?? []).filter((i) => !q || `#${i.number} ${i.title} ${(i.labels ?? []).join(" ")} ${i.author ?? ""}`.toLowerCase().includes(q));
 
   return (
-    <dialog class="picker" ref={ref}>
+    <dialog class="picker" ref={ref} aria-labelledby="github-picker-title">
       {open ? (
         <div class="picker-inner">
           <div class="picker-head">
-            <h3>{template ? `${template.name}: pick ${kind === "issue" ? "an issue" : "a pull request"}` : "Start from GitHub"}</h3>
+            <h3 id="github-picker-title">{template ? `${template.name}: pick ${kind === "issue" ? "an issue" : "a pull request"}` : "Start from GitHub"}</h3>
             {!template?.needs ? (
               <div class="segmented" role="radiogroup" aria-label="Issues or pull requests">
                 <button type="button" role="radio" aria-checked={kind === "issue"} class={kind === "issue" ? "on" : ""} onClick={() => setKind("issue")}>

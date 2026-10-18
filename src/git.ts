@@ -5,6 +5,7 @@ import { appendFile, copyFile, lstat, mkdir, readdir, readFile, realpath, rm } f
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { envNumber, timerMs, WORKTREE_DIR } from "./config.js";
 import { childEnv } from "./env.js";
+import { logWarn } from "./log.js";
 
 export interface GitResult {
   code: number;
@@ -588,14 +589,52 @@ export async function validateBranchPrefix(repo: string, prefix: string): Promis
   }
 }
 
-/** Stage and commit everything in a worktree of `repo`. Returns the new commit, or null if clean. */
-export async function commitAll(repo: string, wt: Worktree, message: string): Promise<string | null> {
+/**
+ * Stage and commit everything in a worktree of `repo`, except files that must not leave this
+ * machine (`unstageSecrets`; `onWarning` names them). Returns the new commit, or null if clean.
+ */
+export async function commitAll(repo: string, wt: Worktree, message: string, onWarning?: (text: string) => void): Promise<string | null> {
   const at = await assertWorktree(repo, wt);
   await gitOk(["add", "-A"], at);
+  await unstageSecrets(at, onWarning);
   const staged = await git(["diff", "--cached", "--quiet", ...RAW_DIFF], at);
   if (staged.code === 0 && !(await isMerging(at))) return null;
   await gitOk([...IDENTITY, "commit", "--no-verify", "-m", message], at);
   return resolveCommit(at);
+}
+
+/** In a worktree's git dir: the files code-flow copied in from your checkout (repo-config `copy`), NUL-separated. */
+export const COPIED_FILES = "codeflow-copied";
+/** Names of files that hold secrets, wherever they are: `.env`, `.env.*`, keys. */
+const SECRET_NAME = /^(?:\.env(?:\..+)?|.+\.pem|id_rsa.*|id_ed25519.*)$/;
+/** Templates of `.env` that repositories commit on purpose. */
+const SECRET_TEMPLATE = /^\.env\.(?:example|sample|template)$/;
+
+/**
+ * Take back out of the index what `add -A` must not commit: files code-flow copied into this
+ * worktree (`.env`…) and new files named like secrets. git ignores them, but an agent can edit
+ * .gitignore or `git add -f` one, and the commit would then carry it to a pull request (a PR
+ * follow-through pushes unattended). The file stays in the worktree; files the repository already
+ * tracks are left alone unless code-flow copied them.
+ */
+async function unstageSecrets(at: GitCwd, onWarning?: (text: string) => void): Promise<void> {
+  const staged = await git(["diff", "--cached", "--name-status", "--no-renames", "-z", ...RAW_DIFF], at);
+  if (staged.code !== 0 || !staged.stdout) return;
+  const record = (await git(["rev-parse", "--git-path", COPIED_FILES], at)).stdout.trim();
+  const copied = new Set(record ? (await readFile(resolve(folderOf(at), record), "utf8").catch(() => "")).split("\0").filter(Boolean) : []);
+  const tokens = staged.stdout.split("\0");
+  const drop: string[] = [];
+  for (let i = 0; i + 1 < tokens.length; i += 2) {
+    const [status, path] = [tokens[i]!, tokens[i + 1]!];
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    const secret = status === "A" && SECRET_NAME.test(name) && !SECRET_TEMPLATE.test(name);
+    if ((copied.has(path) && status !== "D") || secret) drop.push(path);
+  }
+  if (!drop.length) return;
+  await gitOk(["reset", "-q", "--", ...drop], at, { env: { GIT_LITERAL_PATHSPECS: "1" } });
+  const text = `Left ${drop.join(", ")} out of the commit: ${drop.length === 1 ? "it was" : "they were"} copied in from your checkout or ${drop.length === 1 ? "is" : "are"} named like a secret. Commit it yourself if it belongs in the repository.`;
+  logWarn(text, { worktree: folderOf(at) });
+  onWarning?.(text);
 }
 
 /** The change on a checkout's branch since `base`, as a patch. */

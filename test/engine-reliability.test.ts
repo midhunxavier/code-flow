@@ -309,6 +309,20 @@ test("a usage limit with no reset time keeps the reset times already known; quot
   assert.deepEqual(readdirSync(HOME).filter((f) => f.endsWith(".tmp")), []);
 });
 
+test("a usage limit with no reset time doesn't bench an agent until its weekly reset on a guess", () => {
+  const manager = new RunManager(findPattern);
+  const hour = Date.now() + 3_600_000;
+  const week = Date.now() + 6 * 86_400_000;
+  // Neither window is full: the limit lasts until the soonest reset, not the weekly one.
+  manager.quota.claude = { status: "allowed", windows: { five_hour: { utilization: 0.4, resetsAt: hour }, seven_day: { utilization: 0.7, resetsAt: week } }, at: Date.now() };
+  manager.recordLimit("claude");
+  assert.deepEqual(manager.quota.claude!.windows, { five_hour: { utilization: 0.4, resetsAt: hour } });
+  // The weekly window reported full: that's the one that says when the plan has room again.
+  manager.quota.claude = { status: "allowed", windows: { five_hour: { utilization: 0.4, resetsAt: hour }, seven_day: { utilization: 1, resetsAt: week } }, at: Date.now() };
+  manager.recordLimit("claude");
+  assert.deepEqual(manager.quota.claude!.windows, { seven_day: { utilization: 1, resetsAt: week } });
+});
+
 test("an HTTP status only makes an error transient with words around it", () => {
   const kind = (error: string, errorKind?: any, resumed = false) => failureKind({ ok: false, finalText: "", error, errorKind }, resumed);
   assert.equal(kind("Ran 500 tests, 3 failed"), undefined);

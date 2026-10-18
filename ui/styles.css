@@ -5,12 +5,12 @@
   :root {
     /* surfaces: warm off-white page, cool near-white cards */
     --bg: #f7f7f5; --panel: #f3f6f4; --raised: #fdfdfc; --sunken: #eef1ed; --hover: #e6ede6;
-    --text: #222f30; --muted: #445e5f; --faint: #6f7f80;
+    --text: #222f30; --muted: #445e5f; --faint: #5a696a;
     --border: #e4e3e3; --border-strong: #cfd4cf;
     /* brand lime: fill with dark text; --accent-ink is lime's readable text tone */
     --accent: #a7e26e; --accent-hover: #cef79e; --accent-soft: #eff8e4; --accent-line: #c6e7a3; --accent-edge: #86c24e;
     --accent-ink: #3f6f12; --accent-text: #222f30; --ring: rgba(167, 226, 110, .28);
-    --ok: #2f8a57; --ok-soft: #e2f3e8; --warn: #a86200; --warn-soft: #fbf0dc; --err: #c73a2e; --err-soft: #fde9e6;
+    --ok: #226d43; --ok-soft: #e2f3e8; --warn: #995a00; --warn-soft: #fbf0dc; --err: #c73a2e; --err-soft: #fde9e6;
     --claude: #c96442; --codex: #10a37f; --agy: #4285f4;
     --shadow: 0 12px 30px rgba(34, 47, 48, .06), 0 2px 10px rgba(34, 47, 48, .04);
     --shadow-md: 0 20px 48px rgba(34, 47, 48, .14), 0 8px 18px rgba(34, 47, 48, .08);
@@ -615,8 +615,8 @@
   .picker-head .row { display: flex; gap: 6px; align-items: center; }
   .picker-head .row .field { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; }
   .crumbs { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 2px; font-family: var(--mono); }
-  .crumbs a { color: var(--accent-ink); cursor: pointer; }
-  .crumbs a:hover { text-decoration: underline; }
+  .crumbs a, .crumbs button.link { color: var(--accent-ink); cursor: pointer; text-decoration: none; }
+  .crumbs a:hover, .crumbs button.link:hover { text-decoration: underline; }
   .picker-list { overflow-y: auto; flex: 1; min-height: 180px; padding: 8px; }
   .picker-section { font-size: 10px; font-weight: 500; color: var(--faint); letter-spacing: .14em; padding: 10px 10px 4px; }
   .dir { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 10px; cursor: pointer; }
@@ -1021,7 +1021,8 @@
     .convo { padding: 18px 12px 12px; }
   }
   @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+    /* once, not forever: a near-zero infinite spin or pulse is a flicker (.spin, .fu-live, .dot.running) */
+    *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   }
   @media (max-width: 760px) {
     .topbar { gap: 6px; padding: 0 10px; }
