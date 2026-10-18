@@ -1,4 +1,3 @@
-import { RemoteAccess } from "./remote-access.js";
 import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
@@ -113,9 +112,9 @@ export function AutomationsView() {
   const list = automations.value.filter((a) => automationInScope(a));
   const here = activeProject.value ? ` in ${activeProject.value.name}` : scoped ? " without a project" : "";
   return (
-    <div class="composer automations">
+    <div class="automations">
       <div class="page-head">
-        <h1>Automations</h1>
+        <h3>Project scope</h3>
         <ProjectButton />
       </div>
       <p class="lede">
@@ -144,7 +143,7 @@ export function AutomationsView() {
         )}
       </div>
 
-      <RemoteAccess />
+      <p class="help">To access this workspace from another device, open <a href="#/settings/remote-access">Remote access settings</a>.</p>
     </div>
   );
 }
@@ -439,7 +438,7 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
       // Show the project it went in (from "No project", its repo's), as starting a run does.
       const p = automationProject(saved.run);
       if (currentProject.value !== ALL && p && p.id !== currentProject.value) selectProject(p.id, { defaults: false, repo: false });
-      route.value = { view: "automations" };
+      route.value = { view: "settings", section: "automations" };
     } catch (err) {
       setError((err as Error).message);
     } finally {

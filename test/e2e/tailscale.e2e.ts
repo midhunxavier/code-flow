@@ -104,7 +104,7 @@ before(async () => {
   browser = await chromium.launch({ channel: "chrome", headless: true });
   owner = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
   await owner.goto(`${base}/?token=tailscale-e2e`);
-  await owner.goto(`${base}/#/automations`);
+  await owner.goto(`${base}/#/settings/remote-access`);
 });
 after(async () => {
   await browser?.close();

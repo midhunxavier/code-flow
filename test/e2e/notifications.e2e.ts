@@ -49,8 +49,7 @@ after(async () => {
 });
 
 test("notification opt-in, real run delivery, visible failure and explicit retry work with an injected local transport", { timeout: 60_000 }, async () => {
-  await page.goto(base + "/#/workspace");
-  await page.getByRole("navigation", { name: "Workspace tools" }).getByRole("button", { name: "Notifications", exact: true }).click();
+  await page.goto(base + "/#/settings/notifications");
   const target = page.getByRole("article", { name: "Notification settings for Browser fixture", exact: true });
   assert.equal(await target.getByLabel("Enable notifications to this destination").isChecked(), false);
   assert.equal((await api("/api/notifications/deliveries")).length, 0);

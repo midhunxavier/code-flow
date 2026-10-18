@@ -1,5 +1,25 @@
 # Configuration
 
+## Application settings
+
+Open **Settings** at the bottom of the sidebar, press **⌘, / Ctrl+,**, or search for a settings category in the command palette. Categories have shareable addresses such as `#/settings/ssh`; browser Back and Forward preserve navigation. Search settings by a feature name such as “theme”, “permissions”, “VM”, or “Tailscale”.
+
+- **General:** light, dark, or system appearance; sidebar grouping; archived runs; keyboard shortcuts. Terminals follow the selected appearance.
+- **Agents & models:** provider health and usage, model and effort defaults. Sign in through the provider CLI on the current machine.
+- **Run defaults:** workflow, plan approval, agent permissions and run limits. These update the composer’s remembered choices and the current draft; running work is unchanged. Project defaults and per-role choices can override model preferences.
+- **Workspace:** repository verification, code, dependencies, context, history, services, coordinated changes and filtered tasks.
+- **Insights:** run statistics, provider usage, comparisons, evaluation evidence and disk use. The **i** shortcut opens this category.
+- **Automations:** schedules, webhooks, the review inbox and deferred runs. The **a** shortcut opens this category; old `#/automations` bookmarks still work.
+- **Notifications:** browser notifications and outbound notification destinations.
+- **SSH connections:** save and open remote VMs, with optional port and identity-file overrides. See [SSH projects](ssh-projects.md).
+- **Remote access:** Tailscale, Wi-Fi, pairing and device access to the local workspace.
+- **Integrations, Projects & access, Extensions, Data & storage:** existing source/code-host/worker integrations, project conventions, filesystem policies, shared accounts, extensions and retention controls.
+- **Advanced:** collect/export diagnostics and find the server configuration reference. Process-level settings and credentials remain environment configuration and require a restart.
+
+Appearance, run defaults and sidebar preferences save in this browser, separately for each SSH workspace. SSH definitions save on the local server; project, access, notification and retention settings save on the machine hosting that workspace. Controls with a **Save** action keep their existing explicit save behavior. Numeric run limits save when you leave the field; invalid values restore the previous setting.
+
+**Settings → Workspace** contains repository tools: verification, code editing, dependency and context inspection, checkpoints, services, coordinated changes and filtered tasks. Workspace, Insights and Automations share the Settings navigation; the sidebar has one Settings entry. Older `#/workspace` and `#/insights` bookmarks (including comparison links) still work.
+
 ## Per-repo config
 
 Commit `.codeflow/config.json` and every run in that repo (and every teammate) gets the same defaults. Anything you set in the UI wins.
@@ -35,7 +55,7 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
 
 ## What agents may do while building
 
-**Settings → permissions:**
+**Settings → Run defaults → Agent permissions:**
 
 | Mode | Claude Code | Codex | Antigravity |
 |---|---|---|---|

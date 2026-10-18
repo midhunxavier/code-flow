@@ -373,18 +373,6 @@ export function Rail() {
           </label>
         </div>
       ) : null}
-      <div class="rail-nav">
-        <button type="button" class="nav-item" aria-current={route.value.view === "workspace" ? "page" : undefined} title="Repository files, verification and operations" onClick={() => go({ view: "workspace" })}>
-          <Icon name="files" /> <span class="t">Workspace</span>
-        </button>
-        <button type="button" class="nav-item auto-nav" aria-current={route.value.view === "automations" ? "page" : undefined} title="Scheduled and webhook runs, their inbox, and the phone view (a)" onClick={() => go({ view: "automations" })}>
-          <Icon name="clock" /> <span class="t">Automations</span>
-          {pending ? <span class="count">{pending}</span> : null}
-        </button>
-        <button type="button" class="nav-item" aria-current={route.value.view === "insights" ? "page" : undefined} title="What runs cost and how they went, per agent and pattern; comparisons; disk use (i)" onClick={() => go({ view: "insights" })}>
-          <Icon name="chart" /> <span class="t">Insights</span>
-        </button>
-      </div>
       {filtering ? (
         <div class="rail-hint">
           {list.length} of {all.length} runs
@@ -404,6 +392,7 @@ export function Rail() {
         {historyError.value ? <div class="help" role="alert">{historyError.value}<button class="btn small" onClick={() => void refreshRuns()}>Retry history</button></div> : null}
         {filtering && !f.q.trim() && historyNextCursor.value ? <span class="help">Filters apply to loaded pages. Load older runs to include more history.</span> : null}
       </div>
+      <button class="nav-item settings-entry" aria-current={r.view === "settings" ? "page" : undefined} title={`Settings (⌘, / Ctrl+,)${pending ? ` · ${pending} runs need attention in Automations` : ""}`} onClick={() => go({ view: "settings" })}><Icon name="sliders" /><span class="t">Settings</span>{pending ? <span class="count" aria-hidden="true">{pending}</span> : null}<span class="kbd">⌘,</span></button>
       <div class="rail-foot">
         <AgentDots />
         <span class="spacer" />

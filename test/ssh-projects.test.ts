@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { SshProjects } from "../src/ssh-projects/manager.js";
 import { sshAliases } from "../src/ssh-projects/config.js";
 import { parseRuntime } from "../src/ssh-projects/gateway.js";
-import { validSshHost } from "../src/ssh-projects/transport.js";
+import { SshTransport, validSshHost } from "../src/ssh-projects/transport.js";
 import { buildHost, fixture, pause } from "./ssh-project-fixture.js";
 import { createServer, request } from "node:http";
 import { connect, type AddressInfo } from "node:net";
@@ -22,6 +22,29 @@ test("SSH configuration discovers concrete aliases and includes; rejects command
   } finally { await f.cleanup(); }
 });
 
+test("SSH connection options validate, persist, and keep aliases with different ports distinct", async () => {
+  const f = await fixture();
+  const options = { home: f.localHome, returnUrl: "http://localhost:4317/" };
+  const service = new SshProjects(options);
+  try {
+    const host = await service.add({ sshHost: "dev@vm", port: 2222, identityFile: "~/.ssh/my key", name: "VM" });
+    await service.add({ sshHost: "dev@vm", port: 2223 });
+    await service.add({ sshHost: "legacy-alias" });
+    await assert.rejects(service.add({ sshHost: "dev@vm", port: 2222, identityFile: "~/.ssh/my key" }), /already saved/);
+    const restored = await new SshProjects(options).list();
+    assert.equal(restored.hosts.length, 3);
+    assert.deepEqual(restored.hosts[0], { ...host, state: "disconnected", error: undefined });
+    for (const invalid of [{ port: 0 }, { port: 65536 }, { port: 22.5 }, { port: "22" }, { port: null }, { identityFile: "relative-key" }, { identityFile: "/tmp/key\nfile" }, { identityFile: "~/.ssh/%h" }]) {
+      await assert.rejects(service.add({ sshHost: "vm", ...invalid }), /port from/);
+      assert.throws(() => new SshTransport("vm", "ssh", invalid as any), /port from/);
+    }
+    const saved = JSON.parse(await readFile(join(f.localHome, "ssh-hosts.json"), "utf8"));
+    saved.hosts[0].port = "-oProxyCommand=bad";
+    await writeFile(join(f.localHome, "ssh-hosts.json"), JSON.stringify(saved));
+    await assert.rejects(new SshProjects(options).list(), /Repair/);
+  } finally { await service.close(); await f.cleanup(); }
+});
+
 test("full remote backend browses, edits, runs checks and agents, streams terminals, previews and reconnects", { timeout: 180_000 }, async () => {
   buildHost(); const f = await fixture();
   const service = new SshProjects({ home: f.localHome, returnUrl: "http://localhost:4317/", sshBinary: f.ssh });
@@ -33,7 +56,7 @@ test("full remote backend browses, edits, runs checks and agents, streams termin
     const state = join(f.remoteHome, ".codeflow/ssh-host/state");
     await mkdir(state, { recursive: true });
     await writeFile(join(state, "remote.json"), JSON.stringify({ enabled: true, lan: true, transport: "lan", token: "a".repeat(48), controlToken: "b".repeat(48) }));
-    const host = await service.add({ sshHost: "fixture", name: "Remote fixture" });
+    const host = await service.add({ sshHost: "fixture", name: "Remote fixture", port: 2222, identityFile: "~/.ssh/key with spaces" });
     await open(host.id);
     const remote = JSON.parse(await readFile(join(f.remoteHome, ".codeflow/ssh-host/runtime.json"), "utf8"));
     assert.equal((await fetch(`http://127.0.0.1:${remote.port}/api/fs`)).status, 401, "remote backend cannot be claimed by a local browser");
@@ -94,7 +117,12 @@ test("full remote backend browses, edits, runs checks and agents, streams termin
     assert.equal(run.status, "done", JSON.stringify(run.steps.map((step: any) => ({ status: step.status, error: step.error, output: step.output }))).slice(-2000));
     assert.ok(run.worktreeDir.startsWith(f.git("rev-parse", "--show-toplevel")));
     assert.equal((await call("/api/runs")).filter((item: { id: string }) => item.id === created.id).length, 1, "reconnection does not repeat the run");
-    const audit = await readFile(f.audit, "utf8"); assert.match(audit, /StrictHostKeyChecking=yes/); assert.match(audit, /ForwardAgent=no/); assert.match(audit, /ClearAllForwardings=yes/);
+    const audit = await readFile(f.audit, "utf8");
+    for (const line of audit.trim().split("\n")) {
+      const args: string[] = JSON.parse(line);
+      assert.equal(args[args.indexOf("-p") + 1], "2222");
+      assert.equal(args[args.indexOf("-i") + 1], "~/.ssh/key with spaces");
+    } assert.match(audit, /StrictHostKeyChecking=yes/); assert.match(audit, /ForwardAgent=no/); assert.match(audit, /ClearAllForwardings=yes/);
     assert.equal((await readFile(join(f.localHome, "ssh-hosts.json"), "utf8")).includes(remote.token), false);
     const project = (await call("/api/projects"))[0];
     const policy = await call(`/api/projects/${project.id}/filesystem-policy`);

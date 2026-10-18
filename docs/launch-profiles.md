@@ -1,6 +1,6 @@
 # Multi-service launch profiles
 
-Create `.codeflow/launch.json` in the repository. Workspace → Launch profiles reads the selected run's worktree configuration. It does not execute anything until you click **Start launch profile**. Review commands first: they execute repository code on your computer with your ordinary development environment. Runs from an untrusted external source require an additional explicit confirmation.
+Create `.codeflow/launch.json` in the repository. Settings → Workspace → Services reads the selected run's worktree configuration. It does not execute anything until you click **Start launch profile**. Review commands first: they execute repository code on your computer with your ordinary development environment. Runs from an untrusted external source require an additional explicit confirmation.
 
 ```json
 {

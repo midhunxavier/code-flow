@@ -347,7 +347,7 @@ function RunMeta({ run }: { run: RunSummary }) {
         <Icon name="folder" /> {baseName(run.repo)}
       </span>
       {run.trigger ? (
-        <a class="src-link" href="#/automations" title={`Started by ${run.trigger.via === "schedule" ? "its schedule" : run.trigger.via === "webhook" ? "a webhook" : run.trigger.via === "sweep" ? "a sweep" : "Run now"}`}>
+        <a class="src-link" href="#/settings/automations" title={`Started by ${run.trigger.via === "schedule" ? "its schedule" : run.trigger.via === "webhook" ? "a webhook" : run.trigger.via === "sweep" ? "a sweep" : "Run now"}`}>
           {run.trigger.via === "sweep" ? "▤" : "⏱"} {run.trigger.name}
         </a>
       ) : null}
@@ -384,7 +384,7 @@ function RunMeta({ run }: { run: RunSummary }) {
         ))}
       </span>
       {run.group ? (
-        <a class="src-link" href={`#/insights/${encodeURIComponent(run.group.id)}`} title="Started together with other setups on the same task">
+        <a class="src-link" href={`#/settings/insights/${encodeURIComponent(run.group.id)}`} title="Started together with other setups on the same task">
           ⚖ comparison: {run.group.label}
         </a>
       ) : null}

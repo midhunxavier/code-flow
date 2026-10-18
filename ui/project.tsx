@@ -110,7 +110,7 @@ export function ProjectView({ id }: { id: string }) {
         </div>
         {autos.length ? (
           autos.map((a) => (
-            <button key={a.id} type="button" class={`pp-row ${a.enabled ? "" : "off"}`} onClick={() => (route.value = { view: "automations" })}>
+            <button key={a.id} type="button" class={`pp-row ${a.enabled ? "" : "off"}`} onClick={() => (route.value = { view: "settings", section: "automations" })}>
               <Icon name="clock" />
               <span class="t">{a.name}</span>
               <span class="m">{a.enabled ? a.scheduleText || (a.webhook ? "webhook" : "") : "paused"}</span>
@@ -120,7 +120,7 @@ export function ProjectView({ id }: { id: string }) {
           <p class="help">None in this project. Save a run as an automation from the composer to run it on a schedule or from a webhook.</p>
         )}
         {pending ? (
-          <button type="button" class="btn small" onClick={() => (route.value = { view: "automations" })}>
+          <button type="button" class="btn small" onClick={() => (route.value = { view: "settings", section: "automations" })}>
             {pending} result{pending === 1 ? "" : "s"} in the inbox
           </button>
         ) : null}

@@ -1,6 +1,6 @@
 # Filtered Docker tasks
 
-Workspace → Filesystem policy → Filtered Docker task runs one explicitly requested provider turn against a bounded, isolated committed snapshot. This is the enforcing execution path for custom project file policies. Normal native, SSH, automated and multi-agent runs remain refused while any custom restriction is active.
+Settings → Workspace → Filtered tasks → Filtered Docker task runs one explicitly requested provider turn against a bounded, isolated committed snapshot. This is the enforcing execution path for custom project file policies. Normal native, SSH, automated and multi-agent runs remain refused while any custom restriction is active.
 
 Select the project/repository, supported provider (`claude`, `codex`, `agy`), an already prepared local Docker image, instructions and a 1–30 minute limit. Network defaults off; enable it deliberately when the provider needs remote inference. The service resolves the local image to an immutable SHA-256 ID and uses that ID for dispatch. No images are pulled, no host-provider probe or login runs, and no fallback launches a host CLI. A local Docker context is required.
 

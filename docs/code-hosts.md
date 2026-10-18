@@ -1,6 +1,6 @@
 # GitLab and Bitbucket code workflows
 
-Workspace → Code hosts provides explicit owner workflows for GitLab and Bitbucket Cloud. Jira, Linear and source-provider extensions remain read-only. No provider account is contacted in the fixture tests.
+Settings → Integrations → GitLab and Bitbucket code hosts provides explicit owner workflows for GitLab and Bitbucket Cloud. Jira, Linear and source-provider extensions remain read-only. No provider account is contacted in the fixture tests.
 
 Configure integrations with `CODEFLOW_INTEGRATIONS_JSON` or `CODEFLOW_INTEGRATIONS_FILE`:
 

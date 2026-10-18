@@ -238,7 +238,7 @@ test("with no main window to hand to, a popped-out panel opens one and hands ove
   );
 
   // From now on it's the main window.
-  m.navigate({ view: "automations" });
+  m.navigate({ view: "settings", section: "automations" });
   assert.equal(fresh.sent.length, 3);
   assert.equal(opens.length, 1);
 

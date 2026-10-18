@@ -1,6 +1,6 @@
 # Project filesystem policy
 
-Workspace → Filesystem policy stores owner-managed read and write rules per project. Each save uses the exact displayed revision; conflicting saves preserve the browser draft. Private files live at `CODEFLOW_HOME/filesystem-policies/<project>.json`, with version 1, a revision, timestamp and SHA-256 content hash. Corrupt or symbolic policy storage fails closed without replacing it with unrestricted defaults.
+Settings → Projects & access stores owner-managed read and write rules per project. Each save uses the exact displayed revision; conflicting saves preserve the browser draft. Private files live at `CODEFLOW_HOME/filesystem-policies/<project>.json`, with version 1, a revision, timestamp and SHA-256 content hash. Corrupt or symbolic policy storage fails closed without replacing it with unrestricted defaults.
 
 Rules use literal relative repository paths. `.` covers the whole repository; `src` covers that file or subtree. Each read/write operation must match an allow entry and no deny entry. Empty allow lists deny everything. Denies also match conservatively across case and Unicode compatibility variants. There are no globs, traversal components, absolute paths or Git internals. Credential paths, private keys and symbolic filesystem ancestors have fixed application-level denies. Policies from every matching project and the run's pinned snapshots intersect: choosing another project or weakening today's policy cannot silently weaken an older run's pinned policy.
 

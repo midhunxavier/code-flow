@@ -31,7 +31,7 @@ Git worktrees and repositories outside `CODEFLOW_HOME` are not included. Back th
 
 ## Saved per-type retention
 
-Open **Workspace → Retention** to save separate ages for archived run records, attachments, private/team memory and linked workspaces. Every type starts disabled; a blank age keeps that data. You can protect specific run and memory IDs. Settings are revisioned, and concurrent saves cannot overwrite each other. Saving settings never deletes data.
+Open **Settings → Data & storage** to save separate ages for archived run records, attachments, private/team memory and linked workspaces. Every type starts disabled; a blank age keeps that data. You can protect specific run and memory IDs. Settings are revisioned, and concurrent saves cannot overwrite each other. Saving settings never deletes data.
 
 Select **Preview saved retention policy**, review the exact targets and protected reasons, then download the manifest. The preview fixes the cutoff, policy revision, source references and file identities. It contains paths and IDs, without memory bodies or titles. It expires after 24 hours. Stop the server before applying that downloaded file:
 

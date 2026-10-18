@@ -1,6 +1,6 @@
 # Symbol and reference inspection
 
-Workspace → Code offers text search, simple multi-language declaration search,
+Settings → Workspace → Code offers text search, simple multi-language declaration search,
 and JavaScript/TypeScript symbols backed by TypeScript's language service.
 Semantic symbol results include a **Find references** action. Imported aliases
 are resolved; ordinary text mentions are not treated as references. Each request

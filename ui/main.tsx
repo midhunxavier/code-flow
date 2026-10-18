@@ -1,3 +1,4 @@
+import { initializeAppearance } from "./preferences.js";
 import { loadExecutionHost, executionHost } from "./ssh-projects.js";
 import { effect } from "@preact/signals";
 import { render } from "preact";
@@ -13,6 +14,8 @@ import { agents, hashFor, listenForHandOffs, loadHealth, loadModels, loadProject
 // The tab icon: the vibesboard mark, like the top bar.
 const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/png", href: logo });
 document.head.append(icon);
+
+initializeAppearance();
 
 const root = document.getElementById("root")!;
 
@@ -63,7 +66,11 @@ async function boot() {
     const hash = hashFor(route.value);
     // Opened at a bare `/` (the startup link lands there), the composer needs no "#/" of its own:
     // pushing one would make Back return to `/`, which pushes it again, so Back could never leave.
-    if (location.hash !== hash && !(hash === "#/" && !location.hash)) history.pushState(null, "", hash);
+    if (location.hash !== hash && !(hash === "#/" && !location.hash)) {
+      // Replace legacy addresses so Back cannot get stuck on an alias.
+      if (/^#\/?(?:automations|workspace|insights)(?:\/|$)/.test(location.hash)) history.replaceState(null, "", hash);
+      else history.pushState(null, "", hash);
+    }
   });
   window.addEventListener("popstate", () => (route.value = routeFromHash()));
   window.addEventListener("hashchange", () => (route.value = routeFromHash()));
@@ -77,7 +84,7 @@ async function boot() {
   );
   const saved = store.get("repo");
   if (saved) void setRepo(saved, false);
-  else if (executionHost.value.kind === "ssh") pickerOpen.value = true;
+  else if (executionHost.value.kind === "ssh" && route.value.view === "composer") pickerOpen.value = true;
   await Promise.all([refreshRuns(), loadProjects()]);
   watchAllRuns(notifyFinished);
   // A safety net if the event stream drops; projects change when a run starts in a new repo.

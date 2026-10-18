@@ -49,7 +49,7 @@ test("automation time zones, dry-run settings, failed events and explicit retry 
   const accepted = await fetch(`${base}/hooks/${trigger.id}`, { method: "POST", headers: { authorization: `Bearer ${trigger.token}`, "content-type": "application/json" }, body: JSON.stringify({ details: "Preserve this event on retry" }) });
   assert.equal(accepted.status, 202);
   await until(() => api<AutomationEvent[]>(`/api/automations/${trigger.id}/events`), (events) => events.some((event) => event.state === "failed"));
-  await page.goto(base + "/#/automations");
+  await page.goto(base + "/#/settings/automations");
   const row = page.locator(".auto-row", { hasText: "Automation QA" });
   await row.getByText("Schedule and next times", { exact: true }).click();
   await row.getByLabel("Time zone", { exact: true }).fill("America/New_York");

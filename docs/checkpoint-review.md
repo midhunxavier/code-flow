@@ -1,6 +1,6 @@
 # Commit comparison and reviewed reversions
 
-Workspace → History compares the selected checkpoint with the observed HEAD across
+Settings → Workspace → History compares the selected checkpoint with the observed HEAD across
 all changed paths. The patch preview is bounded to 2 MiB; large comparisons are
 explicitly marked truncated. Both comparison endpoints resolve to immutable commits.
 

@@ -41,10 +41,10 @@ before(async () => {
 });
 after(async () => { await browser?.close(); await stop(); await rm(directory, { recursive: true, force: true }); });
 
-test("reachable Workspace retention settings preserve conflicting drafts and download an exact plan for offline apply", { timeout: 40_000 }, async () => {
+test("reachable Settings retention controls preserve conflicting drafts and download an exact plan for offline apply", { timeout: 40_000 }, async () => {
   assert.equal((await fetch(base + "/api/maintenance/retention")).status, 401);
   assert.equal((await fetch(base + "/api/maintenance/retention/apply", { method: "POST", headers, body: "{}" })).status, 404, "the online API cannot delete retention targets");
-  await page.goto(base + "/?token=" + token + "#/workspace"); await page.getByRole("button", { name: "Retention", exact: true }).click();
+  await page.goto(base + "/?token=" + token + "#/settings/data");
   const panel = page.getByRole("region", { name: "Data retention", exact: true }), field = panel.getByLabel("Retention days archivedRuns", { exact: true }); await field.waitFor();
   assert.equal(await field.inputValue(), "");
   const initial = await api<RetentionPolicy>("/api/maintenance/retention"); assert.deepEqual(Object.values(initial.days), [null, null, null, null]);
@@ -55,7 +55,7 @@ test("reachable Workspace retention settings preserve conflicting drafts and dow
   await field.fill("30"); await panel.getByLabel("Retention protected run IDs", { exact: true }).fill("protected-by-policy");
   await panel.getByRole("button", { name: "Save retention settings", exact: true }).click(); await panel.getByRole("status").getByText("Retention settings saved. No data was deleted.", { exact: true }).waitFor();
   const policy = await api<RetentionPolicy>("/api/maintenance/retention"); assert.equal(policy.revision, 2); assert.equal(policy.days.archivedRuns, 30); assert.deepEqual(policy.keepRunIds, ["protected-by-policy"]);
-  await page.reload(); await page.getByRole("button", { name: "Retention", exact: true }).click(); await field.waitFor(); assert.equal(await field.inputValue(), "30");
+  await page.reload(); await field.waitFor(); assert.equal(await field.inputValue(), "30");
   await panel.getByRole("button", { name: "Preview saved retention policy", exact: true }).click();
   const preview = panel.getByRole("region", { name: "Retention preview", exact: true }); await preview.waitFor();
   await preview.getByText("Exact selected targets · 1", { exact: true }).click(); assert.match(await preview.innerText(), /retire-old/);

@@ -44,7 +44,7 @@ after(async () => {
 });
 
 test("criterion mappings show uncovered and covered outcomes in the workspace", { timeout: 45_000 }, async () => {
-  await page.goto(base + "/#/workspace");
+  await page.goto(base + "/#/settings/workspace");
   await page.getByRole("button", { name: "Detect checks", exact: true }).click();
   const mappings = page.locator("details", { has: page.getByText("Requirement evidence mapping", { exact: true }) });
   await mappings.locator("summary").click();
@@ -117,7 +117,7 @@ test("workspace compares a complete commit and stages only its reviewed inverse"
   await writeFile(join(tree.path, "checkpoint.txt"), "This commit will be reverted.\n");
   git("add", "checkpoint.txt"); git("-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "reviewed checkpoint addition");
   const head = git("rev-parse", "HEAD");
-  await page.goto(base + "/#/workspace");
+  await page.goto(base + "/#/settings/workspace");
   await page.locator("#wb-folder").selectOption(tree.path);
   await page.getByRole("button", { name: "History", exact: true }).click();
   await page.getByRole("button", { name: "Load checkpoints", exact: true }).click();

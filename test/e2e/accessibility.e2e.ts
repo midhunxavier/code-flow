@@ -37,16 +37,21 @@ async function audit(screen: string) {
 test("main screens, workspace tools and dialogs pass automatic accessibility checks in light/dark and mobile layouts", async () => {
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
-    for (const [route, name] of [["", "composer"], ["/insights", "insights"], ["/automations", "automations"], [`/run/${runId}`, "run result"], ["/workspace", "workspace"]]) { await page.goto(`${base}/#${route}`); await page.locator("main").waitFor(); await page.waitForFunction(() => document.querySelector("main")!.textContent!.trim().length > 10); await audit(`${colorScheme} ${name}`); }
-    const tabs = ["Code", "Dependencies", "Context", "History", "Conventions", "Deferred runs", "Retention", "Shared accounts", "Filesystem policy", "Code hosts", "SSH workers", "Coordinated changes", "Extensions", "Diagnostics", "Sources", "Notifications"];
+    for (const [route, name] of [["", "composer"], [`/run/${runId}`, "run result"], ["/settings/workspace", "workspace"]]) { await page.goto(`${base}/#${route}`); await page.locator("main").waitFor(); await page.waitForFunction(() => document.querySelector("main")!.textContent!.trim().length > 10); await audit(`${colorScheme} ${name}`); }
+    const tabs = ["Code", "Dependencies", "Context", "History", "Services", "Coordinated changes", "Filtered tasks"];
     for (const tab of tabs) { await page.getByRole("navigation", { name: "Workspace tools" }).getByRole("button", { name: tab, exact: true }).click(); await audit(`${colorScheme} workspace ${tab}`); }
+    await page.goto(`${base}/#/settings`);
+    for (const category of ["General", "Agents & models", "Run defaults", "Notifications", "SSH connections", "Remote access", "Integrations", "Insights", "Automations", "Projects & access", "Extensions", "Data & storage", "Advanced"]) {
+      await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: category, exact: true }).click();
+      await audit(`${colorScheme} settings ${category}`);
+    }
     await page.getByRole("button", { name: "Side panel", exact: true }).click();
     for (const tab of ["Files", "Notes", "Chat"]) { await page.getByRole("tab", { name: tab, exact: true }).click(); await page.getByRole("tabpanel").waitFor(); await audit(`${colorScheme} side panel ${tab}`); }
     await page.getByRole("button", { name: "Close side panel", exact: true }).click();
     await page.getByRole("button", { name: "Open command palette", exact: true }).click(); await page.getByRole("dialog").waitFor(); await audit(`${colorScheme} command palette`); await page.keyboard.press("Escape");
     await page.goto(`${base}/#/`); await page.locator(".repo-btn:not(.project-btn)").click(); await page.getByRole("dialog").waitFor(); await audit(`${colorScheme} folder picker`); await page.keyboard.press("Escape");
   }
-  await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${base}/#/`); await page.locator("main").waitFor(); await audit("mobile composer"); await page.goto(`${base}/#/workspace`); await page.getByRole("heading", { name: "Inspect, verify, and recover" }).waitFor(); await audit("mobile workspace");
+  await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${base}/#/`); await page.locator("main").waitFor(); await audit("mobile composer"); await page.goto(`${base}/#/settings/workspace`); await page.getByRole("heading", { name: "Inspect, verify, and recover" }).waitFor(); await audit("mobile workspace");
   await page.getByLabel("Workspace tool", { exact: true }).selectOption("dependencies"); await page.getByRole("heading", { name: "Architecture and dependencies" }).waitFor(); await audit("mobile architecture tool"); await page.getByLabel("Workspace tool", { exact: true }).selectOption("verification");
   await page.screenshot({ path: join(root, "output/playwright/accessibility-mobile.png"), fullPage: true });
   const failures = findings.filter((item) => item.violations.length); assert.deepEqual(failures, [], JSON.stringify(failures.map((item) => ({ screen: item.screen, violations: item.violations })), null, 2));

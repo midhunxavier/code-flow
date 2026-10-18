@@ -1,16 +1,15 @@
+import { SettingsView } from "./settings.js";
+import { canNotify, setDesktopNotifications } from "./preferences.js";
 import { HostControl, executionHost } from "./ssh-projects.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { ApprovalInbox } from "./approval-inbox.js";
 import { Composer } from "./composer.js";
-import { WorkbenchView } from "./workbench.js";
 import { CommandPalette } from "./command-palette.js";
 import { SidePanel } from "./side.js";
 import { RunView } from "./run.js";
 import { Review } from "./review.js";
 import { GitHubPicker } from "./github.js";
 import { SweepDialog } from "./sweeps.js";
-import { AutomationsView } from "./automations.js";
-import { InsightsView } from "./insights.js";
 import { ProjectsDialog } from "./projects.js";
 import { ProjectView } from "./project.js";
 import { Rail } from "./rail.js";
@@ -98,7 +97,7 @@ function MainApp() {
   useEffect(() => {
     const host = executionHost.value;
     document.title = `${waitingCount.value ? `(${waitingCount.value}) ` : ""}code-flow${host.kind === "ssh" ? ` · SSH ${host.name}` : ""}`;
-  }, [waitingCount.value]);
+  }, [waitingCount.value, executionHost.value]);
   useEffect(() => {
     window.addEventListener("keydown", onShortcut);
     return () => window.removeEventListener("keydown", onShortcut);
@@ -121,14 +120,10 @@ function MainApp() {
             <RunView key={route.value.id} id={route.value.id} />
           ) : route.value.view === "review" ? (
             <Review key={`${route.value.id}:${route.value.branch}`} id={route.value.id} branch={route.value.branch} />
-          ) : route.value.view === "automations" ? (
-            <AutomationsView />
-          ) : route.value.view === "insights" ? (
-            <InsightsView group={route.value.group} />
           ) : route.value.view === "project" ? (
             <ProjectView key={route.value.id} id={route.value.id} />
-          ) : route.value.view === "workspace" ? (
-            <WorkbenchView />
+          ) : route.value.view === "settings" ? (
+            <SettingsView section={route.value.section} group={route.value.group} />
           ) : route.value.view === "invalid" ? (
             <div class="composer" role="alert">
               <h1>This link is invalid</h1>
@@ -221,28 +216,15 @@ function Crumbs() {
 }
 
 // ---------------------------------------------------------------- notifications
-const canNotify = () => "Notification" in window && Notification.permission === "granted" && store.get("notify") !== "0";
-
 export function Bell() {
-  const [on, setOn] = useState(canNotify());
+  const on = canNotify();
   return (
     <button
       class="btn ghost foot-btn bell"
       aria-label="Notifications"
       aria-pressed={on}
       title={on ? "Notifications on — click to turn off" : "Notify me when a run finishes or needs me"}
-      onClick={async () => {
-        if (!("Notification" in window)) return showToast("This browser doesn't support notifications");
-        if (on) {
-          store.set("notify", "0");
-          setOn(false);
-          return showToast("Notifications off");
-        }
-        const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
-        store.set("notify", permission === "granted" ? "1" : "0");
-        setOn(permission === "granted");
-        showToast(permission === "granted" ? "You'll be notified when a run needs you" : "Notifications are blocked in the browser settings");
-      }}
+      onClick={() => void setDesktopNotifications(!on)}
     >
       <Icon name="bell" />
     </button>
@@ -282,14 +264,15 @@ export function notifyFinished(run: RunSummary) {
 
 // ---------------------------------------------------------------- keyboard
 const SHORTCUTS: [string, string][] = [
+  ["⌘, / Ctrl+,", "Settings"],
   ["⌘K / Ctrl+K", "Commands, projects and runs"],
   ["/", "Search runs"],
   ["j / k", "Next / previous run in the list"],
   ["[ / ]", "Previous / next step of the open run"],
   ["n", "New run"],
   ["p", "Pick the project for new runs, Insights and Automations"],
-  ["i", "Insights"],
-  ["a", "Automations"],
+  ["i", "Settings → Insights"],
+  ["a", "Settings → Automations"],
   ["⌘↵", "Start the run, or send what you typed"],
   ["Esc", "Close a dialog, or leave the search box"],
   ["\\", "Show or hide the side panel"],
@@ -297,6 +280,9 @@ const SHORTCUTS: [string, string][] = [
 ];
 
 function onShortcut(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key === "," && !e.defaultPrevented && !document.querySelector("dialog[open]")) {
+    e.preventDefault(); navigate({ view: "settings" }); return;
+  }
   if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
     e.preventDefault();
     commandPaletteOpen.value = !commandPaletteOpen.value;
@@ -326,9 +312,9 @@ function onShortcut(e: KeyboardEvent) {
       projectsOpen.value = true;
       return;
     case "i":
-      return go({ view: "insights" });
+      return go({ view: "settings", section: "insights" });
     case "a":
-      return go({ view: "automations" });
+      return go({ view: "settings", section: "automations" });
     case "?":
       e.preventDefault();
       shortcutsOpen.value = true;

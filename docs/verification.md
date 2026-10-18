@@ -1,6 +1,6 @@
 # Verification and review
 
-In the composer, select a verification profile instead of the single legacy check. Lightweight, standard and thorough presets detect existing repository commands. In **Workspace → Verification**, review/edit the detected commands, add bounded custom gates, map acceptance criteria to checks, and run them at a pinned commit. A baseline comparison runs the same profile on both commits; repeated attempts distinguish consistent failures from flaky results. Export the report or profile for reuse through the API.
+In the composer, select a verification profile instead of the single legacy check. Lightweight, standard and thorough presets detect existing repository commands. In **Settings → Workspace → Verification**, review/edit the detected commands, add bounded custom gates, map acceptance criteria to checks, and run them at a pinned commit. A baseline comparison runs the same profile on both commits; repeated attempts distinguish consistent failures from flaky results. Export the report or profile for reuse through the API.
 
 Every required gate must pass. Skipped gates, mixed results, missing criterion mappings and failing mapped checks cannot produce `verified`. A criterion mapping is your assertion that the chosen checks exercise its behavior; passing a command is not a semantic proof of an arbitrary requirement. Finished work without independent verification is labeled accordingly.
 

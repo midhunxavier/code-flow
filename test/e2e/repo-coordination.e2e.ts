@@ -32,7 +32,7 @@ after(async () => { await browser?.close(); await stop(); await rm(directory, { 
 test("two real repositories execute a verified dependency DAG, pin receipts and explicitly merge a reviewed matrix", { timeout: 90_000 }, async () => {
   assert.equal((await fetch(base + "/api/coordinated-changes")).status, 401);
   const bases = repos.map((repo) => git(repo, "rev-parse", "HEAD"));
-  await page.goto(base + "/?token=" + token + "#/workspace"); await page.getByRole("button", { name: "Coordinated changes", exact: true }).click(); const panel = page.getByRole("region", { name: "Coordinated repository changes", exact: true });
+  await page.goto(base + "/?token=" + token + "#/settings/workspace"); await page.getByRole("button", { name: "Coordinated changes", exact: true }).click(); const panel = page.getByRole("region", { name: "Coordinated repository changes", exact: true });
   await panel.getByText("Create a coordinated change", { exact: true }).click(); await panel.getByLabel("Coordinated project", { exact: true }).selectOption(project); await panel.getByLabel("Coordinated change name", { exact: true }).fill("Verified API and web rollout");
   for (const [index, nodeId] of ["repo1", "repo2"].entries()) { await panel.getByLabel(`Repository for ${nodeId}`, { exact: true }).selectOption(repos[index]!); await panel.getByLabel(`Task for ${nodeId}`, { exact: true }).fill(`Add fixture output for ${nodeId}`); await panel.getByLabel(`Verification for ${nodeId}`, { exact: true }).fill("ls claude-*.txt >/dev/null"); }
   await panel.getByLabel("repo2 depends on repo1", { exact: true }).check(); await panel.getByRole("button", { name: "Start coordinated change", exact: true }).click();

@@ -102,7 +102,7 @@ test("opening a cold archived run hydrates full task and step evidence through t
 });
 
 test("workspace starts, inspects and stops a real two-service launch profile", async () => {
-  await page.goto(`${base}/#/workspace`);
+  await page.goto(`${base}/#/settings/workspace`);
   await page.getByLabel("Repository or run worktree", { exact: true }).selectOption(worktree);
   await page.getByRole("button", { name: "Services", exact: true }).click();
   const panel = page.getByRole("region", { name: "Multi-service launch profiles" });
@@ -126,13 +126,13 @@ test("workspace starts, inspects and stops a real two-service launch profile", a
 });
 
 test("project conventions save with CAS, restore a previewed version, and explicitly stage guidance for a later commit", async () => {
-  await page.goto(`${base}/#/workspace`);
-  const tab = page.getByRole("button", { name: "Conventions", exact: true }); await tab.focus(); await page.keyboard.press("Enter");
+  await page.goto(`${base}/#/settings`);
+  const tab = page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: "Projects & access", exact: true }); await tab.focus(); await page.keyboard.press("Enter");
   const panel = page.getByRole("region", { name: "Versioned project conventions" }); const draft = panel.getByLabel("Private conventions draft", { exact: true });
   await draft.waitFor(); await draft.focus(); await page.keyboard.press("Tab"); assert.equal(await panel.getByLabel("Revision note", { exact: true }).evaluate((element) => element === document.activeElement), true, "editor labels and keyboard focus follow the document order");
   await draft.fill("Keep shared project interfaces small and tested."); await panel.getByLabel("Revision note", { exact: true }).fill("Initial shared guidance");
   await panel.getByRole("button", { name: "Save private revision", exact: true }).click(); await panel.getByText(/Saved revision 1 ·/).waitFor();
-  const projectId = await page.getByLabel("Conventions project", { exact: true }).inputValue();
+  const projectId = await page.getByLabel("Project", { exact: true }).inputValue();
   const concurrent = await fetch(`${base}/api/projects/${projectId}/conventions`, { method: "PUT", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ revision: 1, text: "A concurrent saved convention." }) }); assert.equal(concurrent.status, 200);
   await draft.fill("Preserve my browser draft while comparing concurrent edits."); await panel.getByRole("button", { name: "Save private revision", exact: true }).click();
   await panel.getByRole("alert").getByText(/changed to revision 2/).waitFor(); assert.match(await draft.inputValue(), /Preserve my browser/);
@@ -172,14 +172,14 @@ test("guided onboarding inspects required and optional dependencies through actu
 });
 
 test("review inbox controls have distinct labels, keyboard order and a bounded mobile layout", async () => {
-  await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${base}/#/automations`);
+  await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${base}/#/settings/automations`);
   const group = page.getByRole("combobox", { name: "Group review inbox", exact: true }); const filter = page.getByRole("combobox", { name: "Filter review inbox", exact: true }); const search = page.getByRole("textbox", { name: "Search review inbox", exact: true });
   assert.equal(await group.count(), 1); assert.equal(await filter.count(), 1); assert.equal(await search.count(), 1);
   await group.focus(); await page.keyboard.press("Tab"); assert.equal(await filter.evaluate((element) => element === document.activeElement), true);
   await page.keyboard.press("Tab"); assert.equal(await search.evaluate((element) => element === document.activeElement), true);
   await search.fill("fixture"); await group.selectOption("reason"); await filter.selectOption("failed");
   for (const control of [group, filter, search]) { const bounds = await control.boundingBox(); assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 391, "review controls fit the phone viewport"); }
-  assert.equal(await page.locator(".composer.automations").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, "inbox content has no horizontal overflow");
+  assert.equal(await page.locator(".automations").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, "inbox content has no horizontal overflow");
   if (process.env.CODEFLOW_UI_SCREENSHOTS) { mkdirSync(join(root, "output/playwright"), { recursive: true }); await page.screenshot({ path: join(root, "output/playwright/review-inbox-mobile.png") }); }
 });
 
@@ -228,7 +228,7 @@ test("filesystem policy enforces scoped app reads/writes and globally blocks exe
   const otherRepo = join(fixture, "other-repo"); mkdirSync(otherRepo); execFileSync("git", ["init", "-q", "-b", "main"], { cwd: otherRepo }); writeFileSync(join(otherRepo, "README.md"), "Other repository\n"); execFileSync("git", ["add", "."], { cwd: otherRepo }); execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "initial"], { cwd: otherRepo });
   await fetch(`${base}/api/projects`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ name: "Other repository", repos: [otherRepo] }) });
   const bootReady = Promise.all(["/api/models", "/api/doctor", "/api/doctor/git"].map((path) => page.waitForResponse((response) => new URL(response.url()).pathname === path)));
-  await page.goto(`${base}/?policy-check=1#/workspace`); await bootReady; await page.getByRole("button", { name: "Filesystem policy", exact: true }).click(); await page.getByLabel("Filesystem policy project", { exact: true }).selectOption(project.id); const panel = page.getByRole("region", { name: "Project filesystem policy", exact: true });
+  await page.goto(`${base}/?policy-check=1#/settings/projects`); await bootReady; await page.getByLabel("Project", { exact: true }).selectOption(project.id); const panel = page.getByRole("region", { name: "Project filesystem policy", exact: true });
   await panel.getByLabel("Read deny paths", { exact: true }).fill("private"); await panel.getByLabel("Write allow paths", { exact: true }).fill("api"); const applying = page.waitForResponse((response) => response.url().endsWith("/filesystem-policy") && response.request().method() === "PUT"); await panel.getByRole("button", { name: "Stop execution and apply policy", exact: true }).click(); const applied = await applying; assert.equal(applied.status(), 200, await applied.text()); await panel.getByRole("status").getByText("Filesystem policy revision 1 applied.", { exact: true }).waitFor();
   const request = (path: string, body?: unknown, method = "POST") => fetch(base + path, { headers: { ...headers, "content-type": "application/json" }, ...(body !== undefined ? { method, body: JSON.stringify(body) } : {}) });
   for (const prefix of ["/api", "/api/v1"]) {

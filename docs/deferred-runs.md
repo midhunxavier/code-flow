@@ -1,5 +1,7 @@
 # Deferred runs
 
+Inspect and manage the queue in **Settings → Automations → Deferred runs**. Save a new deferred request from the composer after configuring its task.
+
 Deferred runs save one explicit run request for later execution. They are separate from recurring automations. A job can start at or after a chosen local time, when selected providers have capacity, or after both conditions are satisfied. The application must be running; closing it preserves the queue for the next launch.
 
 The queue uses the application's reported provider windows and current availability. A known provider reset is a waiting condition. An unknown reset is periodically checked; it is not presented as a promised reset time, and the queue never makes a billable inference call to probe quota. Provider selection and source references are validated again when the job launches.
