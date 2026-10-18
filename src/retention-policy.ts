@@ -10,6 +10,7 @@ import { MemoryStore, type MemoryMaintenanceEntry, type MemoryRef } from "./memo
 import { validateDeferredDocument } from "./deferred-runs.js";
 import { validateCodeHostDocument } from "./code-hosts.js";
 import { validateCoordinationDocument } from "./repo-coordination.js";
+import { StrictRunLogReader } from "./run-log.js";
 
 export type RetentionKind = "archivedRuns" | "attachments" | "memory" | "worktrees";
 export interface RetentionPolicy { version: 1; revision: number; days: Record<RetentionKind, number | null>; keepRunIds: string[]; keepMemoryIds: string[] }
@@ -100,7 +101,13 @@ async function runRecord(home: string, id: string, budget: Budget): Promise<RunR
   const log = await readFingerprint(join(home, "runs", `${id}.jsonl`), budget);
   if (!log.text.endsWith("\n")) throw new Error("Incomplete run log; recovery may still need its sources");
   let run: Record<string, any> | undefined;
-  for (const line of log.text.split("\n")) if (line.trim()) { const event = JSON.parse(line); if (!event || typeof event !== "object" || Array.isArray(event)) throw new Error("Invalid run event"); if (event.type === "run") { if (event.run?.id !== id) throw new Error("Mismatched run snapshot"); run = event.run; } }
+  const reader = new StrictRunLogReader(id);
+  for (let start = 0; start < log.text.length;) {
+    const end = log.text.indexOf("\n", start), line = log.text.slice(start, end < 0 ? log.text.length : end); start = end < 0 ? log.text.length : end + 1;
+    if (!line.trim()) continue;
+    const value = JSON.parse(line); if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid run event");
+    const event = reader.decode(value); if (event?.type === "run") run = event.run;
+  }
   if (!run) throw new Error("No authoritative run snapshot"); return { run, log: log.file, mtime: log.mtime };
 }
 async function managedRoot(run: Record<string, any>): Promise<string> {

@@ -623,11 +623,21 @@ function FolderPicker() {
 /** Open/close a <dialog> from state, and report Esc/backdrop closes back. */
 export function useDialog(open: boolean, onClose: () => void) {
   const [el, setEl] = useState<HTMLDialogElement | null>(null);
+  // close() queues a native event. It may arrive after the same dialog has reopened, so it
+  // acknowledges the controlled transition rather than requesting another state change.
+  const controlledCloses = useRef(new WeakMap<HTMLDialogElement, number>());
   useEffect(() => {
     if (!el) return;
     if (open && !el.open) el.showModal();
-    if (!open && el.open) el.close();
-    const handler = () => onClose();
+    if (!open && el.open) {
+      controlledCloses.current.set(el, (controlledCloses.current.get(el) ?? 0) + 1);
+      el.close();
+    }
+    const handler = () => {
+      const pending = controlledCloses.current.get(el) ?? 0;
+      if (pending) { controlledCloses.current.set(el, pending - 1); return; }
+      onClose();
+    };
     el.addEventListener("close", handler);
     return () => el.removeEventListener("close", handler);
   }, [el, open]);

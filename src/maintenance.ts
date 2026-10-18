@@ -8,6 +8,7 @@ import { acquireLock } from "./store.js";
 import { disableRestoredDeferredRuns } from "./deferred-runs.js";
 import { disableRestoredCodeHostActions } from "./code-hosts.js";
 import { disableRestoredCoordinatedChanges } from "./repo-coordination.js";
+import { StrictRunLogReader } from "./run-log.js";
 
 const compress = promisify(gzip);
 const decompress = promisify(gunzip);
@@ -191,7 +192,8 @@ async function readRunLog(home: string, id: string): Promise<LogData> {
   const lines = text.split("\n").filter((line) => line.trim());
   const events = lines.map((line) => JSON.parse(line) as Record<string, any>);
   if (events.some((event) => !event || typeof event !== "object" || Array.isArray(event) || (event.type === "run" && event.run?.id !== id))) throw new Error("Run log contains invalid or mismatched records.");
-  const snapshot = [...events].reverse().find((event) => event?.type === "run" && event.run?.id === id)?.run;
+  const reader = new StrictRunLogReader(id); let snapshot: Record<string, any> | undefined;
+  for (const value of events) { const event = reader.decode(value); if (event?.type === "run") snapshot = event.run; }
   if (!snapshot || !["done", "failed", "cancelled"].includes(snapshot.status)) throw new Error("Only completed, failed or cancelled runs can be maintained. Resumable runs are kept.");
   return { text, lines, events, snapshot, bytes: info.size, mtimeMs: info.mtimeMs };
 }
@@ -232,10 +234,17 @@ export function retainArchivedRuns(input: { home: string; days: number; now?: nu
 export function compactRunLog(input: { home: string; runId: string; apply?: boolean }) {
   return offline(input.home, async (home) => {
     const log = await readRunLog(home, input.runId);
-    const snapshots = log.events.flatMap((event, index) => event?.type === "run" ? [index] : []);
+    const snapshots = log.events.flatMap((event, index) => event?.type === "run" || event?.type === "run-patch" ? [index] : []);
     const removable = new Set(snapshots.slice(1, -1));
-    const text = log.lines.filter((_, index) => !removable.has(index)).join("\n") + "\n";
-    const afterBytes = Buffer.byteLength(text);
+    const last = snapshots.at(-1), lastEvent = last === undefined ? undefined : log.events[last];
+    // The final patch may name a removed intermediate snapshot. Keep it as a self-contained
+    // full snapshot, retaining every transcript/step record and its original sequence order.
+    const finalLine = removable.size && lastEvent?.type === "run-patch" ? JSON.stringify({ seq: lastEvent.seq, ts: lastEvent.ts, runId: input.runId, type: "run", run: log.snapshot }) : undefined;
+    let text = log.lines.flatMap((line, index) => removable.has(index) ? [] : [index === last && finalLine ? finalLine : line]).join("\n") + "\n";
+    let afterBytes = Buffer.byteLength(text);
+    // Already efficient patch logs can grow when materializing the final state. Leave them
+    // untouched rather than exceed their original byte bound merely to remove a snapshot.
+    if (afterBytes >= log.bytes) { removable.clear(); text = log.text; afterBytes = log.bytes; }
     if (input.apply && removable.size) {
       const path = join(home, "runs", `${input.runId}.jsonl`);
       const temp = `${path}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;

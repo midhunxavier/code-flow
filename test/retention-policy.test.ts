@@ -11,6 +11,7 @@ const moduleHome = await mkdtemp(join(tmpdir(), "codeflow-retention-module-")); 
 const { RetentionPolicyStore, RetentionPolicyConflictError, previewRetention, applyRetention } = await import("../src/retention-policy.js");
 const { MemoryStore } = await import("../src/memory.js");
 const { DeferredRuns } = await import("../src/deferred-runs.js");
+const { RunLogWriter } = await import("../src/run-log.js");
 const directories = [moduleHome];
 after(() => Promise.all(directories.map((directory) => rm(directory, { recursive: true, force: true }))));
 const now = Date.now(), old = new Date(now - 100 * 86400000);
@@ -74,6 +75,42 @@ test("active, resumable, unarchived, pinned, watched, child and pending deferred
   const queue = new DeferredRuns({ file: join(f.home, "deferred-runs.json"), ready: async () => ({ ready: false }), launch: async () => ({ runId: "never" }) }); await queue.load(); await queue.enqueue({ run: { repo: f.repo, pattern: "solo", task: "later", roles: {}, options: {}, parentRunId: "deferred-source" } });
   const plan = await previewRetention({ home: f.home, now }); assert.equal(plan.targets.length, 0);
   for (const id of ["active", "paused", "resumable", "stopped", "unarchived", "pinned", "watched", "source", "deferred-source", "policy-pin"]) assert.ok(plan.protected.some((item) => item.kind === "archivedRuns" && item.id === id), id);
+});
+
+test("patch snapshots determine the latest archived state, pins and parent provenance before retention planning", async () => {
+  const f = await fixture();
+  for (const [id, initial, changed] of [
+    ["archive-later", { archived: false }, { archived: true }],
+    ["unarchive-later", {}, { archived: false }],
+    ["pin-later", {}, { pinned: true }],
+    ["parent-source", {}, {}],
+    ["child", { archived: false }, { parentRunId: "parent-source" }],
+  ] as const) {
+    const run = await writeRun(f, id, initial), writer = new RunLogWriter(false);
+    const events = [run, { ...run, ...changed }].map((snapshot, index) => writer.encode({ type: "run", seq: index + 1, ts: +old, runId: id, run: snapshot as any }));
+    assert.equal(events[1]!.type, "run-patch");
+    const file = join(f.home, "runs", id + ".jsonl"); await writeFile(file, events.map((event) => JSON.stringify(event)).join("\n") + "\n"); await utimes(file, old, old);
+  }
+  const plan = await previewRetention({ home: f.home, now });
+  assert.equal(plan.truncated, false); assert.deepEqual(plan.targets.map((target) => target.runId), ["archive-later"]);
+  for (const id of ["unarchive-later", "pin-later", "parent-source", "child"]) assert.ok(plan.protected.some((item) => item.kind === "archivedRuns" && item.id === id), id);
+  assert.match(plan.protected.find((item) => item.id === "parent-source")!.reason, /Source of retained child/);
+});
+
+test("broken, foreign and malformed patch chains protect cleanup sources even before a later full snapshot", async () => {
+  const f = await fixture();
+  for (const [id, patch] of [
+    ["missing-base", { base: 99, set: { archived: true } }],
+    ["foreign-patch", { base: 1, runId: "another-run", set: { archived: true } }],
+    ["invalid-tail", { base: 1, tail: { followUps: [99, []] } }],
+  ] as const) {
+    const run = await writeRun(f, id), file = join(f.home, "runs", id + ".jsonl");
+    await writeFile(file, [{ type: "run", seq: 1, run }, { type: "run-patch", seq: 2, runId: id, ...patch }, { type: "run", seq: 3, run }].map((event) => JSON.stringify(event)).join("\n") + "\n"); await utimes(file, old, old);
+  }
+  const plan = await previewRetention({ home: f.home, now }); assert.equal(plan.truncated, true); assert.equal(plan.targets.length, 0);
+  for (const id of ["missing-base", "foreign-patch", "invalid-tail"]) assert.ok(plan.protected.some((item) => item.id === id), id);
+  await assert.rejects(applyRetention({ home: f.home, plan, now: now + 1000 }), /changed|truncated|incomplete/i);
+  for (const id of ["missing-base", "foreign-patch", "invalid-tail"]) await access(join(f.home, "runs", id + ".jsonl"));
 });
 
 test("project guidance and any live derived reference protect memory bodies and source transcripts", async () => {

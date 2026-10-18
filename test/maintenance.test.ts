@@ -10,6 +10,7 @@ import { gzipSync } from "node:zlib";
 
 process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-maintenance-module-"));
 const { compactRunLog, createEncryptedBackup, restoreEncryptedBackup, retainArchivedRuns } = await import("../src/maintenance.js");
+const { RunLogWriter, decodeRunLog } = await import("../src/run-log.js");
 const PASSWORD = "test backup password 12345";
 const fixture = async (t: { after: (action: () => Promise<unknown>) => void }) => {
   const root = await mkdtemp(join(tmpdir(), "codeflow-maintenance-"));
@@ -188,6 +189,43 @@ test("compaction preserves transcript, step and recovery evidence while removing
   for (const suffix of [".cold-index.json", ".cold-detail.json"]) assert.equal(await lstat(join(home, "runs", "compact" + suffix)).then(() => true, () => false), false);
   await writeFile(join(home, "runs", "running.jsonl"), log("running", "running", false));
   await assert.rejects(compactRunLog({ home, runId: "running", apply: true }), /Resumable/);
+});
+
+test("patch-aware compaction preserves the latest state and rebases the retained final snapshot", async (t) => {
+  const { home } = await fixture(t), writer = new RunLogWriter(false), id = "patch-compact";
+  const initial = { id, status: "done", archived: false, summary: "Initial".repeat(5000), followUps: [] };
+  const snapshots = [initial, { ...initial, summary: initial.summary + "x".repeat(10000) }, { ...initial, archived: true, pinned: true, summary: "Finished" }];
+  const metadata = snapshots.map((run, index) => writer.encode({ type: "run", seq: index * 2 + 1, ts: 1, runId: id, run: run as any }));
+  assert.equal(metadata[1]!.type, "run-patch"); assert.equal(metadata[2]!.type, "run-patch");
+  const events = [metadata[0], { seq: 2, type: "agent", event: { kind: "text", text: "Retained transcript" } }, metadata[1], { seq: 4, type: "step", step: { id: "step", status: "done" } }, metadata[2], { seq: 6, type: "log", text: "Retained verification evidence" }];
+  const file = join(home, "runs", id + ".jsonl"), original = events.map((event) => JSON.stringify(event)).join("\n") + "\n"; await writeFile(file, original);
+  const preview = await compactRunLog({ home, runId: id }); assert.equal(preview.snapshotsRemoved, 1); assert.ok(preview.savedBytes > 9000); assert.equal(await readFile(file, "utf8"), original);
+  await compactRunLog({ home, runId: id, apply: true });
+  const lines = (await readFile(file, "utf8")).trim().split("\n").map((line) => JSON.parse(line)); assert.deepEqual(lines.map((event) => event.seq), [1, 2, 4, 5, 6]);
+  assert.equal(lines[3].type, "run"); assert.deepEqual(decodeRunLog(lines).filter((event) => event.type === "run").at(-1)!.run, snapshots[2]);
+  assert.equal((await compactRunLog({ home, runId: id, apply: true })).snapshotsRemoved, 0);
+});
+
+test("maintenance reads latest archive patches and refuses incomplete or invalid chains without rewriting logs", async (t) => {
+  const { home } = await fixture(t), old = new Date(Date.now() - 100 * 86400000);
+  for (const [id, before, after] of [["archive-patch", false, true], ["unarchive-patch", true, false]] as const) {
+    const writer = new RunLogWriter(false), initial = { id, status: "done", archived: before };
+    const events = [initial, { ...initial, archived: after }].map((run, index) => writer.encode({ seq: index + 1, ts: 1, runId: id, type: "run", run: run as any }));
+    const file = join(home, "runs", id + ".jsonl"); await writeFile(file, events.map((event) => JSON.stringify(event)).join("\n") + "\n"); await utimes(file, old, old);
+  }
+  for (const [id, patch] of [["missing", { base: 99, set: { archived: true } }], ["malformed", { base: 1, tail: { merges: [99, []] } }]] as const) {
+    const initial = { id, status: "done", archived: true, merges: [] }, file = join(home, "runs", id + ".jsonl");
+    const original = [{ seq: 1, type: "run", run: initial }, { seq: 2, type: "run-patch", runId: id, ...patch }].map((event) => JSON.stringify(event)).join("\n") + "\n";
+    await writeFile(file, original); await utimes(file, old, old); await assert.rejects(compactRunLog({ home, runId: id, apply: true }), /patch/i); assert.equal(await readFile(file, "utf8"), original);
+  }
+  const report = await retainArchivedRuns({ home, days: 30 }); assert.deepEqual(report.candidates.map((candidate) => candidate.id), ["archive-patch"]); assert.deepEqual(report.skipped.map((entry) => entry.id).sort(), ["malformed", "missing"]);
+});
+
+test("already compact patch logs stay within their original size instead of duplicating common metadata", async (t) => {
+  const { home } = await fixture(t), writer = new RunLogWriter(false), id = "compact-enough", initial = { id, status: "done", archived: true, task: "same metadata ".repeat(5000) };
+  const events = [initial, { ...initial, summary: "progress" }, { ...initial, summary: "finished" }].map((run, index) => writer.encode({ type: "run", seq: index + 1, ts: 1, runId: id, run: run as any }));
+  const file = join(home, "runs", id + ".jsonl"), original = events.map((event) => JSON.stringify(event)).join("\n") + "\n"; await writeFile(file, original);
+  const result = await compactRunLog({ home, runId: id, apply: true }); assert.equal(result.savedBytes, 0); assert.equal(result.snapshotsRemoved, 0); assert.equal(await readFile(file, "utf8"), original);
 });
 
 test("offline maintenance refuses to compete with a live server lock", async (t) => {

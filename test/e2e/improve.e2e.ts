@@ -193,6 +193,53 @@ test("newer text, repository, project and context transitions invalidate late Im
   } finally { await page.close(); }
 });
 
+test("folder picker ignores a prior opening's delayed native close event while preserving explicit navigation", async () => {
+  const page = await openPage();
+  try {
+    await page.evaluate(() => {
+      const native = HTMLDialogElement.prototype.close;
+      let delayed = false;
+      HTMLDialogElement.prototype.close = function (value?: string) {
+        if (!delayed && this.getAttribute("aria-labelledby") === "folder-picker-title") {
+          delayed = true;
+          this.addEventListener("close", (event) => {
+            event.stopImmediatePropagation();
+            const dialog = this;
+            (window as unknown as { releasePickerClose?: () => void }).releasePickerClose = () => {
+              delete (window as unknown as { releasePickerClose?: () => void }).releasePickerClose;
+              dialog.dispatchEvent(new Event("close"));
+            };
+          }, { once: true, capture: true });
+        }
+        native.call(this, value);
+      };
+    });
+    await chooseRepo(page, repos[1]!);
+    await page.waitForFunction(() => typeof (window as unknown as { releasePickerClose?: unknown }).releasePickerClose === "function");
+    let take!: (route: Route) => void;
+    const requested = new Promise<Route>((resolve) => { take = resolve; });
+    await page.route("**/api/fs?**", (route) => {
+      if (new URL(route.request().url()).searchParams.get("path") === repos[0]) take(route);
+      else void route.continue();
+    });
+    await page.locator(".repo-btn:not(.project-btn)").click();
+    await page.getByLabel("Folder path").fill(repos[0]!); await page.getByLabel("Folder path").press("Enter");
+    const listing = await requested;
+    await page.evaluate(() => (window as unknown as { releasePickerClose: () => void }).releasePickerClose());
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    assert.equal(await page.getByRole("dialog", { name: "Choose a repository", exact: true }).isVisible(), true, "a prior controlled close cannot dismiss the new opening");
+    await listing.continue();
+    await page.getByText("✓ This folder is a git repository").waitFor();
+    await page.getByRole("button", { name: "Use this folder", exact: true }).click();
+    await page.locator(".repo-btn:not(.project-btn) .name", { hasText: "alpha" }).waitFor();
+    await page.unroute("**/api/fs?**");
+    await page.locator(".repo-btn:not(.project-btn)").click();
+    await page.getByRole("dialog", { name: "Choose a repository", exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog", { name: "Choose a repository", exact: true }).waitFor({ state: "hidden" });
+  } finally { await page.close(); }
+});
+
 test("Improve respects SSH and Docker selection and its mode menu remains accessible on a phone", async () => {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   try {

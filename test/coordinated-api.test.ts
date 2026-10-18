@@ -5,7 +5,8 @@ import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCoordinatedApi, persistCoordinatedReceipt, type CoordinationHost } from "../src/coordinated-api.js";
-import type { Run, StartRunInput } from "../src/engine.js";
+import type { Run, RunEvent, StartRunInput } from "../src/engine.js";
+import { RunLogWriter } from "../src/run-log.js";
 import type { DeferredRunRequest } from "../src/deferred-runs.js";
 import type { Project } from "../src/projects.js";
 import type { VerificationReport } from "../src/verification.js";
@@ -18,7 +19,8 @@ async function fixture() {
   const repos = [join(directory, "api"), join(directory, "web")]; for (const repo of repos) { await mkdir(join(repo, ".codeflow"), { recursive: true }); git(repo, "init", "-q", "-b", "main"); git(repo, "config", "user.name", "fixture"); git(repo, "config", "user.email", "fixture@test"); await writeFile(join(repo, "README.md"), "Fixture\n"); await writeFile(join(repo, ".codeflow/config.json"), JSON.stringify({ check: "test -f output.txt", setup: "true", copy: [".env"] })); git(repo, "add", "."); git(repo, "commit", "-qm", "initial"); }
   let project: Project | undefined = { id: "project-fixture", name: "Fixture", repos: [...repos], createdAt: Date.now() };
   const runs = new Map<string, Run>(), inputs: StartRunInput[] = [], cancelled: string[] = [], merges: { id: string; input: any }[] = [];
-  const save = (run: Run) => appendFile(join(records, `${run.id}.jsonl`), JSON.stringify({ type: "run", runId: run.id, run }) + "\n");
+  const writer = new RunLogWriter(); let seq = 0;
+  const save = (run: Run) => appendFile(join(records, `${run.id}.jsonl`), JSON.stringify(writer.encode({ type: "run", seq: ++seq, ts: Date.now(), runId: run.id, run: structuredClone(run) })) + "\n");
   const build = async (request: DeferredRunRequest): Promise<StartRunInput> => ({ pattern: { id: "solo" } as StartRunInput["pattern"], task: request.task, repo: request.repo, project: request.project, baseRef: request.baseRef, roles: { agent: ["claude"] }, options: {}, loop: request.loop, trust: "full", allowUntrusted: true, approvals: { plan: true, tools: true }, parentRunId: "must-be-cleared", context: { paths: [], attachments: [{ name: "must-not-inherit", data: "eA==" }] } });
   const report = (input: StartRunInput, head: string, branch: string): Run["verification"] => ({ version: 1, profile: "Coordinated task checks", state: "verified", head, branch, startedAt: Date.now(), endedAt: Date.now(), checks: input.loop!.verification!.checks.map((check) => ({ check, diagnosis: "passed", attempts: [{ ok: true, command: check.command, output: "Fixture host evidence; real engine is covered in browser acceptance", exitCode: 0, timedOut: false, durationMs: 1 }] })), skipped: [] });
   const host = {
@@ -73,6 +75,20 @@ test("exact initial and shipping receipt persistence rejects forged metadata, un
 test("shipping invokes an actual local expected-tree merge and manual recovery requires its exact parents/tree", async () => {
   const f = await fixture(); let job = await f.completed(); job = await f.api.service.previewShipping(job.id, job.revision, { api: "main", web: "main" }); job = await f.api.service.shipNode(job.id, "api", job.revision, job.shipping!.id); assert.equal(job.nodes[0]!.status, "shipped"); assert.equal(f.merges.length, 1); assert.equal(job.nodes[1]!.status, "verified"); const commit = job.nodes[0]!.shippedCommit!, checked = job.shipping!.entries[0]!.validation; assert.equal(git(f.repos[0]!, "show", "-s", "--format=%P", commit), `${checked.target} ${checked.source}`);
   const document = JSON.parse(await readFile(f.options.file, "utf8")); document.jobs[0].nodes[0].status = "shipping-unknown"; delete document.jobs[0].nodes[0].shippedCommit; await writeFile(f.options.file, JSON.stringify(document)); job = await f.latest(); await assert.rejects(f.api.service.recoverShipping(job.id, "api", job.revision, checked.target), /does not prove/); job = await f.api.service.recoverShipping(job.id, "api", job.revision, commit); assert.equal(job.nodes[0]!.shippedCommit, commit);
+});
+
+test("durable shipping receipts decode patches and reject a broken latest chain until a full snapshot", async () => {
+  const f = await fixture(), job = await f.completed(), run = f.runs.get(job.nodes[0]!.runId!)!, file = join(f.records, `${run.id}.jsonl`);
+  const shipped = { branch: run.worktrees[0]!.branch, into: "main", commit: "f".repeat(40) }, writer = new RunLogWriter(false);
+  const snapshot = (seq: number, merges: Run["merges"]): RunEvent => ({ seq, ts: seq, runId: run.id, type: "run", run: { ...structuredClone(run), merges } });
+  const first = writer.encode(snapshot(1, [])), receipt = writer.encode(snapshot(2, [{ ...shipped, at: 2 }])); assert.equal(receipt.type, "run-patch");
+  await writeFile(file, [first, receipt].map((event) => JSON.stringify(event)).join("\n") + "\n"); await persistCoordinatedReceipt(run, f.records, shipped);
+  await appendFile(file, JSON.stringify({ seq: 3, ts: 3, runId: run.id, type: "run-patch", base: 99, set: { merges: [] } }) + "\n");
+  await assert.rejects(persistCoordinatedReceipt(run, f.records, shipped), /shipping receipt was not saved/);
+  await appendFile(file, JSON.stringify(snapshot(4, [{ ...shipped, at: 2 }])) + "\n"); await persistCoordinatedReceipt(run, f.records, shipped);
+  await appendFile(file, JSON.stringify({ seq: 5, ts: 5, runId: run.id, type: "run-patch", base: 4, tail: { merges: [99, []] } }) + "\n");
+  await assert.rejects(persistCoordinatedReceipt(run, f.records, shipped), /shipping receipt was not saved/);
+  await appendFile(file, JSON.stringify(snapshot(6, [{ ...shipped, at: 2 }])) + "\n"); await persistCoordinatedReceipt(run, f.records, shipped);
 });
 
 test("startup only links exact durable claims and preserves a cancellation requested before the crash", async () => {

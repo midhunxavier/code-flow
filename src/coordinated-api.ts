@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { HttpError, readJson, send } from "./http.js";
 import { RUNS_DIR, flushWrites } from "./store.js";
+import { StrictRunLogReader } from "./run-log.js";
 import { git, repoRoot, resolveCommit } from "./git.js";
 import { readRepoConfig } from "./repo-config.js";
 import { validateVerificationProfile, type VerificationReport } from "./verification.js";
@@ -39,7 +40,13 @@ export async function persistCoordinatedReceipt(run: Pick<Run, "id" | "repo" | "
     if (shipped) {
       const length = Math.min(info.size, 4 * 1024 * 1024), tail = Buffer.alloc(length), read = await handle.read(tail, 0, length, info.size - length), source = tail.subarray(0, read.bytesRead).toString("utf8");
       if (!source.endsWith("\n")) throw new Error("The coordinated shipping record is incomplete"); const lines = source.split("\n"); if (info.size > length) lines.shift();
-      const snapshots = lines.filter(Boolean).map((line) => JSON.parse(line)).filter((event) => event.type === "run" && event.run?.id === run.id), latest = snapshots.at(-1)?.run as Run | undefined;
+      let reader = new StrictRunLogReader(run.id), latest: Run | undefined;
+      for (const line of lines.filter(Boolean)) {
+        let event;
+        try { event = reader.decode(JSON.parse(line)); }
+        catch { latest = undefined; reader = new StrictRunLogReader(run.id); continue; }
+        if (event?.type === "run") latest = event.run as Run;
+      }
       if (!latest || !sameIdentity(latest.coordination, run.coordination) || !latest.merges.some((merge) => merge.branch === shipped.branch && merge.into === shipped.into && merge.commit === shipped.commit)) throw new Error("The exact shipping receipt was not saved; inspect its local target before recovery");
     }
     await handle.sync();
