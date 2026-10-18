@@ -179,20 +179,23 @@ function page(title: string, body: string, refresh = true): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 ${refresh ? '<meta http-equiv="refresh" content="15">' : ""}<meta name="referrer" content="no-referrer"><meta name="robots" content="noindex">
 <title>${esc(title)}</title><style>
-:root{--bg:#f7f7f5;--panel:#fdfdfc;--text:#222f30;--muted:#445e5f;--border:#e4e3e3;--ok:#2f8a57;--warn:#a86200;--bad:#c73a2e;--accent:#3f6f12}
-@media (prefers-color-scheme:dark){:root{--bg:#111918;--panel:#192425;--text:#f5f8f7;--muted:#c9cbbe;--border:#2b3a3c;--ok:#6fd39a;--warn:#e2a64b;--bad:#f2786a;--accent:#b9ea8a}}
-body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 Manrope,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
-main{max-width:720px;margin:0 auto;padding:16px}
-h1{font-size:22px;letter-spacing:-.03em;margin:4px 0 12px}h2,h3{font:500 11px "Roboto Mono",ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:.14em;color:var(--muted);margin:22px 0 8px}
-h2.project{font:700 18px/1.3 Manrope,system-ui,-apple-system,"Segoe UI",sans-serif;text-transform:none;letter-spacing:-.02em;color:var(--text);margin:26px 0 0;padding-top:16px;border-top:1px solid var(--border)}
-section:first-of-type h2.project{margin-top:8px;padding-top:0;border-top:0}h2.project+h3{margin-top:10px}
-a{color:var(--accent);text-decoration:none}
-.card{display:block;background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:12px 14px;margin:8px 0;color:var(--text);box-shadow:0 12px 30px rgba(34,47,48,.06),0 2px 10px rgba(34,47,48,.04)}
-.t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.m{font-size:12px;color:var(--muted)}
-.b{display:inline-block;font-size:11px;font-weight:700;padding:1px 8px;border-radius:999px;border:1px solid currentColor}
-.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}.run{color:var(--accent)}
-pre{white-space:pre-wrap;word-break:break-word;font:12px/1.45 ui-monospace,Menlo,monospace;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:10px}
-li{margin:4px 0}.foot{font-size:12px;color:var(--muted);margin-top:24px}
+:root{--bg:#f8f7f3;--raised:#fdfcf9;--sunken:#f0efe9;--text:#292a26;--muted:#65675e;--border:#e4e2da;--border-strong:#d4d2c7;--link:#2d6a4b;--mint:#36b98a;--ok:#2d6a4b;--ok-soft:#e5f4ea;--warn:#87662e;--warn-soft:#f6efdd;--bad:#a44a36;--bad-soft:#f7e9e4;--shadow:0 1px 2px rgba(34,35,24,.05);color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#161713;--raised:#1e1f1a;--sunken:#121310;--text:#ecebe4;--muted:#9c9d92;--border:#2e3029;--border-strong:#3d4036;--link:#8fe3c4;--mint:#4fd0a0;--ok:#8fe3c4;--ok-soft:#19362a;--warn:#eac77f;--warn-soft:#3a2f18;--bad:#f0a08d;--bad-soft:#3d201a;--shadow:0 1px 2px rgba(0,0,0,.3);color-scheme:dark}}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:720px;margin:0 auto;padding:16px 16px calc(32px + env(safe-area-inset-bottom))}
+h1{font:400 23px/1.2 Georgia,"Times New Roman",serif;letter-spacing:-.5px;margin:8px 0 12px;overflow-wrap:anywhere}h2,h3{font-size:12px;font-weight:500;color:var(--muted);margin:24px 0 8px}
+h2.project{font:400 20px/1.25 Georgia,"Times New Roman",serif;letter-spacing:-.3px;color:var(--text);margin:32px 0 0;padding-top:20px;border-top:1px solid var(--border)}
+section:first-of-type h2.project{margin-top:20px;padding-top:0;border-top:0}h2.project+h3{margin-top:12px}
+a{color:var(--link);text-decoration:none;font-weight:500}a:hover{text-decoration:underline}
+.card{display:block;background:var(--raised);border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin:8px 0;color:var(--text);font-weight:400;box-shadow:var(--shadow)}
+.card:hover{border-color:var(--border-strong);text-decoration:none}
+.t{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.m{font-size:12px;color:var(--muted)}.card .m{margin-top:4px}
+.b{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:12px;font-weight:500;line-height:1;vertical-align:1px;background:var(--sunken);color:var(--text)}
+.b.ok,.b.run{background:var(--ok-soft);color:var(--ok)}.b.warn{background:var(--warn-soft);color:var(--warn)}.b.bad{background:var(--bad-soft);color:var(--bad)}
+.b.run:before{content:"";width:6px;height:6px;border-radius:50%;background:var(--mint)}
+pre{white-space:pre-wrap;word-break:break-word;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--sunken);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0}
+ul,ol{padding-left:20px}li{margin:6px 0}li b{font-weight:600}.foot{font-size:12px;color:var(--muted);margin-top:32px}
+@media (min-width:640px){h1{font-size:26px}}
 </style></head><body><main>${body}<p class="foot">Read-only view of code-flow · refreshes every 15 s</p></main></body></html>`;
 }
 

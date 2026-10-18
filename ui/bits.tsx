@@ -33,7 +33,7 @@ export function QrCode({ text, size = 168 }: { text: string; size?: number }) {
   return (
     <svg class="qr" width={size} height={size} viewBox={`0 0 ${n} ${n}`} shape-rendering="crispEdges" role="img" aria-label={`QR code for ${text}`}>
       <rect width={n} height={n} fill="#fff" />
-      <path d={d} fill="#111918" />
+      <path d={d} fill="#1a1b16" />
     </svg>
   );
 }

@@ -86,36 +86,41 @@ export function AutomationsView() {
   return (
     <div class="composer automations">
       <div class="page-head">
-        <h1>Automations</h1>
+        <div class="ph-text">
+          <h1>Automations</h1>
+          <p class="lede">
+            Runs that start on a schedule or from a webhook. Their results wait in the inbox for you: approve, ask for changes, or reject. Nothing is ever merged automatically.
+          </p>
+        </div>
         <ProjectButton />
       </div>
-      <p class="lede">
-        Runs that start on a schedule or from a webhook. Their results wait in the inbox for you: approve, ask for changes, or reject. Nothing is ever merged automatically.
-      </p>
 
-      <div class="section">
-        <div class="section-title">
+      {/* Each section is a card: its title, then its items as rows. */}
+      <section class="section auto-card" aria-labelledby="inbox-title">
+        <h2 class="section-title" id="inbox-title">
           Inbox {pending.length ? <span class="count">{pending.length}</span> : null}
-        </div>
+        </h2>
         <Elsewhere count={allPending.length - pending.length} what={(n) => `${n} in other projects need${n === 1 ? "s" : ""} you`} />
         {pending.length ? (
           pending.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} />)
         ) : (
-          <p class="help">Nothing to review{here}. Runs that changed nothing are archived on their own.</p>
+          <p class="help empty">Nothing to review{here}. Runs that changed nothing are archived on their own.</p>
         )}
-      </div>
+      </section>
 
-      <div class="section">
-        <div class="section-title">Your automations</div>
+      <section class="section auto-card" aria-labelledby="automations-title">
+        <h2 class="section-title" id="automations-title">
+          Your automations {list.length ? <span class="n">{list.length}</span> : null}
+        </h2>
         <Elsewhere count={automations.value.length - list.length} what={(n) => `${n} more in other projects`} />
         {list.length ? (
           list.map((a) => <AutomationRow key={a.id} a={a} scoped={scoped} />)
         ) : (
-          <p class="help">
+          <p class="help empty">
             None{here} yet. Set up a run in the composer — task, team, check — and choose <b>Save as automation…</b> next to Start run.
           </p>
         )}
-      </div>
+      </section>
 
       <PhoneView />
     </div>
@@ -135,7 +140,7 @@ function Elsewhere({ count, what }: { count: number; what: (n: number) => string
     <div class="rail-hint elsewhere">
       {what(count)}
       <button type="button" onClick={() => selectProject(ALL)}>
-        show all
+        Show all
       </button>
     </div>
   );
@@ -154,7 +159,7 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
           {run.source?.title && !run.task.includes(run.source.title) ? ` — ${run.source.title}` : null}
         </a>
         <span class="help">
-          {run.trigger?.via === "sweep" ? "▤" : "⏱"} {run.trigger?.name} · {STATUS_TEXT[run.status] ?? run.status}
+          <Icon name={run.trigger?.via === "sweep" ? "layers" : run.trigger?.via === "webhook" ? "globe" : "clock"} class="inline-icon" /> {run.trigger?.name} · {STATUS_TEXT[run.status] ?? run.status}
           {run.verdict ? ` · check ${run.verdict}` : run.checkCantRun ? " · check couldn't run" : ""} · {baseName(run.repo)}
           {project ? <> · <Icon name="project" class="inline-icon" /> {project.name}</> : null} · {ago(run.createdAt)}
         </span>
@@ -244,8 +249,9 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
   return (
     <div class={`auto-row ${a.enabled ? "" : "off"}`}>
       <div class="ar-head">
+        {/* A real checkbox, drawn as a switch: it keeps its keyboard use and its checked state. */}
         <label class="switch" title={a.enabled ? "Turn off" : "Turn on"}>
-          <input type="checkbox" checked={a.enabled} onChange={(e) => update({ enabled: e.currentTarget.checked })} />
+          <input type="checkbox" role="switch" aria-label={`${a.name}: on`} checked={a.enabled} onChange={(e) => update({ enabled: e.currentTarget.checked })} />
         </label>
         <b>{a.name}</b>
         <span class="help">
@@ -269,7 +275,7 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
             )
           }
         >
-          ▶ Run now
+          Run now
         </button>
         {a.webhook ? (
           <button class="btn small" aria-pressed={showHook} onClick={() => setShowHook(!showHook)}>
@@ -338,8 +344,10 @@ function PhoneView() {
   const full = info.control && info.lan;
   const short = (u: string) => u.replace(/\/r\/(\w{6})\w+/, "/r/$1…");
   return (
-    <div class="section">
-      <div class="section-title">Phone</div>
+    <section class="section auto-card phone-card" aria-labelledby="phone-title">
+      <h2 class="section-title" id="phone-title">
+        Phone
+      </h2>
       <label class="checkpoint">
         <input type="checkbox" checked={info.enabled} onChange={(e) => set({ enabled: e.currentTarget.checked })} />
         <span>
@@ -364,6 +372,7 @@ function PhoneView() {
             </label>
           ) : null}
           {info.lanError ? <p class="msg err">{info.lanError}</p> : null}
+          {/* The QR code on its white quiet zone, and beside it the links it stands for. */}
           <div class="phone-qr">
             {info.lanUrls[0] ? (
               <QrCode text={info.lanUrls[0]} />
@@ -381,30 +390,30 @@ function PhoneView() {
                     ? "No QR code while code-flow can't listen on your network."
                     : "The link below only opens on this computer. Turn on “Reachable from my Wi-Fi” to get a QR code your phone can open."}
               </span>
-            </div>
-          </div>
-          <div class="hook">
-            {/* With full control the phone gets the whole app, so a read-only preview here would mislead. */}
-            {[...(full ? [] : [info.local]), ...info.lanUrls].map((u) => (
-              <div key={u}>
-                <code>{short(u)}</code>{" "}
-                <button class="btn small" onClick={() => copy(u, "Link copied")}>
-                  Copy link
-                </button>
-                <a class="btn small" href={u} target="_blank" rel="noreferrer">
-                  Open
-                </a>
+              <div class="phone-links">
+                {/* With full control the phone gets the whole app, so a read-only preview here would mislead. */}
+                {[...(full ? [] : [info.local]), ...info.lanUrls].map((u) => (
+                  <div key={u} class="pl-row">
+                    <code title={u}>{short(u)}</code>
+                    <button class="btn small" onClick={() => copy(u, "Link copied")}>
+                      Copy link
+                    </button>
+                    <a class="btn small" href={u} target="_blank" rel="noreferrer">
+                      Open
+                    </a>
+                  </div>
+                ))}
+                <div>
+                  <button class="btn small ghost" onClick={() => confirm(full ? "Make a new link? The old one stops working, and phones signed in with it are signed out." : "Make a new link? The old one stops working.") && set({ rotate: true })}>
+                    <Icon name="refresh" /> New link
+                  </button>
+                </div>
               </div>
-            ))}
-            <div>
-              <button class="btn small" onClick={() => confirm(full ? "Make a new link? The old one stops working, and phones signed in with it are signed out." : "Make a new link? The old one stops working.") && set({ rotate: true })}>
-                New link
-              </button>
             </div>
           </div>
         </>
       ) : null}
-    </div>
+    </section>
   );
 }
 
@@ -451,57 +460,69 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
     }
   };
   return (
-    <dialog class="picker small-dialog" ref={ref}>
+    <dialog class="picker small-dialog save-auto" ref={ref}>
       <div class="picker-inner">
         <div class="picker-head">
           <h3>Save as automation</h3>
           <div class="help">Runs this task with this team and these settings, unattended. Results wait in your inbox; nothing merges by itself.</div>
         </div>
         <div class="dialog-body">
-          <label class="lbl">Name</label>
-          <input class="field" value={name} onInput={(e) => setName(e.currentTarget.value)} />
-          <label class="lbl">When</label>
-          <div class="segmented" role="radiogroup" aria-label="When">
-            {(
-              [
-                ["daily", "At a time"],
-                ["every", "Repeatedly"],
-                ["webhook", "Only from a webhook"],
-              ] as const
-            ).map(([k, label]) => (
-              <button key={k} type="button" role="radio" aria-checked={kind === k} class={kind === k ? "on" : ""} onClick={() => setKind(k)}>
-                {label}
-              </button>
-            ))}
+          <div class="fg">
+            <label class="lbl" for="auto-name">
+              Name
+            </label>
+            <input id="auto-name" class="field" value={name} onInput={(e) => setName(e.currentTarget.value)} />
           </div>
-          {kind === "daily" ? (
-            <div class="row-inline">
-              <input class="field inline" type="time" value={at} onInput={(e) => setAt(e.currentTarget.value)} />
-              {DAYS.map((d, i) => (
-                <button key={d} type="button" class="pill" aria-pressed={days.includes(i)} onClick={() => setDays(days.includes(i) ? days.filter((x) => x !== i) : [...days, i].sort())}>
-                  {d}
+          <div class="fg">
+            <span class="lbl" id="auto-when">
+              When
+            </span>
+            <div class="segmented" role="radiogroup" aria-labelledby="auto-when">
+              {(
+                [
+                  ["daily", "At a time"],
+                  ["every", "Repeatedly"],
+                  ["webhook", "Only from a webhook"],
+                ] as const
+              ).map(([k, label]) => (
+                <button key={k} type="button" role="radio" aria-checked={kind === k} class={kind === k ? "on" : ""} onClick={() => setKind(k)}>
+                  {label}
                 </button>
               ))}
             </div>
-          ) : kind === "every" ? (
-            <div class="row-inline">
-              every <input class="field inline num" type="number" min={5} value={every} onInput={(e) => setEvery(Number(e.currentTarget.value) || 60)} /> minutes
-            </div>
-          ) : null}
-          {kind !== "webhook" ? (
+            {kind === "daily" ? (
+              <div class="row-inline">
+                <input class="field inline" type="time" aria-label="Time of day" value={at} onInput={(e) => setAt(e.currentTarget.value)} />
+                <span class="days" role="group" aria-label="Days">
+                  {DAYS.map((d, i) => (
+                    <button key={d} type="button" class="day" aria-pressed={days.includes(i)} onClick={() => setDays(days.includes(i) ? days.filter((x) => x !== i) : [...days, i].sort())}>
+                      {d}
+                    </button>
+                  ))}
+                </span>
+              </div>
+            ) : kind === "every" ? (
+              <div class="row-inline">
+                Every <input class="field inline num" type="number" min={5} aria-label="Minutes between runs" value={every} onInput={(e) => setEvery(Number(e.currentTarget.value) || 60)} /> minutes
+              </div>
+            ) : null}
+          </div>
+          <div class="fg checks">
+            {kind !== "webhook" ? (
+              <label class="check">
+                <input type="checkbox" checked={webhook} onChange={(e) => setWebhook(e.currentTarget.checked)} /> Also start it from a webhook
+              </label>
+            ) : null}
             <label class="check">
-              <input type="checkbox" checked={webhook} onChange={(e) => setWebhook(e.currentTarget.checked)} /> Also start it from a webhook
+              <input type="checkbox" checked={isolate} onChange={(e) => setIsolate(e.currentTarget.checked)} /> Run checks and setup in a Docker container
             </label>
-          ) : null}
-          <label class="check">
-            <input type="checkbox" checked={isolate} onChange={(e) => setIsolate(e.currentTarget.checked)} /> Run checks and setup in a Docker container
-          </label>
-          {isolate ? (
-            <div class="row-inline">
-              image <input class="field inline mono" value={image} onInput={(e) => setImage(e.currentTarget.value)} />
-              <span class="help">Only the worktree is mounted; none of your environment or home folder.</span>
-            </div>
-          ) : null}
+            {isolate ? (
+              <div class="row-inline image">
+                Image <input class="field inline mono" aria-label="Docker image" value={image} onInput={(e) => setImage(e.currentTarget.value)} />
+                <span class="help">Only the worktree is mounted; none of your environment or home folder.</span>
+              </div>
+            ) : null}
+          </div>
           {error ? <div class="msg err">{error}</div> : null}
         </div>
         <div class="picker-foot">

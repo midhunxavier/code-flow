@@ -124,12 +124,17 @@ export function Rail() {
       >
         <span class={`dot ${runState(r)}`} aria-hidden="true" />
         <span class="t">
-          {r.trigger ? (r.trigger.via === "sweep" ? "▤ " : "⏱ ") : ""}
-          {r.group ? "⚖ " : ""}
+          {/* how it started: the same marks as the Automations inbox */}
+          {r.trigger ? <Icon name={r.trigger.via === "sweep" ? "layers" : r.trigger.via === "webhook" ? "globe" : "clock"} class="inline-icon" /> : null}
+          {r.group ? <Icon name="compare" class="inline-icon" /> : null}
           {r.task.split("\n")[0] || "(no task)"}
         </span>
         <span class="m">
-          {isFlagged(r) ? <span class="flag">⚠ </span> : null}
+          {isFlagged(r) ? (
+            <span class="flag">
+              <Icon name="alert" />
+            </span>
+          ) : null}
           {meta}
         </span>
         <span class="sr-only">

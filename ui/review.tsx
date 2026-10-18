@@ -1,5 +1,6 @@
 import { signal } from "@preact/signals";
 import { useEffect, useMemo, useState } from "preact/hooks";
+import { Icon } from "./icons.js";
 import { AgentPicker } from "./run.js";
 import { api, enc, post, showToast, store } from "./lib.js";
 import { route, runs } from "./state.js";
@@ -107,14 +108,14 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   return (
     <div class="review">
       <div class="review-head">
-        <button class="btn ghost" onClick={() => (route.value = { view: "run", id })}>
-          ← Back to run
+        <button class="btn ghost small review-back" onClick={() => (route.value = { view: "run", id })}>
+          <Icon name="chevron" class="back" /> Back to run
         </button>
         <div class="review-title">
-          <b>Review</b> <code>{branch}</code>
+          <b>Review</b>
+          <code title={branch}>{branch}</code>
           {totals ? (
-            <span class="help">
-              {" "}
+            <span class="review-totals">
               {files!.length} file{files!.length === 1 ? "" : "s"} · <span class="add">+{totals.add}</span> <span class="del">−{totals.del}</span>
             </span>
           ) : null}
@@ -122,27 +123,36 @@ export function Review({ id, branch }: { id: string; branch: string }) {
         <span class="spacer" />
         {summary?.status === "done" ? (
           <>
-            <span class="help">Send to</span>
+            <span class="review-to">Send to</span>
             <AgentPicker value={target} onChange={setAgent} />
             <button class="btn primary" disabled={!canSend || sending} onClick={send}>
               {sending ? "Sending…" : `Send ${comments.length || ""} comment${comments.length === 1 ? "" : "s"}`.replace("  ", " ")}
             </button>
           </>
         ) : (
-          <span class="help">Comments can be sent once the run has finished.</span>
+          <span class="review-to">Comments can be sent once the run has finished.</span>
         )}
       </div>
-      {error ? <div class="msg err" style="padding:16px">{error}</div> : null}
-      {runError ? <div class="msg warn" style="padding:16px">{runError}</div> : null}
+      {error ? <div class="msg err review-msg">{error}</div> : null}
+      {runError ? <div class="msg warn review-msg">{runError}</div> : null}
       <div class="review-body">
         <div class="review-files">
           {files?.map((f) => {
             const n = comments.filter((c) => c.file === f.path).length;
+            const cut = f.path.lastIndexOf("/") + 1;
             return (
               <button key={f.path} type="button" class={`rf ${f.path === selected ? "selected" : ""}`} onClick={() => setSelected(f.path)} title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
                 <span class={`fs ${f.status}`}>{{ added: "A", modified: "M", deleted: "D", renamed: "R" }[f.status]}</span>
-                <span class="fp">{f.path}</span>
-                {n ? <span class="count">{n}</span> : null}
+                {/* the folder shortens first, so the file's name stays readable */}
+                <span class="fp">
+                  {cut ? <span class="fdir">{f.path.slice(0, cut)}</span> : null}
+                  <span class="fname">{f.path.slice(cut)}</span>
+                </span>
+                {n ? (
+                  <span class="count" title={`${n} comment${n === 1 ? "" : "s"}`}>
+                    {n}
+                  </span>
+                ) : null}
                 <span class="fn">
                   <span class="add">+{f.additions}</span> <span class="del">−{f.deletions}</span>
                 </span>

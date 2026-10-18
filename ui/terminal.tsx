@@ -402,7 +402,7 @@ function ShellHead({ shell, places, onClear, onRestart }: { shell: ShellInfo | n
 }
 
 /** System monospace fonts first: they have the box-drawing and other symbols full-screen programs draw with. */
-const TERM_FONT = 'Menlo, "SF Mono", Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", "Roboto Mono", monospace';
+const TERM_FONT = 'Menlo, "SF Mono", "SFMono-Regular", Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace';
 
 /** The terminal's colours from the app's own (light or dark), with ANSI colours readable on each. */
 function termTheme(): ITheme {

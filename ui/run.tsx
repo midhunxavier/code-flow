@@ -242,48 +242,54 @@ export function RunView({ id }: { id: string }) {
       <div class="run-scroll">
         <header class="run-head">
           <div class="run-title">
-            <span class={`status-pill ${awaitingInput ? "awaiting" : state}`}>
-              {awaitingInput ? "Waiting for you" : teamNeedsResume(run) ? "Unresolved work" : state === "failing" ? "Done · check failing" : state === "unchecked" ? "Done · check can't run" : STATUS_TEXT[run.status] ?? run.status}
-            </span>
-            <h2 title={run.task}>{run.task.split("\n")[0] || "(no task)"}</h2>
-            <span class="run-pattern">{p?.name ?? run.pattern}</span>
-            <span class="spacer" />
-            {["interrupted", "stopped", "failed", "cancelled"].includes(run.status) ? (
-              <button
-                class="btn primary"
-                title={run.status === "interrupted" ? "Continue where it stopped; finished steps aren't redone" : "Continue with a fresh budget; finished steps aren't redone"}
-                onClick={() => post(`/api/runs/${run.id}/resume`).catch((e) => showToast(e.message))}
-              >
-                ▶ Resume
-              </button>
-            ) : null}
-            {finished ? (
-              <button class="btn" onClick={() => editAndRerun(run)}>
-                ✎ Edit &amp; run again
-              </button>
-            ) : null}
-            {finished && !run.archived ? (
-              <button class="btn" onClick={() => setArchiving(true)}>
-                Archive…
-              </button>
-            ) : null}
-            {run.archived ? (
-              <button class="btn" onClick={() => post(`/api/runs/${run.id}/archive`, { archived: false }).then(() => showToast("Moved back to your runs"), (e) => showToast(e.message))}>
-                Unarchive
-              </button>
-            ) : null}
-            {!finished ? (
-              <button
-                class="btn danger"
-                onClick={() => {
-                  if (confirm("Stop this run? Agents still working will be stopped; finished work stays on its branches.")) {
-                    post(`/api/runs/${run.id}/cancel`).catch((e) => showToast(e.message));
-                  }
-                }}
-              >
-                Stop run
-              </button>
-            ) : null}
+            {/* OntoLab's page head: a status line above the heading, the actions beside it */}
+            <div class="run-name">
+              <div class="run-kicker">
+                <span class={`status-pill ${awaitingInput ? "awaiting" : state}`}>
+                  {awaitingInput ? "Waiting for you" : teamNeedsResume(run) ? "Unresolved work" : state === "failing" ? "Done · check failing" : state === "unchecked" ? "Done · check can't run" : STATUS_TEXT[run.status] ?? run.status}
+                </span>
+                <span class="run-pattern">{p?.name ?? run.pattern}</span>
+              </div>
+              <h2 title={run.task}>{run.task.split("\n")[0] || "(no task)"}</h2>
+            </div>
+            <div class="run-actions">
+              {["interrupted", "stopped", "failed", "cancelled"].includes(run.status) ? (
+                <button
+                  class="btn primary"
+                  title={run.status === "interrupted" ? "Continue where it stopped; finished steps aren't redone" : "Continue with a fresh budget; finished steps aren't redone"}
+                  onClick={() => post(`/api/runs/${run.id}/resume`).catch((e) => showToast(e.message))}
+                >
+                  Resume
+                </button>
+              ) : null}
+              {finished ? (
+                <button class="btn" onClick={() => editAndRerun(run)}>
+                  <Icon name="refresh" /> Edit &amp; run again
+                </button>
+              ) : null}
+              {finished && !run.archived ? (
+                <button class="btn ghost" onClick={() => setArchiving(true)}>
+                  <Icon name="archive" /> Archive…
+                </button>
+              ) : null}
+              {run.archived ? (
+                <button class="btn ghost" onClick={() => post(`/api/runs/${run.id}/archive`, { archived: false }).then(() => showToast("Moved back to your runs"), (e) => showToast(e.message))}>
+                  <Icon name="archive" /> Unarchive
+                </button>
+              ) : null}
+              {!finished ? (
+                <button
+                  class="btn danger"
+                  onClick={() => {
+                    if (confirm("Stop this run? Agents still working will be stopped; finished work stays on its branches.")) {
+                      post(`/api/runs/${run.id}/cancel`).catch((e) => showToast(e.message));
+                    }
+                  }}
+                >
+                  <Icon name="stop" /> Stop run
+                </button>
+              ) : null}
+            </div>
           </div>
         </header>
 
@@ -291,7 +297,7 @@ export function RunView({ id }: { id: string }) {
           <RunMeta run={run} />
           {run.lockdown ? (
             <div class="lockdown" role="note">
-              🔒 <b>Locked down.</b> {run.lockdown}, so agents run in Safe mode, files like .env aren't copied in, and checks{" "}
+              <b>Locked down.</b> {run.lockdown}, so agents run in Safe mode, files like .env aren't copied in, and checks{" "}
               {run.loop.container ? "run in Docker without network" : "run on this machine because you allowed it"}.
             </div>
           ) : null}
@@ -417,8 +423,11 @@ function WorkSummary({ run, steps }: { run: RunSummary; steps: Step[] }) {
 
 function StepTag({ step, model }: { step: Step; model?: string }) {
   if ((step.kind ?? "agent") === "agent") return <AgentTag id={step.agent} note={model} />;
-  return <span class="tag-cf">{step.kind === "check" ? "check" : "setup"}</span>;
+  return <span class="tag-cf">{step.kind === "check" ? "Check" : "Setup"}</span>;
 }
+
+/** "approved" → "Approved": state words from the server, shown in sentence case. */
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 function RunChips({ run }: { run: RunSummary }) {
   const ctx = run.context ?? { paths: [], attachments: [] };
@@ -427,8 +436,9 @@ function RunChips({ run }: { run: RunSummary }) {
     <div class="run-chips">
       {ctx.paths.map((c) => (
         <span key={c.path} class="chip-ctx" title={c.workingCopy ? `Your ${c.note} working copy was given to the agents` : c.path}>
+          <Icon name={c.type === "dir" ? "folder" : "files"} />
           <span class="n">
-            {c.type === "dir" ? "📁" : "📄"} {c.path}
+            {c.path}
             {c.type === "dir" ? "/" : ""}
           </span>
           {c.note ? <span class="note">{c.note}</span> : null}
@@ -436,9 +446,9 @@ function RunChips({ run }: { run: RunSummary }) {
       ))}
       {ctx.attachments.map((a) => (
         <span key={a.name} class="chip-ctx">
-          <span class="n">
-            📎 {a.name} · {fmtSize(a.size)}
-          </span>
+          <Icon name="attach" />
+          <span class="n">{a.name}</span>
+          <span class="size">{fmtSize(a.size)}</span>
         </span>
       ))}
     </div>
@@ -454,33 +464,34 @@ function RunMeta({ run }: { run: RunSummary }) {
         <Icon name="folder" /> {baseName(run.repo)}
       </span>
       {run.trigger ? (
-        <a class="src-link" href="#/automations" title={`Started by ${run.trigger.via === "schedule" ? "its schedule" : run.trigger.via === "webhook" ? "a webhook" : run.trigger.via === "sweep" ? "a sweep" : "Run now"}`}>
-          {run.trigger.via === "sweep" ? "▤" : "⏱"} {run.trigger.name}
+        <a class="src-link with-ic" href="#/automations" title={`Started by ${run.trigger.via === "schedule" ? "its schedule" : run.trigger.via === "webhook" ? "a webhook" : run.trigger.via === "sweep" ? "a sweep" : "Run now"}`}>
+          <Icon name={run.trigger.via === "sweep" ? "layers" : "clock"} /> {run.trigger.name}
         </a>
       ) : null}
-      {run.triage && run.triage.state !== "pending" ? <span class="badge">{run.triage.state === "empty" ? "no changes · archived" : run.triage.state}</span> : null}
+      {run.triage && run.triage.state !== "pending" ? <span class="badge">{run.triage.state === "empty" ? "No changes · archived" : cap(run.triage.state)}</span> : null}
       {run.source ? (
-        <a class="src-link" href={run.source.url} target="_blank" rel="noreferrer" title={run.source.title}>
+        <a class="src-link with-ic" href={run.source.url} target="_blank" rel="noreferrer" title={run.source.title}>
+          {run.source.kind === "pr" ? <Icon name="pull" /> : null}
           {run.source.kind === "issue"
-            ? `◎ issue #${run.source.number}`
+            ? `Issue #${run.source.number}`
             : run.source.kind === "pr"
-              ? `⇄ PR #${run.source.number}`
-              : `⚠ ${run.source.alert?.tool === "dependabot" ? "Dependabot" : "code scanning"} alert ${(run.source.alert?.numbers ?? [run.source.number]).map((n) => `#${n}`).join(", ")}`}{" "}
-          ↗
+              ? `PR #${run.source.number}`
+              : `⚠ ${run.source.alert?.tool === "dependabot" ? "Dependabot" : "Code scanning"} alert ${(run.source.alert?.numbers ?? [run.source.number]).map((n) => `#${n}`).join(", ")}`}
+          <Icon name="external" />
         </a>
       ) : null}
       <span>
-        from {run.baseLabel} @ {run.baseRef.slice(0, 7)}
+        From {run.baseLabel} @ <code>{run.baseRef.slice(0, 7)}</code>
       </span>
       {run.loop?.check ? (
         <span title="code-flow runs this after every change">
-          done when “{run.loop.check}” passes{run.checkCantRun ? " · can't run here" : run.lastCheck ? (run.lastCheck.ok ? " · last check ✓" : " · last check ✕") : ""}
+          Done when <code>{run.loop.check}</code> passes{run.checkCantRun ? " · can't run here" : run.lastCheck ? (run.lastCheck.ok ? " · last check ✓" : " · last check ✕") : ""}
         </span>
       ) : null}
       <span class="team-line">
         {team.map(([role, ids]) => (
           <span key={role}>
-            {role}:{" "}
+            {cap(role)}:{" "}
             {ids.map((agentId, i) => (
               <span key={agentId}>
                 {i ? ", " : ""}
@@ -491,18 +502,24 @@ function RunMeta({ run }: { run: RunSummary }) {
         ))}
       </span>
       {run.group ? (
-        <a class="src-link" href={`#/insights/${encodeURIComponent(run.group.id)}`} title="Started together with other setups on the same task">
-          ⚖ comparison: {run.group.label}
+        <a class="src-link with-ic" href={`#/insights/${encodeURIComponent(run.group.id)}`} title="Started together with other setups on the same task">
+          <Icon name="compare" /> Comparison: {run.group.label}
         </a>
       ) : null}
       {run.trust === "full" ? (
         <span class="full-access" title="Agents could run any command, with no sandbox">
-          ⚠ full access
+          ⚠ Full access
         </span>
       ) : null}
-      {run.conventions ? <span title="The repo's AGENTS.md, CLAUDE.md… are given to every agent">📘 conventions</span> : null}
+      {run.conventions ? (
+        <span class="with-ic" title="The repo's AGENTS.md, CLAUDE.md… are given to every agent">
+          <Icon name="files" /> Conventions
+        </span>
+      ) : null}
       {run.lessons?.length ? (
-        <span title={`Problems reviewers raised in earlier runs here, given to every agent:\n${run.lessons.map((l) => `• ${l}`).join("\n")}`}>🧠 {run.lessons.length} lesson{run.lessons.length === 1 ? "" : "s"}</span>
+        <span class="with-ic" title={`Problems reviewers raised in earlier runs here, given to every agent:\n${run.lessons.map((l) => `• ${l}`).join("\n")}`}>
+          <Icon name="sparkle" /> {run.lessons.length} lesson{run.lessons.length === 1 ? "" : "s"}
+        </span>
       ) : null}
       {run.usage ? (
         <span class="usage">
@@ -641,12 +658,12 @@ function SideNote({ run, f }: { run: RunSummary; f: FollowUp }) {
 export function FollowUpBadges({ f }: { f: FollowUp }) {
   return (
     <>
-      {f.status === "pending" ? <span class="fu-live">working…</span> : f.status === "failed" ? <span class="err">✕ didn't finish</span> : null}
-      {f.pushed ? <span class="ok">pushed {f.pushed.slice(0, 7)}</span> : f.pushError ? <span class="note">push failed: {f.pushError}</span> : null}
+      {f.status === "pending" ? <span class="fu-live">Working…</span> : f.status === "failed" ? <span class="err">✕ Didn't finish</span> : null}
+      {f.pushed ? <span class="ok">Pushed {f.pushed.slice(0, 7)}</span> : f.pushError ? <span class="note" title={f.pushError}>Push failed: {f.pushError}</span> : null}
       {f.checkPassed === false ? <span class="note">check fails</span> : f.checkPassed ? <span class="ok">check passes</span> : null}
       {f.integrity?.length ? (
         <span class="note" title={f.integrity.map((i) => `${i.file}: ${i.detail}`).join("\n")}>
-          ⚠ changed tests
+          ⚠ Changed tests
         </span>
       ) : null}
     </>
@@ -715,7 +732,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
               <div class="fu-answer">
                 <div class="fu-head">
                   <AgentTag id={f.agent} />
-                  {f.status === "pending" ? <span class="fu-live">{run.status === "running" ? "up next…" : "waiting…"}</span> : <FollowUpBadges f={f} />}
+                  {f.status === "pending" ? <span class="fu-live">{run.status === "running" ? "Up next…" : "Waiting…"}</span> : <FollowUpBadges f={f} />}
                 </div>
                 {f.status === "pending" || !f.result ? null : f.status === "failed" ? <div class="ev error">{f.result}</div> : <Markdown text={f.result} />}
               </div>
@@ -738,14 +755,14 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
               <div key={n.id} class="msg-you">
                 <div class="bubble">
                   <Markdown text={n.text} />
-                  {n.deliveredTo?.midTurn ? <div class="help">sent while it worked</div> : null}
+                  {n.deliveredTo?.midTurn ? <div class="help">Sent while it worked</div> : null}
                 </div>
               </div>
             ))}
             <div class="fu-answer">
               <div class="fu-head">
                 <AgentTag id={s.agent} note={modelNote(run, s.agent)} />
-                {f ? <FollowUpBadges f={f} /> : s.status === "running" ? <span class="fu-live">working…</span> : s.status === "failed" ? <span class="err">✕ didn't finish</span> : null}
+                {f ? <FollowUpBadges f={f} /> : s.status === "running" ? <span class="fu-live">Working…</span> : s.status === "failed" ? <span class="err">✕ Didn't finish</span> : null}
                 {!f && s.status !== "running" && run.lastCheck && nothingAfter ? (
                   run.lastCheck.ok ? <span class="ok">check passes</span> : <span class="note">check fails</span>
                 ) : null}
@@ -759,7 +776,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
         <div class="fu-answer">
           <div class="fu-head">
             <AgentTag id={agent} />
-            <span class="fu-live">starting…</span>
+            <span class="fu-live">Starting…</span>
           </div>
         </div>
       ) : null}
@@ -883,12 +900,12 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
         <code>{artifact.branch}</code>
         {merged.map((m) => (
           <span key={m.commit} class="badge ok">
-            {m.pr ? "PR merged into" : "merged into"} {m.into}
+            {m.pr ? "PR merged into" : "Merged into"} {m.into}
           </span>
         ))}
         {pr ? (
           <a class="badge" href={pr} target="_blank" rel="noreferrer">
-            PR ↗
+            PR <Icon name="external" />
           </a>
         ) : null}
         <span class="acts">
@@ -1017,7 +1034,7 @@ function FindingsNote({ review }: { review: CheckedReview }) {
           <li key={i} class={`sev-${f.severity}`}>
             <div>
               <span class={`sev ${f.severity}`}>{f.severity}</span> <code>{f.file || "general"}</code> {f.problem}{" "}
-              {f.blocking ? <span class="badge warn">blocks</span> : f.severity === "low" ? <span class="help">suggestion</span> : null}
+              {f.blocking ? <span class="badge warn">Blocks</span> : f.severity === "low" ? <span class="help">Suggestion</span> : null}
             </div>
             {f.fix ? <div class="help">Fix: {f.fix}</div> : null}
             <CheckNote severity={f.severity} check={f.check} />
@@ -1204,7 +1221,7 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
           ))}
         </select>
         <label class="check">
-          <input type="checkbox" checked={archiveAfter} onChange={(e) => setArchiveAfter(e.currentTarget.checked)} /> archive the run afterwards (removes its worktrees, keeps branches)
+          <input type="checkbox" checked={archiveAfter} onChange={(e) => setArchiveAfter(e.currentTarget.checked)} /> Archive the run afterwards (removes its worktrees, keeps branches)
         </label>
         <button class="btn primary small" disabled={busy || !target} onClick={merge}>
           {busy ? "Merging…" : `Merge into ${target || "…"}`}
@@ -1293,7 +1310,7 @@ function PrMergePanel({ run, branch, worktree, steps }: { run: RunSummary; branc
                 ))}
               </select>
               <label class="check">
-                <input type="checkbox" checked={archiveAfter} onChange={(e) => setArchiveAfter(e.currentTarget.checked)} /> archive the run afterwards (removes its worktrees, keeps branches)
+                <input type="checkbox" checked={archiveAfter} onChange={(e) => setArchiveAfter(e.currentTarget.checked)} /> Archive the run afterwards (removes its worktrees, keeps branches)
               </label>
               <button class="btn primary small" disabled={busy || info!.isDraft} onClick={merge}>
                 {busy ? "Merging…" : `Merge ${name}`}
@@ -1434,7 +1451,7 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
             rel="noreferrer"
             title={onPhone ? "Opens only if the app listens on your network too (e.g. vite --host)" : undefined}
           >
-            Open {appUrl!.replace("http://", "")} ↗
+            Open {appUrl!.replace("http://", "")} <Icon name="external" />
           </a>
           {onPhone ? null : (
             <button class="btn small" title="Show it in the side panel's Browser, where you can annotate it" onClick={() => showInPanel(server.url)}>
@@ -1456,7 +1473,7 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
             disabled={!command.trim()}
             onClick={() => void runApp()}
           >
-            ▶ Run app
+            Run app
           </button>
           {server?.status === "exited" ? <span class="msg warn">exited ({server.exitCode})</span> : null}
         </>
@@ -1745,12 +1762,12 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
               <span key={n.id} class={`chip-ctx note-chip ${n.status}`} title={n.text}>
                 <span class="n">
                   {n.followUp
-                    ? "✓ sent as your next message"
-                    : n.requestId ? "✓ answered the team's question" : n.status === "delivered"
-                      ? `✓ delivered to ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.deliveredTo?.agent ?? "the team"}${noteStep(n, steps)}`
+                    ? "✓ Sent as your next message"
+                    : n.requestId ? "✓ Answered the team's question" : n.status === "delivered"
+                      ? `✓ Delivered to ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.deliveredTo?.agent ?? "the team"}${noteStep(n, steps)}`
                       : chat
-                        ? "⏳ sent when this turn ends"
-                        : `⏳ queued for ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.agent ?? "next agent"}`}
+                        ? "Sent when this turn ends"
+                        : `Queued for ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.agent ?? "next agent"}`}
                   : {n.text}
                 </span>
               </span>
@@ -2014,7 +2031,9 @@ function ActivityLog({ logs }: { logs: RunData["logs"]; count: number }) {
   return (
     <details class="activity">
       <summary>
-        Activity log ({logs.length}){warnings ? <span class="warn"> · {warnings} warning{warnings === 1 ? "" : "s"}</span> : null}
+        <span>
+          Activity log ({logs.length}){warnings ? <span class="warn"> · {warnings} warning{warnings === 1 ? "" : "s"}</span> : null}
+        </span>
       </summary>
       <div class="log">
         {shown.length < logs.length ? (

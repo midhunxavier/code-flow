@@ -56,6 +56,10 @@ Whatever the mode, code-flow never merges or pushes on its own.
 
 Per provider in **Settings → Models & effort**, and per role right under each role's agents in the team. See [Getting started](getting-started.md#models-and-effort).
 
+## Light or dark
+
+code-flow follows your system's appearance until you pick one with the sun/moon button in the top bar. The pick is kept in that browser, and a side panel popped out into its own window follows it.
+
 ## Health
 
 Click the agent dots at the bottom of the sidebar to see, for each CLI, whether it's installed, its version, and whether it's signed in. It uses `claude auth status`, `codex login status`, and for agy whether it can list models; credentials are never read. Claude's 5-hour and 7-day usage windows are shown from its own reports, with how to fix anything that's wrong. A run won't start with an agent that's signed out, and Auto skips an agent that turned out to be signed out for 15 minutes. If agy can't reach its servers, its sign-in shows as unknown rather than signed out.

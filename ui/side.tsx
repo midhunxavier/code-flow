@@ -214,8 +214,9 @@ function FileViewer({ root, path, onClose }: { root: string; path: string; onClo
         <button type="button" class="btn ghost small" aria-label="Back to the files" title="Back to the files" onClick={onClose}>
           ←
         </button>
+        {/* cut from the start (see .fp): the path isolated, so a leading dot stays in front */}
         <span class="fp" title={path}>
-          {path}
+          <bdi>{path}</bdi>
         </span>
         {file ? <span class="help">{fmtSize(file.size)}</span> : null}
         {inComposer ? (

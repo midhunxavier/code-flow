@@ -24,7 +24,7 @@ export function AutoTeam({ run }: { run: RunSummary }) {
     <section class="auto-team" aria-label="Auto team">
       <div class="at-head">
         <div><h3>Team and workflow</h3><span class="help">Revision {team.revision} · {team.scheduler === "event" ? "Ready work starts when dependencies resolve" : team.wave ? `${team.wave} waves so far · limit ${team.maxWaves} per execution` : "Before the first wave"}</span></div>
-        <span class={`badge ${team.gaps.length || team.status === "blocked" ? "warn" : ""}`}>{teamAwaitingAnswer(run) ? "Waiting for your answer" : STATUS[team.status]}</span>
+        <span class={`badge ${team.gaps.length || team.status === "blocked" ? "warn" : team.status === "completed" ? "ok" : ""}`}>{teamAwaitingAnswer(run) ? "Waiting for your answer" : STATUS[team.status]}</span>
       </div>
       <TeamRunMetrics runId={run.id} running={run.status === "running"} />
       <TeamCapabilities providers={[...new Set(team.members.map((member) => member.provider))]} />
@@ -43,7 +43,7 @@ export function AutoTeam({ run }: { run: RunSummary }) {
       <div class="at-roster" aria-label="Team members">
         {team.members.map((member) => (
           <article class="at-member" key={member.id}>
-            <div class="at-row"><b>{member.name}</b><span class="badge">{member.role}</span></div>
+            <div class="at-row"><b>{member.name}</b><span class="badge">{member.role.charAt(0).toUpperCase() + member.role.slice(1)}</span></div>
             <AgentTag id={member.provider} note={[member.model, member.effort].filter(Boolean).join(" · ") || "CLI defaults"} />
             <div class="help">{memberProgress(team, member)} · <code>{member.id}</code></div>
             <button class="btn small" onClick={() => setInbox(member.id)}>Inbox · {team.messages.filter((message) => message.recipient === member.id && message.delivery?.status !== "context" && message.status !== "delivered").length} pending</button>
@@ -103,10 +103,11 @@ export function TeamQuestionCard({ run }: { run: RunSummary }) {
   if (!team || !message) return null;
   const sender = team.members.find((member) => member.id === message.sender);
   const task = team.tasks.find((item) => item.id === message.taskId);
-  return <section class="at-section at-notice" aria-label="The team needs your answer">
-    <div class="at-row"><b>The team needs your answer</b><span class="help">{sender?.name ?? message.sender}{task ? ` · ${task.title}` : ""}</span></div>
-    <Markdown text={message.body} />
-    <QuestionReply run={run} message={message} />
+  // Laid out like a plan approval (an attention card with a warn strip), since it's the same kind of ask.
+  return <section class="awaiting-card team-question" aria-label="The team needs your answer">
+    <div class="aw-head"><span class="status-pill awaiting">Waiting for you</span><b>The team needs your answer</b><span class="help">{sender?.name ?? message.sender}{task ? ` · ${task.title}` : ""}</span></div>
+    <div class="aw-body"><Markdown text={message.body} /></div>
+    <div class="aw-actions"><QuestionReply run={run} message={message} /></div>
   </section>;
 }
 
@@ -124,7 +125,7 @@ export function QuestionReply({ run, message }: { run: RunSummary; message: Team
     finally { setBusy(false); }
   };
   if (sent) return <p class="help" role="status">Answer sent.</p>;
-  if (run.status !== "running") return <p class="help">Press ▶ Resume in the header to continue the run, then answer here.</p>;
+  if (run.status !== "running") return <p class="help">Press Resume in the header to continue the run, then answer here.</p>;
   const field = `team-answer-${message.id}`;
   return <div class="at-reply"><label class="lbl" for={field}>Your answer</label><textarea class="field" id={field} placeholder="Your answer…" rows={2} value={text} onInput={(event) => setText(event.currentTarget.value)} /><button class="btn primary small" disabled={!text.trim() || busy} onClick={answer}>{busy ? "Sending…" : "Send answer"}</button>{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
 }

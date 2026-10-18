@@ -411,7 +411,7 @@ function HealthDialog() {
               <div class="hr-title">
                 <span class={`agent ${h.id}`}>{h.name}</span>
                 <span class={`badge ${h.installed && h.signedIn !== false ? "ok" : ""}`}>
-                  {!h.installed ? "not installed" : h.signedIn === false ? "signed out" : h.signedIn ? `signed in · ${h.account ?? ""}` : "installed"}
+                  {!h.installed ? "Not installed" : h.signedIn === false ? "Signed out" : h.signedIn ? `Signed in · ${h.account ?? ""}` : "Installed"}
                 </span>
                 <span class="help">{h.version}</span>
               </div>
@@ -446,7 +446,7 @@ function HealthDialog() {
             <div class="health-row">
               <div class="hr-title">
                 <span class="agent">git</span>
-                <span class={`badge ${gitHealth.value.ok ? "ok" : ""}`}>{gitHealth.value.ok ? "ok" : gitHealth.value.installed ? "too old" : "not found"}</span>
+                <span class={`badge ${gitHealth.value.ok ? "ok" : ""}`}>{gitHealth.value.ok ? "OK" : gitHealth.value.installed ? "Too old" : "Not found"}</span>
                 <span class="help">{gitHealth.value.version}</span>
               </div>
               {gitHealth.value.warning ? <div class="msg warn">{gitHealth.value.warning}</div> : null}
@@ -496,7 +496,7 @@ function FolderPicker() {
       if (request !== latest.current) return;
       setDir(d);
       if (!typed.current) setPath(d.path);
-      setStatus(d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked GIT, or type a path");
+      setStatus(d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked Git, or type a path");
     } catch (err) {
       if (request !== latest.current) return;
       setStatus((err as Error).message);
@@ -518,7 +518,7 @@ function FolderPicker() {
     <div key={p} class="dir" tabIndex={0} title={p} onClick={() => browse(p)} onKeyDown={(e) => e.key === "Enter" && browse(p)}>
       <span class="di">{icon}</span>
       <span class="dn">{name}</span>
-      {isRepo ? <span class="git-badge">GIT</span> : null}
+      {isRepo ? <span class="git-badge">Git</span> : null}
       {isRepo ? (
         <button
           class="btn small"
@@ -596,7 +596,7 @@ function FolderPicker() {
                 void browse(dir?.path, e.currentTarget.checked);
               }}
             />{" "}
-            hidden folders
+            Hidden folders
           </label>
           <button class="btn" type="button" onClick={() => (pickerOpen.value = false)}>
             Cancel

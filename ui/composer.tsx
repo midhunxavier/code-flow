@@ -67,7 +67,6 @@ import type { AgentId, AgentInfo, ContextItem, ModelCatalog, PatternInfo, TreeEn
 const DRAG_TYPE = "application/x-codeflow-path";
 const MAX_FILE = 10 * 1024 * 1024;
 const MAX_TOTAL = 25 * 1024 * 1024;
-const fileIcon = (type: string) => (type === "dir" ? "📁" : "📄");
 
 // ================================================================= composer
 export function Composer() {
@@ -167,7 +166,8 @@ export function Composer() {
             <>⚠ {repoConfig.value.error}</>
           ) : (
             <>
-              ⚙ Using <code>.codeflow/config.json</code>
+              <Icon name="sliders" />
+              Using <code>.codeflow/config.json</code>
               {configSummary(repoConfig.value.config)}
             </>
           )}
@@ -604,8 +604,9 @@ function ContextChips() {
       <SourceChip />
       {[...contextPaths.value.values()].map((c) => (
         <span key={c.path} class="chip-ctx" title={c.path}>
+          <Icon name={c.type === "dir" ? "folder" : "note"} />
           <span class="n">
-            {fileIcon(c.type)} {c.path}
+            {c.path}
             {c.type === "dir" ? "/" : ""}
           </span>
           <button type="button" title="Remove" aria-label={`Remove ${c.path}`} onClick={() => remove(c.path)}>
@@ -615,8 +616,9 @@ function ContextChips() {
       ))}
       {attachments.value.map((a, i) => (
         <span key={`a${i}`} class="chip-ctx" title={a.name}>
+          <Icon name="attach" />
           <span class="n">
-            📎 {a.name} · {fmtSize(a.size)}
+            {a.name} · {fmtSize(a.size)}
           </span>
           <button type="button" title="Remove" aria-label={`Remove ${a.name}`} onClick={() => (attachments.value = attachments.value.filter((x) => x !== a))}>
             ×
@@ -722,7 +724,7 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
         );
       })}
       <div class="team-summary">
-        <span>▶</span>
+        <Icon name="chevron" />
         <span>{teamSentence(p, roles)}</span>
       </div>
     </div>
@@ -1152,9 +1154,9 @@ function TreeNode({ entry, depth, sub, root, onOpen, context }: { entry: TreeEnt
         }}
         onDragEnd={(e) => e.currentTarget.classList.remove("dragging")}
       >
-        <span class="tw">{entry.type === "dir" ? (open ? "▼" : "▶") : ""}</span>
+        <span class="tw">{entry.type === "dir" ? <Icon name="chevron" class={open ? "" : "shut"} /> : null}</span>
         <span class={`lb ${entry.type}`}>
-          {fileIcon(entry.type)} {entry.name}
+          <Icon name={entry.type === "dir" ? "folder" : "file"} class="fi" /> {entry.name}
         </span>
         {sub ? <span class="sub">{sub}</span> : null}
         <span class={`st ${entry.status ?? ""}`}>{entry.status ?? ""}</span>

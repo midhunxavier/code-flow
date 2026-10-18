@@ -130,7 +130,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   const path = page.getByLabel("Folder path");
   await path.fill(repo);
   releaseHome();
-  await page.getByText("Open a folder marked GIT, or type a path").waitFor();
+  await page.getByText("Open a folder marked Git, or type a path").waitFor();
   await path.press("Enter");
   await page.getByText("✓ This folder is a git repository").waitFor();
   await page.unroute(/\/api\/fs\b/);

@@ -69,7 +69,7 @@ export function GitHubPicker() {
   const shown = (items ?? []).filter((i) => !q || `#${i.number} ${i.title} ${(i.labels ?? []).join(" ")} ${i.author ?? ""}`.toLowerCase().includes(q));
 
   return (
-    <dialog class="picker" ref={ref}>
+    <dialog class="picker gh-picker" ref={ref}>
       {open ? (
         <div class="picker-inner">
           <div class="picker-head">
@@ -99,7 +99,7 @@ export function GitHubPicker() {
                   {i.title}
                   {kind === "pr" ? (
                     <span class="gh-sub">
-                      {i.headRefName} → {i.baseRefName}
+                      <span class="br">{i.headRefName}</span> → <span class="br">{i.baseRefName}</span>
                       {i.author ? ` · @${i.author}` : ""}
                       {i.isDraft ? " · draft" : ""}
                       {i.isCrossRepository ? " · from a fork (read-only)" : ""}
@@ -139,7 +139,6 @@ export function Templates() {
         <span class="lbl">Start from</span>
         {single.map((t) => (
           <button key={t.id} type="button" class="chip-tpl" title={t.description} onClick={() => choose(t)}>
-            {t.needs === "pr" ? "⇄ " : t.needs === "issue" ? "◎ " : "✦ "}
             {t.name}
           </button>
         ))}
@@ -168,9 +167,13 @@ export function SourceChip() {
   return (
     <span class="chip-ctx source" title={s.url}>
       <span class="n">
-        {s.kind === "issue" ? "◎ Issue" : s.kind === "pr" ? "⇄ PR" : "⚠ Alert"} #{s.number} · {s.title}
+        {s.kind === "issue" ? "Issue" : s.kind === "pr" ? "PR" : "Alert"} <span class="num">#{s.number}</span> · {s.title}
       </span>
-      {s.kind === "pr" ? <span class="note">starts from {s.headRefName}</span> : null}
+      {s.kind === "pr" ? (
+        <span class="note">
+          starts from <span class="br">{s.headRefName}</span>
+        </span>
+      ) : null}
       {s.kind === "pr" ? (
         <label class="note" title="Give agents the PR's failing CI checks and their logs">
           <input type="checkbox" checked={!!s.ciLogs} onChange={(e) => (source.value = { ...s, ciLogs: e.currentTarget.checked })} /> CI logs

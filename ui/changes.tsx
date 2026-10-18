@@ -120,7 +120,7 @@ export function ChangesTab({ run }: { run: RunSummary }) {
                 ←
               </button>
               <span class="fp" title={file.path}>
-                {file.path}
+                <bdi>{file.path}</bdi>
               </span>
               <span class="help">
                 <span class="add">+{file.additions}</span> <span class="del">−{file.deletions}</span>
@@ -152,10 +152,17 @@ export function ChangesTab({ run }: { run: RunSummary }) {
             </div>
             {files.map((f) => {
               const n = comments.filter((c) => c.file === f.path).length;
+              const cut = f.path.lastIndexOf("/") + 1;
               return (
                 <button key={f.path} type="button" class="rf" onClick={() => setOpen(f.path)} title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
                   <span class={`fs ${f.status}`}>{STATUS[f.status]}</span>
-                  <span class="fp">{f.path}</span>
+                  {/* Cut from the start, so the file's name stays in view; its folders fainter, as on the Review page. */}
+                  <span class="fp">
+                    <bdi>
+                      {cut ? <span class="fdir">{f.path.slice(0, cut)}</span> : null}
+                      {f.path.slice(cut)}
+                    </bdi>
+                  </span>
                   {n ? <span class="count">{n}</span> : null}
                   <span class="fn">
                     <span class="add">+{f.additions}</span> <span class="del">−{f.deletions}</span>

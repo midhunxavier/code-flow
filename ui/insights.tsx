@@ -55,36 +55,45 @@ export function InsightsView({ group }: { group?: string }) {
   const groups = stats ? [...stats.groups].sort((a, b) => (a.id === group ? -1 : b.id === group ? 1 : 0)) : [];
   return (
     <div class="insights">
-      <div class="ins-head">
-        <h1>Insights</h1>
-        <ProjectButton />
-        <div class="segmented" role="group" aria-label="Which runs">
-          {inProject ? (
-            <button class={scope === "project" ? "on" : ""} aria-pressed={scope === "project"} title="Runs in this project" onClick={() => setScope("project")}>
-              {project ? project.name : "No project"}
-            </button>
-          ) : null}
-          {repoScope || !inProject ? (
-            <button class={scope === "repo" ? "on" : ""} aria-pressed={scope === "repo"} disabled={!repo.value} title="Runs in this repository" onClick={() => setScope("repo")}>
-              {repo.value ? baseName(repo.value) : "This repo"}
-            </button>
-          ) : null}
-          <button class={scope === "all" ? "on" : ""} aria-pressed={scope === "all"} onClick={() => setScope("all")}>
-            Everything
-          </button>
+      <div class="page-head ins-head">
+        <div class="page-head-text">
+          <h1>Insights</h1>
+          <p>What runs cost and how they went, per agent and per pattern.</p>
         </div>
-        <div class="segmented" role="group" aria-label="Period">
-          {(Object.keys(PERIODS) as (keyof typeof PERIODS)[]).map((k) => (
-            <button key={k} class={period === k ? "on" : ""} aria-pressed={period === k} onClick={() => setPeriod(k)}>
-              {k === "all" ? "All time" : `${k} days`}
+        <div class="page-head-actions">
+          <ProjectButton />
+          <div class="segmented" role="group" aria-label="Which runs">
+            {inProject ? (
+              <button class={scope === "project" ? "on" : ""} aria-pressed={scope === "project"} title="Runs in this project" onClick={() => setScope("project")}>
+                {project ? project.name : "No project"}
+              </button>
+            ) : null}
+            {repoScope || !inProject ? (
+              <button class={scope === "repo" ? "on" : ""} aria-pressed={scope === "repo"} disabled={!repo.value} title="Runs in this repository" onClick={() => setScope("repo")}>
+                {repo.value ? baseName(repo.value) : "This repo"}
+              </button>
+            ) : null}
+            <button class={scope === "all" ? "on" : ""} aria-pressed={scope === "all"} onClick={() => setScope("all")}>
+              Everything
             </button>
-          ))}
+          </div>
+          <div class="segmented" role="group" aria-label="Period">
+            {(Object.keys(PERIODS) as (keyof typeof PERIODS)[]).map((k) => (
+              <button key={k} class={period === k ? "on" : ""} aria-pressed={period === k} onClick={() => setPeriod(k)}>
+                {k === "all" ? "All time" : `${k} days`}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       {error ? <div class="msg err">{error}</div> : null}
-      <TeamEvaluations />
       {!stats ? <div class="help">Loading…</div> : null}
-      {stats && !stats.runs ? <div class="banner"><p>No runs in this period yet. Start one, or compare setups from the composer.</p></div> : null}
+      {stats && !stats.runs ? (
+        <div class="ins-empty">
+          <h2>No runs in this period</h2>
+          <p>Start one, or compare setups from the composer.</p>
+        </div>
+      ) : null}
       {stats && stats.runs ? (
         <>
           <div class="ins-cards">
@@ -141,9 +150,9 @@ export function InsightsView({ group }: { group?: string }) {
                               <td class={`num ${best("steps") ? "best" : ""}`}>{r.steps}</td>
                               <td class={`num ${best("tokens") ? "best" : ""}`}>{fmtTokens(r.tokens)}</td>
                               <td class="num">{r.costUsd ? fmtCost(r.costUsd) : "–"}</td>
-                              <td>{r.flagged ? <span class="badge warn">⚠ {r.flagged}</span> : <span class="help">no</span>}</td>
+                              <td>{r.flagged ? <span class="badge warn">⚠ {r.flagged}</span> : <span class="help">No</span>}</td>
                               <td title={PROOF_TITLE}>
-                                {r.proof === "proven" ? <span class="badge ok">✓ yes</span> : r.proof === "unproven" ? <span class="badge warn">⚠ no</span> : <span class="help">–</span>}
+                                {r.proof === "proven" ? <span class="badge ok">✓ Yes</span> : r.proof === "unproven" ? <span class="badge warn">⚠ No</span> : <span class="help">–</span>}
                               </td>
                               <td class="help">{r.stat ?? "–"}</td>
                             </tr>
@@ -252,6 +261,7 @@ export function InsightsView({ group }: { group?: string }) {
           </section>
         </>
       ) : null}
+      <TeamEvaluations />
       <DiskPanel scope={scopeQuery()} />
     </div>
   );
@@ -328,12 +338,20 @@ function DiskPanel({ scope }: { scope: URLSearchParams }) {
       {disk?.runs.length ? (
         <div class="table-wrap">
           <table class="ins-table">
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Repository</th>
+                <th>Status</th>
+                <th class="num">Worktree</th>
+              </tr>
+            </thead>
             <tbody>
               {disk.runs.slice(0, 10).map((r) => (
                 <tr key={r.id} class="clickable" tabIndex={0} onClick={() => (route.value = { view: "run", id: r.id })} onKeyDown={(e) => e.key === "Enter" && (route.value = { view: "run", id: r.id })}>
                   <td>{r.task}</td>
                   <td class="help">{baseName(r.repo)}</td>
-                  <td class="help">{r.archived ? "archived" : STATUS_TEXT[r.status] ?? r.status}</td>
+                  <td class="help">{r.archived ? "Archived" : STATUS_TEXT[r.status] ?? r.status}</td>
                   <td class="num">{fmtSize(r.bytes)}</td>
                 </tr>
               ))}

@@ -8,24 +8,28 @@ import { store } from "./lib.js";
 export type Theme = "light" | "dark";
 
 const KEY = "theme";
-const system = matchMedia("(prefers-color-scheme: dark)");
+// Absent where the UI is bundled for tests without a browser: there the app is simply light.
+const system = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: dark)") : undefined;
+const root = typeof document === "undefined" ? undefined : document.documentElement;
 const picked = (): Theme | null => {
   const t = store.get(KEY);
   return t === "light" || t === "dark" ? t : null;
 };
-const effective = (): Theme => picked() ?? (system.matches ? "dark" : "light");
+const effective = (): Theme => picked() ?? (system?.matches ? "dark" : "light");
 
 /** The theme in effect, for code that draws its own colours (the terminal). */
 export const theme = signal<Theme>(effective());
 
 function apply() {
   const t = picked();
-  if (t) document.documentElement.dataset.theme = t;
-  else delete document.documentElement.dataset.theme;
+  if (root) {
+    if (t) root.dataset.theme = t;
+    else delete root.dataset.theme;
+  }
   theme.value = effective();
 }
 apply();
-system.addEventListener("change", apply);
+system?.addEventListener("change", apply);
 // Picked in another window of this app (the popped-out side panel, or the main one).
 window.addEventListener("storage", (e) => e.key === KEY && apply());
 

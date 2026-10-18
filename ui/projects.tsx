@@ -85,7 +85,7 @@ export function ProjectsDialog() {
           </span>
         </button>
         {p ? (
-          <button type="button" class="btn small" aria-label={`Edit ${p.name}`} onClick={() => setEditing(p)}>
+          <button type="button" class="btn ghost small" aria-label={`Edit ${p.name}`} onClick={() => setEditing(p)}>
             Edit
           </button>
         ) : null}
@@ -205,17 +205,19 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
           <div class="project-repos">
             {repos.map((r) => (
               <div key={r} class="dir" title={r}>
-                <span class="di">◆</span>
+                <span class="di">
+                  <Icon name="folder" />
+                </span>
                 <span class="dn">{baseName(r)}</span>
                 <Tail text={r} />
-                <button type="button" class="btn small" aria-label={`Remove ${baseName(r)}`} onClick={() => setRepos(repos.filter((x) => x !== r))}>
+                <button type="button" class="btn ghost small" aria-label={`Remove ${baseName(r)}`} onClick={() => setRepos(repos.filter((x) => x !== r))}>
                   Remove
                 </button>
               </div>
             ))}
             {!repos.length ? <div class="help">None yet: the first run you start in this project adds its repository.</div> : null}
           </div>
-          <button type="button" class="btn small add-repo" onClick={addRepo}>
+          <button type="button" class="btn ghost small add-repo" onClick={addRepo}>
             <Icon name="plus" /> Add repository…
           </button>
         </div>

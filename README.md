@@ -107,4 +107,4 @@ See [Architecture and development](docs/architecture.md).
 
 ## License
 
-[MIT](LICENSE). The bundled fonts keep their own licences: Manrope under the [SIL Open Font License 1.1](ui/fonts/OFL-1.1.txt), Roboto Mono under the [Apache License 2.0](ui/fonts/Apache-2.0.txt).
+[MIT](LICENSE). The bundled font keeps its own licence: Inter under the [SIL Open Font License 1.1](ui/fonts/OFL-1.1.txt).
