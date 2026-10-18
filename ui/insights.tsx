@@ -4,6 +4,7 @@ import { api, baseName, duration, fmtCost, fmtSize, fmtTokens, pct, post, showTo
 import { activeProject, currentProject, NONE, patterns, repo, route, runState } from "./state.js";
 import type { AgentId, Stats } from "./types.js";
 import { ProjectButton } from "./projects.js";
+import { TeamEvaluations } from "./team-evaluation.js";
 
 const patternName = (id: string) => patterns.value.find((p) => p.id === id)?.name ?? id;
 const PERIODS = { "7": 7, "30": 30, all: 0 } as const;
@@ -81,6 +82,7 @@ export function InsightsView({ group }: { group?: string }) {
         </div>
       </div>
       {error ? <div class="msg err">{error}</div> : null}
+      <TeamEvaluations />
       {!stats ? <div class="help">Loading…</div> : null}
       {stats && !stats.runs ? <div class="banner"><p>No runs in this period yet. Start one, or compare setups from the composer.</p></div> : null}
       {stats && stats.runs ? (

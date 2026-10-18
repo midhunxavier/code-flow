@@ -216,7 +216,11 @@ test("a run's stream: its history in order with ids, before any live event, and 
   const id = started.body.id;
   // Connected while it runs: history and live events interleave on the server, never on the wire.
   const events = await readEvents(`${a.base}/api/runs/${id}/events`, bearer, (e) => e.some((x) => x.data.type === "run" && x.data.run.endedAt));
-  assert.deepEqual(events[0]!.data, { type: "hello", epoch: events[1]!.id!.split(":")[0], resumed: false });
+  // A fresh connection also gets the snapshot: the client never depends on the event log holding the latest state.
+  const hello = events[0]!.data;
+  assert.deepEqual({ type: hello.type, epoch: hello.epoch, resumed: hello.resumed }, { type: "hello", epoch: events[1]!.id!.split(":")[0], resumed: false });
+  assert.equal(hello.snapshot?.run?.id, id);
+  assert.ok(Array.isArray(hello.snapshot?.steps) && Number.isInteger(hello.snapshot?.seq));
   const body = events.slice(1);
   const seqs = body.map(seqOf);
   assert.ok(seqs.every((s, i) => i === 0 || s > seqs[i - 1]!), `strictly increasing: ${seqs.join(",")}`);
@@ -231,6 +235,27 @@ test("a run's stream: its history in order with ids, before any live event, and 
   assert.ok(again.slice(1).every((e) => seqOf(e) > seqOf(middle)), "only what came after");
 
   assert.equal((await fetch(`${a.base}/api/runs/no-such-run/events`, { headers: bearer })).status, 404);
+});
+
+test("a run's durable cursor survives server restart and invalid future cursors reset", async () => {
+  const home = mkdtempSync(join(tmpdir(), "codeflow-cursor-home-"));
+  const first = await startServer({ CODEFLOW_HOME: home });
+  const started = await api(first, "/api/runs", { pattern: "pipeline", task: "Persistent cursor", repo, roles: team });
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  const id = started.body.id;
+  await finishedRun(first, id);
+  const events = await readEvents(`${first.base}/api/runs/${id}/events`, bearer, (items) => items.some((item) => item.data.type === "run" && item.data.run.endedAt));
+  const cursor = events[Math.floor(events.length / 2)]!;
+  const stopped = new Promise((resolve) => first.child.once("exit", resolve));
+  first.child.kill("SIGTERM");
+  await stopped;
+  const second = await startServer({ CODEFLOW_HOME: home });
+  const replay = await readEvents(`${second.base}/api/runs/${id}/events`, { ...bearer, "last-event-id": cursor.id! }, (items) => items.some((item) => item.data.type === "run" && item.data.run.endedAt));
+  assert.equal(replay[0]!.data.resumed, true);
+  assert.equal(replay[0]!.data.epoch, events[0]!.data.epoch);
+  assert.ok(replay.slice(1).every((event) => seqOf(event) > seqOf(cursor)));
+  const reset = await readEvents(`${second.base}/api/runs/${id}/events`, { ...bearer, "last-event-id": `${events[0]!.data.epoch}:9007199254740991` }, (items) => !!items.length);
+  assert.equal(reset[0]!.data.resumed, false);
 });
 
 test("a webhook is answered at once and the run starts in the background; GitHub sending a delivery again starts nothing", async () => {
