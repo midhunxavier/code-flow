@@ -68,7 +68,7 @@ export function previewTarget(address: string): (PreviewTarget & { path: string 
 export class Previews {
   private readonly open = new Map<string, Preview>();
   /** The origins code-flow's own page can have: the overlay takes commands only from them, and only they may frame a preview. */
-  constructor(private readonly parents: () => string[], private readonly ownPorts: () => number[]) {}
+  constructor(private readonly parents: () => string[], private readonly ownPorts: () => number[], private readonly remoteConnect?: (target: PreviewTarget) => Duplex, private readonly overlay = true) {}
 
   /**
    * The preview for a local app: its address on the proxy. The same app keeps its port. `host`
@@ -116,14 +116,14 @@ export class Previews {
       const own = ownHost(req, server);
       if (!own) return refuse(res, 403, "Bad Host header");
       if (!ownOrigin(req, server)) return refuse(res, 403, "Requests from other sites don't reach the app through its preview");
-      if (req.url?.startsWith(OVERLAY_PATH)) {
+      if (this.overlay && req.url?.startsWith(OVERLAY_PATH)) {
         res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
         return res.end(overlaySource.replace("__PARENTS__", JSON.stringify(this.parents())));
       }
       const headers = forwardHeaders(req, target, targetOrigin, own);
       // Pages are asked for uncompressed, so the overlay can be added. Without the header, any encoding would do.
       headers["accept-encoding"] = "identity";
-      const upstream = request({ host: upstreamHost, port: target.port, method: req.method, path: req.url, headers }, (up) => {
+      const upstream = request({ host: upstreamHost, port: target.port, method: req.method, path: req.url, headers, ...(this.remoteConnect ? { createConnection: () => this.remoteConnect!(target) } : {}) }, (up) => {
         up.on("error", () => res.destroy());
         const nonce = randomBytes(16).toString("base64");
         const out: OutgoingHttpHeaders = {};
@@ -140,7 +140,7 @@ export class Previews {
         const encoding = String(up.headers["content-encoding"] ?? "identity").trim().toLowerCase();
         const decode = encoding === "identity" ? (body: Buffer) => body : DECODE[encoding];
         const html = String(up.headers["content-type"] ?? "").includes("text/html") && req.method !== "HEAD";
-        if (!html || !decode) {
+        if (!html || !decode || !this.overlay) {
           res.writeHead(up.statusCode ?? 502, out);
           up.pipe(res);
           return;
@@ -175,13 +175,15 @@ export class Previews {
     server.on("upgrade", (req, socket, head) => {
       const own = ownHost(req, server);
       if (!own || !ownOrigin(req, server)) return socket.destroy();
-      const up = connect(target.port, upstreamHost, () => {
+      const up = this.remoteConnect ? this.remoteConnect(target) : connect(target.port, upstreamHost);
+      const connected = () => {
         const headers = forwardHeaders(req, target, targetOrigin, own);
         const lines = [`${req.method} ${req.url} HTTP/1.1`, ...Object.entries(headers).flatMap(([k, v]) => (Array.isArray(v) ? v.map((x) => `${k}: ${x}`) : v === undefined ? [] : [`${k}: ${v}`]))];
         up.write(`${lines.join("\r\n")}\r\n\r\n`);
         if (head.length) up.write(head);
         socket.pipe(up).pipe(socket);
-      });
+      };
+      if (this.remoteConnect) queueMicrotask(connected); else up.once("connect", connected);
       up.on("error", () => socket.destroy());
       socket.on("error", () => up.destroy());
       for (const side of [socket, up]) {

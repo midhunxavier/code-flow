@@ -1285,3 +1285,9 @@
 .launch-service > div:first-child { display:flex;justify-content:space-between;gap:8px; }
 .launch-service details { margin-top:12px; }
 .launch-logs { max-height:250px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px; }
+
+/* SSH projects use the same workspace on a separate, authenticated origin. */
+.ssh-connections { overflow-y: auto; padding: 0 20px 20px; }
+.ssh-connections label { display: grid; gap: 6px; margin: 12px 0; }
+.ssh-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.host-control { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

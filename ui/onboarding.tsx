@@ -110,7 +110,7 @@ export function ComposerLibraryEditor({ p, onToolApprovalsChange }: { p: Pattern
   const file = useRef<HTMLInputElement>(null);
   const selected = library.presets.find((item) => item.id === presetId);
   const save = (value: ComposerLibrary) => {
-    try { const clean = parseComposerLibrary(value, patterns.value); localStorage.setItem("composerLibrary", JSON.stringify(clean)); libraryRef.current = clean; setLibrary(clean); setError(""); return true; }
+    try { const clean = parseComposerLibrary(value, patterns.value); store.set("composerLibrary", JSON.stringify(clean)); libraryRef.current = clean; setLibrary(clean); setError(""); return true; }
     catch (err) { setError((err as Error).message); return false; }
   };
   const savePreset = () => {

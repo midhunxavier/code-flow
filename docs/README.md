@@ -23,6 +23,7 @@
 - [Architecture explorer](architecture-explorer.md): static imports, packages, cycles and directory boundaries across six languages.
 - [Semantic memory claims](memory-claims.md): bounded duplicate/contradiction evidence with source revisions and overlapping applicability.
 - [Shared projects](shared-projects.md): local viewer/reviewer accounts, scoped results, reviews and immediate revocation.
+- [SSH projects](ssh-projects.md): connect to a server, open its repositories, and run the full workspace remotely.
 - [SSH workers](remote-workers.md): explicit remote targets, source/result bundles, durable receipts and recovery.
 - [Coordinated changes](coordinated-changes.md): pinned dependencies and per-repository validation/shipping.
 - [GitHub review threads](github-review-threads.md): inspect, reply, resolve and reopen real review threads with stale-state checks.

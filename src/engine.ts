@@ -3737,21 +3737,31 @@ export class RunManager {
   }
 
   private quotaSave?: ReturnType<typeof setTimeout>;
+  private quotaWrites: Promise<void> = Promise.resolve();
   /** Kept on disk so a restart doesn't forget a plan that's out of usage. */
   private saveQuota() {
     if (this.quotaSave) return;
     this.quotaSave = setTimeout(() => {
       this.quotaSave = undefined;
-      // Written whole and renamed into place: a crash mid-write can't leave half a file.
-      const tmp = `${QUOTA_FILE}.${process.pid}.tmp`;
-      void mkdir(CODEFLOW_HOME, { recursive: true })
-        .then(() => writeFile(tmp, JSON.stringify(this.quota)))
-        .then(() => rename(tmp, QUOTA_FILE))
-        .catch((err: Error) => logWarn("Couldn't save quota.json", { error: err.message }));
-      const remoteFile = join(CODEFLOW_HOME, "remote-quota.json"), remoteTemp = `${remoteFile}.${process.pid}.tmp`;
-      void mkdir(CODEFLOW_HOME, { recursive: true }).then(() => writeFile(remoteTemp, JSON.stringify(Object.fromEntries(this.remoteQuota)))).then(() => rename(remoteTemp, remoteFile)).catch((error: Error) => logWarn("Couldn't save remote quota", { error: error.message }));
+      void this.persistQuota();
     }, 1_000);
     this.quotaSave.unref?.();
+  }
+
+  private persistQuota(): Promise<void> {
+    const snapshots = [[QUOTA_FILE, JSON.stringify(this.quota)], [join(CODEFLOW_HOME, "remote-quota.json"), JSON.stringify(Object.fromEntries(this.remoteQuota))]] as const;
+    // Serialize snapshots and track the writes so shutdown cannot leave a timer or
+    // rename running after its caller starts removing the workspace.
+    this.quotaWrites = this.quotaWrites.then(async () => {
+      await mkdir(CODEFLOW_HOME, { recursive: true });
+      const results = await Promise.allSettled(snapshots.map(async ([file, text]) => {
+        const tmp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+        await writeFile(tmp, text);
+        await rename(tmp, file);
+      }));
+      for (const result of results) if (result.status === "rejected") throw result.reason;
+    }).catch((error: Error) => logWarn("Couldn't save provider quota", { error: error.message }));
+    return this.quotaWrites;
   }
 
   private async loadQuota() {
@@ -4492,6 +4502,12 @@ export class RunManager {
       Promise.allSettled([...this.active.values(), ...this.mergeValidationWork.values(), ...this.startingWork, ...this.repositoryLeaseWork.values(), ...[...this.taskReruns.values()].map((entry) => entry.promise)]),
       new Promise((resolve) => setTimeout(resolve, timeoutMs).unref?.()),
     ]);
+    if (this.quotaSave) {
+      clearTimeout(this.quotaSave);
+      this.quotaSave = undefined;
+      void this.persistQuota();
+    }
+    await this.quotaWrites;
     await flushWrites();
     await Promise.allSettled(this.coldWrites.values());
   }

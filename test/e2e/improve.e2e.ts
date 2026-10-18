@@ -87,6 +87,7 @@ async function chooseRepo(page: Page, path: string) {
   await page.locator(".repo-btn:not(.project-btn)").click();
   const dialog = page.getByRole("dialog", { name: "Choose a repository", exact: true });
   await dialog.waitFor();
+  await dialog.locator(".ps").filter({ hasNotText: "Loading…" }).filter({ hasText: /git repository|Open a folder/ }).waitFor();
   // Wait for this navigation, not a repository status retained from the prior opening.
   const listing = page.waitForResponse((response) => {
     const url = new URL(response.url());
