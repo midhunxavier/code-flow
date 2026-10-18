@@ -77,14 +77,67 @@ test("what a run on the base code proves", () => {
   const failing = proofOutcome(result("not ok 1 - parses dates\n  AssertionError: expected 2 to equal 3\n# fail 1", 1));
   assert.equal(failing.status, "proven");
   assert.match(failing.detail, /expected 2 to equal 3/);
-  // A test that imports code only the change adds fails for the change.
-  assert.equal(proofOutcome(result("ModuleNotFoundError: No module named 'pkg.dates'\n1 error during collection", 2, { command: "pytest -q" })).status, "proven");
+  // A test that imports code only the change adds fails for the change, but that only shows the code is there.
+  assert.equal(proofOutcome(result("ModuleNotFoundError: No module named 'pkg.dates'\n1 error during collection", 2, { command: "pytest -q" })).status, "weak");
   // A run that never reached the tests proves nothing either way.
   assert.equal(proofOutcome(result("/bin/sh: pytest: command not found", 127, { command: "pytest" })).status, "unverified");
   assert.equal(proofOutcome(result("/usr/bin/python3: No module named pytest", 1, { command: "python3 -m pytest" })).status, "unverified");
   assert.equal(proofOutcome(result("collected 0 items\n=== no tests ran ===", 5, { command: "pytest" })).status, "unverified");
   assert.equal(proofOutcome(result("", null, { timedOut: true })).status, "unverified");
   assert.equal(proofOutcome(result("code-flow couldn't run it: Docker isn't available", null)).status, "unverified");
+});
+
+test("tests that fail on the base code only because they can't load are a weak proof, in each runner's words", () => {
+  const weak = {
+    pytest: [
+      "==================================== ERRORS ====================================",
+      "_________________ ERROR collecting tests/test_dates.py _________________",
+      "ImportError while importing test module '/x/tests/test_dates.py'.",
+      "E   ImportError: cannot import name 'parse_date' from 'pkg.dates' (/x/pkg/dates.py)",
+      "=========================== short test summary info ============================",
+      "ERROR tests/test_dates.py",
+      "!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!",
+      "1 error in 0.05s",
+    ],
+    node: [
+      "✖ dates.test.mjs (41ms)",
+      "  'test failed'",
+      "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/x/src/dates.mjs' imported from /x/dates.test.mjs",
+      "ℹ tests 1",
+      "ℹ pass 0",
+      "ℹ fail 1",
+    ],
+    // The source Jest quotes around the import holds an expect(); that's not a failing assertion.
+    jest: [
+      "FAIL  test/dates.test.js",
+      "  ● Test suite failed to run",
+      "",
+      "    Cannot find module '../src/dates' from 'test/dates.test.js'",
+      "",
+      "    > 1 | const { parseDate } = require('../src/dates');",
+      "        | ^",
+      "      2 | test('parses', () => {",
+      "      3 |   expect(parseDate('2026-01-02')).toEqual(new Date(2026, 0, 2));",
+      "Tests:       0 total",
+    ],
+    vitest: [" FAIL  test/dates.test.ts [ test/dates.test.ts ]", 'Error: Failed to resolve import "../src/dates" from "test/dates.test.ts". Does the file exist?', " Test Files  1 failed (1)"],
+    go: ["# example.com/dates [example.com/dates.test]", "./dates_test.go:9:7: undefined: ParseDate", "FAIL\texample.com/dates [build failed]"],
+    cargo: ["error[E0425]: cannot find function `parse_date` in this scope", "error: could not compile `dates` (lib test) due to 1 previous error"],
+    unittest: ["ERROR: test_dates (unittest.loader._FailedTest.test_dates)", "ImportError: Failed to import test module: test_dates", "FAILED (errors=1)"],
+  };
+  for (const [runner, lines] of Object.entries(weak)) {
+    const outcome = proofOutcome(result(lines.join("\n"), 1));
+    assert.equal(outcome.status, "weak", runner);
+    assert.ok(outcome.detail.length > 0, runner);
+  }
+  // A test that ran and failed on what it checks is full proof, also when another can't load.
+  const proven = {
+    pytest: ["FAILED tests/test_dates.py::test_parse - AssertionError: assert None == datetime.date(2026, 1, 2)", "ERROR tests/test_tz.py - ModuleNotFoundError: No module named 'pkg.tz'", "1 failed, 1 error in 0.08s"],
+    jest: ["    expect(received).toEqual(expected) // deep equality", "    Expected: 2026-01-02", "    Received: undefined", "    Cannot find module './tz' from 'src/dates.js'"],
+    vitest: ["AssertionError: expected undefined to deeply equal 2026-01-02T00:00:00.000Z", 'Error: Failed to resolve import "./tz" from "src/dates.ts"'],
+    go: ["--- FAIL: TestParseDate (0.00s)", "    dates_test.go:12: got 0001-01-01, want 2026-01-02", "FAIL"],
+  };
+  for (const [runner, lines] of Object.entries(proven)) assert.equal(proofOutcome(result(lines.join("\n"), 1)).status, "proven", runner);
 });
 
 test("the tests side of a change: tests, fixtures and the runner's settings", () => {
@@ -213,6 +266,19 @@ test("single agent: the result's proof is reported, and nobody is asked for a te
   assert.deepEqual(titles(r), ["Your task [claude]:done", "Check:done", "Proof: tests without the change:failed"]);
   assert.equal(r.facts?.proof, "unproven");
   assert.match(r.summary!, /⚠ Not proven/);
+});
+
+test("single agent: a test that only fails on the base code because its import isn't there is a weak proof", async () => {
+  const r = await withEnv({ FAKE_IMPORT_TEST: "1" }, () => run("solo", { agent: ["claude"] }, { loop: { check: "node --test" } }, newRepo()));
+  assert.equal(r.status, "done", r.error);
+  assert.equal(proofOf(r)?.status, "weak");
+  assert.deepEqual(proofOf(r)?.tests, ["feature.test.mjs"]);
+  assert.match(proofOf(r)!.detail, /ERR_MODULE_NOT_FOUND|Cannot find module/);
+  assert.equal(r.facts?.proof, "weak");
+  assert.match(r.summary!, /⚠ Weak proof: `node --test` fails without the change only because its tests can't load there/);
+  assert.match(await log(r), /Weakly proven: with this change's tests \(feature\.test\.mjs\) on the base code/);
+  const proofStep = r.steps.find((s) => s.title === "Proof: tests without the change");
+  assert.equal(proofStep?.status, "done", "it does fail without the change");
 });
 
 test("a package the change adds is installed on the base code too, so its absence can't pass for a proof", async () => {

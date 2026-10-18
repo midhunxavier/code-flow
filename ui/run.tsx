@@ -1,25 +1,25 @@
 import { Component } from "preact";
-import { useEffect, useReducer, useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote, Markdown } from "./bits.js";
 import { TriageActions } from "./automations.js";
 import { Icon } from "./icons.js";
-import { api, ApiError, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, onPhone, post, SHORT, showToast, STATUS_TEXT } from "./lib.js";
+import { api, ApiError, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, onPhone, post, safeHref, SHORT, showToast, STATUS_TEXT, usePoll } from "./lib.js";
 import {
   agents,
   attachments,
   checkCmd,
+  checkLoaded,
   contextPaths,
-  limits,
   markSeen,
-  optionValues,
   patterns,
   repo,
-  roleSel,
-  route,
   runState,
+  setLimits,
+  setOption,
   setPattern,
   setRepo,
+  setRoles,
   setTask,
   setupCmd,
   source,
@@ -39,126 +39,15 @@ import { ProjectMemory } from "./memory.js";
 import { GithubReviewThreadsPanel } from "./github-review-threads.js";
 import { RemoteStepReceipt } from "./remote-workers.js";
 import type { MergeValidation } from "../src/merge-validation.js";
-import { reconcileStreamSnapshot, type StreamSnapshot } from "./run-stream.js";
+import { useRunStream, type RunData } from "./run-feed.js";
 import { followupMinimumCalls, teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
-import type { AgentEvent, AgentId, Artifact, Attachment, CheckedReview, FindingCheck, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunEvent, RunSummary, Step } from "./types.js";
+import type { AgentEvent, AgentId, Artifact, Attachment, CheckedReview, FindingCheck, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
 const modelNote = (run: RunSummary | null, id?: AgentId) =>
   run && id ? [run.agentSettings?.[id]?.model, run.agentSettings?.[id]?.effort].filter(Boolean).join(" · ") : "";
 
-export interface RunData {
-  steps: Map<string, Step>;
-  events: Map<string, AgentEvent[]>;
-  /** Transcript items per step, built incrementally as events arrive (see itemsFor). */
-  built: Map<string, Built>;
-  logs: { ts: number; level: string; text: string }[];
-  seen: Set<number>;
-  /** The event the shown run snapshot, and each step's, came with: an older one never replaces it. */
-  runSeq: number;
-  stepSeq: Map<string, number>;
-  /** The server start the events are from; another one numbers its events afresh. */
-  epoch: string;
-}
-
-const emptyData = (): RunData => ({ steps: new Map(), events: new Map(), built: new Map(), logs: [], seen: new Set(), runSeq: 0, stepSeq: new Map(), epoch: "" });
-
-/**
- * A run's event stream: its snapshot, every step and agent event, kept in `data` (mutated in
- * place; `version` changes as events arrive so components re-render). The run view and the side
- * panel's chat both read a run this way. `onStep` sees each step update as it lands.
- */
-export function useRunStream(id: string, onStep?: (step: Step) => void) {
-  const [run, setRun] = useState<RunSummary | null>(null);
-  /** Why the run can't be shown (it doesn't exist, or the server said no). */
-  const [problem, setProblem] = useState("");
-  const data = useRef<RunData>(emptyData());
-  const [version, bump] = useReducer((x: number) => x + 1, 0);
-  const stepHandler = useRef(onStep);
-  stepHandler.current = onStep;
-
-  useEffect(() => {
-    let source: EventSource | undefined;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let closed = false;
-    let scheduled = false;
-    setProblem("");
-    setRun(null);
-    data.current = emptyData();
-    const connect = () => {
-      source = new EventSource(`/api/runs/${id}/events`);
-      source.onmessage = onMessage;
-      // The browser reconnects by itself after a drop; a refused stream (an unknown run, the
-      // server restarted and this session ended) closes for good: find out why.
-      source.onerror = () => {
-        if (source?.readyState !== EventSource.CLOSED || closed) return;
-        api<RunSummary>(`/api/runs/${id}`).then(
-          () => (retry = setTimeout(connect, 2_000)),
-          (err: ApiError | Error) => {
-            if (err instanceof ApiError && err.status === 404) setProblem("This run doesn't exist. It may have been started by another code-flow, or its files were removed.");
-            else if (err instanceof ApiError) setProblem(`Couldn't load this run: ${err.message}`);
-            else retry = setTimeout(connect, 5_000); // code-flow isn't reachable right now
-          },
-        );
-      };
-    };
-    const onMessage = (msg: MessageEvent<string>) => {
-      const ev = JSON.parse(msg.data) as RunEvent | { type: "hello"; epoch: string; resumed?: boolean; snapshot?: StreamSnapshot };
-      if (ev.type === "hello") {
-        // Not resumed means the whole history follows: start over rather than mix two of them.
-        if (ev.epoch !== data.current.epoch || !ev.resumed) data.current = { ...emptyData(), epoch: ev.epoch };
-        if (ev.snapshot) {
-          data.current = reconcileStreamSnapshot(data.current, ev.snapshot);
-          // The run list is the global feed's (watchAllRuns), as for every other event of this stream.
-          setRun(ev.snapshot.run);
-          for (const step of ev.snapshot.steps) stepHandler.current?.(step);
-          bump(0);
-        }
-        return;
-      }
-      const d = data.current;
-      if (d.seen.has(ev.seq)) return;
-      d.seen.add(ev.seq);
-      if (ev.type === "run") {
-        if (ev.seq < d.runSeq) return;
-        d.runSeq = ev.seq;
-        // The run list is the global feed's (watchAllRuns): this stream numbers its events differently,
-        // and its replayed history would put old snapshots over newer ones there.
-        setRun(ev.run);
-      } else if (ev.type === "step") {
-        if (ev.seq < (d.stepSeq.get(ev.step.id) ?? 0)) return;
-        d.stepSeq.set(ev.step.id, ev.seq);
-        d.steps.set(ev.step.id, ev.step);
-        stepHandler.current?.(ev.step);
-      } else if (ev.type === "agent") {
-        if (!d.events.has(ev.stepId)) d.events.set(ev.stepId, []);
-        d.events.get(ev.stepId)!.push(ev.event);
-      } else if (ev.type === "log") {
-        d.logs.push(ev);
-      }
-      // Batch bursts of events into one render per frame. Browsers pause animation frames in
-      // background tabs and hidden panes, so a timer renders there too (throttled, but it renders).
-      if (!scheduled) {
-        scheduled = true;
-        const flush = () => {
-          if (!scheduled) return;
-          scheduled = false;
-          bump(0);
-        };
-        requestAnimationFrame(flush);
-        setTimeout(flush, 250);
-      }
-    };
-    connect();
-    return () => {
-      closed = true;
-      clearTimeout(retry);
-      source?.close();
-    };
-  }, [id]);
-
-  return { run, problem, data, version };
-}
+export { useRunStream, type RunData } from "./run-feed.js";
 
 export function RunView({ id }: { id: string }) {
   /** The step whose transcript is open; "" when you closed it. */
@@ -464,7 +353,7 @@ function RunMeta({ run }: { run: RunSummary }) {
       ) : null}
       {run.triage && run.triage.state !== "pending" ? <span class="badge">{run.triage.state === "empty" ? "no changes · archived" : run.triage.state}</span> : null}
       {run.source ? (
-        <a class="src-link" href={run.source.url} target="_blank" rel="noreferrer" title={run.source.title}>
+        <a class="src-link" href={safeHref(run.source.url)} target="_blank" rel="noreferrer" title={run.source.title}>
           {run.source.kind === "issue"
             ? `◎ issue #${run.source.number}`
             : run.source.kind === "pr"
@@ -818,7 +707,7 @@ function ReviewCard({ run }: { run: RunSummary }) {
         <span class="spacer" />
         {pr ? (
           review.postedTo ? (
-            <a class="badge ok" href={review.postedTo} target="_blank" rel="noreferrer">
+            <a class="badge ok" href={safeHref(review.postedTo)} target="_blank" rel="noreferrer">
               Posted to PR #{pr.number} ↗
             </a>
           ) : (
@@ -892,13 +781,13 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
           </span>
         ))}
         {pr ? (
-          <a class="badge" href={pr} target="_blank" rel="noreferrer">
+          <a class="badge" href={safeHref(pr)} target="_blank" rel="noreferrer">
             PR ↗
           </a>
         ) : null}
         <span class="acts">
           {canReview ? (
-            <button class="btn small primary" onClick={() => (route.value = { view: "review", id: run.id, branch: artifact.branch })}>
+            <button class="btn small primary" onClick={() => navigate({ view: "review", id: run.id, branch: artifact.branch })}>
               Review changes
             </button>
           ) : null}
@@ -984,6 +873,18 @@ function ProofNote({ proof }: { proof: Proof }) {
           <span class="help">
             {" "}
             — <code>{proof.command}</code> fails on the base code with {tests}, and passes with the change.
+          </span>
+          <details>
+            <summary>How it fails without the change</summary>
+            <pre>{proof.detail}</pre>
+          </details>
+        </>
+      ) : proof.status === "weak" ? (
+        <>
+          <b>⚠ Weak proof: the tests fail without this change only because they can't load</b>
+          <span class="help">
+            {" "}
+            — <code>{proof.command}</code> fails on the base code with {tests}, but on an import or build error, not on what the tests check. Check a test covers the behaviour before merging.
           </span>
           <details>
             <summary>How it fails without the change</summary>
@@ -1296,7 +1197,7 @@ function PrMergePanel({ run, branch, worktree, steps }: { run: RunSummary; branc
         <div class="row">
           <label class="lbl">Merge pull request</label>
           {info ? (
-            <a href={info.url} target="_blank" rel="noreferrer">
+            <a href={safeHref(info.url)} target="_blank" rel="noreferrer">
               #{info.number} into {info.baseRefName} ↗
             </a>
           ) : (
@@ -1406,16 +1307,7 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
   const [server, setServer] = useState<{ url: string; status: string; logs: string[]; command: string; exitCode?: number | null } | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [command, setCommand] = useState(run.app?.command ?? "");
-  useEffect(() => {
-    let alive = true;
-    const poll = () => api(base + "/serve").then((s) => alive && setServer(s), () => {});
-    poll();
-    const timer = setInterval(poll, 2000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [base]);
+  usePoll((current) => api(base + "/serve").then((s) => current() && setServer(s), () => {}), 2000, [base]);
   const open = (target: string) =>
     post<{ openedWith: string }>(`${base}/open`, { target }).then((r) => showToast(`Opened in ${r.openedWith}${onPhone ? " on your computer" : ""}`), (e) => showToast(e.message, 5000));
   /** Start the app; for a locked-down run, only once you've said to run that code here. It opens in the side panel's Browser. */
@@ -1448,7 +1340,7 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
         <>
           <a
             class="btn small primary"
-            href={appUrl}
+            href={safeHref(appUrl)}
             target="_blank"
             rel="noreferrer"
             title={onPhone ? "Opens only if the app listens on your network too (e.g. vite --host)" : undefined}
@@ -1504,10 +1396,10 @@ function ArchiveDialog({ run, onClose }: { run: RunSummary; onClose: () => void 
   const [deleteBranches, setDeleteBranches] = useState(false);
   const ref = useDialog(true, onClose);
   return (
-    <dialog class="picker small-dialog" ref={ref}>
+    <dialog class="picker small-dialog" ref={ref} aria-labelledby="archive-title">
       <div class="picker-inner">
         <div class="picker-head">
-          <h3>Archive this run</h3>
+          <h3 id="archive-title">Archive this run</h3>
         </div>
         <div class="dialog-body">
           <label class="check">
@@ -1724,7 +1616,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
     setBusy(true);
     try {
       const { id } = await post<{ id: string }>(`/api/runs/${run.id}/revise-goal`, { message: text.trim(), budget: { maxSteps: followupSteps, maxInvocations: followupSteps, maxMinutes: followupMinutes } });
-      setText(""); route.value = { view: "run", id };
+      setText(""); navigate({ view: "run", id });
     } catch (error) { showToast((error as Error).message, 5000); }
     finally { setBusy(false); }
   };
@@ -1960,7 +1852,7 @@ type Item = (
   | { kind: "tool"; name: string; input: string; output?: string; isError?: boolean }
 ) & { /** bumped when the item changes in place */ v: number };
 
-interface Built {
+export interface Built {
   items: Item[];
   tools: Map<string, Extract<Item, { kind: "tool" }>>;
   /** Events already turned into items. */
@@ -2054,10 +1946,11 @@ function ActivityLog({ logs }: { logs: RunData["logs"]; count: number }) {
 }
 
 // ---------------------------------------------------------------- edit & run again
-function editAndRerun(run: RunSummary) {
+export function editAndRerun(run: RunSummary) {
   setPattern(run.pattern);
-  roleSel.value = { ...roleSel.value, [run.pattern]: { ...(roleSel.value[run.pattern] ?? {}), ...run.roles } };
-  optionValues.value = { ...optionValues.value, [run.pattern]: { ...run.options } };
+  for (const [role, ids] of Object.entries(run.roles)) setRoles(run.pattern, role, ids);
+  const p = patterns.value.find((x) => x.id === run.pattern);
+  if (p) for (const [id, value] of Object.entries(run.options ?? {})) setOption(p, id, value);
   setTask(run.task);
   const restore = () => {
     contextPaths.value = new Map((run.context?.paths ?? []).map((c) => [c.path, { path: c.path, type: c.type }]));
@@ -2065,7 +1958,7 @@ function editAndRerun(run: RunSummary) {
     if (run.context?.attachments?.length) showToast("Attached files aren't kept — attach them again if needed", 4000);
     checkCmd.value = run.loop?.check ?? "";
     setupCmd.value = run.loop?.setup ?? "";
-    limits.value = { maxMinutes: run.loop?.maxMinutes ?? 60, maxSteps: run.loop?.maxSteps ?? 40 };
+    setLimits({ maxMinutes: run.loop?.maxMinutes ?? 60, maxSteps: run.loop?.maxSteps ?? 40 });
     source.value = run.source
       ? {
           kind: run.source.kind,
@@ -2084,7 +1977,7 @@ function editAndRerun(run: RunSummary) {
   // Back in the run's project, so the new run goes there too.
   const project = projectFor(run);
   if (project) selectProject(project.id, { defaults: false, repo: false });
-  route.value = { view: "composer" };
-  if (run.repo !== repo.value) void setRepo(run.repo).then(restore);
-  else restore();
+  navigate({ view: "composer" });
+  // Once the repo's own "Done when" lookup is done: the run's check and setup win over it.
+  void (run.repo !== repo.value ? setRepo(run.repo).then(checkLoaded) : checkLoaded()).then(restore, restore);
 }

@@ -51,7 +51,15 @@ before(async () => {
 after(async () => { for (const context of contexts) await context.close(); await browser?.close(); processServer?.kill("SIGTERM"); await new Promise<void>((resolve) => { if (!processServer || processServer.exitCode !== null) return resolve(); processServer.once("exit", resolve); setTimeout(resolve, 5000).unref(); }); rmSync(fixture, { recursive: true, force: true }); });
 
 test("shared route enforcement scopes aliases, search counts, exports and SSE while denying all execution surfaces", async () => {
+  const ownerSelf = await fetch(`${base}/api/auth/self`, { headers: ownerHeaders }).then((response) => response.json());
+  assert.match(ownerSelf.streamSharing.channelKey, /^[a-f0-9]{64}$/); assert.match(ownerSelf.streamSharing.lockId, /^[a-f0-9]{32}$/);
   for (const prefix of ["/api", "/api/v1"]) {
+    for (const cookie of [viewerCookie, reviewerCookie]) {
+      const identity = await fetch(`${base}${prefix}/auth/self`, { headers: sharedHeaders(cookie) }).then((response) => response.json());
+      assert.equal("streamSharing" in identity, false); assert.equal(JSON.stringify(identity).includes(ownerSelf.streamSharing.channelKey), false);
+      assert.equal((await fetch(`${base}${prefix}/stream?subs=[]`, { headers: sharedHeaders(cookie) })).status, 403);
+      assert.equal((await fetch(`${base}${prefix}/stream/owner-client`, { method: "POST", headers: sharedHeaders(cookie), body: JSON.stringify({ subscribe: [{ id: 1, topic: "runs" }] }) })).status, 403);
+    }
     const projects = await fetch(base + prefix + "/projects", { headers: sharedHeaders(viewerCookie) }).then((response) => response.json()); assert.deepEqual(projects.map((project: { id: string }) => project.id), ["p-one"]); assert.equal(JSON.stringify(projects).includes("private-default"), false); assert.equal(JSON.stringify(projects).includes("repo-one"), false);
     const runs = await fetch(base + prefix + "/runs?limit=1&q=Shared", { headers: sharedHeaders(viewerCookie) }).then((response) => response.json()); assert.equal(runs.total, 1); assert.deepEqual(runs.runs.map((run: { id: string }) => run.id), ["shared-one"]); assert.equal(runs.nextCursor, undefined);
     const deep = await fetch(base + prefix + "/runs?project=p-one&q=DeepColdNeedle", { headers: sharedHeaders(viewerCookie) }).then((response) => response.json()); assert.equal(deep.total, 1); assert.equal(deep.runs[0].id, "cold-deep"); assert.equal(deep.runs[0].cold, true); assert.equal(deep.runs[0].detailAvailable, true); assert.equal(deep.runs[0].task.includes("DeepColdNeedle"), false, "query reads the full authorized cold task while the list remains a bounded preview");

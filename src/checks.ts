@@ -386,14 +386,31 @@ export function runnerMissing(result: CheckResult): string | undefined {
  * What a fail-to-pass proof's run says: the check on the base code, with the change's tests put
  * onto it. Failing there is the point (a test needs the change); passing means none does. A run
  * that couldn't get as far as the tests (no test runner, nothing collected, a timeout) says
- * neither. A test that can't import code only the change adds does fail for the change, so an
- * import error counts as failing.
+ * neither. A test that can't import code only the change adds does fail for the change, but only
+ * shows the code is there, not that it works: failing only that way is a weak proof.
  */
-export function proofOutcome(result: CheckResult): { status: "proven" | "unproven" | "unverified"; detail: string } {
+export function proofOutcome(result: CheckResult): { status: "proven" | "weak" | "unproven" | "unverified"; detail: string } {
   if (result.ok) return { status: "unproven", detail: `\`${result.command}\` passes on the base code too, with this change's tests` };
   const unknown = inconclusive(result, "on the base code");
   if (unknown) return { status: "unverified", detail: unknown };
-  return { status: "proven", detail: failureExcerpt(result.output, 1_500) || `exit code ${result.exitCode}` };
+  return { status: onlyLoadErrors(result) ? "weak" : "proven", detail: failureExcerpt(result.output, 1_500) || `exit code ${result.exitCode}` };
+}
+
+/** The tests couldn't load: a module, file or name they import isn't there, or doesn't build. */
+const LOAD_ERROR =
+  /ModuleNotFoundError|ImportError|No module named|errors? during collection|ERROR collecting|Cannot find module|ERR_MODULE_NOT_FOUND|Failed to (?:load url|resolve import)|does not provide an export named|is not exported by|error TS(?:2305|2307|2614|2724)\b|unresolved import|cannot find (?:function|struct|type|value|module|crate|macro)|\[build failed\]|^\S+\.go:\d+:\d+: undefined: /m;
+/** A test that ran and failed on what it checks: an assertion, an expected value, a failed test by name. */
+const TEST_FAILURE = /AssertionError|[Aa]ssert(?:ion)? failed|^\s*E\s+assert\b|\bexpect\(|^\s*(?:Expected|Received)\b|\bexpected .+ to\b|^--- FAIL: |^FAILED \S+::|panicked at .*assert/;
+
+/**
+ * Whether a failing run failed only because its tests couldn't load (see LOAD_ERROR), with no
+ * test failing on what it checks. The source lines a runner quotes around an error (`> 3 | …`)
+ * aren't failures, so they're left out.
+ */
+export function onlyLoadErrors(result: CheckResult): boolean {
+  if (result.ok || !LOAD_ERROR.test(result.output)) return false;
+  const quoted = /^\s*>?\s*\d+\s*\|/;
+  return !result.output.split("\n").some((line) => !quoted.test(line) && TEST_FAILURE.test(line));
 }
 
 /**

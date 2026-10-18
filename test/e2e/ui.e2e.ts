@@ -795,6 +795,8 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.keyboard.press("Meta+k");
     const commands = fresh.getByRole("combobox", { name: "Find a command, project or run" });
     await commands.fill("choose repository");
+    const listedPaths: string[] = [];
+    fresh.on("request", (request) => { const url = new URL(request.url()); if (url.pathname === "/api/fs") listedPaths.push(url.searchParams.get("path") ?? ""); });
     await commands.press("Enter");
     // Pasting and pressing Enter may happen before Preact commits its input state.
     await fresh.getByLabel("Folder path").evaluate((element, path) => {
@@ -804,6 +806,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     }, repo);
     await fresh.getByText("✓ This folder is a git repository").waitFor();
+    assert.equal(listedPaths.at(-1), repo, "a delayed default listing cannot supersede same-tick explicit navigation");
     await fresh.getByRole("button", { name: "Use this folder", exact: true }).click();
     await fresh.waitForFunction(() => (document.querySelector("#checkCmd") as HTMLInputElement | null)?.value === "npm test");
     await fresh.getByLabel("Workflow", { exact: true }).selectOption("pipeline");

@@ -46,8 +46,12 @@ export interface PatternStats {
   stopped: number;
   /** Runs whose result changed tests in ways that could hide failures. */
   flagged: number;
-  /** Runs whose result was proven fail-to-pass (a test fails without it), and ones that weren't. */
+  /**
+   * Runs whose result was proven fail-to-pass (a test fails without it), ones whose tests failed
+   * without it only because they couldn't load (weak), and ones that weren't.
+   */
   proven: number;
+  weak: number;
   unproven: number;
   /** Runs that ended, and their total wall-clock time. */
   ended: number;
@@ -112,7 +116,7 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
     cohort.tokens += tokensOf(r);
     cohort.costUsd += r.usage.costUsd ?? 0;
     cohort.ms += r.endedAt ? r.endedAt - r.createdAt : 0;
-    const p = patterns.get(r.pattern) ?? { pattern: r.pattern, runs: 0, done: 0, passed: 0, failing: 0, failed: 0, stopped: 0, flagged: 0, proven: 0, unproven: 0, ended: 0, ms: 0, steps: 0, tokens: 0, costUsd: 0 };
+    const p = patterns.get(r.pattern) ?? { pattern: r.pattern, runs: 0, done: 0, passed: 0, failing: 0, failed: 0, stopped: 0, flagged: 0, proven: 0, weak: 0, unproven: 0, ended: 0, ms: 0, steps: 0, tokens: 0, costUsd: 0 };
     patterns.set(r.pattern, p);
     p.runs++;
     if (r.status === "done") p.done++;
@@ -122,6 +126,7 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
     if (r.verdict === "failing") p.failing++;
     if (r.integrity && Object.keys(r.integrity).length) p.flagged++;
     if (r.facts?.proof === "proven") p.proven++;
+    if (r.facts?.proof === "weak") p.weak++;
     if (r.facts?.proof === "unproven") p.unproven++;
     if (r.endedAt) {
       p.ended++;

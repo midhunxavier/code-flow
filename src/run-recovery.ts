@@ -11,7 +11,7 @@ export async function recoverRun(id: string) {
     projection.apply({ seq: checkpoint.seq, ts: checkpoint.run.createdAt, runId: id, type: "run", run: strip(checkpoint.run) });
     for (const step of checkpoint.run.steps) projection.apply({ seq: checkpoint.seq, ts: step.startedAt, runId: id, type: "step", step });
   } else await visitJsonLines<RunEvent>(`${id}.jsonl`, (event) => projection.apply(event));
-  return { run: projection.finish(), seq: projection.seq, records: projection.records };
+  return { run: projection.finish(), seq: projection.seq, records: projection.records, fullSnapshots: projection.fullSnapshots, patches: projection.patches };
 }
 
 /** Rare synchronous compatibility path for a stale cold projection; memory stays one record. */

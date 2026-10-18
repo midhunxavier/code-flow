@@ -70,8 +70,13 @@ jobs:
           curl --fail --location --retry 2 https://update.code.visualstudio.com/latest/linux-x64/stable --output "$RUNNER_TEMP/vscode.tar.gz"
           mkdir "$RUNNER_TEMP/vscode"
           tar -xzf "$RUNNER_TEMP/vscode.tar.gz" -C "$RUNNER_TEMP/vscode" --strip-components=1
+          sudo chown root:root "$RUNNER_TEMP/vscode/chrome-sandbox"
+          sudo chmod 4755 "$RUNNER_TEMP/vscode/chrome-sandbox"
       - name: Exercise real extension host with fake agents
-        run: xvfb-run -a npm run test:vscode
+        run: |
+          git config --global user.name "code-flow CI"
+          git config --global user.email "ci@code-flow.invalid"
+          xvfb-run -a npm run test:vscode
         env:
           CODEFLOW_VSCODE_BIN: ${{ runner.temp }}/vscode/code
       - run: npm run package:vscode

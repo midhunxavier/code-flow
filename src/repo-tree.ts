@@ -1,6 +1,6 @@
 import { open, readdir, realpath, stat } from "node:fs/promises";
 import { basename, join, sep } from "node:path";
-import { git } from "./git.js";
+import { git, type GitCwd } from "./git.js";
 import { assertProjectDirectoryAccess, assertProjectFileAccess, filePolicyMetadataOnly, filePolicyRegistryActive, filterAllowedProjectEntries } from "./filesystem-policy.js";
 
 export interface TreeEntry {
@@ -17,7 +17,9 @@ const MAX_ENTRIES = 1_000;
 /**
  * The Files panel waits on these: in a huge repo, or one another git is busy with, it says so
  * after this long instead of loading forever. Every call goes through `git()`, so none of them
- * prompts or takes the optional locks your own git needs.
+ * prompts or takes the optional locks your own git needs. A run's worktree is passed as a
+ * Checkout (see worktreeGit): its `.git` is the agents' to rewrite, and a `git status` there
+ * would otherwise run the filters a config of theirs names.
  */
 const PANEL_TIMEOUT_MS = 30_000;
 
@@ -38,11 +40,13 @@ export async function resolveInsideRepo(repo: string, rel: string): Promise<stri
   return abs;
 }
 
+const folderOf = (repo: GitCwd) => (typeof repo === "string" ? repo : repo.path);
+
 /** Immediate children of a repo folder, minus .git and anything git ignores. */
-export async function listTree(repo: string, relDir = ""): Promise<{ path: string; entries: TreeEntry[]; truncated: boolean }> {
+export async function listTree(repo: GitCwd, relDir = ""): Promise<{ path: string; entries: TreeEntry[]; truncated: boolean }> {
   const rel = normalizeRepoPath(relDir);
-  await assertProjectDirectoryAccess(repo, rel || ".");
-  const abs = await resolveInsideRepo(repo, rel);
+  await assertProjectDirectoryAccess(folderOf(repo), rel || ".");
+  const abs = await resolveInsideRepo(folderOf(repo), rel);
   const dirents = (await readdir(abs, { withFileTypes: true })).filter((d) => d.name !== ".git" && (!filePolicyRegistryActive() || !d.isSymbolicLink()));
 
   const candidates = await Promise.all(
@@ -57,7 +61,7 @@ export async function listTree(repo: string, relDir = ""): Promise<{ path: strin
   // git status may run repository fsmonitor and clean filters. Restricted browsing omits decoration.
   const statuses = filePolicyMetadataOnly() ? new Map<string, TreeEntry["status"]>() : await childStatuses(repo, rel);
 
-  const entries = (await filterAllowedProjectEntries(repo, candidates))
+  const entries = (await filterAllowedProjectEntries(folderOf(repo), candidates))
     .filter((c) => !ignored.has(c.type === "dir" ? `${c.path}/` : c.path))
     .map((c) => ({ ...c, status: statuses.get(c.name) }))
     .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) : a.type === "dir" ? -1 : 1));
@@ -66,7 +70,7 @@ export async function listTree(repo: string, relDir = ""): Promise<{ path: strin
 }
 
 /** Files (tracked and untracked, not ignored) whose path contains `query`; filename matches first. */
-export async function searchFiles(repo: string, query: string, limit = 100): Promise<TreeEntry[]> {
+export async function searchFiles(repo: GitCwd, query: string, limit = 100): Promise<TreeEntry[]> {
   const q = query.trim().toLowerCase();
   if (!q) return [];
   const res = await git(["-c", "core.fsmonitor=false", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], repo, { timeoutMs: PANEL_TIMEOUT_MS });
@@ -79,10 +83,10 @@ export async function searchFiles(repo: string, query: string, limit = 100): Pro
     if (basename(lower).includes(q)) nameHits.push(path);
     else if (lower.includes(q)) pathHits.push(path);
   }
-  return (await filterAllowedProjectEntries(repo, [...nameHits, ...pathHits].map((path) => ({ name: basename(path), path, type: "file" as const })))).slice(0, limit);
+  return (await filterAllowedProjectEntries(folderOf(repo), [...nameHits, ...pathHits].map((path) => ({ name: basename(path), path, type: "file" as const })))).slice(0, limit);
 }
 
-async function ignoredPaths(repo: string, paths: string[]): Promise<Set<string>> {
+async function ignoredPaths(repo: GitCwd, paths: string[]): Promise<Set<string>> {
   if (!paths.length) return new Set();
   // Exit 0 = some ignored, 1 = none ignored; anything else means git couldn't tell.
   const res = await git(["-c", "core.fsmonitor=false", "check-ignore", "-z", "--stdin"], repo, { input: paths.join("\0") + "\0", timeoutMs: PANEL_TIMEOUT_MS });
@@ -93,7 +97,7 @@ async function ignoredPaths(repo: string, paths: string[]): Promise<Set<string>>
 }
 
 /** Map of child name → status, rolled up from `git status` for everything under `rel`. */
-async function childStatuses(repo: string, rel: string): Promise<Map<string, TreeEntry["status"]>> {
+async function childStatuses(repo: GitCwd, rel: string): Promise<Map<string, TreeEntry["status"]>> {
   const res = await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", rel || "."], repo, { timeoutMs: PANEL_TIMEOUT_MS });
   const statuses = new Map<string, TreeEntry["status"]>();
   if (res.code !== 0) return statuses;
@@ -130,18 +134,18 @@ export interface FileContent {
 const MAX_FILE_BYTES = 512 * 1024;
 
 /** A file's contents for the Files tab: text up to a limit, or that it's binary. */
-export async function readRepoFile(repo: string, relPath: string): Promise<FileContent> {
-  await assertProjectFileAccess(repo, relPath, "read");
+export async function readRepoFile(repo: GitCwd, relPath: string): Promise<FileContent> {
+  await assertProjectFileAccess(folderOf(repo), relPath, "read");
   const rel = normalizeRepoPath(relPath);
   if (!rel) throw new Error("Name a file");
-  const abs = await resolveInsideRepo(repo, rel);
+  const abs = await resolveInsideRepo(folderOf(repo), rel);
   const info = await stat(abs);
   if (info.isDirectory()) throw new Error(`"${rel}" is a folder`);
   const handle = await open(abs, "r");
   try {
     const buf = Buffer.alloc(Math.min(info.size, MAX_FILE_BYTES));
     const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
-    await assertProjectFileAccess(repo, relPath, "read");
+    await assertProjectFileAccess(folderOf(repo), relPath, "read");
     const head = buf.subarray(0, Math.min(bytesRead, 8_000));
     if (head.includes(0)) return { path: rel, size: info.size, binary: true, truncated: false };
     return { path: rel, size: info.size, text: buf.subarray(0, bytesRead).toString("utf8"), binary: false, truncated: info.size > bytesRead };

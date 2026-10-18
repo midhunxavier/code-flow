@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { git, resolveCommit, withRepoLock } from "./git.js";
+import { git, resolveCommit, withRepoLock, type GitCwd } from "./git.js";
 import { normalizeRepoPath } from "./repo-tree.js";
 import { readEditableFile, WorkspaceConflictError } from "./workspace.js";
 
@@ -10,7 +10,7 @@ const digest = (text: string) => createHash("sha256").update(text).digest("hex")
 const MAX_TEXT = 512 * 1024;
 
 /** Compute a three-way text merge without touching the repository or losing either draft. */
-export async function mergeFileDraft(repo: string, path: string, base: string, draft: string) {
+export async function mergeFileDraft(repo: GitCwd, path: string, base: string, draft: string) {
   if ([base, draft].some((value) => typeof value !== "string" || Buffer.byteLength(value) > MAX_TEXT || value.includes("\0"))) throw new Error("Merge drafts must be text under 512 KB");
   const current = await readEditableFile(repo, path);
   const folder = await mkdtemp(join(tmpdir(), "codeflow-file-merge-"));
@@ -27,7 +27,7 @@ export interface CheckpointHunk { id: string; header: string; patch: string }
 export interface CheckpointHunks { head: string; source: string; path: string; hunks: CheckpointHunk[]; patchHeader: string }
 
 /** Hunk IDs refer to server-generated patches at pinned commits, never caller-authored patches. */
-export async function checkpointHunks(repo: string, input: { source: string; path: string }): Promise<CheckpointHunks> {
+export async function checkpointHunks(repo: GitCwd, input: { source: string; path: string }): Promise<CheckpointHunks> {
   const path = normalizeRepoPath(input.path);
   if (!path || path.split("/").some((part) => part.toLowerCase() === ".git")) throw new Error("Choose a regular repository file outside .git");
   await readEditableFile(repo, path); // rejects links and binary/oversized files in the current checkout
@@ -46,9 +46,9 @@ export async function checkpointHunks(repo: string, input: { source: string; pat
 }
 
 /** Apply selected hunks to a clean, unchanged result checkout, leaving them unstaged for review. */
-export async function applyCheckpointHunks(repo: string, input: { source: string; path: string; expectedHead: string; hunks: string[] }) {
+export async function applyCheckpointHunks(repo: GitCwd, input: { source: string; path: string; expectedHead: string; hunks: string[] }) {
   if (!Array.isArray(input.hunks) || input.hunks.length < 1 || input.hunks.length > 200 || input.hunks.some((id) => typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) || new Set(input.hunks).size !== input.hunks.length) throw new Error("Choose 1–200 distinct checkpoint hunks");
-  return withRepoLock(repo, async () => {
+  return withRepoLock(typeof repo === "string" ? repo : repo.path, async () => {
     if (await resolveCommit(repo) !== input.expectedHead) throw new WorkspaceConflictError(await resolveCommit(repo));
     const status = await git(["status", "--porcelain"], repo);
     if (status.code || status.stdout.trim()) throw new Error("Commit or save existing changes before applying checkpoint hunks");

@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Pattern, Run, RunEvent } from "../src/engine.js";
@@ -24,6 +24,8 @@ test("incremental run projection preserves legacy defaults and latest steps with
   const restored = projection.finish()!; assert.deepEqual(restored, rebuildRun(events)); assert.equal(restored.steps.length, 1); assert.equal(restored.steps[0]!.kind, "agent"); assert.equal(restored.steps[0]!.status, "done"); assert.equal(restored.patternSummary, "Pattern"); assert.equal(restored.trust, "standard"); assert.equal(restored.loop.maxSteps, 40); assert.equal(projection.seq, 2003);
   const snapshot = strip(restored); restored.roles.changed = ["claude"]; assert.equal(snapshot.roles.changed, undefined);
 });
+
+
 
 test("startup keeps archived full state on disk, stable history/count/search/provenance and exact analytics survive bounded detail hydration", async () => {
   const base = await baseline(), originals: Run[] = [];
@@ -70,4 +72,20 @@ test("attention pagination bounds older work after authorization filtering and k
   let release!: () => void; const gate = new Promise<void>((done) => release = done), busy: Pattern = { ...pattern, id: "busy", run: async () => { await gate; return "done"; } };
   const running = await manager.start({ repo, pattern: busy, task: "Active", roles: {}, options: {} }); const active = manager.attentionPage({ limit: 1 }); assert.ok(active.runs.some((run) => run.id === running.id)); assert.equal(active.running, 1); assert.equal(active.runs.length, 2); release(); await finished(running);
   assert.equal(coldEligible({ ...structuredClone(base), archived: true, status: "interrupted" }), false); assert.equal(coldEligible({ ...structuredClone(base), archived: true, followUps: [{ status: "pending" }] as Run["followUps"] }), false);
+});
+
+test("streaming startup and stale cold hydration decode upstream patches without retaining whole logs", async () => {
+  const { RunLogWriter } = await import("../src/run-log.js"), base = await baseline(), run: Run = { ...structuredClone(base), id: "patched-cold", archived: true, seen: true, steps: [], task: "Original pinned task" };
+  const writer = new RunLogWriter(false), first: RunEvent = { seq: 100, ts: 1, runId: run.id, type: "run", run: strip(run) }, second: RunEvent = { seq: 101, ts: 2, runId: run.id, type: "run", run: strip({ ...run, task: "Latest patched task", conventions: "Pinned recovered conventions" }) };
+  const lines = [writer.encode(first), writer.encode(second)]; assert.equal(lines[1]!.type, "run-patch"); writeFileSync(join(RUNS_DIR, `${run.id}.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+  const manager = createManager(); await manager.load(); assert.equal(manager.list().find((item) => item.id === run.id)!.task, "Latest patched task"); assert.equal(manager.get(run.id)!.conventions, "Pinned recovered conventions");
+  writeFileSync(join(RUNS_DIR, `${run.id}.cold-detail.json`), "damaged"); const recovered = manager.get(run.id)!; assert.equal(recovered.task, "Latest patched task"); assert.equal(recovered.conventions, "Pinned recovered conventions");
+  const gap = new RunProjection(); gap.apply(lines[0]!); gap.apply({ seq: 103, ts: 3, runId: run.id, type: "run-patch", base: 102, set: { task: "Must not apply without its base" } }); assert.equal(gap.finish()!.task, run.task, "a missing patch base retains only the last known authoritative snapshot");
+});
+test("legacy archived log compaction refreshes its cold source identity instead of retaining full metadata hot", async () => {
+  const base = await baseline(), run: Run = { ...structuredClone(base), id: "legacy-compacted-cold", archived: true, seen: true, steps: [], conventions: "Preserved conventions\n".repeat(20_000) }, file = join(RUNS_DIR, `${run.id}.jsonl`);
+  writeFileSync(file, Array.from({ length: 5 }, (_, index) => JSON.stringify({ seq: 200 + index, ts: index, runId: run.id, type: "run", run: strip({ ...run, task: `Legacy archived task ${index}` }) })).join("\n") + "\n"); const before = statSync(file).size;
+  const manager = createManager(); await manager.load(); const deadline = Date.now() + 10_000;
+  while (statSync(file).size >= before || manager.list().find((item) => item.id === run.id)?.cold !== true) { if (Date.now() > deadline) throw new Error("Archived compaction did not settle into cold storage"); await new Promise((resolve) => setTimeout(resolve, 25)); }
+  assert.ok(statSync(file).size < before * 0.6); assert.equal(manager.get(run.id)!.task, "Legacy archived task 4"); assert.equal(manager.get(run.id)!.conventions, run.conventions); assert.equal(manager.list().find((item) => item.id === run.id)!.cold, true);
 });

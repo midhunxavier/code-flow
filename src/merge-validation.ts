@@ -1,4 +1,4 @@
-import { git, resolveCommit } from "./git.js";
+import { assertWorktree, git, resolveCommit } from "./git.js";
 import { inTemporaryWorktree } from "./readiness.js";
 import { runCheck, type Container } from "./checks.js";
 import { runVerification, type VerificationProfile, type VerificationReport } from "./verification.js";
@@ -10,15 +10,16 @@ export interface MergeValidation { branch: string; into: string; source: string;
 export async function validateMergeTarget(repo: string, input: { branch: string; into: string; profile: VerificationProfile; setup?: string; container?: Container; signal?: AbortSignal }): Promise<MergeValidation> {
   const [source, target] = await Promise.all([resolveCommit(repo, `refs/heads/${input.branch}`), resolveCommit(repo, `refs/heads/${input.into}`)]);
   return inTemporaryWorktree(repo, target, async (path) => {
+    const checkout = await assertWorktree(repo, { path });
     const container = input.container ? { ...input.container, readOnly: [...new Set([...(input.container.readOnly ?? []), ...readOnlyGitMetadata(path)])] } : undefined;
-    const merged = await git(["-c", "core.hooksPath=/dev/null", "-c", "user.name=code-flow validation", "-c", "user.email=validation@code-flow.invalid", "merge", "--no-commit", "--no-ff", source], path, { signal: input.signal });
+    const merged = await git(["-c", "core.hooksPath=/dev/null", "-c", "user.name=code-flow validation", "-c", "user.email=validation@code-flow.invalid", "merge", "--no-commit", "--no-ff", source], checkout, { signal: input.signal });
     const result: MergeValidation = { branch: input.branch, into: input.into, source, target, conflicts: [], at: Date.now() };
     if (merged.code) {
-      result.conflicts = (await git(["diff", "--name-only", "--diff-filter=U", "-z"], path)).stdout.split("\0").filter(Boolean);
+      result.conflicts = (await git(["diff", "--name-only", "--diff-filter=U", "-z"], checkout)).stdout.split("\0").filter(Boolean);
       if (!result.conflicts.length) throw new Error(merged.stderr.trim() || merged.stdout.trim() || "Cannot construct the merge target");
       return result;
     }
-    const tree = await git(["write-tree"], path);
+    const tree = await git(["write-tree"], checkout);
     if (tree.code) throw new Error(tree.stderr.trim() || "Cannot record the merge tree");
     result.tree = tree.stdout.trim();
     // A successful command must describe this exact candidate, not a checkout a setup or
@@ -26,12 +27,13 @@ export async function validateMergeTarget(repo: string, input: { branch: string;
     // staged tree and HEAD must remain the merged candidate throughout verification.
     const assertCandidate = async (stage: string) => {
       if (input.signal?.aborted) throw new Error("Merge validation was cancelled");
+      await assertWorktree(repo, { path });
       const options = { signal: input.signal, timeoutMs: 10_000 };
       const [currentHead, currentTree, unstaged, flags] = await Promise.all([
-        git(["rev-parse", "--verify", "HEAD^{commit}"], path, options),
-        git(["write-tree"], path, options),
-        git(["diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--quiet", "--exit-code", "--"], path, options),
-        git(["ls-files", "-v", "-z"], path, options),
+        git(["rev-parse", "--verify", "HEAD^{commit}"], checkout, options),
+        git(["write-tree"], checkout, options),
+        git(["diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--quiet", "--exit-code", "--"], checkout, options),
+        git(["ls-files", "-v", "-z"], checkout, options),
       ]);
       if (input.signal?.aborted) throw new Error("Merge validation was cancelled");
       const hidden = flags.stdout.split("\0").some((file) => /^[a-zS] /.test(file));
@@ -39,6 +41,7 @@ export async function validateMergeTarget(repo: string, input: { branch: string;
     };
     await assertCandidate("merge construction");
     if (input.setup) {
+      await assertCandidate("before setup");
       const setup = await runCheck(path, input.setup, { signal: input.signal, container, timeoutMs: 120000 });
       await assertCandidate("setup");
       if (!setup.ok) throw new Error(`Merge validation setup failed: ${setup.output.slice(-2000)}`);

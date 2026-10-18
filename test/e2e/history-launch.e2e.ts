@@ -36,6 +36,12 @@ before(async () => {
     const run = { id, task: index === 0 ? "Ancient needle task outside the initial history page" : index === 125 ? "Services fixture result" : `Historical fixture ${index}`, pattern: "solo", repo, baseRef: commit, baseLabel: "main", branchPrefix: `codeflow/${id}`, worktreeDir: join(fixture, "worktrees", id), roles: { worker: ["codex"] }, options: {}, context: { paths: [], attachments: [] }, agentSettings: {}, roleSettings: {}, trust: "standard", loop: { check: "", setup: "", maxSteps: 10, maxMinutes: 10 }, usage: { agentSteps: 0, checks: 0 }, status: "done", createdAt: index < 2 ? timestamp - 1000 : timestamp, endedAt: timestamp + 100, seen: index !== 1, archived: false, worktrees: index === 125 ? [{ name: "preview", path: worktree, branch: "" }] : [], steps: [], notes: [], approvals: {}, followUps: [], merges: [], prs: {}, watches: {}, artifacts: [] };
     writeFileSync(join(home, "runs", `${id}.jsonl`), JSON.stringify({ seq: index + 1, ts: timestamp, runId: id, type: "run", run }) + "\n");
   }
+  const cold = JSON.parse(readFileSync(join(home, "runs/history-000.jsonl"), "utf8")).run;
+  cold.id = "history-cold"; cold.createdAt = timestamp - 2000; cold.archived = true;
+  cold.task = `Archived full detail ${"padding ".repeat(1300)}COLD_TASK_FULL_END`;
+  cold.summary = `Detailed archived summary ${"evidence ".repeat(1300)}COLD_SUMMARY_FULL_END`;
+  cold.steps = [{ id: "cold-step", kind: "agent", title: "Archived implementation evidence", role: "agent", agent: "claude", mode: "write", status: "done", startedAt: timestamp, endedAt: timestamp + 10, finalText: "COLD_STEP_DETAIL" }];
+  writeFileSync(join(home, "runs/history-cold.jsonl"), [JSON.stringify({ seq: 500, ts: timestamp, runId: cold.id, type: "run", run: cold }), JSON.stringify({ seq: 501, ts: timestamp, runId: cold.id, type: "step", step: cold.steps[0] })].join("\n") + "\n");
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
   server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, FAKE_RECORD_DIR: records, FAKE_SLEEP_MS: "1000", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: process.env.E2E_DEBUG ? "inherit" : "ignore" });
   let healthy = false; for (let retry = 0; retry < 150; retry++) { healthy = await fetch(`${base}/api/health`, { headers }).then((response) => response.ok, () => false); if (healthy) break; await new Promise((resolve) => setTimeout(resolve, 100)); } assert.ok(healthy, "fixture server started");
@@ -50,10 +56,10 @@ after(async () => {
 
 test("HTTP cursor pages preserve timestamp ties and bounded SSE keeps older attention visible", async () => {
   const first = await fetch(`${base}/api/runs?limit=100`, { headers }).then((response) => response.json());
-  assert.equal(first.runs.length, 100); assert.equal(first.total, 126); assert.ok(first.nextCursor);
+  assert.equal(first.runs.length, 100); assert.equal(first.total, 127); assert.ok(first.nextCursor);
   const second = await fetch(`${base}/api/runs?limit=100&cursor=${encodeURIComponent(first.nextCursor)}`, { headers }).then((response) => response.json());
-  assert.equal(second.runs.length, 26); assert.equal(second.nextCursor, undefined);
-  assert.equal(new Set([...first.runs, ...second.runs].map((run) => run.id)).size, 126, "cursor ties neither skip nor repeat runs");
+  assert.equal(second.runs.length, 27); assert.equal(second.nextCursor, undefined);
+  assert.equal(new Set([...first.runs, ...second.runs].map((run) => run.id)).size, 127, "cursor ties neither skip nor repeat runs");
   assert.equal((await fetch(`${base}/api/runs?limit=100&cursor=bad-cursor`, { headers })).status, 400);
   const abort = new AbortController(); const timer = setTimeout(() => abort.abort(), 5000);
   try {
@@ -61,7 +67,7 @@ test("HTTP cursor pages preserve timestamp ties and bounded SSE keeps older atte
     while (!source.includes("\n\n")) { const part = await reader.read(); if (part.done) break; source += new TextDecoder().decode(part.value); }
     await reader.cancel();
     const hello = JSON.parse(source.split("\n\n")[0]!.split("\n").find((line) => line.startsWith("data:"))!.slice(5)) as { type: string; total: number; nextCursor: string; runs: { id: string }[] };
-    assert.equal(hello.type, "hello"); assert.equal(hello.total, 126); assert.ok(hello.nextCursor);
+    assert.equal(hello.type, "hello"); assert.equal(hello.total, 127); assert.ok(hello.nextCursor);
     assert.equal(hello.runs.length, 101); assert.ok(hello.runs.some((run) => run.id === "history-001"), "older unseen result is in attention");
     assert.equal(hello.runs.some((run) => run.id === "history-000"), false, "older ordinary history remains paginated");
   } finally { clearTimeout(timer); abort.abort(); }
@@ -70,7 +76,7 @@ test("HTTP cursor pages preserve timestamp ties and bounded SSE keeps older atte
 test("sidebar searches beyond loaded pages and loads older history without discarding visible results", async () => {
   await page.goto(base);
   const history = page.getByRole("region", { name: "Run history pages" });
-  await history.getByText("101 of 126 runs loaded", { exact: true }).waitFor();
+  await history.getByText("101 of 127 runs loaded", { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: /Ancient needle task/ }).count(), 0);
   const search = page.getByRole("searchbox", { name: "Search runs (press / to focus)" });
   const remoteSearch = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/runs" && new URL(response.url()).searchParams.get("q") === "Ancient needle");
@@ -79,8 +85,20 @@ test("sidebar searches beyond loaded pages and loads older history without disca
   await history.getByText("1 loaded matches · 1 in history", { exact: true }).waitFor();
   await search.fill("");
   await page.getByRole("button", { name: "Load older runs", exact: true }).click();
-  await history.getByText("126 of 126 runs loaded", { exact: true }).waitFor();
+  await history.getByText("127 of 127 runs loaded", { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Load older runs", exact: true }).count(), 0);
+});
+
+test("opening a cold archived run hydrates full task and step evidence through the shared run stream", async () => {
+  const found = await fetch(`${base}/api/runs?limit=100&q=COLD_TASK_FULL_END`, { headers }).then((response) => response.json());
+  assert.equal(found.total, 1); assert.equal(found.runs[0].cold, true);
+  assert.equal(found.runs[0].task.includes("COLD_TASK_FULL_END"), false, "history keeps only a bounded archived preview");
+  await page.goto(`${base}/#/run/history-cold`);
+  await page.locator(".runview .run-head h2").waitFor();
+  await page.waitForFunction(() => document.querySelector(".runview .run-head h2")?.textContent?.includes("COLD_TASK_FULL_END"));
+  await page.getByText("COLD_STEP_DETAIL", { exact: true }).waitFor();
+  const detail = await fetch(`${base}/api/runs/history-cold`, { headers }).then((response) => response.json());
+  assert.ok(detail.summary.includes("COLD_SUMMARY_FULL_END")); assert.equal(detail.steps.length, 1);
 });
 
 test("workspace starts, inspects and stops a real two-service launch profile", async () => {

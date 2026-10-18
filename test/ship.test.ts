@@ -331,6 +331,35 @@ test("a side chat's question keeps the run's verdict and leaves edits you make i
   }
 });
 
+test("a side chat's question that breaks its worktree's .git fails, saying what changed couldn't be checked", async () => {
+  const run = await runPattern("pipeline", pipelineRoles);
+  const wt = run.worktrees.find((w) => w.name === "build")!;
+  const dotGit = join(wt.path, ".git");
+  const original = readFileSync(dotGit, "utf8");
+  const record = mkdtempSync(join(tmpdir(), "codeflow-side-record-"));
+  process.env.FAKE_RECORD_DIR = record;
+  process.env.FAKE_SLEEP_VENDOR = "claude";
+  process.env.FAKE_SLEEP_MS = "1500";
+  try {
+    await manager.followUp(run.id, { kind: "side", worktree: "build", agent: "claude", message: "What's in the README?", side: { chat: "c11", mode: "ask", title: "README" } });
+    // The agent has its prompt, so code-flow took its snapshot: now the agent edits a file and deletes `.git`.
+    for (let i = 0; i < 200 && !readdirSync(record).length; i++) await pause(25);
+    writeFileSync(join(wt.path, "README.md"), "the agent's edit\n");
+    rmSync(dotGit);
+    await finished(run);
+    const f = run.followUps.at(-1)!;
+    assert.equal(f.status, "failed", "not done as if nothing changed");
+    assert.match(f.result ?? "", /Couldn't check what this read-only step changed \(anything it changed is still there\): .*its \.git is missing/);
+    assert.match(await logs(run), /Side chat: README \(claude\) is read-only, but what changed in build while it ran couldn't be checked/);
+    assert.equal(readFileSync(join(wt.path, "README.md"), "utf8"), "the agent's edit\n", "left in place, as a question's changes are");
+  } finally {
+    writeFileSync(dotGit, original);
+    delete process.env.FAKE_RECORD_DIR;
+    delete process.env.FAKE_SLEEP_VENDOR;
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});
+
 test("a side chat's change that changed nothing isn't reported as a change", async () => {
   const run = await runPattern("pipeline", pipelineRoles);
   const head = git("rev-parse", run.artifacts[0]!.branch).trim();

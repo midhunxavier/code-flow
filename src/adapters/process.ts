@@ -484,6 +484,36 @@ export function stderrTail(outcome: ProcessOutcome, lines = 5): string {
   return outcome.stderr.trim().split("\n").slice(-lines).join("\n");
 }
 
+/**
+ * Event and item types a CLI printed that its adapter doesn't know, over one turn. Adapters
+ * skip what they don't recognise, so a CLI update that renames an event (the agent's answer, a
+ * tool call) would otherwise only show as a turn with something missing. `report` gives one
+ * status line per turn naming them, or nothing when every event was known.
+ */
+export function unknownEvents(cli: string) {
+  const counts = new Map<string, number>();
+  let total = 0;
+  return {
+    add(type: unknown) {
+      const name = typeof type === "string" && type.trim() ? type.trim().slice(0, 60) : "(no type)";
+      total++;
+      if (counts.has(name) || counts.size < 20) counts.set(name, (counts.get(name) ?? 0) + 1);
+    },
+    get count() {
+      return total;
+    },
+    /** The status line for the turn (once: later calls return undefined). */
+    report(): string | undefined {
+      if (!total) return undefined;
+      const names = [...counts.entries()].map(([name, n]) => (n > 1 ? `${name} (${n})` : name)).join(", ");
+      const line = `${cli} emitted ${total} event${total === 1 ? "" : "s"} code-flow doesn't know: ${names}. If this turn's output looks incomplete, the CLI's format may have changed: update code-flow.`;
+      total = 0;
+      counts.clear();
+      return line;
+    },
+  };
+}
+
 function duration(ms: number): string {
   return ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.max(1, Math.round(ms / 1000))} s`;
 }

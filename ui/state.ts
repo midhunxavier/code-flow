@@ -1,6 +1,7 @@
 import { computed, signal } from "@preact/signals";
 import { api, ApiError, post, showToast, store } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
+import { onStreamState, subscribe } from "./stream.js";
 import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
 import { hashFor, parseRouteHash, SIDE_TABS, type Route, type SideTab } from "./navigation.js";
 export { hashFor, SIDE_TABS, type Route, type SideTab } from "./navigation.js";
@@ -134,6 +135,10 @@ export const repo = computed(() => repoInfo.value?.repo ?? "");
 let repoSelection = 0;
 let configRequest = 0;
 
+let checkLoading: Promise<void> = Promise.resolve();
+/** The repo's "Done when" lookup has finished: what's set after this (Edit & run again) isn't overwritten by it. */
+export const checkLoaded = () => checkLoading;
+
 export async function setRepo(path: string, remember = true) {
   path = path.trim();
   const request = ++repoSelection;
@@ -165,7 +170,8 @@ export async function setRepo(path: string, remember = true) {
     if (request === repoSelection) repoChecking.value = false;
   }
   if (request !== repoSelection) return false;
-  await loadCheck();
+  checkLoading = loadCheck();
+  await checkLoading;
   return request === repoSelection;
 }
 export const recentRepos = () => store.json<string[]>("recentRepos", []);
@@ -927,19 +933,20 @@ const fetchedFor = new Set<string>();
 
 type FeedMessage =
   | { type: "hello"; epoch: string; seq: number; runs?: RunSummary[]; resumed?: boolean; nextCursor?: string; total?: number; attentionTotal?: number; attentionTruncated?: boolean; attentionNextCursor?: string }
+  | { type: "error"; status: number; message: string }
   | { type: "run"; seq: number; run: RunSummary };
 
 export function watchAllRuns(notify: (run: RunSummary) => void) {
   onFinished = notify;
-  const connect = () => {
-    const source = new EventSource("/api/events?limit=100");
-    let dropped = false;
-    source.onmessage = (msg) => {
-      let data: FeedMessage;
-      try { data = JSON.parse(msg.data) as FeedMessage; }
-      catch { return; }
-      if (!data || (data.type !== "hello" && data.type !== "run") || !Number.isSafeInteger(data.seq) || (data.type === "run" && !data.run?.id)) return;
-      connection.value = { state: "connected", since: connection.value.state === "connected" ? connection.value.since : Date.now(), lastReceived: Date.now() };
+  const stopState = onStreamState((status) => {
+    connectionState(status.state);
+    if (status.lastReceived !== undefined) connection.value = { ...connection.value, lastReceived: status.lastReceived };
+  });
+  const stopRuns = subscribe(
+    "runs",
+    (data: FeedMessage) => {
+      if (data?.type === "error") { historyError.value = data.message; return; }
+      if (!data || (data.type !== "hello" && data.type !== "run") || !Number.isSafeInteger(data.seq) || (data.type === "hello" && typeof data.epoch !== "string") || (data.type === "run" && !data.run?.id)) return;
       if (data.type === "hello") {
         if (typeof data.attentionTotal === "number") attentionTotal.value = data.attentionTotal;
         if (typeof data.attentionTruncated === "boolean") attentionTruncated.value = data.attentionTruncated;
@@ -958,7 +965,8 @@ export function watchAllRuns(notify: (run: RunSummary) => void) {
             historyPages = Math.max(1, historyPages);
           } else if (restarted) void refreshRuns();
         }
-        feed.seq = Math.max(data.runs ? 0 : feed.seq, data.seq);
+        // Resumed, the snapshots it missed follow, and move it on.
+        if (data.runs) feed.seq = data.seq;
         return;
       }
       const { run, seq } = data;
@@ -973,32 +981,11 @@ export function watchAllRuns(notify: (run: RunSummary) => void) {
         void loadProjects();
       }
       noticeChange(before, run);
-    };
-    // Back after a drop (the browser reconnects by itself): catch up on what the stream may have missed.
-    source.onopen = () => {
-      connectionState("connected");
-      if (dropped) void refreshRuns();
-      dropped = false;
-    };
-    // A closed stream (the server restarted, or this session ended): find out which, then reconnect.
-    source.onerror = () => {
-      dropped = true;
-      connectionState(navigator.onLine === false ? "offline" : "reconnecting");
-      if (source.readyState !== EventSource.CLOSED) return;
-      setTimeout(() => {
-        api("/api/health").then(
-          () => {
-            void refreshRuns();
-            connect();
-          },
-          () => setTimeout(connect, 5_000),
-        );
-      }, 1_000);
-    };
-  };
-  window.addEventListener("offline", () => connectionState("offline"));
-  window.addEventListener("online", () => connectionState("reconnecting"));
-  connect();
+    },
+    // Back after a drop: only what the stream missed, when the server still has it.
+    () => (feed.epoch ? `${feed.epoch}:${feed.seq}` : undefined),
+  );
+  return () => { stopRuns(); stopState(); };
 }
 
 /** A PR watch that gave up and handed the PR back to you. */

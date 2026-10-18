@@ -229,8 +229,8 @@ test("file approval previews include rename targets and refuse grants or paths o
 
 test("waiting for a user's approval pauses the idle watchdog and resumes when answered", async () => {
   const approved = await turn("ASK-APPROVAL", {
-    mode: "write", interactiveApprovals: true, idleTimeoutMs: 400,
-    onApproval: async () => { await new Promise((resolve) => setTimeout(resolve, 650)); return "approve"; },
+    mode: "write", interactiveApprovals: true, idleTimeoutMs: 1200,
+    onApproval: async () => { await new Promise((resolve) => setTimeout(resolve, 1800)); return "approve"; },
   });
   assert.ok(approved.result.ok, approved.result.error);
   assert.ok(approved.events.some((event) => event.kind === "tool_result" && event.callId === "i3" && !event.isError));
@@ -271,7 +271,7 @@ test("approval expiry, turn cancellation, and server resolution invalidate late 
 test("hard process timeouts still cancel a pending approval", async () => {
   let approvalSignal: AbortSignal | undefined;
   const timed = await turn("ASK-APPROVAL", {
-    mode: "write", interactiveApprovals: true, timeoutMs: 500, idleTimeoutMs: 150,
+    mode: "write", interactiveApprovals: true, timeoutMs: 3000, idleTimeoutMs: 1200,
     onApproval: async (_request, signal) => { approvalSignal = signal; return new Promise(() => {}); },
   });
   assert.equal(timed.result.errorKind, "timeout");

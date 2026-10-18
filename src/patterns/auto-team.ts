@@ -234,7 +234,7 @@ export const autoTeamPattern: Pattern = {
             if (!reconciled.ok) {
               const resolved = await ctx.ask({ ...callFields(member), taskId: task.id, identity: `task:${task.id}:attempt:${attempt}:reconcile`, title: `Reconcile inputs: ${task.title}`, mode: "write", cwd: wt, allowFailure: true,
                 prompt: memberPrompt(member, "write") + section("Task", task.instructions) + "Resolve every conflict while preserving your partial work and the accepted upstream artifacts. Do not abort or commit the merge." });
-              if (!resolved.ok || await hasConflictMarkers(wt)) throw new Error(`Cannot safely reconcile ${task.id}'s partial work`);
+              if (!resolved.ok || await hasConflictMarkers(await ctx.gitAt(wt))) throw new Error(`Cannot safely reconcile ${task.id}'s partial work`);
               await ctx.commit(wt, `Auto team: reconcile ${task.id} inputs`);
             }
           }
@@ -264,7 +264,7 @@ export const autoTeamPattern: Pattern = {
           let problem = result.ok ? shapeProblem(TASK_OUTCOME_SCHEMA, value) : result.error ?? "Agent turn failed";
           if (!problem && value) value = value as TaskOutcome;
           await ctx.commit(wt, `Auto team ${task.id}: checkpoint attempt ${attempt}`);
-          const changed = await ctx.remember("team-changed", `task:${task.id}:attempt:${attempt}`, () => changedFiles(wt!.path, inputHead));
+          const changed = await ctx.remember("team-changed", `task:${task.id}:attempt:${attempt}`, async () => changedFiles(await ctx.gitAt(wt!), inputHead));
           if (changed.some((file) => !ownsPath(task.paths, file)) && task.kind === "implementation") problem = `Changed files outside declared ownership: ${changed.filter((f) => !ownsPath(task.paths, f)).join(", ")}`;
           if (!problem && (value as TaskOutcome).status === "submitted" && task.kind === "implementation" && !changed.length && !rerun?.rerunTaskIds.includes(task.id)) problem = "Implementation produced no changes; the required artifact is missing";
           if (rerun?.rerunTaskIds.includes(task.id)) task.noNewDiff = !changed.length;

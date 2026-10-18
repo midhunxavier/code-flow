@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { worktreeRoot } from "./git.js";
 import type { LoopSettings, Run, RunEvent, RunSummary, Step } from "./engine.js";
+import { RunLogReader, type RunPatch } from "./run-log.js";
 
 export const DEFAULT_LOOP: LoopSettings = { maxMinutes: 60, maxSteps: 40, checkTimeoutMin: 10 };
 
@@ -8,11 +9,16 @@ export const DEFAULT_LOOP: LoopSettings = { maxMinutes: 60, maxSteps: 40, checkT
 export class RunProjection {
   private snapshot?: RunSummary;
   private steps = new Map<string, Step>();
+  private reader = new RunLogReader();
   seq = 0;
   records = 0;
-  apply(event: RunEvent) {
+  fullSnapshots = 0;
+  patches = 0;
+  apply(line: RunEvent | RunPatch) {
     this.records++;
-    if (Number.isSafeInteger(event.seq) && event.seq > this.seq) this.seq = event.seq;
+    if (Number.isSafeInteger(line.seq) && line.seq > this.seq) this.seq = line.seq;
+    if (line.type === "run") this.fullSnapshots++; else if (line.type === "run-patch") this.patches++;
+    const event = this.reader.decode(line); if (!event) return;
     if (event.type === "run" && event.run) this.snapshot = event.run;
     else if (event.type === "step" && event.step) this.steps.set(event.step.id, { ...event.step, kind: event.step.kind ?? "agent" });
   }

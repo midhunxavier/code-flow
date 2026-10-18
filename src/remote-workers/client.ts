@@ -5,7 +5,7 @@ import { lstat, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "n
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { AgentEvent, RunOptions, RunResult } from "../adapters/types.js";
-import { resolveCommit } from "../git.js";
+import { resolveCommit, type GitCwd } from "../git.js";
 import { registerPrivateEnvNames } from "../env.js";
 import { durableWorkerDirectory } from "./durability.js";
 import { redactExport } from "../privacy.js";
@@ -134,6 +134,6 @@ export class RemoteWorkers {
     catch (error) { return { ok: false, finalText: "", error: redactExport((error as Error).message), errorKind: opts.signal?.aborted ? "cancelled" : "other", remote: { workerId: input.workerId, requestId: id, baseCommit, state: "unknown", ambiguous: true } }; }
     finally { opts.signal?.removeEventListener("abort", abort); }
   }
-  async importArtifact(repo: string, artifact: WorkerArtifact & { file: string }, expectedHead: string) { if (!this.artifacts.has(artifact.file)) throw new RemoteWorkerError("Artifact does not belong to this worker client"); try { return await importWorkerArtifact(repo, artifact, expectedHead); } finally { this.artifacts.delete(artifact.file); await rm(resolve(artifact.file, ".."), { recursive: true, force: true }); } }
+  async importArtifact(repo: GitCwd, artifact: WorkerArtifact & { file: string }, expectedHead: string) { if (!this.artifacts.has(artifact.file)) throw new RemoteWorkerError("Artifact does not belong to this worker client"); try { return await importWorkerArtifact(repo, artifact, expectedHead); } finally { this.artifacts.delete(artifact.file); await rm(resolve(artifact.file, ".."), { recursive: true, force: true }); } }
   async discardArtifact(artifact: WorkerArtifact & { file: string }) { if (this.artifacts.delete(artifact.file)) await rm(resolve(artifact.file, ".."), { recursive: true, force: true }); }
 }

@@ -2,6 +2,7 @@ import type { RunSummary } from "./engine.js";
 import { repoRoot } from "./git.js";
 import {
   alertsError,
+  isPlainPath,
   LIST_CAP,
   listCodeScanningAlerts,
   listDependabotAlerts,
@@ -163,7 +164,9 @@ async function alertItems(repo: string): Promise<SweepList> {
         severity,
         selected: serious,
         note: serious ? undefined : "Low severity",
-        task: `Fix code scanning alert #${a.number}: ${title}${at ? ` in ${at}` : ""}. Fix the cause rather than suppressing the alert, and add a test where it makes sense.`,
+        // The path is the code's: one that carries words stays out of the task (the run's prompt
+        // has it in the alert's fence).
+        task: `Fix code scanning alert #${a.number}: ${title}${at && isPlainPath(at) ? ` in ${at}` : ""}. Fix the cause rather than suppressing the alert, and add a test where it makes sense.`,
         source: { kind: "alert", tool: "code-scanning", number: a.number },
       });
     }

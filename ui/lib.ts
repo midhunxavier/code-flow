@@ -1,4 +1,5 @@
 import { signal } from "@preact/signals";
+import { useCallback, useEffect, useRef } from "preact/hooks";
 import type { AgentId } from "./types.js";
 
 /** An API error; `confirm` names a choice the server needs from you before it can go ahead. */
@@ -71,6 +72,70 @@ export const store = {
 export const onPhone = !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
 
 export const enc = encodeURIComponent;
+
+/** A link from the server (a PR, an issue, a posted review) only as an http(s) address; anything else gets no link. */
+export function safeHref(url: unknown): string | undefined {
+  if (typeof url !== "string") return undefined;
+  try {
+    const { protocol } = new URL(url);
+    return protocol === "https:" || protocol === "http:" ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Answers that can arrive out of order: `begin()` starts a request and returns a check that stays
+ * true only until the next `begin()`, so a slow, older answer never replaces a newer one.
+ */
+export function latestOnly(): () => () => boolean {
+  let seq = 0;
+  return () => {
+    const mine = ++seq;
+    return () => mine === seq;
+  };
+}
+
+/** `latestOnly` for a component: unmounting it also makes every answer still on its way stale. */
+export function useLatest(): () => () => boolean {
+  const seq = useRef(0);
+  useEffect(
+    () => () => {
+      seq.current++;
+    },
+    [],
+  );
+  return useCallback(() => {
+    const mine = ++seq.current;
+    return () => mine === seq.current;
+  }, []);
+}
+
+/**
+ * Call `fn` now and every `ms` while `active` and the page is in view: a hidden tab (or a closed
+ * panel) polls nothing, and catches up with one call when it's shown again. `fn` gets a check that
+ * turns false once `deps` change or the component goes, for answers that come back after that.
+ */
+export function usePoll(fn: (current: () => boolean) => unknown, ms: number, deps: unknown[], active = true) {
+  const latest = useRef(fn);
+  latest.current = fn;
+  useEffect(() => {
+    if (!active) return;
+    let live = true;
+    const current = () => live;
+    const tick = () => {
+      if (!document.hidden) void latest.current(current);
+    };
+    tick();
+    const timer = setInterval(tick, ms);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [active, ms, ...deps]);
+}
 export const baseName = (p: string) => (p || "").replace(/\/+$/, "").split("/").pop() ?? "";
 export const fmtSize = (b: number) => (b < 1024 ? `${b} B` : b < 1048576 ? `${Math.round(b / 1024)} KB` : `${(b / 1048576).toFixed(1)} MB`);
 export const ago = (ts: number) => {

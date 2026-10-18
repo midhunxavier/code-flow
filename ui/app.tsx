@@ -272,7 +272,7 @@ export function notifyFinished(run: RunSummary) {
   }
   n.onclick = () => {
     window.focus();
-    route.value = { view: "run", id: run.id };
+    navigate({ view: "run", id: run.id });
     n.close();
   };
 }
@@ -304,7 +304,7 @@ function onShortcut(e: KeyboardEvent) {
   if (target?.closest("input, textarea, select, [contenteditable=true], dialog")) return;
   const go = (r: typeof route.value) => {
     e.preventDefault();
-    route.value = r;
+    navigate(r);
   };
   switch (e.key) {
     case "/": {
@@ -391,10 +391,10 @@ function HealthDialog() {
   const pct = (u?: number) => (u === undefined ? "?" : `${Math.round(u * 100)}%`);
   const when = (t?: number) => (t ? new Date(t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "");
   return (
-    <dialog class="picker small-dialog health" ref={ref} aria-label="Provider and Git health">
+    <dialog class="picker small-dialog health" ref={ref} aria-labelledby="health-title">
       <div class="picker-inner">
         <div class="picker-head">
-          <h3>Health</h3>
+          <h3 id="health-title">Health</h3>
           <div class="help">What code-flow can see about each CLI — it uses the CLIs' own commands and never reads their credentials.</div>
         </div>
         <div class="dialog-body">
@@ -468,10 +468,14 @@ function FolderPicker() {
   const [status, setStatus] = useState("");
   const [hidden, setHidden] = useState(false);
   const pathInput = useRef<HTMLInputElement>(null);
-  const dialog = useDialog(pickerOpen.value, () => {
+  const opened = useRef(false);
+  const closePicker = () => {
+    opened.current = false;
+    latest.current++;
     pickerOpen.value = false;
     pickerChoose.value = null;
-  });
+  };
+  const dialog = useDialog(pickerOpen.value, closePicker);
   const adding = pickerChoose.value;
   // Only the latest listing counts: a slow earlier one must not replace a path you just typed.
   const latest = useRef(0);
@@ -479,6 +483,8 @@ function FolderPicker() {
   const typed = useRef(false);
 
   const browse = async (target?: string, showHidden = hidden) => {
+    if (!pickerOpen.value) return;
+    opened.current = true;
     const request = ++latest.current;
     typed.current = false;
     setStatus("Loading…");
@@ -487,22 +493,25 @@ function FolderPicker() {
     if (showHidden) q.set("hidden", "1");
     try {
       const d = await api<DirListing>(`/api/fs?${q}`);
-      if (request !== latest.current) return;
+      if (request !== latest.current || !pickerOpen.value) return;
       setDir(d);
       if (!typed.current) setPath(d.path);
       setStatus(d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked GIT, or type a path");
     } catch (err) {
-      if (request !== latest.current) return;
+      if (request !== latest.current || !pickerOpen.value) return;
       setStatus((err as Error).message);
-      if (!dir) void browse(undefined, showHidden);
+      if (!dir && target) void browse(undefined, showHidden);
     }
   };
   useEffect(() => {
-    if (pickerOpen.value) void browse(repo.value || undefined);
+    // A paste + Enter can precede this effect. Its explicit browse already owns this opening;
+    // a delayed default listing must never supersede it (or erase text typed before the effect).
+    if (pickerOpen.value && !opened.current) void browse(repo.value || undefined);
+    if (!pickerOpen.value) opened.current = false;
   }, [pickerOpen.value]);
 
   const choose = (p: string) => {
-    pickerOpen.value = false;
+    closePicker();
     if (adding) adding.choose(p);
     else void pickRepo(p);
   };
@@ -531,10 +540,10 @@ function FolderPicker() {
   );
 
   return (
-    <dialog class="picker" ref={dialog} aria-label={adding ? adding.title : "Choose a repository"}>
+    <dialog class="picker" ref={dialog} aria-labelledby="folder-picker-title">
       <div class="picker-inner">
         <div class="picker-head">
-          <h3>{adding ? adding.title : "Choose a repository"}</h3>
+          <h3 id="folder-picker-title">{adding ? adding.title : "Choose a repository"}</h3>
           <div class="row">
             <button class="btn small" type="button" title="Parent folder" disabled={!dir?.parent} onClick={() => dir?.parent && browse(dir.parent)}>
               ↑
@@ -550,6 +559,7 @@ function FolderPicker() {
               ref={pathInput}
               value={path}
               onInput={(e) => {
+                opened.current = true;
                 typed.current = true;
                 setPath(e.currentTarget.value);
               }}
@@ -565,7 +575,7 @@ function FolderPicker() {
             </button>
           </div>
           <nav class="crumbs" aria-label="Folder breadcrumbs">
-            <button type="button" onClick={() => browse("/")}>/</button>
+            <button type="button" aria-label="The root folder" onClick={() => browse("/")}>/</button>
             {parts.map((part, i) => (
               <span key={i}>
                 <button type="button" aria-current={i === parts.length - 1 ? "location" : undefined} onClick={() => browse("/" + parts.slice(0, i + 1).join("/"))}>{part}</button>
@@ -595,10 +605,13 @@ function FolderPicker() {
             />{" "}
             hidden folders
           </label>
-          <button class="btn" type="button" onClick={() => (pickerOpen.value = false)}>
+          <button class="btn" type="button" onClick={closePicker}>
             Cancel
           </button>
-          <button class="btn primary" type="button" disabled={!dir} onClick={() => dir && choose(dir.path)}>
+          <button class="btn primary" type="button" disabled={!dir || path.trim() !== dir.path || status === "Loading…"} onClick={() => {
+            const entered = (pathInput.current?.value ?? path).trim();
+            if (dir && entered === dir.path && status !== "Loading…") choose(dir.path);
+          }}>
             {adding ? "Add this folder" : "Use this folder"}
           </button>
         </div>

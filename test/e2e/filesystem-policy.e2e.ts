@@ -49,6 +49,18 @@ test("persisted restrictions defer plugin initialization, CLI probes and prompt 
       assert.equal(existsSync(providerMarker), false, "prompt improvement is refused before provider availability or a turn, even for an unrestricted or omitted repo");
     }
     assert.equal((await fetch(`${base}/r/${phoneToken}`)).status, 403); assert.equal((await fetch(`${base}/api/runs/restricted-result`, { headers })).status, 403);
+    const hubAbort = new AbortController(), hubTimer = setTimeout(() => hubAbort.abort(), 10_000);
+    try {
+      const subs = encodeURIComponent(JSON.stringify([{ id: 1, topic: "runs" }, { id: 2, topic: "run:restricted-result" }, { id: 3, topic: "shell:missing" }]));
+      const response = await fetch(`${base}/api/stream?subs=${subs}`, { headers, signal: hubAbort.signal }); assert.equal(response.status, 200);
+      const reader = response.body!.getReader(); let content = "";
+      while (!content.includes('"s":2') || !content.includes('"s":3')) { const chunk = await reader.read(); assert.equal(chunk.done, false); content += new TextDecoder().decode(chunk.value); }
+      const messages = content.split("\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6)));
+      assert.equal(content.includes("RESTRICTED_PRIVATE"), false, "multiplexing cannot bypass filesystem filtering");
+      assert.equal(messages.find((message) => message.s === 1).d.total, 0);
+      for (const id of [2, 3]) assert.equal(messages.find((message) => message.s === id).d.status, 403);
+      await reader.cancel();
+    } finally { clearTimeout(hubTimer); hubAbort.abort(); }
     const login = await fetch(`${base}/api/auth/login`, { method: "POST", headers: { origin: base, "content-type": "application/json" }, body: JSON.stringify({ username: "viewer", password }) }); assert.equal(login.status, 200); const cookie = login.headers.getSetCookie().find((value) => !value.includes("Max-Age=0"))!.split(";")[0]!;
     const scopedHeaders = { cookie }; const listed = await fetch(`${base}/api/runs?limit=100`, { headers: scopedHeaders }).then((response) => response.json()); assert.equal(listed.total, 0); assert.deepEqual(listed.runs, []);
     for (const suffix of ["", "/diff", "/export", "/review-coverage", "/collaboration"]) assert.equal((await fetch(`${base}/api/runs/restricted-result${suffix}`, { headers: scopedHeaders })).status, 404, suffix);

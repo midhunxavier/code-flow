@@ -1,9 +1,9 @@
-import { git } from "./git.js";
+import { git, type GitCwd } from "./git.js";
 
 export class VerificationIntegrityError extends Error {}
 
 /** Checks attributed to a commit must keep its tracked checkout and index unchanged. */
-export async function verificationIntegrity(repo: string, signal?: AbortSignal) {
+export async function verificationIntegrity(repo: GitCwd, signal?: AbortSignal) {
   const options = { signal, timeoutMs: 10_000 };
   const initial = await git(["rev-parse", "--verify", "HEAD^{commit}"], repo, options);
   const tree = await git(["rev-parse", "--verify", "HEAD^{tree}"], repo, options);

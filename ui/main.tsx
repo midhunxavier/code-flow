@@ -4,6 +4,7 @@ import { useEffect, useState } from "preact/hooks";
 import { App, notifyFinished } from "./app.js";
 import { SharedDashboard, SharedLogin } from "./shared.js";
 import type { SharedPrincipal } from "../src/shared-accounts.js";
+import { configureStreamSharing, type StreamSharing } from "./stream.js";
 import logo from "./brand/vibesboard-mark.png";
 import { api, showToast, store, SHORT } from "./lib.js";
 import { agents, hashFor, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
@@ -41,9 +42,10 @@ function BootError({ message, seconds, onRetry }: { message: string; seconds: nu
 async function boot() {
   let agentList, patternList;
   try {
-    const identity = await api<{ kind: "owner" | "anonymous" } | SharedPrincipal>("/api/auth/self");
+    const identity = await api<{ kind: "owner"; streamSharing?: StreamSharing } | { kind: "anonymous" } | SharedPrincipal>("/api/auth/self");
     if (identity.kind === "anonymous") { render(<SharedLogin />, root); return; }
     if (identity.kind === "shared") { render(<SharedDashboard identity={identity} />, root); return; }
+    configureStreamSharing(identity.streamSharing);
     [agentList, patternList] = await Promise.all([api("/api/agents"), api("/api/patterns")]);
   } catch (err) {
     const seconds = RETRY_SECONDS[Math.min(attempts, RETRY_SECONDS.length - 1)]!;

@@ -143,7 +143,15 @@ export function InsightsView({ group }: { group?: string }) {
                               <td class="num">{r.costUsd ? fmtCost(r.costUsd) : "–"}</td>
                               <td>{r.flagged ? <span class="badge warn">⚠ {r.flagged}</span> : <span class="help">no</span>}</td>
                               <td title={PROOF_TITLE}>
-                                {r.proof === "proven" ? <span class="badge ok">✓ yes</span> : r.proof === "unproven" ? <span class="badge warn">⚠ no</span> : <span class="help">–</span>}
+                                {r.proof === "proven" ? (
+                                  <span class="badge ok">✓ yes</span>
+                                ) : r.proof === "weak" ? (
+                                  <span class="badge warn" title="The tests fail without the change only because they can't load">⚠ weak</span>
+                                ) : r.proof === "unproven" ? (
+                                  <span class="badge warn">⚠ no</span>
+                                ) : (
+                                  <span class="help">–</span>
+                                )}
                               </td>
                               <td class="help">{r.stat ?? "–"}</td>
                             </tr>
@@ -249,8 +257,11 @@ export function InsightsView({ group }: { group?: string }) {
                       <td class={`num ${p.failing ? "warn" : ""}`}>{p.failing || "–"}</td>
                       <td class={`num ${p.failed + p.stopped ? "warn" : ""}`}>{p.failed + p.stopped || "–"}</td>
                       <td class={`num ${p.flagged ? "warn" : ""}`}>{p.flagged || "–"}</td>
-                      <td class={`num ${p.unproven ? "warn" : ""}`} title={p.proven + p.unproven ? `${p.proven} proven, ${p.unproven} not proven` : undefined}>
-                        {p.proven + p.unproven ? `${p.proven}/${p.proven + p.unproven}` : "–"}
+                      <td
+                        class={`num ${p.unproven + p.weak ? "warn" : ""}`}
+                        title={p.proven + p.weak + p.unproven ? `${p.proven} proven, ${p.weak} weakly (tests that only fail to load), ${p.unproven} not proven` : undefined}
+                      >
+                        {p.proven + p.weak + p.unproven ? `${p.proven}/${p.proven + p.weak + p.unproven}` : "–"}
                       </td>
                       <td class="num">{p.ended ? duration(p.ms / p.ended) : "–"}</td>
                       <td class="num">{(p.steps / p.runs).toFixed(1)}</td>

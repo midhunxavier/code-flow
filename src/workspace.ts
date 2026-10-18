@@ -1,17 +1,19 @@
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, posix, sep } from "node:path";
-import { git, repoRoot, resolveCommit, withRepoLock } from "./git.js";
+import { git, repoRoot, resolveCommit, withRepoLock, type GitCwd } from "./git.js";
 import { normalizeRepoPath } from "./repo-tree.js";
 import { assertProjectFileAccess } from "./filesystem-policy.js";
 
 const MAX_EDIT_BYTES = 512 * 1024;
 export class WorkspaceConflictError extends Error { constructor(readonly currentHash: string) { super("This file changed since it was loaded. Reload and compare your draft before saving."); } }
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+const folderOf = (repo: GitCwd) => typeof repo === "string" ? repo : repo.path;
+const rootOf = (repo: GitCwd) => typeof repo === "string" ? repoRoot(repo) : Promise.resolve(repo.path);
 
 /** Editing refuses Git internals and every symlink component, including links inside the repo. */
-async function editablePath(repo: string, path: string): Promise<{ root: string; path: string; absolute: string }> {
-  const root = await realpath(await repoRoot(repo));
+async function editablePath(repo: GitCwd, path: string): Promise<{ root: string; path: string; absolute: string }> {
+  const root = await realpath(await rootOf(repo));
   const rel = normalizeRepoPath(path);
   if (!rel || rel.split("/").some((part) => part.toLowerCase() === ".git")) throw new Error("Choose a regular repository file outside .git");
   let current = root;
@@ -27,20 +29,20 @@ async function editablePath(repo: string, path: string): Promise<{ root: string;
   return { root, path: rel, absolute: canonical };
 }
 
-export async function readEditableFile(repo: string, path: string) {
-  await assertProjectFileAccess(repo, path, "read");
+export async function readEditableFile(repo: GitCwd, path: string) {
+  await assertProjectFileAccess(folderOf(repo), path, "read");
   const file = await editablePath(repo, path);
   const text = await readFile(file.absolute, "utf8");
   if (text.includes("\0")) throw new Error("Binary files cannot be edited as text");
-  await assertProjectFileAccess(repo, path, "read");
+  await assertProjectFileAccess(folderOf(repo), path, "read");
   return { path: file.path, text, hash: hash(text), bytes: Buffer.byteLength(text) };
 }
 
-export async function saveEditableFile(repo: string, path: string, text: string, expectedHash: string) {
-  await assertProjectFileAccess(repo, path, "write");
+export async function saveEditableFile(repo: GitCwd, path: string, text: string, expectedHash: string) {
+  await assertProjectFileAccess(folderOf(repo), path, "write");
   if (typeof text !== "string" || Buffer.byteLength(text) > MAX_EDIT_BYTES || text.includes("\0")) throw new Error("The file must be text under 512 KB without binary NUL characters");
   if (!/^[a-f0-9]{64}$/.test(expectedHash)) throw new Error("Saving needs the hash of the loaded version");
-  return withRepoLock(await repoRoot(repo), async () => {
+  return withRepoLock(await rootOf(repo), async () => {
     const file = await editablePath(repo, path);
     const before = await readEditableFile(repo, path);
     if (before.hash !== expectedHash) throw new WorkspaceConflictError(before.hash);
@@ -51,7 +53,7 @@ export async function saveEditableFile(repo: string, path: string, text: string,
       // Recheck after creating the draft, before replacing the loaded file.
       const current = await readEditableFile(repo, path);
       if (current.hash !== expectedHash) throw new WorkspaceConflictError(current.hash);
-      await assertProjectFileAccess(repo, path, "write");
+      await assertProjectFileAccess(folderOf(repo), path, "write");
       await rename(temp, file.absolute);
       return { path: file.path, hash: hash(text), bytes: Buffer.byteLength(text), savedAt: Date.now() };
     } finally { await unlink(temp).catch(() => undefined); }
@@ -61,9 +63,10 @@ export async function saveEditableFile(repo: string, path: string, text: string,
 export interface CodeHit { path: string; line: number; text: string; symbol?: string; kind?: string }
 const definition = /^\s*(?:(?:export|default|public|private|protected|static|async|declare|abstract)\s+)*(?:(function|class|interface|type|enum|def|struct|fn|trait)\s+([\w$]+)|(?:const|let|var)\s+([\w$]+)\s*=)/;
 
-export async function searchCode(repo: string, query: string, mode: "text" | "symbols" = "text") {
-  const root = await repoRoot(repo);
-  const listing = await git(["-c", "core.fsmonitor=false", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], root);
+export async function searchCode(repo: GitCwd, query: string, mode: "text" | "symbols" = "text") {
+  const root = await rootOf(repo);
+  const at = typeof repo === "string" ? root : repo;
+  const listing = await git(["-c", "core.fsmonitor=false", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], at);
   if (listing.code !== 0) throw new Error("Cannot list repository files");
   const files = [...new Set(listing.stdout.split("\0").filter(Boolean))];
   const needle = query.trim().toLowerCase();
@@ -74,7 +77,7 @@ export async function searchCode(repo: string, query: string, mode: "text" | "sy
   for (const path of files) {
     if (scanned >= 2000 || bytes > 8 * 1024 * 1024 || hits.length >= 200) { truncated = true; break; }
     if (/(^|\/)(?:node_modules|vendor|dist|build|\.git)\//.test(path)) continue;
-    const file = await readEditableFile(root, path).catch(() => undefined);
+    const file = await readEditableFile(at, path).catch(() => undefined);
     if (!file) continue;
     scanned++; bytes += file.bytes;
     const lines = file.text.split("\n");
@@ -88,14 +91,15 @@ export async function searchCode(repo: string, query: string, mode: "text" | "sy
   return { hits, scanned, truncated: truncated || hits.length >= 200 };
 }
 
-export async function dependencyGraph(repo: string) {
-  const root = await repoRoot(repo);
-  const listed = await git(["ls-files", "-z"], root);
+export async function dependencyGraph(repo: GitCwd) {
+  const root = await rootOf(repo);
+  const at = typeof repo === "string" ? root : repo;
+  const listed = await git(["ls-files", "-z"], at);
   if (listed.code !== 0) throw new Error("Cannot list repository files");
   const all = new Set(listed.stdout.split("\0").filter((path) => /\.[cm]?[jt]sx?$/.test(path)));
   const nodes = [...all].slice(0, 500), edges: { from: string; to: string; specifier: string }[] = [];
   for (const path of nodes) {
-    const file = await readEditableFile(root, path).catch(() => undefined);
+    const file = await readEditableFile(at, path).catch(() => undefined);
     if (!file) continue;
     for (const match of file.text.matchAll(/(?:\b(?:import|export)\s+(?:[^;\n]*?\s+from\s*)?|\b(?:require|import)\s*\()\s*["']([^"']+)["']/g)) {
       const specifier = match[1]!;
@@ -109,7 +113,7 @@ export async function dependencyGraph(repo: string) {
   return { nodes, edges, truncated: all.size > nodes.length, language: "JavaScript/TypeScript relative imports" };
 }
 
-export async function checkpoints(repo: string, ref = "HEAD") {
+export async function checkpoints(repo: GitCwd, ref = "HEAD") {
   const commit = await resolveCommit(repo, ref);
   const log = await git(["log", "--max-count=50", "--format=%H%x00%at%x00%s", commit], repo);
   if (log.code !== 0) throw new Error("Cannot read checkpoints");
@@ -117,8 +121,8 @@ export async function checkpoints(repo: string, ref = "HEAD") {
 }
 
 /** Selective application requires a clean result worktree and an exact observed HEAD. */
-export async function applyCheckpoint(repo: string, input: { source: string; paths: string[]; expectedHead: string }) {
-  return withRepoLock(repo, async () => {
+export async function applyCheckpoint(repo: GitCwd, input: { source: string; paths: string[]; expectedHead: string }) {
+  return withRepoLock(folderOf(repo), async () => {
     const head = await resolveCommit(repo);
     if (head !== input.expectedHead) throw new WorkspaceConflictError(head);
     if ((await git(["status", "--porcelain"], repo)).stdout.trim()) throw new Error("Commit or save existing changes before applying a checkpoint");

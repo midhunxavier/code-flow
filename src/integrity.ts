@@ -1,4 +1,4 @@
-import { git, gitError } from "./git.js";
+import { git, gitError, type GitCwd } from "./git.js";
 
 /**
  * Test integrity: the check only proves something if the tests it runs are still the tests.
@@ -18,10 +18,16 @@ export interface IntegrityIssue {
 
 const TEST_FILE =
   /(^|\/)(tests?|__tests__|specs?|e2e)\/|[._-](test|spec)s?\.[a-z0-9]+$|(^|\/)test_[^/]+\.py$|Tests?\.(java|kt|cs|swift|scala)$|_spec\.rb$/i;
+const WORKFLOW = /(^|\/)\.github\/workflows\//;
 const TEST_CONFIG =
   /(^|\/)(jest|vitest|vite|playwright|cypress|karma|ava|babel)\.config\.[cm]?[jt]s$|(^|\/)\.mocharc(\.[a-z]+)?$|(^|\/)(pytest\.ini|tox\.ini|setup\.cfg|conftest\.py|\.coveragerc|phpunit\.xml(\.dist)?)$|(^|\/)\.github\/workflows\//;
+/**
+ * Lines that skip a test, focus others (so the rest don't run), mark one as expected to fail, or
+ * run it only when a condition holds: `it.skip(`, `test.skip.each(`, `it.skipIf(`, `test.runIf(`,
+ * `test.fails(`, `this.skip()`, pytest's and unittest's skips, `{ skip: true }`…
+ */
 const SKIP =
-  /\b(?:describe|it|test|context|suite)\.(?:skip|only|todo)\s*\(|\b(?:xit|xdescribe|xtest|fit|fdescribe)\s*\(|@pytest\.mark\.(?:skip|skipif|xfail)\b|\bpytest\.skip\s*\(|@unittest\.skip|@(?:Disabled|Ignore)\b|\bt\.Skip(?:Now|f)?\s*\(|#\[ignore\]|\{\s*skip\s*:\s*true\b|\{\s*todo\s*:\s*true\b/;
+  /\b(?:describe|it|test|context|suite|bench)(?:\.(?:concurrent|sequential|each))*\.(?:skip|only|todo|skipIf|runIf|fails|failing)\b|\b(?:xit|xdescribe|xtest|fit|fdescribe)\s*\(|\bthis\.skip\s*\(|@pytest\.mark\.(?:skip|skipif|xfail)\b|\bpytest\.(?:skip|xfail|importorskip)\s*\(|\bself\.skipTest\s*\(|@unittest\.(?:skip\w*|expectedFailure)\b|@(?:Disabled|Ignore)\b|\bt\.(?:Skip(?:Now|f)?|skip|todo)\s*\(|#\[ignore\]|\{\s*(?:skip|todo)\s*:\s*(?:true\b|["'`])/;
 const ASSERTION =
   /\b(assert\w*|expect|should|t\.(?:Error|Fatal|Fail)\w*|require\.\w+|deepEqual|strictEqual|notEqual|toBe\w*|toEqual|toMatch\w*|toThrow\w*|toHave\w*|toContain\w*)\b/;
 
@@ -47,6 +53,19 @@ const RUNNER_CONFIG = /(^|\/)(jest|vitest|playwright|cypress|karma|ava)\.config\
  */
 export const isTestSide = (path: string) => TEST_FILE.test(path) || FIXTURE.test(path) || RUNNER_CONFIG.test(path);
 
+/** A test runner's own config file (see RUNNER_CONFIG): nothing in it is anyone's but the tests'. */
+export const isRunnerConfig = (path: string) => RUNNER_CONFIG.test(path);
+
+/** Files that hold a test runner's settings among other things: package.json (`jest`…), pyproject.toml (`[tool.pytest…]`). */
+const SHARED_CONFIG = /(^|\/)(package\.json|pyproject\.toml)$/;
+
+/**
+ * A change to what the test runner collects or how the check runs it: the runner's own config,
+ * its settings in package.json or pyproject.toml, or the script the check runs. Build config the
+ * tests also read (vite.config, babel) and CI workflows are left out: a change can need those.
+ */
+export const changesRunner = (i: IntegrityIssue) => i.kind === "test-script" || (i.kind === "test-config" && (RUNNER_CONFIG.test(i.file) || SHARED_CONFIG.test(i.file)));
+
 /**
  * The check found nothing only means something if it could look: when git fails, that is the
  * issue (fail closed), so a pass isn't accepted as clean on no evidence.
@@ -62,8 +81,36 @@ function scriptsRun(check?: string): string[] {
   return [...names];
 }
 
-async function fileAt(cwd: string, ref: string, path: string): Promise<string | undefined> {
-  const res = await git(["show", `${ref}:${path}`], cwd);
+function parseJson(raw?: string) {
+  try {
+    return raw ? JSON.parse(raw) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** package.json keys test runners read their settings from (which tests to collect, which to ignore…). */
+const RUNNER_KEYS = ["jest", "vitest", "mocha", "ava"];
+
+/**
+ * pytest's settings in a pyproject.toml: its `[tool.pytest.ini_options]` table (or `[tool.pytest]`,
+ * and any table under them), without blank lines and comments. Undefined when there are none.
+ */
+function pytestSettings(toml?: string): string | undefined {
+  if (toml === undefined) return undefined;
+  const lines: string[] = [];
+  let inside = false;
+  for (const raw of toml.split("\n")) {
+    const line = raw.trim();
+    const header = /^\[\[?([^\]]+)\]\]?(?:\s*#.*)?$/.exec(line);
+    if (header) inside = /^tool\.pytest(\.|$)/.test(header[1]!.replace(/[\s"']/g, ""));
+    if (inside && line && !line.startsWith("#")) lines.push(line);
+  }
+  return lines.length ? lines.join("\n") : undefined;
+}
+
+async function fileAt(cwd: GitCwd, ref: string, path: string): Promise<string | undefined> {
+  const res = await git(["show", "--no-textconv", `${ref}:${path}`], cwd);
   return res.code === 0 ? res.stdout : undefined;
 }
 
@@ -72,14 +119,15 @@ async function fileAt(cwd: string, ref: string, path: string): Promise<string | 
  * after (from the check's summary), which catches skips the patterns above don't know about.
  */
 export async function inspectChanges(
-  cwd: string,
+  cwd: GitCwd,
   from: string,
   to = "HEAD",
   opts: { check?: string; tests?: { before?: number; after?: number } } = {},
 ): Promise<IntegrityIssue[]> {
   const issues: IntegrityIssue[] = [];
   const range = `${from}..${to}`;
-  const statusArgs = ["diff", "--name-status", "-M", "-z", range];
+  // git's own diff, never an external program or textconv (see RAW_DIFF in git.ts).
+  const statusArgs = ["diff", "--no-ext-diff", "--no-textconv", "--name-status", "-M", "-z", range];
   const status = await git(statusArgs, cwd);
   if (status.code !== 0) return [unverifiedIssue(gitError(statusArgs, status))];
   const tokens = status.stdout.split("\0").filter(Boolean);
@@ -103,13 +151,14 @@ export async function inspectChanges(
   for (const { code, path } of changes) {
     if (code === "D" && isTestFile(path)) issues.push({ kind: "deleted-test", file: path, detail: "test file deleted", severity: "high" });
     else if (TEST_CONFIG.test(path)) {
-      issues.push({ kind: "test-config", file: path, detail: code === "D" ? "test configuration deleted" : "test configuration changed", severity: code === "D" ? "high" : "medium" });
+      const what = WORKFLOW.test(path) ? "CI workflow" : "test configuration";
+      issues.push({ kind: "test-config", file: path, detail: code === "D" ? `${what} deleted` : `${what} changed`, severity: code === "D" ? "high" : "medium" });
     }
   }
 
   // Added lines that skip tests, and test files that lost assertions.
   const added = new Set(changes.filter((c) => c.code === "A").map((c) => c.path));
-  const patchArgs = ["diff", "-U0", "--no-color", "-M", range];
+  const patchArgs = ["diff", "--no-ext-diff", "--no-textconv", "-U0", "--no-color", "-M", range];
   const patch = await git(patchArgs, cwd);
   if (patch.code !== 0) return [...issues, unverifiedIssue(gitError(patchArgs, patch))];
   let file = "";
@@ -149,22 +198,30 @@ export async function inspectChanges(
     }
   }
 
-  // The check command can be changed without touching a test: package.json scripts.
-  if (changes.some((c) => c.path === "package.json")) {
-    const parse = (raw?: string) => {
-      try {
-        return raw ? JSON.parse(raw) : undefined;
-      } catch {
-        return undefined;
+  // What the tests run can be changed without touching a test or a config file of its own: the
+  // check's script and the runner's settings in package.json, pytest's in pyproject.toml.
+  for (const { path } of changes) {
+    if (/(^|\/)package\.json$/.test(path)) {
+      const [before, after] = await Promise.all([fileAt(cwd, from, path).then(parseJson), fileAt(cwd, to, path).then(parseJson)]);
+      // The check runs the root package's scripts.
+      for (const name of path === "package.json" ? scriptsRun(opts.check) : []) {
+        const was = before?.scripts?.[name];
+        const now = after?.scripts?.[name];
+        if (was !== undefined && was !== now) {
+          issues.push({ kind: "test-script", file: path, detail: `scripts.${name} changed from \`${was}\` to \`${now ?? "(removed)"}\``, severity: "high" });
+        }
       }
-    };
-    const [before, after] = await Promise.all([fileAt(cwd, from, "package.json").then(parse), fileAt(cwd, to, "package.json").then(parse)]);
-    for (const name of scriptsRun(opts.check)) {
-      const was = before?.scripts?.[name];
-      const now = after?.scripts?.[name];
-      if (was !== undefined && was !== now) {
-        issues.push({ kind: "test-script", file: "package.json", detail: `scripts.${name} changed from \`${was}\` to \`${now ?? "(removed)"}\``, severity: "high" });
+      for (const key of RUNNER_KEYS) {
+        const [was, now] = [before?.[key], after?.[key]].map((v) => (v === undefined ? undefined : JSON.stringify(v)));
+        if (was === now) continue;
+        const detail = was === undefined ? `adds \`${key}\` settings: ${now!.slice(0, 160)}` : now === undefined ? `\`${key}\` settings removed` : `\`${key}\` settings changed to ${now.slice(0, 160)}`;
+        issues.push({ kind: "test-config", file: path, detail, severity: now === undefined ? "high" : "medium" });
       }
+    } else if (/(^|\/)pyproject\.toml$/.test(path)) {
+      const [was, now] = await Promise.all([fileAt(cwd, from, path).then(pytestSettings), fileAt(cwd, to, path).then(pytestSettings)]);
+      if (was === now) continue;
+      const detail = was === undefined ? "adds pytest settings ([tool.pytest…])" : now === undefined ? "pytest settings ([tool.pytest…]) removed" : "pytest settings ([tool.pytest…]) changed";
+      issues.push({ kind: "test-config", file: path, detail, severity: now === undefined ? "high" : "medium" });
     }
   }
 
@@ -187,7 +244,7 @@ interface AddedLine {
  * into a fixture, as a string: that line matches SKIP but skips nothing. For Python and JS/TS the
  * file is read as a whole, so strings spanning lines (docstrings, template literals) count too.
  */
-async function codeSkips(cwd: string, ref: string, found: AddedLine[]): Promise<AddedLine[]> {
+async function codeSkips(cwd: GitCwd, ref: string, found: AddedLine[]): Promise<AddedLine[]> {
   const code = new Map<string, Promise<string[] | undefined>>();
   const linesOf = (file: string) => {
     const lang = /\.pyi?$/i.test(file) ? "py" : /\.[cm]?[jt]sx?$/i.test(file) ? "js" : undefined;

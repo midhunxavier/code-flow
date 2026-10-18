@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { copyIntoWorktree } from "../src/repo-config.js";
+import { copyFileInside, copyIntoWorktree } from "../src/repo-config.js";
 
 async function fixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "codeflow-copy-")));
@@ -72,4 +72,14 @@ test("source parent links and paths escaping the repository are refused", async 
   assert.deepEqual(result.copied, [".env"]);
   assert.match(result.refused[0]!.why, /outside the repository/);
   assert.equal(existsSync(join(worktree, "config", "linked", "credentials")), false);
+});
+
+test("context refresh replaces a hardlinked destination without changing its other link", async () => {
+  const { repo, worktree, outside } = await fixture();
+  const original = join(outside, "reference.txt"), target = join(worktree, "reference.txt");
+  await writeFile(original, "outside data must survive\n"); await link(original, target);
+  assert.deepEqual(await copyFileInside(worktree, "reference.txt", join(repo, ".env"), { overwrite: false }), { copied: false });
+  assert.deepEqual(await copyFileInside(worktree, "reference.txt", join(repo, ".env")), { copied: true });
+  assert.equal(await readFile(original, "utf8"), "outside data must survive\n");
+  assert.equal(await readFile(target, "utf8"), "SECRET=private\n");
 });

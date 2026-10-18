@@ -1,9 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { cp, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { cp, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+
 import { createHash, randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   adapters,
   getAdapter,
@@ -18,10 +20,10 @@ import {
   type RunResult,
 } from "./adapters/index.js";
 import { CODEFLOW_HOME, MAX_DIFF_CHARS, STEP_IDLE_MS, STEP_TIMEOUT_MS, timerMs } from "./config.js";
-import { logWarn } from "./log.js";
+import { logInfo, logWarn } from "./log.js";
 import { cantRunMessage, cantRunReason, isPlainTestCommand, proofOutcome, reproOutcome, runCheck, type CheckResult, type Container } from "./checks.js";
 import { commandExists } from "./adapters/process.js";
-import { contextPrompt, copyMessageFiles, hasStagedFiles, prepareContext, stageMessageFiles, type ContextInput, type RunContext } from "./context.js";
+import { contextPrompt, copyMessageFiles, copyStagedContext, hasStagedFiles, prepareContext, stageMessageFiles, type ContextInput, type RunContext } from "./context.js";
 import { fitDiff } from "./diff.js";
 import type { ExternalSource } from "./integrations.js";
 import { externalSourcePrompt } from "./source-context.js";
@@ -45,11 +47,13 @@ import { readConventions, recordFindings, recurringLessons } from "./learnings.j
 import { Slots } from "./slots.js";
 import {
   CONTEXT_DIR,
+  assertWorktree,
   branchExists,
   changedFiles,
   changedSince,
   commitAll,
   diffSince,
+  discardChanges,
   diffStat,
   ensureCodeflowExcludes,
   git,
@@ -70,11 +74,15 @@ import {
   validateBranchPrefix,
   validRef,
   worktreeRoot,
+  WorktreeMismatchError,
+  worktreeGit,
+  type Checkout,
   type MergeResult,
   type Snapshot,
   type Worktree,
 } from "./git.js";
-import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines, RUNS_DIR } from "./store.js";
+import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines, rewriteLines, RUNS_DIR } from "./store.js";
+import { compactRunLog, decodeRunLog, RunLogWriter } from "./run-log.js";
 import { branchDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
@@ -205,10 +213,12 @@ export interface RunFacts {
 export interface Proof {
   /**
    * proven: the check fails on the base code with the change's tests (and passes on the change).
-   * unproven: it passes there too, so no test needs the change. unverified: code-flow couldn't
-   * tell (setup failed on the base commit, the test runner didn't start, a timeout…).
+   * weak: it fails there, but only because the tests can't load (an import or build error): that
+   * shows the change adds what they import, not that it works. unproven: it passes there too, so
+   * no test needs the change. unverified: code-flow couldn't tell (setup failed on the base
+   * commit, the test runner didn't start, a timeout…).
    */
-  status: "proven" | "unproven" | "unverified";
+  status: "proven" | "weak" | "unproven" | "unverified";
   command: string;
   /** The change's test files, fixtures and runner settings that were put onto the base code. */
   tests: string[];
@@ -299,6 +309,8 @@ export function reproProblem(repro: Repro): string | undefined {
 
 /** Scratch checkouts code-flow runs tests in (see TeamContext.scratchAt). */
 type Scratch = "proof" | "repro";
+/** Their folders in the run's folder, and the base commit's throwaway checkout's (see `checkOnBase`). */
+const SCRATCH_DIRS = [".proof-check", ".repro-check", ".base-check"];
 
 /** Files that say which dependencies to install: when one changes, a scratch checkout is set up again. */
 const DEPENDENCY_FILE =
@@ -417,6 +429,12 @@ export interface Run {
   triage?: { state: "pending" | "approved" | "rejected" | "empty"; at: number; note?: string };
   /** Changes to tests in each result branch that could make the check pass without a fix. */
   integrity?: Record<string, IntegrityIssue[]>;
+  /**
+   * How many tests the run's check ran on each result branch, the first time and the latest, and
+   * at which commit. A later pass (a follow-up, a resume) starts from these, so a change that makes
+   * fewer tests run shows there too (see TeamContext.testChanges).
+   */
+  testCounts?: Record<string, { first: TestCount; last: TestCount }>;
   /** Fail-to-pass proof of each result branch whose check passes (see Proof). */
   proofs?: Record<string, Proof>;
   /** The latest review of each result branch, its findings checked (see CheckedReview). */
@@ -452,6 +470,12 @@ export interface Run {
 
 export type RunSummary = Omit<Run, "steps"> & { cold?: true; detailAvailable?: true };
 
+/** How many tests the run's check ran at a commit. */
+export interface TestCount {
+  head: string;
+  tests: number;
+}
+
 export interface Note {
   id: string;
   text: string;
@@ -461,7 +485,8 @@ export interface Note {
   memberId?: string;
   /** User answer to this team question; consumed by its dedicated waiter. */
   requestId?: string;
-  status: "queued" | "delivered";
+  /** undelivered: the run finished before any turn took it; it's never handed to a later one. */
+  status: "queued" | "delivered" | "undelivered";
   /** midTurn: it went into that step's turn while it ran, not into the turn's opening prompt. */
   deliveredTo?: { stepId: string; agent: AgentId; midTurn?: boolean };
   /** No turn took it before the chat's turn ended, so it became this follow-up (your next message). */
@@ -526,6 +551,8 @@ export interface CouncilFinding {
   raisedBy: AgentId[];
   /** What code-flow found running its repro (see FindingCheck). */
   check?: FindingCheck;
+  /** The chair left out (or rated lower) this confirmed finding, and code-flow put it back: from whom, and why. */
+  restored?: string;
 }
 
 export interface CouncilReview {
@@ -762,6 +789,11 @@ export class TeamContext {
   private readonly remoteCommits = new Map<string, string>();
   /** How many tests the run's check ran in each worktree: the first time, and the latest. */
   private readonly testCounts = new Map<string, { first?: number; last?: number }>();
+  /**
+   * How many tests the run's check ran at each commit: in this pass, and the counts the run kept
+   * from earlier ones (Run.testCounts), so a follow-up knows how many ran before its change.
+   */
+  private readonly testsAt = new Map<string, number>();
   /** Why the run's check can't run here (null: it can), settled by its first result. */
   private checkRunsHere?: Promise<string | null>;
   /** Whether the run's check passed in each worktree, at which commit, and how many tests ran. */
@@ -789,6 +821,10 @@ export class TeamContext {
     readonly followUpsOnly = false,
   ) {
     this.replaying = journal.size > 0;
+    for (const { first, last } of Object.values(run.testCounts ?? {})) {
+      this.testsAt.set(first.head, first.tests);
+      this.testsAt.set(last.head, last.tests);
+    }
   }
 
   /**
@@ -839,37 +875,78 @@ export class TeamContext {
   }
 
   private clock?: { timer?: ReturnType<typeof setTimeout>; remaining: number; startedAt: number };
-  private clockPauses = 0;
+  /** Why the clock is paused right now (you deciding, the run only waiting for slots): it runs when nothing holds it. */
+  private clockHolds = 0;
+  /** This run's turns and commands waiting for a slot, holding one, and whether that paused the clock. */
+  private readonly slotUse = { waiting: 0, holding: 0, paused: false };
 
-  /** Start the run's time budget; it pauses while the run waits for you. */
+
+  /** Start the run's time budget; it pauses while the run waits for you, or only for slots. */
   startClock(minutes: number) {
     this.stopClock();
     this.clock = { remaining: minutes * 60_000, startedAt: Date.now() };
-    this.armClock();
+    if (!this.clockHolds) this.armClock();
   }
   private armClock() {
-    if (!this.clock || this.clockPauses > 0) return;
+    if (!this.clock || this.clockHolds > 0) return;
     this.clock.startedAt = Date.now();
     // Clamped: past setTimeout's range (or NaN) a timer fires at once and would stop the run.
     this.clock.timer = setTimeout(() => this.stop(`time limit (${this.run.loop.maxMinutes} min)`), timerMs(this.clock.remaining));
     this.clock.timer.unref?.();
   }
+  /** Pause the clock until a matching `resumeClock`; pauses nest (a checkpoint while a branch waits for a slot). */
   pauseClock() {
-    if (!this.clock) return;
-    this.clockPauses++;
-    if (!this.clock.timer) return;
+    if (this.clockHolds++ || !this.clock?.timer) return;
+
     clearTimeout(this.clock.timer);
     this.clock.timer = undefined;
     this.clock.remaining -= Date.now() - this.clock.startedAt;
   }
   resumeClock() {
-    if (this.clockPauses > 0) this.clockPauses--;
-    if (this.clock && !this.clock.timer && this.clockPauses === 0) this.armClock();
+    if (this.clockHolds > 0) this.clockHolds--;
+    if (!this.clockHolds && this.clock && !this.clock.timer) this.armClock();
+  }
+
+  /**
+   * A slot from `slots`, or undefined when the run stops first. While everything of this run that
+   * wants one waits (a run queued behind others, a sweep's runs), its time budget is paused:
+   * waiting its turn on this machine isn't time the run took. A wait beside a turn that runs counts.
+   */
+  private async takeSlot(slots: Slots, signal: AbortSignal = this.signal): Promise<(() => void) | undefined> {
+    const queued = slots.busy >= slots.size;
+    if (queued) this.slotUse.waiting++;
+    this.slotClock();
+    let release: (() => void) | undefined;
+    try {
+      release = await slots.acquire(signal, { priority: () => this.run.priority ?? 0, group: this.run.project ?? this.run.repo }).catch(() => undefined);
+    } finally {
+      if (queued) this.slotUse.waiting--;
+    }
+    if (release) this.slotUse.holding++;
+    this.slotClock();
+    if (!release) return undefined;
+    const free = release;
+    let given = false;
+    return () => {
+      if (given) return;
+      given = true;
+      free();
+      this.slotUse.holding--;
+      this.slotClock();
+    };
+  }
+
+  private slotClock() {
+    const onlyWaiting = this.slotUse.waiting > 0 && this.slotUse.holding === 0;
+    if (onlyWaiting === this.slotUse.paused) return;
+    this.slotUse.paused = onlyWaiting;
+    if (onlyWaiting) this.pauseClock();
+    else this.resumeClock();
+
   }
   stopClock() {
     if (this.clock?.timer) clearTimeout(this.clock.timer);
     this.clock = undefined;
-    this.clockPauses = 0;
   }
 
   /**
@@ -978,6 +1055,14 @@ export class TeamContext {
   /** The logical commit at this point in replay, not a later HEAD already on disk. */
   async head(wt: Worktree): Promise<string> {
     return this.heads.get(wt.name) ?? wt.base;
+  }
+
+  /**
+   * A worktree (or scratch checkout) of this run, for code-flow's git: run there, git uses the
+   * git folder your repository has for it, never one its `.git` names (see worktreeGit).
+   */
+  gitAt(wt: { path: string }): Promise<Checkout> {
+    return worktreeGit(this.run.repo, wt.path);
   }
 
   /**
@@ -1356,9 +1441,11 @@ export class TeamContext {
    * instead. Keys are kind + identity + occurrence, which stay stable across parallel
    * branches as long as identities differ (titles, worktree names). `valid` can reject a
    * recorded result that no longer applies (e.g. a check recorded for different code); the
-   * step is then run again and its new result recorded.
+   * step is then run again and its new result recorded. `keep` can decline to record a result
+   * that isn't the step's own (a turn that failed because its CLI was signed out): it's
+   * returned, and a resumed run takes the step again.
    */
-  async remember<T>(kind: string, identity: string, fn: () => Promise<T>, valid?: (recorded: T) => boolean | Promise<boolean>): Promise<T> {
+  async remember<T>(kind: string, identity: string, fn: () => Promise<T>, valid?: (recorded: T) => boolean | Promise<boolean>, keep?: (value: T) => boolean): Promise<T> {
     const base = `${kind}:${identity}`;
     const n = (this.counters.get(base) ?? 0) + 1;
     this.counters.set(base, n);
@@ -1374,7 +1461,7 @@ export class TeamContext {
     const value = await fn();
     // On disk before the pattern goes on: killed right after, a resume replays this step
     // instead of running (and paying for) it again.
-    await this.persist(key, value);
+    if (!keep || keep(value)) await this.persist(key, value);
     return value;
   }
 
@@ -1394,24 +1481,27 @@ export class TeamContext {
       async (): Promise<CheckResult & { head?: string; verification?: Run["verification"] }> => {
         let result: CheckResult;
         let verification: Run["verification"];
-        const head = await resolveCommit(wt.path).catch(() => undefined);
+        const at = await this.gitAt(wt);
+        const head = await resolveCommit(at).catch(() => undefined);
         if (doneWhen && this.run.loop.verification) {
           const configured = this.run.loop.verification;
           const profile = configured.checks.some((check) => check.command === command) ? configured : { ...configured, checks: [...configured.checks, { id: "primary-check", kind: "custom" as const, command, required: true, timeoutMs: this.run.loop.checkTimeoutMin * 60_000 }] };
-          const changes = head ? await branchDiff(wt.path, this.run.baseRef, head) : [];
+          const changes = head ? await branchDiff(at, this.run.baseRef, head) : [];
           const reviewed = this.run.humanReview?.[wt.branch];
           const startedAt = Date.now();
           this.run.verification = undefined;
           try {
-            const integrity = await verificationIntegrity(wt.path, this.signal);
+            const integrity = await verificationIntegrity(await assertWorktree(this.run.repo, wt), this.signal);
             if (integrity.head !== head) throw new VerificationIntegrityError("The checkout commit moved while verification was being prepared. Refresh and verify the current commit.");
             verification = { ...await runVerification(wt.path, profile, { signal: this.signal, changedFiles: changes, reviewedFiles: reviewed && reviewed.head === head ? reviewed.files : [], execute: async (gate, opts) => {
               await integrity.assert(`before gate ${gate.id}`);
               const checked = await this.command("check", `${title}: ${gate.title ?? gate.id}`, wt, gate.command, undefined, opts.timeoutMs);
+              await assertWorktree(this.run.repo, wt);
               await integrity.assert(`gate ${gate.id}`);
               return checked;
             } }), head: integrity.head, branch: wt.branch };
             await integrity.assert("completion");
+            await assertWorktree(this.run.repo, wt);
           } catch (error) {
             if (!(error instanceof VerificationIntegrityError)) throw error;
             this.checkCancelled();
@@ -1424,7 +1514,8 @@ export class TeamContext {
         this.run.usage.checks++;
         this.run.lastCheck = { ok: result.ok, command, worktree: wt.name, at: Date.now() };
         this.manager.emitRun(this.run);
-        return { ...result, head, verification };
+        return { ...result, head: verification?.head ?? await this.gitAt(wt).then(resolveCommit).catch(() => undefined), verification };
+
       },
       (recorded) => !recorded.head || !head || recorded.head === head,
     );
@@ -1436,6 +1527,13 @@ export class TeamContext {
       counts.first ??= result.tests;
       counts.last = result.tests;
       this.testCounts.set(wt.name, counts);
+      const at = head ?? result.head;
+      if (at) {
+        this.testsAt.set(at, result.tests);
+        const kept = this.run.testCounts?.[wt.branch];
+        const count = { head: at, tests: result.tests };
+        if (wt.branch) this.run.testCounts = { ...this.run.testCounts, [wt.branch]: { first: kept?.first ?? count, last: count } };
+      }
     }
     return result;
   }
@@ -1513,7 +1611,7 @@ export class TeamContext {
     if (!this.proves) return null;
     this.checkCancelled();
     const from = opts.from ?? wt.base;
-    const head = this.heads.get(wt.name) ?? (await resolveCommit(wt.path));
+    const head = this.heads.get(wt.name) ?? (await resolveCommit(await this.gitAt(wt)));
     const key = `${from}..${head}`;
     let proving = this.proofCache.get(key);
     const fresh = !proving;
@@ -1528,6 +1626,7 @@ export class TeamContext {
     if (fresh) {
       const what = proof.tests.length ? `this change's tests (${proof.tests.join(", ")})` : "the existing tests";
       if (proof.status === "proven") this.log(`Proven: with ${what} on the base code, \`${proof.command}\` fails there, so the tests need the change`);
+      else if (proof.status === "weak") this.log(`Weakly proven: with ${what} on the base code, \`${proof.command}\` fails there, but only because the tests can't load (an import or build error), not on what they check`, "warn");
       else if (proof.status === "unproven") this.log(`Not proven: ${proof.detail}, so no test fails without the change`, "warn");
       else this.log(`Couldn't prove the change: ${proof.detail}`, "warn");
     }
@@ -1559,7 +1658,7 @@ export class TeamContext {
     const run = async (): Promise<Proof> => {
       let tests: string[] = [];
       try {
-        const changed = await changedFiles(wt.path, from, head);
+        const changed = await changedFiles(await this.gitAt(wt), from, head);
         tests = changed.filter(isTestSide);
         let result = !tests.length && known ? known : undefined;
         if (!result) {
@@ -1570,7 +1669,7 @@ export class TeamContext {
           // are installed, or the missing package would make the tests fail as if they needed the
           // change's code.
           const deps = changed.filter((f) => DEPENDENCY_FILE.test(f) && !isTestSide(f));
-          await restorePaths(checkout.path, head, [...tests, ...deps]);
+          await restorePaths(this.run.repo, checkout, head, [...tests, ...deps]);
           if (deps.length && this.run.loop.setup && !(await this.setupScratch("proof", checkout, head, "Setup proof checkout (the change's dependencies)"))) {
             return make("unverified", `setup failed on the base code with the change's dependencies (${deps.join(", ")})`, tests);
           }
@@ -1578,7 +1677,9 @@ export class TeamContext {
             const outcome = proofOutcome(r);
             return outcome.status === "proven"
               ? { ok: true, text: `Fails without the change, as it should (exit code ${r.exitCode})` }
-              : { ok: false, text: outcome.status === "unproven" ? "Passes without the change too: no test needs it" : `Couldn't tell: ${outcome.detail}` };
+              : outcome.status === "weak"
+                ? { ok: true, text: `Fails without the change, but only because the tests can't load (exit code ${r.exitCode})` }
+                : { ok: false, text: outcome.status === "unproven" ? "Passes without the change too: no test needs it" : `Couldn't tell: ${outcome.detail}` };
           });
           this.run.usage.checks++;
         }
@@ -1600,7 +1701,7 @@ export class TeamContext {
    * once. `title` names the step.
    */
   async reproduce(wt: Worktree, repro: Repro | undefined, title: string): Promise<FindingCheck> {
-    const head = this.heads.get(wt.name) ?? (await resolveCommit(wt.path));
+    const head = this.heads.get(wt.name) ?? (await resolveCommit(await this.gitAt(wt)));
     const path = repro?.path.trim() ?? "";
     const command = repro?.command.trim() || (path ? this.run.loop.check : undefined);
     const unconfirmed = (detail: string): FindingCheck => ({ status: "unconfirmed", detail, head });
@@ -1655,11 +1756,9 @@ export class TeamContext {
         });
         this.run.usage.checks++;
         const outcome = reproOutcome(result);
-        // Run with the check, a test the runner never picked up passes too: that refutes nothing.
-        const without = this.lastChecks.get(wt.name);
-        if (outcome.status === "refuted" && repro.path && repro.command === this.run.loop.check && without?.head === head && result.tests !== undefined && without.tests !== undefined && result.tests <= without.tests) {
-          return make("unverified", `\`${repro.command}\` ran ${result.tests} tests with it, as many as without, so it didn't run ${repro.path}`);
-        }
+        // A test the runner never picked up passes too: that refutes nothing.
+        const missed = outcome.status === "refuted" && repro.path ? await this.reproMissed(wt, head, checkout, repro, result, title) : undefined;
+        if (missed) return make("unverified", missed);
         return make(outcome.status, outcome.detail);
       } catch (err) {
         if (this.signal.aborted || err instanceof CancelledError) throw err;
@@ -1667,6 +1766,37 @@ export class TeamContext {
       }
     };
     return this.inScratch("repro", run);
+  }
+
+  /**
+   * Why a passing run of a reviewer's test file doesn't show the test ran (undefined: it does).
+   * With the run's check: as many tests ran with it as without (the check's last run here). With
+   * the reviewer's own command: no tests ran; or, when the command doesn't name the test, as many
+   * ran as without it (run once more, the test taken out); or, when the runner doesn't say how many
+   * ran, nothing in its output mentions the test.
+   */
+  private async reproMissed(wt: Worktree, head: string, checkout: Worktree, repro: Repro, result: CheckResult, title: string): Promise<string | undefined> {
+    const name = basename(repro.path);
+    const mentions = (text: string) => text.includes(repro.path) || text.includes(name);
+    const asMany = `\`${repro.command}\` ran ${result.tests} tests with it, as many as without, so it didn't run ${repro.path}`;
+    if (repro.command === this.run.loop.check) {
+      const without = this.lastChecks.get(wt.name);
+      return without?.head === head && result.tests !== undefined && without.tests !== undefined && result.tests <= without.tests ? asMany : undefined;
+    }
+    if (result.tests === 0) return `\`${repro.command}\` ran no tests, so it didn't run ${repro.path}`;
+    if (mentions(repro.command)) return undefined;
+    if (result.tests === undefined) {
+      return mentions(result.output) ? undefined : `\`${repro.command}\` doesn't say how many tests it ran, and its output doesn't mention ${repro.path}, so it may not have run it`;
+    }
+    // Taken out by git (the test's run may have left anything in the checkout, symlinks too), and
+    // a test file the reviewer replaced comes back as it was.
+    await discardChanges(this.run.repo, checkout, head);
+    const without = await this.command("check", `${title} (without the test)`, checkout, repro.command, (r) => ({
+      ok: r.tests !== undefined,
+      text: r.tests !== undefined ? `${r.tests} tests without the reviewer's test` : "Couldn't count the tests without it",
+    }));
+    this.run.usage.checks++;
+    return without.tests !== undefined && result.tests <= without.tests ? asMany : undefined;
   }
 
   /** Run `fn` when the scratch checkout `kind` is free: one checkout serves every run of its kind. */
@@ -1698,13 +1828,11 @@ export class TeamContext {
       current = await opening;
     }
     const { wt } = current;
-    for (const args of [["reset", "-q", "--hard", commit], ["clean", "-fdq"]]) {
-      const res = await git(args, wt.path);
-      if (res.code !== 0) throw new Error(gitError(args, res));
-    }
+    // The check that ran here last ran the agents' code, which could have broken its `.git`.
+    await discardChanges(this.run.repo, wt, commit);
     wt.base = commit;
     if (this.run.loop.copy?.length) await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
-    if (current.setupAt !== commit && this.run.loop.setup && (await changedFiles(wt.path, current.setupAt, commit)).some((f) => DEPENDENCY_FILE.test(f))) {
+    if (current.setupAt !== commit && this.run.loop.setup && (await changedFiles(await this.gitAt(wt), current.setupAt, commit)).some((f) => DEPENDENCY_FILE.test(f))) {
       current.ready = (await this.command("setup", `${title} (dependencies changed)`, wt, this.run.loop.setup)).ok;
       current.setupAt = commit;
     }
@@ -1761,7 +1889,7 @@ export class TeamContext {
       const unsubscribe = this.manager.subscribe(this.run.id, () => { if (this.run.pauseRequested) waiting.abort(); });
       try {
         if (signal.aborted || this.run.pauseRequested) waiting.abort();
-        const release = await slots.acquire(waiting.signal, { priority: () => this.run.priority ?? 0, group: this.run.project ?? this.run.repo }).catch(() => undefined);
+        const release = await this.takeSlot(slots, waiting.signal);
         if (release) {
           if (!this.run.pauseRequested && !signal.aborted) return release;
           release();
@@ -1811,7 +1939,9 @@ export class TeamContext {
         throw new Error(`${this.run.lockdown}, and Docker isn't available, so code-flow won't run \`${command}\` on this machine`);
       }
       release = await this.acquireWorkSlot(checkSlots);
+      await assertWorktree(this.run.repo, wt);
       result = await runCheck(wt.path, command, { timeoutMs: timeoutMs ?? timerMs(this.run.loop.checkTimeoutMin * 60_000, 1_000), signal: this.signal, container });
+
     } catch (err) {
       // Couldn't even start it: the step still ends, as a failure that says why.
       result = { command, ok: false, exitCode: null, timedOut: false, durationMs: 0, output: `code-flow couldn't run it: ${(err as Error).message}` };
@@ -1875,7 +2005,7 @@ export class TeamContext {
     if (!this.heads.has(name)) {
       // Replaying, the pattern starts from the base; otherwise from wherever the branch is.
       const replayed = !live && !this.followUpsOnly;
-      this.heads.set(name, replayed ? wt.base : await resolveCommit(wt.path).catch(() => wt.base));
+      this.heads.set(name, replayed ? wt.base : await this.gitAt(wt).then(resolveCommit).catch(() => wt.base));
     }
     return wt;
   }
@@ -1896,7 +2026,7 @@ export class TeamContext {
     if (!created) {
       // Recorded only once it's set up, so an earlier attempt may have stopped mid-setup (a crash
       // during `npm ci`): agents would get a worktree without its dependencies.
-      if (await isPrepared(wt)) {
+      if (await isPrepared(this.run.repo, wt)) {
         this.log(`Reusing existing worktree ${wt.path} (branch ${wt.branch})`);
         return wt;
       }
@@ -1915,8 +2045,11 @@ export class TeamContext {
    */
   private async prepareWorktree(wt: Worktree) {
     if (hasStagedFiles(this.run.context)) {
-      // Git-excluded, so it is never committed and doesn't count as a change.
-      await cp(join(this.run.worktreeDir, STAGE_DIR), join(wt.path, CONTEXT_DIR), { recursive: true });
+      // Git-excluded, so it is never committed and doesn't count as a change. Never written through
+      // a symbolic link: a re-attached worktree holds whatever the agents committed.
+      for (const r of await copyStagedContext(join(this.run.worktreeDir, STAGE_DIR), wt.path)) {
+        this.manager.log(this.run.id, `Didn't copy ${r.path} into ${wt.name}: ${r.why}`, "warn");
+      }
     }
     if (this.run.loop.copy?.length) {
       const { copied, refused } = await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
@@ -1926,9 +2059,9 @@ export class TeamContext {
     if (this.run.loop.setup) {
       const setup = await this.command("setup", `Setup ${wt.name}`, wt, this.run.loop.setup);
       if (!setup.ok) throw new Error(`Setup command \`${this.run.loop.setup}\` failed in worktree ${wt.name}`);
-      if (!(await isClean(wt.path))) this.manager.log(this.run.id, `Setup left changes in ${wt.name}; they'll appear in its diff`, "warn");
+      if (!(await isClean(await this.gitAt(wt)))) this.manager.log(this.run.id, `Setup left changes in ${wt.name}; they'll appear in its diff`, "warn");
     }
-    const marker = await preparedMarker(wt);
+    const marker = await preparedMarker(this.run.repo, wt);
     const written = marker && (await writeFile(marker, `${new Date().toISOString()}\n`).then(() => true, () => false));
     if (!written) this.manager.log(this.run.id, `Couldn't mark ${wt.name} as set up; it will be set up again if it's reused`, "warn");
   }
@@ -1941,12 +2074,13 @@ export class TeamContext {
       `${wt.name}|${message}`,
       async () => {
         const remote = this.remoteCommits.get(wt.name);
-        const sha = (await commitAll(wt, message)) ?? (remote && await resolveCommit(wt.path) === remote ? remote : await this.recoverCommit(wt, message));
+        const sha = (await commitAll(this.run.repo, wt, message, (warning) => this.log(warning, "warn"))) ?? (remote && await resolveCommit(await this.gitAt(wt)) === remote ? remote : await this.recoverCommit(wt, message));
+
         if (sha) this.log(`Committed ${sha.slice(0, 8)} on ${wt.branch}: ${message}`);
         return sha;
       },
       // A recorded commit only stands if it's still in the branch's history.
-      async (recorded) => recorded === null || (await isAncestor(wt.path, recorded)),
+      async (recorded) => recorded === null || (await this.gitAt(wt).then((at) => isAncestor(at, recorded), () => false)),
     );
     if (sha) this.heads.set(wt.name, sha);
     this.remoteCommits.delete(wt.name);
@@ -1959,10 +2093,11 @@ export class TeamContext {
    */
   private async recoverCommit(wt: Worktree, message: string): Promise<string | null> {
     const known = this.heads.get(wt.name);
-    const head = await resolveCommit(wt.path).catch(() => "");
-    if (!head || !known || head === known) return null;
-    const subject = (await git(["log", "-1", "--format=%s", head], wt.path)).stdout.trim();
-    return subject === message && (await isAncestor(wt.path, known, head)) ? head : null;
+    const at = await this.gitAt(wt).catch(() => undefined);
+    const head = at ? await resolveCommit(at).catch(() => "") : "";
+    if (!at || !head || !known || head === known) return null;
+    const subject = (await git(["log", "-1", "--format=%s", head], at)).stdout.trim();
+    return subject === message && (await isAncestor(at, known, head)) ? head : null;
   }
 
   /** Merge another branch into a worktree (the conflicts, if any, are left for an agent). */
@@ -1970,8 +2105,8 @@ export class TeamContext {
     await this.manager.assertExecutionAllowed(this.run.repo, this.run, "Git worktree integration");
     this.checkCancelled();
     const result = await this.remember("merge", this.run.team ? `${wt.name}|${branch}` : branch, async (): Promise<MergeResult & { head?: string }> => {
-      const merged = await mergeBranch(wt, branch);
-      return { ...merged, head: merged.ok ? await resolveCommit(wt.path) : undefined };
+      const merged = await mergeBranch(this.run.repo, wt, branch);
+      return { ...merged, head: merged.ok ? await resolveCommit(await this.gitAt(wt)) : undefined };
     });
     if (result.head) this.heads.set(wt.name, result.head);
     return result;
@@ -1979,26 +2114,45 @@ export class TeamContext {
 
   /** Diff of the worktree against its base, fitted to a prompt (whole files first; see fitDiff). */
   async diff(wt: Worktree, base = wt.base): Promise<string> {
-    const full = await diffSince(wt, base);
+    const full = await diffSince(await this.gitAt(wt), base);
     if (!full.trim()) return "(no changes)";
     return fitDiff(full, MAX_DIFF_CHARS, base);
   }
 
   /**
+   * The commit to read `wt`'s changes at. Replaying, the worktree on disk already has every later
+   * commit: reading HEAD would show this pass the work of steps it hasn't reached yet, and a
+   * pattern acting on that (undoing what looks like a tester's change to the code) would undo
+   * that work for real. So it reads at this pass's commit until the replay is over.
+   */
+  private readAt(wt: Worktree): string {
+    return (this.replaying && this.heads.get(wt.name)) || "HEAD";
+  }
+
+  /** Files changed in `wt` since `from`, as the pattern's pass through it sees them (see `readAt`). */
+  async changedFiles(wt: Worktree, from: string): Promise<string[]> {
+    return changedFiles(await this.gitAt(wt), from, this.readAt(wt));
+  }
+
+  /**
    * Changes since `from` that could make the check pass without fixing anything: deleted or
    * skipped tests, weakened assertions, a changed test script or config, fewer tests running.
+   * Fewer tests is told from the check's counts at `from` and at the current commit, so check
+   * the change first; without a count at `from`, the first one in this worktree stands in.
    */
   async testChanges(wt: Worktree, from = wt.base): Promise<IntegrityIssue[]> {
     const counts = this.testCounts.get(wt.name);
-    return inspectChanges(wt.path, from, "HEAD", {
-      check: this.run.loop.check,
-      tests: counts ? { before: counts.first, after: counts.last } : undefined,
-    }).catch((err: Error) => [unverifiedIssue(err.message)]); // not knowing isn't the same as no issues
+    const head = this.heads.get(wt.name);
+    const before = this.testsAt.get(from) ?? counts?.first;
+    const after = (head ? this.testsAt.get(head) : undefined) ?? counts?.last;
+    return this.gitAt(wt)
+      .then((at) => inspectChanges(at, from, this.readAt(wt), { check: this.run.loop.check, tests: { before, after } }))
+      .catch((err: Error) => [unverifiedIssue(err.message)]); // not knowing isn't the same as no issues
   }
 
   /** Publish a result branch (replaces an earlier artifact with the same label). */
   async artifact(label: string, wt: Worktree) {
-    const stat = await diffStat(wt, this.run.baseRef).catch((err: Error) => {
+    const stat = await this.gitAt(wt).then((at) => diffStat(at, this.run.baseRef)).catch((err: Error) => {
       this.log(`${label}: couldn't read its changes (${err.message})`, "warn");
       return "";
     });
@@ -2059,9 +2213,16 @@ export class TeamContext {
     if (params.resume?.memberId && params.resume.memberId !== params.memberId) throw new Error("Cannot resume another member's private session");
     if (params.memberId && params.resume?.worktree && params.resume.worktree !== params.cwd.name) throw new Error("A member changing workspaces must start a fresh session with its checkpoint");
     if (params.settings) params = { ...params, settings: validateAgentSettings({ [params.agent]: params.settings })[params.agent] };
+    // A turn that may fail (a race contestant, a worker) and failed because its CLI was signed out
+    // or stalled says nothing about the task: recorded, every resume would replay that failure, and
+    // the race would go on judging one candidate fewer. It's taken again instead. (A usage limit
+    // stops the run before anything is recorded.) An Auto team keeps its failures: its later
+    // decisions were made from them, and it retries a failed task as a new attempt.
+    const keep = (outcome: StepOutcome) => outcome.ok || !!this.run.team || !UNRECORDED.has(failureKind(outcome, !!params.resume));
     const identity = `${params.role}|${params.agent}|${params.cwd.name}|${params.identity ?? params.title}`;
     params = { ...params, remoteIdentity: `${identity}#${(this.counters.get(`ask:${identity}`) ?? 0) + 1}` };
     const outcome = await this.remember("ask", identity, async () => {
+
       const member = params.memberId;
       const workspace = params.cwd.path;
       const session = params.resume?.sessionId;
@@ -2077,9 +2238,10 @@ export class TeamContext {
         this.activeWorkspaces.delete(workspace);
         if (session) this.activeSessions.delete(session);
       }
-    });
+    }, undefined, keep);
     if (outcome.remote?.resultHead && !outcome.remote.ambiguous) this.remoteCommits.set(params.cwd.name, outcome.remote.resultHead);
     return outcome;
+
   }
 
   private async askLive(params: AskParams): Promise<StepOutcome> {
@@ -2130,6 +2292,7 @@ export class TeamContext {
       take: async () => {
         if (agentSlots.busy >= agentSlots.size) onEvent({ kind: "status", text: `Waiting for a free agent slot (${agentSlots.size} agents run at once; CODEFLOW_MAX_AGENTS)` });
         release = await this.acquireWorkSlot(agentSlots);
+
         return !!release;
       },
       give: () => {
@@ -2186,9 +2349,12 @@ export class TeamContext {
     // Your notes didn't land in a turn that finished: they go to the next one (its retry, or the resumed run).
     if (step.status !== "done") this.manager.requeueNotes(this.run, step.id);
 
-    // Out of plan usage: retrying won't help for hours. Stop (resumable) instead of failing.
-    if (usageLimit && !params.allowFailure && !this.signal.aborted) {
+    // Out of plan usage: retrying won't help for hours. Stop (resumable) instead of failing, also
+    // for a turn that may fail: a race or a split would go on without it, and a resume after the
+    // reset gives it its turn.
+    if (usageLimit && !this.signal.aborted) {
       this.stop(`usage limit of ${getAdapter(params.agent).displayName}`);
+
     }
     this.checkCancelled();
     if (!result.ok && !params.allowFailure) {
@@ -2221,15 +2387,20 @@ export class TeamContext {
     // retried without a session to continue starts over from it.
     let start: Snapshot | undefined;
     try {
-      start = await snapshot(params.cwd.path);
+      start = await snapshot(this.run.repo, params.cwd.path);
     } catch (err) {
-      // Read-only can't be enforced without it: don't run the agent at all (fail closed).
+      // Read-only can't be enforced without it, and in a worktree whose `.git` is broken the
+      // agent's own git would act on another checkout (yours): don't run the agent at all (fail closed).
+      if (err instanceof WorktreeMismatchError) {
+        this.log(`${params.title} (${params.agent}) didn't start: ${err.message}`, "warn");
+        return { ok: false, finalText: "", errorKind: "other", error: err.message };
+      }
       if (params.mode === "read") {
         return { ok: false, finalText: "", errorKind: "other", error: `Couldn't record the worktree's state, so read-only mode can't be enforced: ${(err as Error).message}` };
       }
     }
     let restore: { undone: string[] } | { error: Error } | undefined;
-    let changed: string[] = [];
+    let changed: string[] | Error = [];
     let result: RunResult;
     try {
       result = await this.attempts(params, step, onEvent, slot, start);
@@ -2238,16 +2409,22 @@ export class TeamContext {
       // chat's question: you may be editing its worktree meanwhile (its terminal, your editor),
       // and undoing everything would undo your work too, so what changed is only reported.
       if (params.mode === "read" && start && params.side) {
-        changed = await changedSince(params.cwd.path, start).catch(() => []);
+        changed = await changedSince(this.run.repo, params.cwd, start).catch((error: Error) => error);
       } else if (params.mode === "read" && start) {
-        restore = await restoreSnapshot(params.cwd.path, start).then((undone) => ({ undone }), (error: Error) => ({ error }));
+        restore = await restoreSnapshot(this.run.repo, params.cwd, start).then((undone) => ({ undone }), (error: Error) => ({ error }));
       }
     }
     if (restore && "error" in restore) {
+      this.log(`${params.title} (${params.agent}) is read-only, but what it changed couldn't be undone: ${restore.error.message}`, "warn");
       return { ...result, ok: false, errorKind: "other", error: `Couldn't undo what this read-only step changed: ${restore.error.message}` };
     }
     if (restore?.undone.length) {
       this.log(`${params.title} (${params.agent}) modified files in read-only mode; changes were reverted (${restore.undone.join(", ")})`, "warn");
+    }
+    // Not knowing what changed isn't the same as nothing changed (its `.git` may be broken).
+    if (changed instanceof Error) {
+      this.log(`${params.title} (${params.agent}) is read-only, but what changed in ${params.cwd.name} while it ran couldn't be checked, so anything it changed is still there: ${changed.message}`, "warn");
+      return { ...result, ok: false, errorKind: "other", error: `Couldn't check what this read-only step changed (anything it changed is still there): ${changed.message}` };
     }
     if (changed.length) {
       this.log(
@@ -2276,6 +2453,7 @@ export class TeamContext {
     let freshSession = false;
     for (let retries = 0; ; ) {
       await this.manager.assertExecutionAllowed(this.run.repo, this.run, "agent invocation");
+      await assertWorktree(this.run.repo, params.cwd);
       assertExtensionBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
       if (params.agent.startsWith("plugin:") && (this.run.loop.agentContainer || this.run.loop.remoteWorker || this.run.approvals.tools)) throw new Error("Extension providers support local dispatch only; container, SSH and native approval profiles are unavailable");
       this.checkCancelled();
@@ -2288,7 +2466,7 @@ export class TeamContext {
       this.manager.emit(this.run, { type: "step", step: { ...step } });
       if (step.contextInput.exceeded) this.log(`${step.title}: explicit invocation context exceeds its warning budget (${step.contextInput.bytes.toLocaleString()} bytes, approximately ${step.contextInput.approximateTokens.toLocaleString()} tokens). Hidden provider history and later file reads are excluded.`, "warn");
       const remoteSignature = remote ? createHash("sha256").update(JSON.stringify({ agent: params.agent, mode: params.mode, prompt: assembledPrompt, schema: params.schema, settings: params.settings, roleSettings: this.run.roleSettings[params.role], settingsByAgent: this.run.agentSettings[params.agent], trust: params.trust ?? this.run.trust })).digest("hex") : undefined;
-      const launch = remote ? await this.remember("remote-launch", params.remoteIdentity!, async () => ({ id: randomBytes(16).toString("hex"), stepId: step.id, threadId: params.memberId ?? this.sideTurn ?? params.role, baseCommit: await resolveCommit(params.cwd.path), signature: remoteSignature! })) : undefined;
+      const launch = remote ? await this.remember("remote-launch", params.remoteIdentity!, async () => ({ id: randomBytes(16).toString("hex"), stepId: step.id, threadId: params.memberId ?? this.sideTurn ?? params.role, baseCommit: await resolveCommit(await this.gitAt(params.cwd)), signature: remoteSignature! })) : undefined;
       if (launch && launch.signature !== remoteSignature) throw new Error("The scoped remote invocation inputs changed. Inspect its prior receipt, then intentionally start a new run with the changed instructions.");
       const recoveringRemote = !!remote && !!launch && !!await this.manager.remoteWorkers?.hasRequest(remote.workerId, launch.id);
       if (!recoveringRemote && this.run.loop.maxInvocations !== undefined && this.actualInvocations >= this.run.loop.maxInvocations) {
@@ -2360,10 +2538,11 @@ export class TeamContext {
           step.remote = { ...value.remote, recovered: recoveringRemote || undefined }; this.manager.emit(this.run, { type: "step", step: { ...step } });
           try {
             if (value.artifact) {
-              const head = await resolveCommit(params.cwd.path);
+              const at = await assertWorktree(this.run.repo, params.cwd);
+              const head = await resolveCommit(at);
               if (value.remote.ambiguous || this.signal.aborted) throw new Error("Remote result cannot be imported until its outcome and cancellation are settled");
-              if (head === value.artifact.head) { await verificationIntegrity(params.cwd.path); await client.discardArtifact(value.artifact); }
-              else await client.importArtifact(params.cwd.path, value.artifact, launch.baseCommit);
+              if (head === value.artifact.head) { await verificationIntegrity(at); await client.discardArtifact(value.artifact); }
+              else await client.importArtifact(at, value.artifact, launch.baseCommit);
             }
           } catch (error) { if (value.artifact) await client.discardArtifact(value.artifact); throw error; }
           const { remote: _remote, artifact: _artifact, ...publicResult } = value; result = publicResult;
@@ -2377,7 +2556,7 @@ export class TeamContext {
         // An earlier attempt of this write step may have edited files before failing: the whole
         // task again starts from the worktree as the step found it, or not at all.
         if (params.mode === "write" && retries > 0) {
-          if (!start || (await isMerging(params.cwd.path)) || !(await restoreSnapshot(params.cwd.path, start).then(() => true, () => false))) return result;
+          if (!start || (await this.gitAt(params.cwd).then(isMerging, () => false)) || !(await restoreSnapshot(this.run.repo, params.cwd, start).then(() => true, () => false))) return result;
         }
         freshSession = true;
         onEvent({ kind: "status", text: `The ${name} conversation to continue no longer exists; starting a new one with the whole task` });
@@ -2397,7 +2576,7 @@ export class TeamContext {
             `Your previous attempt at this stopped with an error (${firstLine(result.error)}). ` +
             "Continue from the current state of the worktree: finish what was asked, then reply as asked.\n\n" +
             `For reference, the request was:\n${initial.prompt}`;
-        } else if (start && !(await isMerging(params.cwd.path))) {
+        } else if (start && !(await this.gitAt(params.cwd).then(isMerging, () => false))) {
           // (Not mid-merge: resetting would drop the merge, and its commit would lose a parent.)
           startOver = true;
           ({ resume, prompt } = initial);
@@ -2410,7 +2589,7 @@ export class TeamContext {
       onEvent({ kind: "status", text: `${name} failed (${firstLine(result.error).slice(0, 160)}); trying again in ${Math.round(wait / 1000)}s` });
       slot.give();
       if (!(await sleep(wait, this.signal)) || !(await slot.take())) return result;
-      if (startOver && !(await restoreSnapshot(params.cwd.path, start!).then(() => true, () => false))) return result;
+      if (startOver && !(await restoreSnapshot(this.run.repo, params.cwd, start!).then(() => true, () => false))) return result;
     }
   }
 
@@ -2492,6 +2671,8 @@ const TRANSIENT = new RegExp(
 const SESSION_GONE = /no conversation found|(?:session|thread|conversation)\b[^\n]{0,40}\bnot found/i;
 /** Failures a retry in a minute can fix. */
 const RETRYABLE = new Set<ErrorKind | undefined>(["transient", "rate_limit", "stalled"]);
+/** Failures that say nothing about the task, so they aren't a turn's recorded result (see `ask`). */
+const UNRECORDED = new Set<ErrorKind | undefined>(["usage_limit", "auth", "stalled"]);
 
 /**
  * Why a turn failed: the adapter's own `errorKind` when it set one; otherwise read from the error
@@ -2584,6 +2765,11 @@ export interface StartRunInput {
    * Docker). Agents are still locked down to Safe mode.
    */
   allowUntrusted?: boolean;
+  /**
+   * The task carries someone else's words (a webhook caller's text, fenced in the task). Marked
+   * like a Dependabot PR's text: its reviews aren't learned, and memory it proposes waits for you.
+   */
+  untrustedText?: boolean;
   roles: Record<string, AgentId[]>;
   options: Record<string, number | boolean>;
 }
@@ -2633,6 +2819,9 @@ export class RunManager {
     const work = Promise.resolve().then(operation); this.repositoryLeaseWork.set(lease.id, work);
     try { return await work; } finally { this.repositoryLeaseWork.delete(lease.id); if (this.executionPolicyLease === lease) this.executionPolicyLease = undefined; }
   }
+  /** Writes run snapshots to the logs as patches (see src/run-log.ts). */
+  private readonly logWriter = new RunLogWriter();
+
 
   constructor(
     private readonly findPattern: (id: string) => Pattern | undefined = () => undefined,
@@ -2672,15 +2861,18 @@ export class RunManager {
   async load(): Promise<void> {
     await this.loadQuota();
     const ids = (await listRunIds()).filter((id) => !this.runs.has(id) && !this.coldRuns.has(id));
+    const compact: string[] = [];
     // Recover each record incrementally and release its log before opening another batch.
     await mapLimit(ids, 4, async (id) => {
       const cold = await this.coldRuns.load(id);
       if (cold) { this.seq = Math.max(this.seq, cold.seq); return; }
       const projection = await recoverRun(id).catch((error: Error) => { logWarn(`Couldn't recover the log of run ${id}`, { error: error.message }); throw error; });
       this.seq = Math.max(this.seq, projection.seq);
+      if (projection.fullSnapshots >= COMPACT_SNAPSHOTS && !projection.patches) compact.push(id);
       const run = projection.run;
       if (!run) { if (projection.records) logWarn(`The log of run ${id} has no run snapshot; it's left out`, { events: projection.records }); return; }
       if (this.runs.has(id) || this.coldRuns.has(id)) return;
+
       this.runs.set(id, run);
       this.runIdentities.set(id, new WeakRef(run));
       const wasRunning = run.status === "running";
@@ -2712,6 +2904,36 @@ export class RunManager {
       await this.coolRun(run);
     });
     void this.tidyWorktrees().catch((err: Error) => logWarn("Couldn't tidy worktrees at startup", { error: err.message }));
+    if (compact.length) void this.compactLogs(compact);
+  }
+
+  /**
+   * Rewrite logs from before snapshots were patches (see src/run-log.ts), one at a time in the
+   * background: the same events, in fewer bytes. A log is rewritten only when it reads back exactly
+   * as it was, and only if that saves a good part of it.
+   */
+  private async compactLogs(ids: string[]) {
+    let before = 0;
+    let after = 0;
+    for (const id of ids) {
+      if (this.shuttingDown) break;
+      await rewriteLines(`${id}.jsonl`, (lines) => {
+        if (lines.some((l) => (l as { type?: string } | null)?.type === "run-patch")) return undefined;
+        const events = decodeRunLog(lines);
+        const compacted = compactRunLog(events);
+        const [was, is] = [sizeOfLines(lines), sizeOfLines(compacted)];
+        if (was - is < Math.max(64 * 1024, was / 4) || !isDeepStrictEqual(decodeRunLog(compacted), events)) return undefined;
+        before += was;
+        after += is;
+        return compacted;
+      }).catch((err: Error) => logWarn(`Couldn't compact the log of run ${id}; it's left as it was`, { error: err.message }));
+      // Rewriting changes the authoritative source identity. Refresh one cold projection at a
+      // time so the next history listing cannot promote every compacted archived run at once.
+      if (this.coldRuns.has(id) && !this.coldRuns.valid(id)) {
+        const run = this.get(id); if (run) await this.coolRun(run);
+      }
+    }
+    if (before) logInfo(`Compacted run logs: ${Math.round(before / 1024)} KB → ${Math.round(after / 1024)} KB`);
   }
 
   /**
@@ -2747,7 +2969,7 @@ export class RunManager {
     if (!coldEligible(run) || this.busyRun(run) || this.active.has(run.id) || this.runs.get(run.id) !== run) return;
     const before = JSON.stringify(run);
     if (await this.coldRuns.save(run, this.seq)) {
-      if (this.runs.get(run.id) === run && coldEligible(run) && !this.busyRun(run) && !this.active.has(run.id) && JSON.stringify(run) === before) { this.runs.delete(run.id); this.history.delete(run.id); }
+      if (this.runs.get(run.id) === run && coldEligible(run) && !this.busyRun(run) && !this.active.has(run.id) && JSON.stringify(run) === before) { this.runs.delete(run.id); this.history.delete(run.id); this.logWriter.forget(run.id); }
       else this.coldRuns.drop(run.id);
     }
   }
@@ -2789,12 +3011,17 @@ export class RunManager {
     this.coldRuns.drop(id); this.seq = Math.max(this.seq, recovered.seq); return this.adoptRun(recovered.run);
   }
 
+  /** The run worktree (or scratch checkout) `path` is or is in, for code-flow's git there (see runWorktreeAt). */
+  worktreeAt(path: string): Promise<Checkout | undefined> {
+    return runWorktreeAt(this.allSummaries(), path);
+  }
+
   /** Full event history of a run (from memory, or from its log for runs loaded from disk). */
   async events(id: string): Promise<RunEvent[]> {
     const cached = this.history.get(id);
     if (cached) return cached;
     await flushWrites();
-    return readJsonLines<RunEvent>(`${id}.jsonl`);
+    return decodeRunLog(await readJsonLines(`${id}.jsonl`));
   }
 
   subscribe(id: string, listener: (e: RunEvent) => void): () => void {
@@ -2970,15 +3197,51 @@ export class RunManager {
     this.devServers.stopMatching(`${id}/`);
     if (!opts.cleanup) return { removed: [], deletedBranches: [] };
     const result = await removeWorktrees(run.repo, run.worktrees, !!opts.deleteBranches);
+    const tidied = await this.tidyRunFolder(run, !!opts.deleteBranches);
+    result.failed.push(...tidied.failed);
     // Private checkpoints and team records served this run only; project knowledge stays.
     const retired = await memoryStore.purgeRun(run.id).catch((err: Error) => { logWarn(`Couldn't retire run memory for ${run.id}: ${err.message}`); return 0; });
     this.emit(run, {
       type: "log",
       level: "info",
-      text: `Archived: removed ${result.removed.length} worktree(s)${result.deletedBranches.length ? ` and ${result.deletedBranches.length} branch(es)` : "; branches kept"}${retired ? `; retired ${retired} private/team memory record(s)` : ""}`,
+      text:
+        `Archived: removed ${result.removed.length} worktree(s)${result.deletedBranches.length ? ` and ${result.deletedBranches.length} branch(es)` : "; branches kept"}` +
+        `${tidied.folder ? "; removed the run's folder" : ""}${tidied.prBranch ? `; deleted ${tidied.prBranch} (fetched for the run)` : ""}` +
+        `${retired ? `; retired ${retired} private/team memory record(s)` : ""}`,
     });
     if (result.failed.length) this.emit(run, { type: "log", level: "warn", text: `Couldn't remove: ${result.failed.join("; ")}` });
     return result;
+  }
+
+  /**
+   * Once a run's worktrees are gone, what else it keeps in its folder (`<repo>/.worktrees/<run>/`)
+   * goes too: scratch checkouts an attempt left behind (code-flow stopped before removing them),
+   * and, with the branches, the context staged for its agents. With the branches kept, a resume or
+   * a reply checks the worktrees out again and copies that context in, so it stays until then. The
+   * folder itself goes once nothing else is in it. So does the pull request's head code-flow
+   * fetched for the run (`codeflow-pr/<n>`): it can be fetched again, and it's kept while another
+   * run started from it is still around or it's checked out somewhere.
+   */
+  private async tidyRunFolder(run: Run, deleteBranches: boolean): Promise<{ folder: boolean; prBranch?: string; failed: string[] }> {
+    const failed: string[] = [];
+    let folder = false;
+    if (existsSync(run.worktreeDir) && !run.worktrees.some((w) => existsSync(w.path))) {
+      for (const scratch of SCRATCH_DIRS) {
+        const path = join(run.worktreeDir, scratch);
+        if (existsSync(path)) await removeDetachedWorktree(run.repo, path).catch((err: Error) => failed.push(`${path}: ${err.message}`));
+      }
+      if (deleteBranches) await rm(join(run.worktreeDir, STAGE_DIR), { recursive: true, force: true }).catch((err: Error) => failed.push(`${STAGE_DIR}: ${err.message}`));
+      // Only an empty folder: anything that isn't code-flow's own stays where it is.
+      folder = await rmdir(run.worktreeDir).then(() => true, () => false);
+    }
+    const prBranch = run.source?.kind === "pr" && run.baseLabel === `codeflow-pr/${run.source.number}` ? run.baseLabel : undefined;
+    if (!prBranch || !(await branchExists(run.repo, prBranch))) return { folder, failed };
+    const sharing = [...this.runs.values()].some((r) => r !== run && !r.archived && r.repo === run.repo && r.baseLabel === prBranch);
+    const checkedOut = (await git(["worktree", "list", "--porcelain"], run.repo)).stdout.split("\n").includes(`branch refs/heads/${prBranch}`);
+    if (sharing || checkedOut) return { folder, failed };
+    const deleted = await git(["branch", "-D", prBranch], run.repo);
+    if (deleted.code !== 0) failed.push(`branch ${prBranch}: ${gitError(["branch", "-D", prBranch], deleted)}`);
+    return { folder, prBranch: deleted.code === 0 ? prBranch : undefined, failed };
   }
 
   /** Per-file diff of one of the run's branches against the run's base. */
@@ -3204,6 +3467,7 @@ export class RunManager {
     if (outcome.ok) {
       run.merges.push({ branch: input.branch, into: input.into, commit: outcome.commit, at: Date.now() });
       this.emit(run, { type: "log", level: "info", text: `Merged ${input.branch} into ${input.into} (${outcome.commit.slice(0, 8)})` });
+      if (outcome.warning) this.emit(run, { type: "log", level: "warn", text: outcome.warning });
       this.emitRun(run);
       if (input.archiveAfter) await this.archive(id, { cleanup: true });
     }
@@ -3272,6 +3536,9 @@ export class RunManager {
   /** Push a result branch and open a pull request for it. */
   async pullRequest(id: string, input: { branch: string; into: string }) {
     const run = this.require(id);
+    // Opening one can merge into the branch (to catch up with a squash-merged base) and pushes it:
+    // not under a turn that's still working on it (a follow-up, a side chat), whoever asks.
+    if (this.busyRun(run)) throw new Error("Wait for the run to finish before opening a pull request");
     if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
     const title = run.task.split("\n")[0]!.slice(0, 72) || `code-flow run ${run.id}`;
     const agents = [...new Set(Object.values(run.roles).flat())].join(", ");
@@ -3440,8 +3707,15 @@ export class RunManager {
    */
   recordLimit(agent: AgentId, resetsAt?: number, workerId?: string) {
     const now = Date.now();
-    const known = Object.fromEntries(Object.entries(this.quotaForWorker(workerId)[agent]?.windows ?? {}).filter(([, w]) => !!w.resetsAt && w.resetsAt > now));
-    this.recordQuota(agent, "limited", resetsAt ? { limit: { resetsAt } } : known, workerId);
+    // Without a reset time from the CLI, the known windows say how long the limit lasts: a window it
+    // reported full, or else the one that resets soonest. Keeping every window would bench the
+    // agent until the last of them (its weekly reset) on a guess; with none known, routing's
+    // one-hour default applies.
+    const known = Object.entries(this.quotaForWorker(workerId)[agent]?.windows ?? {}).filter(([, w]) => !!w.resetsAt && w.resetsAt > now);
+    const full = known.filter(([, w]) => (w.utilization ?? 0) >= 1);
+    const soonest = known.sort(([, a], [, b]) => a.resetsAt! - b.resetsAt!).slice(0, 1);
+    this.recordQuota(agent, "limited", resetsAt ? { limit: { resetsAt } } : Object.fromEntries(full.length ? full : soonest), workerId);
+
   }
 
   private quotaSave?: ReturnType<typeof setTimeout>;
@@ -3901,11 +4175,14 @@ export class RunManager {
       trigger: input.trigger,
       parentRunId: input.parentRunId,
       teamRerun: input.teamRerun ? structuredClone(input.teamRerun) : undefined,
-      inheritedSourceTrust: parent ? (memoryAuthorityForRun(parent) as { sourceTrust: "trusted" | "untrusted" | "unknown" }).sourceTrust : undefined,
+      // With no source to mark, a run on someone else's words says so in its source trust.
+      inheritedSourceTrust:
+        input.untrustedText && !source ? "untrusted" : parent ? (memoryAuthorityForRun(parent) as { sourceTrust: "trusted" | "untrusted" | "unknown" }).sourceTrust : undefined,
       merges: [],
       prs: {},
-      source,
+      source: input.untrustedText && source ? { ...source, untrustedText: true } : source,
       externalSource: externalSource ? structuredClone(externalSource) : undefined,
+
       reviewBase,
       watches: {},
       routing: input.routing?.length ? input.routing : undefined,
@@ -3980,10 +4257,17 @@ export class RunManager {
 
   private async resumeClaimed(run: Run, pattern: Pattern): Promise<Run> {
     const id = run.id;
-    if (!this.history.has(id)) this.history.set(id, await this.events(id));
+    const loaded = !this.history.has(id);
+    if (loaded) this.history.set(id, await this.events(id));
     const recoveryStarted = performance.now();
     const journal = await loadJournal(id, { strict: run.pattern === "auto-team" });
     if (run.pattern === "auto-team") run.recovery = { bytes: await stat(join(RUNS_DIR, `${id}.journal.jsonl`)).then((info) => info.size, () => 0), records: journal.size, durationMs: performance.now() - recoveryStarted, kind: "journal-load" };
+    // Stop pressed while the log and journal were read: Stop already said yes, so the run doesn't
+    // start, and stays as it was (nothing below awaits before the run is started).
+    if (this.stoppedWhileStarting.has(id)) {
+      if (loaded) this.history.delete(id);
+      return run;
+    }
     if (run.pattern === "auto-team") {
       for (const [key, value] of journal) {
         if (!key.startsWith("team-note:") && !key.startsWith("team-user-answer:")) continue;
@@ -4046,7 +4330,10 @@ export class RunManager {
           run.status = "stopped";
           run.stopReason = "unresolved team work";
           run.error = run.team.gaps.join("; ") || "The team needs more work or information. Resume to continue.";
-        } else run.status = "done";
+        } else {
+          run.status = "done";
+          this.endUndelivered(run);
+        }
       })
       .catch((err: Error) => {
         const aborted = controller.signal.aborted || err instanceof CancelledError;
@@ -4087,6 +4374,24 @@ export class RunManager {
         this.history.delete(run.id);
       });
     this.active.set(run.id, done);
+  }
+
+  /**
+   * The run finished with notes no turn took (sent during the last turn, which couldn't take them
+   * as it ran). Left queued, the next follow-up, days later, would get them as if just sent while
+   * the team worked; so they end here, and the log says to reply to send them. (A chat makes them
+   * its next turn instead; a run that stops keeps them for its resume.)
+   */
+  private endUndelivered(run: Run) {
+    const left = run.notes.filter((n) => n.status === "queued" && !n.requestId);
+    if (!left.length) return;
+    for (const n of left) n.status = "undelivered";
+    const what = left.length === 1 ? "Your message" : `${left.length} of your messages`;
+    this.emit(run, {
+      type: "log",
+      level: "warn",
+      text: `${what} didn't reach an agent: the run finished before another turn could take ${left.length === 1 ? "it" : "them"}. Reply to send ${left.length === 1 ? "it" : "them"}: ${left.map((n) => `“${n.text}”`).join("; ")}`,
+    });
   }
 
   /**
@@ -4185,7 +4490,8 @@ export class RunManager {
     this.bus.emit(run.id, event);
     if (event.type === "run") this.bus.emit("*", event.run);
     // A finished run's last snapshot is synced: after a power cut it must not reload as running.
-    appendLine(`${run.id}.jsonl`, event, { sync: event.type === "run" && event.run.status !== "running", checkpoint: event.type === "run" && event.run.status !== "running" ? { seq: event.seq, run } : undefined });
+    appendLine(`${run.id}.jsonl`, this.logWriter.encode(event), { sync: event.type === "run" && event.run.status !== "running", checkpoint: event.type === "run" && event.run.status !== "running" ? { seq: event.seq, run } : undefined, onFailed: () => this.logWriter.forget(run.id) });
+
   }
 }
 
@@ -4259,10 +4565,8 @@ async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
     // and its passing check cannot extend approval of a different integrated commit.
     const verification = run.team?.verification;
     if (verification && wt.name === "integration") {
-      const [head, pending] = await Promise.all([
-        resolveCommit(wt.path).catch(() => undefined),
-        uncommittedCount(wt.path).catch(() => undefined),
-      ]);
+      const at = await ctx.gitAt(wt).catch(() => undefined);
+      const [head, pending] = at ? await Promise.all([resolveCommit(at).catch(() => undefined), uncommittedCount(at).catch(() => undefined)]) : [undefined, undefined];
       if (head !== verification.head || pending !== 0) {
         run.team!.verification = { head: head ?? verification.head, check: "unknown", reviewed: false, approved: false };
         const gap = `${head === undefined || pending === undefined ? "The integrated result could not be confirmed" : "The integrated result changed"} after the team's review. Run the whole team again to verify the updated result.`;
@@ -4278,10 +4582,10 @@ async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
 
 async function runFollowUpInWorktree(ctx: TeamContext, run: Run, f: FollowUp, wt: Worktree) {
   await placeFiles(run, wt, f);
-  const before = await ctx.remember("head", `before ${f.id}`, () => resolveCommit(wt.path));
+  const before = await ctx.remember("head", `before ${f.id}`, async () => resolveCommit(await ctx.gitAt(wt)));
   if (f.kind === "resolve-conflicts" && f.mergeFrom) {
     // code-flow starts the merge; the agent only resolves the conflict markers.
-    await ctx.remember("merge-start", `${f.id}|${f.mergeFrom}`, () => mergeBranch(wt, f.mergeFrom!));
+    await ctx.remember("merge-start", `${f.id}|${f.mergeFrom}`, () => mergeBranch(run.repo, wt, f.mergeFrom!));
   }
   // A provider-addressed follow-up has no team-member identity. Continue its own unscoped session
   // in this worktree when it has one — from a turn that worked: a failed or stopped turn's session
@@ -4328,10 +4632,12 @@ async function runFollowUpInWorktree(ctx: TeamContext, run: Run, f: FollowUp, wt
               "Address each one, run the relevant tests, and summarize what you changed. Don't commit; code-flow does."),
   });
   f.stepId = outcome.stepId; // also when the turn was replayed
+  // Every message names the follow-up: it keys the commit's journal entry, and a second merge of the
+  // same branch must not replay the first one's commit (its merge would be left uncommitted).
   const sha = await ctx.commit(
     wt,
     f.kind === "resolve-conflicts"
-      ? `Merge ${f.mergeFrom} (conflicts resolved by ${f.agent})`
+      ? `Merge ${f.mergeFrom} (conflicts resolved by ${f.agent}, ${f.id})`
       : f.kind === "reply"
         ? `${f.agent}: follow-up to your reply (${f.id})`
         : f.kind === "ci-fix"
@@ -4339,19 +4645,22 @@ async function runFollowUpInWorktree(ctx: TeamContext, run: Run, f: FollowUp, wt
           : `${f.agent}: address review comments (${f.id})`,
   );
   f.commit = sha ?? undefined;
+  // Checked first, so its test count is there to compare with the one before the change.
+  const check = await ctx.check(wt, `Check after follow-up ${f.id}`);
   // A merge brings in someone else's test changes; anything else is this agent's.
   const issues = sha && f.kind !== "resolve-conflicts" ? await ctx.testChanges(wt, before) : [];
   f.integrity = issues.length ? issues : undefined;
   if (issues.length) ctx.log(`Follow-up ${f.id} (${f.agent}) changed tests:\n${describeIssues(issues)}`, "warn");
-  const check = await ctx.check(wt, `Check after follow-up ${f.id}`);
   // The result changed: prove it again (or drop a proof of code that's no longer there).
   if (sha) ctx.setFacts({ proof: (await ctx.refreshProof(wt))?.status });
   f.status = outcome.ok ? "done" : "failed";
   f.result = outcome.ok ? outcome.finalText : outcome.error;
   f.checkPassed = check ? check.ok : undefined;
-  // Nobody reviews an unattended fix before it's pushed, so one that weakens tests isn't pushed.
-  const blocked = !!f.watch && issues.some((i) => i.severity === "high");
-  if (blocked) f.pushError = "it changes tests in ways that could hide the failure";
+  // Nobody reviews an unattended fix before it's pushed, so one that touches the tests at all —
+  // their config, CI workflows, a skip, an assertion fewer, not only what's likely to hide a
+  // failure — waits for you.
+  const blocked = !!f.watch && issues.length > 0;
+  if (blocked) f.pushError = "it changes tests, their config or CI, and nobody has reviewed that";
   if (f.push && outcome.ok && sha && !blocked) {
     try {
       f.pushed = await ctx.remember("push", `${f.id}|${f.push}`, () => pushBranch(run.repo, wt.branch, f.push!));
@@ -4429,7 +4738,7 @@ async function sideTurn(ctx: TeamContext, run: Run, f: FollowUp, side: SideTurn)
   const wt = await ctx.worktree(f.worktree);
   await placeFiles(run, wt, f);
   const change = side.mode === "change";
-  const before = change ? await ctx.remember("head", `before ${f.id}`, () => resolveCommit(wt.path)) : undefined;
+  const before = change ? await ctx.remember("head", `before ${f.id}`, async () => resolveCommit(await ctx.gitAt(wt))) : undefined;
   const earlier = run.followUps.filter((x) => x.side?.chat === side.chat && x.id !== f.id && x.status === "done" && x.stepId);
   const previous = earlier
     .map((x) => run.steps.find((s) => s.id === x.stepId))
@@ -4474,11 +4783,12 @@ async function sideTurn(ctx: TeamContext, run: Run, f: FollowUp, side: SideTurn)
     // The branch's proof was of the code before this change: it goes now, not once the check is done
     // (which a stop could keep from happening).
     if (sha) await ctx.refreshProof(wt);
+    const check = await ctx.check(wt, `Check after side chat ${f.id}`);
+    f.checkPassed = check ? check.ok : undefined;
+    // After the check, so fewer tests running shows too.
     const issues = sha ? await ctx.testChanges(wt, before) : [];
     f.integrity = issues.length ? issues : undefined;
     if (issues.length) ctx.log(`Side chat ${f.id} (${f.agent}) changed tests:\n${describeIssues(issues)}`, "warn");
-    const check = await ctx.check(wt, `Check after side chat ${f.id}`);
-    f.checkPassed = check ? check.ok : undefined;
     // Proven again (or not) at the new code, as a reply is, and what Insights counts with it.
     if (sha) ctx.setFacts({ proof: (await ctx.refreshProof(wt))?.status });
     if (artifact) await ctx.artifact(artifact.label, wt);
@@ -4501,6 +4811,23 @@ async function unchanged(run: Run): Promise<boolean> {
   return true;
 }
 
+/**
+ * The worktree (or scratch checkout) of one of `runs` that `path` is or is in, for code-flow's
+ * git there (see worktreeGit); undefined when `path` isn't in any run's worktrees folder. Throws
+ * a WorktreeMismatchError when it is, but that run's repository has no checkout there.
+ */
+export async function runWorktreeAt(runs: Iterable<Pick<Run, "repo" | "worktreeDir">>, path: string): Promise<Checkout | undefined> {
+  const targets = [...new Set([resolve(path), await realpath(path).catch(() => resolve(path))])];
+  for (const run of runs) {
+    for (const target of targets) {
+      const rel = relative(resolve(run.worktreeDir), target);
+      const name = rel.split(sep)[0];
+      if (rel && name && name !== ".." && !isAbsolute(rel)) return worktreeGit(run.repo, join(run.worktreeDir, name));
+    }
+  }
+  return undefined;
+}
+
 /** When a run doesn't finish, list each worktree that holds work so you can still use it. */
 async function collectUnfinishedWork(run: Run) {
   const listed = new Set(run.artifacts.map((a) => a.branch));
@@ -4508,8 +4835,9 @@ async function collectUnfinishedWork(run: Run) {
     if (listed.has(wt.branch)) continue;
     // Listed when git can't say, too: better a "Work so far" that's empty than work you can't find.
     const unreadable = "(couldn't read its changes)";
-    const stat = await diffStat({ ...wt, base: run.baseRef }, run.baseRef).catch(() => (existsSync(wt.path) ? unreadable : ""));
-    const pending = await uncommittedCount(wt.path).catch(() => 0);
+    const at = worktreeGit(run.repo, wt.path);
+    const stat = await at.then((at) => diffStat(at, run.baseRef)).catch(() => (existsSync(wt.path) ? unreadable : ""));
+    const pending = await at.then(uncommittedCount).catch(() => 0);
     if (!stat && !pending) continue;
     const note = pending ? `${pending} uncommitted change${pending === 1 ? "" : "s"} left in the worktree` : "";
     run.artifacts.push({ label: `Work so far: ${wt.name}`, branch: wt.branch, path: wt.path, stat: [stat, note].filter(Boolean).join("\n") });
@@ -4571,6 +4899,10 @@ function positive(value: unknown): number | undefined {
 }
 
 /** `fn` over `items`, at most `limit` at a time; results in order. */
+/** An old-format log with at least this many snapshots is worth compacting. */
+const COMPACT_SNAPSHOTS = 4;
+const sizeOfLines = (lines: unknown[]) => lines.reduce<number>((n, l) => n + JSON.stringify(l).length + 1, 0);
+
 async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
@@ -4584,14 +4916,18 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) 
   return out;
 }
 
-/** The file in a worktree's private git dir (never in the files agents see) that says it's set up. */
-async function preparedMarker(wt: Worktree): Promise<string | undefined> {
-  const res = await git(["rev-parse", "--git-dir"], wt.path);
-  const dir = res.stdout.trim();
-  return res.code === 0 && dir ? join(resolve(wt.path, dir), "codeflow-prepared") : undefined;
+/**
+ * The file in a worktree's private git dir (never in the files agents see) that says it's set
+ * up: the git folder `repo` has for it, not one an agent's `.git` names (see worktreeGit).
+ */
+async function preparedMarker(repo: string, wt: Worktree): Promise<string | undefined> {
+  return worktreeGit(repo, wt.path).then(
+    (at) => join(at.gitDir, "codeflow-prepared"),
+    () => undefined,
+  );
 }
 
-async function isPrepared(wt: Worktree): Promise<boolean> {
-  const marker = await preparedMarker(wt);
+async function isPrepared(repo: string, wt: Worktree): Promise<boolean> {
+  const marker = await preparedMarker(repo, wt);
   return !!marker && existsSync(marker);
 }

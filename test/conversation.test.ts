@@ -277,7 +277,8 @@ test("a team run doesn't turn leftover notes into a turn", async () => {
     await finished(m, run);
     assert.equal(run.status, "done", run.error);
     assert.equal(run.followUps.length, 0);
-    assert.equal(run.notes[0]!.status, "queued");
+    // Not left queued for a later turn to deliver days later as if it had just been sent.
+    assert.equal(run.notes[0]!.status, "undelivered");
   } finally {
     delete process.env.FAKE_SLEEP_VENDOR;
     delete process.env.FAKE_SLEEP_MS;

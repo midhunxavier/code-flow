@@ -4,7 +4,7 @@ import { lstat, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "n
 import { constants } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { git, resolveCommit, withRepoLock } from "../git.js";
+import { git, resolveCommit, withRepoLock, type GitCwd } from "../git.js";
 import { verificationIntegrity } from "../verification-integrity.js";
 import { childEnv } from "../env.js";
 import { CHUNK_BYTES, COMMIT_ID, contextPath, MAX_BUNDLE_BYTES, MAX_CONTEXT_BYTES, RemoteWorkerError, REQUEST_ID, type ContextFile, type WorkerArtifact } from "./protocol.js";
@@ -24,13 +24,13 @@ export async function boundedBundle(repo: string, path: string, revisions: strin
   });
   await writeFile(path, data, { flag: "wx", mode: 0o600 }); return data;
 }
-export async function gitChecked(repo: string, args: string[]) {
+export async function gitChecked(repo: GitCwd, args: string[]) {
   const result = await git([...identity, ...args], repo, { timeoutMs: 30_000 });
   if (result.code) throw new RemoteWorkerError(result.stderr.trim().slice(-1000) || `Remote Git ${args[0]} failed`);
   return result.stdout.trim();
 }
 /** A Git bundle does not carry submodule contents or materialized checkout-filter output. */
-export async function assertTransferTree(repo: string, revision: string) {
+export async function assertTransferTree(repo: GitCwd, revision: string) {
   if (!COMMIT_ID.test(revision)) throw new RemoteWorkerError("Remote transfer needs an exact Git object ID");
   const entries = (await gitChecked(repo, ["ls-tree", "-r", "-l", "-z", revision])).split("\0").filter(Boolean);
   let bytes = 0; const attributes: string[] = [];
@@ -40,7 +40,7 @@ export async function assertTransferTree(repo: string, revision: string) {
   for (const path of attributes) { const value = await gitChecked(repo, ["show", `${revision}:${path}`]); attributeBytes += Buffer.byteLength(value); if (attributeBytes > 256 * 1024) throw new RemoteWorkerError("Remote checkout attributes exceed 256 KiB"); if (value.split(/\r?\n/).some((row) => !row.trimStart().startsWith("#") && row.split(/\s+/).some((part) => /^[-!]?filter(?:=|$)/.test(part)))) throw new RemoteWorkerError("Remote Git bundle turns do not materialize checkout filters such as Git LFS. Use local execution or a repository without checkout filters."); }
 }
 /** Suppress configured filters even when an agent introduces new attributes before Git stages its work. */
-export async function disabledCheckoutFilters(repo: string) {
+export async function disabledCheckoutFilters(repo: GitCwd) {
   const result = await git(["config", "--name-only", "--get-regexp", "^filter\\..*\\.(smudge|clean|process|required)$"], repo, { timeoutMs: 10_000 }); if (result.code > 1) throw new RemoteWorkerError("Cannot inspect checkout filter policy");
   const keys = [...new Set(result.stdout.split(/\r?\n/).filter(Boolean))]; if (keys.length > 100 || keys.some((key) => !/^filter\.[^\x00-\x20\x7f]+\.(?:smudge|clean|process|required)$/.test(key))) throw new RemoteWorkerError("Worker Git checkout filter configuration exceeds its supported bound");
   return keys.flatMap((key) => ["-c", `${key}=${key.endsWith(".required") ? "false" : ""}`]);
@@ -82,11 +82,11 @@ export async function contextManifest(repo: string): Promise<{ files: ContextFil
   await visit(root, ".codeflow-context"); return { files, data };
 }
 /** Import only a validated descendant into the unchanged run checkout; no host paths come from bundles. */
-export async function importWorkerArtifact(repo: string, artifact: WorkerArtifact & { file: string }, expectedHead: string) {
+export async function importWorkerArtifact(repo: GitCwd, artifact: WorkerArtifact & { file: string }, expectedHead: string) {
   if (!REQUEST_ID.test(artifact.requestId) || !COMMIT_ID.test(artifact.head) || artifact.baseCommit !== expectedHead || artifact.ref !== `refs/codeflow/results/${artifact.requestId}` || artifact.size > MAX_BUNDLE_BYTES) throw new RemoteWorkerError("Invalid remote result artifact");
   const info = await lstat(artifact.file);
   if (!info.isFile() || info.isSymbolicLink() || info.size !== artifact.size || sha256(await readFile(artifact.file)) !== artifact.sha256) throw new RemoteWorkerError("Remote result bundle failed its integrity check");
-  return withRepoLock(repo, async () => {
+  return withRepoLock(typeof repo === "string" ? repo : repo.path, async () => {
     if (await resolveCommit(repo) !== expectedHead) throw new RemoteWorkerError("The local worktree changed while remote work was running");
     const integrity = await verificationIntegrity(repo);
     const ref = `refs/codeflow/imports/${artifact.requestId}`;

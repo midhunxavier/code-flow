@@ -2,9 +2,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
-import { api, baseName, copy, enc, post, showToast, store } from "./lib.js";
+import { api, baseName, copy, enc, post, showToast, store, usePoll } from "./lib.js";
 import { defaultPlace, Menu, MenuItem, MenuTitle, placeName, placesFor, Strip, type StripItem } from "./panel-bits.js";
 import { rememberSide, sideMemo, sideOpen, sideScope, sideTab } from "./state.js";
+import { subscribe } from "./stream.js";
 import type { DevServer, ShellEvent, ShellInfo } from "./types.js";
 
 /** As in src/shell.ts: past this, a new terminal takes the place of the oldest idle one. */
@@ -26,13 +27,8 @@ export function TerminalTab() {
   const [ratio, setRatio] = useState(0.5);
   const panes = useRef<HTMLDivElement>(null);
   const refresh = () => api<ShellInfo[]>("/api/shell").then(setList, () => {});
-  useEffect(() => {
-    void refresh();
-    const poll = () => api<Omit<DevServer, "logs">[]>("/api/serve").then(setApps, () => {});
-    void poll();
-    const timer = setInterval(() => void (refresh(), poll()), 3_000);
-    return () => clearInterval(timer);
-  }, []);
+  // Only while you can see the tab: a closed panel, another tab or a hidden window asks for nothing.
+  usePoll(() => Promise.all([refresh(), api<Omit<DevServer, "logs">[]>("/api/serve").then(setApps, () => {})]), 3_000, [], sideOpen.value && sideTab.value === "terminal");
 
   // The apps this run started with Run app: their logs can be shown like a terminal, an app that
   // exited too (its last output says why).
@@ -144,9 +140,9 @@ export function TerminalTab() {
     ) : k.startsWith(APP) ? (
       <AppLog key={k} appKey={k.slice(APP.length)} split={!!bottom} focused={focus === where} onFocus={() => setFocus(where)} />
     ) : list?.find((x) => x.id === k)?.interactive ? (
-      <TermView key={k} id={k} places={places} split={!!bottom} focused={focus === where} onFocus={() => setFocus(where)} onReplace={(cwd) => void replace(k, cwd)} />
+      <TermView key={k} id={k} places={places} split={!!bottom} focused={focus === where} shown={shown} onFocus={() => setFocus(where)} onReplace={(cwd) => void replace(k, cwd)} />
     ) : (
-      <ShellView key={k} id={k} places={places} split={!!bottom} focused={focus === where} onFocus={() => setFocus(where)} onReplace={(cwd) => void replace(k, cwd)} />
+      <ShellView key={k} id={k} places={places} split={!!bottom} focused={focus === where} shown={shown} onFocus={() => setFocus(where)} onReplace={(cwd) => void replace(k, cwd)} />
     );
   return (
     <>
@@ -202,8 +198,11 @@ export function TerminalTab() {
 }
 
 // ---------------------------------------------------------------- one terminal
-type ViewProps = { id: string; places: ReturnType<typeof placesFor>; split: boolean; focused: boolean; onFocus: () => void; onReplace: (cwd: string) => void };
+/** `shown`: the Terminal tab is in view. Only then is the shell's output watched; shown again, it's drawn afresh. */
+type ViewProps = { id: string; places: ReturnType<typeof placesFor>; split: boolean; focused: boolean; shown: boolean; onFocus: () => void; onReplace: (cwd: string) => void };
 type Hello = { type: "hello"; shell: ShellInfo; history: ShellEvent[] };
+/** A terminal that can't be watched: it's gone (code-flow restarted, or it was closed). */
+type Gone = { type: "error"; status: number; message: string };
 
 /** Typed into a terminal's own screen, dimmed: a note from code-flow, not the shell's output. */
 const note = (text: string) => `\r\n\x1b[2m[${text}]\x1b[0m\r\n`;
@@ -215,10 +214,12 @@ const GONE = "This terminal is gone (code-flow restarted?). Restart opens a new 
  * request and in order; it fits its pane and tells the shell its size. It reattaches after a
  * reload with what the terminal showed so far; Stop and Restart open a new one in the same folder.
  */
-function TermView({ id, places, split, focused, onFocus, onReplace }: ViewProps) {
+function TermView({ id, places, split, focused, shown, onFocus, onReplace }: ViewProps) {
   const [shell, setShell] = useState<ShellInfo | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal>();
+  /** What to do with a message from the shell: set up with the terminal it draws in. */
+  const receive = useRef<(ev: ShellEvent | Hello | Gone) => void>(() => {});
   const focusRef = useRef(onFocus);
   focusRef.current = onFocus;
   const focusedRef = useRef(focused);
@@ -316,11 +317,18 @@ function TermView({ id, places, split, focused, onFocus, onReplace }: ViewProps)
     const retheme = () => (t.options.theme = termTheme());
     scheme.addEventListener("change", retheme);
 
-    const source = new EventSource(`/api/shell/${enc(id)}/events`);
-    source.onmessage = (msg) => {
-      const ev = JSON.parse(msg.data) as ShellEvent | Hello;
+    receive.current = (ev) => {
+      if (closed) return;
+      // The stream closed for good: the shell is gone (code-flow restarted).
+      if (ev.type === "error") {
+        if (exited) return;
+        exited = true;
+        t.options.disableStdin = true;
+        t.write(note(GONE));
+        return;
+      }
       if (ev.type === "hello") {
-        // (Re)connected: draw what the terminal showed so far, from a clean screen.
+        // (Re)connected, or shown again: draw what the terminal showed so far, from a clean screen.
         setShell(ev.shell);
         exited = ev.shell.status === "exited";
         t.options.disableStdin = exited;
@@ -345,17 +353,9 @@ function TermView({ id, places, split, focused, onFocus, onReplace }: ViewProps)
         setShell((cur) => (cur ? { ...cur, status: "exited", exitCode: ev.code, busy: false, running: undefined } : cur));
       }
     };
-    // The stream closed for good: the shell is gone (code-flow restarted).
-    source.onerror = () => {
-      if (source.readyState !== EventSource.CLOSED || closed) return;
-      exited = true;
-      t.options.disableStdin = true;
-      t.write(note(GONE));
-    };
     if (focusedRef.current) takeKeys();
     return () => {
       closed = true;
-      source.close();
       resized.disconnect();
       scheme.removeEventListener("change", retheme);
       clearTimeout(timer);
@@ -364,6 +364,7 @@ function TermView({ id, places, split, focused, onFocus, onReplace }: ViewProps)
       t.dispose();
     };
   }, [id]);
+  useEffect(() => (shown ? subscribe(`shell:${id}`, (ev) => receive.current(ev)) : undefined), [id, shown]);
 
   return (
     <div class={`term-pane ${focused && split ? "focused" : ""}`} onMouseDown={onFocus}>
@@ -432,7 +433,7 @@ type Line = ShellEvent;
  * Without python3 there's no pseudo-terminal: a shell's output and a command line. It reattaches
  * after a reload; Stop and Restart open a new one in the same folder.
  */
-function ShellView({ id, places, split, focused, onFocus, onReplace }: ViewProps) {
+function ShellView({ id, places, split, focused, shown, onFocus, onReplace }: ViewProps) {
   const [shell, setShell] = useState<ShellInfo | null>(null);
   const [lines, setLines] = useState<Line[]>([]);
   const [command, setCommand] = useState("");
@@ -443,10 +444,10 @@ function ShellView({ id, places, split, focused, onFocus, onReplace }: ViewProps
   const input = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    let closed = false;
-    const source = new EventSource(`/api/shell/${enc(id)}/events`);
-    source.onmessage = (msg) => {
-      const ev = JSON.parse(msg.data) as ShellEvent | Hello;
+    if (!shown) return;
+    return subscribe(`shell:${id}`, (ev: ShellEvent | Hello | Gone) => {
+      // The shell is gone (code-flow restarted).
+      if (ev.type === "error") return setError(GONE);
       if (ev.type === "hello") {
         setShell(ev.shell);
         setLines(ev.history);
@@ -457,17 +458,8 @@ function ShellView({ id, places, split, focused, onFocus, onReplace }: ViewProps
       if (ev.type === "done") setShell((cur) => (cur ? { ...cur, busy: false, cwd: ev.cwd } : cur));
       else if (ev.type === "exit") setShell((cur) => (cur ? { ...cur, status: "exited", exitCode: ev.code, busy: false } : cur));
       else if (ev.type === "input") setShell((cur) => (cur ? { ...cur, busy: true } : cur));
-    };
-    // The stream closed for good: the shell is gone (code-flow restarted).
-    source.onerror = () => {
-      if (source.readyState !== EventSource.CLOSED || closed) return;
-      setError(GONE);
-    };
-    return () => {
-      closed = true;
-      source.close();
-    };
-  }, [id]);
+    });
+  }, [id, shown]);
 
   // Keep the newest output in view.
   useEffect(() => {
@@ -570,16 +562,12 @@ function AppLog({ appKey, split, focused, onFocus }: { appKey: string; split: bo
   const [runId, name] = [appKey.slice(0, appKey.indexOf("/")), appKey.slice(appKey.indexOf("/") + 1)];
   const [server, setServer] = useState<DevServer | null>(null);
   const out = useRef<HTMLPreElement>(null);
-  useEffect(() => {
-    let alive = true;
-    const load = () => api<DevServer | null>(`/api/runs/${enc(runId)}/worktrees/${enc(name)}/serve`).then((s) => alive && setServer(s), () => {});
-    void load();
-    const timer = setInterval(load, 2_000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [appKey]);
+  usePoll(
+    (current) => api<DevServer | null>(`/api/runs/${enc(runId)}/worktrees/${enc(name)}/serve`).then((s) => current() && setServer(s), () => {}),
+    2_000,
+    [appKey],
+    sideOpen.value && sideTab.value === "terminal",
+  );
   useEffect(() => {
     const el = out.current;
     if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 200) el.scrollTop = el.scrollHeight;
@@ -590,10 +578,13 @@ function AppLog({ appKey, split, focused, onFocus }: { appKey: string; split: bo
         <span class="th-name" title={server ? `${server.command} in ${server.cwd}` : undefined}>
           ▶ {server ? `${server.command} · :${server.port}` : "app"}
         </span>
-        <span class="help">{server?.status === "exited" ? `exited${server.exitCode == null ? "" : ` with ${server.exitCode}`}` : "read-only log"}</span>
+        {/* Read out when the app exits; the log itself isn't (it's replaced every poll). */}
+        <span class="help" role="status">
+          {server?.status === "exited" ? `exited${server.exitCode == null ? "" : ` with ${server.exitCode}`}` : "read-only log"}
+        </span>
       </div>
       <div class="term">
-        <pre class="term-out" ref={out} aria-live="polite" aria-label="App log">
+        <pre class="term-out" ref={out} tabIndex={0} aria-label="App log">
           {server?.logs.length ? server.logs.join("\n") : <span class="help">{server ? "No output yet." : "Loading…"}</span>}
         </pre>
       </div>

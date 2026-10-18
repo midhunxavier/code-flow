@@ -52,7 +52,7 @@ const NEEDS: Record<BuiltinAgentId, { args: string[]; needs: Need[] }[]> = {
         { name: "--verbose", when: "every step" },
         { name: "--permission-mode", when: "every step" },
         { name: "--allowedTools", when: "every step" },
-        { name: "--disallowedTools", when: "read-only steps" },
+        { name: "--disallowedTools", when: "read-only steps, and write steps in Safe and Standard" },
         { name: "--resume", when: "follow-ups and retries in the same conversation" },
         { name: "--json-schema", when: "structured answers (plans, reviews, verdicts)" },
         { name: "--model", when: "steps with a model chosen" },

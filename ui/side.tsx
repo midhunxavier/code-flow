@@ -3,7 +3,7 @@ import { BrowserTab } from "./browser.js";
 import { ChangesTab } from "./changes.js";
 import { addContext, FileTree } from "./composer.js";
 import { Icon, type IconName } from "./icons.js";
-import { ago, api, baseName, enc, fmtSize, onPhone, post, showToast } from "./lib.js";
+import { ago, api, baseName, enc, fmtSize, onPhone, post, showToast, useLatest } from "./lib.js";
 import { placesFor, PlacePicker, usePlace } from "./panel-bits.js";
 import { ChatTab } from "./side-chat.js";
 import {
@@ -82,8 +82,10 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
     browser: () => <BrowserTab />,
     notes: () => <NotesTab />,
   };
+  // Closed, it's off-screen on narrower windows (not gone): inert keeps its controls out of the Tab order.
+  const closed = !sideOpen.value && !popped;
   return (
-    <aside class={`side ${sideOpen.value ? "open" : ""} ${popped ? "popped" : ""}`} aria-label="Side panel" aria-hidden={!sideOpen.value} inert={!sideOpen.value}>
+    <aside class={`side ${sideOpen.value ? "open" : ""} ${popped ? "popped" : ""}`} aria-label="Side panel" aria-hidden={closed} inert={closed}>
       {popped ? null : <div class={`side-handle ${dragging ? "dragging" : ""}`} role="separator" tabIndex={0} aria-orientation="vertical" aria-label="Resize the side panel" aria-valuemin={300} aria-valuemax={900} aria-valuenow={sideWidth.value} title="Drag or use arrow keys to resize" onPointerDown={startDrag} onKeyDown={(event) => { const width = event.key === "ArrowLeft" ? sideWidth.value + 24 : event.key === "ArrowRight" ? sideWidth.value - 24 : event.key === "Home" ? 300 : event.key === "End" ? 900 : undefined; if (width !== undefined) { event.preventDefault(); setSideWidth(width); } }} />}
       <ScopeHeader popped={popped} />
       <div class="side-tabs" role="tablist" aria-label="Side panel tabs">
@@ -175,24 +177,30 @@ function ScopeHeader({ popped }: { popped: boolean }) {
 // ---------------------------------------------------------------- files
 function FilesTab() {
   const [place, setPlace, places] = usePlace("files");
-  const [open, setOpen] = useState<string | null>(null);
+  /** The file shown, and the folder it's in: it closes when the panel shows another folder. */
+  const [open, setOpen] = useState<{ root: string; path: string } | null>(null);
   // Something else asked for a file (a run's diff, a transcript): show it, in its folder.
   useEffect(() => {
     const want = sideFile.value;
     if (!want) return;
     const target = places.find((p) => p.path === want.root);
     if (target) setPlace(target);
-    setOpen(want.path);
+    setOpen({ root: target?.path ?? place?.path ?? "", path: want.path });
     sideFile.value = null;
   }, [sideFile.value]);
   const viewKey = place?.path ?? "";
-  useEffect(() => setOpen(null), [viewKey]);
+  useEffect(() => setOpen((o) => (o?.root === viewKey ? o : null)), [viewKey]);
+  // Keyed by folder (and file): another worktree's tree or file never shows what an earlier one loaded.
   return (
     <>
       <div class="side-toolbar">
         <PlacePicker label="Folder" place={place} places={places} onChange={setPlace} />
       </div>
-      {place && open ? <FileViewer root={place.path} path={open} onClose={() => setOpen(null)} /> : <FileTree root={place?.path ?? ""} onOpen={setOpen} />}
+      {place && open?.root === place.path ? (
+        <FileViewer key={`${place.path}\n${open.path}`} root={place.path} path={open.path} onClose={() => setOpen(null)} />
+      ) : (
+        <FileTree key={viewKey} root={viewKey} onOpen={(path) => setOpen({ root: viewKey, path })} />
+      )}
     </>
   );
 }
@@ -202,10 +210,15 @@ const MAX_SHOWN_LINES = 5_000;
 function FileViewer({ root, path, onClose }: { root: string; path: string; onClose: () => void }) {
   const [file, setFile] = useState<FileContent | null>(null);
   const [error, setError] = useState("");
+  const request = useLatest();
   useEffect(() => {
+    const current = request();
     setFile(null);
     setError("");
-    api<FileContent>(`/api/file?repo=${enc(root)}&path=${enc(path)}`).then(setFile, (err) => setError((err as Error).message));
+    api<FileContent>(`/api/file?repo=${enc(root)}&path=${enc(path)}`).then(
+      (f) => current() && setFile(f),
+      (err) => current() && setError((err as Error).message),
+    );
   }, [root, path]);
   const lines = file?.text?.split("\n") ?? [];
   const inComposer = route.value.view === "composer" && root === repo.value;

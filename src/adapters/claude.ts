@@ -1,6 +1,6 @@
 import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, RunOptions, RunResult } from "./types.js";
-import { classifyError, resetFromText } from "./errors.js";
-import { commandExists, describeFailure, processErrorKind, startJsonlProcess, stderrTail, stringify, truncate } from "./process.js";
+import { classifyError, cliErrorLine, resetFromText } from "./errors.js";
+import { commandExists, describeFailure, processErrorKind, startJsonlProcess, stderrTail, stringify, truncate, unknownEvents } from "./process.js";
 import { adapterTeamCapabilities, prepareTeamTools, TEAM_NESTED_DENYLIST, TEAM_TOOL_ALLOWLIST } from "./team-tools.js";
 
 /**
@@ -18,6 +18,20 @@ const READ_TOOLS = [
   "Bash(git status *)",
   "Bash(ls *)",
 ];
+
+/**
+ * Options that make the read-only git commands above write or read anywhere: `--output=<file>`
+ * sends git diff, log or show's output to any path (`git log -1 --format=%B --output=$HOME/.zshrc`),
+ * and git takes it abbreviated too (`--outp=`); `--no-index` diffs any two files on disk, in the
+ * repository or not. Claude Code applies deny rules before allow rules, wherever in the command
+ * the option appears (quoted included: the rule has no space before it).
+ */
+const GIT_READ_DENY = ["Bash(git *--out*)", "Bash(git *--no-index*)"];
+
+/** Stream-json message types code-flow knowingly ignores (partial messages, progress, the control protocol). */
+const IGNORED_TYPES = new Set(["stream_event", "tool_progress", "tool_use_summary", "auth_status", "keep_alive", "control_request", "control_response", "control_cancel_request"]);
+/** Assistant content blocks code-flow knowingly ignores. */
+const IGNORED_BLOCKS = new Set(["redacted_thinking"]);
 
 // Headless runs cannot answer permission prompts, so anything not pre-allowed is denied.
 // Edits are auto-accepted (the cwd is a disposable worktree); shell access is limited to
@@ -82,19 +96,18 @@ export const claudeAdapter: AgentAdapter = {
     if (opts.jsonSchema) args.push("--json-schema", JSON.stringify(opts.jsonSchema));
     if (teamTools) args.push("--mcp-config", teamTools.claudeConfig, "--strict-mcp-config");
     const collaborationTools = teamTools ? TEAM_TOOL_ALLOWLIST : [];
+    // Full access: every tool, without permission checks.
+    const full = opts.mode === "write" && opts.trust === "full";
+    const allowedTools = full ? [] : [...(opts.mode === "write" ? writeTools(opts.trust) : READ_TOOLS), ...collaborationTools];
+    // Where the shell is limited to an allow-list, the git read commands mustn't write (or read) outside it.
+    // With "Bash" allowed outright (Trusted) any command runs anyway.
+    const limitedShell = !full && !allowedTools.includes("Bash");
     const deniedTools = [...(opts.mode === "read" ? ["Edit", "Write", "NotebookEdit"] : []), ...(opts.questionProtocol === "structured" ? TEAM_NESTED_DENYLIST : [])];
-    if (deniedTools.length) args.push("--disallowedTools", deniedTools.join(","));
-    if (opts.mode === "write" && opts.trust === "full") {
-      // Full access: every tool, without permission checks.
-      args.push("--permission-mode", "bypassPermissions");
-    } else if (opts.mode === "write") {
-      args.push("--permission-mode", "acceptEdits", "--allowedTools", [...writeTools(opts.trust), ...collaborationTools].join(","));
-    } else {
-      args.push(
-        "--permission-mode", "default",
-        "--allowedTools", [...READ_TOOLS, ...collaborationTools].join(","),
-      );
-    }
+    // The flag takes several values (`<tools...>`); the git rules go in one of their own.
+    const denied = [deniedTools.join(","), limitedShell ? GIT_READ_DENY.join(",") : ""].filter(Boolean);
+    if (denied.length) args.push("--disallowedTools", ...denied);
+    if (full) args.push("--permission-mode", "bypassPermissions");
+    else args.push("--permission-mode", opts.mode === "write" ? "acceptEdits" : "default", "--allowedTools", allowedTools.join(","));
 
     // Only a session the CLI confirms in this turn: a resume that failed must not hand back its id.
     let sessionId: string | undefined;
@@ -105,6 +118,7 @@ export const claudeAdapter: AgentAdapter = {
     let structured: unknown;
     /** The plan refused this turn (rate_limit_event "rejected"), and when it resets if it said. */
     let rejected: { resetsAt?: number } | undefined;
+    const unknown = unknownEvents("claude");
 
     const proc = startJsonlProcess({
       agentContainer: opts.agentContainer ? { config: opts.agentContainer, mode: opts.mode } : undefined,
@@ -139,6 +153,8 @@ export const claudeAdapter: AgentAdapter = {
                   name: block.name,
                   input: truncate(stringify(block.input), 2_000),
                 });
+              } else if (!["text", "thinking"].includes(block.type) && !IGNORED_BLOCKS.has(block.type)) {
+                unknown.add(`${block.type} block`);
               }
             }
             break;
@@ -198,11 +214,16 @@ export const claudeAdapter: AgentAdapter = {
               onEvent({ kind: "status", text: `Denied in headless mode: ${names}` });
             }
             break;
+
+          default:
+            if (!IGNORED_TYPES.has(msg.type)) unknown.add(msg.type);
         }
       },
     });
 
     const outcome = await proc.outcome;
+    const drift = unknown.report();
+    if (drift) onEvent({ kind: "status", text: drift });
 
     // After a successful result, how the process ended (a hook that hung, a non-zero exit) doesn't matter.
     if (sawResult && !resultError && !outcome.aborted) return { ok: true, finalText, sessionId, structured };
@@ -213,9 +234,12 @@ export const claudeAdapter: AgentAdapter = {
       : !sawResult && outcome.exitCode === 0
         ? `claude exited without a result${tail ? `: ${tail}` : ""}`
         : describeFailure("claude", outcome);
-    let errorKind: ErrorKind = processErrorKind(outcome) ?? classifyError(error);
+    // The kind comes from Claude's error (its result, or its own line on stderr), never from the
+    // rest of stderr: hooks and MCP servers print there. The plan's refusal makes it a usage limit.
+    const own = resultError ?? cliErrorLine(outcome.stderr);
+    let errorKind: ErrorKind = processErrorKind(outcome) ?? classifyError(own);
     if (rejected && (errorKind === "other" || errorKind === "rate_limit")) errorKind = "usage_limit";
-    const resetsAt = errorKind === "usage_limit" ? (rejected?.resetsAt ?? resetFromText(error)) : undefined;
+    const resetsAt = errorKind === "usage_limit" ? (rejected?.resetsAt ?? resetFromText(own)) : undefined;
     onEvent({ kind: "error", message: error });
     return {
       ok: false,

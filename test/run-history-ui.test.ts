@@ -25,7 +25,8 @@ class FakeEventSource {
   onopen?: () => void;
   onerror?: () => void;
   constructor(readonly url: string) { FakeEventSource.instances.push(this); }
-  send(body: unknown) { this.onmessage?.({ data: JSON.stringify(body) }); }
+  close() {}
+  send(body: unknown) { this.onmessage?.({ data: JSON.stringify({ s: 1, d: body }) }); }
 }
 Object.defineProperty(globalThis, "EventSource", { configurable: true, value: FakeEventSource });
 
@@ -39,8 +40,11 @@ test("paged history preserves loaded older runs and cursor progress on refresh a
   assert.equal(state.runs.value.has("older"), true);
   assert.equal(state.historyNextCursor.value, "cursor-b", "a first-page refresh must not restart older pagination");
   state.watchAllRuns(() => undefined);
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
   const source = FakeEventSource.instances.at(-1)!;
-  assert.equal(source.url, "/api/events?limit=100");
+  const url = new URL(source.url, "http://localhost");
+  assert.equal(url.pathname, "/api/stream");
+  assert.deepEqual(JSON.parse(url.searchParams.get("subs")!), [{ id: 1, topic: "runs" }]);
   source.send({ type: "hello", epoch: "server-one", seq: 10, total: 251, nextCursor: "new-boundary", runs: [run("new", "latest") ] });
   assert.equal(state.runs.value.has("older"), true);
   assert.equal(state.historyNextCursor.value, "cursor-b");

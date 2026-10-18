@@ -2,7 +2,7 @@ import type { VerificationProfile } from "../src/verification.js";
 import { effect } from "@preact/signals";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
-import { api, ApiError, baseName, enc, fmtSize, FLOWS, post, readBase64, SHORT, store } from "./lib.js";
+import { api, ApiError, baseName, enc, fmtSize, FLOWS, post, readBase64, SHORT, store, useLatest } from "./lib.js";
 import { useDialog } from "./app.js";
 import { AcceptanceEditor, ComposerLibraryEditor, ContextInspector, EffectiveSettings, FirstRunGuide, RepositoryReadiness } from "./onboarding.js";
 import { RemoteWorkerSelect, type WorkerChoice } from "./remote-workers.js";
@@ -1172,8 +1172,12 @@ export function FileTree({ root, onOpen }: { root: string; onOpen: (path: string
   const [message, setMessage] = useState("");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<TreeEntry[] | null>(null);
+  // Only the latest answer counts: a slow listing or search must not replace a newer one.
+  const treeRequest = useLatest();
+  const searchRequest = useLatest();
 
   useEffect(() => {
+    const current = treeRequest();
     setQuery("");
     setResults(null);
     if (!root) {
@@ -1184,21 +1188,25 @@ export function FileTree({ root, onOpen }: { root: string; onOpen: (path: string
     setMessage("Loading…");
     api<{ entries: TreeEntry[]; truncated: boolean }>(`/api/tree?repo=${enc(root)}&path=`)
       .then((d) => {
+        if (!current()) return;
         setEntries(d.entries);
         setTruncated(d.truncated);
         setMessage("");
       })
-      .catch((err) => setMessage((err as Error).message));
+      .catch((err) => current() && setMessage((err as Error).message));
   }, [root]);
 
   useEffect(() => {
+    // Any change, clearing the box too, makes a search still on its way stale.
+    const current = searchRequest();
     const q = query.trim();
     if (!q || !root) return setResults(null);
     const timer = setTimeout(async () => {
       try {
-        setResults(await api<TreeEntry[]>(`/api/search?repo=${enc(root)}&q=${enc(q)}`));
+        const found = await api<TreeEntry[]>(`/api/search?repo=${enc(root)}&q=${enc(q)}`);
+        if (current()) setResults(found);
       } catch (err) {
-        setMessage((err as Error).message);
+        if (current()) setMessage((err as Error).message);
       }
     }, 180);
     return () => clearTimeout(timer);
@@ -1210,11 +1218,12 @@ export function FileTree({ root, onOpen }: { root: string; onOpen: (path: string
       <input type="search" class="field files-search" placeholder="Search files…" aria-label="Search files" autocomplete="off" spellcheck={false} value={query} onInput={(e) => setQuery(e.currentTarget.value)} />
       <div class="tree">
         {message ? <div class="tree-empty">{message}</div> : null}
-        {results
-          ? results.length
-            ? results.map((r) => <TreeNode key={r.path} entry={r} depth={0} sub={r.path.includes("/") ? r.path.slice(0, r.path.lastIndexOf("/")) : ""} root={root} onOpen={onOpen} context={inComposer} />)
-            : <div class="tree-empty">No matching files</div>
-          : entries?.map((e) => <TreeNode key={e.path} entry={e} depth={0} root={root} onOpen={onOpen} context={inComposer} />)}
+        <div role="tree" aria-label={results ? "Matching files" : "Files"}>
+          {results
+            ? results.map((r) => <TreeNode key={`s:${r.path}`} entry={r} depth={0} sub={r.path.includes("/") ? r.path.slice(0, r.path.lastIndexOf("/")) : ""} root={root} onOpen={onOpen} context={inComposer} />)
+            : entries?.map((e) => <TreeNode key={e.path} entry={e} depth={0} root={root} onOpen={onOpen} context={inComposer} />)}
+        </div>
+        {results && !results.length ? <div class="tree-empty">No matching files</div> : null}
         {!results && truncated ? <div class="tree-empty">Showing the first 1000 — use search</div> : null}
       </div>
       {inComposer ? (
@@ -1230,30 +1239,56 @@ function TreeNode({ entry, depth, sub, root, onOpen, context }: { entry: TreeEnt
   const [children, setChildren] = useState<TreeEntry[] | null>(null);
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
+  const request = useLatest();
   const added = context && contextPaths.value.has(entry.path);
   const statusName = entry.status ? ({ M: "changed", U: "new, not committed", A: "added" } as const)[entry.status] : "";
-  const toggle = async () => {
-    if (entry.type !== "dir") return onOpen(entry.path);
-    if (open) return setOpen(false);
+  const isDir = entry.type === "dir";
+  const expand = async () => {
     setOpen(true);
     if (children) return;
+    const current = request();
     setMessage("Loading…");
     try {
       const d = await api<{ entries: TreeEntry[] }>(`/api/tree?repo=${enc(root)}&path=${enc(entry.path)}`);
+      if (!current()) return;
       setChildren(d.entries);
       setMessage(d.entries.length ? "" : "Empty folder");
     } catch (err) {
-      setMessage((err as Error).message);
+      if (current()) setMessage((err as Error).message);
     }
+  };
+  const toggle = () => {
+    if (!isDir) return onOpen(entry.path);
+    if (open) return setOpen(false);
+    void expand();
+  };
+  /** Enter or Space opens; → and ← open and close a folder; ↓ and ↑ go to the next and previous item. */
+  const onKey = (e: KeyboardEvent) => {
+    if (e.target !== e.currentTarget) return; // the + button's own keys
+    const node = e.currentTarget as HTMLElement;
+    if (e.key === "Enter" || e.key === " ") toggle();
+    else if (e.key === "ArrowRight" && isDir && !open) void expand();
+    else if (e.key === "ArrowLeft" && isDir && open) setOpen(false);
+    else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const items = [...(node.closest('[role="tree"]')?.querySelectorAll<HTMLElement>('[role="treeitem"]') ?? [])];
+      items[items.indexOf(node) + (e.key === "ArrowDown" ? 1 : -1)]?.focus();
+    } else return;
+    e.preventDefault();
   };
   return (
     <div>
       <div
         class={`node ${added ? "added" : ""}`}
+        role="treeitem"
+        tabIndex={0}
+        aria-level={depth + 1}
+        aria-expanded={isDir ? open : undefined}
+        aria-label={`${entry.name}${sub ? `, in ${sub}` : ""}${statusName ? `, ${statusName}` : ""}`}
         draggable={context}
         title={`${entry.path}${statusName ? ` — ${statusName}` : ""}${context ? "\nDrag into the task, or click +" : ""}`}
         style={`padding-left:${2 + depth * 14}px`}
         onClick={toggle}
+        onKeyDown={onKey}
         onDblClick={() => context && entry.type === "file" && addContext(entry)}
         onDragStart={(e) => {
           e.dataTransfer!.setData(DRAG_TYPE, JSON.stringify({ path: entry.path, type: entry.type }));
@@ -1285,7 +1320,7 @@ function TreeNode({ entry, depth, sub, root, onOpen, context }: { entry: TreeEnt
         ) : null}
       </div>
       {open ? (
-        <div>
+        <div role="group">
           {message ? (
             <div class="tree-empty" style={`padding-left:${22 + depth * 14}px`}>
               {message}

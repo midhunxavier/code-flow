@@ -1,6 +1,6 @@
 import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, RunOptions, RunResult } from "./types.js";
-import { classifyError, resetFromText } from "./errors.js";
-import { captureOutput, commandExists, describeFailure, processErrorKind, startJsonlProcess, stderrTail, stringify, truncate } from "./process.js";
+import { classifyError, cliErrorLine, resetFromText } from "./errors.js";
+import { captureOutput, commandExists, describeFailure, processErrorKind, startJsonlProcess, stringify, truncate, unknownEvents } from "./process.js";
 import { STEP_TIMEOUT_MS } from "../config.js";
 import { childEnv } from "../env.js";
 
@@ -83,6 +83,8 @@ export const agyAdapter: AgentAdapter = {
     let sawResult = false;
     let structured: unknown;
     const openTools = new Set<string>();
+    const unknown = unknownEvents("agy");
+    const unknownSteps = new Set<string>();
 
     const proc = startJsonlProcess({
       agentContainer: opts.agentContainer ? { config: opts.agentContainer, mode: opts.mode } : undefined,
@@ -110,6 +112,14 @@ export const agyAdapter: AgentAdapter = {
             if (step.text_delta) {
               streamedText += step.text_delta;
               onEvent({ kind: "text", text: step.text_delta });
+            }
+            if (!step.text_delta && step.step_type !== "tool" && step.step_type !== "agent_response") {
+              // A step code-flow shows nothing of; counted once per step, not per update.
+              const id = `${step.conversation_id ?? ""}:${step.step_index ?? step.step_type}`;
+              if (!unknownSteps.has(id)) {
+                unknownSteps.add(id);
+                unknown.add(`${step.step_type ?? "(no type)"} step`);
+              }
             }
             if (step.step_type === "tool" && step.tool_name) {
               const callId = `${step.conversation_id ?? ""}:${step.step_index ?? step.tool_name}`;
@@ -153,7 +163,7 @@ export const agyAdapter: AgentAdapter = {
             if (result.status && result.status !== "SUCCESS") {
               const detail = typeof result.error === "string" ? result.error : result.error?.message;
               resultError = detail ? `${detail} (agy status ${result.status})` : `agy finished with status ${result.status}`;
-              statusKind = agyStatusKind(String(result.status), !!opts.resumeSessionId);
+              statusKind = agyStatusKind(String(result.status), detail, !!opts.resumeSessionId);
             } else if (!finalText.trim() && result.denied_actions?.length) {
               const denied = result.denied_actions.map((d: any) => d.display_name ?? d.action).join(", ");
               resultError = `agy stopped after headless mode denied: ${denied}. Allow it in permissions.allow or enable CODEFLOW_AGY_SKIP_PERMISSIONS.`;
@@ -166,11 +176,19 @@ export const agyAdapter: AgentAdapter = {
             });
             break;
           }
+
+          case "user": // the prompt, if agy echoes it
+            break;
+
+          default:
+            unknown.add(msg.event ?? msg.type);
         }
       },
     });
 
     const outcome = await proc.outcome;
+    const drift = unknown.report();
+    if (drift) onEvent({ kind: "status", text: drift });
 
     // After a successful result, how the process ended (a hang on shutdown, a non-zero exit) doesn't matter.
     if (sawResult && !resultError && !outcome.aborted) return { ok: true, finalText, sessionId, structured };
@@ -182,8 +200,11 @@ export const agyAdapter: AgentAdapter = {
         "update agy, and make sure you have logged in once with an interactive `agy` session.";
     }
     const error = resultError ?? describeFailure("agy", outcome);
-    const errorKind: ErrorKind = stopped ?? statusKind ?? classifyError(`${error}\n${stderrTail(outcome)}`);
-    const resetsAt = errorKind === "usage_limit" ? resetFromText(error) : undefined;
+    // agy's status first, then its own error text: its result's, or its own line on stderr, never
+    // the rest of stderr (hooks and MCP servers print there too).
+    const own = resultError ?? cliErrorLine(outcome.stderr);
+    const errorKind: ErrorKind = stopped ?? statusKind ?? classifyError(own);
+    const resetsAt = errorKind === "usage_limit" ? resetFromText(own) : undefined;
     onEvent({ kind: "error", message: error });
     return {
       ok: false,
@@ -196,9 +217,18 @@ export const agyAdapter: AgentAdapter = {
   },
 };
 
-/** agy's result status (gRPC-style codes, e.g. RESOURCE_EXHAUSTED) when it names a kind. */
-function agyStatusKind(status: string, resuming: boolean): ErrorKind | undefined {
-  if (/RESOURCE_EXHAUSTED|QUOTA/i.test(status)) return "usage_limit";
+/**
+ * agy's result status (gRPC-style codes, e.g. RESOURCE_EXHAUSTED) when it names a kind. Google
+ * answers a per-minute 429 with RESOURCE_EXHAUSTED too, so that's a rate limit (retried) unless
+ * its message says the plan's or the day's quota is used up: a usage limit stops the run and keeps
+ * Auto away from agy until it resets.
+ */
+function agyStatusKind(status: string, detail: string | undefined, resuming: boolean): ErrorKind | undefined {
+  if (/RESOURCE_EXHAUSTED|QUOTA/i.test(status)) {
+    const text = detail ?? "";
+    if (/\bper (?:minute|second|min\b)|\brate\b/i.test(text)) return "rate_limit";
+    return /daily|per day|\bplan\b|usage limit|quota (?:exceeded|reached|exhausted)|exceeded (?:your|the) [\w -]{0,30}quota/i.test(text) ? "usage_limit" : "rate_limit";
+  }
   if (/RATE/i.test(status)) return "rate_limit";
   if (/UNAUTHENTICATED|AUTH|LOGIN|SIGN_?IN/i.test(status)) return "auth";
   // Only the conversation can be missing when resuming (a missing model is a NOT_FOUND too).

@@ -1,9 +1,9 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import type { Run, RunManager, RunSummary } from "./engine.js";
-import type { SourceInput } from "./github.js";
+import { untrustedBlock, type SourceInput } from "./github.js";
 import { logError, logInfo, logWarn } from "./log.js";
 import { readRepoConfig } from "./repo-config.js";
 import { findSweepItem, nextSweepItems, sourceKeys, sweepTakes, upgradeLegacyKeys, type SweepKind, type SweepList } from "./sweeps.js";
@@ -42,7 +42,10 @@ export interface Trigger {
   sweep?: { kind: SweepKind; max: number };
   /** Items a sweep has started a run for ("issue#12", "dependabot#5"…), so it never starts them twice. */
   handled?: string[];
-  /** GitHub's ids of the latest webhook deliveries, so a delivery sent again doesn't start another run. */
+  /**
+   * The latest webhook deliveries, so one sent again doesn't start another run: GitHub's ids, and
+   * for a delivery signed with GitHub's signature the hash of its body too ("sha256:…").
+   */
   deliveries?: string[];
   /** Webhook events that came in while this automation's run was going; each fires when it ends. */
   queued?: Omit<FireInput, "via">[];
@@ -55,8 +58,15 @@ export interface Trigger {
 /** What a webhook or schedule adds to the saved run. */
 export interface FireInput {
   via: "schedule" | "webhook" | "manual";
-  /** Extra text for the task (e.g. from a webhook payload). */
+  /**
+   * Text the caller sent for the task (a webhook body's `details` or `task`). Anyone with the
+   * automation's secret can send it, and programs on this machine (the agents among them) can read
+   * that secret in triggers.json, so it reaches the agents fenced as data and the run is marked as
+   * carrying untrusted text (see `withDetails`).
+   */
   details?: string;
+  /** code-flow's own line about the GitHub event that fired it ("GitHub: issue opened by @bob"). */
+  event?: string;
   source?: SourceInput;
   /** Internal reference used when draining a queued event. */
   eventId?: string;
@@ -86,6 +96,13 @@ export interface AutomationPreview {
   permissions: { trust: string; isolate: boolean; image?: string };
   limits: { maxSteps?: number; maxInvocations?: number; maxMinutes?: number; startsPerHour: number; startsUsed: number };
   commands: { setup?: string; check?: string };
+}
+
+/** How a webhook call proved it may fire the automation. */
+export interface Caller {
+  trigger: Trigger;
+  /** By GitHub's signature of the body, rather than the secret itself as a Bearer token. */
+  signed: boolean;
 }
 
 export interface FireResult {
@@ -261,8 +278,11 @@ export class Automations {
 
   constructor(
     private readonly manager: RunManager,
-    /** Starts a run exactly like POST /api/runs (validation, Auto roles…). */
-    private readonly startRun: (body: Record<string, any>, extra: { trigger: NonNullable<Run["trigger"]> }) => Promise<Run>,
+    /**
+     * Starts a run exactly like POST /api/runs (validation, Auto roles…). `untrustedText`: its task
+     * carries a webhook caller's text, so the run is marked like one from an outsider's words.
+     */
+    private readonly startRun: (body: Record<string, any>, extra: { trigger: NonNullable<Run["trigger"]>; untrustedText?: boolean }) => Promise<Run>,
     /** Lists a sweep's items (GitHub issues, Dependabot PRs, alerts) for a recurring sweep. */
     private readonly listSweep?: (repo: string, kind: SweepKind) => Promise<SweepList>,
     private readonly file = FILE,
@@ -435,19 +455,27 @@ export class Automations {
    * A webhook call, answered at once: GitHub gives up on a delivery after 10 seconds, and
    * starting a run takes longer than that. The run starts in the background; a failure is
    * recorded on the automation (lastError). A delivery GitHub sends again is ignored.
+   *
+   * GitHub's signature covers the body but not the X-GitHub-Delivery id, so anyone who saw one
+   * signed delivery (a tunnel's log, plain HTTP on the Wi-Fi) could send it again with the id
+   * changed or left out. A signed body (`signedBody`) that came before is a replay whatever id it
+   * carries, or none.
    */
-  accept(id: string, input: Omit<FireInput, "via">, delivery?: string): { accepted: true } | { ignored: string } {
+  accept(id: string, input: Omit<FireInput, "via">, delivery?: string, signedBody?: Buffer): { accepted: true } | { ignored: string } {
     if (this.stopped) return { ignored: "Automation dispatch is paused" };
     const t = this.require(id);
     const validated = validateFireInput({ via: "webhook", ...input });
-    if (delivery) {
-      if (t.deliveries?.includes(delivery)) {
-        const duplicate = this.recordEvent(t, validated, delivery);
-        this.updateEvent(t, duplicate.id, "deduplicated", `Delivery ${delivery} was already handled`);
-        void this.save();
-        return { ignored: `Delivery ${delivery} was already handled` };
-      }
-      t.deliveries = [...(t.deliveries ?? []), delivery].slice(-MAX_DELIVERIES);
+    const body = signedBody && `sha256:${createHash("sha256").update(signedBody).digest("hex")}`;
+    const duplicateReason = delivery && t.deliveries?.includes(delivery) ? `Delivery ${delivery} was already handled` : body && t.deliveries?.includes(body) ? "This delivery was already handled: the same signed body came before" : undefined;
+    if (duplicateReason) {
+      const duplicate = this.recordEvent(t, validated, delivery);
+      this.updateEvent(t, duplicate.id, "deduplicated", duplicateReason);
+      void this.save();
+      return { ignored: duplicateReason };
+    }
+    const seen = [delivery, body].filter((key): key is string => !!key);
+    if (seen.length) {
+      t.deliveries = [...(t.deliveries ?? []), ...seen].slice(-MAX_DELIVERIES);
       void this.save();
     }
     const event = this.recordEvent(t, validated, delivery);
@@ -582,13 +610,13 @@ export class Automations {
     this.starting.add(t.id);
     const body: Record<string, any> = {
       ...t.run,
-      task: input.details?.trim() ? `${t.run.task}\n\n## Details from the ${input.via}\n${input.details.trim().slice(0, 4_000)}` : t.run.task,
+      task: withDetails(t.run.task, input),
       source: input.source ?? t.run.source,
       loop: { ...(t.run.loop ?? {}), container: t.isolate ? { image: t.image || "node:22", network: true } : undefined },
     };
     t.lastFiredAt = startedAt;
     try {
-      const run = await this.startRun(body, { trigger: { id: t.id, name: t.name, via: input.via } });
+      const run = await this.startRun(body, { trigger: { id: t.id, name: t.name, via: input.via }, ...(hasDetails(input) && { untrustedText: true }) });
       t.lastRunId = run.id;
       t.lastError = undefined;
       return { run };
@@ -752,8 +780,10 @@ export class Automations {
       if (itemKeys.every((k) => handled.has(k))) return { runs: [], skipped: "nothing new to sweep" };
       if (itemKeys.some((k) => claimed.has(k) && !mine.includes(k))) return { runs: [], skipped: "a run for it is starting right now" };
       for (const key of itemKeys) if (!claimed.has(key)) claimed.add(key), mine.push(key);
-      const details = input.details?.trim() ? `\n\n## Details from the webhook\n${input.details.trim().slice(0, 4_000)}` : "";
-      const run = await this.startRun(this.sweepRun(t, item.task + details, item.source), { trigger: { id: t.id, name: t.name, via: input.via } });
+      const run = await this.startRun(this.sweepRun(t, withDetails(item.task, input), item.source), {
+        trigger: { id: t.id, name: t.name, via: input.via },
+        ...(hasDetails(input) && { untrustedText: true }),
+      });
       started = true;
       this.handle(t, itemKeys);
       t.lastRunId = run.id;
@@ -779,19 +809,19 @@ export class Automations {
 
   /**
    * Check a webhook call: `Authorization: Bearer <token>`, or GitHub's `X-Hub-Signature-256`
-   * (HMAC of the body with the token as the secret).
+   * (HMAC of the body with the token as the secret). Says which, since a signed body can be sent
+   * again by anyone who saw it, and the secret can't.
    */
-  authorize(id: string, headers: Record<string, string | string[] | undefined>, body: Buffer): Trigger {
+  authorize(id: string, headers: Record<string, string | string[] | undefined>, body: Buffer): Caller {
     const t = this.get(id);
     if (!t || !t.webhook) throw Object.assign(new Error("Not found"), { status: 404 });
     if (!t.enabled) throw Object.assign(new Error("This automation is turned off"), { status: 409 });
     const bearer = String(headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+    if (bearer && same(bearer, t.token)) return { trigger: t, signed: false };
     const signature = String(headers["x-hub-signature-256"] ?? "");
     const expected = `sha256=${createHmac("sha256", t.token).update(body).digest("hex")}`;
-    if (!(bearer && same(bearer, t.token)) && !(signature && same(signature, expected))) {
-      throw Object.assign(new Error("Bad token or signature"), { status: 401 });
-    }
-    return t;
+    if (signature && same(signature, expected)) return { trigger: t, signed: true };
+    throw Object.assign(new Error("Bad token or signature"), { status: 401 });
   }
 
   /**
@@ -828,6 +858,7 @@ export function validateFireInput(raw: unknown): FireInput {
   const input = raw as Record<string, any>;
   if (!["manual", "schedule", "webhook"].includes(input.via)) throw new Error("Invalid automation event origin");
   if (input.details !== undefined && typeof input.details !== "string") throw new Error("Automation event details must be text");
+  if (input.event !== undefined && typeof input.event !== "string") throw new Error("Automation event description must be text");
   let source: SourceInput | undefined;
   if (input.source !== undefined) {
     const s = input.source;
@@ -836,12 +867,26 @@ export function validateFireInput(raw: unknown): FireInput {
     if (s.numbers !== undefined && (!Array.isArray(s.numbers) || s.numbers.length > 20 || s.numbers.some((n: unknown) => !Number.isSafeInteger(n) || (n as number) < 1))) throw new Error("Invalid automation alert numbers");
     source = { kind: s.kind, number: s.number, ...(s.kind === "alert" ? { tool: s.tool, ...(s.numbers ? { numbers: [...new Set<number>(s.numbers)] } : {}) } : { ciLogs: s.ciLogs === true }) };
   }
-  return { via: input.via, details: input.details?.slice(0, 4_000), source };
+  return { via: input.via, details: input.details?.slice(0, 4_000), event: input.event?.slice(0, 1_000), source };
 }
 
 /** Two webhook events that would start the same run. */
 function eventKey(event: Omit<FireInput, "via">): string {
   return event.source ? sourceKeys(event.source).join(",") : `details:${event.details ?? ""}`;
+}
+
+const hasDetails = (input: Omit<FireInput, "via">) => !!input.details?.trim();
+
+/**
+ * The task with what the event added. code-flow's own line about a GitHub event goes in as it is.
+ * The caller's text goes in a fence it can't close (untrustedBlock), with a note that it's
+ * information, not instructions: it runs with the automation's settings, and anyone with the
+ * secret could have written it. The task stays the saved one when nothing was added.
+ */
+function withDetails(task: string, input: FireInput): string {
+  const details = input.details?.trim().slice(0, 4_000);
+  const parts = [input.event?.trim(), details && untrustedBlock(`text sent with the ${input.via}`, details)].filter(Boolean);
+  return parts.length ? `${task}\n\n## Details from the ${input.via}\n${parts.join("\n\n")}` : task;
 }
 
 /**
@@ -910,7 +955,9 @@ function readTrigger(raw: any): Trigger | undefined {
 /**
  * What a webhook asks for. A plain JSON body may carry `{ details, source }`. GitHub events
  * map to a source: issues → that issue; pull_request → that PR; a failed workflow_run → its PR
- * with CI logs. Returns null for events that shouldn't start a run (pings, successes…).
+ * with CI logs. Returns null for events that shouldn't start a run (pings, successes…). A GitHub
+ * event's line for the task is code-flow's own words (`event`), built from fields it checked;
+ * none of the payload's free text goes in as `details`.
  */
 export function readWebhook(headers: Record<string, string | string[] | undefined>, payload: any): Omit<FireInput, "via"> | null {
   const event = String(headers["x-github-event"] ?? "");
@@ -929,22 +976,22 @@ export function readWebhook(headers: Record<string, string | string[] | undefine
   const login = (u: any) => (typeof u?.login === "string" && /^[\w-]{1,39}(\[bot\])?$/.test(u.login) ? `@${u.login}` : "someone");
   // A new or reopened security alert: Dependabot's (a vulnerable dependency) or code scanning's.
   if (event === "dependabot_alert" && ["created", "reopened", "reintroduced"].includes(payload?.action) && number(payload.alert?.number)) {
-    return { source: { kind: "alert", tool: "dependabot", number: payload.alert.number }, details: `GitHub: Dependabot alert ${payload.action}` };
+    return { source: { kind: "alert", tool: "dependabot", number: payload.alert.number }, event: `GitHub: Dependabot alert ${payload.action}` };
   }
   if (event === "code_scanning_alert" && ["created", "reopened", "appeared_in_branch"].includes(payload?.action) && number(payload.alert?.number)) {
-    return { source: { kind: "alert", tool: "code-scanning", number: payload.alert.number }, details: `GitHub: code scanning alert ${payload.action}` };
+    return { source: { kind: "alert", tool: "code-scanning", number: payload.alert.number }, event: `GitHub: code scanning alert ${payload.action}` };
   }
   if (event === "issues" && ["opened", "labeled", "reopened"].includes(payload?.action) && number(payload.issue?.number)) {
-    return { source: { kind: "issue", number: payload.issue.number }, details: `GitHub: issue ${payload.action} by ${login(payload.sender)}` };
+    return { source: { kind: "issue", number: payload.issue.number }, event: `GitHub: issue ${payload.action} by ${login(payload.sender)}` };
   }
   if (event === "pull_request" && ["opened", "synchronize", "reopened", "ready_for_review", "labeled"].includes(payload?.action) && number(payload.pull_request?.number)) {
-    return { source: { kind: "pr", number: payload.pull_request.number }, details: `GitHub: pull request ${payload.action}` };
+    return { source: { kind: "pr", number: payload.pull_request.number }, event: `GitHub: pull request ${payload.action}` };
   }
   if (event === "workflow_run" && payload?.action === "completed" && payload.workflow_run?.conclusion === "failure") {
     const pr = number(payload.workflow_run.pull_requests?.[0]?.number);
     // A PR can rename the workflow it runs: its name is the PR author's text, so only a tame form of it is kept.
     const name = String(payload.workflow_run.name ?? "").replace(/[^\w .()/-]/g, "").slice(0, 80);
-    return pr ? { source: { kind: "pr", number: pr, ciLogs: true }, details: `GitHub: workflow "${name}" failed` } : null;
+    return pr ? { source: { kind: "pr", number: pr, ciLogs: true }, event: `GitHub: workflow "${name}" failed` } : null;
   }
   return null;
 }

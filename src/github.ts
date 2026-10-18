@@ -81,6 +81,11 @@ export interface AlertInfo {
   patched?: string;
   path?: string;
   line?: number;
+  /**
+   * Code scanning: what the scanner said about this code. It quotes the code (identifiers,
+   * strings), so it's fenced as untrusted text, apart from the rule's documentation in the body.
+   */
+  message?: string;
 }
 
 /** Where a run starts from on GitHub, as the composer, a sweep or a webhook asks for it. */
@@ -415,7 +420,8 @@ export const GH_AUTH_ERROR = /isn't signed in|not logged|auth login|HTTP 401|Bad
 
 /** Push a local branch to `origin/<remote>`; never forced, so it fails if the PR moved on. */
 export async function pushBranch(repo: string, local: string, remote: string): Promise<string> {
-  const res = await git(["push", "origin", `refs/heads/${local}:refs/heads/${remote}`], repo);
+  // Your pre-push hooks run, as on your own pushes (Git LFS uploads its files in one).
+  const res = await git(["push", "origin", `refs/heads/${local}:refs/heads/${remote}`], repo, { hooks: true });
   if (res.code !== 0) {
     const why = res.stderr.trim();
     throw new Error(
@@ -497,12 +503,25 @@ function alertPrompt(source: RunSource): string {
         (a.patched ? `fixed in \`${a.patched}\`.` : "no patched version yet."),
     );
   } else {
-    parts.push(`Rule \`${a.rule}\` (${a.severity})${a.path ? ` at \`${a.path}${a.line ? `:${a.line}` : ""}\`` : ""}.`);
+    const at = a.path ? `${a.path}${a.line ? `:${a.line}` : ""}` : "";
+    // A file path is the code's: one that could close the backticks (or carry words) goes in the fence below.
+    parts.push(`Rule \`${a.rule}\` (${a.severity})${at && PLAIN_PATH.test(at) ? ` at \`${at}\`` : ""}.`);
+    // The scanner's message quotes the code it flagged (names, strings, snippets), and whoever
+    // wrote that code, a contributor's branch included, chose those words: fenced as untrusted.
+    // Alerts saved before the message was kept apart have it in the body, which is fenced whole.
+    const message = a.message ?? (source.body.trim() || undefined);
+    if (message || at) parts.push(untrustedBlock("code scanning alert's location and message", [at && `Location: ${at}`, message?.trim().slice(0, 4_000)].filter(Boolean).join("\n\n"), false));
+    if (a.message !== undefined && source.body.trim()) parts.push(untrustedBlock("rule's documentation", source.body.trim().slice(0, 8_000), true));
+    return parts.join("\n\n");
   }
-  // Alert text comes from GitHub's advisory database or your own scanning tools.
+  // Advisory text comes from GitHub's advisory database.
   if (source.body.trim()) parts.push(untrustedBlock("alert", source.body.trim().slice(0, 8_000), true));
   return parts.join("\n\n");
 }
+
+/** A repository path that can sit in backticks in a prompt as it is. */
+const PLAIN_PATH = /^[\w./@+-]{1,300}(?::\d+)?$/;
+export const isPlainPath = (path: string) => PLAIN_PATH.test(path);
 
 const SEVERITY = ["critical", "high", "error", "medium", "warning", "low", "note"];
 /** Sorts critical first; unknown severities last. */
@@ -555,9 +574,18 @@ async function loadAlertSource(repo: string, tool: AlertTool, numbers: number[])
     number: numbers[0]!,
     url: first.html_url,
     title: rule.description || rule.name || rule.id,
-    body: [first.most_recent_instance?.message?.text, rule.full_description, rule.help].filter(Boolean).join("\n\n"),
+    // The rule's own documentation; the message about this code is kept apart (see alertPrompt).
+    body: [rule.full_description, rule.help].filter(Boolean).join("\n\n"),
     trusted: true,
-    alert: { tool, numbers, severity: rule.security_severity_level ?? rule.severity ?? "unknown", rule: rule.id, path: where.path, line: where.start_line },
+    alert: {
+      tool,
+      numbers,
+      severity: rule.security_severity_level ?? rule.severity ?? "unknown",
+      rule: rule.id,
+      path: where.path,
+      line: where.start_line,
+      message: String(first.most_recent_instance?.message?.text ?? ""),
+    },
   };
 }
 
@@ -694,12 +722,15 @@ function ghRaw(cwd: string, args: string[], input?: string, options: GithubComma
       failure ??= why;
       killGroup(child.pid, 2_000);
     };
-    child.stdout!.on("data", (d) => {
+    child.stdout!.on("data", (d: Buffer) => {
+      if (failure) return;
       bytes += d.length;
       if (bytes > maxOutput) stop(`gh printed more than ${maxOutput / 1024 / 1024} MB`);
       else if (!failure) output.push(d);
     });
-    child.stderr!.on("data", (d) => {
+    // Decoded as a stream, for the same reason.
+    child.stderr!.setEncoding("utf8");
+    child.stderr!.on("data", (d: string) => {
       stderr += d;
       if (stderr.length > 64_000) stderr = stderr.slice(-64_000);
     });

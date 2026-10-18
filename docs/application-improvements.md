@@ -8,6 +8,15 @@ permissions, disposable private committed snapshots and mutation leases. Shared 
 restrictions and nonlocal execution profiles cannot bypass their execution rules
 through this endpoint.
 
+Before publication, this branch also integrates `main` at `7a593cc`: pinned
+worktree Git namespaces, stronger test-integrity checks, compact run-log patches
+and shared live-update transport. New workspace/verification helpers retain those
+namespace guards. Cold recovery decodes patches incrementally and refreshes source
+identities after compaction. Owner stream sharing uses a private channel secret
+and an independent enumerable lock ID; shared accounts receive neither, and
+identity changes close old owner connections. Targeted namespace, storage, broker,
+authorization and same-tick repository-picker regressions cover the integration.
+
 Current scope: all six priority correctness packages implemented; all 14 broader
 problems have concrete improvements; all 73 feature items have implemented
 acceptance scopes. Full-suite acceptance passed. Results are recorded

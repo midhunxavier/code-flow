@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -108,4 +108,19 @@ test("container merge validation mounts the linked marker and verified common Gi
     rmSync(repo, { recursive: true, force: true });
     rmSync(records, { recursive: true, force: true });
   }
+});
+
+test("merge validation refuses a setup-rewritten .git before a foreign filter or later gate can run", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "codeflow-merge-namespace-")), foreign = mkdtempSync(join(tmpdir(), "codeflow-foreign-namespace-")), marker = join(foreign, "filter-executed"), gateMarker = join(foreign, "gate-executed");
+  const command = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
+  try {
+    command(repo, "init", "-q", "-b", "main"); writeFileSync(join(repo, "subject.txt"), "original source\n"); command(repo, "add", "."); command(repo, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "base"); const base = command(repo, "rev-parse", "HEAD");
+    command(repo, "checkout", "-qb", "result"); writeFileSync(join(repo, "result.txt"), "reviewed result\n"); command(repo, "add", "."); command(repo, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "result"); const source = command(repo, "rev-parse", "HEAD"); command(repo, "checkout", "-q", "main");
+    command(foreign, "init", "-q", "-b", "main"); writeFileSync(join(foreign, "subject.txt"), "foreign source\n"); command(foreign, "add", "."); command(foreign, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "foreign");
+    const attributes = join(foreign, "attributes"), filter = join(foreign, "filter"); writeFileSync(attributes, "*.txt filter=impostor\n"); writeFileSync(filter, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)},'executed');process.stdin.pipe(process.stdout);\n`, { mode: 0o700 }); command(foreign, "config", "core.attributesFile", attributes); command(foreign, "config", "filter.impostor.clean", filter);
+    await assert.rejects(validateMergeTarget(repo, { branch: "result", into: "main", setup: `printf 'gitdir: %s\\n' ${quote(join(foreign, ".git"))} > .git`, profile: { name: "namespace guard", checks: [{ id: "later", kind: "custom", command: `printf executed > ${quote(gateMarker)}`, required: true, timeoutMs: 10000 }] } }), /checkout code-flow expects/);
+    assert.equal(existsSync(marker), false); assert.equal(existsSync(gateMarker), false); assert.equal(readFileSync(join(foreign, "subject.txt"), "utf8"), "foreign source\n");
+    assert.equal(command(repo, "rev-parse", "main"), base); assert.equal(command(repo, "rev-parse", "result"), source); assert.equal(readFileSync(join(repo, "subject.txt"), "utf8"), "original source\n");
+  } finally { rmSync(repo, { recursive: true, force: true }); rmSync(foreign, { recursive: true, force: true }); }
 });
