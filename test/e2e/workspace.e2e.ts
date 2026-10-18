@@ -102,3 +102,14 @@ test("ordinary Markdown dividers do not block file saves or tab draft recovery",
   await page.getByRole("status").getByText("File saved", { exact: true }).waitFor();
   assert.match(readFileSync(join(repo, "README.md"), "utf8"), /Title\n=======/);
 });
+
+test("workspace resolves saved JavaScript symbols and imported references", async () => {
+  await page.getByRole("button", { name: "Code", exact: true }).click();
+  await page.getByLabel("Code search mode").selectOption("semantic");
+  await page.getByLabel("Search code", { exact: true }).fill("sum");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  const declaration = page.locator("p", { has: page.getByRole("button", { name: "sum.mjs:1 sum", exact: true }) });
+  await declaration.getByRole("button", { name: "Find references to sum", exact: true }).click();
+  await page.getByText(/references in 2 saved source files/).waitFor();
+  assert.ok(await page.getByRole("button", { name: /^sum\.test\.mjs:\d+$/ }).count());
+});

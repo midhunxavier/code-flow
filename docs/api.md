@@ -35,6 +35,7 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 | `POST /runs/:id/priority` | `priority` from -10 to 10 | Update dispatch priority, including waiting work. Equal priorities favor less-busy projects. |
 | `POST /runs/:id/fork` | exact `commit`, optional `task` | Begin a child run from an owned checkpoint, retaining source trust restrictions. |
 | `POST /runs/:id/revise-goal` | `message`, optional `budget` | Create a new Auto-team run with a user-authored goal revision and prior work references; returns 201 with its `id`. |
+| `POST /runs/:id/rerun-tasks` | `expectedHead`, `taskIds`, optional selected-task `instructions`, explicit `budget` | Execute accepted selected tasks and every dependency descendant in a child at the pinned integration commit. Retained work is labeled baseline input; final checks/review are independent. Returns 201 `{id}`. |
 | `POST /runs/:id/team-plan` | `revision`, `tasks`, `contracts`, `rationale` | Edit a pending Auto-team plan before dispatch. Keeps member identities and requirements fixed; validates owners, dependencies, paths and acceptance mappings. Returns `team`; stale revisions return 409. |
 | `GET /runs/:id/review-coverage` | `branch` query | Return current commit, changed files, reviewed files, percentage, heuristic risk, stale-review indicator and human rework history. Only run-owned branches are allowed. |
 | `POST /runs/:id/review-coverage` | `branch`, `expectedHead`, `path`, `reviewed` | Record or remove review of a changed file at that exact commit. Branch movement invalidates prior coverage; stale requests are rejected. |
@@ -69,6 +70,9 @@ returns 422. Run-attached profile verification similarly produces a blocked
 report on candidate drift. Requirement coverage records the checks selected by
 the user; it does not prove those checks semantically exercise the criterion.
 Human file coverage is a separate, user-authored commit-bound record.
+See [selective task reruns](task-reruns.md) for budget, replay, retained-evidence
+and unchanged-result semantics. Client-authored `teamRerun` seeds are never
+accepted by run creation.
 
 ## Paginated history and event feeds
 

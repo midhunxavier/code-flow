@@ -795,8 +795,13 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     const commands = fresh.getByRole("combobox", { name: "Find a command, project or run" });
     await commands.fill("choose repository");
     await commands.press("Enter");
-    await fresh.getByLabel("Folder path").fill(repo);
-    await fresh.getByLabel("Folder path").press("Enter");
+    // Pasting and pressing Enter may happen before Preact commits its input state.
+    await fresh.getByLabel("Folder path").evaluate((element, path) => {
+      const input = element as HTMLInputElement;
+      input.value = path;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    }, repo);
     await fresh.getByText("✓ This folder is a git repository").waitFor();
     await fresh.getByRole("button", { name: "Use this folder", exact: true }).click();
     await fresh.waitForFunction(() => (document.querySelector("#checkCmd") as HTMLInputElement | null)?.value === "npm test");

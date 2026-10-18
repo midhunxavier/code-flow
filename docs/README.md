@@ -12,6 +12,15 @@
 - [API and CLI](api.md): authenticated versioned operations and the local HTTP client.
 - [Agent containers](agent-containers.md): explicit images, authentication volumes, filesystem mounts and cancellation.
 - [Service launch profiles](launch-profiles.md): named dependent services, readiness, logs and cleanup.
+- [Dependency discovery](dependency-discovery.md): explicit Git, provider, terminal, browser and Docker readiness checks.
+- [Selective task reruns](task-reruns.md): pinned baselines, downstream resets and fresh final verification.
+- [Deferred starts](deferred-runs.md): durable start conditions, quota windows and ambiguous-launch recovery.
+- [Context inspection](context-inspection.md): folder previews, explicit input budgets and recorded measurements.
+- [Project conventions](project-conventions.md): private version history and guarded publication to committed instructions.
+- [Commit comparison and revert](checkpoint-review.md): complete comparisons and reviewed staged inverse changes.
+- [Review inbox](review-inbox.md): grouped and prioritized attention across manual and unattended runs.
+- [Code intelligence](code-intelligence.md): isolated JavaScript/TypeScript symbol and reference resolution.
+- [VS Code integration](../integrations/vscode/README.md): local authenticated task creation, run inspection and result worktrees.
 - [External sources](external-sources.md): read-only GitLab, Bitbucket, Linear and Jira imports.
 - [Notifications](notifications.md): opt-in outbound destinations, scopes, retries and delivery history.
 - [Backup and maintenance](maintenance.md): encrypted recovery, safe restore, retention, compaction and startup checkpoints.

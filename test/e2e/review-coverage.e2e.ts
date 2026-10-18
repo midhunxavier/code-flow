@@ -106,3 +106,36 @@ test("human review is commit-scoped and a rejected rework record retains the use
   await panel.getByText(/previous review refers to older code/).waitFor();
   assert.equal(await panel.getByLabel(`Mark ${coverage.files[0]} reviewed`, { exact: true }).isChecked(), false);
 });
+
+test("workspace compares a complete commit and stages only its reviewed inverse", { timeout: 45_000 }, async () => {
+  const started = await api<{ id: string }>("/api/runs", { repo, pattern: "solo", task: "Checkpoint revert browser fixture", roles: { agent: ["claude"] }, loop: { check: "true", maxSteps: 4, maxMinutes: 1 } });
+  const run = await until(() => api(`/api/runs/${started.id}`), (value) => value.status !== "running");
+  assert.equal(run.status, "done", run.error);
+  const tree = run.worktrees[0];
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: tree.path }).toString().trim();
+  const previous = git("rev-parse", "HEAD");
+  await writeFile(join(tree.path, "checkpoint.txt"), "This commit will be reverted.\n");
+  git("add", "checkpoint.txt"); git("-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "reviewed checkpoint addition");
+  const head = git("rev-parse", "HEAD");
+  await page.goto(base + "/#/workspace");
+  await page.locator("#wb-folder").selectOption(tree.path);
+  await page.getByRole("button", { name: "History", exact: true }).click();
+  await page.getByRole("button", { name: "Load checkpoints", exact: true }).click();
+  await page.getByLabel("Checkpoint", { exact: true }).selectOption(previous);
+  await page.getByRole("button", { name: "Compare selected checkpoint to HEAD", exact: true }).click();
+  const compare = page.getByLabel("Full checkpoint comparison", { exact: true });
+  await compare.getByText(/1 changed paths/).waitFor();
+  await compare.getByText("Full commit patch", { exact: true }).click();
+  assert.match(await compare.innerText(), /\+This commit will be reverted/);
+  await page.getByLabel("Checkpoint", { exact: true }).selectOption(head);
+  await page.getByRole("button", { name: "Preview inverse commit", exact: true }).click();
+  const preview = page.getByLabel("Reviewed commit revert", { exact: true });
+  await preview.getByText("Revert: reviewed checkpoint addition", { exact: true }).waitFor();
+  assert.equal(await readFile(join(tree.path, "checkpoint.txt"), "utf8"), "This commit will be reverted.\n");
+  assert.equal(git("status", "--porcelain"), "");
+  await preview.getByRole("button", { name: "Stage reviewed inverse change", exact: true }).click();
+  await page.getByRole("status").getByText(/Inverse change staged/).waitFor();
+  assert.equal(git("rev-parse", "HEAD"), head);
+  assert.match(git("status", "--porcelain"), /D  checkpoint.txt/);
+  await assert.rejects(readFile(join(tree.path, "checkpoint.txt")), { code: "ENOENT" });
+});

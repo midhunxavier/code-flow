@@ -5,6 +5,10 @@ import { acceptanceCriteria, agentSettings, baseRef, catalogs, checkCmd, checkHi
 import { fillTemplate, parseComposerLibrary, taskWithCriteria, templateParameters, type ComposerLibrary, type PresetConfig, type TaskTemplate } from "./composer-tools.js";
 import type { AgentId, PatternInfo } from "./types.js";
 import type { VerificationProfile } from "../src/verification.js";
+import { DependencyDiscovery } from "./dependency-health.js";
+import { ContextBudgetControls } from "./context-budget-controls.js";
+import { contextBudget, contextBudgetOrigin, setContextBudget } from "./context-budget.js";
+import type { ContextInspection } from "../src/context-inspection.js";
 
 const EMPTY_LIBRARY: ComposerLibrary = { schemaVersion: 1, presets: [], templates: [] };
 
@@ -17,6 +21,7 @@ export function FirstRunGuide() {
     <div class="settings-body"><ol><li>Choose the Git repository to work in.</li><li>Check that Git and at least one provider are installed, compatible, and signed in.</li><li>Describe the change and choose a verification command. Inspect readiness before the first run.</li></ol>
       <p class="help">Git: {gitHealth.value ? gitHealth.value.ok ? "ready" : gitHealth.value.warning || "needs attention" : "checking…"}. Provider authentication can only be reported when the CLI exposes it.</p>
       <div class="onboarding-actions"><button class="btn" onClick={() => (healthOpen.value = true)}>Check provider and Git health</button><button class="btn ghost" onClick={() => { store.set("onboardingDismissed", "1"); setDismissed(true); }}>Dismiss guide</button></div>
+      <DependencyDiscovery />
     </div>
   </details>;
 }
@@ -66,7 +71,7 @@ export function RepositoryReadiness() {
 }
 
 function currentConfig(p: PatternInfo): PresetConfig {
-  return structuredClone({ pattern: p.id, roles: rolesFor(p), options: optionsFor(p), agentSettings: agentSettings.value, roleSettings: roleModels.value[p.id] ?? {}, trust: trust.value, limits: limits.value, approvePlan: planApprovalFor(p.id), toolApprovals: store.get("interactiveApprovals") === "1" });
+  return structuredClone({ pattern: p.id, roles: rolesFor(p), options: optionsFor(p), agentSettings: agentSettings.value, roleSettings: roleModels.value[p.id] ?? {}, trust: trust.value, limits: limits.value, approvePlan: planApprovalFor(p.id), toolApprovals: store.get("interactiveApprovals") === "1", contextBudget: contextBudget.value });
 }
 function applyPreset(config: PresetConfig, label: string) {
   const p = patterns.value.find((p) => p.id === config.pattern);
@@ -81,6 +86,7 @@ function applyPreset(config: PresetConfig, label: string) {
   for (const [id, setting] of Object.entries(config.agentSettings)) setAgentSetting(id as AgentId, setting!);
   for (const [role, providers] of Object.entries(config.roleSettings)) for (const [id, setting] of Object.entries(providers)) setRoleModel(p.id, role, id as AgentId, setting!);
   setTrust(config.trust); setLimits({ ...config.limits, maxTokens: config.limits.maxTokens, maxCostUsd: config.limits.maxCostUsd }); setApprovePlan(config.approvePlan, p.id);
+  setContextBudget(config.contextBudget, label);
   store.set("interactiveApprovals", config.toolApprovals ? "1" : "0");
   composerOrigins.value = { ...composerOrigins.value, pattern: label, roles: label, models: label };
 }
@@ -169,6 +175,7 @@ export function EffectiveSettings({ p, verificationProfile, container }: { p: Pa
     ["Agent container", container?.enabled ? `${container.image || "Image not configured"}${container.authVolume ? ` · authentication volume ${container.authVolume}` : " · no authentication volume"}` : "Host CLI execution", container?.enabled ? "Explicit choice for this run; network enabled" : "Application default"],
     ["Start branch", baseRef.value || "Current HEAD", baseRef.value ? "Selected branch (remembered)" : "Repository HEAD"],
     ["Limits", `${limits.value.maxMinutes} minutes · ${limits.value.maxSteps} steps${limits.value.maxTokens ? ` · ${limits.value.maxTokens.toLocaleString()} reported tokens` : ""}${limits.value.maxCostUsd ? ` · $${limits.value.maxCostUsd} reported API equivalent` : ""}`, store.get("limits") ? "Browser preferences / selected preset" : "Application defaults"],
+    ["Explicit input context budget", contextBudget.value ? `${contextBudget.value.maxPromptBytes ?? "No"} byte ceiling · ${contextBudget.value.maxApproximateTokens ?? "no"} estimated token ceiling · ${contextBudget.value.policy}` : "No configured ceiling", contextBudgetOrigin.value],
   ];
   for (const [role, ids] of Object.entries(rolesFor(p))) for (const id of ids) {
     if (id === "auto") { rows.push([`${role} model`, "Selected at dispatch from available providers", "Auto selection"]); continue; }
@@ -185,10 +192,10 @@ export function EffectiveSettings({ p, verificationProfile, container }: { p: Pa
 export function ContextInspector() {
   const paths = [...contextPaths.value.values()];
   const uploads = attachments.value;
-  const [report, setReport] = useState<{ files: Array<{ path: string; bytes?: number; approximateTokens?: number; preview?: string; truncated?: boolean; omitted?: string }>; bytes: number; approximateTokens: number; note: string } | null>(null);
+  const [report, setReport] = useState<ContextInspection | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const selected = JSON.stringify([repo.value, paths]);
+  const selected = JSON.stringify([repo.value, baseRef.value, paths, uploads.map(({ name, size }) => ({ name, size }))]);
   const latest = useRef(selected); latest.current = selected;
   const request = useRef(0);
   useEffect(() => { ++request.current; setReport(null); setBusy(false); setError(""); }, [selected]);
@@ -196,10 +203,17 @@ export function ContextInspector() {
     const generation = ++request.current;
     setBusy(true); setError("");
     try {
-      const result = await post<NonNullable<typeof report>>("/api/workspace/context", { repo: repo.value, paths: paths.filter((path) => path.type === "file").map((path) => path.path) });
+      const result = await post<ContextInspection>("/api/workspace/context", { repo: repo.value, baseRef: baseRef.value || undefined, paths: paths.map((path) => path.path), attachments: uploads.map(({ name, size }) => ({ name, size })) });
       if (generation === request.current && selected === latest.current) setReport(result);
     } catch (err) { if (generation === request.current && selected === latest.current) setError((err as Error).message); }
     finally { if (generation === request.current && selected === latest.current) setBusy(false); }
   };
-  return <details class="settings context-inspector"><summary><span class="st">Context inspector</span><span class="ss">{paths.length} repository paths · {uploads.length} attachments</span></summary><div class="settings-body"><p class="help">Preview selected repository files before starting. Directory selections expand at run start and are omitted from this preview. Attachments come from files added in this browser.</p><ul>{paths.map((item) => <li key={item.path}><code>{item.path}{item.type === "dir" ? "/" : ""}</code> · selected repository path</li>)}{uploads.map((a, i) => <li key={i}>{a.name} · {a.size.toLocaleString()} bytes · uploaded file</li>)}</ul>{!paths.length && !uploads.length ? <p class="help">No explicit context selected. Agents can inspect their worktree.</p> : null}<button class="btn" disabled={!repo.value || !paths.some((path) => path.type === "file") || busy} onClick={inspect}>{busy ? "Reading context…" : "Preview selected files"}</button>{report ? <div><p class="help">{report.bytes.toLocaleString()} bytes · approximately {report.approximateTokens.toLocaleString()} tokens in the selected files. {report.note} Attachments are excluded from this estimate.</p>{report.files.map((file) => <details key={file.path}><summary>{file.path}{file.truncated ? " · preview truncated" : ""}</summary>{file.omitted ? <p class="help">{file.omitted}</p> : <pre class="template-preview">{file.preview}</pre>}</details>)}</div> : null}{error ? <p class="msg err" role="alert">{error}</p> : null}</div></details>;
+  return <details class="settings context-inspector"><summary><span class="st">Context inspector</span><span class="ss">{paths.length} repository paths · {uploads.length} attachments</span></summary><div class="settings-body"><p class="help">Preview selected files and expand folders from the chosen committed base. Explicit files show your current copy. Credential paths and symbolic selections are refused during actual context preparation; preview redaction does not remove secrets from other repository files.</p>
+    <ul>{paths.map((item) => <li key={item.path}><code>{item.path}{item.type === "dir" ? "/" : ""}</code> · selected repository path</li>)}{uploads.map((attachment, index) => <li key={index}>{attachment.name} · {attachment.size.toLocaleString()} bytes · uploaded file</li>)}</ul>{!paths.length && !uploads.length ? <p class="help">No explicit context selected. Agents can inspect their worktree.</p> : null}
+    <button class="btn" disabled={!repo.value || !paths.length && !uploads.length || busy} onClick={inspect}>{busy ? "Reading context…" : "Preview selected context"}</button>
+    {report ? <div class="context-inspection-results"><p class="help">{report.fileBytes.toLocaleString()} inspected text bytes · {report.omittedBytes.toLocaleString()} known omitted-file bytes · {report.attachmentBytes.toLocaleString()} attachment bytes · approximately {report.approximateTokens.toLocaleString()} known text tokens. {report.note}</p>{report.truncated ? <p class="msg warn">Inspection reached its file or byte limit. Narrow the selection to review the remaining context.</p> : null}
+      {report.files.map((file, index) => <details key={`${file.path}-${index}`}><summary>{file.path} · {file.source === "base-ref" ? "committed base" : "current copy"}{file.truncated ? " · preview truncated" : ""}</summary>{file.omitted ? <p class="help">{file.bytes !== undefined ? `${file.bytes.toLocaleString()} known bytes · ` : ""}{file.omitted}</p> : <><p class="help">{file.bytes?.toLocaleString()} bytes · approximately {file.approximateTokens?.toLocaleString()} tokens{file.redacted ? " · possible secret material redacted in this preview only" : ""}</p><pre class="template-preview">{file.preview}</pre></>}</details>)}
+      {report.attachments.map((attachment, index) => <p class="help" key={index}>{attachment.name}: {attachment.bytes.toLocaleString()} bytes · {attachment.omitted ?? (attachment.approximateTokens === undefined ? "token footprint unknown (image, binary or unrecognized format)" : `approximately ${attachment.approximateTokens.toLocaleString()} text tokens from byte size`)}</p>)}
+    </div> : null}{error ? <p class="msg err" role="alert">{error}</p> : null}<ContextBudgetControls />
+  </div></details>;
 }

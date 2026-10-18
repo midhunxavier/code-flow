@@ -45,3 +45,15 @@ test("parameterized templates require each input and substitute literal values i
   const fixed: TaskTemplate = { id: "fixed", name: "Review", pattern: "pipeline", task: "Review it", criteria: [] };
   assert.deepEqual(fillTemplate(fixed, {}), { task: "Review it", criteria: [] });
 });
+
+test("version 1 presets preserve independent context budgets in import/export and history while older presets remain valid", () => {
+  const value = library(); value.presets[0]!.config.contextBudget = { maxPromptBytes: 40000, policy: "warn" }; value.presets[0]!.history[0]!.config.contextBudget = { maxPromptBytes: 10000, maxApproximateTokens: 3000, policy: "block" };
+  const imported = parseComposerLibrary(JSON.parse(JSON.stringify(value)), patterns);
+  assert.deepEqual(imported.presets[0]!.config.contextBudget, value.presets[0]!.config.contextBudget);
+  assert.deepEqual(imported.presets[0]!.history[0]!.config.contextBudget, value.presets[0]!.history[0]!.config.contextBudget);
+  imported.presets[0]!.config.contextBudget!.maxPromptBytes = 1;
+  assert.equal(imported.presets[0]!.history[0]!.config.contextBudget!.maxPromptBytes, 10000, "historical budgets remain independent values");
+  assert.equal(parseComposerLibrary(library(), patterns).presets[0]!.config.contextBudget, undefined);
+  assert.throws(() => validatePresetConfig({ ...config, contextBudget: { maxPromptBytes: 0, policy: "block" } }, patterns), /ceilings/);
+  assert.throws(() => validatePresetConfig({ ...config, contextBudget: { maxPromptBytes: 100, policy: "ignore" } }, patterns), /policy/);
+});

@@ -2,6 +2,7 @@ import { copyFile, mkdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { CONTEXT_DIR, objectTypeAt, workingCopyDiffers } from "./git.js";
 import { normalizeRepoPath, resolveInsideRepo } from "./repo-tree.js";
+import { assertContextPathAllowed, assertNoContextSymlinks, sensitiveContextPath } from "./context-inspection.js";
 
 /**
  * Context the user hands to every agent in a run: repo files/folders dragged from the
@@ -69,6 +70,8 @@ export async function prepareContext(repo: string, baseRef: string, input: Conte
   for (const { path: raw } of rawPaths) {
     const path = normalizeRepoPath(String(raw ?? ""));
     if (!path || seen.has(path)) continue;
+    assertContextPathAllowed(String(raw));
+    await assertNoContextSymlinks(repo, path, baseRef);
     seen.add(path);
 
     const inBase = await objectTypeAt(repo, baseRef, path);
@@ -103,6 +106,7 @@ export async function prepareContext(repo: string, baseRef: string, input: Conte
 
   const names = new Set<string>();
   for (const att of rawAttachments) {
+    if (sensitiveContextPath(String(att.name ?? "file").replace(/\\/g, "/").split("/").at(-1)!)) throw new Error("Potential credential attachments are not allowed as explicit context");
     const data = Buffer.from(String(att.data ?? ""), "base64");
     if (data.length > LIMITS.fileBytes) throw new Error(`"${att.name}" is larger than ${mb(LIMITS.fileBytes)}`);
     total += data.length;
@@ -129,6 +133,7 @@ export async function stageMessageFiles(stageDir: string, prefix: string, files:
   const paths: string[] = [];
   let total = 0;
   for (const f of files) {
+    if (sensitiveContextPath(String(f.name ?? "file").replace(/\\/g, "/").split("/").at(-1)!)) throw new Error("Potential credential attachments are not allowed as message context");
     const data = Buffer.from(String(f.data ?? ""), "base64");
     if (data.length > LIMITS.fileBytes) throw new Error(`"${f.name}" is larger than ${mb(LIMITS.fileBytes)}`);
     total += data.length;

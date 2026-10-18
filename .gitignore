@@ -3,3 +3,5 @@ node_modules/
 .codeflow-dev/
 public/index.html
 output/playwright/
+output/vscode/
+dist/

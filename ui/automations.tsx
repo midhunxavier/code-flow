@@ -8,7 +8,8 @@ import { ago, api, baseName, copy, post, showToast, STATUS_TEXT } from "./lib.js
 import { activeProject, ALL, currentProject, inScope, NONE, patterns, projectFor, projects, route, runs, runState, selectProject } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
 import { ProjectButton } from "./projects.js";
-import { automationNeedsAttention, teamAwaitingAnswer } from "./team-state.js";
+import { teamAwaitingAnswer } from "./team-state.js";
+import { prioritizedReviewRuns, groupReviewRuns, reviewReason, REVIEW_REASON_LABELS, type ReviewReason } from "../src/review-inbox.js";
 import type { AutomationEvent, AutomationPreview, Schedule } from "../src/automation.js";
 
 /** The project an automation's runs go in: the one it was saved with, or (deleted since) its repo's. */
@@ -71,7 +72,7 @@ export async function loadAutomations() {
   }
 }
 /** Automation results waiting for your decision. */
-export const inbox = () => [...runs.value.values()].filter(automationNeedsAttention).sort((a, b) => b.createdAt - a.createdAt);
+export const inbox = () => prioritizedReviewRuns([...runs.value.values()]);
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const localTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -114,8 +115,18 @@ export function AutomationsView() {
   }, []);
   // The project you're in, as in the sidebar; what's in other projects is a count and a link away.
   const scoped = currentProject.value !== ALL;
+  const [grouping, setGrouping] = useState("project");
+  const [filter, setFilter] = useState("");
+  const [query, setQuery] = useState("");
   const allPending = inbox();
   const pending = allPending.filter((r) => inScope(r));
+  const filtered = prioritizedReviewRuns(pending, { query, reason: filter ? filter as ReviewReason : undefined });
+  const groups = groupReviewRuns(filtered, (run) => {
+    if (grouping === "reason") { const reason = reviewReason(run)!; return { id: reason, label: REVIEW_REASON_LABELS[reason] }; }
+    if (grouping === "repo") return { id: run.repo, label: run.repo };
+    if (grouping === "none") return { id: "all", label: "All attention items" };
+    const project = projectFor(run); return { id: project?.id ?? "unassigned", label: project?.name ?? "Without a project" };
+  });
   const list = automations.value.filter((a) => automationInScope(a));
   const here = activeProject.value ? ` in ${activeProject.value.name}` : scoped ? " without a project" : "";
   return (
@@ -130,14 +141,12 @@ export function AutomationsView() {
 
       <div class="section">
         <div class="section-title">
-          Inbox {pending.length ? <span class="count">{pending.length}</span> : null}
+          Review inbox {pending.length ? <span class="count">{pending.length}</span> : null}
         </div>
         <Elsewhere count={allPending.length - pending.length} what={(n) => `${n} in other projects need${n === 1 ? "s" : ""} you`} />
-        {pending.length ? (
-          pending.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} />)
-        ) : (
-          <p class="help">Nothing to review{here}. Runs that changed nothing are archived on their own.</p>
-        )}
+        <p class="help">Higher run priorities come first, then questions, blocked work, failures and results. Older items come first within each priority. Open a run to answer approvals, resume work or review its evidence.</p>
+        <div class="wb-row"><label>Group by<select class="field" aria-label="Group review inbox" value={grouping} onChange={(event) => setGrouping(event.currentTarget.value)}><option value="project">Project</option><option value="repo">Repository</option><option value="reason">Attention needed</option><option value="none">No grouping</option></select></label><label>Show<select class="field" aria-label="Filter review inbox" value={filter} onChange={(event) => setFilter(event.currentTarget.value)}><option value="">All attention items</option>{Object.entries(REVIEW_REASON_LABELS).map(([id, label]) => <option value={id}>{label}</option>)}</select></label><label>Search<input class="field" aria-label="Search review inbox" value={query} onInput={(event) => setQuery(event.currentTarget.value)} placeholder="Task, repository or run ID" /></label></div>
+        {filtered.length ? groups.map((group) => <section key={group.id} aria-label={`Review group ${group.label}`}><h3>{group.label} <span class="count">{group.runs.length}</span></h3>{group.runs.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} />)}</section>) : <p class="help">{pending.length ? "No attention items match these filters." : `Nothing to review${here}. Runs that changed nothing are archived on their own.`}</p>}
       </div>
 
       <div class="section">
@@ -182,6 +191,7 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
   return (
     <div class="inbox-item">
       <div class="ih">
+        <span class="badge">{REVIEW_REASON_LABELS[reviewReason(run)!]}</span>{run.priority ? <span class="badge">Priority {run.priority > 0 ? "+" : ""}{run.priority}</span> : null}
         <span class={`dot ${runState(run)}`} />
         <a href={`#/run/${run.id}`} class="t">
           {run.task.split("\n")[0]}
@@ -194,6 +204,7 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
           {project ? <> · <Icon name="project" class="inline-icon" /> {project.name}</> : null} · {ago(run.createdAt)}
         </span>
       </div>
+      {run.awaiting ? <a class="btn small primary" href={`#/run/${run.id}`}>Open pending approval</a> : null}
       {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
       {run.team ? <div class="help">Team: {run.team.members.length} members · {run.team.tasks.filter((task) => task.status === "completed").length}/{run.team.tasks.length} tasks completed · {run.team.metrics.invocations} calls</div> : null}
       {teamAwaitingAnswer(run) ? <div class="at-notice"><b>The team needs your answer</b><p>{run.team?.messages.find((message) => message.id === run.team!.awaitingRequestId)?.body}</p><a class="btn small primary" href={`#/run/${run.id}`}>Answer team question</a></div> : run.team?.status === "blocked" ? <div class="at-notice"><p>{run.team.gaps.join(" ")}</p><a class="btn small" href={`#/run/${run.id}`}>Continue team work</a></div> : null}

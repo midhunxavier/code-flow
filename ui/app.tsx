@@ -466,6 +466,7 @@ function FolderPicker() {
   const [path, setPath] = useState("");
   const [status, setStatus] = useState("");
   const [hidden, setHidden] = useState(false);
+  const pathInput = useRef<HTMLInputElement>(null);
   const dialog = useDialog(pickerOpen.value, () => {
     pickerOpen.value = false;
     pickerChoose.value = null;
@@ -545,6 +546,7 @@ function FolderPicker() {
               type="text"
               spellcheck={false}
               aria-label="Folder path"
+              ref={pathInput}
               value={path}
               onInput={(e) => {
                 typed.current = true;
@@ -553,11 +555,11 @@ function FolderPicker() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  void browse(path.trim());
+                  void browse(e.currentTarget.value.trim());
                 }
               }}
             />
-            <button class="btn small" type="button" onClick={() => browse(path.trim())}>
+            <button class="btn small" type="button" onClick={() => browse((pathInput.current?.value ?? path).trim())}>
               Go
             </button>
           </div>

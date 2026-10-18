@@ -33,7 +33,7 @@ export interface TeamEvaluation {
   reproducibility?: EvaluationReproducibility;
   status: Run["status"];
   verified: boolean;
-  verification: { checks: "passed" | "failed" | "not_required" | "unknown"; review: "approved" | "rejected" | "unknown"; proof?: string; gaps: number; requirements: number; covered: number; integrityFlags: number };
+  verification: { checks: "passed" | "failed" | "not_required" | "unknown"; review: "approved" | "rejected" | "unknown"; proof?: string; proofNotRequired?: "unchanged-rerun"; gaps: number; requirements: number; covered: number; integrityFlags: number; retainedTasks?: number; newlyExecutedTasks?: number; requirementsUsingBaseline?: number };
   metrics: {
     invocations: number; coordinatorInvocations: number; coordinatorFraction: number | null; workerTurns: number; multiWorker: boolean;
     elapsedMs?: number; activeWorkMs: number; coordinatorMs?: number;
@@ -101,10 +101,11 @@ export function buildTeamEvaluation(run: Run, options: { mode?: EvaluationMode; 
   const requirements = team?.requirements.length ?? 0;
   const covered = team?.requirements.filter((requirement) => {
     const tasks = team.tasks.filter((task) => task.requirements.includes(requirement.id));
-    return tasks.length > 0 && tasks.every((task) => task.status === "completed" && !task.evidenceStale);
+    return tasks.length > 0 && tasks.every((task) => task.status === "completed" && !task.evidenceStale && (!task.retainedBaseline || approved));
   }).length ?? 0;
   const gaps = team?.gaps.length ?? 0;
-  const verified = run.status === "done" && approved && (check === "passed" || check === "not_required") && !gaps && !integrityFlags && (!team || team.status === "completed" && covered === requirements) && (run.prove === false || check === "not_required" || run.facts?.proof === "proven");
+  const unchangedRerun = !!run.teamRerun && run.facts?.proofNotRequired === "unchanged-rerun" && check === "passed" && approved;
+  const verified = run.status === "done" && approved && (check === "passed" || check === "not_required") && !gaps && !integrityFlags && (!team || team.status === "completed" && covered === requirements) && (run.prove === false || check === "not_required" || run.facts?.proof === "proven" || unchangedRerun);
   const mode = options.mode ?? "unknown";
   const approvalAnswers = options.journal ? [...options.journal].filter(([key]) => key.startsWith("approval:")).map(([, value]) => value as { decision?: string; note?: string }) : undefined;
   const rated = options.memoryEntries?.flatMap((entry) => entry.feedback?.filter((feedback) => feedback.runId === run.id && run.memoryManifest?.included.some((ref) => ref.id === entry.id && ref.revision === feedback.revision)) ?? []);
@@ -116,7 +117,7 @@ export function buildTeamEvaluation(run: Run, options: { mode?: EvaluationMode; 
     reproducibility: { nodeVersion: process.version, platform: `${process.platform}/${process.arch}`, ...options.reproducibility,
       requestedSettings: structuredClone(run.agentSettings ?? {}),
       stepSettings: [...new Map(turns.filter((step) => step.agent).map((step) => { const settings = { provider: step.agent!, model: step.settings?.model, effort: step.settings?.effort }; return [JSON.stringify(settings), settings] as const; })).values()] },
-    verification: { checks: check, review: approved ? "approved" : run.facts?.approved === false || team?.verification?.reviewed ? "rejected" : "unknown", proof: run.facts?.proof, gaps, requirements, covered, integrityFlags },
+    verification: { checks: check, review: approved ? "approved" : run.facts?.approved === false || team?.verification?.reviewed ? "rejected" : "unknown", proof: run.facts?.proof, gaps, requirements, covered, integrityFlags, ...(run.teamRerun ? { proofNotRequired: run.facts?.proofNotRequired, retainedTasks: team?.tasks.filter((task) => task.retainedBaseline).length ?? 0, newlyExecutedTasks: team?.tasks.filter((task) => !task.retainedBaseline && (task.attempts ?? 0) > 0).length ?? 0, requirementsUsingBaseline: team?.requirements.filter((requirement) => team.tasks.some((task) => task.retainedBaseline && task.requirements.includes(requirement.id))).length ?? 0 } : {}) },
     metrics: {
       invocations, coordinatorInvocations: coordination, coordinatorFraction: invocations ? coordination / invocations : null,
       workerTurns: workers.length, multiWorker: new Set(workers.map((step) => team ? step.memberId ?? step.agent : step.worktree ?? step.agent)).size > 1,
@@ -144,6 +145,7 @@ export function buildTeamEvaluation(run: Run, options: { mode?: EvaluationMode; 
       "Model identities record requested CLI settings. A provider default or alias is not an immutable model snapshot and may change between trials.",
       "Avoidable barrier time is a counterfactual upper-bound estimate after answered peer questions; it does not prove spare process capacity or an asynchronous speedup.",
       "Active work is the union of observed step intervals; it excludes gaps and is not a full run-clock measurement.",
+      ...(run.teamRerun ? ["Selective reruns retain explicitly pinned source task inputs. Baseline task counts are not newly executed work; final review still covers every original requirement."] : []),
       ...(!team ? ["Supervisor coordination includes its planning, integration and repair turns; legacy requirements have no structured coverage manifest."] : []),
     ],
   };

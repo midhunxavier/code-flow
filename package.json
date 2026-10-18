@@ -13,6 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test --test-concurrency=4 test/*.test.ts",
     "test:e2e": "tsx --test --test-concurrency=2 test/e2e/*.e2e.ts",
+    "test:vscode": "node scripts/test-vscode.mjs",
+    "package:vscode": "python3 scripts/package-vscode.py",
     "evaluate:teams": "tsx scripts/evaluate-teams.ts",
     "client": "node scripts/codeflow.mjs",
     "maintenance": "tsx scripts/maintenance.ts",
@@ -23,8 +25,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
-    "playwright-core": "^1.64.1",
-    "typescript": "^5.9.3"
+    "playwright-core": "^1.64.1"
   },
   "dependencies": {
     "@preact/signals": "^1.3.4",
@@ -33,6 +34,7 @@
     "esbuild": "^0.25.12",
     "preact": "^10.29.8",
     "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
     "uqr": "^0.1.3"
   }
 }

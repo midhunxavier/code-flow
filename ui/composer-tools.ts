@@ -1,5 +1,6 @@
 import type { AgentId, AgentSettings, PatternInfo } from "./types.js";
 import type { RoleValue } from "./roles.js";
+import { validateContextBudget, type ContextBudget } from "../src/context-budget.js";
 
 export interface PresetConfig {
   pattern: string;
@@ -11,6 +12,7 @@ export interface PresetConfig {
   limits: { maxMinutes: number; maxSteps: number; maxTokens?: number; maxCostUsd?: number };
   approvePlan: boolean;
   toolApprovals?: boolean;
+  contextBudget?: ContextBudget;
 }
 export interface TeamPreset {
   id: string;
@@ -71,7 +73,8 @@ export function validatePresetConfig(value: unknown, patterns: readonly PatternI
   }
   if (!["safe", "standard", "trusted", "full"].includes(String(value.trust)) || typeof value.approvePlan !== "boolean" || !object(value.limits) || !whole(value.limits.maxMinutes, 1, 720) || !whole(value.limits.maxSteps, 1, 200)) return fail("Invalid permissions, approval choice or execution limits.");
   if ((value.limits.maxTokens !== undefined && !whole(value.limits.maxTokens, 1, 1000000000)) || (value.limits.maxCostUsd !== undefined && (typeof value.limits.maxCostUsd !== "number" || !Number.isFinite(value.limits.maxCostUsd) || value.limits.maxCostUsd <= 0 || value.limits.maxCostUsd > 1000000)) || (value.toolApprovals !== undefined && typeof value.toolApprovals !== "boolean")) return fail("Invalid reported usage ceilings or tool approval preference.");
-  return { pattern: pattern.id, roles, options, agentSettings: settings(value.agentSettings), roleSettings, trust: value.trust as PresetConfig["trust"], limits: { maxMinutes: value.limits.maxMinutes, maxSteps: value.limits.maxSteps, ...(value.limits.maxTokens !== undefined ? { maxTokens: value.limits.maxTokens as number } : {}), ...(value.limits.maxCostUsd !== undefined ? { maxCostUsd: value.limits.maxCostUsd as number } : {}) }, approvePlan: value.approvePlan, ...(value.toolApprovals !== undefined ? { toolApprovals: value.toolApprovals } : {}) };
+  const contextBudget = validateContextBudget(value.contextBudget);
+  return { pattern: pattern.id, roles, options, agentSettings: settings(value.agentSettings), roleSettings, trust: value.trust as PresetConfig["trust"], limits: { maxMinutes: value.limits.maxMinutes, maxSteps: value.limits.maxSteps, ...(value.limits.maxTokens !== undefined ? { maxTokens: value.limits.maxTokens as number } : {}), ...(value.limits.maxCostUsd !== undefined ? { maxCostUsd: value.limits.maxCostUsd as number } : {}) }, approvePlan: value.approvePlan, ...(value.toolApprovals !== undefined ? { toolApprovals: value.toolApprovals } : {}), ...(contextBudget ? { contextBudget } : {}) };
 }
 
 export function templateParameters(template: Pick<TaskTemplate, "task" | "criteria">): string[] {

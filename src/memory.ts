@@ -75,6 +75,8 @@ export interface MemoryEntry extends Omit<MemoryInput, "derivedFrom" | "tags" | 
   deletedAt?: number;
 }
 
+export type MemoryMaintenanceEntry = Pick<MemoryEntry, "id" | "revision" | "scope" | "repo" | "projectId" | "runId" | "status" | "tags" | "derivedFrom" | "origins" | "sourceRefs" | "createdAt" | "updatedAt">;
+
 /** Verification must be constructed from runtime check/review evidence, not model claims. */
 export interface MemoryVerification {
   passed: boolean;
@@ -291,6 +293,25 @@ export class MemoryStore {
         count++;
       }
       return count;
+    });
+  }
+
+  /** Offline maintenance reads provenance metadata without exporting private bodies/titles. */
+  async maintenanceEntries(): Promise<MemoryMaintenanceEntry[]> {
+    const doc = await this.read();
+    return doc.entries.map(({ id, revision, scope, repo, projectId, runId, status, tags, derivedFrom, origins, sourceRefs, createdAt, updatedAt }) => clone({ id, revision, scope, repo, projectId, runId, status, tags, derivedFrom, origins, sourceRefs, createdAt, updatedAt }));
+  }
+
+  /** One atomic offline retirement; project guidance and live source relations stay protected. */
+  async retireMaintenance(refs: MemoryRef[]): Promise<number> {
+    const selected = uniqueRefs(refs);
+    return this.change((doc) => {
+      const ids = new Set(selected.map((ref) => ref.id));
+      const entries = selected.map((ref) => current(doc, ref.id, ref.revision, { kind: "user" }, true));
+      if (entries.some((entry) => entry.scope === "project" || entry.tags.includes("pinned"))) throw new Error("Retention cannot erase project guidance or pinned memory");
+      if (doc.entries.some((entry) => entry.status !== "deleted" && entry.derivedFrom.some((source) => ids.has(source.id)))) throw new Error("Retention cannot erase a live memory provenance source");
+      for (const entry of entries) redact(entry);
+      return entries.length;
     });
   }
 

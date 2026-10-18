@@ -26,13 +26,17 @@ test("encrypted backups round-trip application data while excluding live session
   await writeFile(join(home, "notifications.json"), JSON.stringify({ version: 1, settings: { slack: { enabled: true, events: ["done"], projects: "all" } }, deliveries: [{ id: "n-1", state: "pending", nextAttemptAt: 123 }], seen: [] }));
   await writeFile(join(home, "remote.json"), '{"controlToken":"old-phone-token"}');
   await writeFile(join(home, "phone-devices.json"), '{"devices":[]}');
+  await writeFile(join(home, "shared-accounts.json"), '{"users":[{"password":"credential-hash"}],"sessions":[{"hash":"live-authority"}]}');
   await writeFile(join(home, "connection.json"), '{"token":"team-token"}');
+  await mkdir(join(home, "remote-worker-private")); await writeFile(join(home, "remote-worker-private", "request.json"), '{"capability":"must-not-restore-worker-authority"}');
   await writeFile(join(root, "outside.txt"), "not part of code-flow");
   await symlink(join(root, "outside.txt"), join(home, "outside-link"));
   const archive = join(root, "backup.cfb");
   const backup = await createEncryptedBackup({ home, output: archive, password: PASSWORD });
   assert.equal(backup.files, 4);
   assert.ok(backup.omitted.some((path) => path.includes("remote.json")));
+  assert.ok(backup.omitted.some((path) => path.includes("remote-worker-private")));
+  assert.ok(backup.omitted.some((path) => path.includes("shared-accounts.json")));
   assert.ok(backup.omitted.some((path) => path.includes("symbolic link")));
   assert.equal((await readFile(archive)).includes(Buffer.from("super-secret-note")), false);
   if (process.platform !== "win32") assert.equal((await lstat(archive)).mode & 0o777, 0o600);
@@ -50,11 +54,33 @@ test("encrypted backups round-trip application data while excluding live session
   assert.equal(notifications.deliveries[0].state, "cancelled");
   assert.equal(await readFile(join(restored, "notes.json"), "utf8"), '{"private":"super-secret-note"}');
   assert.equal(await lstat(join(restored, "remote.json")).then(() => true, () => false), false);
+  assert.equal(await lstat(join(restored, "remote-worker-private")).then(() => true, () => false), false);
+  assert.equal(await lstat(join(restored, "shared-accounts.json")).then(() => true, () => false), false);
   assert.equal(await lstat(join(restored, "outside-link")).then(() => true, () => false), false);
   await assert.rejects(restoreEncryptedBackup({ input: archive, destination: restored, password: PASSWORD }), /already exists/);
   await assert.rejects(createEncryptedBackup({ home, output: archive, password: PASSWORD }), /EEXIST/);
   await mkdir(join(home, "..safe"));
   await assert.rejects(createEncryptedBackup({ home, output: join(home, "..safe", "nested.cfb"), password: PASSWORD }), /outside/);
+});
+
+test("restoring encrypted backups cancels queued and ambiguous deferred work without losing saved receipts", async (t) => {
+  const { root, home } = await fixture(t);
+  const { DeferredRuns } = await import("../src/deferred-runs.js");
+  const file = join(home, "deferred-runs.json");
+  const request = { repo: "/project/fixture", pattern: "solo", task: "Run later", roles: { agent: ["claude"] }, options: {} };
+  const queue = new DeferredRuns({ file, ready: async () => ({ ready: true }), launch: async () => ({ runId: "run-existing" }) }); await queue.load();
+  await queue.enqueue({ run: request }); await queue.tick();
+  await queue.enqueue({ run: request, notBefore: Date.now() + 60_000 });
+  await queue.enqueue({ run: request });
+  const saved = JSON.parse(await readFile(file, "utf8")); const ambiguous = structuredClone(saved.jobs[0]);
+  ambiguous.id = `d-${randomBytes(16).toString("hex").slice(0, 8)}-0000-4000-8000-${randomBytes(6).toString("hex")}`; ambiguous.status = "claimed"; ambiguous.cancelRequested = true; saved.jobs.push(ambiguous); await writeFile(file, JSON.stringify(saved));
+  const backup = join(root, "deferred.cfb"); await createEncryptedBackup({ home, output: backup, password: PASSWORD });
+  const destination = join(root, "restored-deferred"); const result = await restoreEncryptedBackup({ input: backup, destination, password: PASSWORD });
+  assert.equal(result.cancelledDeferredRuns, 3);
+  let calls = 0; const restored = new DeferredRuns({ file: join(destination, "deferred-runs.json"), ready: async () => ({ ready: true }), launch: async () => { calls++; return { runId: "unexpected" }; } }); await restored.load(); await restored.tick(true);
+  assert.equal(calls, 0); const jobs = await restored.list(); assert.equal(jobs.filter((job) => job.status === "cancelled").length, 3);
+  assert.equal(jobs.find((job) => job.status === "started")!.runId, "run-existing");
+  assert.ok(jobs.filter((job) => job.status === "cancelled").every((job) => /backup restore/.test(job.reason!)));
 });
 
 test("incorrect passwords and tampered archives leave no restored directory", async (t) => {
@@ -86,15 +112,17 @@ test("authenticated malicious backups cannot escape the destination or restore o
   await writeFile(archive, archiveManifest({ version: 1, createdAt: 1, omitted: [], files: [file] }));
   await assert.rejects(restoreEncryptedBackup({ input: archive, destination: join(root, "unsafe"), password: PASSWORD }), /unsafe/);
   assert.equal(await lstat(join(root, "escape")).then(() => true, () => false), false);
-  await writeFile(archive, archiveManifest({ version: 1, createdAt: 1, omitted: [], files: [{ ...file, path: "remote.json" }, { ...file, path: "phone-devices.json" }, { ...file, path: "notes.json" }] }));
+  await writeFile(archive, archiveManifest({ version: 1, createdAt: 1, omitted: [], files: [{ ...file, path: "remote.json" }, { ...file, path: "phone-devices.json" }, { ...file, path: "shared-accounts.json.old" }, { ...file, path: "remote-worker-private/request.json" }, { ...file, path: "notes.json" }] }));
   const destination = join(root, "clean");
   const restored = await restoreEncryptedBackup({ input: archive, destination, password: PASSWORD });
   assert.equal(restored.files, 1);
   assert.equal(await lstat(join(destination, "phone-devices.json")).then(() => true, () => false), false);
+  assert.equal(await lstat(join(destination, "shared-accounts.json.old")).then(() => true, () => false), false);
+  assert.equal(await lstat(join(destination, "remote-worker-private")).then(() => true, () => false), false);
 });
 
 const log = (id: string, status: string, archived: boolean) => JSON.stringify({ seq: 1, type: "run", run: { id, status, archived } }) + "\n";
-test("retention previews and deletes only old archived terminal logs, keeping resumable work and knowledge", async (t) => {
+test("legacy age-only retention reports candidates but cannot bypass exact-plan deletion protections", async (t) => {
   const { home } = await fixture(t);
   const now = Date.now(); const old = new Date(now - 100 * 86400000);
   for (const [id, status, archived] of [["old", "done", true], ["active", "running", true], ["resume", "interrupted", true], ["kept", "done", false], ["recent", "done", true]] as const) {
@@ -108,8 +136,9 @@ test("retention previews and deletes only old archived terminal logs, keeping re
   assert.deepEqual(preview.candidates.map((item) => item.id), ["old"]);
   assert.equal(preview.deletedFiles, 0);
   assert.equal(await lstat(join(home, "runs", "old.jsonl")).then(() => true, () => false), true);
-  const applied = await retainArchivedRuns({ home, days: 90, now, apply: true });
-  assert.equal(applied.deletedFiles, 3);
+  assert.match(preview.nextStep, /pins or provenance/);
+  await assert.rejects(retainArchivedRuns({ home, days: 90, now, apply: true }), /Age-only retention cannot delete data/);
+  for (const suffix of [".jsonl", ".journal.jsonl", ".checkpoint.json"]) assert.equal(await lstat(join(home, "runs", "old" + suffix)).then(() => true, () => false), true);
   assert.equal(await readFile(join(home, "memory.json"), "utf8"), "knowledge");
   assert.equal(await lstat(join(home, "runs", "resume.jsonl")).then(() => true, () => false), true);
 });

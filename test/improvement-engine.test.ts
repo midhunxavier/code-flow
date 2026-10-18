@@ -92,6 +92,27 @@ test("reported token ceiling stops the next agent operation", async () => {
   } finally { adapters.claude.run = original; await manager.shutdown(); }
 });
 
+test("assembled context block runs before CLI launch counters and persists only measurements", async () => {
+  let calls = 0; const original = adapters.claude.run;
+  adapters.claude.run = async () => { calls++; return { ok: true, finalText: "done" }; };
+  const manager = new RunManager();
+  try {
+    const p = pattern(async (ctx) => { const tree = await ctx.worktree("result"); await ctx.ask({ title: "Budgeted input", role: "worker", agent: "claude", mode: "read", cwd: tree, prompt: "private fixture contents" }); return "done"; });
+    const blocked = await manager.start({ repo, pattern: p, task: "budget", roles: {}, options: {}, loop: { contextBudget: { maxPromptBytes: 1, policy: "block" } } });
+    const final = await finished(manager, blocked.id);
+    assert.equal(calls, 0); assert.equal(final.status, "stopped"); assert.match(final.stopReason!, /context budget/);
+    const step = final.steps.find((step) => step.kind === "agent")!;
+    assert.equal(step.contextInput?.exceeded, true); assert.equal(step.invocations ?? 0, 0);
+    assert.equal(final.usage.agentSteps, 1, "the refused logical step remains visible"); assert.match(step.contextInput!.hash, /^[a-f0-9]{64}$/);
+    assert.ok(step.contextInput!.excluded.includes("Earlier conversation history"));
+    assert.equal(JSON.stringify(step.contextInput).includes("private fixture contents"), false);
+    const reloaded = new RunManager(); await reloaded.load(); assert.deepEqual(reloaded.get(final.id)?.steps.find((entry) => entry.id === step.id)?.contextInput, step.contextInput);
+    const warned = await manager.start({ repo, pattern: p, task: "warning", roles: {}, options: {}, loop: { contextBudget: { maxPromptBytes: 1, policy: "warn" } } });
+    const warning = await finished(manager, warned.id); assert.equal(warning.status, "done"); assert.equal(calls, 1);
+    assert.equal(warning.steps.find((entry) => entry.kind === "agent")?.contextInput?.exceeded, true);
+  } finally { adapters.claude.run = original; await manager.shutdown(); }
+});
+
 test("human file coverage is tied to a commit and human rework survives reload", async () => {
   const manager = new RunManager();
   try {

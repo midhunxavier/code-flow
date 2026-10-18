@@ -1,6 +1,8 @@
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { AgentTag, Markdown } from "./bits.js";
-import { duration, fmtCost, fmtTokens, post } from "./lib.js";
+import { api, enc, duration, fmtCost, fmtTokens, post } from "./lib.js";
+import { navigate } from "./state.js";
+import { dependentTaskClosure } from "../src/team-rerun-graph.js";
 import { memberProgress, requirementProgress, taskBlockers, teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
 import { MemoryFeedback } from "./memory.js";
 import { TeamCapabilities, TeamRunMetrics } from "./team-evaluation.js";
@@ -42,7 +44,9 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
         {metrics.coordinatorCostUsd !== undefined ? <span title="Provider-reported API equivalent, not your subscription charge"><b>{fmtCost(metrics.coordinatorCostUsd)}</b> API equivalent</span> : null}
       </div>
       {team.rationale ? <p class="at-rationale">{team.rationale}</p> : null}
-      {run.status === "running" && run.awaiting?.kind === "plan" && team.status === "awaiting_approval" ? <div class="at-row"><button class="btn" disabled={!team.inventory} title={team.inventory ? "Edit tasks and contracts while keeping the selected members, requirements and permissions" : "Provider inventory is unavailable for this older plan"} onClick={() => setEditing(true)}>Edit pending plan</button><span class="help">Saving changes keeps the plan pending for your approval.</span></div> : null}
+      {run.status === "running" && run.awaiting?.kind === "plan" && team.status === "awaiting_approval" && !run.teamRerun ? <div class="at-row"><button class="btn" disabled={!team.inventory} title={team.inventory ? "Edit tasks and contracts while keeping the selected members, requirements and permissions" : "Provider inventory is unavailable for this older plan"} onClick={() => setEditing(true)}>Edit pending plan</button><span class="help">Saving changes keeps the plan pending for your approval.</span></div> : null}
+      {run.teamRerun ? <p class="at-notice">Selective rerun of {run.teamRerun.parentRunId} from <code>{run.teamRerun.baseCommit.slice(0, 12)}</code>. Executes {run.teamRerun.rerunTaskIds.join(", ")}; retained tasks are baseline inputs. All requirements need fresh final checks and independent review.</p> : null}
+      {run.status !== "running" && run.worktrees.some((tree) => tree.name === "integration") && !["planning", "awaiting_approval"].includes(team.status) ? <TaskRerunPanel key={run.id} run={run} /> : null}
       <WorkflowGraph run={run} steps={steps} />
       {team.reviewFallback ? <div class="at-notice">{team.reviewFallback}</div> : null}
       {team.gaps.length ? <div class="at-notice"><b>Still unresolved</b><ul>{team.gaps.map((gap, i) => <li key={i}>{gap}</li>)}</ul></div> : null}
@@ -65,6 +69,8 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
           return <li key={task.id} class="at-task" id={`team-task-${task.id}`}>
             <div class="at-row"><b>{task.title}</b><span class={`badge ${task.status === "completed" ? "ok" : task.status === "failed" ? "warn" : ""}`}>{TASK_STATUS[task.status ?? "pending"]}</span></div>
             <div class="help">{name(task.owner)} · {task.kind} · {task.attempts ?? 0} attempts</div>
+            {task.retainedBaseline ? <p class="help">Retained baseline input from {task.retainedBaseline.sourceRunId} · <code>{task.retainedBaseline.sourceTaskHead.slice(0, 12)}</code>. This task was not executed again.</p> : null}
+            {task.noNewDiff ? <p class="help">No new diff from this rerun turn. Acceptance requires a current-head check and independent review.</p> : null}
             {task.dependsOn.length ? <div class="help">Needs {task.dependsOn.map((id) => `${team.tasks.find((item) => item.id === id)?.title ?? id} (${task.dependencyTypes?.[id] ?? "completion"})`).join(", ")}</div> : null}
             {task.evidenceStale ? <p class="at-notice">The contract changed. This task's evidence needs verification again.</p> : null}
             {blockers.length ? <ul class="at-blockers">{blockers.map((reason, i) => <li key={i}>{reason}</li>)}</ul> : null}
@@ -76,7 +82,8 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
       {team.requirements.length ? <div class="at-section"><h4>Requirement coverage</h4><ul class="at-coverage">
         {team.requirements.map((requirement) => {
           const progress = requirementProgress(team, requirement.id, run.status);
-          return <li key={requirement.id}><span>{requirement.description}</span><span class={`badge ${progress === "verified" ? "ok" : progress === "unassigned" ? "warn" : ""}`}>{COVERAGE[progress]}</span></li>;
+          const retained = team.tasks.filter((task) => task.requirements.includes(requirement.id) && task.retainedBaseline).length;
+          return <li key={requirement.id}><span>{requirement.description}{retained ? <small class="help"> · {retained} retained baseline task(s)</small> : null}</span><span class={`badge ${progress === "verified" ? "ok" : progress === "unassigned" ? "warn" : ""}`}>{COVERAGE[progress]}</span></li>;
         })}
       </ul>{team.verification ? <p class="help">Checks: {team.verification.check.replaceAll("_", " ")} · Review: {team.verification.reviewed ? team.verification.approved ? "approved" : "changes requested" : "pending"} · Commit <code>{team.verification.head.slice(0, 12)}</code></p> : null}</div> : null}
       {team.messages.length ? <div class="at-section"><div class="at-row"><h4>Team messages</h4><label>Inbox <select class="field" aria-label="Member inbox" value={inbox} onChange={(event) => setInbox(event.currentTarget.value)}><option value="all">All members</option><option value="user">Questions for you</option>{team.members.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}</select></label></div><div class="at-messages">
@@ -102,6 +109,52 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
       {editing ? <TeamPlanEditor run={run} onClose={() => setEditing(false)} /> : null}
     </section>
   );
+}
+
+function TaskRerunPanel({ run }: { run: RunSummary }) {
+  const team = run.team!;
+  const [open, setOpen] = useState(false);
+  const [head, setHead] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [instructions, setInstructions] = useState<Record<string, string>>({});
+  const [calls, setCalls] = useState(Math.max(8, run.loop.maxSteps));
+  const [minutes, setMinutes] = useState(run.loop.maxMinutes);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [refresh, setRefresh] = useState(0);
+  const branch = run.worktrees.find((tree) => tree.name === "integration")!.branch;
+  useEffect(() => {
+    if (!open) return;
+    let current = true; setHead(""); setError("");
+    api<{ head: string }>(`/api/runs/${enc(run.id)}/review-coverage?branch=${enc(branch)}`).then((value) => { if (current) setHead(value.head); }, (problem) => { if (current) setError((problem as Error).message); });
+    return () => { current = false; };
+  }, [open, run.id, branch, refresh]);
+  const invalidated = dependentTaskClosure(team.tasks, selected);
+  const retained = team.tasks.filter((task) => !invalidated.has(task.id));
+  const unfinished = retained.filter((task) => !["completed", "submitted"].includes(task.status ?? "") || task.evidenceStale || !task.head);
+  const minimum = Math.max(4, invalidated.size + 2);
+  const start = async () => {
+    setBusy(true); setError("");
+    try {
+      const replacements = Object.fromEntries(selected.filter((id) => instructions[id]?.trim()).map((id) => [id, instructions[id]!.trim()]));
+      const child = await post<{ id: string }>(`/api/runs/${enc(run.id)}/rerun-tasks`, { expectedHead: head, taskIds: selected, instructions: replacements, budget: { maxSteps: calls, maxInvocations: calls, maxMinutes: minutes } });
+      navigate({ view: "run", id: child.id });
+    } catch (problem) { setError((problem as Error).message); }
+    finally { setBusy(false); }
+  };
+  return <details class="at-section team-rerun" onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary>Rerun selected tasks</summary>
+    <p class="help">Creates a child at the committed integration result. Selected tasks and every downstream dependency execute again; other completed tasks become explicit baseline inputs. The original run and its worker checkouts stay available. The child requires fresh checks and independent review of all requirements.</p>
+    <p class="help">Baseline: {head ? <code>{head.slice(0, 12)}</code> : "Loading current integration commit…"} <button class="btn ghost small" disabled={busy} onClick={() => setRefresh((value) => value + 1)}>Refresh rerun baseline</button></p>
+    {head && (team.verification?.head !== head || !team.verification?.approved) ? <p class="at-notice">This baseline has no passing parent verification at its current commit. The child starts unverified.</p> : null}
+    <fieldset disabled={busy}><legend>Tasks to execute again</legend>{team.tasks.map((task) => <div key={task.id}><label class="check"><input type="checkbox" checked={selected.includes(task.id)} onChange={(event) => setSelected(event.currentTarget.checked ? [...selected, task.id] : selected.filter((id) => id !== task.id))} />Rerun {task.title}</label>{selected.includes(task.id) ? <label>New instructions for {task.id}<textarea class="field" rows={2} maxLength={16000} placeholder="Leave blank to reuse the accepted instructions" value={instructions[task.id] ?? ""} onInput={(event) => setInstructions({ ...instructions, [task.id]: event.currentTarget.value })} /></label> : null}</div>)}</fieldset>
+    <div aria-label="Task rerun preview"><p>Execute: {team.tasks.filter((task) => invalidated.has(task.id)).map((task) => task.id).join(", ") || "Choose a task"}</p><p>Retain as baseline inputs: {retained.map((task) => task.id).join(", ") || "None"}</p></div>
+    {unfinished.length ? <p class="at-notice">Also select unfinished or stale tasks: {unfinished.map((task) => task.id).join(", ")}.</p> : null}
+    <div class="at-row"><label>New invocation budget<input class="field" type="number" min={minimum} max="200" value={calls} disabled={busy} onInput={(event) => setCalls(Number(event.currentTarget.value))} /></label><label>Rerun time budget (minutes)<input class="field" type="number" min="1" max="720" value={minutes} disabled={busy} onInput={(event) => setMinutes(Number(event.currentTarget.value))} /></label></div>
+    <p class="help">At least {minimum} calls fund invalidated work, independent review and one recovery allowance. Provider/model/permission settings stay pinned. An unchanged implementation must still pass the current check and independent review; it does not create new fail-to-pass proof.</p>
+    <button class="btn primary" disabled={busy || !head || !selected.length || !!unfinished.length || !Number.isInteger(calls) || calls < minimum || calls > 200 || !Number.isFinite(minutes) || minutes < 1 || minutes > 720} onClick={start}>{busy ? "Starting child…" : "Start selected task rerun"}</button>
+    {error ? <p class="msg err" role="alert">{error}</p> : null}
+  </details>;
 }
 
 function WorkflowGraph({ run, steps }: { run: RunSummary; steps?: Step[] }) {

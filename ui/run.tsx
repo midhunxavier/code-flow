@@ -1574,7 +1574,7 @@ function AwaitingCard({ run }: { run: RunSummary }) {
           <button class="btn primary" disabled={busy} onClick={() => answer("approve")}>
             ✓ Approve
           </button>
-          <button class="btn" disabled={busy || !note.trim()} onClick={() => answer("revise")} title={note.trim() ? "" : "Write what should change first"}>
+          <button class="btn" disabled={busy || !note.trim() || !!run.teamRerun} onClick={() => answer("revise")} title={run.teamRerun ? "Reject this pinned rerun and create another selection to change its tasks or instructions" : note.trim() ? "" : "Write what should change first"}>
             Ask for changes
           </button>
           <button class="btn danger" disabled={busy} onClick={() => answer("reject")}>
@@ -1855,6 +1855,7 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
         <span>{(step.kind ?? "agent") === "agent" ? (step.mode === "write" ? "can edit files" : "read-only") : "run by code-flow"}</span>
         <span>worktree {step.worktree}</span>
         {step.usage ? <span title={usageTitle(step.usage)}>{fmtTokens(step.usage.inputTokens + step.usage.outputTokens)} tokens{step.usage.costUsd ? ` · ≈${fmtCost(step.usage.costUsd)}` : ""}</span> : null}
+        {step.contextInput ? <span title={`Measured assembled invocation input. Excludes: ${step.contextInput.excluded.join(", ")}. Input hash ${step.contextInput.hash}`}>{step.contextInput.bytes.toLocaleString()} input bytes · ≈{step.contextInput.approximateTokens.toLocaleString()} input tokens{step.contextInput.exceeded ? ` · ${step.contextInput.policy === "block" ? "blocked" : "budget warning"}` : ""}{step.contextInput.resumed ? " · earlier history excluded" : ""}</span> : null}
         {step.status !== "done" ? <span class={`status-pill ${step.status}`}>{STATUS_TEXT[step.status] ?? step.status}</span> : null}
       </div>
       <div

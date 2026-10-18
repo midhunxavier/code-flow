@@ -4,6 +4,8 @@ import { AgentTag } from "./bits.js";
 import { api, ApiError, baseName, enc, fmtSize, FLOWS, post, readBase64, SHORT, store } from "./lib.js";
 import { useDialog } from "./app.js";
 import { AcceptanceEditor, ComposerLibraryEditor, ContextInspector, EffectiveSettings, FirstRunGuide, RepositoryReadiness } from "./onboarding.js";
+import { DeferredRunsPanel } from "./deferred-runs.js";
+import { contextBudget } from "./context-budget.js";
 import { taskWithCriteria } from "./composer-tools.js";
 import {
   agents,
@@ -126,6 +128,7 @@ export function Composer() {
       maxSteps: limits.value.maxSteps,
       maxTokens: limits.value.maxTokens,
       maxCostUsd: limits.value.maxCostUsd,
+      contextBudget: contextBudget.value,
       verification: verificationProfile,
       agentContainer: containerEnabled ? { image: containerImage.trim(), authVolume: containerVolume.trim() || undefined, network: true } : undefined,
       copy: repoConfig.value?.config.copy,
@@ -247,6 +250,7 @@ export function Composer() {
       {p ? <ComposerLibraryEditor p={p} onToolApprovalsChange={setToolApprovals} /> : null}
       {p ? <EffectiveSettings p={p} verificationProfile={verificationProfile} container={{ enabled: containerEnabled, image: containerImage, authVolume: containerVolume }} /> : null}
       <ContextInspector />
+      {p && repo.value && task.value.trim() ? <details class="settings"><summary>Start later or wait for provider capacity</summary><div class="settings-body"><DeferredRunsPanel runRequest={runBody(p)} project={target.value.project?.id} repo={repo.value} /></div></details> : null}
 
       <details class="settings"><summary>Agent isolation</summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} onChange={(event) => setContainerEnabled(event.currentTarget.checked)} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label>Image<input class="field" placeholder="Your prepared image:tag" value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label>Authentication volume<input class="field" placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is enabled for inference. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
       <label class="checkpoint"><input type="checkbox" checked={toolApprovals} onChange={(event) => { setToolApprovals(event.currentTarget.checked); store.set("interactiveApprovals", event.currentTarget.checked ? "1" : "0"); }} /><span><b>Ask me for tool permissions</b> · Supported Codex requests appear in an approval inbox. Unattended and locked-down runs always decline them.</span></label>

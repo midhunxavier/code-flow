@@ -2,7 +2,7 @@
 
 This work continues the application review on branch `codex/application-improvements`, created from `main` at `abbb6be`. The original review contained defects, 14 broader product problems, and 73 feature ideas; those are tracked separately below.
 
-Current scope: all six priority correctness packages implemented; 11 broader problems addressed and three partially addressed; 52 feature items implemented, 15 partial, and six pending. This is not completion of all 73 feature ideas.
+Current scope: all six priority correctness packages implemented; 11 broader problems addressed and three partially addressed; 63 feature items implemented, seven partial, and three pending. This is not completion of all 73 feature ideas.
 An item is complete only when its behavior is implemented, reachable from its
 intended interface, documented, and covered by appropriate validation. A service
 interface, mock, or roadmap entry alone is not an implemented feature.
@@ -35,7 +35,7 @@ interface, mock, or roadmap entry alone is not an implemented feature.
 
 ## Feature acceptance backlog
 
-- [ ] **Partial.** 1. Guided onboarding and dependency/authentication health. First-run guide and provider/Git health implemented; optional browser/terminal dependency discovery is incomplete.
+- [x] 1. Guided onboarding and dependency/authentication health, including explicit terminal/browser/Docker discovery and refresh.
 - [x] 2. Repository readiness inspection and isolated command validation.
 - [x] 3. Simple and advanced composer modes.
 - [x] 4. Named versioned team presets with import/export.
@@ -48,8 +48,8 @@ interface, mock, or roadmap entry alone is not an implemented feature.
 - [x] 11. Priority queue and project fairness.
 - [x] 12. Safe checkpoint pause.
 - [x] 13. Fork from a checkpoint.
-- [ ] **Pending.** 14. Selective task reruns and downstream evidence invalidation. Requires selective replay planning and downstream evidence invalidation.
-- [ ] **Pending.** 15. Quota-aware deferred execution. Requires durable deferred dispatch against provider quota/reset windows.
+- [x] 14. Selective task reruns and downstream evidence invalidation, with pinned retained baselines and fresh final review/checks.
+- [x] 15. Quota-aware deferred execution with durable claims, reported reset windows and explicit ambiguous-launch recovery.
 - [x] 16. Token and API-equivalent usage ceilings.
 - [x] 17. Conflict-aware task assignments.
 - [ ] **Pending.** 18. Remote execution workers. Requires a selected remote worker protocol, configured target and live worker acceptance.
@@ -64,28 +64,28 @@ interface, mock, or roadmap entry alone is not an implemented feature.
 - [ ] **Partial.** 27. Inline GitHub review synchronization. Inline comments, replies, locations and truncation are ingested and watched; remote thread resolution is absent.
 - [x] 28. Validate the current merge target.
 - [x] 29. Export verification reports.
-- [ ] **Partial.** 30. Symbol-aware code search. Bounded declaration search exists; language-server symbols and reference resolution are absent.
+- [x] 30. Symbol-aware code search and JavaScript/TypeScript imported references through an isolated language service.
 - [ ] **Partial.** 31. Dependency and architecture exploration. JavaScript/TypeScript relative imports are explored; dynamic, package and other-language architecture analysis is absent.
 - [x] 32. File editing with save previews and conflicts.
 - [x] 33. Selective file/hunk application.
 - [x] 34. Three-way conflict resolution.
 - [x] 35. Multi-service workspace launch profiles.
-- [ ] **Partial.** 36. Context inspection before dispatch. Explicit file previews, redaction and size estimates exist; directory expansion and final provider-context budgets are absent.
-- [ ] **Partial.** 37. Concurrent workspace activity coordination. Active workspace editing is blocked and overlapping task paths serialize; there is no general workspace lease system.
-- [ ] **Partial.** 38. Checkpoint comparison and revert. Checkpoint lists, selected file/hunk comparison and restoration exist; full commit comparison/revert is absent.
+- [x] 36. Context inspection before dispatch: bounded directory expansion, explicit assembled-input measurements and warn/block ceilings. Hidden provider history and later file/image tokens are outside this scope.
+- [x] 37. Concurrent workspace activity coordination with in-process workspace mutation leases across starts, resumes and owned worktrees. External/manual programs remain outside the lease system.
+- [x] 38. Full checkpoint comparison and guarded staged inverse commits, alongside selective file/hunk restoration. Merge-commit mainline decisions remain manual.
 - [x] 39. Memory provenance graph.
 - [x] 40. Memory edit conflict resolution.
 - [x] 41. Memory deletion impact preview.
 - [x] 42. Stale-memory detection.
 - [ ] **Partial.** 43. Memory duplicates and contradictions. Exact and lexical duplicate suggestions exist; semantic contradiction analysis is absent.
-- [ ] **Partial.** 44. Versioned project conventions. Existing conventions are Git files and can be edited/restored; a dedicated versioned conventions library is absent.
+- [x] 44. Dedicated versioned project conventions with immutable history, conflict-safe drafts, preview restore and guarded explicit publication.
 - [x] 45. Searchable revisioned notes.
 - [x] 46. Curated project onboarding summaries.
 - [x] 47. Explicit schedule time zones and previews.
 - [x] 48. Inspectable webhook queue.
 - [x] 49. Failed delivery replay.
 - [x] 50. Automation dry runs.
-- [ ] **Partial.** 51. Grouped prioritized review inbox. Project-scoped automation review exists; a grouped, prioritized review inbox is absent.
+- [x] 51. Grouped prioritized review inbox for manual and unattended questions, blocked work, failures and results.
 - [ ] **Partial.** 52. GitLab and Bitbucket adapters. GitLab/Bitbucket read-only metadata imports exist; PR code fetching, push and full review/merge parity are absent.
 - [x] 53. Linear and Jira sources.
 - [x] 54. Opt-in external notifications.
@@ -95,7 +95,7 @@ interface, mock, or roadmap entry alone is not an implemented feature.
 - [x] 58. Secure paired phone sessions.
 - [ ] **Partial.** 59. Filesystem access policies. Symlink containment, worktree guards and container mounts are enforced; configurable per-project filesystem allow/deny policies are absent.
 - [x] 60. Secret filtering for exported content.
-- [ ] **Partial.** 61. Retention and deletion policies. Offline archived run-log retention exists; separate saved policies for attachments, memory and worktrees are absent.
+- [x] 61. Saved per-type retention policies for archived runs, attachments, run memory and worktrees, with protected exact plans and explicit offline application.
 - [x] 62. Backup and restore.
 - [x] 63. History compaction and pagination.
 - [x] 64. Sanitized diagnostic bundles.
@@ -106,14 +106,14 @@ interface, mock, or roadmap entry alone is not an implemented feature.
 - [x] 69. Critical-path timing analysis.
 - [x] 70. Reproducible benchmark fixtures and model identities.
 - [ ] **Pending.** 71. Shared projects and role permissions. Requires an identity system and server-enforced project roles.
-- [ ] **Pending.** 72. Editor integrations. Requires a selected editor integration and its host acceptance environment.
+- [x] 72. Local VS Code integration with SecretStorage connection, task creation, run inspection, cancellation and result worktrees; packaged and tested in the actual editor host.
 - [ ] **Partial.** 73. Versioned provider/workflow extension contracts. Versioned HTTP operations and typed adapter capabilities exist; provider/workflow plugin loading and version negotiation are absent.
 
 ## Implementation boundaries
 
 Mutation, visual and accessibility gates execute explicitly configured repository scripts; they do not supply mutation engines, browser rules or image baselines. External source adapters were validated with HTTP fixtures, not live third-party accounts, and import source text/metadata without fetching PR code. Native agent containers were tested with Docker and fake CLIs; real provider credentials/quota were not used. Critical-path metrics use observed time, not predictions. Phone pairing grants owner control rather than project roles.
 
-Remote workers, shared identity/roles, editor hosts, selective task replay, deferred quota dispatch and multi-repository coordination remain pending. These are new systems rather than small fixes, and are not represented as completed by scaffolding.
+SSH remote workers, shared identity/roles and multi-repository coordination remain pending and are the next implementation batch. These are new systems rather than small fixes, and are not represented as completed by scaffolding.
 
 ## Validation
 
@@ -122,4 +122,16 @@ send external notifications, or mutate third-party accounts as a side effect of
 the test suite. Account-dependent features require explicit configured credentials
 for live acceptance testing; fixture coverage is recorded separately.
 
-The full browser suite passed 34/34 on the implemented integration surface. The unit suite passed 621 tests with three opt-in Docker cases skipped; those three native Docker cases passed separately. Thirty-five post-audit unit checks and the three workspace browser cases, including draft recovery, also passed. A final full-browser rerun includes the new draft case. The test runner limits unit concurrency to four files and browser concurrency to two because these suites launch real Git, server and browser processes.
+The first checkpoint passed 621 unit tests with three opt-in Docker cases skipped;
+those three native Docker cases passed separately. Its full browser suite passed
+35/35. The second batch's unit run passed 688/688 executed checks (three optional
+Docker cases skipped). Focused browser acceptance also covers conventions,
+dependency discovery, deferred restart/receipt recovery, selective reruns,
+retention, context budgets, commit reversions and language-service references.
+The final full browser rerun passed 45/45 after the folder-picker race fix.
+The VS Code extension passed actual host acceptance on installed VS Code 1.141.0,
+and the packaged VSIX passed the same host acceptance after isolated installation,
+including delayed-response connection/disconnection regressions. No real provider
+quota, external notifications or third-party account mutations were used.
+The test runner limits unit concurrency to four files and browser concurrency to
+two because these suites launch real Git, server and browser processes.

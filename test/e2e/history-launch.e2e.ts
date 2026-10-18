@@ -2,22 +2,24 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type AddressInfo } from "node:net";
 import { chromium, type Browser, type Page } from "playwright-core";
+import type { Run } from "../../src/engine.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), "codeflow-history-launch-ui-")));
 const repo = join(fixture, "repo"); const home = join(fixture, "data"); const worktree = join(fixture, "worktrees", "history-125", "preview");
+const records = join(fixture, "agent-records");
 const token = "history-launch-ui-token"; const headers = { authorization: `Bearer ${token}` };
 const port = await new Promise<number>((resolve) => { const probe = createServer().listen(0, "127.0.0.1", () => { const port = (probe.address() as AddressInfo).port; probe.close(() => resolve(port)); }); });
 const base = `http://localhost:${port}`;
 let server: ChildProcess; let browser: Browser; let page: Page;
 before(async () => {
-  mkdirSync(join(repo, ".codeflow"), { recursive: true }); mkdirSync(join(home, "runs"), { recursive: true });
+  mkdirSync(join(repo, ".codeflow"), { recursive: true }); mkdirSync(join(home, "runs"), { recursive: true }); mkdirSync(records);
   const command = `'${process.execPath.replaceAll("'", "'\\''")}' service.mjs`;
   for (const id of ["api", "web"]) {
     mkdirSync(join(repo, id));
@@ -34,7 +36,7 @@ before(async () => {
     writeFileSync(join(home, "runs", `${id}.jsonl`), JSON.stringify({ seq: index + 1, ts: timestamp, runId: id, type: "run", run }) + "\n");
   }
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
-  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: process.env.E2E_DEBUG ? "inherit" : "ignore" });
+  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, FAKE_RECORD_DIR: records, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: process.env.E2E_DEBUG ? "inherit" : "ignore" });
   let healthy = false; for (let retry = 0; retry < 150; retry++) { healthy = await fetch(`${base}/api/health`, { headers }).then((response) => response.ok, () => false); if (healthy) break; await new Promise((resolve) => setTimeout(resolve, 100)); } assert.ok(healthy, "fixture server started");
   browser = await chromium.launch({ channel: "chrome", headless: true }); page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await page.addInitScript((path) => { localStorage.setItem("repo", path); localStorage.setItem("sideOpen", "0"); }, repo);
@@ -102,4 +104,102 @@ test("workspace starts, inspects and stops a real two-service launch profile", a
   await panel.getByRole("button", { name: "Stop services", exact: true }).click();
   await panel.getByText("Stack: stopped", { exact: true }).waitFor();
   assert.equal(await panel.getByRole("link", { name: "Open web", exact: true }).count(), 0);
+});
+
+test("project conventions save with CAS, restore a previewed version, and explicitly stage guidance for a later commit", async () => {
+  await page.goto(`${base}/#/workspace`);
+  const tab = page.getByRole("button", { name: "Conventions", exact: true }); await tab.focus(); await page.keyboard.press("Enter");
+  const panel = page.getByRole("region", { name: "Versioned project conventions" }); const draft = panel.getByLabel("Private conventions draft", { exact: true });
+  await draft.waitFor(); await draft.focus(); await page.keyboard.press("Tab"); assert.equal(await panel.getByLabel("Revision note", { exact: true }).evaluate((element) => element === document.activeElement), true, "editor labels and keyboard focus follow the document order");
+  await draft.fill("Keep shared project interfaces small and tested."); await panel.getByLabel("Revision note", { exact: true }).fill("Initial shared guidance");
+  await panel.getByRole("button", { name: "Save private revision", exact: true }).click(); await panel.getByText(/Saved revision 1 ·/).waitFor();
+  const projectId = await page.getByLabel("Conventions project", { exact: true }).inputValue();
+  const concurrent = await fetch(`${base}/api/projects/${projectId}/conventions`, { method: "PUT", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ revision: 1, text: "A concurrent saved convention." }) }); assert.equal(concurrent.status, 200);
+  await draft.fill("Preserve my browser draft while comparing concurrent edits."); await panel.getByRole("button", { name: "Save private revision", exact: true }).click();
+  await panel.getByRole("alert").getByText(/changed to revision 2/).waitFor(); assert.match(await draft.inputValue(), /Preserve my browser/);
+  await panel.getByRole("button", { name: "Compare latest revision", exact: true }).click(); await panel.getByRole("heading", { name: "Latest saved revision 2", exact: true }).waitFor();
+  await panel.getByRole("button", { name: "Use latest revision as base and keep my draft", exact: true }).click();
+  await panel.getByRole("button", { name: "Save private revision", exact: true }).click(); await panel.getByText(/Saved revision 3 ·/).waitFor();
+  await panel.getByText("Revision history (3)", { exact: true }).click(); await panel.getByLabel("Saved conventions version", { exact: true }).selectOption("1");
+  await panel.getByRole("button", { name: "Preview saved revision", exact: true }).click(); await panel.getByRole("heading", { name: "Preview revision 1", exact: true }).waitFor();
+  await panel.getByRole("button", { name: "Restore as new revision", exact: true }).click(); await panel.getByText(/Saved revision 4 ·/).waitFor(); assert.match(await draft.inputValue(), /^Keep shared project interfaces/);
+  await page.waitForFunction(() => document.activeElement?.tagName === "TEXTAREA");
+  await panel.getByRole("button", { name: "Inspect repository file", exact: true }).click(); await panel.getByRole("heading", { name: "Current repository file", exact: true }).waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, "convention previews fit a phone viewport");
+  if (process.env.CODEFLOW_UI_SCREENSHOTS) { mkdirSync(join(root, "output/playwright"), { recursive: true }); await page.screenshot({ path: join(root, "output/playwright/conventions-mobile.png") }); }
+  await panel.getByRole("button", { name: "Publish and stage file", exact: true }).click(); await panel.getByRole("status").getByText(/Revision 4 was staged/).waitFor();
+  await page.waitForFunction(() => document.activeElement?.getAttribute("role") === "status");
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+  assert.equal(git("diff", "--cached", "--name-only"), ".codeflow/conventions.md"); assert.match(readFileSync(join(repo, ".codeflow/conventions.md"), "utf8"), /^Keep shared project interfaces/);
+  assert.equal(execFileSync("git", ["ls-tree", "HEAD", ".codeflow/conventions.md"], { cwd: repo, encoding: "utf8" }), "", "publication does not silently commit or activate guidance");
+  git("-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "activate reviewed conventions");
+});
+
+test("guided onboarding inspects required and optional dependencies through actual read-only probes", async () => {
+  await page.goto(base);
+  await page.locator(".first-run > summary").focus(); await page.keyboard.press("Enter");
+  const panel = page.getByRole("region", { name: "Guided dependency discovery" });
+  const response = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/doctor/dependencies");
+  await panel.getByRole("button", { name: "Check all dependencies", exact: true }).focus(); await page.keyboard.press("Enter");
+  const result = await response; assert.equal(result.status(), 200); const report = await result.json();
+  await panel.getByRole("heading", { name: "Required tools", exact: true }).waitFor();
+  await panel.getByRole("heading", { name: "Optional tools", exact: true }).waitFor();
+  assert.equal(report.providers.length, 3); assert.equal(report.optional.length, 3);
+  for (const dependency of report.optional) await panel.getByText(dependency.name, { exact: false }).first().waitFor();
+  assert.match(await panel.innerText(), /Interactive terminal/); assert.match(await panel.innerText(), /Browser snapshots/); assert.match(await panel.innerText(), /Optional Docker isolation/);
+  assert.equal(await panel.getByRole("button", { name: "Check dependencies again", exact: true }).isEnabled(), true);
+});
+
+test("review inbox controls have distinct labels, keyboard order and a bounded mobile layout", async () => {
+  await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${base}/#/automations`);
+  const group = page.getByRole("combobox", { name: "Group review inbox", exact: true }); const filter = page.getByRole("combobox", { name: "Filter review inbox", exact: true }); const search = page.getByRole("textbox", { name: "Search review inbox", exact: true });
+  assert.equal(await group.count(), 1); assert.equal(await filter.count(), 1); assert.equal(await search.count(), 1);
+  await group.focus(); await page.keyboard.press("Tab"); assert.equal(await filter.evaluate((element) => element === document.activeElement), true);
+  await page.keyboard.press("Tab"); assert.equal(await search.evaluate((element) => element === document.activeElement), true);
+  await search.fill("fixture"); await group.selectOption("reason"); await filter.selectOption("failed");
+  for (const control of [group, filter, search]) { const bounds = await control.boundingBox(); assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 391, "review controls fit the phone viewport"); }
+  assert.equal(await page.locator(".composer.automations").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, "inbox content has no horizontal overflow");
+  if (process.env.CODEFLOW_UI_SCREENSHOTS) { mkdirSync(join(root, "output/playwright"), { recursive: true }); await page.screenshot({ path: join(root, "output/playwright/review-inbox-mobile.png") }); }
+});
+
+test("context directories preview committed sources and explicit budgets block actual provider launch while warnings retain input evidence", async () => {
+  await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto(base);
+  await page.getByLabel("Workflow", { exact: true }).selectOption("solo"); await page.getByLabel("Task", { exact: true }).fill("Exercise the explicit context budget before a provider launch.");
+  await page.locator(".taskbox").getByRole("button", { name: "Files", exact: true }).click(); await page.getByRole("button", { name: "Add api to the task", exact: true }).click();
+  await page.getByRole("button", { name: "Side panel", exact: true }).click();
+  await page.locator(".context-inspector > summary").click(); await page.getByRole("button", { name: "Preview selected context", exact: true }).click();
+  await page.locator(".context-inspection-results").getByText("api/service.mjs · committed base", { exact: true }).waitFor();
+  await page.getByRole("checkbox", { name: "Set an explicit input budget for each provider launch", exact: true }).check();
+  await page.getByLabel("Maximum explicit input bytes", { exact: true }).fill("1"); await page.getByLabel("When the explicit input exceeds this budget", { exact: true }).selectOption("block");
+  await page.getByText("Saved teams and task templates", { exact: true }).click();
+  await page.getByLabel("Team name", { exact: true }).fill("Budgeted team");
+  await page.getByRole("button", { name: "Save current team", exact: true }).click();
+  await page.getByRole("button", { name: "Save new revision", exact: true }).waitFor();
+  await page.getByLabel("Maximum explicit input bytes", { exact: true }).fill("40000"); await page.getByLabel("When the explicit input exceeds this budget", { exact: true }).selectOption("warn");
+  await page.getByRole("button", { name: "Save new revision", exact: true }).click();
+  await page.getByLabel("Revision to apply", { exact: true }).selectOption("1"); await page.getByRole("button", { name: "Apply team", exact: true }).click();
+  assert.equal(await page.getByLabel("Maximum explicit input bytes", { exact: true }).inputValue(), "1", "applying history restores the captured input ceiling");
+  assert.equal(await page.getByLabel("When the explicit input exceeds this budget", { exact: true }).inputValue(), "block");
+  await page.getByText("Effective settings", { exact: true }).click();
+  await page.locator(".effective-settings").getByText("Preset Budgeted team r1", { exact: true }).first().waitFor();
+  const before = readdirSync(records).length;
+  await page.getByRole("button", { name: /^Start run/ }).click(); await page.waitForURL(/#\/run\//);
+  const id = decodeURIComponent(page.url().split("#/run/")[1]!);
+  const read = (id: string) => fetch(`${base}/api/runs/${id}`, { headers }).then((response) => response.json()) as Promise<Run>;
+  let blocked = await read(id); for (let attempt = 0; blocked.status === "running" && attempt < 600; attempt++) { await new Promise((resolve) => setTimeout(resolve, 50)); blocked = await read(id); }
+  assert.deepEqual(blocked.loop.contextBudget, { maxPromptBytes: 1, policy: "block" }, "the chosen budget reaches persisted run settings");
+  const blockedStep = blocked.steps.find((step) => step.contextInput?.policy === "block")!;
+  assert.equal(blocked.status, "stopped"); assert.match(blocked.stopReason ?? "", /explicit invocation context budget/);
+  assert.equal(blockedStep.status, "stopped"); assert.match(blockedStep.error ?? "", /context exceeds its configured budget/); assert.equal(readdirSync(records).length, before, "blocking context budgets launch no provider CLI");
+  assert.equal(blocked.steps.some((step) => step.contextInput?.exceeded && step.contextInput.policy === "block" && !step.invocations), true);
+  const sensitive = await fetch(`${base}/api/runs`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ repo, pattern: "solo", task: "Reject credential context", roles: { agent: ["claude"] }, context: { paths: [{ path: ".env" }] } }) });
+  assert.equal(sensitive.status, 400); assert.match((await sensitive.json()).error, /credential/);
+  const started = await fetch(`${base}/api/runs`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ repo, pattern: "solo", task: "Run with a warning budget and preserve final input-size evidence", roles: { agent: ["claude"] }, loop: { contextBudget: { maxPromptBytes: 1, policy: "warn" } } }) }); assert.equal(started.status, 201);
+  const warningId = (await started.json()).id; let warning = await read(warningId); for (let attempt = 0; warning.status === "running" && attempt < 600; attempt++) { await new Promise((resolve) => setTimeout(resolve, 50)); warning = await read(warningId); }
+  assert.equal(warning.status, "done", warning.error); const step = warning.steps.find((step) => step.contextInput)!; const evidence = step.contextInput!; assert.equal(evidence.policy, "warn"); assert.equal(evidence.exceeded, true); assert.equal(step.invocations, 1);
+  const recording = readdirSync(records).filter((file) => file.startsWith("claude-")).map((file) => JSON.parse(readFileSync(join(records, file), "utf8"))).at(-1);
+  assert.equal(evidence.promptBytes, Buffer.byteLength(recording.prompt), "size evidence measures the actual assembled text sent to the adapter");
+  assert.match(evidence.hash, /^[a-f0-9]{64}$/);
 });

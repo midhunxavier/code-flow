@@ -18,6 +18,13 @@ import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig } from "./repo-config.js";
 import { openFolder } from "./serve.js";
 import { LaunchProfiles, LaunchProfileError, readLaunchProfiles } from "./launch-profiles.js";
+import { TeamRerunError } from "./team-reruns.js";
+import { ConventionsStore, ConventionsError } from "./conventions.js";
+import { discoverDependencies } from "./dependency-health.js";
+import { DeferredRunConflictError, sanitizeDeferredRequest } from "./deferred-runs.js";
+import { createDeferredRuns, persistDeferredReceipt, recoverDeferredRuns } from "./deferred-launch.js";
+import { validateContextBudget } from "./context-budget.js";
+import { RetentionPolicyStore, RetentionPolicyConflictError, previewRetention } from "./retention-policy.js";
 import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
 import { Previews } from "./preview.js";
 import { SnapshotError, takeSnapshot } from "./snapshot.js";
@@ -85,6 +92,17 @@ if (reaped) logInfo(`Stopped ${reaped} process group(s) a previous code-flow lef
 
 const projects = new Projects();
 const manager = new RunManager(findPattern, projects);
+const conventions = new ConventionsStore();
+const retentionPolicy = new RetentionPolicyStore();
+const deferredRuns = createDeferredRuns(manager, {
+  build: buildStartInput,
+  resolveProviders: async (request) => {
+    const pattern = findPattern(request.pattern);
+    if (!pattern) throw new Error("This pattern no longer exists; cancel and review the saved request");
+    const { roles } = await validateRoles(pattern, request.roles, request.repo);
+    return { roles, installed: new Set((await agentAvailability()).filter((entry) => entry.available).map((entry) => entry.id)) };
+  },
+});
 const launchProfiles = new LaunchProfiles(manager.devServers);
 manager.onWorkspaceStop((runId) => launchProfiles.stopMatching(`${runId}/`));
 const integrations = new Integrations();
@@ -265,7 +283,7 @@ async function attempt<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err) {
-    throw err instanceof HttpError ? err : new HttpError(err instanceof TeamPlanEditError ? err.status : err instanceof MemoryConflictError || err instanceof RunConflictError ? 409 : 400, (err as Error).message);
+    throw err instanceof HttpError ? err : new HttpError(err instanceof TeamPlanEditError || err instanceof TeamRerunError || err instanceof ConventionsError ? err.status : err instanceof MemoryConflictError || err instanceof RunConflictError || err instanceof DeferredRunConflictError || err instanceof RetentionPolicyConflictError ? 409 : 400, (err as Error).message);
   }
 }
 
@@ -427,6 +445,7 @@ function validateLoop(input: unknown): Partial<LoopSettings> {
     maxInvocations: number("maxInvocations", 1, 200),
     maxTokens: number("maxTokens", 1, 1_000_000_000),
     maxCostUsd: number("maxCostUsd", 0.001, 1_000_000),
+    contextBudget: validateContextBudget(raw.contextBudget),
     checkTimeoutMin: number("checkTimeoutMin", 1, 120),
   };
 }
@@ -450,6 +469,7 @@ function validateOptions(pattern: Pattern, input: unknown): Record<string, numbe
 
 /** Validate a run request (from the composer or an automation) into what the engine starts. */
 async function buildStartInput(body: Record<string, any>): Promise<StartRunInput> {
+  if (body.deferred !== undefined || body.teamRerun !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
   const pattern = findPattern(String(body.pattern ?? ""));
   if (!pattern) throw new HttpError(400, "Unknown pattern");
   const task = String(body.task ?? "").trim();
@@ -903,6 +923,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     });
     return send(res, 200, listing);
   }
+  if (req.method === "GET" && parts[1] === "doctor" && parts[2] === "dependencies") return send(res, 200, await discoverDependencies(manager.quota));
   if (req.method === "GET" && parts[1] === "doctor" && parts[2] === "git") return send(res, 200, await checkGit());
   if (req.method === "GET" && parts[1] === "doctor") {
     const health = await doctor(manager.quota);
@@ -915,7 +936,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (req.method === "GET" && parts[1] === "health") {
     // interactiveTerminal: false when there's no python3 for the Terminal's pseudo-terminal (src/shell.ts).
-    return send(res, 200, { busy: manager.busy, writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length, interactiveTerminal: await shells.interactive() });
+    return send(res, 200, { busy: manager.busy, activity: manager.inspectRepositoryActivity(), writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length, interactiveTerminal: await shells.interactive() });
   }
   if (req.method === "GET" && parts[1] === "stats") {
     const since = Number(url.searchParams.get("since")) || undefined;
@@ -930,6 +951,48 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     const body = await readJson(req);
     return send(res, 200, await cleanUp(runsIn(body.project), Math.max(0, Number(body.olderThanDays ?? 7)), typeof body.repo === "string" ? body.repo : undefined));
   }
+  if (parts[1] === "maintenance" && parts[2] === "retention") {
+    if (req.method === "GET" && !parts[3]) return send(res, 200, await attempt(() => retentionPolicy.get()));
+    if (req.method === "POST" && !parts[3]) {
+      const body = await readJson(req);
+      return send(res, 200, await attempt(() => retentionPolicy.set({ days: body.days, keepRunIds: body.keepRunIds, keepMemoryIds: body.keepMemoryIds }, body.expectedRevision)));
+    }
+    if (req.method === "POST" && parts[3] === "preview") return send(res, 200, await attempt(() => previewRetention({ home: CODEFLOW_HOME })));
+    throw new HttpError(404, "Retention deletion is an explicit offline CLI operation");
+  }
+  if (parts[1] === "deferred-runs") {
+    const id = parts[2], action = parts[3];
+    if (!id && req.method === "GET") return send(res, 200, await attempt(() => deferredRuns.list()));
+    if (!id && req.method === "POST") {
+      const body = await readJson(req);
+      const raw = body.run;
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new HttpError(400, "Choose a run configuration to defer");
+      if (raw.teamRerun !== undefined || raw.deferred !== undefined) throw new HttpError(400, "Server launch identities cannot be queued");
+      if (raw.context?.attachments !== undefined && (!Array.isArray(raw.context.attachments) || raw.context.attachments.length)) throw new HttpError(400, "Attachments cannot be deferred; remove them before queueing");
+      const request = await attempt(async () => sanitizeDeferredRequest({ ...automationRun(raw), parentRunId: raw.parentRunId, branchPrefix: raw.branchPrefix }));
+      const pattern = findPattern(request.pattern);
+      if (!pattern) throw new HttpError(400, "Unknown pattern");
+      request.repo = await attempt(() => repoRoot(request.repo));
+      if (request.project && !projects.get(request.project)?.repos.includes(request.repo)) throw new HttpError(400, "Choose a repository belonging to this project");
+      if (request.parentRunId && manager.get(request.parentRunId)?.repo !== request.repo) throw new HttpError(400, "Choose an existing parent run in the same repository");
+      for (const spec of pattern.roles) if (!spec.optional && pattern.id !== "auto-team" && !request.roles[spec.id]?.length) throw new HttpError(400, `Pick an agent for "${spec.label}"`);
+      validateLoop(request.loop);
+      request.options = validateOptions(pattern, request.options);
+      return send(res, 201, await attempt(() => deferredRuns.enqueue({ name: body.name, run: request, notBefore: body.notBefore, waitForProviders: body.waitForProviders, maxAttempts: body.maxAttempts, operationId: body.operationId })));
+    }
+    if (id && req.method === "POST") {
+      const body = await readJson(req);
+      if (action === "cancel") return send(res, 200, await attempt(() => deferredRuns.cancel(id, body.expectedRevision)));
+      if (action === "retry") return send(res, 200, await attempt(() => deferredRuns.retry(id, body.expectedRevision, { acknowledgeUnknown: body.acknowledgeUnknown === true })));
+      if (action === "attach") {
+        const job = (await deferredRuns.list()).find((item) => item.id === id), run = typeof body.runId === "string" ? manager.get(body.runId) : undefined;
+        if (!job || !run || run.repo !== job.run.repo || job.run.project && run.project !== job.run.project || run.deferred?.jobId !== job.id || run.deferred.claimId !== job.claimId || run.deferred.attempt !== job.attempts) throw new HttpError(409, "This run does not belong to this exact deferred launch claim");
+        await attempt(() => persistDeferredReceipt(run));
+        return send(res, 200, await attempt(() => deferredRuns.attach(id, body.expectedRevision, run.id)));
+      }
+    }
+    throw new HttpError(404, "Unknown deferred run operation");
+  }
   if (parts[1] === "projects") {
     const id = parts[2];
     if (!id && req.method === "GET") return send(res, 200, projects.list());
@@ -938,6 +1001,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       return send(res, 201, await attempt(() => projects.create({ name: body.name, repos: Array.isArray(body.repos) ? body.repos : [] })));
     }
     if (id && !projects.get(id)) throw new HttpError(404, "Project not found");
+    if (id && parts[3] === "conventions") {
+      const project = projects.get(id)!;
+      if (!parts[4] && req.method === "GET") return send(res, 200, await attempt(() => conventions.get(id)));
+      if (!parts[4] && req.method === "PUT") return send(res, 200, await attempt(async () => conventions.save(id, await readJson(req))));
+      if (parts[4] === "restore-preview" && req.method === "POST") { const body = await readJson(req); return send(res, 200, await attempt(() => conventions.previewRestore(id, body.version))); }
+      if (parts[4] === "restore" && req.method === "POST") return send(res, 200, await attempt(async () => conventions.restore(id, await readJson(req))));
+      if (parts[4] === "publication" && req.method === "GET") {
+        const repo = url.searchParams.get("repo");
+        if (!repo || !project.repos.includes(repo)) throw new HttpError(400, "Choose a repository belonging to this project");
+        return send(res, 200, await attempt(() => conventions.inspectRepository(repo)));
+      }
+      if (parts[4] === "publish" && req.method === "POST") {
+        const body = await readJson(req);
+        if (typeof body.repo !== "string" || !project.repos.includes(body.repo)) throw new HttpError(400, "Choose a repository belonging to this project");
+        return send(res, 200, await attempt(() => manager.withIdleRepository(body.repo, () => conventions.publish(id, body, { repos: project.repos, actor: "user", isIdle: () => manager.isRepositoryIdle(body.repo) }), { kind: "conventions-publication", owner: id })));
+      }
+      throw new HttpError(404, "Unknown conventions operation");
+    }
     if (id && parts[3] === "memory") {
       const project = projects.get(id)!;
       const requested = url.searchParams.get("repo");
@@ -1287,6 +1368,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const revised = await attempt(() => manager.reviseGoal(run.id, { message: body.message, budget: body.budget === undefined ? undefined : { maxSteps: body.budget?.maxSteps, maxInvocations: body.budget?.maxInvocations, maxMinutes: body.budget?.maxMinutes } }));
       return send(res, 201, { id: revised.id });
     }
+    if (req.method === "POST" && parts[3] === "rerun-tasks") {
+      const body = await readJson(req);
+      const child = await attempt(() => manager.rerunTeamTasks(run.id, body));
+      return send(res, 201, { id: child.id });
+    }
     if (req.method === "POST" && parts[3] === "pause") {
       const body = await readJson(req);
       return send(res, 200, await attempt(async () => manager.setPaused(run.id, body.paused !== false)));
@@ -1466,6 +1552,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
 await manager.load();
 await projects.load(manager.list());
 await automations.load();
+await deferredRuns.load();
+await recoverDeferredRuns(deferredRuns, manager).catch((error) => logError("A deferred launch requires manual recovery", error));
 remote = await loadRemote();
 await phoneSessions.load().catch((error) => logError("Phone pairing disabled: session storage cannot be read", error));
 if (notificationsReady) {
@@ -1480,6 +1568,7 @@ if (notificationsReady) {
 }
 watcher.start();
 automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 }));
+deferredRuns.start();
 void syncLanServer();
 
 function listener(via: Via) {
@@ -1619,6 +1708,7 @@ async function stop(reason: string, code = 0) {
   } catch {
     // still starting up: nothing is listening yet
   }
+  await deferredRuns.stop().catch((err) => logError("Deferred queue shutdown failed", err));
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));
   await teamToolBridge.close().catch(() => undefined);
   await automationsSaved;

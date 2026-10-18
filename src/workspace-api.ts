@@ -13,6 +13,9 @@ import { writeHealth } from "./store.js";
 import type { RunManager } from "./engine.js";
 import { mergeFileDraft, checkpointHunks, applyCheckpointHunks } from "./workspace-changes.js";
 import { verificationIntegrity, VerificationIntegrityError } from "./verification-integrity.js";
+import { inspectContext, ContextInspectionError } from "./context-inspection.js";
+import { applyCommitRevert, compareCheckpoint, previewCommitRevert } from "./checkpoint-review.js";
+import { searchSemanticSymbols, findCodeReferences } from "./code-intelligence.js";
 
 interface Result { status: number; body: unknown }
 async function diagnosticTail(path: string) {
@@ -82,11 +85,23 @@ export async function handleWorkspaceApi(req: IncomingMessage, url: URL, parts: 
   }
   if (parts[1] === "workspace") {
     const selectedRepo = requireRepo();
+    if (parts[2] === "compare-checkpoint" && req.method === "POST") {
+      if (typeof body.from !== "string" || typeof body.to !== "string") throw new HttpError(400, "Choose two commits to compare");
+      return { status: 200, body: await compareCheckpoint(selectedRepo, body, signal) };
+    }
+    if (["preview-revert", "apply-revert"].includes(parts[2] ?? "") && req.method === "POST") {
+      const run = typeof body.runId === "string" ? manager.get(body.runId) : undefined;
+      if (!run?.worktrees.some((tree) => tree.path === selectedRepo)) throw new HttpError(409, "Choose an owned run worktree before reverting a commit");
+      if (typeof body.commit !== "string" || typeof body.expectedHead !== "string") throw new HttpError(400, "Choose a commit and refresh the current HEAD");
+      try {
+        return { status: 200, body: await manager.withIdleRepository<unknown>(selectedRepo, () => parts[2] === "preview-revert" ? previewCommitRevert(selectedRepo, body, signal) : applyCommitRevert(selectedRepo, body, signal), { kind: "checkpoint-revert", owner: run.id }) };
+      } catch (error) { if (error instanceof WorkspaceConflictError) throw new HttpError(409, error.message); throw error; }
+    }
     if (parts[2] === "merge-file" && req.method === "POST") return { status: 200, body: await mergeFileDraft(selectedRepo, body.path, body.base, body.draft) };
     if (["checkpoint-hunks", "apply-hunks"].includes(parts[2] ?? "") && req.method === "POST") {
       const run = typeof body.runId === "string" ? manager.get(body.runId) : undefined;
       if (!run?.worktrees.some((tree) => tree.path === selectedRepo) || run.status === "running") throw new HttpError(409, "Choose an idle run worktree before applying checkpoint hunks");
-      try { return { status: 200, body: parts[2] === "checkpoint-hunks" ? await checkpointHunks(selectedRepo, body) : await applyCheckpointHunks(selectedRepo, body) }; }
+      try { return { status: 200, body: await manager.withIdleRepository<unknown>(selectedRepo, () => parts[2] === "checkpoint-hunks" ? checkpointHunks(selectedRepo, body) : applyCheckpointHunks(selectedRepo, body), { kind: "checkpoint-hunks", owner: run.id }) }; }
       catch (error) { if (error instanceof WorkspaceConflictError) throw new HttpError(409, error.message); throw error; }
     }
     if (parts[2] === "file") {
@@ -95,11 +110,12 @@ export async function handleWorkspaceApi(req: IncomingMessage, url: URL, parts: 
       if (req.method === "POST") {
         const busy = manager.list().find((run) => run.status === "running" && (run.repo === selectedRepo || run.worktrees.some((tree) => tree.path === selectedRepo)));
         if (busy) throw new HttpError(409, "Finish or stop the active run before editing its workspace");
-        try { return { status: 200, body: await saveEditableFile(selectedRepo, path, body.text, body.expectedHash) }; }
+        try { return { status: 200, body: await manager.withIdleRepository(selectedRepo, () => saveEditableFile(selectedRepo, path, body.text, body.expectedHash), { kind: "file-edit", owner: "workspace" }) }; }
         catch (error) { if (error instanceof WorkspaceConflictError) throw new HttpError(409, error.message); throw error; }
       }
     }
-    if (parts[2] === "search" && req.method === "GET") return { status: 200, body: await searchCode(selectedRepo, url.searchParams.get("q") ?? "", url.searchParams.get("mode") === "symbols" ? "symbols" : "text") };
+    if (parts[2] === "search" && req.method === "GET") return { status: 200, body: url.searchParams.get("mode") === "semantic" ? await searchSemanticSymbols(selectedRepo, url.searchParams.get("q") ?? "", signal) : await searchCode(selectedRepo, url.searchParams.get("q") ?? "", url.searchParams.get("mode") === "symbols" ? "symbols" : "text") };
+    if (parts[2] === "references" && req.method === "GET") return { status: 200, body: await findCodeReferences(selectedRepo, { path: url.searchParams.get("path") ?? "", line: Number(url.searchParams.get("line")), column: Number(url.searchParams.get("column")) }, signal) };
     if (parts[2] === "dependencies" && req.method === "GET") return { status: 200, body: await dependencyGraph(selectedRepo) };
     if (parts[2] === "checkpoints" && req.method === "GET") return { status: 200, body: { head: await resolveCommit(selectedRepo), checkpoints: await checkpoints(selectedRepo, url.searchParams.get("ref") || "HEAD") } };
     if (parts[2] === "apply-checkpoint" && req.method === "POST") {
@@ -107,24 +123,18 @@ export async function handleWorkspaceApi(req: IncomingMessage, url: URL, parts: 
       const tree = run?.worktrees.find((tree) => tree.path === selectedRepo);
       if (!run || !tree || run.status === "running") throw new HttpError(409, "Choose an idle run worktree before applying checkpoint files");
       if (!Array.isArray(body.paths) || body.paths.some((path: unknown) => typeof path !== "string")) throw new HttpError(400, "Choose repository paths");
-      return { status: 200, body: await applyCheckpoint(selectedRepo, { source: String(body.source ?? ""), paths: body.paths, expectedHead: String(body.expectedHead ?? "") }) };
+      return { status: 200, body: await manager.withIdleRepository(selectedRepo, () => applyCheckpoint(selectedRepo, { source: String(body.source ?? ""), paths: body.paths, expectedHead: String(body.expectedHead ?? "") }), { kind: "checkpoint-files", owner: run.id }) };
     }
     if (parts[2] === "context" && req.method === "POST") {
-      if (!Array.isArray(body.paths) || body.paths.length > 50) throw new HttpError(400, "Choose at most 50 context files");
-      const files = await Promise.all(body.paths.map(async (path: unknown) => {
-        if (typeof path !== "string") throw new HttpError(400, "Context paths must be strings");
-        if (/(^|\/)(?:\.env(?:\..*)?|.*\.(?:pem|key))$/.test(path)) return { path, sensitive: true, omitted: "Potential credential file; contents are not included in the inspector." };
-        const file = await readEditableFile(selectedRepo, path);
-        return { path, bytes: file.bytes, approximateTokens: Math.ceil(file.text.length / 4), preview: redactExport(file.text.slice(0, 3000)), truncated: file.text.length > 3000 };
-      }));
-      return { status: 200, body: { files, bytes: files.reduce((total, file) => total + (file.bytes ?? 0), 0), approximateTokens: files.reduce((total, file) => total + (file.approximateTokens ?? 0), 0), note: "Token counts are estimates; provider conversations and additional context are not included." } };
+      try { return { status: 200, body: await inspectContext({ repo: selectedRepo, baseRef: typeof body.baseRef === "string" ? body.baseRef : undefined, paths: body.paths, attachments: body.attachments, signal }) }; }
+      catch (error) { if (error instanceof ContextInspectionError) throw new HttpError(error.status, error.message); throw error; }
     }
   }
   if (parts[1] === "diagnostics" && req.method === "GET") {
     const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
     const log = await diagnosticTail(join(CODEFLOW_HOME, "server.log"));
     const runs = manager.list();
-    return { status: 200, body: redactExport({ version: 1, application: packageJson.version, node: process.version, platform: process.platform, at: Date.now(), busy: manager.busy, writes: writeHealth, runs: { total: runs.length, active: runs.filter((run) => run.status === "running").length, interrupted: runs.filter((run) => run.status === "interrupted").length }, recentErrors: log.slice(-32_000), capabilities: { workspace: true, verificationProfiles: true }, git: repo ? await git(["--version"], repo).then((result) => result.stdout.trim()) : undefined }) };
+    return { status: 200, body: redactExport({ version: 1, application: packageJson.version, node: process.version, platform: process.platform, at: Date.now(), busy: manager.busy, activity: manager.inspectRepositoryActivity(), writes: writeHealth, runs: { total: runs.length, active: runs.filter((run) => run.status === "running").length, interrupted: runs.filter((run) => run.status === "interrupted").length }, recentErrors: log.slice(-32_000), capabilities: { workspace: true, verificationProfiles: true }, git: repo ? await git(["--version"], repo).then((result) => result.stdout.trim()) : undefined }) };
   }
   throw new HttpError(404, "Unknown workspace operation");
 }

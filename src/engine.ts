@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -24,6 +24,8 @@ import { contextPrompt, copyMessageFiles, hasStagedFiles, prepareContext, stageM
 import { fitDiff } from "./diff.js";
 import type { ExternalSource } from "./integrations.js";
 import { externalSourcePrompt } from "./source-context.js";
+import { ContextBudgetError, enforceContextBudget, type PromptContextEvidence } from "./context-inspection.js";
+import { validateContextBudget, type ContextBudget } from "./context-budget.js";
 import { editableTeamPlan, summarizeTeamPlan, teamPlanPolicy, validateTeamPlanEdit, TeamPlanEditError } from "./workflow-control.js";
 import { encodeRunCursor, decodeRunCursor, compareRuns, afterRunCursor } from "./run-history.js";
 import { validateMergeTarget, type MergeValidation } from "./merge-validation.js";
@@ -31,6 +33,7 @@ import { approvals } from "./approvals.js";
 import { validateAgentContainer, type AgentContainer } from "./agent-container.js";
 import { runVerification, validateVerificationProfile, assessChangeRisk, reviewCoverage, type VerificationProfile, type VerificationReport } from "./verification.js";
 import { verificationIntegrity, VerificationIntegrityError } from "./verification-integrity.js";
+import { prepareTeamRerun, validateTeamRerunSeed, TeamRerunError, type TeamRerunSeed } from "./team-reruns.js";
 import { writeFileInside } from "./fs.js";
 import { describeIssues, inspectChanges, isTestFile, isTestSide, unverifiedIssue, type IntegrityIssue } from "./integrity.js";
 import { extractJson, shapeProblem } from "./json.js";
@@ -127,6 +130,7 @@ export interface Step {
   invocations?: number;
   settings?: { model?: string; effort?: string };
   contextManifest?: TeamContextManifest;
+  contextInput?: PromptContextEvidence;
   mode: AccessMode;
   worktree?: string;
   status: Status;
@@ -180,6 +184,8 @@ export interface RunFacts {
   approved?: boolean;
   /** Whether a test in the result fails without its change (see Proof). */
   proof?: Proof["status"];
+  /** An unchanged selective rerun was checked and independently reviewed without claiming new proof. */
+  proofNotRequired?: "unchanged-rerun";
 }
 
 /**
@@ -361,6 +367,10 @@ export interface Run {
   awaiting?: { kind: "plan"; title: string; content: string; at: number; teamPlanRound?: number };
   /** The run this one continues (a "whole team again" reply). */
   parentRunId?: string;
+  /** Internal server-created accepted task projection, persisted for deterministic rerun replay. */
+  teamRerun?: TeamRerunSeed;
+  /** Durable queue identity, constructed by the server rather than a run request body. */
+  deferred?: { jobId: string; claimId: string; attempt: number };
   /** Source trust follows related work even when the child has no GitHub source. */
   inheritedSourceTrust?: "trusted" | "untrusted" | "unknown";
   supersededBy?: string;
@@ -390,7 +400,7 @@ export interface Run {
    * Started by an automation (schedule, webhook, or "Run now") or a sweep, rather than by you
    * one at a time: its result waits in the inbox.
    */
-  trigger?: { id: string; name: string; via: "schedule" | "webhook" | "manual" | "sweep" };
+  trigger?: { id: string; name: string; via: "schedule" | "webhook" | "manual" | "sweep" | "deferred" };
   /** Your decision on an automation's result: it waits in the inbox until you make one. */
   triage?: { state: "pending" | "approved" | "rejected" | "empty"; at: number; note?: string };
   /** Changes to tests in each result branch that could make the check pass without a fix. */
@@ -560,6 +570,7 @@ export interface LoopSettings {
   /** Ceilings apply to provider-reported usage; unreported usage cannot be counted. */
   maxTokens?: number;
   maxCostUsd?: number;
+  contextBudget?: ContextBudget;
   verification?: VerificationProfile;
   /** Per check/setup command. */
   checkTimeoutMin: number;
@@ -1810,7 +1821,7 @@ export class TeamContext {
   }
 
   private abortedStatus(): Status {
-    return this.manager.isShuttingDown ? "interrupted" : "cancelled";
+    return this.run.stopReason ? "stopped" : this.manager.isShuttingDown ? "interrupted" : "cancelled";
   }
 
   /** A worktree for this run; reused if it already exists (e.g. when resuming). */
@@ -2235,6 +2246,14 @@ export class TeamContext {
     let freshSession = false;
     for (let retries = 0; ; ) {
       this.checkCancelled();
+      const assembledPrompt = this.notesFor(step.id) + prompt;
+      try { step.contextInput = enforceContextBudget({ prompt: assembledPrompt, jsonSchema: params.schema, resumeSessionId: resume }, this.run.loop.contextBudget); }
+      catch (error) {
+        if (error instanceof ContextBudgetError) { step.contextInput = error.evidence; this.manager.emit(this.run, { type: "step", step: { ...step } }); this.stop("explicit invocation context budget"); }
+        throw error;
+      }
+      this.manager.emit(this.run, { type: "step", step: { ...step } });
+      if (step.contextInput.exceeded) this.log(`${step.title}: explicit invocation context exceeds its warning budget (${step.contextInput.bytes.toLocaleString()} bytes, approximately ${step.contextInput.approximateTokens.toLocaleString()} tokens). Hidden provider history and later file reads are excluded.`, "warn");
       if (this.run.loop.maxInvocations !== undefined && this.actualInvocations >= this.run.loop.maxInvocations) {
         this.stop("CLI invocation limit"); this.checkCancelled();
       }
@@ -2276,7 +2295,7 @@ export class TeamContext {
       let result: RunResult;
       try { result = await adapters[params.agent].run(
         {
-          prompt: this.notesFor(step.id) + prompt,
+          prompt: assembledPrompt,
           cwd: params.cwd.path,
           mode: params.mode,
           resumeSessionId: resume,
@@ -2494,6 +2513,8 @@ export interface StartRunInput {
   loop?: Partial<LoopSettings>;
   approvals?: { plan?: boolean; tools?: boolean };
   parentRunId?: string;
+  teamRerun?: TeamRerunSeed;
+  deferred?: Run["deferred"];
   roleSettings?: Record<string, AgentSettings>;
   trust?: Trust;
   /** Start from a GitHub issue or PR (a PR's branch becomes the base). */
@@ -2526,6 +2547,10 @@ export class RunManager {
   private readonly active = new Map<string, Promise<void>>();
   /** Runs between "resume requested" and "running": a second request must not start them twice. */
   private readonly starting = new Set<string>();
+  private readonly startingRepositories = new Map<string, number>();
+  private readonly startingWork = new Set<Promise<Run>>();
+  private readonly repositoryLeases = new Map<string, { id: string; repo: string; scope: Set<string>; kind: string; owner?: string; at: number }>();
+  private readonly repositoryLeaseWork = new Map<string, Promise<unknown>>();
   /** Stop was pressed while a resume was starting: it doesn't start. */
   private readonly stoppedWhileStarting = new Set<string>();
   private readonly bus = new EventEmitter();
@@ -2729,6 +2754,47 @@ export class RunManager {
     return run.status === "running" || this.starting.has(run.id) || this.mergeValidating.has(run.id);
   }
 
+  isRepositoryIdle(repo: string): boolean {
+    const scope = this.repositoryScope(repo);
+    return ![...this.startingRepositories].some(([path, count]) => count > 0 && scope.has(path)) && ![...this.runs.values()].some((run) => scope.has(run.repo) && this.busyRun(run));
+  }
+
+  /** Related main checkouts and owned worktrees share one in-process activity boundary. */
+  private repositoryScope(repo: string): Set<string> {
+    const neighbors = new Map<string, Set<string>>();
+    for (const run of this.runs.values()) for (const tree of run.worktrees) {
+      if (!neighbors.has(run.repo)) neighbors.set(run.repo, new Set());
+      if (!neighbors.has(tree.path)) neighbors.set(tree.path, new Set());
+      neighbors.get(run.repo)!.add(tree.path); neighbors.get(tree.path)!.add(run.repo);
+    }
+    const scope = new Set([repo]), queue = [repo];
+    for (let index = 0; index < queue.length; index++) for (const path of neighbors.get(queue[index]!) ?? []) if (!scope.has(path)) { scope.add(path); queue.push(path); }
+    return scope;
+  }
+
+  private assertNoWorkspaceLease(repo: string) {
+    const scope = this.repositoryScope(repo);
+    for (const lease of this.repositoryLeases.values()) if ([...scope].some((path) => lease.scope.has(path))) throw new RunConflictError(`Wait for ${lease.kind} to finish before starting another operation in this workspace`);
+  }
+
+  /** Claim after canonicalization but before invoking any mutation; independent starts stay parallel. */
+  async withIdleRepository<T>(repo: string, operation: () => T, metadata: { kind?: string; owner?: string } = {}): Promise<Awaited<T>> {
+    const canonical = await realpath(await repoRoot(repo));
+    if (this.shuttingDown) throw new RunConflictError("code-flow is shutting down");
+    this.assertNoWorkspaceLease(canonical);
+    if (!this.isRepositoryIdle(canonical)) throw new RunConflictError("Finish or stop active and starting runs before changing this workspace");
+    const id = `lease-${randomBytes(8).toString("hex")}`;
+    this.repositoryLeases.set(id, { id, repo: canonical, scope: this.repositoryScope(canonical), kind: metadata.kind?.slice(0, 100) || "workspace mutation", owner: metadata.owner?.slice(0, 256), at: Date.now() });
+    try {
+      const work = Promise.resolve(operation()); this.repositoryLeaseWork.set(id, work);
+      return await work;
+    } finally { this.repositoryLeases.delete(id); this.repositoryLeaseWork.delete(id); }
+  }
+
+  inspectRepositoryActivity() {
+    return { leases: [...this.repositoryLeases.values()].map(({ scope: _scope, ...lease }) => lease), starting: [...this.startingRepositories].map(([repo, count]) => ({ repo, count })), runs: [...this.runs.values()].filter((run) => this.busyRun(run)).map((run) => ({ id: run.id, repo: run.repo, status: run.status, starting: this.starting.has(run.id), validating: this.mergeValidating.has(run.id) })) };
+  }
+
   setArchived(id: string, archived: boolean) {
     const run = this.require(id);
     if (this.busyRun(run)) throw new Error("Stop the run before archiving it");
@@ -2887,6 +2953,32 @@ export class RunManager {
   }
 
   private readonly goalRevisions = new Map<string, { signature: string; promise: Promise<Run> }>();
+  private readonly taskReruns = new Map<string, { signature: string; promise: Promise<Run> }>();
+
+  /** Execute selected accepted tasks and their dependents in a fresh child; the source is unchanged. */
+  async rerunTeamTasks(id: string, input: unknown): Promise<Run> {
+    const run = this.require(id), signature = JSON.stringify(input);
+    const pending = this.taskReruns.get(id);
+    if (pending) { if (pending.signature !== signature) throw new TeamRerunError("A different task rerun is already starting", 409); return pending.promise; }
+    if (this.shuttingDown || this.busyRun(run)) throw new TeamRerunError("Wait for the source run and its operations to finish before rerunning tasks", 409);
+    this.assertNoWorkspaceLease(run.repo);
+    const pattern = this.findPattern("auto-team");
+    if (!pattern || !autoTeamEnabled()) throw new TeamRerunError("New Auto-team executions are unavailable", 409);
+    // This same synchronous claim prevents resume, archive, merge and a second rerun racing us.
+    this.starting.add(id); this.stoppedWhileStarting.delete(id);
+    const promise = (async () => {
+      await this.active.get(id)?.catch(() => undefined);
+      const seed = await prepareTeamRerun(run, input);
+      if (this.stoppedWhileStarting.has(id) || this.shuttingDown) throw new TeamRerunError("Task rerun was cancelled before the child started", 409);
+      return this.start({ pattern, repo: run.repo, project: run.project, parentRunId: run.id, baseRef: seed.baseCommit, teamRerun: seed,
+        task: run.task, roles: structuredClone(run.roles), options: structuredClone(run.options), loop: { ...structuredClone(run.loop), ...seed.budget },
+        approvals: { ...run.approvals }, trust: run.trust, agentSettings: structuredClone(run.agentSettings), roleSettings: structuredClone(run.roleSettings),
+        context: { paths: run.context.paths.map(({ path }) => ({ path })) },
+      });
+    })();
+    this.taskReruns.set(id, { signature, promise });
+    try { return await promise; } finally { this.taskReruns.delete(id); this.starting.delete(id); this.stoppedWhileStarting.delete(id); }
+  }
 
   /** A user goal change creates a new approved plan after all original processes reconcile. */
   async reviseGoal(id: string, input: { message: string; budget?: Partial<Pick<LoopSettings, "maxSteps" | "maxInvocations" | "maxMinutes">> }): Promise<Run> {
@@ -2963,6 +3055,7 @@ export class RunManager {
 
   async validateMerge(id: string, input: { branch: string; into: string; allowUntrusted?: boolean }, signal?: AbortSignal) {
     const run = this.require(id);
+    this.assertNoWorkspaceLease(run.repo);
     if (this.busyRun(run)) throw new Error("Wait for the run and its validation to finish");
     if (!run.worktrees.some((tree) => tree.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
     if (run.lockdown && !run.loop.container && !run.lockdownOnHost && !input.allowUntrusted) throw new UntrustedSourceError(`${run.lockdown}. Merge validation executes repository code on this machine.`);
@@ -3278,6 +3371,7 @@ export class RunManager {
 
   /** A plan edit is durable before its held approval projection changes. */
   async editTeamPlan(id: string, input: unknown): Promise<TeamState> {
+    if (this.require(id).teamRerun) throw new TeamPlanEditError("A selective rerun keeps its pinned task graph. Reject it and create another rerun to change the selected tasks or instructions.", 409);
     if (this.teamPlanWrites.has(id)) throw new TeamPlanEditError("A workflow edit is already being saved. Refresh and try again.", 409);
     const run = this.require(id);
     const team = run.team;
@@ -3490,6 +3584,28 @@ export class RunManager {
   }
 
   async start(input: StartRunInput): Promise<Run> {
+    if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
+    const repo = await realpath(await repoRoot(input.repo));
+    this.assertNoWorkspaceLease(repo);
+    if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
+    this.startingRepositories.set(repo, (this.startingRepositories.get(repo) ?? 0) + 1);
+    const work = this.startResolved({ ...input, repo });
+    this.startingWork.add(work);
+    try { return await work; } finally {
+      this.startingWork.delete(work);
+      const remaining = (this.startingRepositories.get(repo) ?? 1) - 1;
+      if (remaining) this.startingRepositories.set(repo, remaining); else this.startingRepositories.delete(repo);
+    }
+  }
+
+  private async startResolved(input: StartRunInput): Promise<Run> {
+    if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
+    if (input.teamRerun) {
+      const parent = input.parentRunId ? this.runs.get(input.parentRunId) : undefined;
+      if (input.pattern.id !== "auto-team" || !parent?.team || input.teamRerun.parentRunId !== parent.id || input.baseRef !== input.teamRerun.baseCommit) throw new TeamRerunError("Task reruns must start from their owned source checkpoint", 409);
+      validateTeamRerunSeed(input.teamRerun, teamPlanPolicy(parent.team, parent));
+      if (await resolveCommit(parent.repo, `refs/heads/${input.teamRerun.integrationBranch}`) !== input.teamRerun.baseCommit) throw new TeamRerunError("The source integration branch moved before the child could start", 409);
+    }
     if (input.pattern.id === "auto-team" && !autoTeamEnabled()) throw new Error("New Auto team runs are disabled; saved teams remain viewable and resumable");
     // .codeflow/config.json supplies defaults; anything the request sets explicitly wins.
     const { config } = await readRepoConfig(await repoRoot(input.repo).catch(() => input.repo));
@@ -3504,6 +3620,7 @@ export class RunManager {
     if (given.check === undefined) loop.check = config.check;
     if (given.setup === undefined) loop.setup = config.setup;
     if (loop.verification) loop.verification = validateVerificationProfile(loop.verification);
+    loop.contextBudget = validateContextBudget(loop.contextBudget);
     if (loop.agentContainer) { loop.agentContainer = validateAgentContainer(loop.agentContainer); if (!(await commandExists("docker"))) throw new Error("Agent isolation needs Docker installed and running"); }
     loop.check = loop.check?.trim() || loop.verification?.checks.find((check) => check.required)?.command || undefined;
     loop.maxTokens = positive(loop.maxTokens);
@@ -3554,7 +3671,7 @@ export class RunManager {
         // Even without a check: a pattern can run commands of its own (test-first runs the
         // tester's test command), and every command code-flow runs for this run goes in it.
         loop.container = { image: config.image ?? "node:22", network: false };
-      } else if (input.allowUntrusted || parent?.lockdownOnHost) {
+      } else if (input.allowUntrusted || parent?.lockdownOnHost && input.trigger?.via !== "deferred") {
         lockdownOnHost = true;
       } else if (loop.check || loop.setup) {
         throw new UntrustedSourceError(lockdown);
@@ -3592,6 +3709,7 @@ export class RunManager {
       id,
       pattern: input.pattern.id,
       task: input.task,
+      deferred: input.deferred ? structuredClone(input.deferred) : undefined,
       repo,
       project: placed?.project.id,
       baseRef,
@@ -3621,6 +3739,7 @@ export class RunManager {
       approvals: input.trigger ? {} : input.approvals ?? (input.pattern.id === "auto-team" ? { plan: true } : {}),
       trigger: input.trigger,
       parentRunId: input.parentRunId,
+      teamRerun: input.teamRerun ? structuredClone(input.teamRerun) : undefined,
       inheritedSourceTrust: parent ? (memoryAuthorityForRun(parent) as { sourceTrust: "trusted" | "untrusted" | "unknown" }).sourceTrust : undefined,
       merges: [],
       prs: {},
@@ -3636,6 +3755,10 @@ export class RunManager {
       steps: [],
       artifacts: [],
     };
+    if (this.shuttingDown || input.teamRerun && this.stoppedWhileStarting.has(input.teamRerun.parentRunId)) {
+      await rm(worktreeDir, { recursive: true, force: true });
+      throw new TeamRerunError("Run creation was cancelled before execution started", 409);
+    }
     this.runs.set(run.id, run);
     this.history.set(run.id, []);
     this.emitRun(run);
@@ -3666,6 +3789,7 @@ export class RunManager {
   async resume(id: string): Promise<Run> {
     const run = this.runs.get(id);
     if (!run) throw new Error("Run not found");
+    this.assertNoWorkspaceLease(run.repo);
     if (this.busyRun(run)) throw new Error("This run is already running or validating a merge");
     const pattern = this.findPattern(run.pattern);
     if (!pattern) throw new Error(`Unknown pattern "${run.pattern}"`);
@@ -3877,7 +4001,7 @@ export class RunManager {
     for (const controller of this.mergeValidating.values()) controller.abort();
     for (const controller of this.controllers.values()) controller.abort();
     await Promise.race([
-      Promise.allSettled([...this.active.values(), ...this.mergeValidationWork.values()]),
+      Promise.allSettled([...this.active.values(), ...this.mergeValidationWork.values(), ...this.startingWork, ...this.repositoryLeaseWork.values(), ...[...this.taskReruns.values()].map((entry) => entry.promise)]),
       new Promise((resolve) => setTimeout(resolve, timeoutMs).unref?.()),
     ]);
     await flushWrites();

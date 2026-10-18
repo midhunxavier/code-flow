@@ -17,24 +17,51 @@ Backups use AES-256-GCM authenticated encryption with a fresh 16-byte salt, 12-b
 
 Backups are limited to 256 MiB of file data and 20,000 files. Restores bound archive and decompression size and reject invalid manifests, duplicates, traversal paths, damaged data, wrong passwords, and existing destinations. The output directory must exist and the backup must be outside the data directory. Output files are created exclusively and existing backups are never overwritten.
 
-Symbolic links, special files, temporary files, server locks, process registries, phone settings/device sessions, session credential files, team connection/capability files, `.env` files and private-key files are omitted. The command reports every omitted path. Restore also excludes this material from older archives. Reconfigure phone pairing and credentials after restoring.
+Symbolic links, special files, temporary files, server locks, process registries, phone settings/device sessions, shared account password/session stores, session credential files, team connection/capability files, remote-worker private capability receipts, `.env` files and private-key files are omitted. The command reports every omitted path. Restore also excludes this material from older archives. Recreate shared accounts and reconfigure phone pairing and credentials after restoring.
 
 Restored automations are disabled, their webhook tokens are rotated, and queued deliveries are cleared. Review each automation, update its webhook sender with the new token, and deliberately enable it again. This prevents old schedules or deliveries from running immediately after recovery.
 
 Restored external notification settings are also disabled. Pending or in-flight notification deliveries are cancelled; destinations must be reviewed and deliberately enabled again.
 
+Restored deferred jobs are never dispatched automatically. Pending, waiting, claimed, failed and unknown jobs become cancelled with a restore-history entry. Existing started receipts remain metadata. Review the recovered configuration and explicitly retry a cancelled job only when you intend to launch it; saved claim and run IDs remain available for investigation. Malformed deferred storage aborts the restore.
+
 Git worktrees and repositories outside `CODEFLOW_HOME` are not included. Back them up separately when they contain needed commits or uncommitted work. The password is required for recovery and cannot be recovered from code-flow.
 
-## Run retention
+## Saved per-type retention
+
+Open **Workspace → Retention** to save separate ages for archived run records, attachments, private/team memory and linked workspaces. Every type starts disabled; a blank age keeps that data. You can protect specific run and memory IDs. Settings are revisioned, and concurrent saves cannot overwrite each other. Saving settings never deletes data.
+
+Select **Preview saved retention policy**, review the exact targets and protected reasons, then download the manifest. The preview fixes the cutoff, policy revision, source references and file identities. It contains paths and IDs, without memory bodies or titles. It expires after 24 hours. Stop the server before applying that downloaded file:
 
 ```sh
-npx tsx scripts/maintenance.ts retention --days 90
-npx tsx scripts/maintenance.ts retention --days 90 --apply
+npm run maintenance -- retention-policy --plan /downloads/codeflow-retention.json --apply --home /absolute/data/path
 ```
 
-The first command previews candidates and byte counts. `--apply` deletes only logs, recovery journals and checkpoints belonging to archived runs whose last log modification predates the cutoff and whose status is `done`, `failed`, or `cancelled`. Running, interrupted, stopped, unarchived, unreadable and recently modified runs are kept. Logs larger than 64 MiB are skipped with a reason.
+For an entirely offline workflow, save settings from a JSON file, produce a preview and then apply that exact preview. An existing output file is never overwritten:
 
-Retention removes transcripts and recovery evidence for the selected runs. Memory entries may retain descriptive provenance referring to those run IDs; the removed transcripts will no longer be available. Projects, notes, memory bodies, attachments and Git worktrees are kept. Preview the exact candidate IDs and create a backup before deleting data you may need again.
+```sh
+npm run maintenance -- retention-settings --input /path/retention-settings.json
+npm run maintenance -- retention-policy --output /path/reviewed-plan.json
+npm run maintenance -- retention-policy --plan /path/reviewed-plan.json --apply
+```
+
+Example settings keep attachments and workspaces indefinitely, retain private/team memory for 180 days, and retain eligible archived run records for 90 days:
+
+```json
+{
+  "days": { "archivedRuns": 90, "attachments": null, "memory": 180, "worktrees": null },
+  "keepRunIds": ["important-run-id"],
+  "keepMemoryIds": []
+}
+```
+
+Apply takes the exclusive server lock and rebuilds the manifest using its original cutoff. Any changed policy, file identity, source reference, worktree state or supplied manifest rejects the entire plan before deletion starts. A partial scan cannot be applied. The scan bounds are 2,000 runs, 50,000 live memory entries, 1,000 targets, 100,000 files and 256 MiB of read data; individual logs are limited to 64 MiB. Keep other tools from changing repositories during offline apply. If an I/O error occurs after deletion begins, the result lists applied, failed and remaining targets; stop and create a fresh preview before another attempt.
+
+Running, paused, interrupted, stopped, unarchived, pinned and watched runs are protected. Retained child runs, selective-rerun baselines, enabled automations and pending deferred jobs preserve their parent sources. Project knowledge is never bulk-deleted. Pinned memory, memory used by active/resumable/kept runs, and sources referenced by retained derived memory are protected. Remaining live memory preserves its origin transcripts, attachments and workspaces.
+
+Eligible old private/team memory bodies are erased atomically while their provenance tombstones remain. Attachment retention deletes only bounded regular files in known staging/generated context directories and refuses tracked repository files or symlinked ancestors. Workspace retention requires verified managed linked Git ownership, a clean index and worktree, no hidden tracked changes, no nested repository/submodule, and no Git lock. Removal uses Git without force and preserves branches. Run retention removes only the selected terminal archived logs, journals and checkpoints. These changes remove recovery evidence, so review the preview and back up data you still need.
+
+The older `retention --days 90` command remains an age-only report and does not assess pins or provenance. Its unguarded `--apply` behavior has been removed. Existing scripts must migrate to a reviewed `retention-policy` manifest; the compatibility alias `retention --plan /path/reviewed-plan.json --apply` uses the same protected exact-plan apply.
 
 ## Log compaction
 
