@@ -167,6 +167,14 @@ test("a run view with a side chat, two terminals and a second tab still gets its
   await second.locator(".run-head").getByRole("button", { name: "Unarchive" }).waitFor({ timeout: 5_000 });
   await page.locator(".run-head").getByRole("button", { name: "Unarchive" }).waitFor({ timeout: 5_000 });
 
+  // A tab that goes away stops being watched at once, even one that crashed without a word.
+  const third = await context.newPage();
+  await third.goto(`${BASE}/#/run/${created.id}`);
+  await streamsAre({ streams: 1, subscriptions: 12 }, "a third tab, on the same stream");
+  const cdp = await context.newCDPSession(third);
+  void cdp.send("Page.crash").catch(() => {}); // never answered: the page is gone
+  await streamsAre({ streams: 1, subscriptions: 8 }, "the crashed tab's topics dropped");
+
   // The tab holding the stream closes: the other one opens it, and keeps hearing about the run.
   await page.close();
   await streamsAre({ streams: 1, subscriptions: 4 }, "the second tab's stream: its run list, its run, its terminals");

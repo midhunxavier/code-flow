@@ -208,6 +208,9 @@ function share() {
     lead();
     return new Promise<never>(() => {}); // held for as long as this window is open
   });
+  // A lock of this window's own, held while it's open: the window holding the stream waits for it,
+  // so it hears at once when this one closes, or crashes.
+  void navigator.locks.request(`${CHANNEL}:${WINDOW}`, () => new Promise<never>(() => {}));
   addEventListener("pagehide", () => role === "follower" && shared?.postMessage({ kind: "bye", window: WINDOW } satisfies Shared));
   setInterval(() => {
     if (role === "follower") announce();
@@ -242,6 +245,8 @@ function adopt(window: string, list: [number, string, string | undefined][]) {
     if (!list.length) return;
     w = { ids: new Map(), cursors: new Map(), seen: 0, out: new BroadcastChannel(`${CHANNEL}:${window}`) };
     windows.set(window, w);
+    // Granted once that window is gone (see share).
+    void navigator.locks.request(`${CHANNEL}:${window}`, () => windows.get(window) === w && adopt(window, []));
   }
   const theirs = w;
   theirs.seen = Date.now();
