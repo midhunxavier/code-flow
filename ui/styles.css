@@ -602,6 +602,8 @@
      timelines aren't supported, so the line just stays). */
   .run-head { position: sticky; top: 0; z-index: 3; padding: 4px 28px 14px; background: var(--bg); border-bottom: 1px solid transparent; animation: head-rule linear both; animation-timeline: scroll(); animation-range: 0 12px; }
   @keyframes head-rule { to { border-bottom-color: var(--border); } }
+  /* A scroll-linked animation never finishes (it stays "running"): with reduced motion the hairline just stays. */
+  @media (prefers-reduced-motion: reduce) { .run-head { animation: none; border-bottom-color: var(--border); } }
   .run-title { max-width: 824px; margin: 0 auto; display: flex; align-items: flex-end; gap: 16px; }
   .run-name { flex: 1; min-width: 0; display: grid; gap: 6px; }
   .run-kicker { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -808,6 +810,7 @@
      it, like the run head's (always there where scroll timelines aren't supported). */
   .tr-body { max-height: min(62vh, 680px); overflow-y: auto; margin-left: -9px; padding: 0 9px; font-size: 13.5px; border-top: 1px solid transparent; animation: tr-rule linear both; animation-timeline: scroll(self); animation-range: 0 8px; }
   @keyframes tr-rule { to { border-top-color: var(--border); } }
+  @media (prefers-reduced-motion: reduce) { .tr-body { animation: none; border-top-color: var(--border); } }
   .ev { margin: 10px 0; }
   .ev.status { color: var(--muted); font-size: 12px; white-space: pre-wrap; }
   .ev.error { color: var(--err); white-space: pre-wrap; background: var(--err-soft); padding: 9px 12px; border-radius: var(--radius-sm); font-size: 13px; }
@@ -2319,10 +2322,16 @@
   .wb-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   .wb-main > * { margin: 0; }
   .wb-note { font-size: 13px; }
-  /* the page is narrow (side panel open, a small window, a phone): eighteen tools never fit one tab strip (most
-     would hide past its edge), so the nav gives way to the "Workspace tool" select, grouped like the nav */
+  /* the page is narrow (side panel open, a small window): the tools wrap above the open one, still in their
+     groups and still buttons; on a phone the nav gives way to the "Workspace tool" select, grouped like it */
   @container workbench (max-width: 820px) {
     .wb-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+    .wb-tabs { position: static; display: flex; flex-wrap: wrap; gap: 6px 18px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+    .wb-group { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+    .wb-group-label { padding: 0 6px 0 0; }
+    .wb-tab { width: auto; height: 30px; line-height: 30px; }
+  }
+  @media (max-width: 760px) {
     .wb-tabs { display: none; }
     .wb-mobile-tool { display: grid; max-width: 420px; margin: 0 0 16px; }
   }
