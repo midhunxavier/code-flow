@@ -765,6 +765,8 @@
   .qr-off { flex: none; width: 96px; height: 96px; border-radius: 16px; background: var(--sunken); color: var(--faint); display: flex; align-items: center; justify-content: center; }
   .qr-off .icon { width: 30px; height: 30px; }
   .phone-qr-text { display: grid; gap: 4px; min-width: 0; }
+  .remote-connection { display: grid; gap: 6px; margin-top: 16px; max-width: 420px; }
+  .remote-status { margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 16px; overflow-wrap: anywhere; }
   .phone-qr-text b { font-weight: 650; letter-spacing: -.01em; }
   .phone-qr + .hook { margin-top: 10px; }
   .row-inline { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13px; }

@@ -22,6 +22,7 @@ export async function fixture() {
   const login = join(directory, "login-shell");
   await writeFile(login, '#!/bin/sh\nif [ "$1" = "-lc" ]; then shift; exec /bin/sh -c "$1"; fi\nexec /bin/bash --noprofile --norc "$@"\n', { mode: 0o700 });
   const ssh = join(bin, "ssh"), audit = join(directory, "ssh-audit.jsonl");
+  const networkPort = await port();
   // Exercises the real bootstrap and HTTP gateway with a separate host home. Only the
   // encrypted transport is replaced; a separate opt-in test exercises OpenSSH itself.
   await writeFile(ssh, `#!${process.execPath}\n` + `
@@ -35,7 +36,7 @@ if (args.includes('-W')) {
  // Let stdout drain naturally: process.exit() can truncate a large HTTP response.
  socket.on('close', () => { process.stdin.unpipe(socket); process.stdin.destroy(); });
 } else {
- const child = spawn('/bin/sh', ['-c', args[args.length-1]], { stdio: 'inherit', env: { ...process.env, HOME: ${JSON.stringify(remoteHome)}, SHELL: ${JSON.stringify(login)}, PATH: ${JSON.stringify(`${join(root, "test/fake-bin")}:${dirname(process.execPath)}:${process.env.PATH}`)} } });
+ const child = spawn('/bin/sh', ['-c', args[args.length-1]], { stdio: 'inherit', env: { ...process.env, HOME: ${JSON.stringify(remoteHome)}, SHELL: ${JSON.stringify(login)}, CODEFLOW_REMOTE_PORT: ${JSON.stringify(String(networkPort))}, PATH: ${JSON.stringify(`${join(root, "test/fake-bin")}:${dirname(process.execPath)}:${process.env.PATH}`)} } });
  child.on('exit', code => process.exit(code ?? 1));
  process.on('SIGTERM', () => child.kill());
 }
@@ -44,6 +45,6 @@ if (args.includes('-W')) {
     try { const state = JSON.parse(await readFile(join(remoteHome, ".codeflow/ssh-host/runtime.json"), "utf8")); process.kill(state.pid, "SIGTERM"); for (let i = 0; i < 50; i++) { try { process.kill(state.pid, 0); } catch { break; } await pause(100); } } catch { /* never started or already stopped */ }
     await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   };
-  return { directory, remoteHome, localHome, bin, repo, ssh, audit, git, login, cleanup };
+  return { directory, remoteHome, localHome, bin, repo, ssh, audit, git, login, networkPort, cleanup };
 }
 export function buildHost() { execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root }); execFileSync(process.execPath, ["scripts/build-host.mjs"], { cwd: root }); }

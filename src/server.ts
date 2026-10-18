@@ -79,6 +79,7 @@ import { improvePrompt, assertImproveEnvironment, ImproveError, MAX_IMPROVE_CHAR
 import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
 import { Automations, describeSchedule, readWebhook, validateSchedule, previewSchedule } from "./automation.js";
+import { detectTailscale, isTailscaleIPv4, type TailscaleStatus } from "./tailscale.js";
 import { changeRemote, isOwnAddress, lanAddresses, loadRemote, renderRemote, saveRemote, tokenMatches, type RemoteSettings } from "./remote.js";
 import { projectOf, Projects } from "./projects.js";
 import { memoryStore, MemoryConflictError, type MemoryAuthority, type MemoryEntry } from "./memory.js";
@@ -189,6 +190,11 @@ function changeSavedRemote(patch: Parameters<typeof changeRemote>[1]): Promise<R
   const change = changingRemote.catch(() => undefined).then(async () => {
     const before = remote;
     const next = changeRemote(before, patch);
+    if (next.control && !phoneTls && !insecurePhoneDevelopment && patch.control === true) {
+      throw new HttpError(400, "Full phone control requires HTTPS. Configure CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY, then restart Codeflow.");
+    }
+    // Tailscale encrypts transit, but HTTP cookies can leak to other ports on the same host.
+    if (!phoneTls && !insecurePhoneDevelopment) next.control = false;
     await saveRemote(next);
     remote = next;
     return before;
@@ -355,7 +361,7 @@ const LOCKED_PAGE = lockedPage(
 const PHONE_LOCKED_PAGE = lockedPage(
   "scan the QR code",
   `<h1>Scan the QR code again</h1>
-<p>This phone isn't signed in to code-flow. On your computer, open code-flow's <b>Automations</b> page and scan the QR code under <b>Phone</b>.</p>
+<p>This phone isn't signed in to code-flow. On your computer, open code-flow's <b>Automations</b> page and scan the QR code under <b>Remote access</b>.</p>
 <p>Making a new link, or turning off full control from your phone, signs phones out.</p>`,
 );
 
@@ -866,9 +872,14 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
 function remoteInfo() {
   // What the QR code opens: with full control the sign-in link, otherwise the read-only view.
   const phonePath = `/r/${phoneControl() ? remote.controlToken : remote.token}`;
+  const ready = remote.enabled && remote.lan && lanServer?.listening && lanHost === networkHost() && !lanError;
+  const tailscaleHost = phoneTls && tailscaleStatus.dnsName ? tailscaleStatus.dnsName : tailscaleStatus.ip;
   return {
     enabled: remote.enabled,
     lan: remote.lan,
+    transport: remote.transport ?? "lan",
+    tailscale: tailscaleStatus,
+    tailscaleUrl: ready && remote.transport === "tailscale" ? `${phoneProtocol}://${tailscaleHost}:${REMOTE_PORT}${phonePath}` : undefined,
     control: phoneControl(),
     secure: !!phoneTls,
     insecureDevelopment: insecurePhoneDevelopment,
@@ -876,7 +887,7 @@ function remoteInfo() {
     path: `/r/${remote.token}`,
     phonePath,
     local: `http://localhost:${PORT}/r/${remote.token}`,
-    lanUrls: remote.lan && lanServer && !lanError ? lanAddresses().map((ip) => `${phoneProtocol}://${ip}:${REMOTE_PORT}${phonePath}`) : [],
+    lanUrls: ready && remote.transport !== "tailscale" ? lanAddresses().map((ip) => `${phoneProtocol}://${ip}:${REMOTE_PORT}${phonePath}`) : [],
     lanError: remote.enabled && remote.lan ? lanError : undefined,
   };
 }
@@ -895,43 +906,87 @@ function remoteInfo() {
  * tests that play the phone on the same machine.
  */
 let lanServer: ReturnType<typeof createServer> | undefined;
-/** Why the network listener isn't listening (e.g. its port is taken), shown instead of a QR code. */
+let lanHost: string | undefined;
+let remoteStopping = false;
 let lanError: string | undefined;
 const LAN_ALLOW_LOCAL = process.env.CODEFLOW_LAN_ALLOW_LOCAL === "1";
+let tailscaleStatus: TailscaleStatus = { state: "unavailable", message: "Tailscale has not been checked yet." };
+let detectingTailscale: Promise<void> | undefined;
+let detectedTailscaleAt = 0;
+let syncingLan: Promise<void> = Promise.resolve();
 
-/** Start, stop or sign out the network listener to match the settings; resolves once it's listening (or failed to). */
+async function refreshTailscale(force = false): Promise<void> {
+  if (process.env.CODEFLOW_SSH_HOST) return;
+  if (detectingTailscale) return detectingTailscale;
+  if (!force && Date.now() - detectedTailscaleAt < 5_000) return;
+  detectingTailscale = detectTailscale().then((status) => {
+    tailscaleStatus = status;
+    detectedTailscaleAt = Date.now();
+  }).finally(() => { detectingTailscale = undefined; });
+  return detectingTailscale;
+}
+
+function networkHost(): string | undefined {
+  if (process.env.CODEFLOW_SSH_HOST || remoteStopping || !remote.enabled || !remote.lan) return undefined;
+  if (remote.transport === "tailscale") return tailscaleStatus.state === "connected" ? tailscaleStatus.ip : undefined;
+  return "0.0.0.0";
+}
+
+/** Serialize changes; a stopped/disconnected Tailscale never falls back to a LAN listener. */
 function syncLanServer(signOut = false): Promise<void> {
-  if (remote.enabled && remote.lan && !lanServer) {
+  const change = syncingLan.catch(() => undefined).then(async () => {
+    let host = networkHost();
+    if (lanServer && host !== lanHost) {
+      const previous = lanServer;
+      lanServer = undefined;
+      lanHost = undefined;
+      await new Promise<void>((resolve) => {
+        previous.close(() => resolve());
+        previous.closeAllConnections();
+      });
+      // Another settings change may have been saved while the old listener closed.
+      host = networkHost();
+    }
+    if (!host) { lanError = undefined; return; }
+    if (lanServer) {
+      if (signOut) lanServer.closeAllConnections();
+      return;
+    }
     lanError = undefined;
-    const server = phoneTls ? createSecureServer({ ...phoneTls, maxHeaderSize: MAX_HEADER_SIZE }, listener("lan")) : createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("lan"));
+    const transport = remote.transport ?? "lan";
+    const receive = listener("lan");
+    const handleNetwork = (req: IncomingMessage, res: ServerResponse) => {
+      // Settings may change before the socket closes. Old bindings never inherit a new mode.
+      if (host !== networkHost() || transport !== (remote.transport ?? "lan")) {
+        return send(res, 403, { error: "Remote access changed. Reconnect using the current link." });
+      }
+      receive(req, res);
+    };
+    const server = phoneTls ? createSecureServer({ ...phoneTls, maxHeaderSize: MAX_HEADER_SIZE }, handleNetwork) : createServer({ maxHeaderSize: MAX_HEADER_SIZE }, handleNetwork);
     server.on("connection", (socket) => {
-      if (!LAN_ALLOW_LOCAL && isOwnAddress(socket.remoteAddress)) socket.destroy();
+      const source = (socket.remoteAddress ?? "").replace(/^::ffff:/i, "");
+      if (!LAN_ALLOW_LOCAL && (isOwnAddress(source) || source === host || (transport === "tailscale" && !isTailscaleIPv4(source)))) socket.destroy();
     });
-    const ready = new Promise<void>((resolve) => {
+    lanServer = server;
+    lanHost = host;
+    await new Promise<void>((resolve) => {
       server.once("listening", resolve);
       server.on("error", (err: NodeJS.ErrnoException) => {
-        lanError =
-          err.code === "EADDRINUSE"
-            ? `Port ${REMOTE_PORT} is already in use by another program, so your phone can't reach code-flow. Start code-flow with CODEFLOW_REMOTE_PORT set to a free port.`
+        lanError = err.code === "EADDRINUSE"
+          ? `Port ${REMOTE_PORT} is already in use by another program. Set CODEFLOW_REMOTE_PORT to a free port, then restart code-flow.`
+          : transport === "tailscale"
+            ? `Codeflow couldn't listen on Tailscale (${host}:${REMOTE_PORT}). Check that Tailscale is connected, then refresh.`
             : `code-flow couldn't listen on your network (port ${REMOTE_PORT}): ${err.message}`;
         logError(lanError, err);
-        if (lanServer === server) lanServer = undefined;
+        if (lanServer === server) { lanServer = undefined; lanHost = undefined; }
         server.close();
         resolve();
       });
+      server.listen(REMOTE_PORT, host);
     });
-    server.listen(REMOTE_PORT, "0.0.0.0");
-    lanServer = server;
-    return ready;
-  } else if ((!remote.enabled || !remote.lan) && (lanServer || lanError)) {
-    lanServer?.close();
-    lanServer?.closeAllConnections();
-    lanServer = undefined;
-    lanError = undefined;
-  } else if (signOut) {
-    lanServer?.closeAllConnections();
-  }
-  return Promise.resolve();
+  });
+  syncingLan = change;
+  return change;
 }
 
 /**
@@ -1566,19 +1621,26 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (req.method === "POST") {
       const body = await readJson(req);
-      if (body.control === true && !phoneTls && !insecurePhoneDevelopment) throw new HttpError(400, "Full phone control requires HTTPS. Configure CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY, then restart code-flow.");
+      if (body.transport !== undefined && body.transport !== "lan" && body.transport !== "tailscale") throw new HttpError(400, "Choose Wi-Fi or Tailscale for remote access");
       // Turning anything off makes new secrets: old links and phones' cookies stop working.
-      const before = await changeSavedRemote({ enabled: body.enabled, lan: body.lan, control: body.control, rotate: !!body.rotate }).catch((err) => {
+      const before = await changeSavedRemote({ enabled: body.enabled, lan: body.lan, transport: body.transport, control: body.control, rotate: !!body.rotate }).catch((err) => {
+        if (err instanceof HttpError) throw err;
         logError("Couldn't save the phone settings", err);
         throw new HttpError(500, `Couldn't save the phone settings: ${(err as Error).message}`);
       });
       const signOut = remote.controlToken !== before.controlToken || remote.token !== before.token || (phoneControl(before) && !phoneControl());
       // Listening starts now, so the reply's links (or why there are none) are real.
-      if (remote.enabled && remote.lan && !lanServer) await syncLanServer();
+      if (remote.transport === "tailscale") await refreshTailscale();
+      // A remote caller must receive its reply before its own connection is closed.
+      if (via === "local") await syncLanServer(signOut);
       // Signing out waits until after replying (or a dropped request): the phone may be the one
       // turning itself off.
-      res.once("close", () => void syncLanServer(signOut));
-    }
+      if (via === "lan") res.once("close", () => void syncLanServer(signOut));
+    } else if (req.method === "GET") {
+      await refreshTailscale(url.searchParams.has("refresh"));
+      if (via === "local") await syncLanServer();
+      else res.once("close", () => void syncLanServer());
+    } else throw new HttpError(405, "Method not allowed");
     return send(res, 200, remoteInfo());
   }
   if (parts[1] === "automations") {
@@ -2060,7 +2122,16 @@ if (notificationsReady) {
 }
 if (!fileAccess.hasRestrictions()) startPolicyBackground();
 else await pausePolicyBackground();
-if (!process.env.CODEFLOW_SSH_HOST) void syncLanServer();
+if (!process.env.CODEFLOW_SSH_HOST) void (async () => {
+  if (remote.transport === "tailscale") await refreshTailscale();
+  await syncLanServer();
+})();
+const tailscaleTimer = setInterval(() => {
+  if (!process.env.CODEFLOW_SSH_HOST && remote.enabled && remote.lan && remote.transport === "tailscale") {
+    void refreshTailscale().then(() => syncLanServer()).catch((err) => logError("Tailscale access refresh failed", err));
+  }
+}, 10_000);
+tailscaleTimer.unref();
 
 function listener(via: Via) {
   return (req: IncomingMessage, res: ServerResponse) => {
@@ -2189,7 +2260,10 @@ async function stop(reason: string, code = 0) {
   let automationsSaved: Promise<unknown> = Promise.resolve();
   try {
     server.close();
+    remoteStopping = true;
+    clearInterval(tailscaleTimer);
     lanServer?.close();
+    lanServer?.closeAllConnections();
     watcher.stop();
     approvals.close();
     launchProfiles.stopAll();

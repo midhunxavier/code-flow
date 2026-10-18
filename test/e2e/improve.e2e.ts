@@ -85,16 +85,21 @@ async function holdReplies(page: Page) {
 }
 async function chooseRepo(page: Page, path: string) {
   await page.locator(".repo-btn:not(.project-btn)").click();
-  const picker = page.getByRole("dialog", { name: "Choose a repository", exact: true });
-  await picker.waitFor();
-  // Let the initial listing settle before replacing its path, so this helper tests
-  // selection rather than racing the initial request's update of the input.
-  await picker.locator(".ps").filter({ hasNotText: "Loading…" }).filter({ hasText: /git repository|Open a folder/ }).waitFor();
+  const dialog = page.getByRole("dialog", { name: "Choose a repository", exact: true });
+  await dialog.waitFor();
+  await dialog.locator(".ps").filter({ hasNotText: "Loading…" }).filter({ hasText: /git repository|Open a folder/ }).waitFor();
+  // Wait for this navigation, not a repository status retained from the prior opening.
+  const listing = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/fs" && url.searchParams.get("path") === path;
+  });
   await page.getByLabel("Folder path").fill(path); await page.getByLabel("Folder path").press("Enter");
-  await page.getByText("✓ This folder is a git repository").waitFor();
+  assert.equal((await listing).status(), 200);
+  await dialog.getByText("✓ This folder is a git repository").waitFor();
   await page.getByRole("button", { name: "Use this folder", exact: true }).click();
-  await picker.waitFor({ state: "hidden" });
+  await dialog.waitFor({ state: "hidden" });
   await page.locator(".repo-btn:not(.project-btn) .name", { hasText: path.split("/").pop()! }).waitFor();
+  await page.waitForFunction(() => !document.querySelector("#checkCmd")?.parentElement?.parentElement?.textContent?.includes("Loading repository configuration"));
 }
 async function chooseProject(page: Page, name: string) {
   await page.locator(".composer .project-btn").click();

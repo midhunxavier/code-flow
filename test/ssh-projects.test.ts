@@ -8,7 +8,7 @@ import { parseRuntime } from "../src/ssh-projects/gateway.js";
 import { validSshHost } from "../src/ssh-projects/transport.js";
 import { buildHost, fixture, pause } from "./ssh-project-fixture.js";
 import { createServer, request } from "node:http";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo } from "node:net";
 
 test("SSH configuration discovers concrete aliases and includes; rejects command injection", async () => {
   const f = await fixture();
@@ -30,6 +30,9 @@ test("full remote backend browses, edits, runs checks and agents, streams termin
   const call = async (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") => { const response = await fetch(origin + path, { method, headers: { cookie, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }); const value = await response.json(); assert.ok(response.ok, `${path}: ${JSON.stringify(value)}`); return value; };
   let app: ReturnType<typeof createServer> | undefined;
   try {
+    const state = join(f.remoteHome, ".codeflow/ssh-host/state");
+    await mkdir(state, { recursive: true });
+    await writeFile(join(state, "remote.json"), JSON.stringify({ enabled: true, lan: true, transport: "lan", token: "a".repeat(48), controlToken: "b".repeat(48) }));
     const host = await service.add({ sshHost: "fixture", name: "Remote fixture" });
     await open(host.id);
     const remote = JSON.parse(await readFile(join(f.remoteHome, ".codeflow/ssh-host/runtime.json"), "utf8"));
@@ -39,6 +42,15 @@ test("full remote backend browses, edits, runs checks and agents, streams termin
     assert.equal(await new Promise<number>((resolve, reject) => { request(origin + "/api/fs", { headers: { cookie, host: "evil.example" } }, (res) => { res.resume(); resolve(res.statusCode!); }).on("error", reject).end(); }), 403);
     assert.equal((await call("/api/fs")).home, f.remoteHome);
     assert.equal((await call("/api/ssh-context")).name, "Remote fixture");
+    const network = await call("/api/remote?refresh=1");
+    assert.deepEqual(network.lanUrls, [], "saved remote-access settings cannot start a listener from an SSH backend");
+    assert.equal(network.lanError, undefined);
+    const listening = await new Promise<boolean>((resolve) => {
+      const socket = connect(f.networkPort, "127.0.0.1");
+      socket.once("connect", () => { socket.destroy(); resolve(true); });
+      socket.once("error", () => resolve(false));
+    });
+    assert.equal(listening, false, "neither startup nor refreshing remote access opens the network port");
     const pageResponse = await fetch(origin + "/", { headers: { cookie } });
     const html = await pageResponse.text();
     assert.equal(pageResponse.status, 200, html.slice(0, 1000));
