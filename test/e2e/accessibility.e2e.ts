@@ -26,6 +26,8 @@ before(async () => {
 after(async () => { await browser?.close(); server?.kill("SIGTERM"); await new Promise<void>((resolve) => { if (server?.exitCode !== null) return resolve(); server?.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }); rmSync(directory, { recursive: true, force: true }); });
 const findings: { screen: string; violations: any[]; incomplete: any[] }[] = [];
 async function audit(screen: string) {
+  // The reduced-motion rule gives every element an `all .01ms` transition, so a theme switch or state change settles only on the next frame; axe caches styles per node and would mix old and new colors.
+  await page.evaluate(async () => { for (;;) { document.documentElement.getBoundingClientRect(); const running = document.getAnimations().filter((animation) => animation.playState === "running" && animation.effect?.getComputedTiming().endTime !== Infinity); if (!running.length) break; await Promise.all(running.map((animation) => animation.finished.catch(() => undefined))); } });
   await page.addScriptTag({ content: axe.source });
   const result = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"] } }));
   const compact = (values: typeof result.violations) => values.map((item) => ({ id: item.id, impact: item.impact, help: item.help, nodes: item.nodes.map((node) => ({ target: node.target, html: node.html, failureSummary: node.failureSummary })) }));
