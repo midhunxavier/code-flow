@@ -2562,3 +2562,4 @@
   .ssh-connections label .field { font-size: 13px; font-weight: 400; }
   .ssh-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .host-control { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar .host-control { flex: none; margin-right: 10px; }
