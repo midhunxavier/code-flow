@@ -96,7 +96,7 @@ The processes code-flow starts (agent CLIs, checks, setup, **Run app**, `gh`, `g
 
 | File | What it is |
 |---|---|
-| `runs/<run>.jsonl` | Each run's event log, appended as it happens; runs are rebuilt from it at startup. Unreadable lines (a crash mid-write) are skipped and noted in `server.log` |
+| `runs/<run>.jsonl` | Each run's event log, appended as it happens; runs are rebuilt from it at startup. A run snapshot after the first is written as what changed; logs from older versions are compacted once, in the background. Unreadable lines (a crash mid-write) are skipped and noted in `server.log` |
 | `runs/<run>.journal.jsonl` | The result of each completed step, written to disk at once, so **Resume** replays them instead of running them again |
 | `projects.json` | Your [projects](runs.md#projects): names, repositories, and the team each one last used. Written whole (through a temporary file); a change that can't be saved fails and is undone. One that can't be read is moved aside to `projects.json.corrupt-<time>` and logged; if it can't be moved either, projects are off (runs start without one) until it's fixed |
 | `server.log` | code-flow's own log, one JSON line per entry: failed requests, unhandled errors, failed writes, processes it cleaned up. Past 5 MB it moves to `server.log.1` (one old file is kept) |

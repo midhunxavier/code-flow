@@ -161,6 +161,32 @@ export async function loadJournal(runId: string): Promise<Map<string, unknown>> 
 }
 
 /**
+ * Write a file's lines anew: `make` gets them as they are by then (in turn with appends, so none
+ * is lost) and returns the new ones, or undefined to leave the file as it is. The new file is
+ * synced and then renamed over the old one, so a crash leaves one or the other. True if rewritten.
+ */
+export function rewriteLines(file: string, make: (lines: unknown[]) => unknown[] | undefined): Promise<boolean> {
+  const done = writeQueue.then(async () => {
+    const path = join(RUNS_DIR, file);
+    const lines = make(await readJsonLines(file));
+    if (!lines) return false;
+    const temp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
+    try {
+      await appendSynced(temp, lines.map((l) => `${JSON.stringify(l)}\n`).join(""));
+      await rename(temp, path);
+    } catch (err) {
+      await unlink(temp).catch(() => {});
+      throw err;
+    }
+    repaired.add(file);
+    unsynced.delete(file);
+    return true;
+  });
+  writeQueue = done.catch(() => undefined);
+  return done;
+}
+
+/**
  * Synced, and awaited before the run moves on: a resumed run replays these instead of redoing
  * (and re-paying for) the steps, so a step counts as done only once its entry is on disk.
  */
