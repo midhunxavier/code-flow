@@ -237,6 +237,88 @@ test("a run's stream: its history in order with ids, before any live event, and 
   assert.equal((await fetch(`${a.base}/api/runs/no-such-run/events`, { headers: bearer })).status, 404);
 });
 
+/** A window's one stream (/api/stream): its messages as they come, by subscription. */
+async function openHub(s: Instance, subs: unknown[]) {
+  const ac = new AbortController();
+  const res = await fetch(`${s.base}/api/stream?subs=${encodeURIComponent(JSON.stringify(subs))}`, { headers: bearer, signal: ac.signal });
+  assert.equal(res.status, 200);
+  const messages: { s: number; d: any }[] = [];
+  void (async () => {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+        buffer += decoder.decode(chunk, { stream: true });
+        for (let i = buffer.indexOf("\n\n"); i >= 0; i = buffer.indexOf("\n\n")) {
+          for (const line of buffer.slice(0, i).split("\n")) if (line.startsWith("data: ")) messages.push(JSON.parse(line.slice(6)));
+          buffer = buffer.slice(i + 2);
+        }
+      }
+    } catch {
+      // closed
+    }
+  })();
+  const until = async (cond: () => boolean, what: string, ms = 15_000) => {
+    for (const end = Date.now() + ms; !cond(); await new Promise((r) => setTimeout(r, 25))) if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+  };
+  await until(() => messages.length > 0, "the hello");
+  const client: string = messages[0]!.d.client;
+  return {
+    messages,
+    client,
+    until,
+    of: (id: number) => messages.filter((m) => m.s === id).map((m) => m.d),
+    update: (body: unknown) => api(s, `/api/stream/${client}`, body),
+    close: () => ac.abort(),
+  };
+}
+
+test("/api/stream: one stream for every topic a window watches, changed while it's open; a run replays only its latest snapshots", async () => {
+  const started = await api(a, "/api/runs", { pattern: "pipeline", task: "One stream", repo, roles: team });
+  const id = started.body.id;
+  await finishedRun(a, id);
+  const streams = async () => (await api(a, "/api/health")).body.streams as { streams: number; subscriptions: number };
+  const before = await streams();
+  const hub = await openHub(a, [{ id: 1, topic: "runs" }, { id: 2, topic: `run:${id}` }]);
+  assert.deepEqual(hub.messages[0], { s: 0, d: { type: "hello", client: hub.client } });
+  await hub.until(() => hub.of(2).some((d) => d.type === "run" && d.run.endedAt), "the run's snapshot");
+  const feed = hub.of(1)[0];
+  assert.equal(feed.type, "hello");
+  assert.ok(feed.runs.some((r: { id: string }) => r.id === id), "the run list starts whole");
+  const replay = hub.of(2);
+  const { snapshot, ...hello } = replay[0];
+  assert.deepEqual(hello, { type: "hello", epoch: `run-${id}`, resumed: false });
+  assert.equal(snapshot.run.id, id, "the run as it is now comes first");
+  assert.equal(replay.filter((d) => d.type === "run").length, 1, "only the latest snapshot of the run");
+  const steps = replay.filter((d) => d.type === "step").map((d) => d.step.id);
+  assert.ok(steps.length > 0);
+  assert.deepEqual(steps, [...new Set(steps)], "and of each step");
+  assert.ok(replay.some((d) => d.type === "agent"), "with what the agents said");
+  assert.deepEqual(await streams(), { streams: before.streams + 1, subscriptions: before.subscriptions + 2 });
+
+  // The same run picked up where it left off, a run and a terminal that don't exist, and the first subscription dropped.
+  const last = Math.max(...replay.filter((d) => d.seq).map((d) => d.seq));
+  const changed = await hub.update({ subscribe: [{ id: 3, topic: `run:${id}`, after: `run-${id}:${last}` }, { id: 4, topic: "run:no-such-run" }, { id: 5, topic: "shell:no-such-shell" }], unsubscribe: [2] });
+  assert.equal(changed.status, 200);
+  await hub.until(() => [3, 4, 5].every((n) => hub.of(n).length > 0), "the new subscriptions");
+  assert.deepEqual(hub.of(3).map(({ snapshot: _, ...d }) => d), [{ type: "hello", epoch: `run-${id}`, resumed: true }], "resumed, with nothing missed");
+  assert.deepEqual([hub.of(4)[0].type, hub.of(4)[0].status], ["error", 404]);
+  assert.match(hub.of(5)[0].message, /terminal is gone/);
+  assert.deepEqual(await streams(), { streams: before.streams + 1, subscriptions: before.subscriptions + 2 }, "runs, and the run again");
+
+  // A new run comes on the run list's topic, on the same stream.
+  const next = await api(a, "/api/runs", { pattern: "pipeline", task: "One stream, two", repo, roles: team });
+  await hub.until(() => hub.of(1).some((d) => d.type === "run" && d.run.id === next.body.id && d.run.endedAt), "the new run's end");
+  assert.equal(hub.of(2).length, replay.length, "nothing more for the dropped subscription");
+
+  // Closed, its subscriptions go; its id no longer changes anything.
+  hub.close();
+  for (let i = 0; i < 100 && (await streams()).streams !== before.streams; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(await streams(), before);
+  assert.equal((await api(a, `/api/stream/${hub.client}`, { unsubscribe: [1] })).status, 404);
+  assert.equal((await fetch(`${a.base}/api/stream?subs=not-json`, { headers: bearer })).status, 400);
+});
+
 test("a run's durable cursor survives server restart and invalid future cursors reset", async () => {
   const home = mkdtempSync(join(tmpdir(), "codeflow-cursor-home-"));
   const first = await startServer({ CODEFLOW_HOME: home });

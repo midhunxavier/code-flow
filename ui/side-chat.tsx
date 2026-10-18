@@ -203,6 +203,9 @@ export function ChatTab() {
 }
 
 // ---------------------------------------------------------------- a side chat on a run
+/** The Chat tab is in view: not behind another tab, nor in a closed panel. */
+const chatShown = () => sideOpen.value && sideTab.value === "chat";
+
 function useFollow(deps: unknown[]) {
   const scroll = useRef<HTMLDivElement>(null);
   // Follow the conversation unless you scrolled up to read.
@@ -215,7 +218,8 @@ function useFollow(deps: unknown[]) {
 
 /** A side chat's turns, each your message and then the agent's turn in the run's worktree. */
 function SideChatView({ run: summary, chat }: { run: RunSummary; chat: string }) {
-  const { run: live, data, version } = useRunStream(summary.id);
+  // Watched while you can see it: behind another tab, or in a closed panel, it catches up when shown.
+  const { run: live, data, version } = useRunStream(summary.id, undefined, chatShown());
   const shown = sideChatIn(live, summary, chat);
   const scroll = useFollow([version, shown?.chat.turns.length, shown?.chat.turns.at(-1)?.status]);
   if (!shown) return <div class="side-empty help">Loading…</div>;
@@ -396,10 +400,10 @@ function useDraft(text: string, setText: (fn: (t: string) => string) => void) {
 // ---------------------------------------------------------------- a chat on its own branch
 /** A chat in progress: the Single-agent run's thread and its composer, compact. */
 function ChatView({ id }: { id: string }) {
-  const { run, problem, data, version } = useRunStream(id);
+  const watched = chatShown();
+  const { run, problem, data, version } = useRunStream(id, undefined, watched);
   const scroll = useFollow([version, run?.status, run?.followUps?.length]);
   // A reply you watch arrive here is seen, as in the run's own view; not behind another tab or a closed panel.
-  const watched = sideOpen.value && sideTab.value === "chat";
   useEffect(() => {
     if (watched && run && run.status !== "running" && !run.seen && !document.hidden) void markSeen(run.id);
   }, [watched, run?.status, run?.seen]);

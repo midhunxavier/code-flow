@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   adapters,
   agentAvailability,
@@ -17,7 +18,7 @@ import {
   type RunResult,
 } from "./adapters/index.js";
 import { CODEFLOW_HOME, MAX_DIFF_CHARS, STEP_IDLE_MS, STEP_TIMEOUT_MS, timerMs } from "./config.js";
-import { logWarn } from "./log.js";
+import { logInfo, logWarn } from "./log.js";
 import { cantRunMessage, cantRunReason, isPlainTestCommand, proofOutcome, reproOutcome, runCheck, type CheckResult, type Container } from "./checks.js";
 import { commandExists } from "./adapters/process.js";
 import { contextPrompt, copyMessageFiles, copyStagedContext, hasStagedFiles, prepareContext, stageMessageFiles, type ContextInput, type RunContext } from "./context.js";
@@ -62,7 +63,8 @@ import {
   type Snapshot,
   type Worktree,
 } from "./git.js";
-import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines, RUNS_DIR } from "./store.js";
+import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines, rewriteLines, RUNS_DIR } from "./store.js";
+import { compactRunLog, decodeRunLog, RunLogWriter } from "./run-log.js";
 import { branchDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
@@ -2587,6 +2589,8 @@ export class RunManager {
   private readonly bus = new EventEmitter();
   private seq = 0;
   private shuttingDown = false;
+  /** Writes run snapshots to the logs as patches (see src/run-log.ts). */
+  private readonly logWriter = new RunLogWriter();
 
   constructor(
     private readonly findPattern: (id: string) => Pattern | undefined = () => undefined,
@@ -2619,13 +2623,17 @@ export class RunManager {
   async load(): Promise<void> {
     await this.loadQuota();
     const ids = (await listRunIds()).filter((id) => !this.runs.has(id));
+    /** Logs written before snapshots were patches, with many of them: compacted once loaded. */
+    const compact: string[] = [];
     // A few logs at a time: one by one is slow with hundreds of runs, all at once opens too many files.
-    const logs = await mapLimit(ids, 8, (id) =>
-      readJsonLines<RunEvent>(`${id}.jsonl`).catch((err: Error) => {
+    const logs = await mapLimit(ids, 8, async (id) => {
+      const lines = await readJsonLines(`${id}.jsonl`).catch((err: Error) => {
         logWarn(`Couldn't read the log of run ${id}; it's left out`, { error: err.message });
         return [] as RunEvent[];
-      }),
-    );
+      });
+      if (lines.filter((l) => l?.type === "run").length >= COMPACT_SNAPSHOTS && !lines.some((l) => l?.type === "run-patch")) compact.push(id);
+      return decodeRunLog(lines);
+    });
     ids.forEach((id, i) => {
       const events = logs[i]!;
       for (const e of events) if (typeof e.seq === "number" && e.seq > this.seq) this.seq = e.seq;
@@ -2663,6 +2671,31 @@ export class RunManager {
       }
     });
     void this.tidyWorktrees().catch((err: Error) => logWarn("Couldn't tidy worktrees at startup", { error: err.message }));
+    if (compact.length) void this.compactLogs(compact);
+  }
+
+  /**
+   * Rewrite logs from before snapshots were patches (see src/run-log.ts), one at a time in the
+   * background: the same events, in fewer bytes. A log is rewritten only when it reads back exactly
+   * as it was, and only if that saves a good part of it.
+   */
+  private async compactLogs(ids: string[]) {
+    let before = 0;
+    let after = 0;
+    for (const id of ids) {
+      if (this.shuttingDown) break;
+      await rewriteLines(`${id}.jsonl`, (lines) => {
+        if (lines.some((l) => (l as { type?: string } | null)?.type === "run-patch")) return undefined;
+        const events = decodeRunLog(lines);
+        const compacted = compactRunLog(events);
+        const [was, is] = [sizeOfLines(lines), sizeOfLines(compacted)];
+        if (was - is < Math.max(64 * 1024, was / 4) || !isDeepStrictEqual(decodeRunLog(compacted), events)) return undefined;
+        before += was;
+        after += is;
+        return compacted;
+      }).catch((err: Error) => logWarn(`Couldn't compact the log of run ${id}; it's left as it was`, { error: err.message }));
+    }
+    if (before) logInfo(`Compacted run logs: ${Math.round(before / 1024)} KB → ${Math.round(after / 1024)} KB`);
   }
 
   /**
@@ -2698,7 +2731,7 @@ export class RunManager {
     const cached = this.history.get(id);
     if (cached) return cached;
     await flushWrites();
-    return readJsonLines<RunEvent>(`${id}.jsonl`);
+    return decodeRunLog(await readJsonLines(`${id}.jsonl`));
   }
 
   subscribe(id: string, listener: (e: RunEvent) => void): () => void {
@@ -3871,7 +3904,8 @@ export class RunManager {
     this.bus.emit(run.id, event);
     if (event.type === "run") this.bus.emit("*", event.run);
     // A finished run's last snapshot is synced: after a power cut it must not reload as running.
-    appendLine(`${run.id}.jsonl`, event, { sync: event.type === "run" && event.run.status !== "running" });
+    // A line that didn't make it: the next snapshot is written whole, not as a patch on a lost one.
+    appendLine(`${run.id}.jsonl`, this.logWriter.encode(event), { sync: event.type === "run" && event.run.status !== "running", onFailed: () => this.logWriter.forget(run.id) });
   }
 }
 
@@ -4329,6 +4363,10 @@ function positive(value: unknown): number | undefined {
 }
 
 /** `fn` over `items`, at most `limit` at a time; results in order. */
+/** An old-format log with at least this many snapshots is worth compacting. */
+const COMPACT_SNAPSHOTS = 4;
+const sizeOfLines = (lines: unknown[]) => lines.reduce<number>((n, l) => n + JSON.stringify(l).length + 1, 0);
+
 async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
