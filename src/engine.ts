@@ -2103,7 +2103,7 @@ export class TeamContext {
       }
     }
     let restore: { undone: string[] } | { error: Error } | undefined;
-    let changed: string[] = [];
+    let changed: string[] | Error = [];
     let result: RunResult;
     try {
       result = await this.attempts(params, step, onEvent, slot, start);
@@ -2112,7 +2112,7 @@ export class TeamContext {
       // chat's question: you may be editing its worktree meanwhile (its terminal, your editor),
       // and undoing everything would undo your work too, so what changed is only reported.
       if (params.mode === "read" && start && params.side) {
-        changed = await changedSince(this.run.repo, params.cwd, start).catch(() => []);
+        changed = await changedSince(this.run.repo, params.cwd, start).catch((error: Error) => error);
       } else if (params.mode === "read" && start) {
         restore = await restoreSnapshot(this.run.repo, params.cwd, start).then((undone) => ({ undone }), (error: Error) => ({ error }));
       }
@@ -2123,6 +2123,11 @@ export class TeamContext {
     }
     if (restore?.undone.length) {
       this.log(`${params.title} (${params.agent}) modified files in read-only mode; changes were reverted (${restore.undone.join(", ")})`, "warn");
+    }
+    // Not knowing what changed isn't the same as nothing changed (its `.git` may be broken).
+    if (changed instanceof Error) {
+      this.log(`${params.title} (${params.agent}) is read-only, but what changed in ${params.cwd.name} while it ran couldn't be checked, so anything it changed is still there: ${changed.message}`, "warn");
+      return { ...result, ok: false, errorKind: "other", error: `Couldn't check what this read-only step changed (anything it changed is still there): ${changed.message}` };
     }
     if (changed.length) {
       this.log(
