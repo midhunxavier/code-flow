@@ -189,11 +189,11 @@ function changeSavedRemote(patch: Parameters<typeof changeRemote>[1]): Promise<R
   const change = changingRemote.catch(() => undefined).then(async () => {
     const before = remote;
     const next = changeRemote(before, patch);
-    if (next.control && next.transport !== "tailscale" && !phoneTls && !insecurePhoneDevelopment && patch.control === true) {
-      throw new HttpError(400, "Full phone control requires HTTPS or Tailscale. Configure CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY, or choose Tailscale.");
+    if (next.control && !phoneTls && !insecurePhoneDevelopment && patch.control === true) {
+      throw new HttpError(400, "Full phone control requires HTTPS. Configure CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY, then restart Codeflow.");
     }
-    // A transport change must never carry HTTP full control onto an unencrypted LAN.
-    if (next.transport !== "tailscale" && !phoneTls && !insecurePhoneDevelopment) next.control = false;
+    // Tailscale encrypts transit, but HTTP cookies can leak to other ports on the same host.
+    if (!phoneTls && !insecurePhoneDevelopment) next.control = false;
     await saveRemote(next);
     remote = next;
     return before;
@@ -316,7 +316,7 @@ function signedIn(req: IncomingMessage): boolean {
  */
 const PHONE_COOKIE = `codeflow_phone_${REMOTE_PORT}`;
 const PHONE_COOKIE_DAYS = 30;
-const phoneControl = (s: RemoteSettings = remote) => s.enabled && s.lan && s.control && (!!phoneTls || insecurePhoneDevelopment || s.transport === "tailscale");
+const phoneControl = (s: RemoteSettings = remote) => s.enabled && s.lan && s.control && (!!phoneTls || insecurePhoneDevelopment);
 
 function phoneCookie(token: string): string {
   return `${PHONE_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/${phoneTls ? "; Secure" : ""}; Max-Age=${PHONE_COOKIE_DAYS * 86_400}`;

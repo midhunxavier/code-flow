@@ -75,7 +75,7 @@ export function RemoteAccess() {
         <label class="remote-connection">Connection
           <select class="field" aria-label="Remote connection" disabled={busy} value={info.lan ? info.transport : "local"} onChange={(e) => {
             const value = e.currentTarget.value;
-            void set({ lan: value !== "local", transport: value === "tailscale" ? "tailscale" : "lan", ...(value === "lan" && !info.secure && !info.insecureDevelopment ? { control: false } : {}) });
+            void set({ lan: value !== "local", transport: value === "tailscale" ? "tailscale" : "lan", ...(value !== "local" && !info.secure && !info.insecureDevelopment ? { control: false } : {}) });
           }}>
             <option value="local">This computer only</option>
             <option value="tailscale">Tailscale · access anywhere</option>
@@ -91,10 +91,10 @@ export function RemoteAccess() {
         </div> : info.lan ? <p class="help">Your other device must be on the same trusted Wi-Fi network. HTTPS is required for full control.</p> : null}
         {info.lan ? <>
           <label class={`checkpoint${info.control ? " danger" : ""}`}>
-            <input type="checkbox" aria-label="Full control from remote devices" disabled={busy || (!tailscale && !info.secure && !info.insecureDevelopment)} checked={info.control} onChange={(e) => void set({ control: e.currentTarget.checked })} />
+            <input type="checkbox" aria-label="Full control from remote devices" disabled={busy || (!info.secure && !info.insecureDevelopment)} checked={info.control} onChange={(e) => void set({ control: e.currentTarget.checked })} />
             <span><b>Full control from remote devices</b> — start runs, answer questions, review changes, merge and open pull requests. Anyone with the pairing link has your control of this computer.</span>
           </label>
-          <p class="help">{tailscale ? "Tailscale encrypts the connection between your devices. " : info.secure ? "Encrypted HTTPS. " : info.insecureDevelopment ? "Development override: unencrypted HTTP. " : "To enable full control on Wi-Fi, configure CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY, then restart Codeflow. "}{full ? "Pairing links expire after ten minutes. Paired devices stay signed in for up to 30 days." : ""}</p>
+          <p class="help">{info.secure ? "Encrypted HTTPS. " : info.insecureDevelopment ? "Development override: unencrypted HTTP. " : "To enable full control, configure CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY, then restart Codeflow. "}{full ? "Pairing links expire after ten minutes. Paired devices stay signed in for up to 30 days." : ""}</p>
           <PhoneDevices key={`${info.transport}-${info.pairingUntil}`} />
         </> : null}
         {info.lanError ? <p class="msg err" role="alert">{info.lanError}</p> : null}

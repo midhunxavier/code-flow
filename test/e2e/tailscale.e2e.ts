@@ -4,7 +4,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer as netServer, type AddressInfo } from "node:net";
+import { connect, createServer as netServer, type AddressInfo } from "node:net";
 import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,8 @@ import { encode } from "uqr";
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const directory = await mkdtemp(join(tmpdir(), "codeflow-tailscale-e2e-"));
 const home = join(directory, "home"), statusFile = join(directory, "status.json"), bindLog = join(directory, "bind.log");
+const cert = join(directory, "cert.pem"), key = join(directory, "key.pem");
+let tls = false;
 const headers = { authorization: "Bearer tailscale-e2e", "content-type": "application/json" };
 const freePort = () => new Promise<number>((resolve) => { const server = netServer().listen(0, "127.0.0.1", () => { const port = (server.address() as AddressInfo).port; server.close(() => resolve(port)); }); });
 const port = await freePort(), remotePort = await freePort();
@@ -27,11 +29,17 @@ async function api(path = "/api/remote", body?: object) {
   return response.json();
 }
 async function setStatus(value: object) { await writeFile(statusFile, JSON.stringify(value)); }
+async function assertNoListener() {
+  await assert.rejects(new Promise<void>((resolve, reject) => {
+    const socket = connect(remotePort, "127.0.0.1", () => { socket.destroy(); resolve(); });
+    socket.on("error", reject);
+  }), "disabled or disconnected mode opens no fallback listener");
+}
 async function start(allowLocal = true) {
   child = spawn(process.execPath, ["--import", "tsx", "--import", "./test/tailscale-network-fixture.mjs", "src/server.ts"], { cwd: root, env: {
     ...process.env, PORT: String(port), CODEFLOW_REMOTE_PORT: String(remotePort), CODEFLOW_HOME: home,
     CODEFLOW_TOKEN: "tailscale-e2e", CODEFLOW_LAN_ALLOW_LOCAL: allowLocal ? "1" : "0", CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL: "0",
-    CODEFLOW_TLS_CERT: "", CODEFLOW_TLS_KEY: "", FAKE_TAILSCALE_STATUS: statusFile, FAKE_TAILSCALE_BIND_LOG: bindLog,
+    CODEFLOW_TLS_CERT: tls ? cert : "", CODEFLOW_TLS_KEY: tls ? key : "", FAKE_TAILSCALE_STATUS: statusFile, FAKE_TAILSCALE_BIND_LOG: bindLog,
     PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`,
   }, stdio: "pipe" });
   let output = "";
@@ -50,7 +58,7 @@ async function stop() {
   await stopped; clearTimeout(timer);
 }
 async function phone() {
-  const context = await browser.newContext({ proxy: { server: proxyUrl }, viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const context = await browser.newContext({ proxy: { server: proxyUrl }, ignoreHTTPSErrors: true, viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   return context.newPage();
 }
 async function responseFrom(page: Page, path: string, body?: object) {
@@ -66,6 +74,7 @@ async function refreshUI() {
 }
 
 before(async () => {
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=codeflow.tail-test.ts.net"], { stdio: "ignore" });
   await setStatus({ BackendState: "Stopped" });
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
   await start();
@@ -78,6 +87,17 @@ before(async () => {
     });
     upstream.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end(); });
     res.on("close", () => upstream.destroy()); req.pipe(upstream);
+  });
+  // Tunnel TLS unchanged; Chrome sees the real HTTPS origin and Secure cookie behavior.
+  proxy.on("connect", (req, socket, head) => {
+    if (req.url !== `codeflow.tail-test.ts.net:${remotePort}` && req.url !== `100.101.102.104:${remotePort}`) { socket.destroy(); return; }
+    const upstream = connect(remotePort, "127.0.0.1", () => {
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length) upstream.write(head);
+      socket.pipe(upstream); upstream.pipe(socket);
+    });
+    upstream.on("error", () => socket.destroy()); socket.on("error", () => upstream.destroy());
+    socket.on("close", () => upstream.destroy());
   });
   await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
   proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
@@ -99,7 +119,7 @@ test("settings detect disconnected Tailscale, then show the actual remote link a
   await section.getByLabel("Remote connection").selectOption("tailscale");
   await section.getByText("Turn on Tailscale on this computer, then refresh.").waitFor();
   assert.equal(await section.locator("svg.qr").count(), 0);
-  await assert.rejects(fetch(`http://127.0.0.1:${remotePort}/`), "disconnected mode opens no fallback listener");
+  await assertNoListener();
   await setStatus({ BackendState: "NeedsLogin" }); await refreshUI();
   await section.getByText("Sign in to Tailscale on this computer, then refresh.").waitFor();
   assert.equal(await section.locator("svg.qr").count(), 0);
@@ -135,15 +155,23 @@ test("settings detect disconnected Tailscale, then show the actual remote link a
 
 test("pair through Tailscale, mutate and stream, revoke a device and rotate links", { timeout: 60_000 }, async () => {
   const section = owner.getByRole("region", { name: "Remote access", exact: true });
+  assert.equal(await section.getByRole("checkbox", { name: "Full control from remote devices", exact: true }).isDisabled(), true);
+  const rejected = await fetch(`${base}/api/remote`, { method: "POST", headers, body: JSON.stringify({ control: true }) });
+  assert.equal(rejected.status, 400, "Tailscale alone cannot protect cookies from other HTTP services on the same host");
+  await stop(); tls = true; await start(); await owner.reload();
   const saved = owner.waitForResponse((r) => r.url().endsWith("/api/remote") && r.request().method() === "POST");
   await section.getByRole("checkbox", { name: "Full control from remote devices", exact: true }).click();
   await saved;
   const info = await api();
   assert.equal(info.control, true);
-  assert.equal(info.secure, false, "encrypted Tailscale allows control without the insecure development override");
+  assert.equal(info.secure, true);
+  assert.match(info.tailscaleUrl, /^https:\/\/codeflow\.tail-test\.ts\.net:/);
   const tab = await phone();
   await tab.goto(info.tailscaleUrl);
-  await tab.waitForURL(`http://100.101.102.103:${remotePort}/`);
+  await tab.waitForURL(`https://codeflow.tail-test.ts.net:${remotePort}/`);
+  const session = (await tab.context().cookies()).find((cookie) => cookie.name.startsWith("codeflow_phone_"));
+  assert.ok(session?.secure && session.httpOnly, "full-control sessions require Secure HttpOnly cookies");
+  assert.equal((await tab.context().cookies(`http://codeflow.tail-test.ts.net:${remotePort + 1}/`)).length, 0, "another HTTP service cannot receive the full-control cookie");
   assert.equal((await responseFrom(tab, "/api/runs")).status, 200);
   const remoteSettings = await responseFrom(tab, "/api/remote", { enabled: true });
   assert.equal(remoteSettings.status, 200, "same-origin POST works through the tailnet address");
@@ -171,12 +199,12 @@ test("pair through Tailscale, mutate and stream, revoke a device and rotate link
     run = (await responseFrom(tab, `/api/runs/${started.body.id}`)).body;
   }
   assert.equal(run.status, "done", run.error);
-  const crossSite = await fetch(`http://127.0.0.1:${remotePort}/api/remote`, { headers: { origin: "http://evil.example", "content-type": "application/json" }, method: "POST", body: "{}" });
-  assert.equal(crossSite.status, 403);
+  const crossSite = await tab.request.post(`https://codeflow.tail-test.ts.net:${remotePort}/api/remote`, { headers: { origin: "http://evil.example" }, data: {} });
+  assert.equal(crossSite.status(), 403);
   const devices = await api("/api/remote/devices");
   assert.equal(devices.length, 1);
   assert.equal((await fetch(`${base}/api/remote/devices/${devices[0].id}`, { method: "DELETE", headers })).status, 200);
-  assert.equal((await responseFrom(tab, "/api/runs")).status, 401);
+  assert.equal((await tab.request.get(`https://codeflow.tail-test.ts.net:${remotePort}/api/runs`)).status(), 401);
   const second = await phone(); await second.goto(info.tailscaleUrl);
   assert.equal((await responseFrom(second, "/api/runs")).status, 200);
   owner.once("dialog", (dialog) => dialog.accept());
@@ -185,7 +213,7 @@ test("pair through Tailscale, mutate and stream, revoke a device and rotate link
   await rotated;
   const changed = await api();
   assert.notEqual(changed.phonePath, info.phonePath);
-  assert.equal((await responseFrom(second, "/api/runs")).status, 401);
+  assert.equal((await second.request.get(`https://codeflow.tail-test.ts.net:${remotePort}/api/runs`)).status(), 401);
   const old = await phone(); const expired = await old.goto(info.tailscaleUrl);
   assert.equal(expired!.status(), 404);
 });
@@ -195,10 +223,10 @@ test("disconnect, reconnect and address changes never fall back to Wi-Fi; restar
   await setStatus({ ...connected(), BackendState: "Stopped" });
   const stopped = await api("/api/remote?refresh=1");
   assert.equal(stopped.tailscaleUrl, undefined); assert.deepEqual(stopped.lanUrls, []);
-  await assert.rejects(fetch(`http://127.0.0.1:${remotePort}/`));
-  await setStatus(connected("100.101.102.104"));
+  await assertNoListener();
+  await setStatus({ ...connected("100.101.102.104"), Self: { Online: true } });
   const changed = await api("/api/remote?refresh=1");
-  assert.match(changed.tailscaleUrl, /^http:\/\/100\.101\.102\.104:/);
+  assert.match(changed.tailscaleUrl, /^https:\/\/100\.101\.102\.104:/);
   assert.equal(changed.phonePath, before.phonePath);
   const paired = await phone(); await paired.goto(changed.tailscaleUrl);
   assert.equal((await responseFrom(paired, "/api/runs")).status, 200);
@@ -216,19 +244,21 @@ test("disconnect, reconnect and address changes never fall back to Wi-Fi; restar
   await owner.getByText("Pairing link expired. Choose New link to pair another device.").waitFor();
   assert.equal(await owner.getByRole("region", { name: "Remote access", exact: true }).locator("svg.qr").count(), 0);
   const wifi = await api("/api/remote", { transport: "lan" });
-  assert.equal(wifi.control, false, "switching to plain Wi-Fi cannot inherit Tailscale control");
+  assert.equal(wifi.control, true, "HTTPS keeps full control available across transports");
   assert.notEqual(wifi.phonePath, restarted.phonePath);
   assert.equal(wifi.tailscaleUrl, undefined);
   await api("/api/remote", { enabled: false });
-  await assert.rejects(fetch(`http://127.0.0.1:${remotePort}/`));
+  await assertNoListener();
+  await stop(); tls = false; await start();
+  assert.equal((await api()).control, false, "removing TLS disables persisted full control");
 });
 
 test("bind failure hides links and production settings refuse connections from this computer", { timeout: 60_000 }, async () => {
   // This address is deliberately not mapped by the fixture, so the real bind fails.
   await setStatus(connected("100.101.102.105")); await api("/api/remote?refresh=1");
-  const failed = await api("/api/remote", { enabled: true, lan: true, transport: "tailscale", control: true });
+  const failed = await api("/api/remote", { enabled: true, lan: true, transport: "tailscale", control: false });
   assert.equal(failed.tailscaleUrl, undefined); assert.deepEqual(failed.lanUrls, []); assert.match(failed.lanError, /couldn't listen on Tailscale/);
-  await assert.rejects(fetch(`http://127.0.0.1:${remotePort}/`));
+  await assertNoListener();
   await setStatus(connected()); await api("/api/remote?refresh=1");
   await stop(); await start(false);
   const info = await api("/api/remote?refresh=1");
