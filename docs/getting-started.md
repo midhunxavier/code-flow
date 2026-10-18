@@ -23,7 +23,7 @@ The session token exists only in the server's memory, so the agents code-flow ru
 
 ## Your first run
 
-![The composer: a task and the team patterns, with Plan → Build → Review picked (demo data)](images/composer-light.png)
+![The composer: a task and its workflow, Plan → Build → Review, with the check that decides when it's done (demo data)](images/composer-light.png)
 
 1. Click the **repository button** under the composer's title to choose a repo. The folder browser is served by the local server, because browsers don't expose absolute paths. It marks git repos and remembers recent ones.
 2. Describe the task. Drag files from the **Files** panel, or from Finder, onto the task box to give the agents context. **Improve** (at the right of the task box) rewrites a rough task so agents can act on it: the same intent, with the goal first, the specifics, how to tell it's done, and any open questions. **Undo** puts your text back.
