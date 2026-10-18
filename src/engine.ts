@@ -2026,7 +2026,7 @@ export class RunManager {
     for (const id of ids) {
       if (this.shuttingDown) break;
       await rewriteLines(`${id}.jsonl`, (lines) => {
-        if (lines.some((l) => (l as RunEvent | undefined)?.type === ("run-patch" as string))) return undefined;
+        if (lines.some((l) => (l as { type?: string } | null)?.type === "run-patch")) return undefined;
         const events = decodeRunLog(lines);
         const compacted = compactRunLog(events);
         const [was, is] = [sizeOfLines(lines), sizeOfLines(compacted)];

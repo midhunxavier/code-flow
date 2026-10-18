@@ -136,13 +136,21 @@ test("a run view with a side chat, two terminals and a second tab still gets its
   await side.getByRole("tab", { name: "Terminal" }).click();
   await streamsAre({ streams: 1, subscriptions: 4 }, "terminals watched again");
 
-  // A second tab on the same run.
+  // A closed panel watches nothing; opened again, it does.
+  await page.getByRole("button", { name: "Side panel", exact: true }).click();
+  await streamsAre({ streams: 1, subscriptions: 2 }, "the run list and the run view's run");
+  await page.getByRole("button", { name: "Side panel", exact: true }).click();
+  await streamsAre({ streams: 1, subscriptions: 4 }, "the panel's terminals again");
+
+  // A second tab on the same run: the first tab's stream carries its topics too.
   const second = await context.newPage();
   await second.goto(`${BASE}/#/run/${created.id}`);
   await second.locator(".runview .run-head h2", { hasText: "E2E: a run for the connections" }).waitFor({ timeout: 10_000 }).catch(() => {});
   assert.equal(await fetchFrom(page, "/api/health"), 200, "the first tab's requests still go through");
   assert.equal(await fetchFrom(second, "/api/health"), 200, "the second tab's requests go through");
   await second.locator(".runview .run-head h2", { hasText: "E2E: a run for the connections" }).waitFor({ timeout: 5_000 });
+  // It opens with the panel as you left it (on the Terminal tab, the same two shells).
+  await streamsAre({ streams: 1, subscriptions: 8 }, "one stream for both tabs");
 
   // Keystrokes still reach a terminal (drawn afresh after it was hidden), and its output comes back.
   const pane = side.locator("#side-pane-terminal .term-pane").first();
@@ -158,11 +166,13 @@ test("a run view with a side chat, two terminals and a second tab still gets its
   await dialog.getByRole("button", { name: "Archive", exact: true }).click();
   await second.locator(".run-head").getByRole("button", { name: "Unarchive" }).waitFor({ timeout: 5_000 });
   await page.locator(".run-head").getByRole("button", { name: "Unarchive" }).waitFor({ timeout: 5_000 });
-  await second.close();
-  await streamsAre({ streams: 1, subscriptions: 4 }, "the closed tab's stream is gone");
 
-  // A closed panel watches nothing.
-  await page.getByRole("button", { name: "Side panel", exact: true }).click();
-  await streamsAre({ streams: 1, subscriptions: 2 }, "the run list and the run view's run");
+  // The tab holding the stream closes: the other one opens it, and keeps hearing about the run.
   await page.close();
+  await streamsAre({ streams: 1, subscriptions: 4 }, "the second tab's stream: its run list, its run, its terminals");
+  await api(`/api/runs/${created.id}/archive`, { archived: false });
+  await second.locator(".run-head").getByRole("button", { name: "Archive…" }).waitFor({ timeout: 5_000 });
+  assert.equal(await fetchFrom(second, "/api/health"), 200);
+  await second.close();
+  await streamsAre({ streams: 0, subscriptions: 0 }, "no tabs, no streams");
 });
