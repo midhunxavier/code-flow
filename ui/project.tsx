@@ -1,3 +1,4 @@
+import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { automationProject, automations, inbox, loadAutomations } from "./automations.js";
 import { Icon } from "./icons.js";
@@ -8,6 +9,7 @@ import type { RunSummary } from "./types.js";
 const WEEK = 7 * 86_400_000;
 /** Recent results listed before "show all". */
 const RECENT = 8;
+const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 
 /**
  * A project's page, opened from its name in the sidebar: what needs you, what's running, recent
@@ -20,7 +22,7 @@ export function ProjectView({ id }: { id: string }) {
   const p = projects.value.find((x) => x.id === id);
   if (!p) {
     return (
-      <div class="composer project-page">
+      <div class="project-page">
         <p class="help">{projectsLoaded.value ? "This project doesn't exist any more." : "Loading…"}</p>
       </div>
     );
@@ -36,6 +38,7 @@ export function ProjectView({ id }: { id: string }) {
   const autos = automations.value.filter((a) => automationProject(a.run)?.id === id);
   const pending = inbox().filter((r) => projectFor(r)?.id === id).length;
   const team = p.defaults ? patterns.value.find((x) => x.id === p.defaults!.pattern)?.name : undefined;
+  const archived = list.length - live.length;
 
   /** The composer, in this project, with what you typed as the task. */
   const start = () => {
@@ -45,26 +48,20 @@ export function ProjectView({ id }: { id: string }) {
   };
 
   return (
-    <div class="composer project-page">
+    <div class="project-page">
       <div class="page-head">
-        <div class="pp-title">
-          <span class="eyebrow">Project</span>
+        <div class="page-head-text pp-title">
           <h1>{p.name}</h1>
+          <p>{p.repos.length ? `Runs in ${p.repos.map(baseName).join(", ")}: what needs you, what's running and how recent runs went.` : "What needs you, what's running and how recent runs went."}</p>
         </div>
-        <button type="button" class="btn ghost" onClick={() => editProject(id)} title="Rename, repositories, delete">
-          <Icon name="more" /> Edit
-        </button>
-        <button type="button" class="btn primary" onClick={start} title="A new run in this project">
-          <Icon name="plus" /> New run
-        </button>
-      </div>
-      <div class="pp-meta">
-        {p.repos.map((r) => (
-          <code key={r} title={r}>
-            {baseName(r)}
-          </code>
-        ))}
-        {team ? <span class="help">last team: {team}</span> : null}
+        <div class="page-head-actions">
+          <button type="button" class="btn" onClick={() => editProject(id)} title="Rename, repositories, delete">
+            Edit
+          </button>
+          <button type="button" class="btn primary" onClick={start} title="A new run in this project">
+            <Icon name="plus" /> New run
+          </button>
+        </div>
       </div>
 
       <div class="pp-task">
@@ -93,38 +90,75 @@ export function ProjectView({ id }: { id: string }) {
         <Card label="API-equivalent" value={cost ? fmtCost(cost) : "–"} hint="Claude's cost, as a measure of size" />
       </div>
 
-      {waiting.length ? <Section title="Needs you" count={waiting.length} runs={waiting} /> : null}
-      {running.length ? <Section title="Running" runs={running} /> : null}
-      <Section
-        title="Recent results"
-        runs={all ? results : results.slice(0, RECENT)}
-        empty="No results yet. Start a run above."
-        more={!all && results.length > RECENT ? () => setAll(true) : undefined}
-        moreCount={results.length - RECENT}
-      />
-
-      <section class="pp-section">
-        <div class="section-title">
-          Automations
-          {pending ? <span class="count">{pending}</span> : null}
+      <div class="pp-layout">
+        <div class="pp-main">
+          {waiting.length ? <Section title="Needs you" count={waiting.length} runs={waiting} attention /> : null}
+          {running.length ? <Section title="Running" count={running.length} runs={running} /> : null}
+          <Section
+            title="Recent results"
+            runs={all ? results : results.slice(0, RECENT)}
+            empty="No results yet. Start a run above."
+            more={!all && results.length > RECENT ? () => setAll(true) : undefined}
+            moreCount={results.length - RECENT}
+          />
         </div>
-        {autos.length ? (
-          autos.map((a) => (
-            <button key={a.id} type="button" class={`pp-row ${a.enabled ? "" : "off"}`} onClick={() => (route.value = { view: "settings", section: "automations" })}>
-              <Icon name="clock" />
-              <span class="t">{a.name}</span>
-              <span class="m">{a.enabled ? a.scheduleText || (a.webhook ? "webhook" : "") : "paused"}</span>
-            </button>
-          ))
-        ) : (
-          <p class="help">None in this project. Save a run as an automation from the composer to run it on a schedule or from a webhook.</p>
-        )}
-        {pending ? (
-          <button type="button" class="btn small" onClick={() => (route.value = { view: "settings", section: "automations" })}>
-            {pending} result{pending === 1 ? "" : "s"} in the inbox
-          </button>
-        ) : null}
-      </section>
+
+        <div class="pp-aside">
+          <section class="pp-card" aria-labelledby="pp-details">
+            <div class="pp-card-head">
+              <h2 id="pp-details">Details</h2>
+            </div>
+            <dl class="pp-kv">
+              <dt>Repositories</dt>
+              <dd class="pp-repos">
+                {p.repos.length
+                  ? p.repos.map((r) => (
+                      <code key={r} title={r}>
+                        {baseName(r)}
+                      </code>
+                    ))
+                  : <span class="muted">None yet</span>}
+              </dd>
+              <dt>Last team</dt>
+              <dd>{team ?? <span class="muted">None yet</span>}</dd>
+              <dt>Runs</dt>
+              <dd>
+                {plural(live.length, "run")}
+                {archived ? <span class="muted"> · {archived} archived</span> : null}
+              </dd>
+              <dt>Created</dt>
+              <dd>{new Date(p.createdAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}</dd>
+            </dl>
+          </section>
+
+          <section class="pp-card" aria-labelledby="pp-autos">
+            <div class="pp-card-head">
+              <h2 id="pp-autos">Automations</h2>
+              {pending ? <span class="pp-count" title={`${plural(pending, "result")} waiting in the inbox`}>{pending}</span> : null}
+            </div>
+            {autos.length ? (
+              <div class="pp-list">
+                {autos.map((a) => (
+                  <button key={a.id} type="button" class={`pp-row ${a.enabled ? "" : "off"}`} onClick={() => (route.value = { view: "settings", section: "automations" })}>
+                    <Icon name="clock" />
+                    <span class="t">{a.name}</span>
+                    <span class="m">{a.enabled ? a.scheduleText || (a.webhook ? "Webhook" : "") : "Paused"}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p class="pp-empty">None in this project. Save a run as an automation from the composer to run it on a schedule or from a webhook.</p>
+            )}
+            {pending ? (
+              <div class="pp-card-foot">
+                <button type="button" class="btn small" onClick={() => (route.value = { view: "settings", section: "automations" })}>
+                  {plural(pending, "result")} in the inbox
+                </button>
+              </div>
+            ) : null}
+          </section>
+        </div>
+      </div>
     </div>
   );
 }
@@ -132,22 +166,30 @@ export function ProjectView({ id }: { id: string }) {
 function Card({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div class="ins-card" title={hint}>
-      <div class="lbl">{label}</div>
-      <div class="pp-value">{value}</div>
+      <div class="ic-label">{label}</div>
+      <div class="ic-value">{value}</div>
     </div>
   );
 }
 
-function Section({ title, runs, count, empty, more, moreCount = 0 }: { title: string; runs: RunSummary[]; count?: number; empty?: string; more?: () => void; moreCount?: number }) {
+function Section({ title, runs, count, empty, more, moreCount = 0, attention = false }: { title: string; runs: RunSummary[]; count?: number; empty?: string; more?: () => void; moreCount?: number; attention?: boolean }) {
   return (
-    <section class="pp-section" aria-label={title}>
-      <div class="section-title">
-        {title}
-        {count ? <span class="count">{count}</span> : null}
+    <section class={`pp-card ${attention ? "attention" : ""}`} aria-label={title}>
+      <div class="pp-card-head">
+        <h2>{title}</h2>
+        {count ? <span class={`pp-count ${attention ? "warn" : ""}`}>{count}</span> : null}
       </div>
-      {runs.length ? runs.map((r) => <RunRow key={r.id} run={r} />) : empty ? <p class="help">{empty}</p> : null}
+      {runs.length ? (
+        <div class="pp-list">
+          {runs.map((r) => (
+            <RunRow key={r.id} run={r} />
+          ))}
+        </div>
+      ) : empty ? (
+        <p class="pp-empty">{empty}</p>
+      ) : null}
       {more ? (
-        <button type="button" class="rail-more" onClick={more}>
+        <button type="button" class="pp-more" onClick={more}>
           Show {moreCount} more
         </button>
       ) : null}
@@ -160,22 +202,24 @@ function RunRow({ run }: { run: RunSummary }) {
   const pattern = patterns.value.find((x) => x.id === run.pattern)?.name ?? run.pattern;
   const merged = run.merges.length > 0;
   const pr = Object.keys(run.prs).length > 0;
-  const verdict =
-    run.awaiting ? (
-      <span class="status-pill awaiting">waiting for you</span>
-    ) : state === "failing" ? (
-      <span class="status-pill failing">check fails</span>
-    ) : run.status === "done" && run.verdict === "passed" ? (
-      <span class="status-pill done">check passes</span>
-    ) : run.status !== "done" ? (
-      <span class={`status-pill ${run.status}`}>{STATUS_TEXT[run.status]?.toLowerCase() ?? run.status}</span>
-    ) : null;
+  const pill = (cls: string, text: ComponentChildren) => <span class={`status-pill ${cls}`}>{text}</span>;
+  const verdict = run.awaiting
+    ? pill("awaiting", "Waiting for you")
+    : state === "failing"
+      ? pill("failing", "Check fails")
+      : run.status === "done" && run.verdict === "passed"
+        ? pill("done", "Check passes")
+        : run.status !== "done"
+          ? pill(run.status, STATUS_TEXT[run.status] ?? run.status)
+          : null;
   return (
     <a class="pp-row" href={`#/run/${encodeURIComponent(run.id)}`} title={run.task}>
       <span class={`dot ${state}`} aria-hidden="true" />
       <span class="t">{run.task.split("\n")[0] || "(no task)"}</span>
-      {verdict}
-      {merged ? <span class="status-pill">merged</span> : pr ? <span class="status-pill">PR open</span> : null}
+      <span class="pills">
+        {verdict}
+        {merged ? pill("", "Merged") : pr ? pill("", "PR open") : null}
+      </span>
       <span class="m">
         {pattern} · {ago(run.createdAt)}
       </span>

@@ -96,7 +96,14 @@
   addEventListener("hashchange", where);
 
   // ------------------------------------------------------------ the layer: highlight, box, pins
-  const ACCENT = "#e8590c";
+  // code-flow's paper palette, as literals (this runs inside other apps, with none of its CSS): mint
+  // outlines, ink labels and numbers with a white ring, so they read on light and dark pages alike.
+  // The panel's snapshot boxes and the PNG sent to agents use the same (ui/browser.tsx, ui/styles.css).
+  const MARK = "#2a9b72";
+  const MARK_FILL = "rgba(42,155,114,.1)";
+  const INK = "#343932";
+  const ON_INK = "#fbfaf6";
+  const SANS = 'Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif';
   let layer;
   const ensureLayer = () => {
     if (layer && layer.isConnected) return layer;
@@ -109,12 +116,12 @@
   const box = (cls) => {
     const el = document.createElement("div");
     el.className = cls;
-    el.style.cssText = `position:absolute;border:2px solid ${ACCENT};border-radius:4px;background:rgba(232,89,12,.08);box-sizing:border-box;pointer-events:none;`;
+    el.style.cssText = `position:absolute;border:2px solid ${MARK};border-radius:6px;background:${MARK_FILL};box-sizing:border-box;pointer-events:none;`;
     ensureLayer().appendChild(el);
     return el;
   };
   const label = document.createElement("div");
-  label.style.cssText = `position:absolute;transform:translateY(-100%);background:${ACCENT};color:#fff;font:600 11px ui-monospace,Menlo,monospace;padding:2px 6px;border-radius:4px;white-space:nowrap;pointer-events:none;`;
+  label.style.cssText = `position:absolute;transform:translateY(calc(-100% - 4px));background:${INK};color:${ON_INK};font:500 11px/1.4 ui-monospace,"SFMono-Regular",Menlo,monospace;padding:2px 7px;border-radius:6px;box-shadow:0 1px 2px rgba(34,35,24,.12),0 4px 12px rgba(34,35,24,.14);white-space:nowrap;pointer-events:none;`;
   let highlight;
   const docRect = (r) => ({ x: Math.round(r.left + scrollX), y: Math.round(r.top + scrollY), w: Math.round(r.width), h: Math.round(r.height) });
   const place = (el, r) => Object.assign(el.style, { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` });
@@ -326,7 +333,7 @@
       const dot = document.createElement("div");
       dot.className = "cf-pin";
       dot.textContent = String(p.n);
-      dot.style.cssText = `position:absolute;left:${p.rect.x + p.rect.w - 9}px;top:${p.rect.y - 9}px;width:18px;height:18px;border-radius:50%;background:${ACCENT};color:#fff;font:700 11px system-ui,sans-serif;display:grid;place-items:center;box-shadow:0 0 0 2px #fff;pointer-events:none;`;
+      dot.style.cssText = `position:absolute;left:${p.rect.x + p.rect.w - 9}px;top:${p.rect.y - 9}px;width:18px;height:18px;border-radius:50%;background:${INK};color:${ON_INK};font:600 11px ${SANS};display:grid;place-items:center;box-shadow:0 0 0 2px #fff;pointer-events:none;`;
       layer.appendChild(dot);
     }
   };

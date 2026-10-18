@@ -1,21 +1,10 @@
-import { effect, signal } from "@preact/signals";
+import { signal } from "@preact/signals";
 import { showToast, store } from "./lib.js";
 
-export type Theme = "system" | "light" | "dark";
-const saved = store.get("theme");
-export const theme = signal<Theme>(saved === "light" || saved === "dark" ? saved : "system");
 export const desktopNotifications = signal(store.get("notify") !== "0");
 export const notificationPermission = signal<NotificationPermission | "unsupported">("Notification" in window ? Notification.permission : "unsupported");
 export const canNotify = () => desktopNotifications.value && notificationPermission.value === "granted";
-export function setTheme(value: Theme) { theme.value = value; store.set("theme", value); }
-export function initializeAppearance() {
-  const scheme = matchMedia("(prefers-color-scheme: dark)");
-  const apply = () => {
-    document.documentElement.dataset.theme = theme.value === "system" ? scheme.matches ? "dark" : "light" : theme.value;
-    window.dispatchEvent(new Event("codeflow-theme"));
-  };
-  effect(apply);
-  scheme.addEventListener("change", apply);
+export function watchNotificationPermission() {
   window.addEventListener("focus", () => { notificationPermission.value = "Notification" in window ? Notification.permission : "unsupported"; });
 }
 export async function setDesktopNotifications(enabled: boolean) {

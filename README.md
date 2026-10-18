@@ -19,7 +19,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/run-dark.png">
-    <img src="docs/images/run-light.png" alt="A code-flow run: the task, four steps by Claude and Codex, and the approved result with its branch (demo data)" width="100%">
+    <img src="docs/images/run-light.png" alt="A code-flow run: the task, eight steps by Claude and Codex, and the approved, proven result with its branch (demo data)" width="100%">
   </picture>
 </p>
 
@@ -73,7 +73,7 @@ review. [Filesystem policies](docs/filesystem-policy.md) and explicit trusted
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/composer-dark.png">
-  <img src="docs/images/composer-light.png" alt="The composer: the task, the seven team patterns, and a team with an agent, model and effort per role (demo data)" width="100%">
+  <img src="docs/images/composer-light.png" alt="The composer: the project and repository, getting started and task starters, the task, acceptance criteria and the workflow with Plan → Build → Review picked (demo data)" width="100%">
 </picture>
 
 | Pattern | How the agents work | Reach for it when |
@@ -125,4 +125,4 @@ See [Architecture and development](docs/architecture.md).
 
 ## License
 
-[MIT](LICENSE). The bundled fonts keep their own licences: Manrope under the [SIL Open Font License 1.1](ui/fonts/OFL-1.1.txt), Roboto Mono under the [Apache License 2.0](ui/fonts/Apache-2.0.txt).
+[MIT](LICENSE). The bundled font keeps its own licence: Inter under the [SIL Open Font License 1.1](ui/fonts/OFL-1.1.txt).

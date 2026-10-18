@@ -1,5 +1,6 @@
 import { signal } from "@preact/signals";
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { Icon } from "./icons.js";
 import { AgentPicker } from "./run.js";
 import { api, enc, post, showToast, store } from "./lib.js";
 import { route, runs } from "./state.js";
@@ -107,42 +108,53 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   return (
     <div class="review">
       <div class="review-head">
-        <button class="btn ghost" onClick={() => (route.value = { view: "run", id })}>
-          ← Back to run
+        <button class="btn ghost small review-back" onClick={() => (route.value = { view: "run", id })}>
+          <Icon name="chevron" class="back" /> Back to run
         </button>
         <div class="review-title">
-          <b>Review</b> <code>{branch}</code>
+          <h1>Review</h1>
+          <code title={branch}>{branch}</code>
           {totals ? (
-            <span class="help">
-              {" "}
+            <span class="review-totals">
               {files!.length} file{files!.length === 1 ? "" : "s"} · <span class="add">+{totals.add}</span> <span class="del">−{totals.del}</span>
             </span>
           ) : null}
         </div>
-        <span class="spacer" />
-        {summary?.status === "done" ? (
-          <>
-            <span class="help">Send to</span>
-            <AgentPicker value={target} onChange={setAgent} />
-            <button class="btn primary" disabled={!canSend || sending} onClick={send}>
-              {sending ? "Sending…" : `Send ${comments.length || ""} comment${comments.length === 1 ? "" : "s"}`.replace("  ", " ")}
-            </button>
-          </>
-        ) : (
-          <span class="help">Comments can be sent once the run has finished.</span>
-        )}
+        {/* one group, so the agent and the button wrap together */}
+        <div class="review-send">
+          {summary?.status === "done" ? (
+            <>
+              <span class="review-to">Send to</span>
+              <AgentPicker value={target} onChange={setAgent} />
+              <button class="btn primary" disabled={!canSend || sending} onClick={send}>
+                {sending ? "Sending…" : `Send ${comments.length || ""} comment${comments.length === 1 ? "" : "s"}`.replace("  ", " ")}
+              </button>
+            </>
+          ) : (
+            <span class="review-to">Comments can be sent once the run has finished.</span>
+          )}
+        </div>
       </div>
-      {error ? <div class="msg err" style="padding:16px">{error}</div> : null}
-      {runError ? <div class="msg warn" style="padding:16px">{runError}</div> : null}
+      {error ? <div class="msg err review-msg">{error}</div> : null}
+      {runError ? <div class="msg warn review-msg">{runError}</div> : null}
       <div class="review-body">
         <div class="review-files">
           {files?.map((f) => {
             const n = comments.filter((c) => c.file === f.path).length;
+            const cut = f.path.lastIndexOf("/") + 1;
             return (
               <button key={f.path} type="button" class={`rf ${f.path === selected ? "selected" : ""}`} onClick={() => setSelected(f.path)} title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
                 <span class={`fs ${f.status}`}>{{ added: "A", modified: "M", deleted: "D", renamed: "R" }[f.status]}</span>
-                <span class="fp">{f.path}</span>
-                {n ? <span class="count">{n}</span> : null}
+                {/* the folder shortens first, so the file's name stays readable */}
+                <span class="fp">
+                  {cut ? <span class="fdir">{f.path.slice(0, cut)}</span> : null}
+                  <span class="fname">{f.path.slice(cut)}</span>
+                </span>
+                {n ? (
+                  <span class="count" title={`${n} comment${n === 1 ? "" : "s"}`}>
+                    {n}
+                  </span>
+                ) : null}
                 <span class="fn">
                   <span class="add">+{f.additions}</span> <span class="del">−{f.deletions}</span>
                 </span>
@@ -167,7 +179,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
             />
           </div>
         </div>
-        <div class="review-diff">
+        <div class="review-diff" role="region" aria-label={file ? `Diff of ${file.path}` : "Diff"}>
           {file ? (
             <FileDiff
               key={file.path}
@@ -199,8 +211,34 @@ export function FileDiff({ file, comments, onAdd, onRemove }: { file: DiffFile; 
   const rows = useMemo(() => parsePatch(file.patch), [file.patch]);
   const [editing, setEditing] = useState<{ side: "old" | "new"; line: number; code: string } | null>(null);
   const [text, setText] = useState("");
+  // The diff is one tab stop (a roving tabindex): Tab lands on the last line you were on, the arrow
+  // keys move between lines, Enter or Space comments on one. A tab stop per line would trap Tab in a long diff.
+  const [active, setActive] = useState(-1);
+  const body = useRef<HTMLTableSectionElement>(null);
+  const editor = useRef<HTMLTextAreaElement>(null);
+  // a new comment box takes focus, opened by click or by key
+  useEffect(() => {
+    if (editing) editor.current?.focus();
+  }, [editing]);
   if (file.binary) return <div class="tree-empty">Binary file — no text diff.</div>;
   const at = (side: "old" | "new", line?: number) => comments.filter((c) => c.side === side && c.line === line);
+  const isLine = (row: Row) => row.type === "add" || row.type === "del" || row.type === "ctx";
+  // (a live diff can change under the remembered line: fall back to the first line)
+  const stop = rows[active] && isLine(rows[active]!) ? active : rows.findIndex(isLine);
+  // closing the editor removes the focused textarea: put focus back on its line, not on the page
+  const close = (i: number) => {
+    body.current?.querySelector<HTMLElement>(`tr[data-i="${i}"]`)?.focus();
+    setEditing(null);
+  };
+  const move = (e: KeyboardEvent) => {
+    const lines = [...(body.current?.querySelectorAll<HTMLElement>("tr.dl[tabindex]") ?? [])];
+    const from = lines.indexOf(e.currentTarget as HTMLElement);
+    const steps: Record<string, number> = { ArrowDown: 1, ArrowUp: -1, PageDown: 20, PageUp: -20, Home: -lines.length, End: lines.length };
+    if (from < 0 || !(e.key in steps) || e.altKey || e.ctrlKey || e.metaKey) return false;
+    e.preventDefault();
+    lines[Math.max(0, Math.min(lines.length - 1, from + steps[e.key]!))]!.focus();
+    return true;
+  };
   return (
     <div>
       <div class="diff-file-head">
@@ -209,23 +247,34 @@ export function FileDiff({ file, comments, onAdd, onRemove }: { file: DiffFile; 
         {file.truncated ? <span class="help"> · diff truncated</span> : null}
       </div>
       <table class="diff">
-        <tbody>
+        <tbody ref={body}>
           {rows.map((row, i) => {
             const side: "old" | "new" = row.type === "del" ? "old" : "new";
             const line = side === "old" ? row.old : row.new;
-            const commentable = row.type === "add" || row.type === "del" || row.type === "ctx";
+            const commentable = isLine(row);
             const here = commentable ? at(side, line) : [];
             const isEditing = editing && commentable && editing.side === side && editing.line === line;
+            const comment = () => {
+              if (!commentable || line === undefined) return;
+              setEditing({ side, line, code: row.text });
+              setText("");
+            };
             return [
               <tr
                 key={`r${i}`}
                 class={`dl ${row.type}`}
-                onClick={() => {
-                  if (!commentable || line === undefined) return;
-                  setEditing({ side, line, code: row.text });
-                  setText("");
+                data-i={i}
+                tabIndex={commentable ? (i === stop ? 0 : -1) : undefined}
+                onClick={comment}
+                onFocus={() => setActive(i)}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget || move(e)) return;
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    comment();
+                  }
                 }}
-                title={commentable ? "Click to comment on this line" : undefined}
+                title={commentable ? "Click or press Enter to comment on this line" : undefined}
               >
                 <td class="ln">{row.old ?? ""}</td>
                 <td class="ln">{row.new ?? ""}</td>
@@ -251,22 +300,23 @@ export function FileDiff({ file, comments, onAdd, onRemove }: { file: DiffFile; 
                   <td colSpan={3}>
                     <div class="comment editing">
                       <textarea
+                        ref={editor}
                         class="field"
                         rows={3}
-                        autoFocus
+                        aria-label={`Comment on line ${line}`}
                         placeholder="What should change here?"
                         value={text}
                         onInput={(e) => setText(e.currentTarget.value)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) {
                             onAdd({ file: file.path, side, line: line!, code: row.text, text });
-                            setEditing(null);
+                            close(i);
                           }
-                          if (e.key === "Escape") setEditing(null);
+                          if (e.key === "Escape") close(i);
                         }}
                       />
                       <div class="row">
-                        <button class="btn small" onClick={() => setEditing(null)}>
+                        <button class="btn small" onClick={() => close(i)}>
                           Cancel
                         </button>
                         <button
@@ -274,7 +324,7 @@ export function FileDiff({ file, comments, onAdd, onRemove }: { file: DiffFile; 
                           disabled={!text.trim()}
                           onClick={() => {
                             onAdd({ file: file.path, side, line: line!, code: row.text, text });
-                            setEditing(null);
+                            close(i);
                           }}
                         >
                           Add comment <span class="kbd">⌘↵</span>

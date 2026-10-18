@@ -71,7 +71,7 @@ function SchedulePreview({ schedule }: { schedule?: Schedule }) {
   }, [key]);
   const timezone = schedule && "at" in schedule ? schedule.timezone : undefined;
   const format = (at: number) => { try { return new Date(at).toLocaleString([], { timeZone: timezone, weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }); } catch { return "Choose a valid time zone"; } };
-  return <div aria-label="Next scheduled times"><p class="help">Next runs{timezone ? ` in ${timezone}` : ""}:</p>{times.length ? <ol class="help">{times.map((at) => <li key={at}>{format(at)}</li>)}</ol> : <p class="help">{schedule ? "Calculating…" : "No schedule"}</p>}{timezone ? <p class="help">Runs once per local day. A skipped daylight-saving time moves forward; a repeated time uses its first occurrence.</p> : null}{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
+  return <div role="group" aria-label="Next scheduled times"><p class="help">Next runs{timezone ? ` in ${timezone}` : ""}:</p>{times.length ? <ol class="help">{times.map((at) => <li key={at}>{format(at)}</li>)}</ol> : <p class="help">{schedule ? "Calculating…" : "No schedule"}</p>}{timezone ? <p class="help">Runs once per local day. A skipped daylight-saving time moves forward; a repeated time uses its first occurrence.</p> : null}{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
 }
 
 function ScheduleEditor({ automation: a, save }: { automation: Automation; save: (patch: object) => unknown }) {
@@ -114,34 +114,39 @@ export function AutomationsView() {
   return (
     <div class="automations">
       <div class="page-head">
-        <h3>Project scope</h3>
+        <div class="ph-text page-head-text">
+          <h3>Project scope</h3>
+          <p class="lede">
+            Runs that start on a schedule or from a webhook. Their results wait in the inbox for you: approve, ask for changes, or reject. Nothing is ever merged automatically.
+          </p>
+        </div>
         <ProjectButton />
       </div>
-      <p class="lede">
-        Runs that start on a schedule or from a webhook. Their results wait in the inbox for you: approve, ask for changes, or reject. Nothing is ever merged automatically.
-      </p>
 
-      <div class="section">
-        <div class="section-title">
+      {/* Each section is a card: its title, then its items as rows. */}
+      <section class="section auto-card" aria-labelledby="inbox-title">
+        <h2 class="section-title" id="inbox-title">
           Review inbox {pending.length ? <span class="count">{pending.length}</span> : null}
-        </div>
+        </h2>
         <Elsewhere count={allPending.length - pending.length} what={(n) => `${n} in other projects need${n === 1 ? "s" : ""} you`} />
-        <p class="help">Higher run priorities come first, then questions, blocked work, failures and results. Older items come first within each priority. Open a run to answer approvals, resume work or review its evidence.</p>
-        <div class="wb-row"><label>Group by<select class="field" aria-label="Group review inbox" value={grouping} onChange={(event) => setGrouping(event.currentTarget.value)}><option value="project">Project</option><option value="repo">Repository</option><option value="reason">Attention needed</option><option value="none">No grouping</option></select></label><label>Show<select class="field" aria-label="Filter review inbox" value={filter} onChange={(event) => setFilter(event.currentTarget.value)}><option value="">All attention items</option>{Object.entries(REVIEW_REASON_LABELS).map(([id, label]) => <option value={id}>{label}</option>)}</select></label><label>Search<input class="field" aria-label="Search review inbox" value={query} onInput={(event) => setQuery(event.currentTarget.value)} placeholder="Task, repository or run ID" /></label></div>
-        {filtered.length ? groups.map((group) => <section key={group.id} aria-label={`Review group ${group.label}`}><h3>{group.label} <span class="count">{group.runs.length}</span></h3>{group.runs.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} />)}</section>) : <p class="help">{pending.length ? "No attention items match these filters." : `Nothing to review${here}. Runs that changed nothing are archived on their own.`}</p>}
-      </div>
+        <p class="help inbox-note">Higher run priorities come first, then questions, blocked work, failures and results. Older items come first within each priority. Open a run to answer approvals, resume work or review its evidence.</p>
+        <div class="wb-row inbox-filters"><label>Group by<select class="field" aria-label="Group review inbox" value={grouping} onChange={(event) => setGrouping(event.currentTarget.value)}><option value="project">Project</option><option value="repo">Repository</option><option value="reason">Attention needed</option><option value="none">No grouping</option></select></label><label>Show<select class="field" aria-label="Filter review inbox" value={filter} onChange={(event) => setFilter(event.currentTarget.value)}><option value="">All attention items</option>{Object.entries(REVIEW_REASON_LABELS).map(([id, label]) => <option value={id}>{label}</option>)}</select></label><label>Search<input class="field" aria-label="Search review inbox" value={query} onInput={(event) => setQuery(event.currentTarget.value)} placeholder="Task, repository or run ID" /></label></div>
+        {filtered.length ? groups.map((group) => <section key={group.id} class="inbox-group" aria-label={`Review group ${group.label}`}><h3>{group.label} <span class="count">{group.runs.length}</span></h3>{group.runs.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} />)}</section>) : <p class="help empty">{pending.length ? "No attention items match these filters." : `Nothing to review${here}. Runs that changed nothing are archived on their own.`}</p>}
+      </section>
 
-      <div class="section">
-        <div class="section-title">Your automations</div>
+      <section class="section auto-card" aria-labelledby="automations-title">
+        <h2 class="section-title" id="automations-title">
+          Your automations {list.length ? <span class="n">{list.length}</span> : null}
+        </h2>
         <Elsewhere count={automations.value.length - list.length} what={(n) => `${n} more in other projects`} />
         {list.length ? (
           list.map((a) => <AutomationRow key={a.id} a={a} scoped={scoped} />)
         ) : (
-          <p class="help">
+          <p class="help empty">
             None{here} yet. Set up a run in the composer — task, team, check — and choose <b>Save as automation…</b> next to Start run.
           </p>
         )}
-      </div>
+      </section>
 
       <p class="help">To access this workspace from another device, open <a href="#/settings/remote-access">Remote access settings</a>.</p>
     </div>
@@ -161,7 +166,7 @@ function Elsewhere({ count, what }: { count: number; what: (n: number) => string
     <div class="rail-hint elsewhere">
       {what(count)}
       <button type="button" onClick={() => selectProject(ALL)}>
-        show all
+        Show all
       </button>
     </div>
   );
@@ -181,7 +186,7 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
           {run.source?.title && !run.task.includes(run.source.title) ? ` — ${run.source.title}` : null}
         </a>
         <span class="help">
-          {run.trigger?.via === "sweep" ? "▤" : "⏱"} {run.trigger?.name} · {STATUS_TEXT[run.status] ?? run.status}
+          <Icon name={run.trigger?.via === "sweep" ? "layers" : run.trigger?.via === "webhook" ? "globe" : "clock"} class="inline-icon" /> {run.trigger?.name} · {STATUS_TEXT[run.status] ?? run.status}
           {run.verdict ? ` · check ${run.verdict}` : run.checkCantRun ? " · check couldn't run" : ""} · {baseName(run.repo)}
           {project ? <> · <Icon name="project" class="inline-icon" /> {project.name}</> : null} · {ago(run.createdAt)}
         </span>
@@ -273,8 +278,9 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
   return (
     <div class={`auto-row ${a.enabled ? "" : "off"}`}>
       <div class="ar-head">
+        {/* A real checkbox, drawn as a switch: it keeps its keyboard use and its checked state. */}
         <label class="switch" title={a.enabled ? "Turn off" : "Turn on"}>
-          <input type="checkbox" checked={a.enabled} onChange={(e) => update({ enabled: e.currentTarget.checked })} />
+          <input type="checkbox" role="switch" aria-label={`${a.name}: on`} checked={a.enabled} onChange={(e) => update({ enabled: e.currentTarget.checked })} />
         </label>
         <b>{a.name}</b>
         <span class="help">
@@ -299,7 +305,7 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
             )
           }
         >
-          ▶ Run now
+          Run now
         </button>
         {a.webhook ? (
           <button class="btn small" aria-pressed={showHook} onClick={() => setShowHook(!showHook)}>
@@ -446,59 +452,76 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
     }
   };
   return (
-    <dialog class="picker small-dialog" ref={ref} aria-labelledby="save-automation-title">
+    <dialog class="picker small-dialog save-auto" ref={ref} aria-labelledby="save-automation-title">
       <div class="picker-inner">
         <div class="picker-head">
           <h3 id="save-automation-title">Save as automation</h3>
           <div class="help">Runs this task with this team and these settings, unattended. Results wait in your inbox; nothing merges by itself.</div>
         </div>
         <div class="dialog-body">
-          <label class="lbl">Name</label>
-          <input class="field" value={name} onInput={(e) => setName(e.currentTarget.value)} />
-          <label class="lbl">When</label>
-          <div class="segmented" role="radiogroup" aria-label="When">
-            {(
-              [
-                ["daily", "At a time"],
-                ["every", "Repeatedly"],
-                ["webhook", "Only from a webhook"],
-              ] as const
-            ).map(([k, label]) => (
-              <button key={k} type="button" role="radio" aria-checked={kind === k} class={kind === k ? "on" : ""} onClick={() => setKind(k)}>
-                {label}
-              </button>
-            ))}
+          <div class="fg">
+            <label class="lbl" for="auto-name">
+              Name
+            </label>
+            <input id="auto-name" class="field" value={name} onInput={(e) => setName(e.currentTarget.value)} />
           </div>
-          {kind === "daily" ? (
-            <div class="row-inline">
-              <input class="field inline" type="time" value={at} onInput={(e) => setAt(e.currentTarget.value)} />
-              {DAYS.map((d, i) => (
-                <button key={d} type="button" class="pill" aria-pressed={days.includes(i)} onClick={() => setDays(days.includes(i) ? days.filter((x) => x !== i) : [...days, i].sort())}>
-                  {d}
+          <div class="fg">
+            <span class="lbl" id="auto-when">
+              When
+            </span>
+            <div class="segmented" role="radiogroup" aria-labelledby="auto-when">
+              {(
+                [
+                  ["daily", "At a time"],
+                  ["every", "Repeatedly"],
+                  ["webhook", "Only from a webhook"],
+                ] as const
+              ).map(([k, label]) => (
+                <button key={k} type="button" role="radio" aria-checked={kind === k} class={kind === k ? "on" : ""} onClick={() => setKind(k)}>
+                  {label}
                 </button>
               ))}
             </div>
-          ) : kind === "every" ? (
-            <div class="row-inline">
-              every <input class="field inline num" type="number" min={5} value={every} onInput={(e) => setEvery(Number(e.currentTarget.value) || 60)} /> minutes
-            </div>
-          ) : null}
-          {kind === "daily" ? <label>Time zone<input class="field" aria-label="Automation time zone" placeholder="Europe/Stockholm" value={timezone} onInput={(event) => setTimezone(event.currentTarget.value)} /></label> : null}
-          {kind !== "webhook" ? <SchedulePreview schedule={kind === "every" ? { every } : { at, days, timezone }} /> : null}
-          {kind !== "webhook" ? (
+            {kind === "daily" ? (
+              <div class="row-inline">
+                <input class="field inline" type="time" aria-label="Time of day" value={at} onInput={(e) => setAt(e.currentTarget.value)} />
+                <span class="days" role="group" aria-label="Days">
+                  {DAYS.map((d, i) => (
+                    <button key={d} type="button" class="day" aria-pressed={days.includes(i)} onClick={() => setDays(days.includes(i) ? days.filter((x) => x !== i) : [...days, i].sort())}>
+                      {d}
+                    </button>
+                  ))}
+                </span>
+              </div>
+            ) : kind === "every" ? (
+              <div class="row-inline">
+                Every <input class="field inline num" type="number" min={5} aria-label="Minutes between runs" value={every} onInput={(e) => setEvery(Number(e.currentTarget.value) || 60)} /> minutes
+              </div>
+            ) : null}
+            {kind === "daily" ? (
+              <label class="lbl tz">
+                Time zone
+                <input class="field" aria-label="Automation time zone" placeholder="Europe/Stockholm" value={timezone} onInput={(event) => setTimezone(event.currentTarget.value)} />
+              </label>
+            ) : null}
+            {kind !== "webhook" ? <SchedulePreview schedule={kind === "every" ? { every } : { at, days, timezone }} /> : null}
+          </div>
+          <div class="fg checks">
+            {kind !== "webhook" ? (
+              <label class="check">
+                <input type="checkbox" checked={webhook} onChange={(e) => setWebhook(e.currentTarget.checked)} /> Also start it from a webhook
+              </label>
+            ) : null}
             <label class="check">
-              <input type="checkbox" checked={webhook} onChange={(e) => setWebhook(e.currentTarget.checked)} /> Also start it from a webhook
+              <input type="checkbox" checked={isolate} onChange={(e) => setIsolate(e.currentTarget.checked)} /> Run checks and setup in a Docker container
             </label>
-          ) : null}
-          <label class="check">
-            <input type="checkbox" checked={isolate} onChange={(e) => setIsolate(e.currentTarget.checked)} /> Run checks and setup in a Docker container
-          </label>
-          {isolate ? (
-            <div class="row-inline">
-              image <input class="field inline mono" value={image} onInput={(e) => setImage(e.currentTarget.value)} />
-              <span class="help">Only the worktree is mounted; none of your environment or home folder.</span>
-            </div>
-          ) : null}
+            {isolate ? (
+              <div class="row-inline image">
+                Image <input class="field inline mono" aria-label="Docker image" value={image} onInput={(e) => setImage(e.currentTarget.value)} />
+                <span class="help">Only the worktree is mounted; none of your environment or home folder.</span>
+              </div>
+            ) : null}
+          </div>
           {error ? <div class="msg err">{error}</div> : null}
         </div>
         <div class="picker-foot">

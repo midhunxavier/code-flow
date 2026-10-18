@@ -4,7 +4,8 @@ import { Icon } from "./icons.js";
 import { api, enc, showToast } from "./lib.js";
 import { ModelRow, TRUST } from "./composer.js";
 import { SETTINGS_SECTIONS, searchSettings, type SettingsSection } from "./settings-sections.js";
-import { theme, setTheme, notificationPermission, canNotify, setDesktopNotifications, type Theme } from "./preferences.js";
+import { notificationPermission, canNotify, setDesktopNotifications } from "./preferences.js";
+import { themeChoice, setTheme, type ThemeChoice } from "./theme.js";
 import { executionHost, SshConnections } from "./ssh-projects.js";
 import { RemoteAccess } from "./remote-access.js";
 import { AutomationsView, inbox } from "./automations.js";
@@ -88,9 +89,9 @@ function SettingsRow({ title, description, children }: { title: string; descript
 function GeneralSettings() {
   return <>
     <SettingsCard title="Appearance">
-      <p class="help">Choose a look. Your preference is saved automatically in this browser for this workspace.</p>
+      <p class="help">Choose a look. Your preference is saved in this browser and applies to every workspace.</p>
       <div class="theme-options" role="group" aria-label="Appearance">
-        {(["light", "dark", "system"] as Theme[]).map((value) => <button class={`theme-option ${theme.value === value ? "selected" : ""}`} key={value} aria-pressed={theme.value === value} onClick={() => setTheme(value)}><span class={`theme-preview ${value}`} aria-hidden="true"><span /><span><i /><i /><i /></span></span><span>{value === "system" ? "System" : value === "light" ? "Light" : "Dark"}{theme.value === value ? <span aria-hidden="true">✓</span> : null}</span></button>)}
+        {(["light", "dark", "system"] as ThemeChoice[]).map((value) => <button class={`theme-option ${themeChoice.value === value ? "selected" : ""}`} key={value} aria-pressed={themeChoice.value === value} onClick={() => setTheme(value)}><span class={`theme-preview ${value}`} aria-hidden="true"><span /><span><i /><i /><i /></span></span><span>{value === "system" ? "System" : value === "light" ? "Light" : "Dark"}{themeChoice.value === value ? <span aria-hidden="true">✓</span> : null}</span></button>)}
       </div>
     </SettingsCard>
     <SettingsCard title="Workspace preferences">

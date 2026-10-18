@@ -362,10 +362,10 @@ function AddressBar(props: {
     <>
       <div class="side-toolbar browse-bar">
         <input type="url" class="field mono" aria-label="Address" placeholder="localhost:3000, or an address…" value={typed} onInput={(e) => setTyped(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && props.onGo(typed)} />
-        <button type="button" class="btn ghost small" title="Reload" aria-label="Reload" disabled={!props.url} onClick={props.onReload}>
+        <button type="button" class="icon-btn" title="Reload" aria-label="Reload" disabled={!props.url} onClick={props.onReload}>
           <Icon name="refresh" />
         </button>
-        <a class={`btn ghost small ${props.url ? "" : "off"}`} href={props.url || "#"} target="_blank" rel="noreferrer" title="Open in a new tab" aria-label="Open in a new tab" aria-disabled={!props.url}>
+        <a class={`icon-btn ${props.url ? "" : "off"}`} href={props.url || "#"} target="_blank" rel="noreferrer" title="Open in a new tab" aria-label="Open in a new tab" aria-disabled={!props.url}>
           <Icon name="external" />
         </a>
       </div>
@@ -378,18 +378,18 @@ function AddressBar(props: {
           ))}
         </div>
         <span class="spacer" />
-        <button type="button" class={`btn small annotate ${props.mode === "pick" ? "on" : ""}`} aria-pressed={props.mode === "pick"} disabled={!props.canAnnotate} title={props.canAnnotate ? "Click an element in the page to comment on it (Esc stops)" : props.why} onClick={() => toggle("pick")}>
+        <button type="button" class={`btn ghost small annotate ${props.mode === "pick" ? "on" : ""}`} aria-pressed={props.mode === "pick"} disabled={!props.canAnnotate} title={props.canAnnotate ? "Click an element in the page to comment on it (Esc stops)" : props.why} onClick={() => toggle("pick")}>
           Pick
         </button>
-        <button type="button" class={`btn small annotate ${props.mode === "box" ? "on" : ""}`} aria-pressed={props.mode === "box"} disabled={!props.canAnnotate} title={props.canAnnotate ? "Drag a box over an area of the page to comment on it" : props.why} onClick={() => toggle("box")}>
+        <button type="button" class={`btn ghost small annotate ${props.mode === "box" ? "on" : ""}`} aria-pressed={props.mode === "box"} disabled={!props.canAnnotate} title={props.canAnnotate ? "Drag a box over an area of the page to comment on it" : props.why} onClick={() => toggle("box")}>
           Box
         </button>
-        <button type="button" class={`btn small ${props.errors ? "danger" : ""}`} aria-pressed={props.showConsole} disabled={!props.canAnnotate} title={props.canAnnotate ? "Console errors and failed requests from the page" : props.why} onClick={props.onConsole}>
+        <button type="button" class={`btn ghost small ${props.errors ? "danger" : ""}`} aria-pressed={props.showConsole} disabled={!props.canAnnotate} title={props.canAnnotate ? "Console errors and failed requests from the page" : props.why} onClick={props.onConsole}>
           Console{props.errors ? ` · ${props.errors}` : ""}
         </button>
         <button
           type="button"
-          class={`btn small annotate ${props.snapshotOn ? "on" : ""}`}
+          class={`btn ghost small annotate ${props.snapshotOn ? "on" : ""}`}
           aria-pressed={props.snapshotOn}
           disabled={!/^https?:\/\//i.test(props.url)}
           title={props.snapshotOn ? "Back to the live page" : "A screenshot of the page, any page, to draw boxes on (taken by a headless Chrome, signed out)"}
@@ -543,18 +543,23 @@ async function annotatedSnap(snap: Snap, pins: Pin[]): Promise<string | undefine
     const canvas = Object.assign(document.createElement("canvas"), { width: snap.width, height: snap.height });
     const ctx = canvas.getContext("2d")!;
     ctx.drawImage(img, 0, 0);
+    // The marks the overlay draws on the live page: mint boxes, ink numbers (src/preview-overlay.js).
     for (const p of pins) {
-      ctx.strokeStyle = "#e8590c";
+      ctx.strokeStyle = "#2a9b72";
       ctx.lineWidth = 3;
       ctx.strokeRect(p.rect.x + 1.5, p.rect.y + 1.5, Math.max(0, p.rect.w - 3), Math.max(0, p.rect.h - 3));
       const cx = Math.min(snap.width - 14, p.rect.x + p.rect.w);
       const cy = Math.max(14, p.rect.y);
-      ctx.fillStyle = "#e8590c";
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(cx, cy, 15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#343932";
       ctx.beginPath();
       ctx.arc(cx, cy, 13, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = "#fff";
-      ctx.font = "bold 14px system-ui, sans-serif";
+      ctx.fillStyle = "#fbfaf6";
+      ctx.font = "600 14px Inter, system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(String(p.n), cx, cy + 0.5);
@@ -680,11 +685,13 @@ function SnapshotView({ pageKey, state, here, onTake, onLive }: { pageKey: strin
   );
 }
 
+const LEVEL: Record<ConsoleLine["level"], string> = { error: "Error", warn: "Warn", network: "Net" };
+
 function ConsoleDrawer({ pageKey, lines }: { pageKey: string; lines: ConsoleLine[] }) {
   return (
     <div class="browse-console">
       <div class="bc-head">
-        <span class="lbl">Console</span>
+        <span class="bc-title">Console</span>
         <span class="help">errors, warnings and failed requests since the page opened</span>
         <span class="spacer" />
         <button type="button" class="btn ghost small" disabled={!lines.length} onClick={() => setPage(pageKey, (p) => ({ ...p, console: [] }))}>
@@ -695,7 +702,7 @@ function ConsoleDrawer({ pageKey, lines }: { pageKey: string; lines: ConsoleLine
         {lines.length ? (
           lines.map((l, i) => (
             <div key={i} class={`bc-line ${l.level}`}>
-              <span class="bc-level">{l.level === "network" ? "net" : l.level}</span>
+              <span class="bc-level">{LEVEL[l.level]}</span>
               <span class="bc-text">{l.text}</span>
             </div>
           ))
@@ -823,54 +830,57 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
   };
   return (
     <div class="pins-tray">
-      {state.pins.map((p) => (
-        <div key={p.n} class="pin-row">
-          <span class="pin-n">{p.n}</span>
-          <div class="pin-main">
-            <div class="pin-what" title={p.html ?? p.selector}>
-              {p.kind === "box" ? `Area ${p.rect.w}×${p.rect.h}` : p.selector}
-              {p.image ? <img class="pin-thumb" src={p.image} alt={`Snapshot of pin ${p.n}`} /> : <span class="help"> · no snapshot</span>}
-            </div>
-            <input class="field" aria-label={`What about pin ${p.n}?`} placeholder="What's wrong, or what should change?" value={p.comment} onInput={(e) => update(p.n, { comment: e.currentTarget.value })} />
-            {adjusting === p.n && p.kind === "element" && !p.gone ? (
-              <div class="adjust">
-                {ADJUST.map((prop) => (
-                  <label key={prop} class="adj">
-                    <span>{prop}</span>
-                    <input
-                      class="field mono"
-                      placeholder={p.styles?.[prop] ?? ""}
-                      value={p.tried?.[prop] ?? ""}
-                      onInput={(e) => {
-                        const tried = { ...p.tried, [prop]: e.currentTarget.value };
-                        update(p.n, { tried });
-                        overlays.get(pageKey)?.({ type: "adjust", id: p.id, styles: { [prop]: e.currentTarget.value } });
-                      }}
-                    />
-                  </label>
-                ))}
+      {/* The pins scroll; the send row stays put below them, so its menu can open upward over the page. */}
+      <div class="pins-list">
+        {state.pins.map((p) => (
+          <div key={p.n} class="pin-row">
+            <span class="pin-n">{p.n}</span>
+            <div class="pin-main">
+              <div class="pin-what" title={p.html ?? p.selector}>
+                {p.kind === "box" ? <span class="pin-label">Area {p.rect.w}×{p.rect.h}</span> : <span class="pin-label pin-sel">{p.selector}</span>}
+                {p.image ? <img class="pin-thumb" src={p.image} alt={`Snapshot of pin ${p.n}`} /> : <span class="help"> · no snapshot</span>}
               </div>
-            ) : null}
-          </div>
-          <div class="pin-actions">
-            {p.kind === "element" ? (
-              <button
-                type="button"
-                class={`btn ghost small ${adjusting === p.n && !p.gone ? "on" : ""}`}
-                disabled={p.gone}
-                title={p.gone ? "The page has loaded again since you picked this, so its element is gone" : "Try style changes on the page; what you try goes with the pin"}
-                onClick={() => setAdjusting(adjusting === p.n ? null : p.n)}
-              >
-                Adjust
+              <input class="field" aria-label={`What about pin ${p.n}?`} placeholder="What's wrong, or what should change?" value={p.comment} onInput={(e) => update(p.n, { comment: e.currentTarget.value })} />
+              {adjusting === p.n && p.kind === "element" && !p.gone ? (
+                <div class="adjust">
+                  {ADJUST.map((prop) => (
+                    <label key={prop} class="adj">
+                      <span>{prop}</span>
+                      <input
+                        class="field mono"
+                        placeholder={p.styles?.[prop] ?? ""}
+                        value={p.tried?.[prop] ?? ""}
+                        onInput={(e) => {
+                          const tried = { ...p.tried, [prop]: e.currentTarget.value };
+                          update(p.n, { tried });
+                          overlays.get(pageKey)?.({ type: "adjust", id: p.id, styles: { [prop]: e.currentTarget.value } });
+                        }}
+                      />
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <div class="pin-actions">
+              {p.kind === "element" ? (
+                <button
+                  type="button"
+                  class={`btn ghost small ${adjusting === p.n && !p.gone ? "on" : ""}`}
+                  disabled={p.gone}
+                  title={p.gone ? "The page has loaded again since you picked this, so its element is gone" : "Try style changes on the page; what you try goes with the pin"}
+                  onClick={() => setAdjusting(adjusting === p.n ? null : p.n)}
+                >
+                  Adjust
+                </button>
+              ) : null}
+              <button type="button" class="icon-btn" aria-label={`Remove pin ${p.n}`} title="Remove" onClick={() => remove(p)}>
+                <Icon name="close" />
               </button>
-            ) : null}
-            <button type="button" class="icon-btn" aria-label={`Remove pin ${p.n}`} title="Remove" onClick={() => remove(p)}>
-              <Icon name="close" />
-            </button>
+            </div>
           </div>
-        </div>
-      ))}
-      {state.capturing ? <div class="help">Taking a snapshot…</div> : null}
+        ))}
+        {state.capturing ? <div class="help">Taking a snapshot…</div> : null}
+      </div>
       <div class="pins-actions">
         {errors.length ? (
           <label class="check">

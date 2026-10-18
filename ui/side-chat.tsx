@@ -76,6 +76,11 @@ export function sideChatIn(live: RunSummary | null, summary: RunSummary, chat: s
 
 /** A run can have side chats once there's a worktree to work in and it's going or finished. */
 const takesSideChats = (run: RunSummary) => (run.status === "done" || run.status === "running") && !!resultWorktree(run);
+/** Why a run's side chat can't work in the run's worktree, as a sentence. */
+const whyNoSideChat = (run: RunSummary) => {
+  const ended: Record<string, string> = { failed: "failed", cancelled: "was cancelled", stopped: "stopped at a limit", interrupted: "was interrupted" };
+  return ended[run.status] ? `This run ${ended[run.status]}, so a side chat can't work in its worktree.` : "This run has no result worktree for a side chat to work in yet.";
+};
 const finishedTurns = (c: SideChat) => c.turns.filter((t) => t.status !== "pending").length;
 
 function savedAgent(): AgentId {
@@ -231,7 +236,7 @@ function SideChatView({ run: summary, chat }: { run: RunSummary; chat: string })
         <div class="thread">
           <div class="chat-meta">
             <AgentTag id={c.agent} />
-            <span class="help">side chat in {wt ? <code title={wt.path}>{wt.branch}</code> : "the run's worktree"}</span>
+            <span class="help">Side chat in {wt ? <code title={wt.path}>{wt.branch}</code> : "the run's worktree"}</span>
           </div>
           {c.turns.map((f) => {
             const step = f.stepId ? data.current.steps.get(f.stepId) : undefined;
@@ -248,9 +253,9 @@ function SideChatView({ run: summary, chat }: { run: RunSummary; chat: string })
                   <div class="fu-head">
                     <AgentTag id={f.agent} />
                     {f.status === "pending" && run.status !== "running" ? (
-                      <span class="help">the run stopped before this turn finished: resume the run to finish it</span>
+                      <span class="help">The run stopped before this turn finished: resume the run to finish it</span>
                     ) : f.status === "pending" && !step ? (
-                      <span class="fu-live">{run.patternDone ? "up next…" : "waits for the team to finish…"}</span>
+                      <span class="fu-live">{run.patternDone ? "Up next…" : "Waits for the team to finish…"}</span>
                     ) : (
                       <FollowUpBadges f={f} />
                     )}
@@ -431,7 +436,7 @@ function ChatView({ id }: { id: string }) {
             <AgentTag id={agent} />
             <span class={`status-pill ${state}`}>{STATUS_TEXT[run.status] ?? run.status}</span>
             {branch ? <code title="The branch this chat works on">{branch}</code> : null}
-            {state === "failing" ? <span class="note">check fails</span> : run.verdict === "passed" ? <span class="ok">check passes</span> : null}
+            {state === "failing" ? <span class="note">Check fails</span> : run.verdict === "passed" ? <span class="ok">Check passes</span> : null}
             <a class="btn ghost small" href={`#/run/${encodeURIComponent(run.id)}`} title="Open this chat as a run, with its branch and result">
               Open
             </a>
@@ -514,7 +519,7 @@ function NewChat({ scope }: { scope: SideScope }) {
           <h3>{run ? "A separate chat" : `Chat with ${name}`}</h3>
           <p class="help">
             {run
-              ? `${blocked ? `This run ${STATUS_TEXT[run.status]?.toLowerCase() ?? run.status}, so a side chat can't work in its worktree. ` : ""}${name} works on a branch of its own${base ? ", starting from the run's result" : ""}, and you keep talking to it; the chat is a run like any other.`
+              ? `${blocked ? `${whyNoSideChat(run)} ` : ""}${name} works on a branch of its own${base ? ", starting from the run's result" : ""}, and you keep talking to it; the chat is a run like any other.`
               : `Ask a question or ask for a change. ${name} works on its own branch of ${where} and you keep talking to it; its reply shows here and the chat is a run like any other.`}
           </p>
           {!solo ? <p class="msg warn">This code-flow has no Single-agent pattern, which the chat needs.</p> : null}

@@ -1,4 +1,5 @@
 import { SettingsView } from "./settings.js";
+import { SETTINGS_SECTIONS } from "./settings-sections.js";
 import { canNotify, setDesktopNotifications } from "./preferences.js";
 import { HostControl, executionHost } from "./ssh-projects.js";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -14,12 +15,13 @@ import { ProjectsDialog } from "./projects.js";
 import { ProjectView } from "./project.js";
 import { Rail } from "./rail.js";
 import { Icon } from "./icons.js";
-import logo from "./brand/vibesboard-mark.png";
 import { api, showToast, store, toast } from "./lib.js";
+import { theme, toggleTheme } from "./theme.js";
 import {
   pickRepo,
   pickerChoose,
   projectFor,
+  projects,
   projectsOpen,
   announcement,
   shortcutsOpen,
@@ -110,30 +112,32 @@ function MainApp() {
   return (
     <>
       <a class="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to main content</a>
-      <TopBar />
       <ApprovalInbox />
       <div class={`app ${sideOpen.value ? "with-side" : ""}`} style={`--side-w:${sideWidth.value}px`}>
         <Rail />
         {railOpen.value ? <div class="rail-scrim" aria-hidden="true" onClick={() => (railOpen.value = false)} /> : null}
-        <main id="main-content" tabIndex={-1}>
-          {route.value.view === "run" ? (
-            <RunView key={route.value.id} id={route.value.id} />
-          ) : route.value.view === "review" ? (
-            <Review key={`${route.value.id}:${route.value.branch}`} id={route.value.id} branch={route.value.branch} />
-          ) : route.value.view === "project" ? (
-            <ProjectView key={route.value.id} id={route.value.id} />
-          ) : route.value.view === "settings" ? (
-            <SettingsView section={route.value.section} group={route.value.group} />
-          ) : route.value.view === "invalid" ? (
-            <div class="composer" role="alert">
-              <h1>This link is invalid</h1>
-              <p>The address contains an incomplete or invalid URL escape. Your saved work is available from the run list.</p>
-              <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>Open new run</button>
-            </div>
-          ) : (
-            <Composer />
-          )}
-        </main>
+        <div class="main-col">
+          <TopBar />
+          <main id="main-content" tabIndex={-1}>
+            {route.value.view === "run" ? (
+              <RunView key={route.value.id} id={route.value.id} />
+            ) : route.value.view === "review" ? (
+              <Review key={`${route.value.id}:${route.value.branch}`} id={route.value.id} branch={route.value.branch} />
+            ) : route.value.view === "project" ? (
+              <ProjectView key={route.value.id} id={route.value.id} />
+            ) : route.value.view === "settings" ? (
+              <SettingsView section={route.value.section} group={route.value.group} />
+            ) : route.value.view === "invalid" ? (
+              <div class="composer" role="alert">
+                <h1>This link is invalid</h1>
+                <p class="lede">The address contains an incomplete or invalid URL escape. Your saved work is available from the run list.</p>
+                <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>Open new run</button>
+              </div>
+            ) : (
+              <Composer />
+            )}
+          </main>
+        </div>
         {sideOpen.value ? <div class="side-scrim" aria-hidden="true" onClick={closeSide} /> : null}
         <SidePanel />
       </div>
@@ -157,24 +161,33 @@ function MainApp() {
 }
 
 // ---------------------------------------------------------------- top bar
+/** The command palette's modifier as this keyboard labels it: ⌘ on Apple devices, Ctrl elsewhere. */
+const MOD_KEY = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent) ? "⌘" : "Ctrl ";
+
+/** Above the page, beside the sidebar: where you are, live updates, commands, then the theme and the side panel. */
 function TopBar() {
+  const dark = theme.value === "dark";
   return (
     <header class="topbar">
-      <button class="btn ghost menu-btn" aria-label="Show runs" onClick={() => (railOpen.value = !railOpen.value)}>
+      <button class="icon-btn menu-btn" aria-label="Show runs" aria-expanded={railOpen.value} onClick={() => (railOpen.value = !railOpen.value)}>
         <Icon name="menu" />
       </button>
-      <span class="brand">
-        <img class="brand-mark" src={logo} alt="" width={28} height={28} />
-        <span class="brand-name">code-flow</span>
-      </span>
       <HostControl />
       <Crumbs />
       <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.state === "connected" ? "Live updates are connected" : "Live updates are unavailable; displayed run information may be out of date"}>
-        <span aria-hidden="true">●</span> {connection.value.state === "connected" ? "Connected" : connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}
+        <span class="cs-dot" aria-hidden="true" />
+        <span class="cs-label">{connection.value.state === "connected" ? "Connected" : connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}</span>
       </span>
-      <button class="btn ghost command-btn" aria-label="Open command palette" title="Commands and navigation (⌘K / Ctrl+K)" onClick={() => (commandPaletteOpen.value = true)}>⌘K</button>
+      {/* a search glass and the shortcut as a key; a phone shows only the glass */}
+      <button class="btn ghost command-btn" aria-label="Open command palette" title={`Commands and navigation (${MOD_KEY}K)`} onClick={() => (commandPaletteOpen.value = true)}>
+        <Icon name="search" />
+        <kbd class="kbd-key" aria-hidden="true">{MOD_KEY}K</kbd>
+      </button>
+      <button class="icon-btn" aria-label={dark ? "Use the light theme" : "Use the dark theme"} title={dark ? "Light theme" : "Dark theme"} onClick={toggleTheme}>
+        <Icon name={dark ? "sun" : "moon"} />
+      </button>
       <button
-        class="btn ghost side-btn"
+        class="icon-btn side-btn"
         aria-pressed={sideOpen.value}
         aria-label="Side panel"
         title="Side panel: chat, files, terminal, browser, notes (\\)"
@@ -186,31 +199,77 @@ function TopBar() {
   );
 }
 
-/** On a run or its review: the project it's in and the run. Other pages carry their own heading. */
+/** Where you are: the page, or on a run (and its review) the project it's in and the run. */
 function Crumbs() {
   const r = route.value;
   const run = r.view === "run" || r.view === "review" ? runs.value.get(r.id) : undefined;
-  if (!run) return <span class="spacer" />;
-  const project = projectFor(run);
+  const sep = (
+    <span class="sep" aria-hidden="true">
+      /
+    </span>
+  );
+  let trail;
+  if (run) {
+    const project = projectFor(run);
+    trail = (
+      <>
+        {project ? (
+          <a class="crumb" href={`#/project/${encodeURIComponent(project.id)}`} title={run.repo}>
+            {project.name}
+          </a>
+        ) : (
+          <span class="crumb" title={run.repo}>
+            No project
+          </span>
+        )}
+        {sep}
+        <span class={`crumb title ${r.view === "run" ? "here" : ""}`} title={run.task} aria-current={r.view === "run" ? "page" : undefined}>
+          {run.task.split("\n")[0] || "(no task)"}
+        </span>
+        {r.view === "review" ? (
+          <>
+            {sep}
+            <span class="crumb here" aria-current="page">
+              Review
+            </span>
+          </>
+        ) : null}
+      </>
+    );
+  } else if (r.view === "project") {
+    trail = (
+      <span class="crumb here" aria-current="page">
+        {projects.value.find((p) => p.id === r.id)?.name ?? "Project"}
+      </span>
+    );
+  } else if (r.view === "settings") {
+    const section = r.section ? SETTINGS_SECTIONS.find((item) => item.id === r.section) : undefined;
+    trail = section ? (
+      <>
+        <a class="crumb" href="#/settings">
+          Settings
+        </a>
+        {sep}
+        <span class="crumb here" aria-current="page">
+          {section.label}
+        </span>
+      </>
+    ) : (
+      <span class="crumb here" aria-current="page">
+        Settings
+      </span>
+    );
+  } else {
+    const page = r.view === "composer" ? "New run" : "";
+    trail = page ? (
+      <span class="crumb here" aria-current="page">
+        {page}
+      </span>
+    ) : null;
+  }
   return (
     <nav class="crumbs-bar" aria-label="Where you are">
-      <span class="crumb" title={run.repo}>
-        <Icon name="project" /> {project?.name ?? "No project"}
-      </span>
-      <span class="sep" aria-hidden="true">
-        ›
-      </span>
-      <span class={`crumb ${r.view === "run" ? "here" : ""}`} title={run.task}>
-        {run.task.split("\n")[0] || "(no task)"}
-      </span>
-      {r.view === "review" ? (
-        <>
-          <span class="sep" aria-hidden="true">
-            ›
-          </span>
-          <span class="crumb here">Review</span>
-        </>
-      ) : null}
+      {trail}
     </nav>
   );
 }
@@ -393,7 +452,7 @@ function HealthDialog() {
               <div class="hr-title">
                 <span class={`agent ${h.id}`}>{h.name}</span>
                 <span class={`badge ${h.installed && h.signedIn !== false ? "ok" : ""}`}>
-                  {!h.installed ? "not installed" : h.signedIn === false ? "signed out" : h.signedIn ? `signed in · ${h.account ?? ""}` : "installed"}
+                  {!h.installed ? "Not installed" : h.signedIn === false ? "Signed out" : h.signedIn ? `Signed in · ${h.account ?? ""}` : "Installed"}
                 </span>
                 <span class="help">{h.version}</span>
               </div>
@@ -428,7 +487,7 @@ function HealthDialog() {
             <div class="health-row">
               <div class="hr-title">
                 <span class="agent">git</span>
-                <span class={`badge ${gitHealth.value.ok ? "ok" : ""}`}>{gitHealth.value.ok ? "ok" : gitHealth.value.installed ? "too old" : "not found"}</span>
+                <span class={`badge ${gitHealth.value.ok ? "ok" : ""}`}>{gitHealth.value.ok ? "OK" : gitHealth.value.installed ? "Too old" : "Not found"}</span>
                 <span class="help">{gitHealth.value.version}</span>
               </div>
               {gitHealth.value.warning ? <div class="msg warn">{gitHealth.value.warning}</div> : null}
@@ -485,7 +544,7 @@ function FolderPicker() {
       if (request !== latest.current || !pickerOpen.value) return;
       setDir(d);
       if (!typed.current) setPath(d.path);
-      setStatus(d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked GIT, or type a path");
+      setStatus(d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked Git, or type a path");
     } catch (err) {
       if (request !== latest.current || !pickerOpen.value) return;
       setStatus((err as Error).message);
@@ -511,7 +570,7 @@ function FolderPicker() {
       <button type="button" class="dir-browse" aria-label={`Open folder ${name}`} onClick={() => browse(p)}>
       <span class="di">{icon}</span>
       <span class="dn">{name}</span>
-      {isRepo ? <span class="git-badge">GIT</span> : null}
+      {isRepo ? <span class="git-badge">Git</span> : null}
       </button>
       {isRepo ? (
         <button
@@ -534,10 +593,10 @@ function FolderPicker() {
         <div class="picker-head">
           <h3 id="folder-picker-title">{adding ? adding.title : "Choose a repository"}</h3>
           <div class="row">
-            <button class="btn small" type="button" title="Parent folder" disabled={!dir?.parent} onClick={() => dir?.parent && browse(dir.parent)}>
+            <button class="btn" type="button" title="Parent folder" aria-label="Parent folder" disabled={!dir?.parent} onClick={() => dir?.parent && browse(dir.parent)}>
               ↑
             </button>
-            <button class="btn small" type="button" title="Home folder" onClick={() => browse(dir?.home)}>
+            <button class="btn" type="button" title="Home folder" aria-label="Home folder" onClick={() => browse(dir?.home)}>
               ~
             </button>
             <input
@@ -559,7 +618,7 @@ function FolderPicker() {
                 }
               }}
             />
-            <button class="btn small" type="button" onClick={() => browse((pathInput.current?.value ?? path).trim())}>
+            <button class="btn" type="button" onClick={() => browse((pathInput.current?.value ?? path).trim())}>
               Go
             </button>
           </div>
@@ -592,7 +651,7 @@ function FolderPicker() {
                 void browse(dir?.path, e.currentTarget.checked);
               }}
             />{" "}
-            hidden folders
+            Hidden folders
           </label>
           <button class="btn" type="button" onClick={closePicker}>
             Cancel
