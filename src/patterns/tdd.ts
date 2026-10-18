@@ -182,7 +182,7 @@ export const tddPattern: Pattern = {
       await ctx.commit(wt, `${builder}: implementation round ${round}`);
 
       // The tests are the spec: the builder's changes to them are undone, not just reported.
-      const touched = (await changedFiles(wt.path, before)).filter((f) => testFiles.includes(f));
+      const touched = (await ctx.changedFiles(wt, before)).filter((f) => testFiles.includes(f));
       let tamperNote = "";
       if (touched.length) {
         ctx.log(`Builder modified test files: ${touched.join(", ")}; code-flow put them back`, "warn");
@@ -222,7 +222,7 @@ export const tddPattern: Pattern = {
       });
       await ctx.commit(wt, `${tester}: edge-case tests round ${round}`);
       // The tester probes with tests; changes it makes to the implementation are undone.
-      const probeChanges = await changedFiles(wt.path, beforeProbe);
+      const probeChanges = await ctx.changedFiles(wt, beforeProbe);
       const outside = probeChanges.filter((f) => !isTestFile(f) && !testFiles.includes(f));
       for (const f of probeChanges) if (!outside.includes(f) && !testFiles.includes(f)) testFiles.push(f);
       if (outside.length) {

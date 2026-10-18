@@ -1,8 +1,8 @@
-import { existsSync } from "node:fs";
-import { copyFile, lstat, mkdir, readdir, readFile, realpath } from "node:fs/promises";
-import { dirname, join, sep } from "node:path";
+import { constants, existsSync } from "node:fs";
+import { lstat, mkdir, open, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
 import type { AgentSettings } from "./adapters/types.js";
-import { gitWithInput } from "./git.js";
+import { COPIED_FILES, git, gitWithInput } from "./git.js";
 
 /**
  * Optional per-repo settings, committed with the project at `.codeflow/config.json`, so every
@@ -77,7 +77,8 @@ export async function readRepoConfig(repo: string): Promise<{ config: RepoConfig
  * worktree are never overwritten. Only regular, gitignored files inside the repo are copied:
  * a symlink could point anywhere (a cloned repo's `.env` → your cloud credentials), and a file
  * git doesn't ignore would be committed with the agents' work and pushed in a pull request.
- * Returns the copied paths and the ones refused (with why).
+ * Nor is anything written through a link in the worktree. The copied paths are recorded so
+ * commits leave them out (commitAll). Returns the copied paths and the ones refused (with why).
  */
 export async function copyIntoWorktree(
   repo: string,
@@ -120,12 +121,71 @@ export async function copyIntoWorktree(
       refused.push({ path: rel, why: "git doesn't ignore it, so it would be committed with the agents' work" });
       continue;
     }
-    const to = join(worktree, rel);
-    await mkdir(dirname(to), { recursive: true });
-    await copyFile(join(repo, rel), to);
-    copied.push(rel);
+    // The worktree is the agents' (a re-attached one holds whatever they committed): a link there
+    // would send your `.env` wherever it points.
+    const done = await copyFileInside(worktree, rel, join(repo, rel), { overwrite: false });
+    if (done.copied) copied.push(rel);
+    else if (done.why) refused.push({ path: rel, why: done.why });
   }
+  await recordCopied(worktree, copied);
   return { copied, refused };
+}
+
+/**
+ * Note in the worktree's git dir (where agents don't write) which files were copied in, so
+ * committing leaves them out even after an agent un-ignores one or `git add -f`s it (commitAll).
+ */
+async function recordCopied(worktree: string, copied: string[]): Promise<void> {
+  if (!copied.length) return;
+  const res = await git(["rev-parse", "--git-path", COPIED_FILES], worktree);
+  if (res.code !== 0 || !res.stdout.trim()) return;
+  const file = resolve(worktree, res.stdout.trim());
+  const known = (await readFile(file, "utf8").catch(() => "")).split("\0").filter(Boolean);
+  await writeFile(file, [...new Set([...known, ...copied])].map((p) => `${p}\0`).join(""));
+}
+
+/**
+ * Copy `from` to `rel` inside `root` without following a symbolic link on the way there, like
+ * writeFileInside (fs.ts) does for a write: a worktree holds whatever an agent put in it, and a
+ * link it made at `.env` or `.codeflow-context` would otherwise send the copy anywhere, over your
+ * own files included. Folders that don't exist are created one at a time. With `overwrite: false`
+ * a file already there is left as it is (`copied: false` and no `why`). Returns why it refused.
+ */
+export async function copyFileInside(
+  root: string,
+  rel: string,
+  from: string,
+  opts: { overwrite?: boolean } = {},
+): Promise<{ copied: true } | { copied: false; why?: string }> {
+  const parts = rel.split(/[\\/]+/).filter((p) => p && p !== ".");
+  if (!parts.length || parts.includes("..")) return { copied: false, why: `\`${rel}\` isn't a path inside the worktree` };
+  const realRoot = await realpath(root);
+  let dir = root;
+  for (const [i, part] of parts.slice(0, -1).entries()) {
+    dir = join(dir, part);
+    const info = await lstat(dir).catch(() => undefined);
+    const at = parts.slice(0, i + 1).join("/");
+    if (!info) await mkdir(dir);
+    else if (info.isSymbolicLink()) return { copied: false, why: `the worktree has a symbolic link at \`${at}\`` };
+    else if (!info.isDirectory()) return { copied: false, why: `\`${at}\` in the worktree isn't a folder` };
+  }
+  // Checked part by part above; this catches a link that appeared in between.
+  const realDir = await realpath(dir);
+  if (realDir !== realRoot && !realDir.startsWith(realRoot + sep)) return { copied: false, why: `\`${rel}\` leads outside the worktree` };
+  const target = join(dir, parts.at(-1)!);
+  const existing = await lstat(target).catch(() => undefined);
+  if (existing?.isSymbolicLink()) return { copied: false, why: `the worktree has a symbolic link at \`${rel}\`` };
+  if (existing && !existing.isFile()) return { copied: false, why: `\`${rel}\` in the worktree isn't a file` };
+  if (existing && opts.overwrite === false) return { copied: false };
+  const [data, mode] = await Promise.all([readFile(from), stat(from).then((s) => s.mode & 0o777)]);
+  // O_NOFOLLOW: if a link shows up at the last moment, opening fails instead of following it.
+  const file = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0), mode);
+  try {
+    await file.writeFile(data);
+  } finally {
+    await file.close();
+  }
+  return { copied: true };
 }
 
 async function expand(repo: string, pattern: string): Promise<string[]> {

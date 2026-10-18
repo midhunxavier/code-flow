@@ -1,4 +1,4 @@
-import { classifyError } from "./errors.js";
+import { classifyError, cliErrorLine } from "./errors.js";
 import { startJsonlProcess, stderrTail, stringify, truncate, type ProcessOutcome } from "./process.js";
 import type { ErrorKind } from "./types.js";
 
@@ -56,6 +56,41 @@ const QUIET = [
   "item/fileChange/patchUpdated",
   "turn/diff/updated",
 ];
+/**
+ * Notifications code-flow knowingly leaves alone: thread and account bookkeeping, progress it
+ * doesn't show, warnings Codex also logs. Any other method is counted as unknown (a protocol
+ * change worth knowing about), along with the QUIET ones in case the server sends them anyway.
+ */
+const IGNORED = new Set([
+  ...QUIET,
+  "thread/started",
+  "thread/closed",
+  "thread/status/changed",
+  "thread/name/updated",
+  "thread/archived",
+  "thread/unarchived",
+  "thread/compacted",
+  "account/updated",
+  "account/rateLimits/updated",
+  "account/login/completed",
+  "mcpServer/oauthLogin/completed",
+  "mcpServer/startupStatus/updated",
+  "item/mcpToolCall/progress",
+  "item/commandExecution/terminalInteraction",
+  "rawResponseItem/completed",
+  "serverRequest/resolved",
+  "model/rerouted",
+  "deprecationNotice",
+  "configWarning",
+  "windows/worldWritableWarning",
+  "fuzzyFileSearch/sessionUpdated",
+  "fuzzyFileSearch/sessionCompleted",
+  "sessionConfigured",
+  "authStatusChange",
+  "loginChatGptComplete",
+]);
+/** Thread items with nothing to show: your own messages, compaction markers, review-mode markers, plan-mode text. */
+const IGNORED_ITEMS = new Set(["userMessage", "contextCompaction", "enteredReviewMode", "exitedReviewMode", "imageView", "plan"]);
 const INIT_TIMEOUT_MS = 20_000;
 /** Every other request (thread/start, thread/resume, turn/start, turn/steer): no answer is a failure. */
 const REQUEST_TIMEOUT_MS = 2 * 60_000;
@@ -212,6 +247,10 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
           completed?.(params.turn ?? {});
         }
         break;
+
+      default:
+        // Counted by the adapter; v1's raw event stream (codex/event/…) is its own protocol.
+        if (!IGNORED.has(method) && !method.startsWith("codex/event/")) turn.onMessage({ type: "unrecognized", name: method });
     }
   }
 
@@ -299,7 +338,7 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
           ? `codex app-server didn't answer within ${seconds(turn.initTimeoutMs ?? INIT_TIMEOUT_MS)} of starting`
           : `codex app-server stopped before it was ready${tail ? `: ${tail}` : ""}`;
       // A start that failed for no stated reason is worth another try; a missing binary isn't.
-      const kind = err instanceof RpcTimeout ? "transient" : classifyError(tail);
+      const kind = err instanceof RpcTimeout ? "transient" : classifyError(cliErrorLine(outcome.stderr));
       turn.onMessage({ type: "turn.failed", error: { message, kind: kind === "other" && !/ENOENT|EACCES/.test(tail) ? "transient" : kind } });
       return outcome;
     }
@@ -312,14 +351,16 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
         ? await request("thread/resume", { threadId: turn.resumeThreadId, excludeTurns: true, ...threadParams })
         : await request("thread/start", threadParams);
     } catch (err) {
-      if (unsupported(err)) {
-        proc.kill();
-        await exited;
-        return { unavailable: (err as Error).message };
-      }
       // The thread is gone (Codex: "no rollout found for thread id …"): resuming it again won't help.
       if (turn.resumeThreadId && err instanceof RpcError && /no rollout found|thread[^\n]{0,20}not found|invalid thread id/i.test(err.message)) {
         throw new TurnError(err.message, "session_not_found");
+      }
+      // A resume whose parameters this Codex rejects (-32602: an older one without `excludeTurns`,
+      // say) would fail the same way every time; `codex exec resume` continues the thread instead.
+      if (unsupported(err) || (turn.resumeThreadId && err instanceof RpcError && err.code === -32602)) {
+        proc.kill();
+        await exited;
+        return { unavailable: (err as Error).message };
       }
       throw err;
     }
@@ -409,7 +450,8 @@ function execItem(item: any): any {
     case "webSearch":
       return { id: item.id, type: "web_search", query: item.query };
     default:
-      return undefined; // your own messages, compaction markers, …
+      // An item this client doesn't know is counted by the adapter, not dropped without a word.
+      return item?.type && IGNORED_ITEMS.has(item.type) ? undefined : { id: item?.id, type: "unrecognized", name: item?.type };
   }
 }
 

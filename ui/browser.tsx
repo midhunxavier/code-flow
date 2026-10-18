@@ -1,10 +1,10 @@
 import { signal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
-import { api, baseName, onPhone, post, showToast } from "./lib.js";
+import { api, baseName, onPhone, post, showToast, usePoll } from "./lib.js";
 import { Menu, MenuItem, MenuTitle, resultWorktree, Strip, type StripItem } from "./panel-bits.js";
 import { sideChatsOf } from "./side-chat.js";
-import { draftTo, navigate, openSide, poppedScope, projectKeyOf, rememberSide, runs, setSideChat, sideMemo, sideMemory, sideScope, type SideScope } from "./state.js";
+import { draftTo, navigate, openSide, poppedScope, projectKeyOf, rememberSide, runs, setSideChat, sideMemo, sideMemory, sideOpen, sideScope, sideTab, type SideScope } from "./state.js";
 import type { Attachment, DevServer, RunSummary } from "./types.js";
 
 /**
@@ -135,16 +135,8 @@ export function BrowserTab() {
   const [mode, setMode] = useState<"off" | "pick" | "box">("off");
   const [showConsole, setShowConsole] = useState(false);
   const [nonce, setNonce] = useState(0);
-  useEffect(() => {
-    let alive = true;
-    const poll = () => api<Omit<DevServer, "logs">[]>("/api/serve").then((x) => alive && setServers(x), () => {});
-    poll();
-    const timer = setInterval(poll, 5_000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, []);
+  // Only while you can see the tab: a closed panel, another tab or a hidden window asks for nothing.
+  usePoll((current) => api<Omit<DevServer, "logs">[]>("/api/serve").then((x) => current() && setServers(x), () => {}), 5_000, [], sideOpen.value && sideTab.value === "browser");
   const running = servers.filter((x) => x.status === "running");
   // The apps started in the panel's folders come first: a run's own worktrees (every run's sit inside
   // the repository), or anywhere in the project's repositories.

@@ -4,22 +4,22 @@ import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote, Markdown } from "./bits.js";
 import { TriageActions } from "./automations.js";
 import { Icon } from "./icons.js";
-import { api, ApiError, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, onPhone, post, SHORT, showToast, STATUS_TEXT } from "./lib.js";
+import { api, ApiError, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, onPhone, post, safeHref, SHORT, showToast, STATUS_TEXT, usePoll } from "./lib.js";
 import {
   agents,
   attachments,
   checkCmd,
+  checkLoaded,
   contextPaths,
-  limits,
   markSeen,
-  optionValues,
   patterns,
   repo,
-  roleSel,
-  route,
   runState,
+  setLimits,
+  setOption,
   setPattern,
   setRepo,
+  setRoles,
   setTask,
   setupCmd,
   source,
@@ -460,7 +460,7 @@ function RunMeta({ run }: { run: RunSummary }) {
       ) : null}
       {run.triage && run.triage.state !== "pending" ? <span class="badge">{run.triage.state === "empty" ? "no changes · archived" : run.triage.state}</span> : null}
       {run.source ? (
-        <a class="src-link" href={run.source.url} target="_blank" rel="noreferrer" title={run.source.title}>
+        <a class="src-link" href={safeHref(run.source.url)} target="_blank" rel="noreferrer" title={run.source.title}>
           {run.source.kind === "issue"
             ? `◎ issue #${run.source.number}`
             : run.source.kind === "pr"
@@ -813,7 +813,7 @@ function ReviewCard({ run }: { run: RunSummary }) {
         <span class="spacer" />
         {pr ? (
           review.postedTo ? (
-            <a class="badge ok" href={review.postedTo} target="_blank" rel="noreferrer">
+            <a class="badge ok" href={safeHref(review.postedTo)} target="_blank" rel="noreferrer">
               Posted to PR #{pr.number} ↗
             </a>
           ) : (
@@ -887,13 +887,13 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
           </span>
         ))}
         {pr ? (
-          <a class="badge" href={pr} target="_blank" rel="noreferrer">
+          <a class="badge" href={safeHref(pr)} target="_blank" rel="noreferrer">
             PR ↗
           </a>
         ) : null}
         <span class="acts">
           {canReview ? (
-            <button class="btn small primary" onClick={() => (route.value = { view: "review", id: run.id, branch: artifact.branch })}>
+            <button class="btn small primary" onClick={() => navigate({ view: "review", id: run.id, branch: artifact.branch })}>
               Review changes
             </button>
           ) : null}
@@ -1277,7 +1277,7 @@ function PrMergePanel({ run, branch, worktree, steps }: { run: RunSummary; branc
         <div class="row">
           <label class="lbl">Merge pull request</label>
           {info ? (
-            <a href={info.url} target="_blank" rel="noreferrer">
+            <a href={safeHref(info.url)} target="_blank" rel="noreferrer">
               #{info.number} into {info.baseRefName} ↗
             </a>
           ) : (
@@ -1387,16 +1387,7 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
   const [server, setServer] = useState<{ url: string; status: string; logs: string[]; command: string; exitCode?: number | null } | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [command, setCommand] = useState(run.app?.command ?? "");
-  useEffect(() => {
-    let alive = true;
-    const poll = () => api(base + "/serve").then((s) => alive && setServer(s), () => {});
-    poll();
-    const timer = setInterval(poll, 2000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [base]);
+  usePoll((current) => api(base + "/serve").then((s) => current() && setServer(s), () => {}), 2000, [base]);
   const open = (target: string) =>
     post<{ openedWith: string }>(`${base}/open`, { target }).then((r) => showToast(`Opened in ${r.openedWith}${onPhone ? " on your computer" : ""}`), (e) => showToast(e.message, 5000));
   /** Start the app; for a locked-down run, only once you've said to run that code here. It opens in the side panel's Browser. */
@@ -1429,7 +1420,7 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
         <>
           <a
             class="btn small primary"
-            href={appUrl}
+            href={safeHref(appUrl)}
             target="_blank"
             rel="noreferrer"
             title={onPhone ? "Opens only if the app listens on your network too (e.g. vite --host)" : undefined}
@@ -1485,10 +1476,10 @@ function ArchiveDialog({ run, onClose }: { run: RunSummary; onClose: () => void 
   const [deleteBranches, setDeleteBranches] = useState(false);
   const ref = useDialog(true, onClose);
   return (
-    <dialog class="picker small-dialog" ref={ref}>
+    <dialog class="picker small-dialog" ref={ref} aria-labelledby="archive-title">
       <div class="picker-inner">
         <div class="picker-head">
-          <h3>Archive this run</h3>
+          <h3 id="archive-title">Archive this run</h3>
         </div>
         <div class="dialog-body">
           <label class="check">
@@ -1705,7 +1696,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
     setBusy(true);
     try {
       const { id } = await post<{ id: string }>(`/api/runs/${run.id}/revise-goal`, { message: text.trim(), budget: { maxSteps: followupSteps, maxInvocations: followupSteps, maxMinutes: followupMinutes } });
-      setText(""); route.value = { view: "run", id };
+      setText(""); navigate({ view: "run", id });
     } catch (error) { showToast((error as Error).message, 5000); }
     finally { setBusy(false); }
   };
@@ -2033,10 +2024,11 @@ function ActivityLog({ logs }: { logs: RunData["logs"]; count: number }) {
 }
 
 // ---------------------------------------------------------------- edit & run again
-function editAndRerun(run: RunSummary) {
+export function editAndRerun(run: RunSummary) {
   setPattern(run.pattern);
-  roleSel.value = { ...roleSel.value, [run.pattern]: { ...(roleSel.value[run.pattern] ?? {}), ...run.roles } };
-  optionValues.value = { ...optionValues.value, [run.pattern]: { ...run.options } };
+  for (const [role, ids] of Object.entries(run.roles)) setRoles(run.pattern, role, ids);
+  const p = patterns.value.find((x) => x.id === run.pattern);
+  if (p) for (const [id, value] of Object.entries(run.options ?? {})) setOption(p, id, value);
   setTask(run.task);
   const restore = () => {
     contextPaths.value = new Map((run.context?.paths ?? []).map((c) => [c.path, { path: c.path, type: c.type }]));
@@ -2044,7 +2036,7 @@ function editAndRerun(run: RunSummary) {
     if (run.context?.attachments?.length) showToast("Attached files aren't kept — attach them again if needed", 4000);
     checkCmd.value = run.loop?.check ?? "";
     setupCmd.value = run.loop?.setup ?? "";
-    limits.value = { maxMinutes: run.loop?.maxMinutes ?? 60, maxSteps: run.loop?.maxSteps ?? 40 };
+    setLimits({ maxMinutes: run.loop?.maxMinutes ?? 60, maxSteps: run.loop?.maxSteps ?? 40 });
     source.value = run.source
       ? {
           kind: run.source.kind,
@@ -2063,7 +2055,7 @@ function editAndRerun(run: RunSummary) {
   // Back in the run's project, so the new run goes there too.
   const project = projectFor(run);
   if (project) selectProject(project.id, { defaults: false, repo: false });
-  route.value = { view: "composer" };
-  if (run.repo !== repo.value) void setRepo(run.repo).then(restore);
-  else restore();
+  navigate({ view: "composer" });
+  // Once the repo's own "Done when" lookup is done: the run's check and setup win over it.
+  void (run.repo !== repo.value ? setRepo(run.repo).then(checkLoaded) : checkLoaded()).then(restore, restore);
 }

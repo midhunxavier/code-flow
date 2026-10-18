@@ -139,12 +139,18 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
           ],
     });
   } else if (prompt.includes("Other reviewers are reviewing the same changes")) {
+    // "council-false-alarms": the reviewers raise only the false alarm, as the chair reports. A
+    // confirmed bug the chair leaves out comes back in (see restoreConfirmed in council.ts).
     const offByOne = { severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use <" };
+    const nullCheck = { severity: "high", file: "feature.txt", problem: "Missing null check", fix: "Check for null", repro: passingRepro };
     answer = json({
       verdict: "changes_requested",
-      issues: process.env.FAKE_REPRO
-        ? [{ ...offByOne, repro: failingRepro }, { severity: "high", file: "feature.txt", problem: "Missing null check", fix: "Check for null", repro: passingRepro }]
-        : [{ ...offByOne, repro: noRepro }],
+      issues:
+        process.env.FAKE_REPRO === "council-false-alarms"
+          ? [nullCheck]
+          : process.env.FAKE_REPRO
+            ? [{ ...offByOne, repro: failingRepro }, nullCheck]
+            : [{ ...offByOne, repro: noRepro }],
     });
   } else if (prompt.includes('"verdict": "approve" | "changes_requested"') && process.env.FAKE_REPRO) {
     // A reviewer that shows its finding with a test (FAKE_REPRO): fails (a real bug, raised in the

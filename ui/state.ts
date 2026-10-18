@@ -155,6 +155,10 @@ export const repoError = signal("");
 export const repoChecking = signal(false);
 export const repo = computed(() => repoInfo.value?.repo ?? "");
 
+let checkLoading: Promise<void> = Promise.resolve();
+/** The repo's "Done when" lookup has finished: what's set after this (Edit & run again) isn't overwritten by it. */
+export const checkLoaded = () => checkLoading;
+
 export async function setRepo(path: string, remember = true) {
   path = path.trim();
   const previous = repo.value;
@@ -175,7 +179,7 @@ export async function setRepo(path: string, remember = true) {
   }
   if (repo.value !== previous) {
     contextPaths.value = new Map(); // paths are relative to the repo they came from
-    void loadCheck();
+    checkLoading = loadCheck();
   }
 }
 export const recentRepos = () => store.json<string[]>("recentRepos", []);

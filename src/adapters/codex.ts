@@ -5,8 +5,8 @@ import { codexTransport } from "../config.js";
 import { logWarn } from "../log.js";
 import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, ModelInfo, RunOptions, RunResult } from "./types.js";
 import { runAppServerTurn } from "./codex-app-server.js";
-import { classifyError, resetFromText } from "./errors.js";
-import { captureOutput, commandExists, describeFailure, processErrorKind, startJsonlProcess, stderrTail, stringify, truncate, type ProcessOutcome } from "./process.js";
+import { classifyError, cliErrorLine, resetFromText } from "./errors.js";
+import { captureOutput, commandExists, describeFailure, processErrorKind, startJsonlProcess, stringify, truncate, unknownEvents, type ProcessOutcome } from "./process.js";
 import { adapterTeamCapabilities, prepareTeamTools } from "./team-tools.js";
 
 /**
@@ -78,6 +78,14 @@ export const codexAdapter: AgentAdapter = {
     let completed = false;
     /** Called when the turn's outcome is known, so a CLI that then hangs is stopped (exec only). */
     let resultSeen = () => {};
+    const unknown = unknownEvents("codex");
+    /** Items already counted as unknown: one item's started, updated and completed events count once. */
+    const unknownItems = new Set<string>();
+    const unknownItem = (type: string, id?: string) => {
+      if (id && unknownItems.has(id)) return;
+      if (id) unknownItems.add(id);
+      unknown.add(type);
+    };
 
     const handle = (msg: any) => {
       switch (msg.type) {
@@ -87,10 +95,13 @@ export const codexAdapter: AgentAdapter = {
           onEvent({ kind: "session", sessionId: msg.thread_id });
           break;
 
+        case "turn.started":
+          break;
+
         case "item.started":
         case "item.updated":
         case "item.completed":
-          handleItem(msg.type, msg.item, onEvent, (text) => (finalText = text));
+          handleItem(msg.type, msg.item, onEvent, (text) => (finalText = text), unknownItem);
           break;
 
         case "turn.completed": {
@@ -118,6 +129,14 @@ export const codexAdapter: AgentAdapter = {
           lastErrorKind = msg.kind;
           onEvent({ kind: "status", text: `Codex: ${lastError}` });
           break;
+
+        // A notification app-server sent that its client doesn't know (codex-app-server.ts).
+        case "unrecognized":
+          unknown.add(msg.name);
+          break;
+
+        default:
+          unknown.add(msg.type);
       }
     };
     const onText = (line: string) => onEvent({ kind: "status", text: line });
@@ -185,13 +204,22 @@ export const codexAdapter: AgentAdapter = {
     }
 
     if (schemaFile) await rm(dirname(schemaFile), { recursive: true, force: true }).catch(() => undefined);
+    const unknownCount = unknown.count;
+    const drift = unknown.report();
+    if (drift) onEvent({ kind: "status", text: drift });
     // After turn.completed, how the process ended (a hang on shutdown, a non-zero exit) doesn't matter.
     if (!completed || turnError || outcome.aborted) {
       const stopped = processErrorKind(outcome);
-      const error = turnError ?? (stopped ? undefined : lastError) ?? describeFailure("codex", outcome);
-      // stderr says why a run that never got going failed (a resume of a thread that's gone, an unknown flag).
-      const errorKind: ErrorKind = stopped ?? (turnError ? turnErrorKind : lastErrorKind) ?? classifyError(turnError ? error : `${error}\n${stderrTail(outcome)}`);
-      const resetsAt = errorKind === "usage_limit" ? resetFromText(error) : undefined;
+      const said = turnError ?? (stopped ? undefined : lastError);
+      const error = said ?? describeFailure("codex", outcome);
+      // Codex's own error info first, then what it said failed. Only a run that never got going
+      // (a resume of a thread that's gone, an unknown flag) is read from stderr, and only Codex's
+      // own error line there: hooks and MCP servers print to it too.
+      const stderrLine = cliErrorLine(outcome.stderr);
+      const fromText = classifyError(said);
+      const errorKind: ErrorKind =
+        stopped ?? (turnError ? turnErrorKind : lastErrorKind) ?? (turnError || fromText !== "other" ? fromText : classifyError(stderrLine));
+      const resetsAt = errorKind === "usage_limit" ? (resetFromText(said) ?? (turnError ? undefined : resetFromText(stderrLine))) : undefined;
       onEvent({ kind: "error", message: error });
       return {
         ok: false,
@@ -201,6 +229,14 @@ export const codexAdapter: AgentAdapter = {
         errorKind,
         ...(resetsAt && { resetsAt }),
       };
+    }
+    // A finished turn with no answer at all is one the agent ended without a word, unless Codex
+    // printed things code-flow doesn't know: then its answer was most likely among them (a renamed
+    // event or field), and an empty "success" would hand the next step nothing without saying so.
+    if (!finalText.trim() && unknownCount) {
+      const error = "Codex finished the turn, but code-flow didn't recognise its output, so its answer is missing. Update codex-cli or code-flow.";
+      onEvent({ kind: "error", message: error });
+      return { ok: false, finalText, sessionId, error, errorKind: "cli_incompatible" };
     }
     let structured: unknown;
     if (opts.jsonSchema) {
@@ -233,6 +269,7 @@ function handleItem(
   item: any,
   onEvent: (e: AgentEvent) => void,
   setFinal: (text: string) => void,
+  unknown: (type: string, id?: string) => void,
 ) {
   if (!item) return;
   const done = phase === "item.completed";
@@ -242,6 +279,8 @@ function handleItem(
       if (done && item.text) {
         setFinal(item.text);
         onEvent({ kind: "text", text: item.text });
+      } else if (done && typeof item.text !== "string") {
+        unknown("agent_message without text", item.id); // its answer moved to a field code-flow doesn't read
       }
       break;
 
@@ -302,5 +341,9 @@ function handleItem(
     case "error":
       if (done) onEvent({ kind: "error", message: item.message ?? "error" });
       break;
+
+    default:
+      // app-server marks the items its translation doesn't know ("unrecognized", with their own type).
+      unknown(`${item.type === "unrecognized" ? (item.name ?? "(no type)") : item.type} item`, item.id);
   }
 }

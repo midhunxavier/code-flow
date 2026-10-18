@@ -11,7 +11,9 @@ When a run finishes, each result branch has **Review changes**, **Merge…** and
 - **Merge…** merges the result into one of your branches, and only when that's safe:
   - If the target branch is checked out (e.g. `main` in your checkout), the merge happens there, and only when it has no uncommitted changes to tracked files (staged or not).
   - If something else stops it — untracked files the merge would overwrite, another git holding the repository's lock, a failing hook, git not knowing your name and email — you're told which (and which files), and your checkout is put back as it was.
-  - Otherwise code-flow builds the merge with `git merge-tree` and moves the branch, so no checkout is touched. That needs git 2.38 or later; with an older git, check the branch out and merge there.
+  - That merge runs your hooks, with up to 30 minutes for them (`CODEFLOW_MERGE_TIMEOUT_SEC`), so a post-merge `npm install` or a Git LFS download has time. If git is stopped after it made the merge commit, the merge is done, and you're warned the hook may not have finished.
+  - If the target branch isn't checked out anywhere, code-flow builds the merge with `git merge-tree` and moves the branch, so no checkout is touched. That needs git 2.38 or later; with an older git, check the branch out and merge there.
+  - A branch that's being rebased or bisected in one of your worktrees isn't merged into: finishing or aborting the rebase would undo the merge. You're told where, and what to run there first.
   - On a real conflict you see the files and can **ask an agent to resolve them**: code-flow merges the target into the result branch and the agent fixes the markers. Then merge again.
   - By default the run is archived after merging (worktrees removed, branches kept).
   - Merging a branch that's already in the target says *Nothing to merge* instead of recording a second merge.
@@ -77,10 +79,11 @@ A read-only pattern: several agents review the same changes independently, and a
 
 ### Follow-through
 
-**Watch PR** works on a result that has a PR. code-flow checks it every minute:
+**Watch PR** works on a result that has a PR. code-flow checks it every minute. A PR that stays green with no new comments is checked less often, up to every 10 minutes, and every minute again once something changes:
 
 - **Failing CI:** the failed jobs' logs go to the agent you picked, which fixes the cause. code-flow commits and pushes to the PR.
 - **New comments** from you (the account `gh` is signed in as), or from people you list under *Also act on comments from*, go to the agent in the same way. Nobody reviews these fixes before they're pushed, so anyone else's comments are logged and ignored, even an org member's. Comments that were there before you started watching are never acted on.
+  - PR comments and a review's summary are read. Line comments on the diff aren't read yet; the run's log says so when watching starts.
 - These unattended fixes never run with more than *standard* permissions, and a fix that changes tests in ways that could hide the failure isn't pushed. It's handed back to you instead.
 - **Stops:** after the number of fixes you allow, if someone else pushed to the PR, or when the PR is merged or closed. It then shows under *Needs you* with a notification.
 - **Can't check:** when checking the PR fails (`gh` signed out, rate-limited, offline), code-flow waits longer before each retry. After three failures in a row the watch shows under *Needs you* with the reason, e.g. *gh isn't signed in — run `gh auth login`* (it asks `gh auth status` to tell). It keeps retrying, and goes back to watching once `gh` answers again.
@@ -95,6 +98,8 @@ Text from outside the repo is untrusted. Issue and PR titles and descriptions, c
 - checks run in Docker without network.
 
 **Dependabot's PR text is untrusted too.** GitHub opens the PRs, but their descriptions quote the new version's release notes and commit messages word for word, and their CI logs print the new package's output. That text is fenced as data. The run itself isn't locked down: the branch is this repository's and installs what merging it would, so setup can install the new version (with network) and the check can verify it. Pushing a fix to Dependabot's branch still works.
+
+**A code scanning alert's message is fenced too.** It quotes the code it flags (names, strings), which whoever wrote that code chose. The rule's own description and help aren't fenced.
 
 Without Docker, code-flow asks before running that person's tests on your machine; automations never do. **▶ Run app** on a locked-down run asks first too: the app is that code, running on your machine outside any container. The text itself — title, branch name and description — is quoted in a fence it can't break out of, marked as information rather than instructions. Conventions files are read from where the PR started, not from the PR.
 

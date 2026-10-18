@@ -32,8 +32,10 @@ A webhook that reaches a sweep names one item, and goes through the same rules:
 
 `POST /hooks/<id>` with `Authorization: Bearer <secret>` and a JSON body. Both fields are optional:
 
-- `details` is added to the task;
+- `details` (or `task`) is added to the task as information for the agents, not instructions: it goes in a fenced block they're told not to take orders from;
 - `source` (e.g. `{"kind": "pr", "number": 12}`) starts from that issue or PR, or from a security alert (`{"kind": "alert", "tool": "dependabot", "number": 3}`, or `"tool": "code-scanning"`).
+
+Anyone with the secret can send `details`, and programs on this computer can read the secret in `~/.codeflow/triggers.json`, the agents included. So a run with `details` is marked as carrying untrusted text, like one from a Dependabot PR: its reviews aren't learned as lessons for later runs, and project memory it proposes waits for your approval. Runs from a schedule, **Run now**, or a webhook without `details` are as before.
 
 GitHub webhooks work directly through a tunnel. Use the secret as the webhook secret; code-flow checks `X-Hub-Signature-256`. These events start a run, and all others are ignored:
 
@@ -44,7 +46,7 @@ GitHub webhooks work directly through a tunnel. Use the secret as the webhook se
 
 Leaked-secret alerts never start a run.
 
-code-flow answers `202` at once (GitHub gives up on a delivery after 10 seconds) and starts the run in the background. If it can't start, the reason shows on the automation (*couldn't start: …*). A delivery GitHub sends again, with the same `X-GitHub-Delivery` id, is ignored. An automation that isn't a sweep starts at most 10 runs an hour from webhooks.
+code-flow answers `202` at once (GitHub gives up on a delivery after 10 seconds) and starts the run in the background. If it can't start, the reason shows on the automation (*couldn't start: …*). A delivery GitHub sends again is ignored: one with the same `X-GitHub-Delivery` id, or a signed one with the same body whatever its id says, or with none (the signature covers the body, not the id). An automation that isn't a sweep starts at most 10 runs an hour from webhooks.
 
 ## The inbox
 

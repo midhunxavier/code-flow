@@ -26,7 +26,8 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
   ```
 
   Setup runs once per worktree outside the agents' sandboxes, so the check can run without network (`--no-sync`). When a run's check can't run at all (not installed, nothing collected, `conftest.py` can't import the project), the run says so and asks you to set these.
-- `copy` brings files git doesn't carry (like `.env`) from your checkout into every new worktree. Only regular files that git ignores are copied. Symlinks are refused, since a cloned repo's `.env` could point at your credentials, and so are files git would commit. Patterns can't reach outside the repo.
+- `copy` brings files git doesn't carry (like `.env`) from your checkout into every new worktree. Only regular files that git ignores are copied. Symlinks are refused, since a cloned repo's `.env` could point at your credentials, and so are files git would commit. Patterns can't reach outside the repo, and nothing is copied through a symlink in the worktree.
+  - Copied files are never committed, even when an agent un-ignores one or runs `git add -f`. Neither are new files named like secrets (`.env`, `.env.*` other than `.env.example`, `.env.sample` and `.env.template`, `*.pem`, `id_rsa*`, `id_ed25519*`). They stay in the worktree, and a warning names what was left out. Commit such a file yourself if it belongs in the repo.
 - `image` is the Docker image for running checks in isolation (automations, untrusted sources). `learn` passes recurring review problems on to later runs. `prove` checks that each passing result has a test that fails without it ([fail-to-pass](patterns.md#checks-loops-and-limits)); set it to `false` when the check is too slow to run twice.
 - A result's worktree that was removed (archived) is set up again when you follow up on it: files copied, setup run, context restored, and the files you sent with the follow-up added. If its branch was deleted, that follow-up fails with a clear message; the run itself stays finished. A follow-up also fails, rather than delete anything, when the worktree's folder is there but holds something else: move that folder away, then send it again.
 - **Try it:** each result has **Terminal**, **Editor** (Cursor, VS Code, Zed or Sublime, whichever is installed) and **Folder** buttons that open its worktree, plus **▶ Run app**.
@@ -74,6 +75,7 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 | `CODEFLOW_STEP_TIMEOUT_MIN` | `30` | Timeout per agent step |
 | `CODEFLOW_STEP_IDLE_MIN` | `15` | An agent CLI that prints nothing for this long is stuck (a login prompt, a stalled network, a hook that never returns) and is stopped. Keep it above your longest silent test run |
 | `CODEFLOW_GIT_TIMEOUT_SEC` | `300` | Longest a git command may run, hooks included; cloning a new worktree's submodules gets 10 minutes |
+| `CODEFLOW_MERGE_TIMEOUT_SEC` | `1800` | Longest **Merge…** may take in a checkout, your hooks included (a post-merge `npm install`, Git LFS). If git is stopped after it made the merge commit, the merge counts as done, with a warning |
 | `CODEFLOW_MAX_AGENTS` | `6` | Agent CLIs running at once, across all runs |
 | `CODEFLOW_MAX_CHECKS` | `3` | Check and setup commands running at once, across all runs |
 | `CODEFLOW_RETRY_DELAYS_MS` | `20000,60000` | Waits before retrying an agent turn that failed for a passing reason |
@@ -82,7 +84,7 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 | `CODEFLOW_CLAUDE_WRITE_TOOLS` | build/test allow-list | Comma-separated Claude tool rules for write mode, e.g. `Edit,Bash` |
 | `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view (or the full app, with phone control) and webhooks on your network, when *Reachable from my Wi-Fi* is on |
 | `CODEFLOW_SCHEDULER_TICK_MS` | `30000` | How often due automations are checked |
-| `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments |
+| `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments. A PR that stays green with no new comments is checked less often, up to every 10 minutes |
 | `CODEFLOW_CODEX_TRANSPORT` | `auto` | `auto`: `codex app-server` when the installed Codex has it, else `codex exec`. A Codex without app-server is re-checked every 10 minutes; a slow or failed app-server start fails only that turn. `app-server`: require it. `exec`: always `codex exec` (your notes then wait for Codex's next turn) |
 | `CODEFLOW_PYTHON` | `python3` | The Python 3 that runs the side panel Terminal's pseudo-terminal (`scripts/pty.py`). It's found once and run by its full path, so a repository that pins another Python (pyenv, asdf, mise) still gets a terminal. Without a working one, terminals are line-based (`interactiveTerminal: false` in `/api/health`) |
 | `CODEFLOW_CHROME` | first one installed | The Chrome, Chromium, Edge or Brave the side panel Browser's **Snapshot** runs headless. Without one, Snapshot says so |

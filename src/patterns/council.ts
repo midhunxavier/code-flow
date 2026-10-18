@@ -153,21 +153,38 @@ export const councilPattern: Pattern = {
     const agentOf = Object.fromEntries(done.map((r) => [r.label, r.agent]));
     // The merged findings' tests: what already ran is reused, a test the chair changed runs now.
     const checks = await checkIssues(ctx, wt, merged.findings, "Merged finding's test");
-    const findings: CouncilFinding[] = merged.findings
-      .map((f, i) => ({
-        severity: severityOf(f.severity),
-        file: f.file,
-        problem: f.problem,
-        fix: f.fix,
-        raisedBy: [...new Set(f.raised_by.map((l) => agentOf[l]!).filter(Boolean))],
-        check: checks[i]!,
-      }))
-      .sort(
-        (a, b) =>
-          SEVERITY[a.severity] - SEVERITY[b.severity] ||
-          CONFIRMATION[a.check.status] - CONFIRMATION[b.check.status] ||
-          b.raisedBy.length - a.raisedBy.length,
+    // The chair can't drop a finding a test confirms, or rate it lower: it's put back as raised.
+    const { raised, added } = restoreConfirmed(done, checked, merged, checks);
+    const restored = [...raised.values(), ...added];
+    if (restored.length) {
+      ctx.log(
+        `The chair left out or rated lower ${restored.length} finding${restored.length === 1 ? "" : "s"} a test confirms; code-flow put ${restored.length === 1 ? "it" : "them"} back as raised: ` +
+          restored.map((r) => `${r.finding.severity} "${r.finding.problem}" (Reviewer ${r.label}: ${r.why})`).join("; "),
+        "warn",
       );
+    }
+    const note = (r: Restored) => `from Reviewer ${r.label}, whose test confirms it: ${r.why}`;
+    const findings: CouncilFinding[] = [
+      ...merged.findings.map((f, i) => {
+        const back = raised.get(i);
+        return {
+          severity: back?.finding.severity ?? severityOf(f.severity),
+          file: f.file,
+          problem: f.problem,
+          fix: f.fix,
+          raisedBy: [...new Set(f.raised_by.map((l) => agentOf[l]!).filter(Boolean))],
+          // Rated low, the chair's copy wasn't run (a suggestion): the reviewer's test result stands.
+          check: back?.finding.check ?? checks[i]!,
+          ...(back ? { restored: note(back) } : {}),
+        };
+      }),
+      ...added.map((r) => ({ ...r.finding, raisedBy: [agentOf[r.label]!], restored: note(r) })),
+    ].sort(
+      (a, b) =>
+        SEVERITY[a.severity] - SEVERITY[b.severity] ||
+        CONFIRMATION[a.check.status] - CONFIRMATION[b.check.status] ||
+        b.raisedBy.length - a.raisedBy.length,
+    );
     // Recurring problems are passed on to later runs; false alarms aren't problems.
     ctx.learn(findings.filter((f) => f.check?.status !== "refuted"));
     // The verdict goes by what blocks once code-flow has run the findings' tests, as in the other
@@ -198,6 +215,50 @@ export const councilPattern: Pattern = {
   },
 };
 
+/**
+ * The confirmed findings the chair's merge lost: a reviewer's test fails on the code, so whether it
+ * blocks can't depend on the chair keeping it. A merged finding stands for one when it keeps its
+ * test, or names its reviewer, is about the same file and is confirmed too (the chair combined it
+ * with another reviewer's and kept that one's test). Rated lower there, it's raised back to the
+ * reviewer's severity (`raised`, by merged finding); with none, it comes back as its reviewer
+ * raised it (`added`).
+ */
+function restoreConfirmed(
+  done: { label: string; review: ReviewVerdict }[],
+  checked: FindingCheck[][],
+  merged: Merged,
+  checks: FindingCheck[],
+): { raised: Map<number, Restored>; added: Restored[] } {
+  const raised = new Map<number, Restored>();
+  const added: Restored[] = [];
+  done.forEach((r, n) =>
+    r.review.issues.forEach((issue, i) => {
+      const check = checked[n]![i]!;
+      if (check.status !== "confirmed") return;
+      const severity = severityOf(issue.severity);
+      const rank = (j: number) => SEVERITY[raised.get(j)?.finding.severity ?? severityOf(merged.findings[j]!.severity)];
+      const best = merged.findings
+        .map((f, j) => ({ f, j }))
+        .filter(({ f, j }) => sameRepro(f.repro, issue.repro) || (f.raised_by.includes(r.label) && f.file === issue.file && checks[j]!.status === "confirmed"))
+        .sort((a, b) => rank(a.j) - rank(b.j))[0];
+      if (best && rank(best.j) <= SEVERITY[severity]) return;
+      const finding = { severity, file: issue.file, problem: issue.problem, fix: issue.fix, check };
+      if (best) raised.set(best.j, { label: r.label, why: `the chair rated it ${severityOf(best.f.severity)}`, finding });
+      else added.push({ label: r.label, why: "the chair left it out", finding });
+    }),
+  );
+  return { raised, added };
+}
+
+type Restored = { label: string; why: string; finding: Omit<CouncilFinding, "raisedBy" | "check"> & { check: FindingCheck } };
+
+/** The same test: the file, its contents and the command, as a reviewer gave them. */
+function sameRepro(a: Repro | undefined, b: Repro | undefined): boolean {
+  if (!a || !b) return false;
+  const [path, command] = [(a.path ?? "").trim(), (a.command ?? "").trim()];
+  return !!(path || command) && path === (b.path ?? "").trim() && (a.contents ?? "") === (b.contents ?? "") && command === (b.command ?? "").trim();
+}
+
 /** What code-flow found running a finding's test, for the chair. */
 function checkNote(severity: string, check: FindingCheck): string {
   if (check.status === "confirmed") return `confirmed: \`${check.command}\` fails with its test on this code`;
@@ -213,7 +274,8 @@ export function renderReview(verdict: string, summary: string, findings: Council
         .map(
           (f, i) =>
             `${i + 1}. **${f.severity}** \`${f.file || "general"}\` — ${f.problem}\n   *Fix:* ${f.fix}\n   *Raised by:* ${f.raisedBy.join(", ")}` +
-            (f.check ? `\n   *Checked by code-flow:* ${checkMark(f)}` : ""),
+            (f.check ? `\n   *Checked by code-flow:* ${checkMark(f)}` : "") +
+            (f.restored ? `\n   *Restored by code-flow:* ${f.restored}` : ""),
         )
         .join("\n")
     : "No problems found.";
