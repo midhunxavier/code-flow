@@ -159,7 +159,8 @@ const STATUS: Record<string, string> = {
 };
 
 function badge(run: RunSummary): string {
-  if (run.awaiting) return `<span class="b warn">Waiting for you</span>`;
+  if (run.awaiting || (run.status === "running" && run.team?.awaitingRequestId)) return `<span class="b warn">Waiting for you</span>`;
+  if (run.team?.status === "blocked") return `<span class="b warn">Team needs attention</span>`;
   if (run.triage?.state === "pending") return `<span class="b warn">In your inbox</span>`;
   const watch = Object.values(run.watches ?? {}).find((w) => w.state === "needs-you");
   if (watch) return `<span class="b warn">PR needs you</span>`;
@@ -202,7 +203,7 @@ li{margin:4px 0}.foot{font-size:12px;color:var(--muted);margin-top:24px}
 export function renderRemote(manager: RunManager, projects: Project[], base: string, path: string): string | null {
   if (path === "" || path === "/") {
     const runs = manager.list().filter((r) => !r.archived);
-    const needs = runs.filter((r) => r.awaiting || r.triage?.state === "pending" || Object.values(r.watches ?? {}).some((w) => w.state === "needs-you") || (r.status !== "running" && !r.seen));
+    const needs = runs.filter((r) => r.awaiting || (r.status === "running" && r.team?.awaitingRequestId) || r.team?.status === "blocked" || r.triage?.state === "pending" || Object.values(r.watches ?? {}).some((w) => w.state === "needs-you") || (r.status !== "running" && !r.seen));
     const running = runs.filter((r) => r.status === "running" && !needs.includes(r));
     const recent = runs.filter((r) => !needs.includes(r) && !running.includes(r)).slice(0, 15);
     const card = (r: RunSummary) =>
@@ -239,6 +240,15 @@ function renderRun(run: Run, base: string, project?: Project): string {
     .map((w) => `<li>${esc(w.pr)} — <b>${esc(w.state)}</b>: ${esc(w.detail)}</li>`)
     .join("");
   const artifacts = run.artifacts.map((a) => `<li><b>${esc(a.label)}</b> <span class="m">${esc(a.branch)}</span>${a.stat ? `<pre>${esc(a.stat)}</pre>` : ""}</li>`).join("");
+  const team = run.team;
+  const memberName = (id: string) => id === "user" ? "You" : team?.members.find((member) => member.id === id)?.name ?? id;
+  const teamView = team ? [
+    `<h2>Team and workflow</h2><p>${esc(team.status)} · revision ${team.revision} · ${team.metrics.invocations} lifetime calls (${team.metrics.coordinatorInvocations} coordinating)</p>`,
+    `<ul>${team.tasks.map((task) => `<li><b>${esc(task.title)}</b> · ${esc(memberName(task.owner))} · ${esc(task.status ?? "planned")}${task.dependsOn.length ? `<br><span class="m">Needs ${task.dependsOn.map((id) => esc(team.tasks.find((item) => item.id === id)?.title ?? id)).join(", ")}</span>` : ""}</li>`).join("")}</ul>`,
+    team.messages.some((message) => message.kind === "question" && message.status === "open") ? `<h2>Open questions</h2><ul>${team.messages.filter((message) => message.kind === "question" && message.status === "open").map((message) => `<li><b>${esc(memberName(message.sender))} → ${esc(memberName(message.recipient))}</b>: ${esc(message.body)}${message.recipient === "user" ? `<br><span class="m">Open the full-control app or code-flow on your computer to answer.</span>` : ""}${message.deadlineAt ? `<br><span class="m">Deadline ${esc(new Date(message.deadlineAt).toLocaleString())}</span>` : ""}</li>`).join("")}</ul>` : "",
+    team.gaps.length ? `<h2>Unresolved work</h2><ul>${team.gaps.map((gap) => `<li>${esc(gap)}</li>`).join("")}</ul>` : "",
+    team.verification ? `<p class="m">Verification: ${esc(team.verification.check)} · independent review ${team.verification.reviewed ? team.verification.approved ? "approved" : "changes requested" : "pending"} · ${esc(team.verification.head.slice(0, 12))}</p>` : "",
+  ].join("") : "";
   return [
     `<p><a href="${base}/">← All runs</a></p>`,
     `<h1>${esc(run.task.split("\n")[0])}</h1>`,
@@ -247,6 +257,7 @@ function renderRun(run: Run, base: string, project?: Project): string {
     run.triage?.state === "pending" ? "<h2>In your inbox</h2><p>Approve, revise or reject it in code-flow on your computer.</p>" : "",
     run.error ? `<h2>Error</h2><pre>${esc(run.error)}</pre>` : "",
     run.checkCantRun ? `<h2>Check</h2><p>${esc(cantRunMessage(run.checkCantRun.reason))}.</p>` : "",
+    teamView,
     review || (run.summary ? `<h2>Summary</h2><pre>${esc(run.summary.slice(0, 8_000))}</pre>` : ""),
     artifacts ? `<h2>Results</h2><ul>${artifacts}</ul>` : "",
     watches ? `<h2>Pull requests</h2><ul>${watches}</ul>` : "",

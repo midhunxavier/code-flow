@@ -5,7 +5,7 @@ import { useDialog } from "./app.js";
 import {
   agents,
   agentSettings,
-  approvePlan,
+  planApprovalFor,
   health,
   repoConfig,
   roleModels,
@@ -27,6 +27,7 @@ import {
   optionsFor,
   pattern,
   patterns,
+  teamRollout,
   pickerOpen,
   refreshRuns,
   repo,
@@ -55,9 +56,12 @@ import {
   type RoleValue,
 } from "./state.js";
 import { ProjectButton, ProjectNote } from "./projects.js";
+import { ProjectMemory } from "./memory.js";
+import { TeamRolloutNotice } from "./team-evaluation.js";
 import { SourceChip, Templates } from "./github.js";
 import { SaveAutomationDialog } from "./automations.js";
 import { Icon } from "./icons.js";
+import { Menu, MenuItem, MenuTitle } from "./panel-bits.js";
 import type { AgentId, AgentInfo, ContextItem, ModelCatalog, PatternInfo, TreeEntry } from "./types.js";
 
 const DRAG_TYPE = "application/x-codeflow-path";
@@ -96,7 +100,7 @@ export function Composer() {
       attachments: attachments.value.map((a) => ({ name: a.name, data: a.data })),
     },
     agentSettings: agentSettings.value,
-    approvals: { plan: !!CHECKPOINTS[p.id] && approvePlan.value },
+    approvals: { plan: !!CHECKPOINTS[p.id] && planApprovalFor(p.id) },
     trust: trust.value,
     roleSettings: roleModels.value[p.id] ?? {},
     loop: {
@@ -170,6 +174,8 @@ export function Composer() {
         </div>
       ) : null}
       <ProjectNote />
+      {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
+      {p?.id === "auto-team" && target.value.project && repo.value ? <ProjectMemory key={`${target.value.project.id}:${repo.value}`} projectId={target.value.project.id} repo={repo.value} /> : null}
       {repoInfo.value ? <Templates /> : null}
       <TaskBox onStart={start} />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
@@ -188,7 +194,7 @@ export function Composer() {
         {p ? <Team p={p} roles={roles} /> : null}
         {p && CHECKPOINTS[p.id] && (p.id !== "debate" || roles.builder?.length) ? (
           <label class="checkpoint">
-            <input type="checkbox" checked={approvePlan.value} onChange={(e) => setApprovePlan(e.currentTarget.checked)} />
+            <input type="checkbox" checked={planApprovalFor(p.id)} onChange={(e) => setApprovePlan(e.currentTarget.checked, p.id)} />
             <span>
               <b>Let me approve {CHECKPOINTS[p.id]}</b> before agents build — the run pauses (and its time budget with it) until you approve, ask for changes, or reject.
             </span>
@@ -356,24 +362,100 @@ function CompareDialog({ base, onClose, onStarted }: { base: Record<string, any>
 
 /** Why the run can't start yet ("" when it can); `needsTask: false` for sweeps, whose items bring their tasks. */
 export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true): string {
+  if (p?.id === "auto-team" && teamRollout.value?.enabled === false) return "New Auto teams are disabled. Existing teams can still be resumed.";
   if (!repo.value) return "Choose a repository first";
   if (needsTask && !task.value.trim()) return "Describe the task to start";
   if (!p) return "Pick how the agents work together";
   for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return `Pick an agent for ${role.label}`;
   if (p.id === "race" && (roles.contestants?.length ?? 0) < 2) return "A race needs at least two contestants";
   if (p.id === "debate" && (roles.debaters?.length ?? 0) < 2) return "A debate needs at least two debaters";
+  if (p.id === "auto-team" && !(roles.pool?.length)) return "Keep at least one provider in the pool";
+  if (p.id === "auto-team" && limits.value.maxSteps < 4) return "An Auto team needs at least 4 steps: planning, work, review and recovery";
   if (p.requiresCheck && !checkCmd.value.trim()) return `${p.name} needs a “Done when” command, e.g. npm test`;
-  const used = new Set<RoleValue>(Object.values(roles).flat());
+  // An Auto pool is permission to choose from these providers; availability is checked by
+  // the coordinator before building its roster, so one signed-out candidate needn't block it.
+  const used = new Set<RoleValue>(p.id === "auto-team" ? roles.coordinator ?? [] : Object.values(roles).flat());
   const signedOut = health.value?.find((h) => used.has(h.id) && h.installed && h.signedIn === false);
   if (signedOut) return `${signedOut.name} isn't signed in — open Health in the top bar`;
   return "";
 }
 
 // ---------------------------------------------------------------- task box
+type ImproveMode = "quick" | "repo";
+
+/**
+ * Improve: one read-only agent turn rewrites the task so agents can act on it (src/improve.ts).
+ * Quick works from the text alone; Repo reads the repository first. Undo brings yours back
+ * while the rewrite is still what's in the box.
+ */
+function useImprove() {
+  const [busy, setBusy] = useState<{ stop: AbortController; mode: ImproveMode } | null>(null);
+  const [done, setDone] = useState<{ before: string; after: string; note: string } | null>(null);
+  const [error, setError] = useState<{ message: string; text: string } | null>(null);
+  const [mode, setMode] = useState<ImproveMode>(store.get("improveMode") === "repo" ? "repo" : "quick");
+  // Leaving the composer (starting the run, opening another page) stops the turn.
+  const live = useRef<AbortController | null>(null);
+  useEffect(() => () => live.current?.abort(), []);
+  const run = async (how: ImproveMode = mode) => {
+    if (busy) return busy.stop.abort();
+    const text = task.value;
+    if (!text.trim() || !repo.value) return;
+    const stop = new AbortController();
+    live.current = stop;
+    setBusy({ stop, mode: how });
+    setError(null);
+    setDone(null);
+    try {
+      const r = await api<{ prompt: string; summary: string; agent: AgentId }>("/api/improve-prompt", {
+        method: "POST",
+        signal: stop.signal,
+        body: JSON.stringify({
+          text,
+          repo: repo.value,
+          mode: how,
+          context: [...[...contextPaths.value.values()].map((c) => c.path), ...attachments.value.map((a) => a.name)],
+          source: source.value ? { kind: source.value.kind, number: source.value.number, title: source.value.title } : undefined,
+        }),
+      });
+      // Typed over, started or cleared meanwhile: that wins over the rewrite.
+      if (task.value !== text) return;
+      setTask(r.prompt);
+      const name = agents.value.find((a) => a.id === r.agent)?.displayName ?? r.agent;
+      setDone({ before: text, after: r.prompt, note: `${name}: ${r.summary}` });
+    } catch (err) {
+      if (!stop.signal.aborted) setError({ message: (err as Error).message, text });
+    } finally {
+      if (live.current === stop) live.current = null;
+      setBusy(null);
+    }
+  };
+  const pick = (how: ImproveMode) => {
+    setMode(how);
+    store.set("improveMode", how);
+    void run(how);
+  };
+  const undo = () => {
+    if (done) setTask(done.before);
+    setDone(null);
+  };
+  // Both apply to the text they were about; editing it puts the usual hint back.
+  return {
+    busy,
+    mode,
+    run,
+    pick,
+    undo,
+    error: error && task.value === error.text ? error.message : "",
+    done: done && task.value === done.after ? done : null,
+  };
+}
+
 function TaskBox({ onStart }: { onStart: () => void }) {
   const [over, setOver] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const improve = useImprove();
+  const canImprove = !!task.value.trim() && !!repo.value;
   const autosize = () => {
     const t = area.current;
     if (!t) return;
@@ -435,6 +517,8 @@ function TaskBox({ onStart }: { onStart: () => void }) {
         aria-label="Task"
         placeholder="e.g. Add rate limiting to the /login endpoint, with tests…"
         value={task.value}
+        readOnly={!!improve.busy}
+        aria-busy={!!improve.busy}
         onInput={(e) => setTask(e.currentTarget.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -454,9 +538,45 @@ function TaskBox({ onStart }: { onStart: () => void }) {
         <button class="btn ghost small" title="Show the repository's files in the side panel" onClick={() => openSide("files")}>
           <Icon name="files" /> Files
         </button>
-        <span class="hint">
-          {count ? `${count} item${count === 1 ? "" : "s"} of context — agents read these before starting` : "Drag files here from the file list or Finder to give the agents context"}
-        </span>
+        {improve.busy ? (
+          <span class="hint status" role="status">{improve.busy.mode === "repo" ? "Reading the repository and rewriting the task…" : "Rewriting the task…"}</span>
+        ) : improve.error ? (
+          <span class="hint status bad" role="alert" title={improve.error}>{improve.error}</span>
+        ) : improve.done ? (
+          <span class="hint status" title={improve.done.note}>{improve.done.note}</span>
+        ) : (
+          <span class="hint">
+            {count ? `${count} item${count === 1 ? "" : "s"} of context — agents read these before starting` : "Drag files here from the file list or Finder to give the agents context"}
+          </span>
+        )}
+        {improve.done ? (
+          <button class="btn ghost small" title="Put back the task as you wrote it" onClick={improve.undo}>
+            Undo
+          </button>
+        ) : null}
+        <div class="improve">
+          <button
+            class="btn ghost small"
+            disabled={!improve.busy && !canImprove}
+            title={improve.busy ? "Stop rewriting" : !repo.value ? "Choose a repository first" : improve.mode === "repo" ? "Rewrite the task so agents can act on it, after reading the repository" : "Rewrite the task so agents can act on it"}
+            onClick={() => void improve.run()}
+          >
+            {improve.busy ? <span class="spin" /> : <Icon name="sparkle" />} {improve.busy ? "Stop" : "Improve"}
+          </button>
+          <Menu label="How Improve works" icon="chevron">
+            {(close) => (
+              <>
+                <MenuTitle>Improve the task</MenuTitle>
+                <MenuItem on={improve.mode === "quick"} disabled={!!improve.busy} sub="From your text alone, on a fast model" onClick={() => (close(), improve.pick("quick"))}>
+                  Quick rewrite
+                </MenuItem>
+                <MenuItem on={improve.mode === "repo"} disabled={!!improve.busy} sub="Reads the repo first to name real files. Slower." onClick={() => (close(), improve.pick("repo"))}>
+                  Use the repository
+                </MenuItem>
+              </>
+            )}
+          </Menu>
+        </div>
       </div>
       <div class="overlay">Drop to add as context</div>
       <input
@@ -576,7 +696,7 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
                     </button>
                   );
                 })}
-                <button
+                {p.id !== "auto-team" || role.id !== "pool" ? <button
                   type="button"
                   class="pill auto"
                   aria-pressed={selected.includes("auto")}
@@ -587,7 +707,7 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
                   }}
                 >
                   Auto
-                </button>
+                </button> : null}
                 {role.optional ? (
                   <button type="button" class="pill none" aria-pressed={!selected.length} onClick={() => setRoles(p.id, role.id, [])}>
                     Skip
@@ -629,8 +749,10 @@ export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>,
   };
   const opts = optionsFor(p);
   const check = checkCmd.value.trim();
-  const doneWhen = (check ? ` · done when “${check}” passes` : "") + (checkpoints && CHECKPOINTS[p.id] && approvePlan.value && (p.id !== "debate" || roles.builder?.length) ? ` · you approve ${CHECKPOINTS[p.id]} first` : "");
+  const doneWhen = (check ? ` · done when “${check}” passes` : "") + (checkpoints && CHECKPOINTS[p.id] && planApprovalFor(p.id) && (p.id !== "debate" || roles.builder?.length) ? ` · you approve ${CHECKPOINTS[p.id]} first` : "");
   switch (p.id) {
+    case "auto-team":
+      return `${one("coordinator")} assembles up to ${opts.maxMembers ?? 4} members from ${many("pool")} → the team works through dependencies → an independent member verifies the result${doneWhen}`;
     case "pipeline":
       return `${one("planner")} plans → ${one("builder")} builds → ${one("reviewer")} reviews (up to ${opts.maxRounds} rounds of fixes)${doneWhen}`;
     case "race":

@@ -32,6 +32,10 @@ export interface RunOptions {
   idleTimeoutMs?: number;
   /** Constrain the final answer to this JSON Schema (all three CLIs support it). */
   jsonSchema?: object;
+  /** Auto members ask through their structured outcome, with answers on a later turn. */
+  questionProtocol?: "structured";
+  /** Ephemeral, server-derived member capability; never serialize with the Run or prompt. */
+  teamTools?: import("../team-tools.js").TeamToolConnection;
   /**
    * How much an agent may do in write mode: "safe" = edit files only, "standard" = also run
    * common build/test commands, "trusted" = any command (and network, where the CLI sandboxes),
