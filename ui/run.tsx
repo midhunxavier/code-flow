@@ -968,6 +968,18 @@ function ProofNote({ proof }: { proof: Proof }) {
             <pre>{proof.detail}</pre>
           </details>
         </>
+      ) : proof.status === "weak" ? (
+        <>
+          <b>⚠ Weak proof: the tests fail without this change only because they can't load</b>
+          <span class="help">
+            {" "}
+            — <code>{proof.command}</code> fails on the base code with {tests}, but on an import or build error, not on what the tests check. Check a test covers the behaviour before merging.
+          </span>
+          <details>
+            <summary>How it fails without the change</summary>
+            <pre>{proof.detail}</pre>
+          </details>
+        </>
       ) : proof.status === "unproven" ? (
         <>
           <b>⚠ Not proven: no test fails without this change</b>

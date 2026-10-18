@@ -162,7 +162,7 @@ export const racePattern: Pattern = {
             const status = e.result.ok ? "completed" : `failed (${e.result.error})`;
             const check = e.check ? (e.check.ok ? ", check passes" : ", check fails") : "";
             const proof = proofs.get(e.label)?.status;
-            const proven = proof === "proven" ? ", proven" : proof === "unproven" ? ", not proven" : "";
+            const proven = proof === "proven" ? ", proven" : proof === "weak" ? ", weakly proven" : proof === "unproven" ? ", not proven" : "";
             return `- ${e.label}: ${e.agent} — ${status}${check}${proven} — \`${e.wt.branch}\``;
           })
           .join("\n"),
