@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { TeamToolBridge, TEAM_TOOLS, validateTeamToolRequest, type TeamToolConnection } from "../src/team-tools.js";
-import { prepareTeamTools } from "../src/adapters/team-tools.js";
 
 const fixture = mkdtempSync(join(tmpdir(), "codeflow-team-tools-test-"));
 process.env.PATH = `${fileURLToPath(new URL("./fake-bin", import.meta.url))}:${process.env.PATH}`;
@@ -15,7 +14,9 @@ process.env.CODEFLOW_HOME = join(fixture, "home");
 process.env.CODEFLOW_TOKEN = "server-token-must-never-reach-agents";
 after(() => rmSync(fixture, { recursive: true, force: true }));
 const { adapters } = await import("../src/adapters/index.js");
-const { adapterTeamCapabilities, TEAM_TOOL_ALLOWLIST } = await import("../src/adapters/team-tools.js");
+// src/adapters/team-tools.js loads src/config.js, so it is imported only after CODEFLOW_HOME is set.
+const { adapterTeamCapabilities, prepareTeamTools, TEAM_TOOL_ALLOWLIST } = await import("../src/adapters/team-tools.js"), { CODEFLOW_HOME } = await import("../src/config.js");
+assert.equal(CODEFLOW_HOME, process.env.CODEFLOW_HOME, "src/config.js loaded before CODEFLOW_HOME was set");
 
 async function send(connection: TeamToolConnection, body: unknown, extra: Record<string, string> = {}) {
   const response = await fetch(connection.endpoint, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${connection.token}`, ...extra }, body: JSON.stringify(body) });

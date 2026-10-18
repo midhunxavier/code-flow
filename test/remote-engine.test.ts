@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { git, remoteWorkerFixture } from "./remote-worker-fixture.js";
 
 const root = mkdtempSync(join(tmpdir(), "codeflow-remote-engine-")); process.env.CODEFLOW_HOME = join(root, "engine-home");
+// Everything from src (the fixture loads it too) is imported after CODEFLOW_HOME is set, or runs land in ~/.codeflow.
+const { git, remoteWorkerFixture } = await import("./remote-worker-fixture.js"), { CODEFLOW_HOME } = await import("../src/config.js");
+assert.equal(CODEFLOW_HOME, process.env.CODEFLOW_HOME, "src/config.js loaded before CODEFLOW_HOME was set");
 const { RunManager } = await import("../src/engine.js"), { findPattern } = await import("../src/patterns/index.js"), { adapters } = await import("../src/adapters/index.js"), { flushWrites } = await import("../src/store.js");
 type Run = import("../src/engine.js").Run;
 const managers: InstanceType<typeof RunManager>[] = [];
