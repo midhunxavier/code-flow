@@ -7,6 +7,7 @@ import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, ModelInfo, RunO
 import { runAppServerTurn } from "./codex-app-server.js";
 import { classifyError, resetFromText } from "./errors.js";
 import { captureOutput, commandExists, describeFailure, processErrorKind, startJsonlProcess, stderrTail, stringify, truncate, type ProcessOutcome } from "./process.js";
+import { adapterTeamCapabilities, prepareTeamTools } from "./team-tools.js";
 
 /**
  * Codex, through `codex app-server` (JSON-RPC over stdio) when the installed Codex has it, so a
@@ -55,9 +56,14 @@ export const codexAdapter: AgentAdapter = {
   },
 
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
+    const supportsTools = opts.teamTools && (await adapterTeamCapabilities("codex")).scopedTools === "tested";
+    const teamTools = supportsTools ? await prepareTeamTools(opts.teamTools!) : undefined;
+    if (opts.teamTools && !teamTools) onEvent({ kind: "status", text: "This Codex CLI has no verified per-turn team tools; use structured outcomes and next-turn replies." });
+    try {
     const sandbox = opts.mode === "read" ? "read-only" : opts.trust === "full" ? "danger-full-access" : "workspace-write";
     // Codex sandboxes writes to the worktree unless the run has full access; "trusted" adds network access.
     const network = opts.mode === "write" && opts.trust === "trusted" ? ["-c", "sandbox_workspace_write.network_access=true"] : [];
+    const teamConfig = [...(teamTools?.codexConfig ?? []), ...(opts.questionProtocol === "structured" ? ["-c", "features.multi_agent=false", "-c", "features.multi_agent_v2=false"] : [])];
     const transport = codexTransport();
 
     // Only a thread Codex confirms in this turn: a resume that failed must not hand back its id.
@@ -128,7 +134,8 @@ export const codexAdapter: AgentAdapter = {
         model: opts.model,
         effort: opts.effort,
         outputSchema: opts.jsonSchema,
-        config: network,
+        questionProtocol: opts.questionProtocol,
+        config: [...network, ...teamConfig],
         signal: opts.signal,
         timeoutMs: opts.timeoutMs,
         idleTimeoutMs: opts.idleTimeoutMs,
@@ -153,7 +160,7 @@ export const codexAdapter: AgentAdapter = {
 
     if (!outcome) {
       // `-c sandbox_mode=` works for both `exec` and `exec resume` (resume has no -s flag).
-      const common = ["--json", "--skip-git-repo-check", "-c", `sandbox_mode="${sandbox}"`, ...network];
+      const common = ["--json", "--skip-git-repo-check", "-c", `sandbox_mode="${sandbox}"`, ...network, ...teamConfig];
       if (opts.model) common.push("-m", opts.model);
       if (opts.effort) common.push("-c", `model_reasoning_effort="${opts.effort}"`);
       schemaFile = opts.jsonSchema ? await writeSchemaFile(opts.jsonSchema) : undefined;
@@ -204,6 +211,7 @@ export const codexAdapter: AgentAdapter = {
       }
     }
     return { ok: true, finalText, sessionId, structured };
+    } finally { await teamTools?.cleanup(); }
   },
 };
 

@@ -11,6 +11,7 @@ export type { ShellEvent, ShellInfo } from "../src/shell.js";
 export type { FileContent } from "../src/repo-tree.js";
 export type { DevServer } from "../src/serve.js";
 export type { RunContext } from "../src/context.js";
+export type { TeamState, TeamMember, TeamTask, TeamMessage, TeamContextManifest } from "../src/teams.js";
 
 import type { AgentId, ModelCatalog } from "../src/adapters/types.js";
 import type { Pattern } from "../src/engine.js";

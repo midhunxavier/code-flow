@@ -216,7 +216,11 @@ test("a run's stream: its history in order with ids, before any live event, and 
   const id = started.body.id;
   // Connected while it runs: history and live events interleave on the server, never on the wire.
   const events = await readEvents(`${a.base}/api/runs/${id}/events`, bearer, (e) => e.some((x) => x.data.type === "run" && x.data.run.endedAt));
-  assert.deepEqual(events[0]!.data, { type: "hello", epoch: events[1]!.id!.split(":")[0], resumed: false });
+  // A fresh connection also gets the snapshot: the client never depends on the event log holding the latest state.
+  const hello = events[0]!.data;
+  assert.deepEqual({ type: hello.type, epoch: hello.epoch, resumed: hello.resumed }, { type: "hello", epoch: events[1]!.id!.split(":")[0], resumed: false });
+  assert.equal(hello.snapshot?.run?.id, id);
+  assert.ok(Array.isArray(hello.snapshot?.steps) && Number.isInteger(hello.snapshot?.seq));
   const body = events.slice(1);
   const seqs = body.map(seqOf);
   assert.ok(seqs.every((s, i) => i === 0 || s > seqs[i - 1]!), `strictly increasing: ${seqs.join(",")}`);
@@ -282,7 +286,9 @@ test("/api/stream: one stream for every topic a window watches, changed while it
   assert.equal(feed.type, "hello");
   assert.ok(feed.runs.some((r: { id: string }) => r.id === id), "the run list starts whole");
   const replay = hub.of(2);
-  assert.deepEqual(replay[0], { type: "hello", epoch: feed.epoch, resumed: false });
+  const { snapshot, ...hello } = replay[0];
+  assert.deepEqual(hello, { type: "hello", epoch: `run-${id}`, resumed: false });
+  assert.equal(snapshot.run.id, id, "the run as it is now comes first");
   assert.equal(replay.filter((d) => d.type === "run").length, 1, "only the latest snapshot of the run");
   const steps = replay.filter((d) => d.type === "step").map((d) => d.step.id);
   assert.ok(steps.length > 0);
@@ -292,10 +298,10 @@ test("/api/stream: one stream for every topic a window watches, changed while it
 
   // The same run picked up where it left off, a run and a terminal that don't exist, and the first subscription dropped.
   const last = Math.max(...replay.filter((d) => d.seq).map((d) => d.seq));
-  const changed = await hub.update({ subscribe: [{ id: 3, topic: `run:${id}`, after: `${feed.epoch}:${last}` }, { id: 4, topic: "run:no-such-run" }, { id: 5, topic: "shell:no-such-shell" }], unsubscribe: [2] });
+  const changed = await hub.update({ subscribe: [{ id: 3, topic: `run:${id}`, after: `run-${id}:${last}` }, { id: 4, topic: "run:no-such-run" }, { id: 5, topic: "shell:no-such-shell" }], unsubscribe: [2] });
   assert.equal(changed.status, 200);
   await hub.until(() => [3, 4, 5].every((n) => hub.of(n).length > 0), "the new subscriptions");
-  assert.deepEqual(hub.of(3), [{ type: "hello", epoch: feed.epoch, resumed: true }], "resumed, with nothing missed");
+  assert.deepEqual(hub.of(3).map(({ snapshot: _, ...d }) => d), [{ type: "hello", epoch: `run-${id}`, resumed: true }], "resumed, with nothing missed");
   assert.deepEqual([hub.of(4)[0].type, hub.of(4)[0].status], ["error", 404]);
   assert.match(hub.of(5)[0].message, /terminal is gone/);
   assert.deepEqual(await streams(), { streams: before.streams + 1, subscriptions: before.subscriptions + 2 }, "runs, and the run again");
@@ -311,6 +317,27 @@ test("/api/stream: one stream for every topic a window watches, changed while it
   assert.deepEqual(await streams(), before);
   assert.equal((await api(a, `/api/stream/${hub.client}`, { unsubscribe: [1] })).status, 404);
   assert.equal((await fetch(`${a.base}/api/stream?subs=not-json`, { headers: bearer })).status, 400);
+});
+
+test("a run's durable cursor survives server restart and invalid future cursors reset", async () => {
+  const home = mkdtempSync(join(tmpdir(), "codeflow-cursor-home-"));
+  const first = await startServer({ CODEFLOW_HOME: home });
+  const started = await api(first, "/api/runs", { pattern: "pipeline", task: "Persistent cursor", repo, roles: team });
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  const id = started.body.id;
+  await finishedRun(first, id);
+  const events = await readEvents(`${first.base}/api/runs/${id}/events`, bearer, (items) => items.some((item) => item.data.type === "run" && item.data.run.endedAt));
+  const cursor = events[Math.floor(events.length / 2)]!;
+  const stopped = new Promise((resolve) => first.child.once("exit", resolve));
+  first.child.kill("SIGTERM");
+  await stopped;
+  const second = await startServer({ CODEFLOW_HOME: home });
+  const replay = await readEvents(`${second.base}/api/runs/${id}/events`, { ...bearer, "last-event-id": cursor.id! }, (items) => items.some((item) => item.data.type === "run" && item.data.run.endedAt));
+  assert.equal(replay[0]!.data.resumed, true);
+  assert.equal(replay[0]!.data.epoch, events[0]!.data.epoch);
+  assert.ok(replay.slice(1).every((event) => seqOf(event) > seqOf(cursor)));
+  const reset = await readEvents(`${second.base}/api/runs/${id}/events`, { ...bearer, "last-event-id": `${events[0]!.data.epoch}:9007199254740991` }, (items) => !!items.length);
+  assert.equal(reset[0]!.data.resumed, false);
 });
 
 test("a webhook is answered at once and the run starts in the background; GitHub sending a delivery again starts nothing", async () => {

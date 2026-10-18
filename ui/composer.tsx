@@ -5,7 +5,7 @@ import { useDialog } from "./app.js";
 import {
   agents,
   agentSettings,
-  approvePlan,
+  planApprovalFor,
   health,
   repoConfig,
   roleModels,
@@ -27,6 +27,7 @@ import {
   optionsFor,
   pattern,
   patterns,
+  teamRollout,
   pickerOpen,
   refreshRuns,
   repo,
@@ -55,6 +56,8 @@ import {
   type RoleValue,
 } from "./state.js";
 import { ProjectButton, ProjectNote } from "./projects.js";
+import { ProjectMemory } from "./memory.js";
+import { TeamRolloutNotice } from "./team-evaluation.js";
 import { SourceChip, Templates } from "./github.js";
 import { SaveAutomationDialog } from "./automations.js";
 import { Icon } from "./icons.js";
@@ -96,7 +99,7 @@ export function Composer() {
       attachments: attachments.value.map((a) => ({ name: a.name, data: a.data })),
     },
     agentSettings: agentSettings.value,
-    approvals: { plan: !!CHECKPOINTS[p.id] && approvePlan.value },
+    approvals: { plan: !!CHECKPOINTS[p.id] && planApprovalFor(p.id) },
     trust: trust.value,
     roleSettings: roleModels.value[p.id] ?? {},
     loop: {
@@ -170,6 +173,8 @@ export function Composer() {
         </div>
       ) : null}
       <ProjectNote />
+      {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
+      {p?.id === "auto-team" && target.value.project && repo.value ? <ProjectMemory key={`${target.value.project.id}:${repo.value}`} projectId={target.value.project.id} repo={repo.value} /> : null}
       {repoInfo.value ? <Templates /> : null}
       <TaskBox onStart={start} />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
@@ -188,7 +193,7 @@ export function Composer() {
         {p ? <Team p={p} roles={roles} /> : null}
         {p && CHECKPOINTS[p.id] && (p.id !== "debate" || roles.builder?.length) ? (
           <label class="checkpoint">
-            <input type="checkbox" checked={approvePlan.value} onChange={(e) => setApprovePlan(e.currentTarget.checked)} />
+            <input type="checkbox" checked={planApprovalFor(p.id)} onChange={(e) => setApprovePlan(e.currentTarget.checked, p.id)} />
             <span>
               <b>Let me approve {CHECKPOINTS[p.id]}</b> before agents build — the run pauses (and its time budget with it) until you approve, ask for changes, or reject.
             </span>
@@ -356,14 +361,19 @@ function CompareDialog({ base, onClose, onStarted }: { base: Record<string, any>
 
 /** Why the run can't start yet ("" when it can); `needsTask: false` for sweeps, whose items bring their tasks. */
 export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true): string {
+  if (p?.id === "auto-team" && teamRollout.value?.enabled === false) return "New Auto teams are disabled. Existing teams can still be resumed.";
   if (!repo.value) return "Choose a repository first";
   if (needsTask && !task.value.trim()) return "Describe the task to start";
   if (!p) return "Pick how the agents work together";
   for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return `Pick an agent for ${role.label}`;
   if (p.id === "race" && (roles.contestants?.length ?? 0) < 2) return "A race needs at least two contestants";
   if (p.id === "debate" && (roles.debaters?.length ?? 0) < 2) return "A debate needs at least two debaters";
+  if (p.id === "auto-team" && !(roles.pool?.length)) return "Keep at least one provider in the pool";
+  if (p.id === "auto-team" && limits.value.maxSteps < 4) return "An Auto team needs at least 4 steps: planning, work, review and recovery";
   if (p.requiresCheck && !checkCmd.value.trim()) return `${p.name} needs a “Done when” command, e.g. npm test`;
-  const used = new Set<RoleValue>(Object.values(roles).flat());
+  // An Auto pool is permission to choose from these providers; availability is checked by
+  // the coordinator before building its roster, so one signed-out candidate needn't block it.
+  const used = new Set<RoleValue>(p.id === "auto-team" ? roles.coordinator ?? [] : Object.values(roles).flat());
   const signedOut = health.value?.find((h) => used.has(h.id) && h.installed && h.signedIn === false);
   if (signedOut) return `${signedOut.name} isn't signed in — open Health in the top bar`;
   return "";
@@ -576,7 +586,7 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
                     </button>
                   );
                 })}
-                <button
+                {p.id !== "auto-team" || role.id !== "pool" ? <button
                   type="button"
                   class="pill auto"
                   aria-pressed={selected.includes("auto")}
@@ -587,7 +597,7 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
                   }}
                 >
                   Auto
-                </button>
+                </button> : null}
                 {role.optional ? (
                   <button type="button" class="pill none" aria-pressed={!selected.length} onClick={() => setRoles(p.id, role.id, [])}>
                     Skip
@@ -629,8 +639,10 @@ export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>,
   };
   const opts = optionsFor(p);
   const check = checkCmd.value.trim();
-  const doneWhen = (check ? ` · done when “${check}” passes` : "") + (checkpoints && CHECKPOINTS[p.id] && approvePlan.value && (p.id !== "debate" || roles.builder?.length) ? ` · you approve ${CHECKPOINTS[p.id]} first` : "");
+  const doneWhen = (check ? ` · done when “${check}” passes` : "") + (checkpoints && CHECKPOINTS[p.id] && planApprovalFor(p.id) && (p.id !== "debate" || roles.builder?.length) ? ` · you approve ${CHECKPOINTS[p.id]} first` : "");
   switch (p.id) {
+    case "auto-team":
+      return `${one("coordinator")} assembles up to ${opts.maxMembers ?? 4} members from ${many("pool")} → the team works through dependencies → an independent member verifies the result${doneWhen}`;
     case "pipeline":
       return `${one("planner")} plans → ${one("builder")} builds → ${one("reviewer")} reviews (up to ${opts.maxRounds} rounds of fixes)${doneWhen}`;
     case "race":

@@ -142,5 +142,5 @@ export class StreamHub {
 export function cursorSeq(cursor: string | undefined, epoch: string): number | undefined {
   const [from, seq] = String(cursor ?? "").split(":");
   const n = Number(seq);
-  return from === epoch && seq !== "" && seq !== undefined && Number.isInteger(n) && n >= 0 ? n : undefined;
+  return from === epoch && seq !== "" && seq !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
 }

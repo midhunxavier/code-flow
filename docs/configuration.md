@@ -102,3 +102,11 @@ The processes code-flow starts (agent CLIs, checks, setup, **Run app**, `gh`, `g
 | `server.log` | code-flow's own log, one JSON line per entry: failed requests, unhandled errors, failed writes, processes it cleaned up. Past 5 MB it moves to `server.log.1` (one old file is kept) |
 | `processes.json` | The process groups code-flow has started and not seen finish. If code-flow dies without a clean exit (a crash, `kill -9`, a closed terminal), the next start stops what's left before resuming anything, so an orphaned agent can't keep editing a worktree. Pids from before a reboot, or reused by another program, are left alone |
 | `server.lock` | One server per `CODEFLOW_HOME`. It records the server's pid, start time and the boot, so a lock left by a crash is taken over even when another program now has that pid, or after a reboot |
+
+## Dynamic teams
+
+`CODEFLOW_AUTO_TEAM_ENABLED=false` disables new Auto team runs while preserving saved-run viewing and recovery. Auto remains opt-in; the rollout record and evaluation evidence are shown in Insights. The recorded stage is informational (and a composer default when set to `default`); only `CODEFLOW_AUTO_TEAM_ENABLED` changes whether new Auto runs can start. Existing runs without the `eventDriven` option retain dependency-wave replay; newly created Auto runs default it on.
+
+The authenticated run API accepts `loop.maxInvocations` as an additional per-allocation ceiling on actual CLI launches, including retries. Auto already caps launches with its step budget. Follow-up requests can specify `budget: { maxSteps, maxInvocations, maxMinutes }`; the UI exposes this fresh allocation and retains lifetime usage.
+
+Project memory is in `memory.json`; evaluation reports and the explicit rollout decision live under the evaluation store in `CODEFLOW_HOME`. Both use durable replacement writes. See [Auto team](auto-team.md) for scope, trust, revision and deletion semantics.

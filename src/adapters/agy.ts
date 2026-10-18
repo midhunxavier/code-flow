@@ -55,6 +55,7 @@ export const agyAdapter: AgentAdapter = {
   },
 
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
+    if (opts.teamTools) onEvent({ kind: "status", text: "Antigravity has no verified scoped per-turn tool configuration; team messages and memory are provided at turn boundaries." });
     // A NaN or missing timeout must not become "--print-timeout NaNm".
     const timeoutMs = typeof opts.timeoutMs === "number" && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : STEP_TIMEOUT_MS;
     // Prompt as one stream-json message on stdin (-p would need it as an argument).

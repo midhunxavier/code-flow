@@ -18,12 +18,12 @@ import { logError, logWarn } from "./log.js";
 
 export const RUNS_DIR = join(CODEFLOW_HOME, "runs");
 
-/** Journal entries carry this; entries written by a newer code-flow are ignored, not misread. */
+/** Newer versions are rejected by strict recovery; legacy readers skip them. */
 export const JOURNAL_VERSION = 2;
 
 let writeQueue: Promise<unknown> = mkdir(RUNS_DIR, { recursive: true }).catch(() => undefined);
 
-/** Failed writes (a full disk, a permissions problem): runs keep going but aren't saved. */
+/** Failed writes: event projections are best-effort; authoritative callers fail closed. */
 export const writeHealth: { failures: number; lastError?: string; at?: number } = { failures: 0 };
 
 /**
@@ -34,6 +34,9 @@ const repaired = new Set<string>();
 
 /** Files appended to since the last `flushWrites`, which fsyncs them. */
 const unsynced = new Set<string>();
+
+/** First synced append also persists the journal's directory entry. */
+const directorySynced = new Set<string>();
 
 async function endsWithNewline(path: string): Promise<boolean> {
   const handle = await open(path, "r").catch(() => undefined);
@@ -57,6 +60,43 @@ async function appendSynced(path: string, text: string) {
   } finally {
     await handle.close();
   }
+  if (!directorySynced.has(path)) {
+    // Directory handles cannot be fsynced on Windows; file fsync still applies there.
+    if (process.platform !== "win32") {
+      const directory = await open(RUNS_DIR, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
+    }
+    directorySynced.add(path);
+  }
+}
+
+/** A partial authoritative record was never committed; do not turn it into a bad full line. */
+async function truncateIncompleteTail(path: string): Promise<void> {
+  const handle = await open(path, "r+").catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return undefined;
+    throw err;
+  });
+  if (!handle) return;
+  try {
+    const { size } = await handle.stat();
+    if (!size) return;
+    let end = size;
+    const buffer = Buffer.alloc(Math.min(size, 64 * 1024));
+    while (end > 0) {
+      const start = Math.max(0, end - buffer.length);
+      const length = end - start;
+      await handle.read(buffer, 0, length, start);
+      const newline = buffer.subarray(0, length).lastIndexOf(0x0a);
+      if (newline >= 0) {
+        const boundary = start + newline + 1;
+        if (boundary !== size) { await handle.truncate(boundary); await handle.sync(); }
+        return;
+      }
+      end = start;
+    }
+    await handle.truncate(0);
+    await handle.sync();
+  } finally { await handle.close(); }
 }
 
 /**
@@ -64,11 +104,12 @@ async function appendSynced(path: string, text: string) {
  * the line to reach the disk (fsync) before the next write: for lines that must survive a
  * power loss, not for every event (`flushWrites` syncs those at shutdown).
  */
-export function appendLine(file: string, value: unknown, opts: { sync?: boolean } = {}): Promise<void> {
+export function appendLine(file: string, value: unknown, opts: { sync?: boolean; strict?: boolean } = {}): Promise<void> {
   const line = `${JSON.stringify(value)}\n`;
   const written = writeQueue
     .then(async () => {
       const path = join(RUNS_DIR, file);
+      if (opts.strict && !repaired.has(file)) await truncateIncompleteTail(path);
       // Close a torn last line first, or this line would be glued to it and both lost.
       const prefix = repaired.has(file) || (await endsWithNewline(path)) ? "" : "\n";
       try {
@@ -82,8 +123,8 @@ export function appendLine(file: string, value: unknown, opts: { sync?: boolean 
       repaired.add(file);
       if (opts.sync) unsynced.delete(file);
       else unsynced.add(file);
-    })
-    .catch((err: Error) => {
+    });
+  const observed = written.catch((err: Error) => {
       writeHealth.failures++;
       writeHealth.lastError = err.message;
       writeHealth.at = Date.now();
@@ -91,9 +132,9 @@ export function appendLine(file: string, value: unknown, opts: { sync?: boolean 
         logError(`couldn't save run data (${writeHealth.failures} failed writes)`, err, { file });
       }
     });
-  writeQueue = written;
-  // Resolves once this line is written (synced, with `sync`), or its write failed; never rejects.
-  return written;
+  // A caller can fail closed without poisoning the queue for every later run.
+  writeQueue = observed;
+  return opts.strict ? written : observed;
 }
 
 async function syncFile(file: string) {
@@ -155,7 +196,26 @@ export async function listRunIds(): Promise<string[]> {
     .map((f) => f.slice(0, -".jsonl".length));
 }
 
-export async function loadJournal(runId: string): Promise<Map<string, unknown>> {
+export async function loadJournal(runId: string, opts: { strict?: boolean } = {}): Promise<Map<string, unknown>> {
+  if (opts.strict) {
+    let text: string;
+    try { text = await readFile(join(RUNS_DIR, `${runId}.journal.jsonl`), "utf8"); }
+    catch (err) { if ((err as NodeJS.ErrnoException).code === "ENOENT") return new Map(); throw err; }
+    // An interrupted append has no terminating newline. Only complete records count.
+    const complete = text.slice(0, text.lastIndexOf("\n") + 1);
+    const journal = new Map<string, unknown>();
+    for (const [index, line] of complete.split("\n").entries()) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (typeof entry.key !== "string" || !("value" in entry) || (entry.v ?? 1) > JOURNAL_VERSION) throw new Error("invalid or unsupported record");
+        journal.set(entry.key, entry.value);
+      } catch (err) {
+        throw new Error(`Cannot recover journal ${runId}: record ${index + 1} is damaged or uses an unsupported version`, { cause: err });
+      }
+    }
+    return journal;
+  }
   const entries = await readJsonLines<{ key: string; value: unknown; v?: number }>(`${runId}.journal.jsonl`);
   return new Map(entries.filter((e) => (e.v ?? 1) <= JOURNAL_VERSION).map((e) => [e.key, e.value]));
 }
@@ -191,7 +251,7 @@ export function rewriteLines(file: string, make: (lines: unknown[]) => unknown[]
  * (and re-paying for) the steps, so a step counts as done only once its entry is on disk.
  */
 export function journalEntry(runId: string, key: string, value: unknown): Promise<void> {
-  return appendLine(`${runId}.journal.jsonl`, { key, value, v: JOURNAL_VERSION }, { sync: true });
+  return appendLine(`${runId}.journal.jsonl`, { key, value, v: JOURNAL_VERSION }, { sync: true, strict: true });
 }
 
 // ---------------------------------------------------------------- the one-server lock
