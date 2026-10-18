@@ -1,3 +1,4 @@
+import { loadExecutionHost, executionHost } from "./ssh-projects.js";
 import { effect } from "@preact/signals";
 import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
@@ -7,7 +8,7 @@ import type { SharedPrincipal } from "../src/shared-accounts.js";
 import { configureStreamSharing, type StreamSharing } from "./stream.js";
 import logo from "./brand/vibesboard-mark.png";
 import { api, showToast, store, SHORT } from "./lib.js";
-import { agents, hashFor, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
+import { agents, hashFor, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, pickerOpen, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
 // The tab icon: the vibesboard mark, like the top bar.
 const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/png", href: logo });
@@ -46,6 +47,7 @@ async function boot() {
     if (identity.kind === "anonymous") { render(<SharedLogin />, root); return; }
     if (identity.kind === "shared") { render(<SharedDashboard identity={identity} />, root); return; }
     configureStreamSharing(identity.streamSharing);
+    await loadExecutionHost();
     [agentList, patternList] = await Promise.all([api("/api/agents"), api("/api/patterns")]);
   } catch (err) {
     const seconds = RETRY_SECONDS[Math.min(attempts, RETRY_SECONDS.length - 1)]!;
@@ -75,6 +77,7 @@ async function boot() {
   );
   const saved = store.get("repo");
   if (saved) void setRepo(saved, false);
+  else if (executionHost.value.kind === "ssh") pickerOpen.value = true;
   await Promise.all([refreshRuns(), loadProjects()]);
   watchAllRuns(notifyFinished);
   // A safety net if the event stream drops; projects change when a run starts in a new repo.

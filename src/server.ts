@@ -1,3 +1,4 @@
+import { SshProjects } from "./ssh-projects/manager.js";
 import { readFileSync } from "node:fs";
 import { ProjectFilePolicies, FilePolicyError, assertPolicyExecution, configureFilePolicyResolver, filterPolicyDiff, policyIsRestrictive } from "./filesystem-policy.js";
 import { FilesystemAccess } from "./filesystem-access.js";
@@ -198,6 +199,7 @@ function changeSavedRemote(patch: Parameters<typeof changeRemote>[1]): Promise<R
 const REMOTE_PORT = envNumber("CODEFLOW_REMOTE_PORT", PORT + 1, { min: 1, max: 65_535 });
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
 const HOST = "127.0.0.1";
+const sshProjects = process.env.CODEFLOW_SSH_HOST ? undefined : new SshProjects({ returnUrl: `http://localhost:${PORT}/` });
 const tlsConfigured = !!process.env.CODEFLOW_TLS_CERT && !!process.env.CODEFLOW_TLS_KEY;
 if (!!process.env.CODEFLOW_TLS_CERT !== !!process.env.CODEFLOW_TLS_KEY) throw new Error("Configure both CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY");
 const phoneTls = tlsConfigured ? { cert: readFileSync(process.env.CODEFLOW_TLS_CERT!), key: readFileSync(process.env.CODEFLOW_TLS_KEY!) } : undefined;
@@ -211,6 +213,9 @@ const previews = new Previews(
   () => [`http://localhost:${PORT}`, `http://${HOST}:${PORT}`],
   () => [PORT, REMOTE_PORT],
 );
+
+// SSH previews are revocable on this host; the local gateway adds the browser overlay.
+const sshPreviews = new Previews(() => [], () => [PORT, REMOTE_PORT], undefined, false);
 
 /** This server launches coding agents, so only accept requests from its own page. */
 function checkOrigin(req: IncomingMessage) {
@@ -234,7 +239,7 @@ function checkOrigin(req: IncomingMessage) {
  */
 const auth = {
   token: process.env.CODEFLOW_TOKEN || randomBytes(24).toString("hex"),
-  claimable: sharedAccounts.available && !sharedAccounts.hasUsers,
+  claimable: !process.env.CODEFLOW_SSH_HOST && sharedAccounts.available && !sharedAccounts.hasUsers,
 };
 sharedAccounts.onChange(() => { auth.claimable = false; });
 manager.onActivity(() => (auth.claimable = false));
@@ -1141,6 +1146,7 @@ async function streamTopic(req: IncomingMessage, res: ServerResponse, kind: "run
 type Via = "local" | "lan";
 
 async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
+  if (stopping) throw new HttpError(503, "The backend is stopping");
   const url = new URL(req.url ?? "/", "http://localhost");
   let parts = url.pathname.split("/").filter(Boolean);
   if (parts[0] === "api") parts = await attempt(async () => canonicalSharedPath(req.url ?? "/").parts);
@@ -1197,6 +1203,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (via === "lan" && !phoneControl()) throw new HttpError(404, "Not found");
   if (!owner) throw Object.assign(new HttpError(401, "Not signed in: use the owner link or sign in to shared projects"), { signIn: true });
+  if (parts.join("/") === "api/ssh-context" && req.method === "GET") return send(res, 200, { kind: process.env.CODEFLOW_SSH_HOST ? "host" : "local" });
+  if (process.env.CODEFLOW_SSH_HOST && parts.join("/") === "api/ssh-runtime" && req.method === "GET") return send(res, 200, { instance: process.env.CODEFLOW_SSH_HOST });
   if (parts[1] === "projects" && parts[2] && parts[3] === "filesystem-policy") {
     const project = projects.get(parts[2]); if (!project) throw new HttpError(404, "Project not found");
     if (parts.length !== 4) throw new HttpError(404, "Unknown filesystem policy operation");
@@ -1207,7 +1215,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         if (!filteredTasksReady || filteredTasks.active()) throw new FilePolicyError("Finish or explicitly cancel and reconcile filtered tasks before changing policy; unavailable task storage must be repaired first", 409);
         if (policyIsRestrictive(next) && extensions.list().length) throw new FilePolicyError("Disable configured extensions and restart before applying a restriction. Previously imported trusted JavaScript can retain background host authority, including a bundle rejected after initialization.", 409);
         if (shells.list().length || manager.devServers.list().some((service) => service.status === "running")) throw new FilePolicyError("Close terminals and stop development services before changing filesystem policy", 409);
-        try { await manager.withIdleExecution(async () => { await pausePolicyBackground(); previews.closeAll(); await commit(); }); }
+        try { await manager.withIdleExecution(async () => { await pausePolicyBackground(); previews.closeAll(); sshPreviews.closeAll(); await commit(); }); }
         finally { if (!fileAccess.hasRestrictions()) startPolicyBackground(); }
       })));
     }
@@ -1226,6 +1234,35 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     await attempt(async () => assertImproveEnvironment());
   }
   await attempt(() => fileAccess.ownerGate(req, url, parts));
+  if (parts[1] === "ssh-runtime" && process.env.CODEFLOW_SSH_HOST) {
+    if (parts[2] === "preview" && parts.length === 3 && req.method === "POST") {
+      if (fileAccess.hasRestrictions()) throw new HttpError(409, "Filesystem restrictions pause remote previews");
+      const body = await readJson(req, 8192); const target = previewTarget(String(body.url ?? ""));
+      if (!target || target.port === PORT || target.port === REMOTE_PORT) throw new HttpError(400, "Choose a remote development app's localhost HTTP address");
+      return send(res, 200, await sshPreviews.show(String(body.url)));
+    }
+    if (parts[2] === "stop" && parts.length === 3 && req.method === "POST") {
+      if (manager.list().some((run) => run.status === "running") || manager.busy.agents.running || manager.busy.checks.running || shells.list().some((shell) => shell.status === "running") || manager.devServers.list().some((service) => service.status === "running")) throw new HttpError(409, "Finish running work and close terminals and development servers before stopping the backend");
+      await attempt(() => manager.withIdleExecution(async () => {
+        await pausePolicyBackground();
+        send(res, 200, { ok: true }); void stop("SSH backend stopped from the app");
+      })); return;
+    }
+    throw new HttpError(404, "Unknown SSH runtime operation");
+  }
+  if (parts[1] === "ssh-hosts") {
+    if (!sshProjects || via !== "local") throw new HttpError(403, "Manage SSH connections from the local app");
+    if (fileAccess.hasRestrictions()) throw new HttpError(409, "Filesystem restrictions pause SSH connection management");
+    if (parts.length === 2 && req.method === "GET") return send(res, 200, await attempt(() => sshProjects.list()));
+    if (parts.length === 2 && req.method === "POST") return send(res, 201, await attempt(async () => sshProjects.add(await readJson(req, 8192))));
+    if (parts.length === 3 && req.method === "DELETE") { await attempt(() => sshProjects.remove(parts[2]!)); return send(res, 200, { ok: true }); }
+    if (parts.length === 4 && req.method === "POST") {
+      if (parts[3] === "connect") return send(res, 200, await attempt(() => sshProjects.connect(parts[2]!, `http://${req.headers.host}/`)));
+      if (parts[3] === "disconnect") { await attempt(() => sshProjects.disconnect(parts[2]!)); return send(res, 200, { ok: true }); }
+      if (parts[3] === "stop") { await attempt(() => sshProjects.stop(parts[2]!)); return send(res, 200, { ok: true }); }
+    }
+    throw new HttpError(404, "Unknown SSH connection operation");
+  }
   if (parts[1] === "accounts") {
     if (!parts[2] && req.method === "GET") return send(res, 200, await attempt(async () => sharedAccounts.snapshot()));
     const body = await readJson(req);
@@ -1521,6 +1558,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (req.method === "GET" && parts[1] === "templates") return send(res, 200, templates);
   if (parts[1] === "remote") {
+    if (process.env.CODEFLOW_SSH_HOST && req.method !== "GET") throw new HttpError(403, "Use SSH to reach this backend; phone listeners are unavailable on SSH hosts");
     if (parts[2] === "devices") {
       if (req.method === "GET") return send(res, 200, phoneSessions.list(remote.controlToken));
       if (req.method === "DELETE" && parts[3]) return send(res, 200, { revoked: await phoneSessions.revoke(parts[3], remote.controlToken) });
@@ -2022,7 +2060,7 @@ if (notificationsReady) {
 }
 if (!fileAccess.hasRestrictions()) startPolicyBackground();
 else await pausePolicyBackground();
-void syncLanServer();
+if (!process.env.CODEFLOW_SSH_HOST) void syncLanServer();
 
 function listener(via: Via) {
   return (req: IncomingMessage, res: ServerResponse) => {
@@ -2157,10 +2195,12 @@ async function stop(reason: string, code = 0) {
     launchProfiles.stopAll();
     shells.closeAll();
     previews.closeAll();
+    sshPreviews.closeAll();
     automationsSaved = automations.stop();
   } catch {
     // still starting up: nothing is listening yet
   }
+  await sshProjects?.close();
   await coordinatedApi.service.stop().catch((err) => logError("Coordinated changes shutdown failed", err));
   await deferredRuns.stop().catch((err) => logError("Deferred queue shutdown failed", err));
   for (const controller of improvingControllers) controller.abort();

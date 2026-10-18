@@ -44,24 +44,29 @@ export function signInAgain() {
 
 export const post = <T = any>(path: string, body: unknown = {}) => api<T>(path, { method: "POST", body: JSON.stringify(body) });
 
+const workspaceKey = (key: string) => {
+  const id = (window as Window & { __CODEFLOW_WORKSPACE?: string }).__CODEFLOW_WORKSPACE;
+  return id ? `ssh:${id}:${key}` : key;
+};
 export const store = {
+  remove(k: string) { try { localStorage.removeItem(workspaceKey(k)); } catch {} },
   get(k: string): string | null {
     try {
-      return localStorage.getItem(k);
+      return localStorage.getItem(workspaceKey(k));
     } catch {
       return null;
     }
   },
   set(k: string, v: string) {
     try {
-      localStorage.setItem(k, v);
+      localStorage.setItem(workspaceKey(k), v);
     } catch {
       // private mode or blocked storage: settings just won't persist
     }
   },
   json<T>(k: string, fallback: T): T {
     try {
-      return (JSON.parse(localStorage.getItem(k) ?? "null") as T) ?? fallback;
+      return (JSON.parse(localStorage.getItem(workspaceKey(k)) ?? "null") as T) ?? fallback;
     } catch {
       return fallback;
     }

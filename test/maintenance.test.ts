@@ -31,6 +31,7 @@ test("encrypted backups round-trip application data while excluding live session
   await writeFile(join(home, "connection.json"), '{"token":"team-token"}');
   await mkdir(join(home, "extension-cache")); await writeFile(join(home, "extension-cache", "pinned.mjs"), 'throw new Error("must-not-restore-executable-code");');
   await mkdir(join(home, "remote-worker-private")); await writeFile(join(home, "remote-worker-private", "request.json"), '{"capability":"must-not-restore-worker-authority"}');
+  await mkdir(join(home, "ssh-host")); await writeFile(join(home, "ssh-host", "runtime.json"), '{"token":"must-not-restore-host-authority"}');
   await writeFile(join(root, "outside.txt"), "not part of code-flow");
   await symlink(join(root, "outside.txt"), join(home, "outside-link"));
   const archive = join(root, "backup.cfb");
@@ -38,6 +39,7 @@ test("encrypted backups round-trip application data while excluding live session
   assert.equal(backup.files, 4);
   assert.ok(backup.omitted.some((path) => path.includes("remote.json")));
   assert.ok(backup.omitted.some((path) => path.includes("remote-worker-private")));
+  assert.ok(backup.omitted.some((path) => path.includes("ssh-host")));
   assert.ok(backup.omitted.some((path) => path.includes("extension-cache")));
   assert.ok(backup.omitted.some((path) => path.includes("shared-accounts.json")));
   assert.ok(backup.omitted.some((path) => path.includes("symbolic link")));
@@ -58,6 +60,7 @@ test("encrypted backups round-trip application data while excluding live session
   assert.equal(await readFile(join(restored, "notes.json"), "utf8"), '{"private":"super-secret-note"}');
   assert.equal(await lstat(join(restored, "remote.json")).then(() => true, () => false), false);
   assert.equal(await lstat(join(restored, "remote-worker-private")).then(() => true, () => false), false);
+  assert.equal(await lstat(join(restored, "ssh-host")).then(() => true, () => false), false);
   assert.equal(await lstat(join(restored, "extension-cache")).then(() => true, () => false), false);
   assert.equal(await lstat(join(restored, "shared-accounts.json")).then(() => true, () => false), false);
   assert.equal(await lstat(join(restored, "outside-link")).then(() => true, () => false), false);

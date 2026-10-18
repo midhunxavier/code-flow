@@ -325,3 +325,24 @@ explicit owner choice. Input/output limits are 500 files, 512 KiB per file and
 16 MiB total; live monitoring is a polling safeguard, not a filesystem quota.
 Restarted effectful phases become unknown and require explicit inspection or
 cancellation. See [runtime provisioning, recovery and limitations](filesystem-policy.md).
+
+## SSH projects
+
+Owner-only connection management is available on the local listener. SSH host
+backends and phone/shared sessions cannot manage additional SSH connections.
+
+| Endpoint | Input | Result |
+| --- | --- | --- |
+| `GET /ssh-hosts` | none | Saved host IDs, names, aliases and connection state, plus concrete aliases discovered from SSH config. |
+| `POST /ssh-hosts` | `sshHost`, optional `name` | Save an alias or `user@hostname`; port/key/jump configuration stays in OpenSSH. |
+| `POST /ssh-hosts/:id/connect` | none | Install or reuse the remote backend and return a one-minute, single-use workspace URL. |
+| `POST /ssh-hosts/:id/disconnect` | none | Close local gateways and channels, leaving remote work running. |
+| `POST /ssh-hosts/:id/stop` | none | Stop an idle remote backend, then disconnect. Refuses active execution, terminals and development services. |
+| `DELETE /ssh-hosts/:id` | none | Disconnect and remove the saved definition; remote data remains. |
+| `GET /ssh-context` | none | Local or SSH workspace context; a gateway includes its display name and return URL. |
+
+The returned workspace uses its own authenticated origin. Its existing `/api`
+endpoints and event streams address the remote backend, so project paths, Git,
+files, checks, agent tools and terminals all refer to that server. Mutations are
+never replayed automatically. See [SSH projects](ssh-projects.md) for setup,
+reconnection, remote previews, supported hosts and authentication boundaries.
