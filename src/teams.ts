@@ -89,7 +89,8 @@ export interface TeamMessage {
   revision?: number;
   deadlineAt?: number;
   originalRecipient?: string;
-  delivery?: { status: "queued" | "context" | "steered"; attempt?: number; at?: number };
+  /** steering: sent into a running turn, the CLI's acknowledgement still pending; it settles at a later drain. */
+  delivery?: { status: "queued" | "context" | "steered" | "steering"; attempt?: number; at?: number };
 }
 
 export interface TeamWait {

@@ -21,16 +21,22 @@ export interface AdapterTeamCapabilities {
 }
 
 const CACHE_MS = 10 * 60_000;
-const cache = new Map<string, { at: number; value: Promise<AdapterTeamCapabilities> }>();
+/**
+ * An unknown result (a CLI missing or not signed in, an older Codex refusing `mcp get`, a probe that
+ * timed out) is kept too, for less long: a CLI installed meanwhile is picked up within minutes, and an
+ * installation that stays unknown pays the serial probe stages once per window, not once per turn.
+ */
+const UNKNOWN_CACHE_MS = 2 * 60_000;
+const cache = new Map<string, { at: number; ttl: number; value: Promise<AdapterTeamCapabilities> }>();
 /** Protocol fixtures establish our contract; installed help/config probes establish availability. */
 export function adapterTeamCapabilities(provider: AgentId): Promise<AdapterTeamCapabilities> {
   const key = `${provider}:${process.env.PATH}:${process.env.FAKE_UNKNOWN_FLAG ?? ""}`;
   const saved = cache.get(key);
-  if (saved && Date.now() - saved.at < CACHE_MS) return saved.value;
-  const value = probe(provider);
-  cache.set(key, { at: Date.now(), value });
-  void value.then((capabilities) => { if (capabilities.scopedTools === "unknown") cache.delete(key); });
-  return value;
+  if (saved && Date.now() - saved.at < saved.ttl) return saved.value;
+  const entry = { at: Date.now(), ttl: CACHE_MS, value: probe(provider) };
+  cache.set(key, entry);
+  void entry.value.then((capabilities) => { if (capabilities.scopedTools === "unknown") entry.ttl = UNKNOWN_CACHE_MS; }, () => cache.delete(key));
+  return entry.value;
 }
 
 async function probe(provider: AgentId): Promise<AdapterTeamCapabilities> {

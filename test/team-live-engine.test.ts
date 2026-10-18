@@ -200,21 +200,37 @@ test("live memory honors assigned paths, search text and the returned-entry limi
 });
 
 test("agent steering is addressed, journaled before delivery, distinct from user notes, and never repeated on replay", async () => {
-  for (const accepted of [true, false]) {
+  // "late": the CLI answers only after the steering deadline. The receipt is unknown first, the answer
+  // settles it later, and the message is never counted as refused in between.
+  for (const mode of ["accepted", "refused", "late"] as const) {
+    const accepted = mode !== "refused";
     let ready!: () => void; const receiverReady = new Promise<void>((resolve) => { ready = resolve; });
     let release!: () => void; const senderDone = new Promise<void>((resolve) => { release = resolve; });
     const steers: string[] = []; let calls = 0;
+    let lateAnswer: Promise<boolean> | undefined;
     const savedClaude = adapters.claude.run; const savedCodex = adapters.codex.run;
     adapters.codex.run = async (opts) => {
       calls++;
+      const runId = opts.teamTools!.endpoint.split("/runs/")[1]!.split("/")[0]!;
       opts.onSteerable?.(async (text) => {
-        const runId = opts.teamTools!.endpoint.split("/runs/")[1]!.split("/")[0]!;
         const journal = await loadJournal(runId, { strict: true });
         assert.ok([...journal.keys()].some((key) => key.startsWith("team-command:")), "message is durable before transport");
         assert.ok([...journal.keys()].some((key) => key.startsWith("team-steering:") && key.endsWith(":intent")), "intent is durable before steering");
-        steers.push(text); return accepted;
+        steers.push(text);
+        if (mode !== "late") return accepted;
+        lateAnswer = new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 3_000));
+        return lateAnswer;
       });
       ready(); await senderDone;
+      if (mode === "late") {
+        // The turn ends only once the late answer is journaled, so the final drain can settle it.
+        await lateAnswer;
+        const end = Date.now() + 5_000;
+        while (![...(await loadJournal(runId, { strict: true })).keys()].some((key) => key.endsWith(":settled"))) {
+          if (Date.now() > end) throw new Error("The late steering answer was not journaled");
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      }
       opts.onSteerable?.(undefined);
       return { ok: true, finalText: "receiver done" };
     };
@@ -243,6 +259,10 @@ test("agent steering is addressed, journaled before delivery, distinct from user
       assert.equal(payload.origin, "agent"); assert.equal(payload.recipient, "right"); assert.equal(payload.sender, "left");
       assert.equal(payload.id, run.team!.messages[0]!.id);
       assert.equal(run.team!.messages[0]!.delivery?.status, accepted ? "steered" : "queued");
+      const journal = await loadJournal(run.id, { strict: true });
+      const receipt = [...journal.entries()].find(([key]) => key.startsWith("team-steering:") && key.endsWith(":receipt"))?.[1] as { accepted: boolean | "unknown" } | undefined;
+      assert.equal(receipt?.accepted, mode === "late" ? "unknown" : accepted, "a deadline that passes records an unknown outcome, never a refusal");
+      if (mode === "late") assert.equal(([...journal.entries()].find(([key]) => key.endsWith(":settled"))?.[1] as { accepted: boolean }).accepted, true, "the late answer is journaled and settles the outcome");
       assert.equal(run.notes.length, 0, "agent data never becomes a user note");
       run.patternDone = false; await manager.resume(run.id); await finished(run);
       assert.equal(run.status, "done", run.error);

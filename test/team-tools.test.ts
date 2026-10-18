@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, existsSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -165,4 +165,23 @@ test("older Claude and unsupported agy keep structured turns working without a l
     }
     assert.equal(calls, 0);
   } finally { delete process.env.FAKE_UNKNOWN_FLAG; grant.revoke(); await bridge.close(); }
+});
+
+test("an unknown capability probe is not repeated on the next turn", async () => {
+  // A codex that fails every probe (not signed in, too old for `mcp get`, or timing out) must not cost
+  // the serial probe stages again before every Auto turn.
+  const bin = mkdtempSync(join(fixture, "unknown-bin-"));
+  const log = join(bin, "calls.log");
+  writeFileSync(join(bin, "codex"), `#!/bin/sh\necho "$@" >> "${log}"\nexit 1\n`, { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath}`;
+  try {
+    const first = await adapterTeamCapabilities("codex");
+    assert.equal(first.scopedTools, "unknown");
+    const probes = readFileSync(log, "utf8").trim().split("\n").length;
+    assert.ok(probes >= 1, "the first call probes the CLI");
+    const second = await adapterTeamCapabilities("codex");
+    assert.equal(second.scopedTools, "unknown");
+    assert.equal(readFileSync(log, "utf8").trim().split("\n").length, probes, "an unknown result is served from the cache instead of probing again");
+  } finally { process.env.PATH = savedPath; }
 });
