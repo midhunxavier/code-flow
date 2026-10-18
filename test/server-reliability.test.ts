@@ -383,3 +383,27 @@ test("the health check tells Auto when an agent is signed out", async () => {
   assert.equal(second.find((e: { id: string }) => e.id === "codex").quota?.status, "signed_out");
   assert.notEqual(second.find((e: { id: string }) => e.id === "claude").quota?.status, "signed_out");
 });
+
+test("Improve rewrites the task in one read-only turn: Auto picks the agent, bad input is refused, the repository is untouched", async () => {
+  const status = () => execFileSync("git", ["status", "--porcelain"], { cwd: repo }).toString();
+  const before = status();
+  const quick = await api(a, "/api/improve-prompt", { text: "add rate limit to login", repo, context: ["src/login.ts"], source: { kind: "issue", number: 6, title: "Tests are flaky" } });
+  assert.equal(quick.status, 200, JSON.stringify(quick.body));
+  assert.deepEqual(quick.body, { prompt: "Goal: add rate limit to login\n\nDone when: the tests pass.", summary: "Stated the goal and when it's done (quick, claude).", agent: "claude" });
+  const deep = await api(a, "/api/improve-prompt", { text: "add rate limit to login", repo, mode: "repo", agent: "agy" });
+  assert.equal(deep.status, 200, JSON.stringify(deep.body));
+  assert.equal(deep.body.agent, "agy");
+  assert.match(deep.body.summary, /\(repo, agy\)/);
+  assert.equal(status(), before);
+
+  const refused = async (body: Record<string, unknown>, message: RegExp, code = 400) => {
+    const res = await api(a, "/api/improve-prompt", body);
+    assert.equal(res.status, code, JSON.stringify(res.body));
+    assert.match(res.body.error, message);
+  };
+  await refused({ text: "  ", repo }, /Write a task to improve first/);
+  await refused({ text: "x".repeat(20_001), repo }, /too long to improve/);
+  await refused({ text: "x", repo: "relative/path" }, /absolute path/);
+  await refused({ text: "x", repo: tmpdir() }, /Not a git repository/);
+  await refused({ text: "IMPROVE-EMPTY", repo }, /didn't return a rewritten task/, 502);
+});
