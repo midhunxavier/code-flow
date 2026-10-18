@@ -23,7 +23,7 @@ import { RunManager, UntrustedSourceError, type LoopSettings, type Pattern } fro
 import { detectCheckCommand } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
-import { listBranches, repoRoot, worktreeRoot } from "./git.js";
+import { listBranches, repoRoot, worktreeRoot, type GitCwd } from "./git.js";
 import { stat } from "node:fs/promises";
 import { folderSizes, remoteBranches, removeWorktrees } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
@@ -272,6 +272,21 @@ async function validRepo(requested: string): Promise<string> {
   return repoRoot(requested).catch(() => {
     throw new HttpError(400, "Not a git repository");
   });
+}
+
+/**
+ * The folder the Files panel asks about. A run's worktree comes with the git folder its run's
+ * repository has for it (see worktreeGit): agents can rewrite the worktree's `.git`, and git
+ * finding the repository through it would read a config of theirs.
+ */
+async function requestedFolder(url: URL): Promise<GitCwd> {
+  const requested = url.searchParams.get("repo") ?? "";
+  const worktree = requested.startsWith("/")
+    ? await manager.worktreeAt(requested).catch((err: Error) => {
+        throw new HttpError(400, err.message);
+      })
+    : undefined;
+  return worktree ?? requestedRepo(url);
 }
 
 function describePattern(p: Pattern) {
@@ -863,7 +878,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, { repo, worktreeRoot: worktreeRoot(repo), ...(await listBranches(repo)) });
   }
   if (req.method === "GET" && parts[1] === "tree") {
-    const repo = await requestedRepo(url);
+    const repo = await requestedFolder(url);
     const listing = await listTree(repo, url.searchParams.get("path") ?? "").catch((err: NodeJS.ErrnoException) => {
       throw new HttpError(err.code === "ENOENT" ? 404 : 400, err.code === "ENOENT" ? "Folder not found" : err.message);
     });
@@ -1048,11 +1063,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, (await detectCheckCommand(repo)) ?? { command: null });
   }
   if (req.method === "GET" && parts[1] === "search") {
-    const repo = await requestedRepo(url);
+    const repo = await requestedFolder(url);
     return send(res, 200, await searchFiles(repo, url.searchParams.get("q") ?? ""));
   }
   if (req.method === "GET" && parts[1] === "file") {
-    const repo = await requestedRepo(url);
+    const repo = await requestedFolder(url);
     const content = await readRepoFile(repo, url.searchParams.get("path") ?? "").catch((err: NodeJS.ErrnoException) => {
       throw new HttpError(err.code === "ENOENT" ? 404 : 400, err.code === "ENOENT" ? "File not found" : err.message);
     });
@@ -1094,10 +1109,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const cwd = String(body.cwd ?? "").trim();
       if (!cwd.startsWith("/")) throw new HttpError(400, "The folder must be an absolute path");
       if (!(await stat(cwd).then((s) => s.isDirectory(), () => false))) throw new HttpError(404, "Folder not found");
-      // A repository or one of its worktrees: not just any folder a request names.
-      await repoRoot(cwd).catch(() => {
-        throw new HttpError(400, "The terminal opens in a git repository or one of its worktrees");
-      });
+      // A repository or one of its worktrees: not just any folder a request names. A run's
+      // worktree is known without asking git, which would go by the `.git` agents can rewrite.
+      if (!(await manager.worktreeAt(cwd).then(Boolean, () => false))) {
+        await repoRoot(cwd).catch(() => {
+          throw new HttpError(400, "The terminal opens in a git repository or one of its worktrees");
+        });
+      }
       manager.noteActivity(); // commands run on this machine, like Run app
       try {
         // `pty`: a real terminal of `cols` × `rows` (line-based, `interactive: false`, without python3).

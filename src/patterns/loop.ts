@@ -125,7 +125,7 @@ export const loopPattern: Pattern = {
         const what =
           result.failed !== undefined ? `left ${plural(result.failed)} failing, more than the ${best.failed} ${best.where}` : `left no test results, where there were some ${best.where}`;
         ctx.log(`Round ${round} ${what}; undoing it`, "warn");
-        const changed = await ctx.remember("changed", `${wt.name}|undo round ${round}`, () => changedFiles(wt.path, best.head));
+        const changed = await ctx.remember("changed", `${wt.name}|undo round ${round}`, async () => changedFiles(await ctx.gitAt(wt), best.head));
         await ctx.remember("restore", `${wt.name}|undo round ${round}`, () => restorePaths(ctx.run.repo, wt, best.head, changed).then(() => true));
         head = (await ctx.commit(wt, `code-flow: undo round ${round}, which made the check worse`)) ?? head;
         history[history.length - 1] += ` — worse than ${best.where}, so code-flow undid it`;
