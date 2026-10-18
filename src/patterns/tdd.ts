@@ -89,7 +89,7 @@ export const tddPattern: Pattern = {
     // fixtures, snapshots, test config (and whatever the tester named). Only a plain source file
     // the tester added, a stub for the tests to import, is the builder's to fill in.
     const named = (spec?.test_files ?? []).map((f) => f.replace(/^\.\//, ""));
-    const testsIn = async (commit: string | null) => (commit ? (await changedFiles(wt.path, wt.base, commit)).filter((f) => !isPlainSource(f) || named.includes(f)) : named);
+    const testsIn = async (commit: string | null) => (commit ? (await changedFiles(await ctx.gitAt(wt), wt.base, commit)).filter((f) => !isPlainSource(f) || named.includes(f)) : named);
     let testFiles = await testsIn(testsCommit);
 
     // Evidence comes from code-flow running the tests itself. An agent-chosen command is only run
@@ -159,7 +159,7 @@ export const tddPattern: Pattern = {
 
     for (let round = 1; round <= maxRounds; round++) {
       // Only the builder's own changes count when checking for edited tests.
-      const before = await ctx.remember("head", `before round ${round}`, () => resolveCommit(wt.path));
+      const before = await ctx.remember("head", `before round ${round}`, async () => resolveCommit(await ctx.gitAt(wt)));
       builderStep = await ctx.ask({
         title: round === 1 ? "Implement to pass tests" : `Fix failures (round ${round})`,
         role: "builder",
@@ -182,7 +182,7 @@ export const tddPattern: Pattern = {
       await ctx.commit(wt, `${builder}: implementation round ${round}`);
 
       // The tests are the spec: the builder's changes to them are undone, not just reported.
-      const touched = (await changedFiles(wt.path, before)).filter((f) => testFiles.includes(f));
+      const touched = (await changedFiles(await ctx.gitAt(wt), before)).filter((f) => testFiles.includes(f));
       let tamperNote = "";
       if (touched.length) {
         ctx.log(`Builder modified test files: ${touched.join(", ")}; code-flow put them back`, "warn");
@@ -202,7 +202,7 @@ export const tddPattern: Pattern = {
         }
       }
 
-      const beforeProbe = await ctx.remember("head", `before probe ${round}`, () => resolveCommit(wt.path));
+      const beforeProbe = await ctx.remember("head", `before probe ${round}`, async () => resolveCommit(await ctx.gitAt(wt)));
       const probed = await ctx.decide<TestVerdict>({
         title: `Try to break it (round ${round})`,
         schema: TEST_VERDICT_SCHEMA,
@@ -222,7 +222,7 @@ export const tddPattern: Pattern = {
       });
       await ctx.commit(wt, `${tester}: edge-case tests round ${round}`);
       // The tester probes with tests; changes it makes to the implementation are undone.
-      const probeChanges = await changedFiles(wt.path, beforeProbe);
+      const probeChanges = await changedFiles(await ctx.gitAt(wt), beforeProbe);
       const outside = probeChanges.filter((f) => !isTestFile(f) && !testFiles.includes(f));
       for (const f of probeChanges) if (!outside.includes(f) && !testFiles.includes(f)) testFiles.push(f);
       if (outside.length) {

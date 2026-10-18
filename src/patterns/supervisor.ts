@@ -163,7 +163,7 @@ export const supervisorPattern: Pattern = {
       await ctx.commit(wt, `${agent}: ${sub.title}`);
       // A turn can end fine without changing anything (blocked, or nothing seemed needed):
       // that part is missing, not done.
-      const changed = (await changedFiles(wt.path, wt.base)).length > 0;
+      const changed = (await changedFiles(await ctx.gitAt(wt), wt.base)).length > 0;
       if (result.ok && !changed) ctx.failStep(result, `Made no changes: ${firstLine(result.finalText)}`);
       return { sub, agent, wt, result, changed };
     });

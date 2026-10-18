@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,22 +16,31 @@ process.env.GIT_CONFIG_VALUE_0 = "always";
 
 const {
   assertWorktree,
+  changedFiles,
   changedSince,
   commitAll,
+  diffSince,
+  diffStat,
   discardChanges,
   git,
+  hasConflictMarkers,
   isClean,
   mergeBranch,
   openWorktree,
   openDetachedWorktree,
   removeDetachedWorktree,
+  resolveCommit,
   restorePaths,
   snapshot,
   restoreSnapshot,
+  uncommittedCount,
+  worktreeGit,
   WorktreeMismatchError,
 } = await import("../src/git.js");
 const { mergeInto, removeWorktrees } = await import("../src/ship.js");
 const { listTree, searchFiles } = await import("../src/repo-tree.js");
+const { inspectChanges } = await import("../src/integrity.js");
+const { runWorktreeAt } = await import("../src/engine.js");
 
 const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
 const commit = (cwd: string, msg: string) => {
@@ -353,4 +363,95 @@ test("an fsmonitor or hook from a git folder an agent planted never runs; your h
   assert.equal(merged.ok, true, JSON.stringify(merged));
   assert.match(readFileSync(ran, "utf8"), /^post-merge in /m, "your post-merge hook ran on the merge into your checkout");
   rmSync(script, { force: true });
+});
+
+test("a filter, textconv or external diff from a git folder an agent planted never runs: not for the Files panel, diffs, status or the integrity checks", async () => {
+  const { repo, wt, untouched } = await repoWithWorktree("codeflow-git-filter-");
+  // A change on the run's branch, for the diffs and the integrity checks to look at.
+  writeFileSync(join(wt.path, "a.txt"), "the agent's change\n");
+  writeFileSync(join(wt.path, "a.test.js"), "test('a', () => { assert.ok(true); });\n");
+  assert.ok(await commitAll(repo, wt, "change"));
+  const head = sh(wt.path, "rev-parse", "HEAD");
+
+  const ran = join(mkdtempSync(join(tmpdir(), "codeflow-git-ran-")), "ran");
+  const script = join(tmpdir(), `codeflow-git-filter-${process.pid}.sh`);
+  // Says how it was run, then hands the content back (a textconv gets a file), so git carries on.
+  writeFileSync(script, `#!/bin/sh\necho "$1" >> ${ran}\nif [ "$1" = textconv ]; then cat "$2"; elif [ "$1" != external ]; then cat; fi\n`);
+  chmodSync(script, 0o755);
+
+  // The agent's own git folder (its HEAD another commit, its index a copy of the worktree's), whose
+  // config runs its commands as a filter, a textconv and an external diff; its `.gitattributes`
+  // turns them on for every file.
+  const dotGit = join(wt.path, ".git");
+  const original = readFileSync(dotGit, "utf8");
+  const planted = join(wt.path, "x");
+  mkdirSync(join(planted, "objects", "info"), { recursive: true });
+  mkdirSync(join(planted, "refs", "heads"), { recursive: true });
+  writeFileSync(join(planted, "objects", "info", "alternates"), `${join(repo, ".git", "objects")}\n`);
+  writeFileSync(join(planted, "HEAD"), `${sh(repo, "rev-parse", "main")}\n`);
+  cpSync(join(original.replace(/^gitdir: */, "").trim(), "index"), join(planted, "index"));
+  writeFileSync(
+    join(planted, "config"),
+    `[core]\n\trepositoryformatversion = 0\n[filter "x"]\n\tclean = ${script} clean\n\tsmudge = ${script} smudge\n[diff "x"]\n\ttextconv = ${script} textconv\n[diff]\n\texternal = ${script} external\n`,
+  );
+  writeFileSync(join(wt.path, ".gitattributes"), "* filter=x diff=x\n");
+  writeFileSync(dotGit, "gitdir: ./x\n");
+  // The same size as what's committed: git has to read it (through the filter) to tell it changed.
+  writeFileSync(join(wt.path, "a.txt"), "the agent's chaNge\n");
+
+  // It works: plain git there runs all three.
+  const plain = (...args: string[]) => execFileSync("git", args, { cwd: wt.path, stdio: ["ignore", "pipe", "pipe"] });
+  plain("status", "--porcelain");
+  plain("diff", `${wt.base}..HEAD`);
+  plain("diff", "--no-ext-diff", `${wt.base}..HEAD`);
+  for (const what of ["clean", "external", "textconv"]) assert.match(readFileSync(ran, "utf8"), new RegExp(`^${what}$`, "m"), `the planted ${what} is live for plain git`);
+  rmSync(ran);
+
+  // code-flow's git there is told the worktree's git folder; the Files panel finds it from the run.
+  const at = await worktreeGit(repo, wt.path);
+  assert.equal(at.gitDir, await realpath(original.replace(/^gitdir: */, "").trim()));
+  const runs = [{ repo, worktreeDir: join(repo, ".worktrees", "run1") }];
+  assert.deepEqual(await runWorktreeAt(runs, wt.path), at);
+  assert.equal(await runWorktreeAt(runs, repo), undefined, "your checkout isn't a run's worktree");
+  assert.equal(await resolveCommit(at), head, "the worktree's own HEAD, not the planted one");
+
+  // The Files panel.
+  const listing = await listTree(at);
+  assert.equal(listing.entries.find((e) => e.name === "a.txt")?.status, "M");
+  assert.equal(listing.entries.find((e) => e.name === ".gitattributes")?.status, "U");
+  assert.deepEqual((await searchFiles(at, "a.t")).map((e) => e.path).sort(), ["a.test.js", "a.txt"]);
+  // Status and diffs.
+  assert.equal(await isClean(at), false);
+  assert.equal(await uncommittedCount(at), 3); // a.txt, .gitattributes, x/
+  assert.match(await diffSince(at, wt.base), /^\+the agent's change$/m);
+  assert.match(await diffStat(at, wt.base), /a\.txt/);
+  assert.deepEqual((await changedFiles(at, wt.base)).sort(), ["a.test.js", "a.txt"]);
+  assert.equal(await hasConflictMarkers(at), false);
+  // The integrity checks.
+  assert.deepEqual(await inspectChanges(at, wt.base), []);
+  assert.ok(!existsSync(ran), `ran: ${existsSync(ran) ? readFileSync(ran, "utf8") : ""}`);
+
+  // What assertWorktree checked is what git then uses, whatever `.git` says by the time it runs.
+  writeFileSync(dotGit, original);
+  const checked = await assertWorktree(repo, wt);
+  writeFileSync(dotGit, "gitdir: ./x\n");
+  assert.equal(await resolveCommit(checked), head);
+  assert.equal((await git(["status", "--porcelain"], checked)).code, 0);
+  assert.ok(!existsSync(ran));
+  untouched();
+  rmSync(script, { force: true });
+});
+
+test("restoring a snapshot puts untracked files back as they were, not as a filter in your config would store them", async () => {
+  const { repo, wt } = await repoWithWorktree("codeflow-git-lfs-");
+  // Like Git LFS: your config stores some files as something else (here, in upper case).
+  sh(repo, "config", "filter.upper.clean", "tr a-z A-Z");
+  sh(repo, "config", "filter.upper.smudge", "cat");
+  writeFileSync(join(wt.path, ".gitattributes"), "*.dat filter=upper\n");
+  writeFileSync(join(wt.path, "notes.dat"), "lower case\n");
+  const snap = await snapshot(repo, wt.path);
+  writeFileSync(join(wt.path, "notes.dat"), "edited\n");
+  assert.deepEqual(await restoreSnapshot(repo, wt, snap), ["1 untracked file put back"]);
+  assert.equal(readFileSync(join(wt.path, "notes.dat"), "utf8"), "lower case\n");
+  assert.deepEqual(await changedSince(repo, wt, snap), [], "unchanged untracked files compare as unchanged");
 });

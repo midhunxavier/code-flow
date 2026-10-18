@@ -10,6 +10,8 @@ import {
   gitError,
   withRepoLock,
   worktreeRoot,
+  type Checkout,
+  type GitCwd,
   type GitFailure,
   type GitResult,
 } from "./git.js";
@@ -131,33 +133,34 @@ export async function mergeInto(repo: string, branch: string, into: string, mess
 async function mergeInCheckout(repo: string, checkout: string, branch: string, into: string, message: string): Promise<MergeOutcome> {
   if (!existsSync(checkout)) throw new Error(`"${into}" is checked out at ${checkout}, which no longer exists`);
   // `into` can be a run's own branch, checked out in its worktree (catching a result up with its
-  // pull request's base), where an agent may have broken `.git`.
-  await assertWorktree(repo, { path: checkout, branch: into });
+  // pull request's base), where an agent may have broken `.git`. All the git below uses the git
+  // folder checked here.
+  const at = await assertWorktree(repo, { path: checkout, branch: into });
   // Changes to tracked files, staged or not. Untracked files only matter when the merge would
   // overwrite them, and git refuses that itself (told apart below).
-  const status = await git(["status", "--porcelain", "--untracked-files=no"], checkout);
+  const status = await git(["status", "--porcelain", "--untracked-files=no"], at);
   if (status.code !== 0) throw new Error(`Couldn't read the state of ${checkout}: ${gitError(["status"], status)}`);
   if (status.stdout.trim()) {
     throw new Error(`"${into}" is checked out at ${checkout} and has uncommitted changes. Commit or stash them, then merge again.`);
   }
-  if (await midMerge(checkout)) throw new Error(`${checkout} is in the middle of another merge. Finish it, or run \`git merge --abort\` there, then merge again.`);
+  if (await midMerge(at)) throw new Error(`${checkout} is in the middle of another merge. Finish it, or run \`git merge --abort\` there, then merge again.`);
   // With the index locked, git still starts the merge (and calls it a conflict) but can't undo
   // it either: don't start.
-  const lockPath = (await git(["rev-parse", "--git-path", "index.lock"], checkout)).stdout.trim();
+  const lockPath = (await git(["rev-parse", "--git-path", "index.lock"], at)).stdout.trim();
   const lock = lockPath && resolve(checkout, lockPath);
   if (lock && existsSync(lock)) throw new Error(`Couldn't merge into ${into}: ${describeGitFailure("locked")} (${lock})`);
 
   // Your hooks run on a merge into your checkout, as on your own merges; not in code-flow's worktrees.
-  const res = await git(["merge", "--no-ff", "-m", message, branch], checkout, { hooks: !isInside(worktreeRoot(repo), checkout) });
-  if (res.code === 0) return { ok: true, commit: (await gitOrThrow(["rev-parse", "HEAD"], checkout)).trim(), method: "checkout" };
+  const res = await git(["merge", "--no-ff", "-m", message, branch], at, { hooks: !isInside(worktreeRoot(repo), checkout) });
+  if (res.code === 0) return { ok: true, commit: (await gitOrThrow(["rev-parse", "HEAD"], at)).trim(), method: "checkout" };
   let kind = mergeFailure(res);
-  const conflicts = kind === "conflict" ? (await git(["diff", "--name-only", "--diff-filter=U"], checkout)).stdout.trim().split("\n").filter(Boolean) : [];
+  const conflicts = kind === "conflict" ? (await git(["diff", "--name-only", "--no-ext-diff", "--diff-filter=U"], at)).stdout.trim().split("\n").filter(Boolean) : [];
   // "Automatic merge failed" with nothing unmerged wasn't a conflict.
   if (kind === "conflict" && !conflicts.length) kind = "other";
   // A conflict, a failed hook or a missing identity can leave the merge half done: undo it, and
   // say so when that fails, rather than leave your checkout mid-merge without a word.
-  if (await midMerge(checkout)) {
-    const abort = await git(["merge", "--abort"], checkout);
+  if (await midMerge(at)) {
+    const abort = await git(["merge", "--abort"], at);
     if (abort.code !== 0) {
       throw new Error(`Merging into ${into} failed (${describeGitFailure(kind)}), and undoing it failed too: ${gitError(["merge", "--abort"], abort)}. Run \`git merge --abort\` in ${checkout}.`);
     }
@@ -198,7 +201,7 @@ const isInside = (dir: string, path: string) => {
 };
 
 /** True while a merge in `checkout` is started but not committed. */
-async function midMerge(checkout: string): Promise<boolean> {
+async function midMerge(checkout: Checkout): Promise<boolean> {
   return (await git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], checkout)).code === 0;
 }
 
@@ -359,7 +362,7 @@ function shortError(res: GitResult): string {
   return kind === "other" ? last.replace(/^(fatal|error):\s*/, "") || "git failed" : describeGitFailure(kind);
 }
 
-async function gitOrThrow(args: string[], cwd: string): Promise<string> {
+async function gitOrThrow(args: string[], cwd: GitCwd): Promise<string> {
   const res = await git(args, cwd);
   if (res.code !== 0) throw new Error(`git ${args[0]} failed: ${res.stderr.trim() || res.stdout.trim()}`);
   return res.stdout;

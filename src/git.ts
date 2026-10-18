@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { appendFile, copyFile, lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { appendFile, copyFile, lstat, mkdir, readdir, readFile, realpath, rm } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { envNumber, timerMs, WORKTREE_DIR } from "./config.js";
 import { childEnv } from "./env.js";
 
@@ -43,19 +43,39 @@ function gitEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /**
+ * A checkout and the git folder code-flow found for it from your repository's side (see
+ * worktreeGit). git run with one gets both (GIT_DIR, GIT_WORK_TREE), so it never reads the
+ * checkout's own `.git`: an agent can rewrite that file, and the git folder it then names could
+ * hold a config whose filter, textconv or external diff code-flow would run outside the agent's
+ * sandbox, even for a `git status`.
+ */
+export interface Checkout {
+  /** Its folder (real path). */
+  readonly path: string;
+  readonly gitDir: string;
+}
+
+/** Where git runs: a folder, whose repository git finds itself (never above it), or a Checkout. */
+export type GitCwd = string | Checkout;
+
+const folderOf = (cwd: GitCwd) => (typeof cwd === "string" ? cwd : cwd.path);
+
+/**
  * The arguments and environment for code-flow's own git in `cwd`:
  * - git looks for the repository in `cwd` and nowhere above it (GIT_CEILING_DIRECTORIES). A
  *   worktree lives inside your checkout, and once an agent deletes its `.git`, git run there
  *   would find your checkout instead: a `reset --hard` meant for the worktree would reset yours.
+ *   In a Checkout git doesn't look at all: it's told the git folder.
  * - no fsmonitor and no hooks, whatever a config file says. An agent can point a worktree's
  *   `.git` at a git folder of its own making, whose config would otherwise have code-flow run
  *   the agent's commands outside its sandbox. Your hooks still run where you'd expect them to:
  *   a merge into your checkout and a push (Git LFS uploads its files in pre-push).
  */
-function gitCommand(args: string[], cwd: string, opts: GitOptions = {}): { args: string[]; env: NodeJS.ProcessEnv } {
+function gitCommand(args: string[], cwd: GitCwd, opts: GitOptions = {}): { args: string[]; env: NodeJS.ProcessEnv } {
   const own = ["-c", "core.fsmonitor=false", ...(opts.hooks ? [] : ["-c", "core.hooksPath=/dev/null"])];
-  const ceiling = opts.discover ? {} : { GIT_CEILING_DIRECTORIES: dirname(realPathSync(cwd)) };
-  return { args: [...own, ...args], env: gitEnv({ ...ceiling, ...opts.env }) };
+  const ceiling = opts.discover ? {} : { GIT_CEILING_DIRECTORIES: dirname(realPathSync(folderOf(cwd))) };
+  const pinned = typeof cwd === "string" ? {} : { GIT_DIR: cwd.gitDir, GIT_WORK_TREE: cwd.path };
+  return { args: [...own, ...args], env: gitEnv({ ...ceiling, ...pinned, ...opts.env }) };
 }
 
 function realPathSync(path: string): string {
@@ -73,12 +93,12 @@ const realPath = (path: string) => realpath(path).catch(() => resolve(path));
  * fetch or a stalled remote can't hang a run) and in output (a huge diff fails cleanly instead
  * of ending up in an error message).
  */
-export function git(args: string[], cwd: string, opts: GitOptions = {}): Promise<GitResult> {
+export function git(args: string[], cwd: GitCwd, opts: GitOptions = {}): Promise<GitResult> {
   const timeoutMs = opts.timeoutMs ?? GIT_TIMEOUT_MS;
   return new Promise((resolve) => {
     const command = gitCommand(args, cwd, opts);
     // Its own process group, so a timeout also stops the hooks (and their children) git started.
-    const child = spawn("git", command.args, { cwd, env: command.env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("git", command.args, { cwd: folderOf(cwd), env: command.env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let outBytes = 0;
@@ -157,7 +177,7 @@ export function gitError(args: string[], res: GitResult): string {
   return `git ${args.join(" ").slice(0, 200)} failed: ${text}`;
 }
 
-async function gitOk(args: string[], cwd: string, opts?: GitOptions): Promise<string> {
+async function gitOk(args: string[], cwd: GitCwd, opts?: GitOptions): Promise<string> {
   const res = await git(args, cwd, opts);
   if (res.code !== 0) throw new Error(gitError(args, res));
   return res.stdout.trim();
@@ -258,7 +278,7 @@ export async function repoRoot(path: string): Promise<string> {
   return gitOk(["rev-parse", "--show-toplevel"], path, { discover: true });
 }
 
-export async function resolveCommit(repo: string, ref = "HEAD"): Promise<string> {
+export async function resolveCommit(repo: GitCwd, ref = "HEAD"): Promise<string> {
   return gitOk(["rev-parse", "--verify", `${ref}^{commit}`], repo);
 }
 
@@ -277,57 +297,112 @@ export type CheckoutRef = { path: string; branch?: string };
 export class WorktreeMismatchError extends Error {}
 
 /**
- * Before code-flow changes a checkout of `repo` (resets it, cleans it, puts a stash back, commits,
- * merges, removes it): make sure git will act on that checkout and nothing else. An agent can
- * delete or rewrite the worktree's `.git` (it's a file in the worktree), and git would then act
- * on your checkout above it, or on a repository of the agent's making. Throws, saying what's
- * wrong, instead. What it checks:
- * - `.git` is the file git wrote, pointing at the worktree's folder in `repo`'s git folder, which
- *   points back at it (an agent can't write there). For your main checkout, `.git` is `repo`'s
- *   git folder itself.
- * - git sees the checkout as its own top folder.
- * - with `wt.branch`, HEAD is that branch: a reset or commit on another one would change it.
+ * The checkout of `repo` at `path`, for code-flow's git (see Checkout). Its git folder is found
+ * from `repo`'s side, where agents can't write: the folder in `repo`'s git folder whose `gitdir`
+ * file names `path`'s `.git` (`repo`'s git folder itself for its main checkout). `path`'s own
+ * `.git` is at most a hint at which one to try first. Throws a WorktreeMismatchError when `repo`
+ * has no checkout at `path`.
+ *
+ * This doesn't check `.git` itself: reads work in a worktree whose `.git` an agent broke. Before
+ * changing a checkout, use assertWorktree.
  */
-export async function assertWorktree(repo: string, wt: CheckoutRef): Promise<void> {
-  const problem = await worktreeProblem(repo, wt);
-  if (problem) {
-    throw new WorktreeMismatchError(
-      `${wt.path} isn't the checkout code-flow expects (${problem}), so code-flow didn't run git there: it could have changed another checkout or branch, such as yours. Nothing was changed.`,
-    );
+export async function worktreeGit(repo: string, path: string): Promise<Checkout> {
+  const found = await findGitDir(repo, path);
+  if (!found.gitDir) {
+    throw new WorktreeMismatchError(`${path} isn't a checkout of ${repo} (no git folder of ${repo}'s names it), so code-flow didn't run git there.`);
   }
+  return { path: found.path, gitDir: found.gitDir };
 }
 
-async function worktreeProblem(repo: string, wt: CheckoutRef): Promise<string | undefined> {
-  const common = await realPath(resolve(repo, await gitOk(["rev-parse", "--git-common-dir"], repo)));
-  const path = await realPath(wt.path);
-  const dotGit = join(path, ".git");
+/** `repo`'s git folder (shared by its worktrees), its real path. */
+async function commonDir(repo: string): Promise<string> {
+  return realPath(resolve(repo, await gitOk(["rev-parse", "--git-common-dir"], repo)));
+}
+
+/** The path, through any links on the way but not a link at the end (an agent may have made `.git` one). */
+const realPathOfEntry = async (path: string) => join(await realPath(dirname(path)), basename(path));
+
+/** The git folder a `.git` file names (its real path); undefined when it isn't a small regular file naming one. */
+async function namedGitDir(dotGit: string): Promise<string | undefined> {
+  const info = await lstat(dotGit).catch(() => undefined);
+  if (!info?.isFile() || info.size > 4096) return undefined;
+  const named = /^gitdir: *(.+?)\s*$/m.exec(await readFile(dotGit, "utf8").catch(() => ""))?.[1];
+  return named ? realPath(resolve(dirname(dotGit), named)) : undefined;
+}
+
+/** A worktree's git folder in `repo`'s names `dotGit` as its checkout's `.git` (git's back-link). */
+async function namesCheckout(gitDir: string, dotGit: string): Promise<boolean> {
+  const back = (await readFile(join(gitDir, "gitdir"), "utf8").catch(() => "")).trim();
+  return !!back && (await realPathOfEntry(resolve(gitDir, back))) === dotGit;
+}
+
+async function findGitDir(repo: string, path: string): Promise<{ path: string; common: string; gitDir?: string }> {
+  const common = await commonDir(repo);
+  const real = await realPath(path);
+  const dotGit = join(real, ".git");
+  const worktrees = join(common, "worktrees");
+  const hint = await namedGitDir(dotGit);
+  if (hint && dirname(hint) === worktrees && (await namesCheckout(hint, dotGit))) return { path: real, common, gitDir: hint };
+  for (const entry of await readdir(worktrees).catch(() => [])) {
+    if (await namesCheckout(join(worktrees, entry), dotGit)) return { path: real, common, gitDir: join(worktrees, entry) };
+  }
+  const main = await mainWorktree(repo);
+  return { path: real, common, gitDir: main && (await realPath(main)) === real ? common : undefined };
+}
+
+/**
+ * Before code-flow changes a checkout of `repo` (resets it, cleans it, puts a stash back, commits,
+ * merges, removes it), or starts an agent there: make sure git acts on that checkout and nothing
+ * else. Returns it (see worktreeGit), for the git that does the changing: that git uses the git
+ * folder checked here, whatever `.git` says by the time it runs.
+ *
+ * An agent can delete or rewrite the worktree's `.git` (it's a file in the worktree), and git
+ * would then act on your checkout above it, or on a repository of the agent's making: the
+ * agent's own git, and code-flow's before it was given the git folder. Throws, saying what's
+ * wrong, instead. What it checks:
+ * - `.git` is the file git wrote, naming the worktree's folder in `repo`'s git folder, which
+ *   names it back (an agent can't write there). For your main checkout, `.git` is `repo`'s git
+ *   folder itself.
+ * - with `wt.branch`, HEAD is that branch: a reset or commit on another one would change it.
+ */
+export async function assertWorktree(repo: string, wt: CheckoutRef): Promise<Checkout> {
+  const found = await findGitDir(repo, wt.path);
+  const problem = await dotGitProblem(repo, found);
+  const checkout = found.gitDir && !problem ? { path: found.path, gitDir: found.gitDir } : undefined;
+  const branchProblem = checkout && wt.branch ? await headProblem(checkout, wt.branch) : undefined;
+  if (!checkout || branchProblem) {
+    throw new WorktreeMismatchError(
+      `${wt.path} isn't the checkout code-flow expects (${problem ?? branchProblem ?? `no git folder of ${repo}'s names it`}), so code-flow didn't run git there: it could have changed another checkout or branch, such as yours. Nothing was changed.`,
+    );
+  }
+  return checkout;
+}
+
+/** What's wrong with a checkout's `.git`, which should name `found.gitDir`. */
+async function dotGitProblem(repo: string, found: { path: string; common: string; gitDir?: string }): Promise<string | undefined> {
+  const dotGit = join(found.path, ".git");
   const info = await lstat(dotGit).catch(() => undefined);
   if (!info) return "its .git is missing";
-  let gitDir: string;
-  if (info.isDirectory()) gitDir = await realPath(dotGit);
+  let named: string;
+  if (info.isDirectory()) named = await realPath(dotGit);
   else if (info.isFile()) {
-    const named = /^gitdir: *(.+?)\s*$/m.exec(await readFile(dotGit, "utf8").catch(() => ""))?.[1];
-    if (!named) return "its .git doesn't name a git folder";
-    gitDir = await realPath(resolve(path, named));
+    const gitDir = await namedGitDir(dotGit);
+    if (!gitDir) return "its .git doesn't name a git folder";
+    named = gitDir;
   } else return `its .git is a ${info.isSymbolicLink() ? "symbolic link" : "special file"}`;
+  if (named === found.gitDir) return undefined;
 
-  if (gitDir === common) {
-    const main = await mainWorktree(repo);
-    if (!main || (await realPath(main)) !== path) return `its .git points to the git folder of ${main ?? repo} itself`;
-  } else if (dirname(gitDir) === join(common, "worktrees")) {
-    const back = (await readFile(join(gitDir, "gitdir"), "utf8").catch(() => "")).trim();
-    if (!back) return `its .git points to ${gitDir}, which isn't there any more`;
-    if ((await realPath(resolve(gitDir, back))) !== dotGit) return `its .git points to the git folder of another worktree (${gitDir})`;
-  } else return `its .git points to ${gitDir}, which isn't one of ${repo}'s worktrees`;
-
-  const top = await git(["rev-parse", "--show-toplevel"], path);
-  if (top.code !== 0) return `git can't read it: ${gitError(["rev-parse"], top)}`;
-  if ((await realPath(top.stdout.trim())) !== path) return `git sees ${top.stdout.trim()} as its top folder`;
-  if (wt.branch) {
-    const head = (await git(["symbolic-ref", "-q", "HEAD"], path)).stdout.trim();
-    if (head !== `refs/heads/${wt.branch}`) return head ? `it's on ${head.replace(/^refs\/heads\//, "")}, not ${wt.branch}` : `its HEAD is detached, not on ${wt.branch}`;
+  if (named === found.common) return `its .git points to the git folder of ${(await mainWorktree(repo)) ?? repo} itself`;
+  if (dirname(named) === join(found.common, "worktrees")) {
+    return existsSync(join(named, "gitdir")) ? `its .git points to the git folder of another worktree (${named})` : `its .git points to ${named}, which isn't there any more`;
   }
-  return undefined;
+  return `its .git points to ${named}, which isn't one of ${repo}'s worktrees`;
+}
+
+async function headProblem(checkout: Checkout, branch: string): Promise<string | undefined> {
+  const head = (await git(["symbolic-ref", "-q", "HEAD"], checkout)).stdout.trim();
+  if (head === `refs/heads/${branch}`) return undefined;
+  return head ? `it's on ${head.replace(/^refs\/heads\//, "")}, not ${branch}` : `its HEAD is detached, not on ${branch}`;
 }
 
 /** `repo`'s main checkout (the one its git folder belongs to); undefined for a bare repository. */
@@ -340,6 +415,13 @@ async function mainWorktree(repo: string): Promise<string | undefined> {
 
 // Agents commit as this identity so their work is clearly attributed in history.
 const IDENTITY = ["-c", "user.name=code-flow", "-c", "user.email=code-flow@localhost"];
+
+/**
+ * code-flow's diffs are git's own: never an external diff program or a textconv filter, which a
+ * config can name (and a `.gitattributes` in the worktree pick) to run commands, and whose
+ * output code-flow couldn't read as a diff anyway.
+ */
+const RAW_DIFF = ["--no-ext-diff", "--no-textconv"];
 
 /** `<repo>/.worktrees` by default; see WORKTREE_DIR. */
 export function worktreeRoot(repo: string): string {
@@ -370,20 +452,20 @@ export async function ensureCodeflowExcludes(repo: string): Promise<void> {
 }
 
 /** Run git with data on stdin (used for `check-ignore --stdin`). */
-export function gitWithInput(args: string[], cwd: string, input: string): Promise<GitResult> {
+export function gitWithInput(args: string[], cwd: GitCwd, input: string): Promise<GitResult> {
   return git(args, cwd, { input });
 }
 
 /** "blob" or "tree" if `path` exists in commit `ref`, else null. */
-export async function objectTypeAt(repo: string, ref: string, path: string): Promise<"blob" | "tree" | null> {
+export async function objectTypeAt(repo: GitCwd, ref: string, path: string): Promise<"blob" | "tree" | null> {
   const res = await git(["cat-file", "-t", `${ref}:${path}`], repo);
   const type = res.stdout.trim();
   return res.code === 0 && (type === "blob" || type === "tree") ? type : null;
 }
 
 /** True when the working-copy file differs from its version in commit `ref`. */
-export async function workingCopyDiffers(repo: string, ref: string, path: string): Promise<boolean> {
-  return (await git(["diff", "--quiet", ref, "--", path], repo)).code !== 0;
+export async function workingCopyDiffers(repo: GitCwd, ref: string, path: string): Promise<boolean> {
+  return (await git(["diff", "--quiet", ...RAW_DIFF, ref, "--", path], repo)).code !== 0;
 }
 
 /** Cloning submodules can take far longer than other git calls. */
@@ -508,25 +590,25 @@ export async function validateBranchPrefix(repo: string, prefix: string): Promis
 
 /** Stage and commit everything in a worktree of `repo`. Returns the new commit, or null if clean. */
 export async function commitAll(repo: string, wt: Worktree, message: string): Promise<string | null> {
-  await assertWorktree(repo, wt);
-  await gitOk(["add", "-A"], wt.path);
-  const staged = await git(["diff", "--cached", "--quiet"], wt.path);
-  const merging = (await git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], wt.path)).code === 0;
-  if (staged.code === 0 && !merging) return null;
-  await gitOk([...IDENTITY, "commit", "--no-verify", "-m", message], wt.path);
-  return resolveCommit(wt.path);
+  const at = await assertWorktree(repo, wt);
+  await gitOk(["add", "-A"], at);
+  const staged = await git(["diff", "--cached", "--quiet", ...RAW_DIFF], at);
+  if (staged.code === 0 && !(await isMerging(at))) return null;
+  await gitOk([...IDENTITY, "commit", "--no-verify", "-m", message], at);
+  return resolveCommit(at);
 }
 
-export async function diffSince(wt: Worktree, base = wt.base): Promise<string> {
-  return gitOk(["diff", "--no-color", `${base}..HEAD`], wt.path);
+/** The change on a checkout's branch since `base`, as a patch. */
+export async function diffSince(at: GitCwd, base: string): Promise<string> {
+  return gitOk(["diff", "--no-color", ...RAW_DIFF, `${base}..HEAD`], at);
 }
 
-export async function diffStat(wt: Worktree, base = wt.base): Promise<string> {
-  return gitOk(["diff", "--stat", "--no-color", `${base}..HEAD`], wt.path);
+export async function diffStat(at: GitCwd, base: string): Promise<string> {
+  return gitOk(["diff", "--stat", "--no-color", ...RAW_DIFF, `${base}..HEAD`], at);
 }
 
-export async function changedFiles(cwd: string, from: string, to = "HEAD"): Promise<string[]> {
-  const out = await gitOk(["diff", "--name-only", `${from}..${to}`], cwd);
+export async function changedFiles(cwd: GitCwd, from: string, to = "HEAD"): Promise<string[]> {
+  const out = await gitOk(["diff", "--name-only", ...RAW_DIFF, `${from}..${to}`], cwd);
   return out ? out.split("\n") : [];
 }
 
@@ -537,10 +619,10 @@ export interface MergeResult {
 }
 
 export async function mergeBranch(repo: string, wt: Worktree, branch: string): Promise<MergeResult> {
-  await assertWorktree(repo, wt);
-  const res = await git([...IDENTITY, "merge", "--no-ff", "--no-edit", branch], wt.path);
+  const at = await assertWorktree(repo, wt);
+  const res = await git([...IDENTITY, "merge", "--no-ff", "--no-edit", branch], at);
   if (res.code === 0) return { ok: true, conflicts: [], output: res.stdout };
-  const conflicts = await git(["diff", "--name-only", "--diff-filter=U"], wt.path);
+  const conflicts = await git(["diff", "--name-only", "--diff-filter=U", ...RAW_DIFF], at);
   return {
     ok: false,
     conflicts: conflicts.stdout.trim().split("\n").filter(Boolean),
@@ -548,20 +630,20 @@ export async function mergeBranch(repo: string, wt: Worktree, branch: string): P
   };
 }
 
-export async function isClean(cwd: string): Promise<boolean> {
+export async function isClean(cwd: GitCwd): Promise<boolean> {
   return (await gitOk(["status", "--porcelain"], cwd)) === "";
 }
 
-export async function uncommittedCount(cwd: string): Promise<number> {
+export async function uncommittedCount(cwd: GitCwd): Promise<number> {
   const out = await gitOk(["status", "--porcelain"], cwd);
   return out ? out.split("\n").length : 0;
 }
 
 /** Move a disposable worktree of `repo` to `to`, dropping its changes and untracked (non-ignored) files. */
 export async function discardChanges(repo: string, wt: CheckoutRef, to = "HEAD"): Promise<void> {
-  await assertWorktree(repo, wt);
-  await gitOk(["reset", "--hard", "-q", to], wt.path);
-  await gitOk(["clean", "-fdq"], wt.path);
+  const at = await assertWorktree(repo, wt);
+  await gitOk(["reset", "--hard", "-q", to], at);
+  await gitOk(["clean", "-fdq"], at);
 }
 
 /** A worktree's state before a read-only step: its commit, uncommitted changes, untracked files. */
@@ -581,28 +663,34 @@ export interface Snapshot {
 /** Untracked files bigger than this, or past this many, aren't saved in a snapshot. */
 const SNAPSHOT_FILE_LIMIT = { bytes: 8 * 1024 * 1024, files: 2_000 };
 
+/**
+ * Untracked files' contents as blobs, byte for byte: no clean filter (LFS's would save a
+ * pointer, and an agent's `.gitattributes` would pick which ones run).
+ */
+const HASH_AS_IS = ["hash-object", "--no-filters", "--stdin-paths"];
+
 /** Save untracked files' contents as blobs; returns path → blob for those it saved. */
-async function saveUntracked(cwd: string, paths: string[]): Promise<Record<string, string>> {
+async function saveUntracked(at: Checkout, paths: string[]): Promise<Record<string, string>> {
   const files: string[] = [];
   for (const path of paths) {
     if (files.length >= SNAPSHOT_FILE_LIMIT.files) break;
     if (path.includes("\n")) continue; // can't go through --stdin-paths
-    const info = await lstat(join(cwd, path)).catch(() => undefined);
+    const info = await lstat(join(at.path, path)).catch(() => undefined);
     if (info?.isFile() && info.size <= SNAPSHOT_FILE_LIMIT.bytes) files.push(path);
   }
   if (!files.length) return {};
-  const ids = (await gitOk(["hash-object", "-w", "--stdin-paths"], cwd, { input: `${files.join("\n")}\n` })).split("\n");
+  const ids = (await gitOk([...HASH_AS_IS, "-w"], at, { input: `${files.join("\n")}\n` })).split("\n");
   return Object.fromEntries(files.map((f, i) => [f, ids[i]!]).filter(([, id]) => /^[0-9a-f]{40,64}$/.test(id!)));
 }
 
-/** Write blob `id` to `path` in `cwd`, byte for byte (binary files too). */
-function writeBlob(cwd: string, id: string, path: string): Promise<void> {
+/** Write blob `id` to `path` in a checkout, byte for byte (binary files too). */
+function writeBlob(at: Checkout, id: string, path: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const target = join(cwd, path);
+    const target = join(at.path, path);
     mkdirSync(dirname(target), { recursive: true });
     const fd = openSync(target, "w");
-    const command = gitCommand(["cat-file", "blob", id], cwd);
-    const child = spawn("git", command.args, { cwd, env: command.env, stdio: ["ignore", fd, "pipe"] });
+    const command = gitCommand(["cat-file", "blob", id], at);
+    const child = spawn("git", command.args, { cwd: at.path, env: command.env, stdio: ["ignore", fd, "pipe"] });
     let stderr = "";
     child.stderr?.on("data", (c: Buffer) => (stderr += c.toString()));
     child.on("error", (err) => {
@@ -622,8 +710,8 @@ function writeBlob(cwd: string, id: string, path: string): Promise<void> {
  * takes `index.lock` and fails (silently, exit 1) when the lock is held. On a copy, read-only
  * steps side by side in one worktree, an agent's own git, or yours never collide with it.
  */
-async function stashCreate(cwd: string): Promise<string> {
-  const index = resolve(cwd, await gitOk(["rev-parse", "--git-path", "index"], cwd));
+async function stashCreate(at: Checkout): Promise<string> {
+  const index = resolve(at.path, await gitOk(["rev-parse", "--git-path", "index"], at));
   const copy = `${index}.codeflow-${process.pid}-${randomBytes(4).toString("hex")}`;
   const copied = await copyFile(index, copy).then(() => true, () => false);
   const env = copied ? { env: { GIT_INDEX_FILE: copy } } : undefined;
@@ -631,29 +719,29 @@ async function stashCreate(cwd: string): Promise<string> {
     // Refreshed first: a file touched but unchanged makes `stash create` see a change, then none
     // once it refreshes, and exit 1 with nothing printed. (On the real index, the first call's
     // refresh hid that; a copy is stale every time.)
-    if (copied) await git(["update-index", "-q", "--refresh"], cwd, env);
-    return (await gitOk(["stash", "create"], cwd, env)).trim();
+    if (copied) await git(["update-index", "-q", "--refresh"], at, env);
+    return (await gitOk(["stash", "create"], at, env)).trim();
   } finally {
     if (copied) await Promise.all([rm(copy, { force: true }), rm(`${copy}.lock`, { force: true })]);
   }
 }
 
 /** gitOk, tried again for a few seconds while another git process holds a lock (an agent's, yours). */
-async function gitOkWhenFree(args: string[], cwd: string): Promise<string> {
+async function gitOkWhenFree(args: string[], at: Checkout): Promise<string> {
   for (let attempt = 0; ; attempt++) {
-    const res = await git(args, cwd);
+    const res = await git(args, at);
     if (res.code === 0) return res.stdout.trim();
     if (attempt >= 5 || classifyGitFailure(res) !== "locked") throw new Error(gitError(args, res));
     await new Promise((r) => setTimeout(r, 100 * 2 ** attempt));
   }
 }
 
-async function uncommittedTree(cwd: string): Promise<string> {
-  const sha = await stashCreate(cwd);
-  return sha ? (await gitOk(["rev-parse", `${sha}^{tree}`], cwd)).trim() : "";
+async function uncommittedTree(at: Checkout): Promise<string> {
+  const sha = await stashCreate(at);
+  return sha ? (await gitOk(["rev-parse", `${sha}^{tree}`], at)).trim() : "";
 }
 
-const untrackedFiles = async (cwd: string) => (await gitOk(["ls-files", "--others", "--exclude-standard", "-z"], cwd)).split("\0").filter(Boolean);
+const untrackedFiles = async (at: Checkout) => (await gitOk(["ls-files", "--others", "--exclude-standard", "-z"], at)).split("\0").filter(Boolean);
 
 /**
  * The state of the worktree of `repo` at `cwd` (see Snapshot). Refused when its `.git` is broken
@@ -661,13 +749,13 @@ const untrackedFiles = async (cwd: string) => (await gitOk(["ls-files", "--other
  */
 export async function snapshot(repo: string, cwd: string): Promise<Snapshot> {
   return withWorktreeLock(cwd, async () => {
-    await assertWorktree(repo, { path: cwd });
-    const untracked = await untrackedFiles(cwd);
+    const at = await assertWorktree(repo, { path: cwd });
+    const untracked = await untrackedFiles(at);
     return {
-      head: await resolveCommit(cwd),
-      changes: await stashCreate(cwd),
+      head: await resolveCommit(at),
+      changes: await stashCreate(at),
       untracked,
-      untrackedBlobs: await saveUntracked(cwd, untracked),
+      untrackedBlobs: await saveUntracked(at, untracked),
     };
   });
 }
@@ -695,37 +783,37 @@ function compareSnapshot(repo: string, wt: CheckoutRef, snap: Snapshot, undo: bo
   const cwd = wt.path;
   return withWorktreeLock(cwd, async () => {
     // Only undoing changes the branch, so only then must it be the worktree's own.
-    await assertWorktree(repo, undo ? wt : { path: cwd });
+    const at = await assertWorktree(repo, undo ? wt : { path: cwd });
     const found: string[] = [];
-    const head = await resolveCommit(cwd);
-    const changesNow = await uncommittedTree(cwd);
-    const changesBefore = snap.changes ? (await gitOk(["rev-parse", `${snap.changes}^{tree}`], cwd)).trim() : "";
+    const head = await resolveCommit(at);
+    const changesNow = await uncommittedTree(at);
+    const changesBefore = snap.changes ? (await gitOk(["rev-parse", `${snap.changes}^{tree}`], at)).trim() : "";
     if (head !== snap.head) found.push("commits");
     if (head !== snap.head || changesNow !== changesBefore) {
       if (head === snap.head) found.push("edits");
       if (undo) {
-        await gitOkWhenFree(["reset", "--hard", "-q", snap.head], cwd);
-        if (snap.changes) await gitOkWhenFree(["stash", "apply", "-q", snap.changes], cwd);
+        await gitOkWhenFree(["reset", "--hard", "-q", snap.head], at);
+        if (snap.changes) await gitOkWhenFree(["stash", "apply", "-q", snap.changes], at);
       }
     }
     const before = new Set(snap.untracked);
-    const added = (await untrackedFiles(cwd)).filter((f) => !before.has(f));
+    const added = (await untrackedFiles(at)).filter((f) => !before.has(f));
     if (added.length) {
       found.push(`${added.length} new file${added.length === 1 ? "" : "s"}`);
-      if (undo) for (let i = 0; i < added.length; i += 100) await gitOkWhenFree(["clean", "-fq", "--", ...added.slice(i, i + 100)], cwd);
+      if (undo) for (let i = 0; i < added.length; i += 100) await gitOkWhenFree(["clean", "-fq", "--", ...added.slice(i, i + 100)], at);
     }
     // Untracked files that were there before: edited or deleted since, they get their contents back.
     const saved = Object.entries(snap.untrackedBlobs ?? {});
     if (saved.length) {
-      const present = (await Promise.all(saved.map(async ([path]) => ((await lstat(join(cwd, path)).catch(() => undefined))?.isFile() ? path : undefined)))).filter(
+      const present = (await Promise.all(saved.map(async ([path]) => ((await lstat(join(at.path, path)).catch(() => undefined))?.isFile() ? path : undefined)))).filter(
         (p): p is string => !!p,
       );
-      const now = present.length ? (await gitOk(["hash-object", "--stdin-paths"], cwd, { input: `${present.join("\n")}\n` })).split("\n") : [];
+      const now = present.length ? (await gitOk(HASH_AS_IS, at, { input: `${present.join("\n")}\n` })).split("\n") : [];
       const current = new Map(present.map((p, i) => [p, now[i]]));
       const changed = saved.filter(([path, id]) => current.get(path) !== id);
       for (const [path, id] of undo ? changed : []) {
-        await rm(join(cwd, path), { recursive: true, force: true });
-        await writeBlob(cwd, id, path);
+        await rm(join(at.path, path), { recursive: true, force: true });
+        await writeBlob(at, id, path);
       }
       if (changed.length) found.push(`${changed.length} untracked file${changed.length === 1 ? "" : "s"} ${undo ? "put back" : "changed"}`);
     }
@@ -734,7 +822,7 @@ function compareSnapshot(repo: string, wt: CheckoutRef, snap: Snapshot, undo: bo
 }
 
 /** A merge is in progress (conflicts being resolved): starting over would lose it. */
-export async function isMerging(cwd: string): Promise<boolean> {
+export async function isMerging(cwd: GitCwd): Promise<boolean> {
   return (await git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd)).code === 0;
 }
 
@@ -743,17 +831,17 @@ export async function branchExists(repo: string, branch: string): Promise<boolea
 }
 
 /** True when commit `a` is `b` or one of its ancestors. */
-export async function isAncestor(cwd: string, a: string, b = "HEAD"): Promise<boolean> {
+export async function isAncestor(cwd: GitCwd, a: string, b = "HEAD"): Promise<boolean> {
   return (await git(["merge-base", "--is-ancestor", a, b], cwd)).code === 0;
 }
 
 /** Put `paths` in a worktree of `repo` back to how they are in `ref` (deleting the ones `ref` doesn't have). */
 export async function restorePaths(repo: string, wt: CheckoutRef, ref: string, paths: string[]): Promise<void> {
-  const cwd = wt.path;
-  if (paths.length) await assertWorktree(repo, wt);
+  if (!paths.length) return;
+  const at = await assertWorktree(repo, wt);
   for (const path of paths) {
-    if (await objectTypeAt(cwd, ref, path)) await gitOk(["checkout", ref, "--", path], cwd);
-    else await git(["rm", "-q", "-f", "--ignore-unmatch", "--", path], cwd);
+    if (await objectTypeAt(at, ref, path)) await gitOk(["checkout", ref, "--", path], at);
+    else await git(["rm", "-q", "-f", "--ignore-unmatch", "--", path], at);
   }
 }
 
@@ -762,7 +850,7 @@ export async function validRef(repo: string, ref: string): Promise<boolean> {
   return !!ref && !ref.startsWith("-") && (await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repo)).code === 0;
 }
 
-export async function hasConflictMarkers(wt: Worktree): Promise<boolean> {
-  const res = await git(["diff", "--check"], wt.path);
+export async function hasConflictMarkers(at: GitCwd): Promise<boolean> {
+  const res = await git(["diff", "--check", ...RAW_DIFF], at);
   return /conflict marker/i.test(res.stdout + res.stderr);
 }
