@@ -14,6 +14,13 @@ scripts/check-node.mjs   stops npm start and npm run dev on a Node older than 20
 scripts/pty.py           the Terminal's pseudo-terminal (Python 3 standard library, no native npm module): runs your login shell in a pty, relays its bytes, takes resizes and reports the shell's pid, its terminal and the foreground on fd 3; when it ends, it hangs up everything in the shell's session
 src/server.ts            HTTP API + SSE on 127.0.0.1 (Host/Origin checked, session cookie or Bearer token)
 src/store.ts             run logs and the replay journal on disk, the one-server lock
+src/teams.ts             provider-independent team members, tasks, messages and context projections
+src/memory.ts            private/team/project memory, revisions, provenance and atomic snapshots
+src/team-memory.ts       run/project scope and Git applicability for memory retrieval and proposals
+src/team-mailbox.ts      validated atomic collaboration commands, requests and waits
+src/team-scheduler.ts    recorded completion batches with concurrent worker lifetimes
+src/team-tools.ts        expiring member capability service; stdio MCP client in team-tool-client.mjs
+src/team-evaluation.ts   immutable evaluations and evidence-gated rollout decisions
 src/projects.ts          projects: named groups of repos, and which project a new run goes in
 src/log.ts               code-flow's own log, ~/.codeflow/server.log (rotated at 5 MB)
 src/env.ts               the environment of everything code-flow starts: yours, minus its token, npm_* and its own node_modules/.bin
@@ -45,6 +52,8 @@ src/context.ts           validates and stages task context for agents
 - **AgentAdapter** (`src/adapters/types.ts`): `run({prompt, cwd, mode, resumeSessionId}, onEvent) → {ok, finalText, sessionId, errorKind, resetsAt}`. `sessionId` is only ever one the CLI confirmed in that turn, never a session that failed to resume. A failed turn says why in `errorKind` (`usage_limit`, `auth`, `session_not_found`, `cli_incompatible`, `stalled`, `transient`…), read from the CLI's own signals (`src/adapters/errors.ts`), and the engine retries, stops or starts a fresh session on that. Adapters convert each CLI's JSONL into `text | thinking | tool_call | tool_result | usage | status | error` events. An adapter whose turns take input while they run calls `onSteerable(steer)` once its turn can be steered. The engine then hands queued notes to `steer`. `src/adapters/codex-app-server.ts` turns app-server notifications into the events `codex exec --json` prints, so both Codex transports share one handler.
 - **TeamContext** gives patterns a few primitives. `ask()` runs one agent turn as a visible step, and `resume` continues that agent's own conversation. `worktree()`, `commit()`, `diff()` and `artifact()` handle git. `parallel()` runs branches side by side (race contestants, workers, debaters); when one throws, the others are stopped and waited for, so nothing keeps running after the run ends. Structured hand-offs (review verdicts, judge picks, subtask lists) use a fenced ```` ```json ```` block that `extractJson` parses.
 - Every event is appended to `~/.codeflow/runs/<run>.jsonl`. Worktrees live in `<repo>/.worktrees/<run-id>/` (see [Worktrees and branches](getting-started.md#worktrees-and-branches)).
+
+**Auto team** uses the same engine with validated plans and bounded event-driven scheduling (with saved-wave compatibility) (`src/patterns/auto-team-model.ts`, `auto-team.ts`). Stable member IDs separate identity from provider; turn metadata binds settings, session, task, usage and selected context. Questions yield a turn rather than holding a slot. Accepted plans and admission decisions replay from the journal; strict journal failures stop dependent execution. A stopped workflow resumes through completed waves and final verification before beginning another user-authorized allocation. Project memory selections journal references, not bodies; replay resolves only still-applicable exact revisions. See [Auto team](auto-team.md) for the public behavior and trust/retention boundaries.
 
 ### Adding a pattern
 
@@ -115,3 +124,9 @@ The GitHub tests cover untrusted issues (lockdown, fenced text, Docker or your c
 - Write run snapshots as deltas and compact old logs (today every state change appends a full snapshot).
 - Read PR line comments (review threads), not just conversation comments and review summaries.
 - Linear as a source, next to GitHub issues.
+
+## Dynamic team control and replay
+
+A live tool command and its receipt are fsynced together before acknowledgement. The scheduler records which command batch it consumes at each boundary, so replay cannot inject a future reply into an earlier task. Completion batches likewise record observed order before serial integration. One server owns the journal; no dispatch lease or outbox is needed. See the [implementation plan](dynamic-teams-implementation-plan.md) for the invariants.
+
+The scoped loopback bridge is separate from the user API and its bearer token. Official adapters receive a temporary stdio MCP configuration for supported turns. Memory tools inherit the active member, project, task and source provenance from the engine. Native spawning controls, sandbox support and nested usage limitations are exposed through the capability inventory. Supervisor shares decomposition/integration primitives while retaining its public ID and historical replay identities.

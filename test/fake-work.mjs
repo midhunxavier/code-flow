@@ -42,7 +42,39 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
   let answer = `${vendor} handled the request.`;
   const json = (obj) => `Done.\n\`\`\`json\n${JSON.stringify(obj)}\n\`\`\``;
 
-  if (prompt.includes('"subtasks"')) {
+  if (prompt.includes("AUTO_TEAM_PLAN")) {
+    const inventoryText = prompt.match(/## Inventory and constraints\n```json\n([\s\S]*?)\n```/);
+    const policy = inventoryText ? JSON.parse(inventoryText[1]) : { coordinator: vendor, pool: ["claude", "codex"], inventory: { providers: [] } };
+    const eligible = policy.inventory.providers.filter((p) => p.available && !p.blockedReason && (policy.pool.includes(p.id) || p.id === policy.coordinator));
+    const builder = eligible.find((p) => p.id === "claude")?.id ?? eligible[0]?.id ?? vendor;
+    const reviewer = eligible.find((p) => p.id !== builder)?.id ?? builder;
+    const makeMember = (id, role, provider) => { const p = eligible.find((p) => p.id === provider); const settings = p?.settingsByRole?.[role] ?? p; return { id, name: id, role, provider, model: settings?.model ?? "", effort: settings?.effort ?? "", reason: role === "worker" ? "Own a separate component" : role === "reviewer" ? "Independently verify the result" : "Investigate and coordinate" }; };
+    const investigation = prompt.includes("AUTO-INVESTIGATION");
+    const same = prompt.includes("AUTO-SAME-PROVIDER") || prompt.includes("AUTO-EVENT");
+    const tasks = [{ id: "alpha", title: "Alpha implementation", instructions: "Implement alpha " + (prompt.includes("AUTO-USER-QUESTION") ? "AUTO-USER-QUESTION" : prompt.includes("AUTO-QUESTION") ? "AUTO-QUESTION" : ""), owner: "builder", kind: investigation ? "investigation" : "implementation", dependsOn: [], requirements: ["goal"], acceptance: ["The requested behavior has evidence"], paths: ["*"] }];
+    if (same || prompt.includes("AUTO-DEPENDENCIES") || prompt.includes("AUTO-CONTRACT-CHANGE")) tasks.push({ id: "beta", title: "Beta dependent implementation", instructions: "Read alpha's artifact before implementing beta", owner: same ? "builder-two" : "builder", kind: "implementation", dependsOn: ["alpha"], requirements: ["goal"], acceptance: ["Dependent result uses alpha"], paths: ["*"] });
+    if (prompt.includes("AUTO-EVENT")) {
+      tasks[0].paths = [`${builder}-alpha.txt`];
+      tasks[1].owner = "builder"; tasks[1].paths = [`${builder}-beta.txt`];
+      tasks.push({ ...tasks[0], id: "slow", title: "Independent slow task", owner: "builder-two", paths: [`${builder}-slow.txt`], instructions: "AUTO-SLOW-TURN" });
+    }
+    answer = json({ requirements: [{ id: "goal", description: "Implement the requested sample" }], members: [makeMember("coordinator", "coordinator", vendor), makeMember("builder", "worker", builder), ...(same ? [makeMember("builder-two", "worker", builder)] : []), makeMember("verifier", "reviewer", reviewer)], tasks: prompt.includes("AUTO-SUBPLAN") ? [] : tasks.map((task) => ({ ...task, dependencyTypes: [] })), ...(prompt.includes("AUTO-SUBPLAN") ? { subplans: [{ id: "sample", strategy: "investigate-implement", owner: "builder", requirements: ["goal"], acceptance: ["The requested behavior has evidence"], paths: ["*"], dependsOn: [], instructions: "Implement the requested sample" }] } : { subplans: [] }), contracts: ["Each task preserves the accepted dependency artifacts"], rationale: "A small team with independent review" });
+  } else if (prompt.includes("AUTO_TEAM_TASK")) {
+    const { task, member, attempt } = JSON.parse(prompt.match(/## Assignment JSON\n```json\n([\s\S]*?)\n```/)[1]);
+    if (task.instructions.includes("AUTO-SLOW-TURN")) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2500);
+    const needsInfo = attempt === 1 && task.id === "alpha" && /AUTO-(USER-)?QUESTION/.test(task.instructions);
+    const failed = prompt.includes("AUTO-FAILURE") || prompt.includes("AUTO-CONTRACT-CHANGE") && task.id === "beta" && attempt === 1 || prompt.includes("AUTO-HANDOVER") && member.id === "builder";
+    if (write && !needsInfo && !failed && !prompt.includes("AUTO-NO-CHANGE")) writeFileSync(`${vendor}-${task.id}.txt`, `${task.id} implementation\n`);
+    if (write && needsInfo) writeFileSync(`${vendor}-${task.id}-partial.txt`, "partial checkpoint\n");
+    answer = json({ taskId: task.id, memberId: member.id, status: failed ? "failed" : needsInfo ? "needs_info" : "submitted", checkpoint: failed ? "The requested work is blocked" : needsInfo ? "Partial work saved; need the input contract" : `Completed ${task.id} with evidence`, handover: `Shared output and next actions for ${task.id}`, artifacts: needsInfo ? [] : [`${vendor}-${task.id}.txt`], unresolvedRequirements: needsInfo || failed ? ["goal"] : [], questions: needsInfo ? [{ id: "input-contract", recipient: task.instructions.includes("AUTO-USER-QUESTION") ? "user" : "coordinator", body: "Should empty input be accepted?", blocking: true }] : [], replies: [], findings: needsInfo || failed ? [] : [{ title: `${task.id} convention`, body: "Preserve empty input behavior in this component", evidence: [`${vendor}-${task.id}.txt`], paths: [] }] });
+  } else if (prompt.includes("AUTO_TEAM_ANSWERS")) {
+    const questions = JSON.parse(prompt.match(/## Open questions JSON\n```json\n([\s\S]*?)\n```/)[1]);
+    answer = json({ replies: questions.map((q) => ({ requestId: q.id, body: "Empty input is valid", evidence: ["README.md input contract"] })), unresolved: [] });
+  } else if (prompt.includes("AUTO_TEAM_REVISION")) {
+    const state = JSON.parse(prompt.match(/## Current accepted plan and outcomes\n```json\n([\s\S]*?)\n```/)[1]);
+    const handover = prompt.includes("AUTO-HANDOVER") && state.members.some((m) => m.id === "builder" && m.status !== "retired");
+    answer = json({ reason: "Retry failed work within the existing scope", contractRequirements: prompt.includes("AUTO-CONTRACT-CHANGE") ? ["goal"] : [], addTasks: [], reassignments: handover ? [{ taskId: "alpha", memberId: "replacement" }] : [], retryTasks: state.tasks.filter((t) => t.status === "failed" && t.attempts <= state.maxRepairs).map((t) => t.id), contracts: prompt.includes("AUTO-CONTRACT-CHANGE") ? ["Preserve empty input behavior across both components"] : [], answers: [], addMembers: handover ? [{ ...state.members.find((m) => m.id === "builder"), id: "replacement", name: "Replacement", reason: "Take over the blocked assignment" }] : [], retireMembers: handover ? ["builder"] : [] });
+  } else if (prompt.includes('"subtasks"')) {
     const conflict = prompt.includes("CONFLICT");
     answer = json({
       contracts: "Each part writes its own file; no shared names.",

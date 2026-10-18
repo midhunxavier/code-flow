@@ -7,6 +7,7 @@ import { ago, api, baseName, copy, post, showToast, STATUS_TEXT } from "./lib.js
 import { activeProject, ALL, currentProject, inScope, NONE, patterns, projectFor, projects, route, runs, runState, selectProject } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
 import { ProjectButton } from "./projects.js";
+import { automationNeedsAttention, teamAwaitingAnswer } from "./team-state.js";
 
 /** The project an automation's runs go in: the one it was saved with, or (deleted since) its repo's. */
 export const automationProject = (run: { project?: string; repo: string }) =>
@@ -65,7 +66,7 @@ export async function loadAutomations() {
   }
 }
 /** Automation results waiting for your decision. */
-export const inbox = () => [...runs.value.values()].filter((r) => r.triage?.state === "pending" && !r.archived).sort((a, b) => b.createdAt - a.createdAt);
+export const inbox = () => [...runs.value.values()].filter(automationNeedsAttention).sort((a, b) => b.createdAt - a.createdAt);
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -159,6 +160,8 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
         </span>
       </div>
       {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
+      {run.team ? <div class="help">Team: {run.team.members.length} members · {run.team.tasks.filter((task) => task.status === "completed").length}/{run.team.tasks.length} tasks completed · {run.team.metrics.invocations} calls</div> : null}
+      {teamAwaitingAnswer(run) ? <div class="at-notice"><b>The team needs your answer</b><p>{run.team?.messages.find((message) => message.id === run.team!.awaitingRequestId)?.body}</p><a class="btn small primary" href={`#/run/${run.id}`}>Answer team question</a></div> : run.team?.status === "blocked" ? <div class="at-notice"><p>{run.team.gaps.join(" ")}</p><a class="btn small" href={`#/run/${run.id}`}>Continue team work</a></div> : null}
       {run.review ? <div class="help">Review: {run.review.verdict === "approve" ? "approve" : `${run.review.findings.length} findings`}</div> : null}
       {changed.map((a) => (
         <pre key={a.branch} class="stat">
@@ -168,7 +171,7 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
         </pre>
       ))}
       {run.error ? <div class="msg err">{run.error}</div> : null}
-      <TriageActions run={run} />
+      {run.triage?.state === "pending" ? <TriageActions run={run} /> : null}
     </div>
   );
 }
@@ -177,11 +180,13 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
 export function TriageActions({ run }: { run: RunSummary }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState("");
+  const [calls, setCalls] = useState(run.loop.maxInvocations ?? run.loop.maxSteps);
+  const [minutes, setMinutes] = useState(run.loop.maxMinutes);
   const act = async (decision: "approve" | "revise" | "reject", extra: Record<string, unknown> = {}) => {
     if (decision === "reject" && !confirm("Reject this result? Its worktrees and branches are deleted.")) return;
     setBusy(decision);
     try {
-      await post(`/api/runs/${run.id}/triage`, { decision, note, ...extra });
+      await post(`/api/runs/${run.id}/triage`, { decision, note, ...(decision === "revise" ? { budget: { maxSteps: calls, maxInvocations: calls, maxMinutes: minutes } } : {}), ...extra });
       showToast(
         decision === "approve"
           ? extra.pushPr
@@ -207,6 +212,7 @@ export function TriageActions({ run }: { run: RunSummary }) {
   return (
     <div class="triage">
       <input class="field" placeholder="What should change? (for Revise)" value={note} onInput={(e) => setNote(e.currentTarget.value)} disabled={running} />
+      {note.trim() ? <details class="followup-budget"><summary>Revision budget · {calls} calls · {minutes} min</summary><label>Maximum calls<input class="field" aria-label="Revision maximum calls" type="number" min={1} max={200} value={calls} onInput={(event) => setCalls(Number(event.currentTarget.value))} /></label><label>Maximum minutes<input class="field" aria-label="Revision maximum minutes" type="number" min={1} max={720} value={minutes} onInput={(event) => setMinutes(Number(event.currentTarget.value))} /></label></details> : null}
       <button class="btn small" disabled={running || !!busy || !note.trim()} onClick={() => act("revise")}>
         {busy === "revise" ? "Sending…" : "Revise"}
       </button>
