@@ -2784,6 +2784,8 @@ export class RunManager {
   private readonly runIdentities = new Map<string, WeakRef<Run>>();
   private readonly coldRuns = new RunColdStore();
   private readonly coldWrites = new Map<string, Promise<void>>();
+  /** Async mutations retain their adopted live object while an older cold write settles. */
+  private readonly coldMutations = new Map<string, number>();
   /** Event history of running runs (finished runs are read back from disk when needed). */
   private readonly history = new Map<string, RunEvent[]>();
   private readonly controllers = new Map<string, AbortController>();
@@ -2966,12 +2968,12 @@ export class RunManager {
     return [run.task, run.id, run.repo, run.pattern, run.branchPrefix, run.source ? `#${run.source.number} ${run.source.title}` : "", run.externalSource?.title ?? "", run.trigger?.name ?? "", run.group?.label ?? ""].join("\n").toLowerCase();
   }
   private async coolRun(run: Run): Promise<void> {
-    if (!coldEligible(run) || this.busyRun(run) || this.active.has(run.id) || this.runs.get(run.id) !== run) return;
+    if (!coldEligible(run) || this.busyRun(run) || this.active.has(run.id) || this.coldMutations.has(run.id) || this.runs.get(run.id) !== run) return;
     await flushWrites();
-    if (!coldEligible(run) || this.busyRun(run) || this.active.has(run.id) || this.runs.get(run.id) !== run) return;
+    if (!coldEligible(run) || this.busyRun(run) || this.active.has(run.id) || this.coldMutations.has(run.id) || this.runs.get(run.id) !== run) return;
     const before = JSON.stringify(run);
     if (await this.coldRuns.save(run, this.seq)) {
-      if (this.runs.get(run.id) === run && coldEligible(run) && !this.busyRun(run) && !this.active.has(run.id) && JSON.stringify(run) === before) { this.runs.delete(run.id); this.history.delete(run.id); this.logWriter.forget(run.id); }
+      if (this.runs.get(run.id) === run && coldEligible(run) && !this.busyRun(run) && !this.active.has(run.id) && !this.coldMutations.has(run.id) && JSON.stringify(run) === before) { this.runs.delete(run.id); this.history.delete(run.id); this.logWriter.forget(run.id); }
       else this.coldRuns.drop(run.id);
     }
   }
@@ -2979,6 +2981,17 @@ export class RunManager {
     if (!coldEligible(run) || this.coldWrites.has(run.id)) return;
     const work = this.coolRun(run).catch((error: Error) => logWarn(`Couldn't cache archived run ${run.id}; its log remains authoritative`, { error: error.message })).finally(() => this.coldWrites.delete(run.id));
     this.coldWrites.set(run.id, work);
+  }
+  private holdColdMutation(run: Run): () => void {
+    this.coldMutations.set(run.id, (this.coldMutations.get(run.id) ?? 0) + 1);
+    return () => {
+      const remaining = this.coldMutations.get(run.id)! - 1;
+      if (remaining) { this.coldMutations.set(run.id, remaining); return; }
+      this.coldMutations.delete(run.id);
+      const pending = this.coldWrites.get(run.id);
+      if (pending) void pending.then(() => this.scheduleCold(run));
+      else this.scheduleCold(run);
+    };
   }
   inspectStorage() { return { hot: this.runs.size, cold: this.coldRuns.inspect(), pending: this.coldWrites.size }; }
 
@@ -3280,52 +3293,55 @@ export class RunManager {
     },
   ) {
     const run = this.require(id);
-    await this.assertExecutionAllowed(run.repo, run, "follow-up dispatch");
-    const kind = input.kind ?? "comments";
-    if (kind === "side" && !input.side) throw new Error("A side chat's turn needs its chat");
-    // A side chat's turn can wait for the team, and anything can wait for follow-ups once the team is
-    // done (a reply sent while a side chat works): the running execution takes it after its own work.
-    const waits = () => run.status === "running" && !this.starting.has(id) && (kind === "side" || !!run.patternDone);
-    let queue = waits();
-    if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error(kind === "side" ? "Side chats can start once the run has finished or while it's running" : "Follow-ups can be sent once the run has finished");
-    if (!run.worktrees.some((w) => w.name === input.worktree)) throw new Error(`Unknown worktree "${input.worktree}"`);
-    if (kind !== "resolve-conflicts" && !input.message?.trim()) throw new Error(kind === "reply" ? "Write a reply" : kind === "side" ? "Write a message" : "Write at least one comment");
-    if (kind === "resolve-conflicts" && !input.mergeFrom) throw new Error("Say which branch to merge");
-    if (kind === "resolve-conflicts" && !(await validRef(run.repo, input.mergeFrom!))) throw new Error(`"${input.mergeFrom}" isn't a branch in this repository`);
-    // An invalid budget is refused before any file is staged.
-    const budget = followUpBudget(input.budget, run.loop);
-    // Staged with the run's context, not in the worktree: it may have been removed (archived,
-    // cleaned up), and the turn re-attaches it first. The turn copies them in.
-    const files = input.attachments?.length ? await stageMessageFiles(join(run.worktreeDir, STAGE_DIR), Date.now().toString(36), input.attachments) : [];
-    // Writing the files took a moment: whether it waits for the team or starts now is decided after.
-    queue = waits();
-    if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error("Follow-ups can be sent once the run has finished");
-    const message = (input.message?.trim() ?? "") + (files.length ? `\n\nAttached, in this worktree (not committed): ${files.map((f) => `\`${f}\``).join(", ")}` : "");
-    run.followUps.push({
-      id: `f${run.followUps.length + 1}`, budget,
-      kind,
-      side: kind === "side" ? input.side : undefined,
-      worktree: input.worktree,
-      agent: input.agent,
-      message,
-      files: files.length ? files : undefined,
-      mergeFrom: input.mergeFrom,
-      from: input.from,
-      push: input.push,
-      watch: input.watch,
-      trust: input.trust,
-      status: "pending",
-      at: Date.now(),
-    });
-    // The budget is the allocation of the execution this follow-up starts. A queued one joins the
-    // execution that is running (its limits are read live: shrinking them could stop the side chat
-    // it waits for), so its budget is kept on the follow-up only.
-    if (budget && !queue) Object.assign(run.loop, budget);
-    if (queue) {
-      this.emitRun(run);
-      return run;
-    }
-    return this.resume(id);
+    const release = this.holdColdMutation(run);
+    try {
+      await this.assertExecutionAllowed(run.repo, run, "follow-up dispatch");
+      const kind = input.kind ?? "comments";
+      if (kind === "side" && !input.side) throw new Error("A side chat's turn needs its chat");
+      // A side chat's turn can wait for the team, and anything can wait for follow-ups once the team is
+      // done (a reply sent while a side chat works): the running execution takes it after its own work.
+      const waits = () => run.status === "running" && !this.starting.has(id) && (kind === "side" || !!run.patternDone);
+      let queue = waits();
+      if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error(kind === "side" ? "Side chats can start once the run has finished or while it's running" : "Follow-ups can be sent once the run has finished");
+      if (!run.worktrees.some((w) => w.name === input.worktree)) throw new Error(`Unknown worktree "${input.worktree}"`);
+      if (kind !== "resolve-conflicts" && !input.message?.trim()) throw new Error(kind === "reply" ? "Write a reply" : kind === "side" ? "Write a message" : "Write at least one comment");
+      if (kind === "resolve-conflicts" && !input.mergeFrom) throw new Error("Say which branch to merge");
+      if (kind === "resolve-conflicts" && !(await validRef(run.repo, input.mergeFrom!))) throw new Error(`"${input.mergeFrom}" isn't a branch in this repository`);
+      // An invalid budget is refused before any file is staged.
+      const budget = followUpBudget(input.budget, run.loop);
+      // Staged with the run's context, not in the worktree: it may have been removed (archived,
+      // cleaned up), and the turn re-attaches it first. The turn copies them in.
+      const files = input.attachments?.length ? await stageMessageFiles(join(run.worktreeDir, STAGE_DIR), Date.now().toString(36), input.attachments) : [];
+      // Writing the files took a moment: whether it waits for the team or starts now is decided after.
+      queue = waits();
+      if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error("Follow-ups can be sent once the run has finished");
+      const message = (input.message?.trim() ?? "") + (files.length ? `\n\nAttached, in this worktree (not committed): ${files.map((f) => `\`${f}\``).join(", ")}` : "");
+      run.followUps.push({
+        id: `f${run.followUps.length + 1}`, budget,
+        kind,
+        side: kind === "side" ? input.side : undefined,
+        worktree: input.worktree,
+        agent: input.agent,
+        message,
+        files: files.length ? files : undefined,
+        mergeFrom: input.mergeFrom,
+        from: input.from,
+        push: input.push,
+        watch: input.watch,
+        trust: input.trust,
+        status: "pending",
+        at: Date.now(),
+      });
+      // The budget is the allocation of the execution this follow-up starts. A queued one joins the
+      // execution that is running (its limits are read live: shrinking them could stop the side chat
+      // it waits for), so its budget is kept on the follow-up only.
+      if (budget && !queue) Object.assign(run.loop, budget);
+      if (queue) {
+        this.emitRun(run);
+        return run;
+      }
+      return await this.resume(id);
+    } finally { release(); }
   }
 
   private readonly goalRevisions = new Map<string, { signature: string; promise: Promise<Run> }>();
