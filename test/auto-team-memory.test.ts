@@ -69,3 +69,11 @@ test("Auto planning and work reuse accepted project knowledge without unapproved
   assert.ok(run.team!.contextManifests.some((manifest) => manifest.memoryIds.includes(`${accepted.id}@${accepted.revision}`)));
   assert.ok(run.steps.some((step) => step.taskId && step.contextManifest?.memoryIds.includes(`${accepted.id}@${accepted.revision}`)), "the executed worker step records its exact included revision");
 });
+
+test("shutdown flushes pending local and remote quota updates before workspace cleanup", async () => {
+  manager.recordQuota("claude", "limited", { session: { utilization: 1, resetsAt: 12345 } });
+  manager.recordQuota("codex", "limited", { session: { utilization: 1, resetsAt: 67890 } }, "remote-fixture");
+  await manager.shutdown();
+  assert.deepEqual(JSON.parse(await readFile(join(home, "quota.json"), "utf8")), manager.quota);
+  assert.deepEqual(JSON.parse(await readFile(join(home, "remote-quota.json"), "utf8")), { "remote-fixture": manager.quotaForWorker("remote-fixture") });
+});

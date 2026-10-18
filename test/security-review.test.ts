@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -173,14 +173,19 @@ test("the app page: never in a frame, compressed when the browser takes it, and 
   // rebuilt it meanwhile.)
   const original = readFileSync(indexHtml);
   const rebuilt = Buffer.concat([original, Buffer.from("\n<!-- rebuilt -->\n")]);
-  writeFileSync(indexHtml, rebuilt);
+  const publish = (html: Buffer) => {
+    const temporary = `${indexHtml}.${process.pid}.tmp`;
+    writeFileSync(temporary, html);
+    renameSync(temporary, indexHtml);
+  };
+  publish(rebuilt);
   try {
     const fresh = await get(a.port, "/", { ...cookie, "accept-encoding": "br", "if-none-match": etags[0]! });
     assert.equal(fresh.status, 200);
     assert.notEqual(fresh.headers.etag, etags[0]);
     assert.ok(brotliDecompressSync(fresh.body).equals(rebuilt));
   } finally {
-    if (readFileSync(indexHtml).equals(rebuilt)) writeFileSync(indexHtml, original);
+    if (readFileSync(indexHtml).equals(rebuilt)) publish(original);
   }
 
   // The phone's whole app on the network listener: the same, behind the phone's own cookie.

@@ -5,7 +5,7 @@
 - [Auto team](auto-team.md): dynamic team creation, dependency workflows, member communication, private/team/project memory, and recovery.
 - [Runs](runs.md): the run view, talking to a running team, replies, projects, the side panel (chat, files, terminal, browser, notes), restarts and resume, Insights.
 - [GitHub, review and shipping](github.md): review and merge results, start from issues and PRs, review councils, PR follow-through, untrusted text.
-- [Automations and away mode](automations.md): schedules, webhooks, the inbox, Docker isolation, the phone view.
+- [Automations and away mode](automations.md): schedules, webhooks, the inbox, Docker isolation, the phone view and direct Tailscale access.
 - [Configuration](configuration.md): `.codeflow/config.json`, permissions, health, environment variables.
 - [Security, subscriptions and caveats](security.md): how the CLIs and their logins are used, what runs where, known limits.
 - [Verification profiles](verification.md): required gates, baseline/flaky diagnosis, requirements, human review and merge-target checks.
@@ -23,6 +23,7 @@
 - [Architecture explorer](architecture-explorer.md): static imports, packages, cycles and directory boundaries across six languages.
 - [Semantic memory claims](memory-claims.md): bounded duplicate/contradiction evidence with source revisions and overlapping applicability.
 - [Shared projects](shared-projects.md): local viewer/reviewer accounts, scoped results, reviews and immediate revocation.
+- [SSH projects](ssh-projects.md): connect to a server, open its repositories, and run the full workspace remotely.
 - [SSH workers](remote-workers.md): explicit remote targets, source/result bundles, durable receipts and recovery.
 - [Coordinated changes](coordinated-changes.md): pinned dependencies and per-repository validation/shipping.
 - [GitHub review threads](github-review-threads.md): inspect, reply, resolve and reopen real review threads with stale-state checks.

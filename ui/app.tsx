@@ -1,3 +1,4 @@
+import { HostControl, executionHost } from "./ssh-projects.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { ApprovalInbox } from "./approval-inbox.js";
 import { Composer } from "./composer.js";
@@ -95,7 +96,8 @@ export function handOffLink(e: MouseEvent) {
 
 function MainApp() {
   useEffect(() => {
-    document.title = waitingCount.value ? `(${waitingCount.value}) code-flow` : "code-flow";
+    const host = executionHost.value;
+    document.title = `${waitingCount.value ? `(${waitingCount.value}) ` : ""}code-flow${host.kind === "ssh" ? ` · SSH ${host.name}` : ""}`;
   }, [waitingCount.value]);
   useEffect(() => {
     window.addEventListener("keydown", onShortcut);
@@ -170,6 +172,7 @@ function TopBar() {
         <img class="brand-mark" src={logo} alt="" width={28} height={28} />
         <span class="brand-name">code-flow</span>
       </span>
+      <HostControl />
       <Crumbs />
       <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.state === "connected" ? "Live updates are connected" : "Live updates are unavailable; displayed run information may be out of date"}>
         <span aria-hidden="true">●</span> {connection.value.state === "connected" ? "Connected" : connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}

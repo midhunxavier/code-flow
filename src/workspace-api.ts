@@ -51,7 +51,7 @@ export async function handleWorkspaceApi(req: IncomingMessage, url: URL, parts: 
     if (typeof value !== "string" || value.length > 4000 || value.includes("\0")) throw new HttpError(400, "Commands must be text under 4,000 characters");
     return value;
   };
-  if (parts[1] === "v1" && parts[2] === "capabilities" && req.method === "GET") return { status: 200, body: { version: 1, features: ["readiness", "verification", "file-editing", "code-search", "dependencies", "checkpoints", "diagnostics", "run-export", "cursor-history", "shared-projects", "ssh-workers", "coordinated-changes", "code-hosts", "github-review-threads", "filesystem-policies", "filtered-tasks", "provider-workflow-extensions"], authentication: "Bearer CODEFLOW_TOKEN", api: "/api", docs: "docs/api.md" } };
+  if (parts[1] === "v1" && parts[2] === "capabilities" && req.method === "GET") return { status: 200, body: { version: 1, features: ["readiness", "verification", "file-editing", "code-search", "dependencies", "checkpoints", "diagnostics", "run-export", "cursor-history", "shared-projects", "ssh-projects", "ssh-workers", "coordinated-changes", "code-hosts", "github-review-threads", "filesystem-policies", "filtered-tasks", "provider-workflow-extensions"], authentication: "Bearer CODEFLOW_TOKEN", api: "/api", docs: "docs/api.md" } };
   if (parts[1] === "readiness" && req.method === "POST") {
     if (body.execute === true) manager.noteActivity();
     return { status: 200, body: await inspectReadiness({ repo: owned?.run.repo ?? requireRepo(), baseRef: await resolveCommit(await readRepo(), typeof body.baseRef === "string" && body.baseRef ? body.baseRef : "HEAD"), setup: boundedCommand(body.setup), check: boundedCommand(body.check), execute: body.execute === true, signal }) };

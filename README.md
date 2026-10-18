@@ -47,6 +47,7 @@ The **Workspace** page adds verification profiles and requirement mappings, code
 Additional workflows include [selective task reruns](docs/task-reruns.md), [deferred starts](docs/deferred-runs.md), [context budgets](docs/context-inspection.md), [versioned conventions](docs/project-conventions.md), [reviewed commit reversions](docs/checkpoint-review.md), and a [local VS Code extension](integrations/vscode/README.md). The [review inbox](docs/review-inbox.md) groups questions, blocked work, failures and results across projects.
 
 Use [shared project accounts](docs/shared-projects.md) for scoped human review,
+[SSH projects](docs/ssh-projects.md) for a complete remote workspace,
 [SSH workers](docs/remote-workers.md) for provisioned remote execution and
 [coordinated changes](docs/coordinated-changes.md) for repository dependency
 workflows. [GitLab/Bitbucket code workflows](docs/code-hosts.md), [GitHub review
@@ -62,7 +63,7 @@ review. [Filesystem policies](docs/filesystem-policy.md) and explicit trusted
 - **Done means the check passes, and proves something.** code-flow runs your test command itself after every change, feeds failures back, and flags edits that make tests pass without fixing anything. Then it runs the result's tests on the original code: at least one should fail there, or nothing shows the change works, and the agent is asked for a test that does. Reviewers show the bugs they report with a test that code-flow runs, so a false alarm doesn't cost a fix round.
 - **A conversation, not a job queue.** Approve the plan before anyone builds, message the team while it works (straight into a running Codex turn), and reply after it finishes.
 - **A side panel, like the apps you know.** Next to the work, and following what you open: side chats that work in the run's own worktree (ask, or change it), the run's changes, its files, real terminals (two at once, one above the other), a browser for the app it started where you pick or box what's wrong and send it to the agent with a snapshot (or a snapshot of any site, to draw boxes on), and your notes. A pin keeps it on one run; it can open in a window of its own.
-- **Where the work lives, even when you're away.** Start from GitHub issues and PRs, fix failing CI, have a council review a PR, run on a schedule or from webhooks, and check in or take over from your phone.
+- **Where the work lives, even when you're away.** Start from GitHub issues and PRs, fix failing CI, have a council review a PR, run on a schedule or from webhooks, and check in or take over from your phone. Built-in Tailscale detection gives your devices a private remote link and QR code.
 - **Projects.** Runs are grouped by project with no setup: each repository gets one the first time you run in it. A project can span several repositories, and remembers the team you last used there.
 - **Sweep the backlog.** Fix every open issue, every Dependabot PR with failing CI, or every security alert in one go: pick from the list, get one run each, approve the results from your inbox. Optionally every night, for new ones only.
 

@@ -3,7 +3,7 @@ import { BrowserTab } from "./browser.js";
 import { ChangesTab } from "./changes.js";
 import { addContext, FileTree } from "./composer.js";
 import { Icon, type IconName } from "./icons.js";
-import { ago, api, baseName, enc, fmtSize, onPhone, post, showToast, useLatest } from "./lib.js";
+import { ago, api, baseName, enc, fmtSize, onPhone, post, showToast, store, useLatest } from "./lib.js";
 import { placesFor, PlacePicker, usePlace } from "./panel-bits.js";
 import { ChatTab } from "./side-chat.js";
 import {
@@ -296,7 +296,7 @@ function NotesTab() {
       (n) => {
         if (!current) return;
         let draft: string | null = null;
-        try { draft = localStorage.getItem(`notes-draft:${key}`); } catch {}
+        try { draft = store.get(`notes-draft:${key}`); } catch {}
         setText(draft ?? n.text);
         bases.current.set(key, { text: n.text, revision: n.revision });
         setSaved({ at: n.updatedAt, text: n.text, revision: n.revision });
@@ -322,7 +322,7 @@ function NotesTab() {
         try {
           const note = await post<{ updatedAt: number; revision: number }>("/api/notes", { key, text, expectedRevision: base.revision });
           bases.current.set(key, { text, revision: note.revision });
-          try { if (localStorage.getItem(`notes-draft:${key}`) === text) localStorage.removeItem(`notes-draft:${key}`); } catch {}
+          try { if (store.get(`notes-draft:${key}`) === text) store.remove(`notes-draft:${key}`); } catch {}
           if (activeKey.current === key) { setSaved({ at: note.updatedAt, text, revision: note.revision }); setStatus(""); }
         } catch (error) {
           if (activeKey.current !== key) return;
@@ -384,10 +384,10 @@ function NotesTab() {
       </div>
       <details><summary>Search saved notes</summary><div class="side-toolbar"><input class="field" aria-label="Search saved notes" placeholder="Words or repository path" value={search} onInput={(event) => setSearch(event.currentTarget.value)} /><button class="btn small" onClick={async () => { try { setMatches(await api(`/api/notes/search?q=${enc(search)}`)); } catch (error) { setStatus((error as Error).message); } }}>Search notes</button></div>{matches ? <>{matches.hits.length ? matches.hits.map((match) => <p key={match.key}><button class="btn ghost small" onClick={() => { setPickedNote(match.key); setMatches(null); }}>{match.key} · revision {match.revision}</button><span class="help">{match.excerpt}</span></p>) : <p class="help">No saved notes match.</p>}{matches.truncated ? <p class="help">Results are limited; narrow the query.</p> : null}</> : null}</details>
       {pickedNote ? <div class="side-toolbar"><span class="help">Editing {pickedNote}</span><button class="btn small" onClick={() => setPickedNote(null)}>Return to current notes</button></div> : null}
-      {latest ? <div class="msg err" role="alert"><p>This note changed in another window. Your draft is preserved.</p><details><summary>Compare saved version</summary><pre>{latest.text}</pre></details><button class="btn small" onClick={() => { bases.current.set(key, latest); setText(latest.text); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); try { localStorage.removeItem(`notes-draft:${key}`); } catch {} }}>Use saved version</button><button class="btn small" onClick={() => { bases.current.set(key, latest); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); }}>Save my draft over this version</button></div> : null}
+      {latest ? <div class="msg err" role="alert"><p>This note changed in another window. Your draft is preserved.</p><details><summary>Compare saved version</summary><pre>{latest.text}</pre></details><button class="btn small" onClick={() => { bases.current.set(key, latest); setText(latest.text); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); try { store.remove(`notes-draft:${key}`); } catch {} }}>Use saved version</button><button class="btn small" onClick={() => { bases.current.set(key, latest); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); }}>Save my draft over this version</button></div> : null}
       <div class="side-toolbar"><button class="btn small" disabled={!ready} onClick={async () => { try { setHistory(await api(`/api/notes/history?key=${enc(key)}`)); } catch (error) { setStatus((error as Error).message); } }}>Revision history</button></div>
       {history.length ? <details open><summary>{history.length} saved revisions</summary>{history.map((note) => <div key={note.revision}><details><summary>Revision {note.revision} · {new Date(note.updatedAt).toLocaleString()}</summary><pre>{note.text || "(empty)"}</pre><button class="btn small" disabled={note.revision === saved?.revision || saved?.text !== text} onClick={async () => { try { const restored = await post<{ text: string; updatedAt: number; revision: number }>("/api/notes/restore", { key, revision: note.revision, expectedRevision: saved?.revision }); bases.current.set(key, restored); setSaved({ at: restored.updatedAt, text: restored.text, revision: restored.revision }); setText(restored.text); setHistory([]); setStatus("Restored as a new revision"); } catch (error) { setStatus((error as Error).message); } }}>Restore as new revision</button></details></div>)}</details> : null}
-      <textarea id="side-notes" class="notes-area" aria-label="Notes" placeholder="Notes to yourself: what to check, ideas, commands… Saved as you type." spellcheck={false} disabled={!ready} value={text} onInput={(e) => { setText(e.currentTarget.value); try { localStorage.setItem(`notes-draft:${key}`, e.currentTarget.value); } catch {} }} />
+      <textarea id="side-notes" class="notes-area" aria-label="Notes" placeholder="Notes to yourself: what to check, ideas, commands… Saved as you type." spellcheck={false} disabled={!ready} value={text} onInput={(e) => { setText(e.currentTarget.value); try { store.set(`notes-draft:${key}`, e.currentTarget.value); } catch {} }} />
       <div class="notes-foot">
         <span>{status || (saved?.at ? `Saved ${ago(saved.at)}` : "")}</span>
         <span class="spacer" />
