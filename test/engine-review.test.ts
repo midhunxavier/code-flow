@@ -353,6 +353,33 @@ test("council: a finding a test confirms comes back when the chair drops it, and
   assert.match(await logs(manager, run), /The chair left out or rated lower 2 findings a test confirms; code-flow put them back as raised/);
 });
 
+test("council: findings that share a test are still different findings", async () => {
+  // One test (a plain test command would do the same) shows three bugs in three files: the chair
+  // keeps Reviewer A's first; A's second and B's aren't that finding, so they come back.
+  const shared = { path: "shared.test.mjs", contents: failing("shared"), command: "node --test shared.test.mjs" };
+  const x = { severity: "high", file: "x.txt", problem: "X overflows", fix: "Bound it", repro: shared };
+  const y = { severity: "high", file: "y.txt", problem: "Y leaks", fix: "Close it", repro: shared };
+  const z = { severity: "high", file: "z.txt", problem: "Z races", fix: "Lock it", repro: shared };
+  const chair: Stub = async () => json({ verdict: "changes_requested", summary: "One bug.", findings: [{ ...x, raised_by: ["A"] }] });
+  const manager = new RunManager(findPattern);
+  const run = await withStub(["claude"], async () => json({ verdict: "changes_requested", issues: [x, y] }), () =>
+    withStub(["codex"], async () => json({ verdict: "changes_requested", issues: [z] }), () =>
+      withStub(["agy"], chair, async () =>
+        idle(manager, await manager.start({ pattern: findPattern("council")!, task: "Review it", repo, roles: { reviewers: ["claude", "codex"], chair: ["agy"] }, options: {} })),
+      ),
+    ),
+  );
+  assert.equal(run.status, "done", run.error);
+  assert.deepEqual(
+    run.review!.findings.map((f) => [f.problem, f.check?.status, f.restored ?? ""]).sort(),
+    [
+      ["X overflows", "confirmed", ""],
+      ["Y leaks", "confirmed", "from Reviewer A, whose test confirms it: the chair left it out"],
+      ["Z races", "confirmed", "from Reviewer B, whose test confirms it: the chair left it out"],
+    ],
+  );
+});
+
 // ---------------------------------------------------------------- a repro that never ran
 test("a reviewer's own command that never ran its test couldn't tell; one that ran it refutes or confirms", async () => {
   const dir = newRepo({

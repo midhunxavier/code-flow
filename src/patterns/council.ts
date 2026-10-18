@@ -217,11 +217,13 @@ export const councilPattern: Pattern = {
 
 /**
  * The confirmed findings the chair's merge lost: a reviewer's test fails on the code, so whether it
- * blocks can't depend on the chair keeping it. A merged finding stands for one when it keeps its
- * test, or names its reviewer, is about the same file and is confirmed too (the chair combined it
- * with another reviewer's and kept that one's test). Rated lower there, it's raised back to the
- * reviewer's severity (`raised`, by merged finding); with none, it comes back as its reviewer
- * raised it (`added`).
+ * blocks can't depend on the chair keeping it. A merged finding stands for one when it's about the
+ * same file and either keeps its test, or names its reviewer and is confirmed too (the chair
+ * combined it with another reviewer's and kept that one's test). A test alone isn't enough: two
+ * bugs can share one (a plain `npm test` most of all). And a merged finding stands for at most one
+ * finding of each reviewer: it can merge what several reviewers raised, not two of one reviewer's.
+ * Rated lower there, it's raised back to the reviewer's severity (`raised`, by merged finding);
+ * with none, it comes back as its reviewer raised it (`added`).
  */
 function restoreConfirmed(
   done: { label: string; review: ReviewVerdict }[],
@@ -231,6 +233,8 @@ function restoreConfirmed(
 ): { raised: Map<number, Restored>; added: Restored[] } {
   const raised = new Map<number, Restored>();
   const added: Restored[] = [];
+  /** The reviewers each merged finding already stands for a finding of. */
+  const standsFor = new Map<number, Set<string>>();
   done.forEach((r, n) =>
     r.review.issues.forEach((issue, i) => {
       const check = checked[n]![i]!;
@@ -239,8 +243,10 @@ function restoreConfirmed(
       const rank = (j: number) => SEVERITY[raised.get(j)?.finding.severity ?? severityOf(merged.findings[j]!.severity)];
       const best = merged.findings
         .map((f, j) => ({ f, j }))
-        .filter(({ f, j }) => sameRepro(f.repro, issue.repro) || (f.raised_by.includes(r.label) && f.file === issue.file && checks[j]!.status === "confirmed"))
+        .filter(({ j }) => !standsFor.get(j)?.has(r.label))
+        .filter(({ f, j }) => f.file === issue.file && (sameRepro(f.repro, issue.repro) || (f.raised_by.includes(r.label) && checks[j]!.status === "confirmed")))
         .sort((a, b) => rank(a.j) - rank(b.j))[0];
+      if (best) standsFor.set(best.j, (standsFor.get(best.j) ?? new Set()).add(r.label));
       if (best && rank(best.j) <= SEVERITY[severity]) return;
       const finding = { severity, file: issue.file, problem: issue.problem, fix: issue.fix, check };
       if (best) raised.set(best.j, { label: r.label, why: `the chair rated it ${severityOf(best.f.severity)}`, finding });
