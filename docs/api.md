@@ -18,6 +18,7 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 
 | Operation | Request | Behavior |
 | --- | --- | --- |
+| `POST /improve-prompt` | `repo`, `text`, optional `mode=quick\|repo`, `agent`, `context`, `source`, `execution=local` | Owner-only local prompt rewrite in a disposable private Git directory; returns `{prompt, summary, agent}` after cleanup. |
 | `POST /readiness` | `repo`, optional `baseRef`, `setup`, `check`, `execute` | Inspection by default; `execute: true` runs commands in a temporary worktree at a pinned commit. |
 | `GET /verification/profile` | `repo`, `preset` query | Detect lightweight, standard or thorough checks. |
 | `POST /verification` | `repo`, `profile` or `preset`, optional `baseRef`, `baseline`, `setup`, `repeats` | Execute bounded required gates on isolated checkouts and return structured evidence plus Markdown. |
@@ -51,6 +52,25 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 | `GET /remote/devices` | none | List paired device metadata, never session credentials. |
 | `DELETE /remote/devices/:id` | none | Revoke one device immediately. |
 | `GET /diagnostics` | optional `repo` query | Export versions, queue/write health and sanitized recent logs. |
+
+Prompt improvement accepts up to 20,000 input/output characters and a 1,000-character
+summary. Context is limited to 50 names of 300 characters; optional source metadata
+contains `kind=issue|pr|alert`, integer `number` and a title of at most 200 characters.
+Quick mode supplies only the text and metadata; repository mode exports a pinned
+committed-HEAD snapshot with a fresh Git namespace. Source Git configuration, hooks,
+remotes, history, ignored/untracked content and executable provider configuration
+are not copied. Both use safe provider permissions and an in-process repository
+mutation lease; cleanup removes only the private directory after failure or
+cancellation, never resetting the source checkout or its index. See
+[snapshot bounds](getting-started.md#your-first-run). Snapshot preparation has a
+60-second deadline. Inherited Git routing/configuration overrides are refused so
+the provider cannot accidentally target another checkout through its environment.
+Improve also requires absolute, nonempty PATH entries and currently supports
+macOS/Linux; Windows is refused until executable discovery is pinned and tested.
+Explicit SSH/container profiles return
+400, shared accounts return 403, repository/policy conflicts return 409, the three-turn
+global concurrency limit returns 429, and provider/snapshot failures return 502.
+Closing the request cancels the turn; clients must not automatically retry it.
 
 Verification profiles contain `name`, up to 12 `checks`, optional `setup`, and
 up to 48 `requirements`. Each check has a unique `id`, `kind`, `command`, optional

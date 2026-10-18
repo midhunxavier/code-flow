@@ -70,6 +70,7 @@ import { logError, logInfo, logWarn } from "./log.js";
 import { listIssues, listPullRequests, MERGE_METHODS, type SourceInput } from "./github.js";
 import { listSweep, runSweep, sourceKeys, type SweepKind } from "./sweeps.js";
 import { resolveAuto } from "./routing.js";
+import { improvePrompt, assertImproveEnvironment, ImproveError, MAX_IMPROVE_CHARS, type ImproveRequest } from "./improve.js";
 import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
 import { Automations, describeSchedule, readWebhook, validateSchedule, previewSchedule } from "./automation.js";
@@ -368,7 +369,10 @@ async function attempt<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function requestedRepo(url: URL): Promise<string> {
-  const requested = url.searchParams.get("repo") ?? "";
+  return validRepo(url.searchParams.get("repo") ?? "");
+}
+
+async function validRepo(requested: string): Promise<string> {
   if (!requested.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
   return repoRoot(requested).catch(() => {
     throw new HttpError(400, "Not a git repository");
@@ -422,6 +426,59 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string, re
     }
   }
   return { roles, notes: resolved.notes };
+}
+
+/** Improve turns running now: a few at most, since each one is a CLI process. */
+let improving = 0;
+const MAX_IMPROVING = 3;
+const improvingControllers = new Set<AbortController>();
+
+/** The composer's Improve: rewrite the task in one read-only turn (see improve.ts). */
+async function improveTask(body: any, res: ServerResponse) {
+  if (body.execution !== undefined && body.execution !== "local" || body.remoteWorker || body.agentContainer || body.loop?.remoteWorker || body.loop?.agentContainer) throw new HttpError(400, "Prompt improvement supports local execution only; remote and container profiles cannot fall back to a host CLI");
+  const text = typeof body.text === "string" ? body.text : "";
+  if (!text.trim()) throw new HttpError(400, "Write a task to improve first");
+  if (text.length > MAX_IMPROVE_CHARS) throw new HttpError(400, `The task is too long to improve (${MAX_IMPROVE_CHARS.toLocaleString("en")} characters at most)`);
+  const stop = new AbortController();
+  res.once("close", () => stop.abort());
+  if (res.destroyed || res.writableEnded) stop.abort();
+  const request: ImproveRequest = {
+    text,
+    repo: await validRepo(typeof body.repo === "string" ? body.repo : ""),
+    mode: body.mode === "repo" ? "repo" : "quick",
+    context: Array.isArray(body.context) ? body.context.filter((p: unknown): p is string => typeof p === "string" && !!p.trim()).slice(0, 50).map((p: string) => p.slice(0, 300)) : [],
+    source:
+      body.source && ["issue", "pr", "alert"].includes(body.source.kind) && Number.isInteger(body.source.number)
+        ? { kind: body.source.kind, number: body.source.number, title: typeof body.source.title === "string" ? body.source.title.slice(0, 200) : undefined }
+        : undefined,
+  };
+  if (improving >= MAX_IMPROVING) throw new HttpError(429, "Other tasks are being improved right now. Try again in a moment.");
+  // Closing the request (Stop in the composer, or leaving the page) stops the turn.
+  improving++; improvingControllers.add(stop);
+  try {
+    return await attempt(() => manager.withIdleRepository(request.repo, async () => {
+      await manager.assertExecutionAllowed(request.repo, undefined, "Prompt improvement");
+      stop.signal.throwIfAborted();
+      const installed = new Set((await agentAvailability()).filter((a) => a.available).map((a) => a.id));
+      stop.signal.throwIfAborted();
+      const agent = resolveAuto({ improve: [isAgentId(body.agent) ? body.agent : "auto"] }, manager.quota, installed).roles.improve?.[0];
+      if (!agent) throw new HttpError(400, "Install the Claude Code, Codex or Antigravity CLI to improve tasks");
+      if (!installed.has(agent)) throw new HttpError(400, `${getAdapter(agent).displayName} (\`${getAdapter(agent).binary}\`) is not installed or not on PATH`);
+      await manager.assertExecutionAllowed(request.repo, undefined, "Prompt improvement");
+      stop.signal.throwIfAborted(); manager.noteActivity();
+      try {
+        const result = await improvePrompt(agent, request, { signal: stop.signal, onEvent: (event) => { if (event.kind === "quota") manager.recordQuota(agent, event.status, event.windows); } });
+        return send(res, 200, { ...result, agent });
+      } catch (error) {
+        if (!(error instanceof ImproveError)) throw error;
+        if (error.kind === "usage_limit") manager.recordLimit(agent, error.resetsAt);
+        if (error.kind === "auth") manager.recordQuota(agent, "signed_out", {});
+        throw new HttpError(502, error.message);
+      }
+    }, { kind: "prompt improvement", owner: "composer" }));
+  } finally {
+    improving--; improvingControllers.delete(stop);
+  }
 }
 
 /** { kind: "issue" | "pr", number, ciLogs? } or { kind: "alert", tool, number, numbers? } — where a run starts from on GitHub. */
@@ -616,10 +673,10 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
 
 async function startFromBody(body: Record<string, any>, extra: { trigger?: Run["trigger"]; group?: Run["group"] } = {}): Promise<Run> {
   const input = await buildStartInput(body);
-  return manager.start({ ...input, ...extra }).catch((err: Error) => {
+  return attempt(() => manager.start({ ...input, ...extra }).catch((err: Error) => {
     if (err instanceof UntrustedSourceError) throw Object.assign(new HttpError(409, err.message), { confirm: "allowUntrusted" });
-    throw err instanceof HttpError ? err : new HttpError(400, err.message);
-  });
+    throw err;
+  }));
 }
 
 /** The parts of a run request an automation keeps (no attachments: they'd go stale). */
@@ -969,6 +1026,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     auth.claimable = false;
     if (req.method === "POST" && parts.length === 2) manager.noteActivity();
     if (await handleFilteredTasksApi(req, res, url, parts.slice(1), filteredTasks)) return;
+  }
+  // Check before ownerGate/validRepo: even repository discovery can invoke Git in its cwd.
+  if (parts[1] === "improve-prompt") {
+    if (req.method !== "POST" || parts.length !== 2) throw new HttpError(404, "Unknown prompt improvement operation");
+    await attempt(async () => assertImproveEnvironment());
   }
   await attempt(() => fileAccess.ownerGate(req, url, parts));
   if (parts[1] === "accounts") {
@@ -1454,6 +1516,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (id && req.method === "DELETE") return send(res, 200, { closed: shells.close(id) });
   }
+  if (req.method === "POST" && parts[1] === "improve-prompt" && parts.length === 2) return improveTask(await readJson(req, 256 * 1024), res);
   if (req.method === "GET" && parts[1] === "models") {
     const agents = await agentAvailability();
     const entries = await Promise.all(
@@ -1898,6 +1961,7 @@ async function stop(reason: string, code = 0) {
   }
   await coordinatedApi.service.stop().catch((err) => logError("Coordinated changes shutdown failed", err));
   await deferredRuns.stop().catch((err) => logError("Deferred queue shutdown failed", err));
+  for (const controller of improvingControllers) controller.abort();
   await filteredTasks.close().catch((err) => logError("Filtered task shutdown failed; inspect its durable unknown receipt before retrying", err));
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));
   await teamToolBridge.close().catch(() => undefined);

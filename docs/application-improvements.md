@@ -2,6 +2,12 @@
 
 This work continues the application review on branch `codex/application-improvements`, created from `main` at `abbb6be`. The original review contained defects, 14 broader product problems, and 73 feature ideas; those are tracked separately below.
 
+The later `main` update at `d1677e1` is also integrated. Its composer Improve feature
+retains Quick/Repository modes with cancellation, guarded Undo, safe provider
+permissions, disposable private committed snapshots and mutation leases. Shared access, filesystem
+restrictions and nonlocal execution profiles cannot bypass their execution rules
+through this endpoint.
+
 Current scope: all six priority correctness packages implemented; all 14 broader
 problems have concrete improvements; all 73 feature items have implemented
 acceptance scopes. Full-suite acceptance passed. Results are recorded
@@ -163,3 +169,27 @@ The packaged VSIX passed actual installed VS Code host acceptance again.
 Typecheck, UI/worker builds, 68 accessibility renderings and local documentation
 links passed. Provider version/help probes used actual official binaries; no
 live inference, account mutation or notification delivery occurred.
+
+After integrating the newer `main` composer feature, 19 existing browser and
+accessibility checks, four new Improve browser flows and two shared/policy security
+flows passed. Eleven prompt-improvement unit checks and all 14 server-reliability
+checks passed, including a delayed-turn lease/cancellation test that exposed and
+fixed an incorrect 400 response for concurrent run starts. A subsequent source
+review moved Improve out of the working checkout entirely so external edits can
+never be discarded by read-only cleanup. Final typecheck and
+UI/worker builds passed. The Improve menu adds two mobile theme audits, bringing
+the accessibility acceptance total to 70 renderings; both mobile screenshots were
+inspected for readable controls and overflow.
+
+The post-merge full unit run passed 828 checks with six optional native-runtime
+cases skipped (already passed separately). After private-snapshot hardening,
+all 15 Improve checks and all 15 server-reliability checks passed again, including
+external source edits/commits, private cleanup, executable-configuration exclusion,
+snapshot bounds and early environment checks across both API prefixes. The four
+Improve browser flows passed with the isolated backend; the final menu-wrapping
+change also passed its mobile/profile regression and visual inspection.
+The final subprocess PATH fix passed 15 foundation/filesystem-policy unit checks
+and the policy browser flow. Actual malicious cwd/relative-bin executables were
+refused for inherited and overridden PATHs; explicit absolute fixture binaries
+remain usable. The exact-route regression passed again after adding malformed
+suffix/method checks across both API prefixes.

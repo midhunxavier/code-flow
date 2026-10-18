@@ -26,7 +26,11 @@ The session token exists only in the server's memory, so the agents code-flow ru
 ![The composer: a task, the Plan → Build → Review pattern, and a team with a model and effort for each role (demo data)](images/composer-light.png)
 
 1. Click the **repository button** under the composer's title to choose a repo. The folder browser is served by the local server, because browsers don't expose absolute paths. It marks git repos and remembers recent ones.
-2. Describe the task. Drag files from the **Files** panel, or from Finder, onto the task box to give the agents context.
+2. Describe the task. Drag files from the **Files** panel, or from Finder, onto the task box to give the agents context. **Improve** (at the right of the task box) rewrites a rough task so agents can act on it: the same intent, with the goal first, the specifics, how to tell it's done, and any open questions. **Undo** puts your text back.
+   - It's one short turn by the agent Auto picks, on your subscription, using its read-only permissions in a disposable private Git directory. Improve never resets your working checkout.
+   - The arrow next to it picks how: **Quick rewrite** (the default) works from your text alone on a fast model (Claude's Haiku, low effort for Codex and Antigravity). **Use the repository** reads a snapshot of the current committed version so the rewrite can name real files and commands; it takes longer. Uncommitted changes, untracked/ignored files and executable provider configuration are not copied.
+   - **Stop** cancels. Editing the task or changing its repository, context, source or execution profile discards the old request; Undo applies only while the rewritten text is still current.
+   - Improve supports the **local** execution profile. SSH and container selections disable it, and filesystem restrictions pause it. Other Code Flow mutations in that repository are refused until the turn and cleanup finish. Repository snapshots allow up to 5,000 regular files, 2 MiB per file and 128 MiB in total; unsupported symlinks, submodules and larger snapshots fail explicitly.
 3. Pick how the agents work together, and click an agent for each role. Under each role you can set that agent's model and effort for the role. The sentence under the team, such as *"Claude plans → Codex builds → Claude reviews"*, shows what will happen.
 4. Optionally open **Settings** to pick the base branch, the result branch name, rounds, limits, permissions, and the default model and effort per provider.
 5. Press **Start run** (⌘↵).

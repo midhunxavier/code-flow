@@ -1,4 +1,4 @@
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** code-flow's own install folder: its node_modules/.bin must not leak into your repo's checks. */
@@ -31,11 +31,13 @@ export function childEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     if (key.startsWith("npm_config_") && key !== "npm_config_local_prefix") continue;
     if (key.startsWith("npm_") || key === "INIT_CWD") delete env[key];
   }
-  if (env.PATH) env.PATH = cleanPath(env.PATH);
-  return { ...env, ...extra };
+  const merged = { ...env, ...extra };
+  // Apply after overrides; an empty PATH must not restore current-directory lookup.
+  merged.PATH = cleanPath(merged.PATH ?? "");
+  return merged;
 }
 
-/** PATH without the bin folders npm adds for code-flow's own scripts. */
+/** Absolute tool directories only; repository executables must never be selected through cwd. */
 export function cleanPath(path: string, installDir = INSTALL_DIR): string {
   const sepChar = process.platform === "win32" ? ";" : ":";
   const ancestors = new Set<string>();
@@ -43,14 +45,17 @@ export function cleanPath(path: string, installDir = INSTALL_DIR): string {
     ancestors.add(join(dir, "node_modules", ".bin"));
     if (dirname(dir) === dir) break;
   }
-  return path
+  const cleaned = path
     .split(sepChar)
     .filter((entry) => {
-      if (!entry) return false;
+      if (!isAbsolute(entry)) return false;
       const normalized = resolve(entry);
       if (ancestors.has(normalized)) return false;
       // npm's own shim folder for lifecycle scripts
       return !normalized.includes(`${sep}@npmcli${sep}run-script${sep}`);
     })
     .join(sepChar);
+  if (cleaned) return cleaned;
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "";
+  return process.platform === "win32" ? join(isAbsolute(systemRoot) ? systemRoot : "C:\\Windows", "System32") : "/usr/bin:/bin";
 }

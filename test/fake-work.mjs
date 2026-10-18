@@ -42,7 +42,14 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
   let answer = `${vendor} handled the request.`;
   const json = (obj) => `Done.\n\`\`\`json\n${JSON.stringify(obj)}\n\`\`\``;
 
-  if (prompt.includes("AUTO_TEAM_PLAN")) {
+  if (prompt.includes("## Task to improve")) {
+    // The composer's Improve: the task restated with a done line. IMPROVE-EMPTY answers with nothing usable.
+    const original = prompt.slice(prompt.indexOf("## Task to improve") + "## Task to improve".length).trim();
+    const repo = prompt.includes("look around the repository");
+    answer = prompt.includes("IMPROVE-EMPTY")
+      ? "I'd rather not."
+      : json({ prompt: `Goal: ${original}\n\nDone when: the tests pass.`, summary: `Stated the goal and when it's done (${repo ? "repo" : "quick"}, ${vendor}).` });
+  } else if (prompt.includes("AUTO_TEAM_PLAN")) {
     const inventoryText = prompt.match(/## Inventory and constraints\n```json\n([\s\S]*?)\n```/);
     const policy = inventoryText ? JSON.parse(inventoryText[1]) : { coordinator: vendor, pool: ["claude", "codex"], inventory: { providers: [] } };
     const eligible = policy.inventory.providers.filter((p) => p.available && !p.blockedReason && (policy.pool.includes(p.id) || p.id === policy.coordinator));

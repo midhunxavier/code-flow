@@ -27,6 +27,16 @@ This is the boundary each vendor draws for personal use. Don't extend code-flow 
 
 ## Running the agents' code
 
+Composer Improve uses an empty private Git repository for Quick mode and a bounded
+committed snapshot for repository mode. It copies no source Git history, remotes,
+hooks, working-copy drafts or executable provider configuration. Cleanup removes
+only that private directory and never resets the source checkout. Native Safe/read
+permissions remain a CLI boundary rather than an OS filesystem sandbox; filesystem
+restrictions block Improve entirely. See [Improve setup and limits](getting-started.md#your-first-run).
+App-managed subprocesses use absolute PATH entries, including explicit environment
+overrides. On macOS/Linux, an absent or unusable PATH falls back to `/usr/bin:/bin`
+so repository-owned tools cannot be selected through the current directory.
+
 Local shared-project accounts grant scoped viewer/reviewer access through a
 separate closed API surface. They do not delegate execution or the owner's
 phone capability. Sessions expire and revoke immediately; raw transcripts,

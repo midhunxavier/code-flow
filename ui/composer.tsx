@@ -1,5 +1,6 @@
 import type { VerificationProfile } from "../src/verification.js";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { effect } from "@preact/signals";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
 import { api, ApiError, baseName, enc, fmtSize, FLOWS, post, readBase64, SHORT, store } from "./lib.js";
 import { useDialog } from "./app.js";
@@ -32,6 +33,7 @@ import {
   checkHint,
   contextError,
   contextPaths,
+  currentProject,
   openSide,
   limits,
   optionsFor,
@@ -72,6 +74,7 @@ import { TeamRolloutNotice } from "./team-evaluation.js";
 import { SourceChip, Templates } from "./github.js";
 import { SaveAutomationDialog } from "./automations.js";
 import { Icon } from "./icons.js";
+import { MenuTitle } from "./panel-bits.js";
 import type { AgentId, AgentInfo, ContextItem, ModelCatalog, PatternInfo, TreeEntry } from "./types.js";
 
 const DRAG_TYPE = "application/x-codeflow-path";
@@ -93,6 +96,7 @@ export function Composer() {
   const [profileLoading, setProfileLoading] = useState(false);
   const profileRequest = useRef(0);
   const [toolApprovals, setToolApprovals] = useState(store.get("interactiveApprovals") === "1");
+  const improve = useImprove(remoteWorker ? "Improve uses a local provider. Choose This computer to rewrite this task." : containerEnabled ? "Improve uses a local provider. Turn off Docker isolation to rewrite this task." : "");
   const p = pattern.value;
   useEffect(() => { ++profileRequest.current; setVerificationProfile(null); setVerificationPreset(""); setProfileLoading(false); }, [repo.value]);
   const [error, setError] = useState("");
@@ -145,6 +149,7 @@ export function Composer() {
   const start = async () => {
     if (problem || !p || starting || profileLoading) return;
     if (containerEnabled && !remoteWorker && !containerImage.trim()) { setError("Choose a prebuilt agent image"); return; }
+    improve.stop();
     setStarting(true);
     setError("");
     try {
@@ -212,7 +217,7 @@ export function Composer() {
       {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
       {p?.id === "auto-team" && target.value.project && repo.value ? <ProjectMemory key={`${target.value.project.id}:${repo.value}`} projectId={target.value.project.id} repo={repo.value} /> : null}
       {repoInfo.value ? <Templates /> : null}
-      <TaskBox onStart={start} />
+      <TaskBox onStart={start} improve={improve} />
       <AcceptanceEditor />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
 
@@ -248,7 +253,7 @@ export function Composer() {
           ))}
         </div>
         {p ? <p class="pattern-why">{p.description}</p> : null}
-        <RemoteWorkerSelect value={remoteWorker} onChange={setRemoteWorker} disabled={starting} />
+        <RemoteWorkerSelect value={remoteWorker} onChange={(value) => { improve.stop(); setRemoteWorker(value); }} disabled={starting} />
         {remoteWorker ? <p class="help">Provider availability comes from this worker. Checks and setup run on the application server. Copied workspace files and native interactive approvals are unavailable; use explicitly staged references.</p> : null}
         {p ? <Team p={p} roles={roles} providers={remoteAgents} remote={!!remoteWorker} /> : null}
         <div class="section"><label class="lbl" for="verification-profile">Verification gates</label><select class="field" id="verification-profile" value={verificationPreset} disabled={!repo.value} onChange={async (event) => { const selected = event.currentTarget.value; const request = ++profileRequest.current; setVerificationPreset(selected); if (!selected) { setVerificationProfile(null); setProfileLoading(false); return; } const current = repo.value; setProfileLoading(true); try { const profile = await api<VerificationProfile>(`/api/verification/profile?repo=${enc(current)}&preset=${selected}`); if (repo.value === current && request === profileRequest.current) setVerificationProfile(profile); } catch (error) { if (repo.value === current && request === profileRequest.current) { setError((error as Error).message); setVerificationPreset(""); setVerificationProfile(null); } } finally { if (request === profileRequest.current) setProfileLoading(false); } }}><option value="">Single configured check</option><option value="lightweight">Lightweight profile</option><option value="standard">Standard profile</option><option value="thorough">Thorough profile</option></select>{verificationProfile ? <p class="help">Required gates: {verificationProfile.checks.map((gate) => gate.command).join(" · ") || "No runnable gates detected"}. Each gate appears in the run's evidence.</p> : null}</div>
@@ -261,7 +266,7 @@ export function Composer() {
       <ContextInspector />
       {p && repo.value && task.value.trim() ? <details class="settings"><summary>Start later or wait for provider capacity</summary><div class="settings-body"><DeferredRunsPanel runRequest={runBody(p)} project={target.value.project?.id} repo={repo.value} /></div></details> : null}
 
-      <details class="settings"><summary>Agent isolation</summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} disabled={!!remoteWorker} onChange={(event) => setContainerEnabled(event.currentTarget.checked)} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label>Image<input class="field" placeholder="Your prepared image:tag" value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label>Authentication volume<input class="field" placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is enabled for inference. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
+      <details class="settings"><summary>Agent isolation</summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} disabled={!!remoteWorker} onChange={(event) => { improve.stop(); setContainerEnabled(event.currentTarget.checked); }} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label>Image<input class="field" placeholder="Your prepared image:tag" value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label>Authentication volume<input class="field" placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is enabled for inference. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
       <label class="checkpoint"><input type="checkbox" checked={!remoteWorker && toolApprovals} disabled={!!remoteWorker} onChange={(event) => { setToolApprovals(event.currentTarget.checked); store.set("interactiveApprovals", event.currentTarget.checked ? "1" : "0"); }} /><span><b>Ask me for tool permissions</b> · Supported Codex requests appear in an approval inbox. Unattended and locked-down runs always decline them.</span></label>
       <div class="start-row">
         <button class="btn primary" disabled={!!problem || starting} onClick={start}>
@@ -436,10 +441,139 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
 }
 
 // ---------------------------------------------------------------- task box
-function TaskBox({ onStart }: { onStart: () => void }) {
+type ImproveMode = "quick" | "repo";
+
+/**
+ * Improve: one read-only agent turn rewrites the task so agents can act on it (src/improve.ts).
+ * Quick works from the text alone; Repo reads a committed repository snapshot. Undo brings yours back
+ * while the rewrite is still what's in the box.
+ */
+function useImprove(disabledReason: string) {
+  const [busy, setBusy] = useState<{ mode: ImproveMode } | null>(null);
+  const [done, setDone] = useState<{ before: string; note: string; revision: number; snapshot: ImproveSnapshot } | null>(null);
+  const [error, setError] = useState<{ message: string; revision: number; snapshot: ImproveSnapshot } | null>(null);
+  const [mode, setMode] = useState<ImproveMode>(store.get("improveMode") === "repo" ? "repo" : "quick");
+  const reason = useRef(disabledReason);
+  reason.current = disabledReason;
+  const capture = () => [task.value, repo.value, repoInfo.value, currentProject.value, target.value.project?.id, baseRef.value, contextPaths.value, attachments.value, source.value, externalSource.value, acceptanceCriteria.value, contextBudget.value, reason.current] as const;
+  type ImproveSnapshot = ReturnType<typeof capture>;
+  const same = (a: ImproveSnapshot, b: ImproveSnapshot) => a.every((value, index) => Object.is(value, b[index]));
+  const observed = useRef(capture());
+  const revision = useRef(0);
+  const mounted = useRef(true);
+  const live = useRef<{ stop: AbortController; revision: number; snapshot: ImproveSnapshot } | null>(null);
+  const completed = useRef<typeof done>(null);
+  const stop = () => {
+    // Invalidate synchronously: an already resolved response or an older finally cannot win.
+    const previous = live.current;
+    live.current = null;
+    previous?.stop.abort();
+    completed.current = null;
+    setBusy(null);
+    setDone(null);
+    setError(null);
+  };
+  const observe = () => {
+    const next = capture();
+    if (same(observed.current, next)) return;
+    observed.current = next;
+    revision.current++;
+    stop();
+  };
+  // Signals observe every transition, including repo A → B → A or text edited then restored.
+  // A layout effect installs this before the composer can receive input.
+  useLayoutEffect(() => {
+    const dispose = effect(observe);
+    return () => { mounted.current = false; live.current?.stop.abort(); live.current = null; dispose(); };
+  }, []);
+  useLayoutEffect(observe, [disabledReason]);
+  const run = async (how: ImproveMode = mode) => {
+    if (live.current) { stop(); return; }
+    observe();
+    const text = task.value;
+    if (!mounted.current || reason.current || !text.trim() || !repo.value) return;
+    const operation = { stop: new AbortController(), revision: revision.current, snapshot: capture() };
+    live.current = operation;
+    completed.current = null;
+    setBusy({ mode: how }); setError(null); setDone(null);
+    const current = () => mounted.current && live.current === operation && !operation.stop.signal.aborted && revision.current === operation.revision && same(operation.snapshot, capture());
+    try {
+      const result = await api<{ prompt: string; summary: string; agent: AgentId }>("/api/improve-prompt", {
+        method: "POST", signal: operation.stop.signal,
+        body: JSON.stringify({
+          text, repo: repo.value, mode: how, execution: "local",
+          context: [...contextPaths.value.values()].map((item) => item.path).concat(attachments.value.map((item) => item.name)),
+          source: source.value ? { kind: source.value.kind, number: source.value.number, title: source.value.title } : undefined,
+        }),
+      });
+      if (!current()) return;
+      live.current = null;
+      setBusy(null);
+      setTask(result.prompt);
+      const name = agents.value.find((agent) => agent.id === result.agent)?.displayName ?? result.agent;
+      const applied = { before: text, note: `${name}: ${result.summary}`, revision: revision.current, snapshot: capture() };
+      completed.current = applied;
+      setDone(applied);
+    } catch (err) {
+      if (current()) setError({ message: (err as Error).message, revision: revision.current, snapshot: capture() });
+    } finally {
+      if (mounted.current && live.current === operation) { live.current = null; setBusy(null); }
+    }
+  };
+  const pick = (how: ImproveMode) => { setMode(how); store.set("improveMode", how); void run(how); };
+  const undo = () => {
+    const result = completed.current;
+    if (!result || result.revision !== revision.current || !same(result.snapshot, capture())) { stop(); return; }
+    stop();
+    setTask(result.before);
+  };
+  return {
+    busy, mode, run, pick, undo, stop, disabledReason,
+    error: error && error.revision === revision.current && same(error.snapshot, capture()) ? error.message : "",
+    done: done && done.revision === revision.current && same(done.snapshot, capture()) ? done : null,
+  };
+}
+
+/** Escape restores the trigger; choosing a mode focuses its persistent Improve/Stop action. */
+function ImproveMenu({ improve, disabled }: { improve: ReturnType<typeof useImprove>; disabled: boolean }) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const focusLast = useRef(false);
+  const close = (restore = false) => { setOpen(false); if (restore) trigger.current?.focus(); };
+  useLayoutEffect(() => {
+    if (!open) return;
+    const items = wrap.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]');
+    items?.[focusLast.current ? items.length - 1 : 0]?.focus();
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => { if (!wrap.current?.contains(event.target as Node)) close(); };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [open]);
+  useLayoutEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  return <div class="pop-wrap" ref={wrap} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) close(); }} onKeyDown={(event) => {
+    if (event.key === "Escape" && open) { event.preventDefault(); event.stopPropagation(); close(true); return; }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    if (!open) { if (!disabled) { focusLast.current = event.key === "ArrowUp" || event.key === "End"; setOpen(true); } return; }
+    const items = [...(wrap.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [])];
+    const index = items.findIndex((item) => item === document.activeElement);
+    items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length]?.focus();
+  }}>
+    <button ref={trigger} type="button" class={`icon-btn ${open ? "on" : ""}`} aria-label="How Improve works" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? "improve-mode-menu" : undefined} disabled={disabled} title="How Improve works" onClick={() => { focusLast.current = false; setOpen(!open); }}><Icon name="chevron" /></button>
+    {open ? <div class="pop-menu" role="menu" id="improve-mode-menu" aria-label="Improve mode"><MenuTitle>Improve the task</MenuTitle>
+      {([{ mode: "quick", title: "Quick rewrite", description: "From your text alone, on a fast local model" }, { mode: "repo", title: "Use the repository", description: "Reads a committed repository snapshot. Skips local edits." }] as const).map((item) => <button key={item.mode} type="button" role="menuitemradio" tabIndex={-1} aria-checked={improve.mode === item.mode} class={`pop-item ${improve.mode === item.mode ? "on" : ""}`} onClick={() => { close(); improve.pick(item.mode); (wrap.current?.previousElementSibling as HTMLButtonElement | null)?.focus(); }}><span class="pi-main">{item.title}</span><span class="pi-sub">{item.description}</span></button>)}
+    </div> : null}
+  </div>;
+}
+
+function TaskBox({ onStart, improve }: { onStart: () => void; improve: ReturnType<typeof useImprove> }) {
   const [over, setOver] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const canImprove = !!task.value.trim() && !!repo.value && !improve.disabledReason;
   const autosize = () => {
     const t = area.current;
     if (!t) return;
@@ -501,6 +635,7 @@ function TaskBox({ onStart }: { onStart: () => void }) {
         aria-label="Task"
         placeholder="e.g. Add rate limiting to the /login endpoint, with tests…"
         value={task.value}
+        aria-busy={!!improve.busy}
         onInput={(e) => setTask(e.currentTarget.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -520,9 +655,36 @@ function TaskBox({ onStart }: { onStart: () => void }) {
         <button class="btn ghost small" title="Show the repository's files in the side panel" onClick={() => openSide("files")}>
           <Icon name="files" /> Files
         </button>
-        <span class="hint">
-          {count ? `${count} item${count === 1 ? "" : "s"} of context — agents read these before starting` : "Drag files here from the file list or Finder to give the agents context"}
-        </span>
+        {improve.busy ? (
+          <span class="hint status" role="status">{improve.busy.mode === "repo" ? "Reading the committed repository snapshot and rewriting the task…" : "Rewriting the task…"}</span>
+        ) : improve.error ? (
+          <span class="hint status bad" role="alert" title={improve.error}>{improve.error}</span>
+        ) : improve.done ? (
+          <span class="hint status" role="status" title={improve.done.note}>{improve.done.note}</span>
+        ) : improve.disabledReason ? (
+          <span class="hint status" id="improve-execution-note">{improve.disabledReason}</span>
+        ) : (
+          <span class="hint">
+            {count ? `${count} item${count === 1 ? "" : "s"} of context — agents read these before starting` : "Drag files here from the file list or Finder to give the agents context"}
+          </span>
+        )}
+        {improve.done ? (
+          <button class="btn ghost small improve-undo" title="Put back the task as you wrote it" onClick={improve.undo}>
+            Undo
+          </button>
+        ) : null}
+        <div class="improve">
+          <button
+            class="btn ghost small"
+            disabled={!improve.busy && !canImprove}
+            aria-describedby={improve.disabledReason ? "improve-execution-note" : undefined}
+            title={improve.busy ? "Stop rewriting" : improve.disabledReason || (!repo.value ? "Choose a repository first" : improve.mode === "repo" ? "Rewrite the task using a committed repository snapshot" : "Rewrite the task so agents can act on it")}
+            onClick={() => void improve.run()}
+          >
+            {improve.busy ? <span class="spin" /> : <Icon name="sparkle" />} {improve.busy ? "Stop" : "Improve"}
+          </button>
+          <ImproveMenu improve={improve} disabled={!!improve.busy || !canImprove} />
+        </div>
       </div>
       <div class="overlay">Drop to add as context</div>
       <input
