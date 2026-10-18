@@ -8,11 +8,12 @@ import { createRequire } from "node:module";
 
 const watching = process.argv.includes("--watch");
 
-// Fonts referenced as url("fonts/<file>.woff2") are inlined, so the page needs no network.
+// Fonts referenced as url("fonts/<file>.woff") or .woff2 are inlined, so the page needs no network.
+const FONT_URL = /url\("fonts\/([\w.-]+\.(woff2?))"\)/g;
 async function inlineFonts(css) {
-  const files = [...new Set([...css.matchAll(/url\("fonts\/([\w.-]+\.woff2)"\)/g)].map((m) => m[1]))];
+  const files = [...new Set([...css.matchAll(FONT_URL)].map((m) => m[1]))];
   const data = new Map(await Promise.all(files.map(async (f) => [f, (await readFile(`ui/fonts/${f}`)).toString("base64")])));
-  return css.replace(/url\("fonts\/([\w.-]+\.woff2)"\)/g, (_, f) => `url(data:font/woff2;base64,${data.get(f)})`);
+  return css.replace(FONT_URL, (_, f, type) => `url(data:font/${type};base64,${data.get(f)})`);
 }
 
 // The Terminal's xterm brings a stylesheet of its own; ours comes after it, to override it.

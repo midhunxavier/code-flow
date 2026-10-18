@@ -286,6 +286,16 @@ export function Rail() {
   const empty = !list.length;
   return (
     <nav class={`rail ${railOpen.value ? "open" : ""}`} aria-label="Runs">
+      <div class="rail-head">
+        <a class="brand" href="#/" aria-label="code-flow: new run" onClick={() => (railOpen.value = false)}>
+          <span class="brand-name">
+            code<span>-flow</span>
+          </span>
+        </a>
+        <button type="button" class="icon-btn rail-close" aria-label="Close menu" onClick={() => (railOpen.value = false)}>
+          <Icon name="close" />
+        </button>
+      </div>
       <button class="btn primary new-run" title="New run (n)" onClick={() => go({ view: "composer" })}>
         <Icon name="plus" /> New run
       </button>

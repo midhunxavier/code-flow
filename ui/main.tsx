@@ -1,3 +1,4 @@
+import "./theme.js"; // first: the theme follows your pick (or the system) before anything renders
 import { effect } from "@preact/signals";
 import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";

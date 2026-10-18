@@ -11,12 +11,13 @@ import { ProjectsDialog } from "./projects.js";
 import { ProjectView } from "./project.js";
 import { Rail } from "./rail.js";
 import { Icon } from "./icons.js";
-import logo from "./brand/vibesboard-mark.png";
 import { api, showToast, store, toast } from "./lib.js";
+import { theme, toggleTheme } from "./theme.js";
 import {
   pickRepo,
   pickerChoose,
   projectFor,
+  projects,
   projectsOpen,
   announcement,
   shortcutsOpen,
@@ -103,25 +104,27 @@ function MainApp() {
 
   return (
     <>
-      <TopBar />
       <div class={`app ${sideOpen.value ? "with-side" : ""}`} style={`--side-w:${sideWidth.value}px`}>
         <Rail />
         {railOpen.value ? <div class="rail-scrim" aria-hidden="true" onClick={() => (railOpen.value = false)} /> : null}
-        <main>
-          {route.value.view === "run" ? (
-            <RunView key={route.value.id} id={route.value.id} />
-          ) : route.value.view === "review" ? (
-            <Review key={`${route.value.id}:${route.value.branch}`} id={route.value.id} branch={route.value.branch} />
-          ) : route.value.view === "automations" ? (
-            <AutomationsView />
-          ) : route.value.view === "insights" ? (
-            <InsightsView group={route.value.group} />
-          ) : route.value.view === "project" ? (
-            <ProjectView key={route.value.id} id={route.value.id} />
-          ) : (
-            <Composer />
-          )}
-        </main>
+        <div class="main-col">
+          <TopBar />
+          <main>
+            {route.value.view === "run" ? (
+              <RunView key={route.value.id} id={route.value.id} />
+            ) : route.value.view === "review" ? (
+              <Review key={`${route.value.id}:${route.value.branch}`} id={route.value.id} branch={route.value.branch} />
+            ) : route.value.view === "automations" ? (
+              <AutomationsView />
+            ) : route.value.view === "insights" ? (
+              <InsightsView group={route.value.group} />
+            ) : route.value.view === "project" ? (
+              <ProjectView key={route.value.id} id={route.value.id} />
+            ) : (
+              <Composer />
+            )}
+          </main>
+        </div>
         {sideOpen.value ? <div class="side-scrim" aria-hidden="true" onClick={closeSide} /> : null}
         <SidePanel />
       </div>
@@ -144,19 +147,20 @@ function MainApp() {
 }
 
 // ---------------------------------------------------------------- top bar
+/** Above the page, beside the sidebar: where you are, then the theme and the side panel. */
 function TopBar() {
+  const dark = theme.value === "dark";
   return (
     <header class="topbar">
-      <button class="btn ghost menu-btn" aria-label="Show runs" onClick={() => (railOpen.value = !railOpen.value)}>
+      <button class="icon-btn menu-btn" aria-label="Show runs" aria-expanded={railOpen.value} onClick={() => (railOpen.value = !railOpen.value)}>
         <Icon name="menu" />
       </button>
-      <span class="brand">
-        <img class="brand-mark" src={logo} alt="" width={28} height={28} />
-        <span class="brand-name">code-flow</span>
-      </span>
       <Crumbs />
+      <button class="icon-btn" aria-label={dark ? "Use the light theme" : "Use the dark theme"} title={dark ? "Light theme" : "Dark theme"} onClick={toggleTheme}>
+        <Icon name={dark ? "sun" : "moon"} />
+      </button>
       <button
-        class="btn ghost side-btn"
+        class="icon-btn side-btn"
         aria-pressed={sideOpen.value}
         aria-label="Side panel"
         title="Side panel: chat, files, terminal, browser, notes (\\)"
@@ -168,31 +172,60 @@ function TopBar() {
   );
 }
 
-/** On a run or its review: the project it's in and the run. Other pages carry their own heading. */
+/** Where you are: the page, or on a run (and its review) the project it's in and the run. */
 function Crumbs() {
   const r = route.value;
   const run = r.view === "run" || r.view === "review" ? runs.value.get(r.id) : undefined;
-  if (!run) return <span class="spacer" />;
-  const project = projectFor(run);
+  const sep = (
+    <span class="sep" aria-hidden="true">
+      /
+    </span>
+  );
+  let trail;
+  if (run) {
+    const project = projectFor(run);
+    trail = (
+      <>
+        {project ? (
+          <a class="crumb" href={`#/project/${encodeURIComponent(project.id)}`} title={run.repo}>
+            {project.name}
+          </a>
+        ) : (
+          <span class="crumb" title={run.repo}>
+            No project
+          </span>
+        )}
+        {sep}
+        <span class={`crumb ${r.view === "run" ? "here" : ""}`} title={run.task} aria-current={r.view === "run" ? "page" : undefined}>
+          {run.task.split("\n")[0] || "(no task)"}
+        </span>
+        {r.view === "review" ? (
+          <>
+            {sep}
+            <span class="crumb here" aria-current="page">
+              Review
+            </span>
+          </>
+        ) : null}
+      </>
+    );
+  } else if (r.view === "project") {
+    trail = (
+      <span class="crumb here" aria-current="page">
+        {projects.value.find((p) => p.id === r.id)?.name ?? "Project"}
+      </span>
+    );
+  } else {
+    const page = r.view === "automations" ? "Automations" : r.view === "insights" ? "Insights" : r.view === "composer" ? "New run" : "";
+    trail = page ? (
+      <span class="crumb here" aria-current="page">
+        {page}
+      </span>
+    ) : null;
+  }
   return (
     <nav class="crumbs-bar" aria-label="Where you are">
-      <span class="crumb" title={run.repo}>
-        <Icon name="project" /> {project?.name ?? "No project"}
-      </span>
-      <span class="sep" aria-hidden="true">
-        ›
-      </span>
-      <span class={`crumb ${r.view === "run" ? "here" : ""}`} title={run.task}>
-        {run.task.split("\n")[0] || "(no task)"}
-      </span>
-      {r.view === "review" ? (
-        <>
-          <span class="sep" aria-hidden="true">
-            ›
-          </span>
-          <span class="crumb here">Review</span>
-        </>
-      ) : null}
+      {trail}
     </nav>
   );
 }
