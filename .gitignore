@@ -2,3 +2,4 @@ node_modules/
 *.log
 .codeflow-dev/
 public/index.html
+output/playwright/

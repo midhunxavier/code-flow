@@ -5,7 +5,16 @@ import { fileURLToPath } from "node:url";
 const INSTALL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Variables that belong to code-flow itself, never to the processes it starts. */
-const SECRET_VARS = ["CODEFLOW_TOKEN", "CODEFLOW_TEAM_CAPABILITY", "CODEFLOW_TEAM_ENDPOINT"];
+const SECRET_VARS = new Set(["CODEFLOW_TOKEN", "CODEFLOW_TEAM_CAPABILITY", "CODEFLOW_TEAM_ENDPOINT", "CODEFLOW_INTEGRATIONS_JSON", "CODEFLOW_INTEGRATIONS_FILE", "CODEFLOW_NOTIFICATIONS_JSON", "CODEFLOW_NOTIFICATIONS_FILE"]);
+
+/** Service credentials belong to the server, not to agent, check or preview subprocesses. */
+export function registerPrivateEnvNames(names: Iterable<string>) {
+  for (const name of names) if (/^[A-Z_][A-Z0-9_]{0,99}$/.test(name)) SECRET_VARS.add(name);
+}
+
+export function privateEnvironmentValues(): string[] {
+  return [...SECRET_VARS].map((name) => process.env[name]).filter((value): value is string => !!value && value.length >= 8);
+}
 
 /**
  * Environment for everything code-flow starts (agent CLIs, checks, setup, Run app, gh, git):

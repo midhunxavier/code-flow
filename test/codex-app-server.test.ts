@@ -178,6 +178,106 @@ test("approval requests are declined: runs are headless", async () => {
   assert.ok(events.some((e) => e.kind === "status" && /asked for approval \(commandExecution\); declined/.test(e.text)));
 });
 
+test("interactive command approvals are opt-in, one-shot and keep the original sandbox", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codeflow-approval-record-"));
+  const requests: import("../src/adapters/types.js").AgentApprovalRequest[] = [];
+  const configured = { mode: "write" as const, onApproval: async (request: import("../src/adapters/types.js").AgentApprovalRequest) => { requests.push(request); return "approve" as const; } };
+  assert.ok((await turn("ASK-APPROVAL", configured)).result.ok);
+  assert.equal(requests.length, 0, "a callback alone cannot opt a headless run into approval");
+  const approved = await withEnv({ FAKE_RECORD_DIR: dir }, () => turn("ASK-APPROVAL", { ...configured, interactiveApprovals: true }));
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]!.kind, "command");
+  assert.equal(requests[0]!.command, "rm -rf build");
+  assert.ok(approved.result.ok, approved.result.error);
+  assert.ok(approved.events.some((event) => event.kind === "tool_result" && event.callId === "i3" && !event.isError));
+  const [record] = recorded(dir);
+  assert.equal(record.thread.approvalPolicy, "on-request");
+  assert.equal(record.thread.sandbox, "workspace-write");
+  assert.ok(approved.events.some((event) => event.kind === "status" && /approved once/.test(event.text)));
+});
+
+test("interactive approvals decline unsupported scope and mismatched requests before presenting them", async () => {
+  let callbacks = 0;
+  const opts = { mode: "write" as const, interactiveApprovals: true, onApproval: async () => { callbacks++; return "approve" as const; } };
+  const overrides = [
+    { threadId: "another-thread" }, { turnId: "another-turn" }, { kind: "writeStdin" },
+    { cwd: tmpdir() }, { networkApprovalContext: { host: "example.com", protocol: "https" } },
+    { additionalPermissions: { network: { enabled: true } } }, { environmentId: "remote-environment" },
+  ];
+  for (const override of overrides) {
+    const denied = await withEnv({ FAKE_CODEX_APPROVAL_OVERRIDES: JSON.stringify(override) }, () => turn("ASK-APPROVAL", opts));
+    assert.ok(denied.result.ok, denied.result.error);
+    assert.ok(denied.events.some((event) => event.kind === "tool_result" && event.callId === "i3" && event.isError));
+  }
+  await turn("ASK-APPROVAL", { ...opts, mode: "read" });
+  assert.equal(callbacks, 0);
+});
+
+test("file approval previews include rename targets and refuse grants or paths outside the worktree", async () => {
+  const requests: import("../src/adapters/types.js").AgentApprovalRequest[] = [];
+  const opts = { mode: "write" as const, interactiveApprovals: true, onApproval: async (request: import("../src/adapters/types.js").AgentApprovalRequest) => { requests.push(request); return "approve" as const; } };
+  const changes = [{ path: "original.ts", kind: { type: "update", move_path: "renamed.ts" }, diff: "rename" }];
+  const accepted = await withEnv({ FAKE_CODEX_FILE_CHANGES: JSON.stringify(changes) }, () => turn("ASK-FILE-APPROVAL", opts));
+  assert.ok(accepted.result.ok, accepted.result.error);
+  assert.deepEqual(requests[0]!.paths, ["original.ts", "renamed.ts"]);
+  assert.ok(accepted.events.some((event) => event.kind === "tool_result" && event.callId === "patch-approval" && !event.isError));
+  const outside = await withEnv({ FAKE_CODEX_FILE_CHANGES: JSON.stringify([{ ...changes[0], kind: { type: "update", move_path: "../outside.ts" } }]) }, () => turn("ASK-FILE-APPROVAL", opts));
+  const sessionGrant = await withEnv({ FAKE_CODEX_APPROVAL_OVERRIDES: JSON.stringify({ grantRoot: "/" }) }, () => turn("ASK-FILE-APPROVAL", opts));
+  assert.equal(requests.length, 1, "unsafe file requests never enter the inbox");
+  for (const denied of [outside, sessionGrant]) assert.ok(denied.events.some((event) => event.kind === "tool_result" && event.callId === "patch-approval" && event.isError));
+});
+
+test("waiting for a user's approval pauses the idle watchdog and resumes when answered", async () => {
+  const approved = await turn("ASK-APPROVAL", {
+    mode: "write", interactiveApprovals: true, idleTimeoutMs: 400,
+    onApproval: async () => { await new Promise((resolve) => setTimeout(resolve, 650)); return "approve"; },
+  });
+  assert.ok(approved.result.ok, approved.result.error);
+  assert.ok(approved.events.some((event) => event.kind === "tool_result" && event.callId === "i3" && !event.isError));
+});
+
+test("approval expiry, turn cancellation, and server resolution invalidate late responses", async () => {
+  let timedOutSignal: AbortSignal | undefined;
+  const expired = await served("ASK-APPROVAL", {
+    sandbox: "workspace-write", interactiveApprovals: true, approvalTimeoutMs: 60,
+    onApproval: async (_request, signal) => { timedOutSignal = signal; return new Promise(() => {}); },
+  });
+  assert.ok(!("unavailable" in expired.outcome));
+  assert.equal(timedOutSignal?.aborted, true);
+  assert.equal(expired.failed, undefined, "a declined request does not itself fail the turn");
+
+  const controller = new AbortController();
+  let cancelSignal: AbortSignal | undefined;
+  const running = turn("ASK-APPROVAL", {
+    mode: "write", interactiveApprovals: true, signal: controller.signal,
+    onApproval: async (_request, signal) => { cancelSignal = signal; return new Promise(() => {}); },
+  });
+  await until(() => !!cancelSignal);
+  controller.abort();
+  assert.equal((await running).result.errorKind, "cancelled");
+  assert.equal(cancelSignal!.aborted, true);
+
+  let resolvedSignal: AbortSignal | undefined;
+  const resolved = await withEnv({ FAKE_CODEX_APPROVAL_RESOLVE_MS: "30" }, () => turn("ASK-APPROVAL", {
+    mode: "write", interactiveApprovals: true,
+    onApproval: async (_request, signal) => { resolvedSignal = signal; await new Promise((resolve) => setTimeout(resolve, 100)); return "approve"; },
+  }));
+  assert.ok(resolved.result.ok, resolved.result.error);
+  assert.equal(resolvedSignal?.aborted, true);
+  assert.ok(resolved.events.some((event) => event.kind === "tool_result" && event.callId === "i3" && event.isError));
+  assert.ok(!resolved.events.some((event) => event.kind === "status" && /approved once/.test(event.text)));
+});
+
+test("hard process timeouts still cancel a pending approval", async () => {
+  let approvalSignal: AbortSignal | undefined;
+  const timed = await turn("ASK-APPROVAL", {
+    mode: "write", interactiveApprovals: true, timeoutMs: 500, idleTimeoutMs: 150,
+    onApproval: async (_request, signal) => { approvalSignal = signal; return new Promise(() => {}); },
+  });
+  assert.equal(timed.result.errorKind, "timeout");
+  assert.equal(approvalSignal?.aborted, true);
+});
+
 test("cancelling a turn stops the server and everything it started", async () => {
   const pidfile = join(mkdtempSync(join(tmpdir(), "codeflow-appserver-pid-")), "linger.pid");
   process.env.FAKE_LINGER_VENDOR = "codex";
@@ -253,7 +353,7 @@ test("a request the server never answers times out cleanly", async () => {
 
 test("requests code-flow doesn't know are answered, and the run shows what Codex asked", async () => {
   const cases: [string, RegExp][] = [
-    ["item/permissions/requestApproval", /got \{"decision":"decline"\}/],
+    ["item/permissions/requestApproval", /got \{"permissions":\{\},"scope":"turn"\}/],
     ["mcpServer/elicitation/request", /got \{"action":"decline","content":null\}/],
     ["item/tool/requestUserInput", /got \{"error":\{"code":-32601/],
   ];
@@ -273,7 +373,7 @@ test("Auto members get structured question guidance without granting native perm
     assert.ok(events.some((event) => event.kind === "text" && /got \{(?:"error"|"action":"decline")/.test(event.text)));
   }
   const denied = await withEnv({ FAKE_CODEX_SERVER_REQUEST: "item/permissions/requestApproval" }, () => turn("Ask through the team outcome", { questionProtocol: "structured" }));
-  assert.ok(denied.events.some((event) => event.kind === "text" && event.text.includes('got {"decision":"decline"}')));
+  assert.ok(denied.events.some((event) => event.kind === "text" && event.text.includes('got {"permissions":{},"scope":"turn"}')));
 });
 
 test("app-server: a crash mid-turn fails it; a hang after the turn doesn't", async () => {

@@ -105,6 +105,7 @@ export class PrWatcher {
     if (status.state !== "OPEN") {
       return update({ state: "closed", detail: status.state === "MERGED" ? "The pull request was merged" : "The pull request was closed" });
     }
+    if (status.commentsTruncated) return update({ state: "needs-you", detail: "The PR has at least 1,000 inline review comments; review its complete discussion before restarting follow-through" });
     if (w.state === "fixing" || run.status !== "done") {
       // A fix that never finished (e.g. code-flow restarted mid-way).
       return update({ state: "needs-you", detail: `The run is ${run.status}; resume it, then watch again` });
@@ -142,7 +143,11 @@ export class PrWatcher {
         worktree: worktree.name,
         agent: w.agent,
         from: `${who} on the pull request`,
-        message: actionable.map((c) => `@${c.author}:\n${safeFence(c.body.trim())}`).join("\n\n"),
+        message: actionable.map((c) => {
+          // Repository filenames are user-controlled too; keep locations inside the data fence.
+          const location = c.path ? `File: ${c.path}${c.line ? `:${c.line}` : ""}${c.side ? ` (${c.side.toLowerCase()} side)` : ""}${c.outdated ? " [outdated diff]" : ""}` : "";
+          return `@${c.author}:\n${safeFence([location, c.threadId ? `Thread: ${c.threadId}` : "", c.body.trim()].filter(Boolean).join("\n\n"))}`;
+        }).join("\n\n"),
         push: w.remoteBranch,
         watch: w.branch,
         trust: unattendedTrust(run),

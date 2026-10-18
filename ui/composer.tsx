@@ -1,9 +1,15 @@
+import type { VerificationProfile } from "../src/verification.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
 import { api, ApiError, baseName, enc, fmtSize, FLOWS, post, readBase64, SHORT, store } from "./lib.js";
 import { useDialog } from "./app.js";
+import { AcceptanceEditor, ComposerLibraryEditor, ContextInspector, EffectiveSettings, FirstRunGuide, RepositoryReadiness } from "./onboarding.js";
+import { taskWithCriteria } from "./composer-tools.js";
 import {
   agents,
+  acceptanceCriteria,
+  setAcceptanceCriteria,
+  configChecking,
   agentSettings,
   planApprovalFor,
   health,
@@ -46,6 +52,7 @@ import {
   setTask,
   setupCmd,
   source,
+  externalSource,
   task,
   ghPicker,
   afterStart,
@@ -70,7 +77,16 @@ const fileIcon = (type: string) => (type === "dir" ? "📁" : "📄");
 
 // ================================================================= composer
 export function Composer() {
+  const [containerEnabled, setContainerEnabled] = useState(false);
+  const [containerImage, setContainerImage] = useState("");
+  const [containerVolume, setContainerVolume] = useState("");
+  const [verificationProfile, setVerificationProfile] = useState<VerificationProfile | null>(null);
+  const [verificationPreset, setVerificationPreset] = useState("");
+  const [profileLoading, setProfileLoading] = useState(false);
+  const profileRequest = useRef(0);
+  const [toolApprovals, setToolApprovals] = useState(store.get("interactiveApprovals") === "1");
   const p = pattern.value;
+  useEffect(() => { ++profileRequest.current; setVerificationProfile(null); setVerificationPreset(""); setProfileLoading(false); }, [repo.value]);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
   // Pins sent from the side panel's Browser: their text joins the task, their snapshots its attachments.
@@ -81,25 +97,26 @@ export function Composer() {
     attachments.value = [...attachments.value, ...drafts.flatMap((d) => d.images)];
   }, [chatDrafts.value]);
   const roles = rolesFor(p);
-  const problem = startProblem(p, roles);
+  const problem = startProblem(p, roles) || (profileLoading ? "Loading verification profile…" : "");
 
   const [saving, setSaving] = useState(false);
   const runBody = (p: PatternInfo) => ({
     repo: repo.value,
     project: target.value.project?.id,
-    task: task.value,
+    task: taskWithCriteria(task.value, acceptanceCriteria.value),
     pattern: p.id,
     roles,
     options: optionsFor(p),
     baseRef: baseRef.value,
     source: source.value ? { kind: source.value.kind, number: source.value.number, ciLogs: !!source.value.ciLogs, tool: source.value.tool, numbers: source.value.numbers } : undefined,
     branchPrefix: branchPrefix.value.trim(),
+    externalSourceId: externalSource.value?.id,
     context: {
       paths: [...contextPaths.value.values()].map((c) => ({ path: c.path })),
       attachments: attachments.value.map((a) => ({ name: a.name, data: a.data })),
     },
     agentSettings: agentSettings.value,
-    approvals: { plan: !!CHECKPOINTS[p.id] && planApprovalFor(p.id) },
+    approvals: { plan: !!CHECKPOINTS[p.id] && planApprovalFor(p.id), tools: toolApprovals },
     trust: trust.value,
     roleSettings: roleModels.value[p.id] ?? {},
     loop: {
@@ -107,12 +124,17 @@ export function Composer() {
       setup: setupCmd.value.trim(),
       maxMinutes: limits.value.maxMinutes,
       maxSteps: limits.value.maxSteps,
+      maxTokens: limits.value.maxTokens,
+      maxCostUsd: limits.value.maxCostUsd,
+      verification: verificationProfile,
+      agentContainer: containerEnabled ? { image: containerImage.trim(), authVolume: containerVolume.trim() || undefined, network: true } : undefined,
       copy: repoConfig.value?.config.copy,
     },
   });
   const [comparing, setComparing] = useState(false);
   const start = async () => {
-    if (problem || !p || starting) return;
+    if (problem || !p || starting || profileLoading) return;
+    if (containerEnabled && !containerImage.trim()) { setError("Choose a prebuilt agent image"); return; }
     setStarting(true);
     setError("");
     try {
@@ -130,8 +152,10 @@ export function Composer() {
   const resetComposer = () => {
     store.set("baseRef", baseRef.value);
     setTask("");
+    setAcceptanceCriteria([]);
     branchPrefix.value = "";
     source.value = null;
+    externalSource.value = null;
     contextPaths.value = new Map();
     attachments.value = [];
   };
@@ -145,6 +169,7 @@ export function Composer() {
         <ProjectButton composer />
         <RepoButton />
       </div>
+      <FirstRunGuide />
       {!repoInfo.value ? (
         <div class={`banner ${repoError.value ? "bad" : ""}`}>
           <p>
@@ -173,14 +198,37 @@ export function Composer() {
         </div>
       ) : null}
       <ProjectNote />
+      {externalSource.value ? <div class="banner"><p>External context: {externalSource.value.provider} {externalSource.value.kind} {externalSource.value.key} · {externalSource.value.title}</p><p class="help">This source remains untrusted. The run uses Safe permissions and isolated checks.</p><button class="btn small" onClick={() => { externalSource.value = null; }}>Remove source</button></div> : null}
       {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
       {p?.id === "auto-team" && target.value.project && repo.value ? <ProjectMemory key={`${target.value.project.id}:${repo.value}`} projectId={target.value.project.id} repo={repo.value} /> : null}
       {repoInfo.value ? <Templates /> : null}
       <TaskBox onStart={start} />
+      <AcceptanceEditor />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
 
       <div class="section">
-        <div class="section-title">How should they work together?</div>
+        <label class="lbl" for="workflow-select">Workflow</label>
+        <select class="field" id="workflow-select" aria-label="Workflow" value={p?.id ?? ""} onChange={(e) => setPattern(e.currentTarget.value)}>
+          {patterns.value.map((x) => <option key={x.id} value={x.id}>{x.name}{x.id === "pipeline" ? " · recommended for most changes" : ""}</option>)}
+        </select>
+        {p ? <p class="pattern-why">{teamSentence(p, roles)}</p> : null}
+        {trust.value === "full" ? <p class="full-warn" role="alert"><b>Full access: no sandbox.</b> Agents can run commands and change files outside their worktree with your credentials. Review permissions in Advanced team controls.</p> : null}
+        {p && CHECKPOINTS[p.id] && (p.id !== "debate" || roles.builder?.length) ? (
+          <label class="checkpoint">
+            <input type="checkbox" checked={planApprovalFor(p.id)} onChange={(e) => setApprovePlan(e.currentTarget.checked, p.id)} />
+            <span><b>Let me approve {CHECKPOINTS[p.id]}</b> before agents build.</span>
+          </label>
+        ) : null}
+        <div class={`donewhen ${p?.requiresCheck && !checkCmd.value.trim() ? "required" : ""}`}>
+          <label class="lbl" for="checkCmd">Done when this passes</label>
+          <div class="dw-row"><span class="dw-prompt">$</span><input class="field" id="checkCmd" placeholder="e.g. npm test" spellcheck={false} autocomplete="off" value={checkCmd.value} onInput={(e) => setCheck(e.currentTarget.value)} /></div>
+          <div class="help">{configChecking.value ? "Loading repository configuration… " : checkHint.value ? `${checkHint.value} ` : ""}code-flow runs this itself after changes. A run without a passing automated check is unchecked.</div>
+        </div>
+      </div>
+
+      <details class="settings advanced-controls" open={store.get("composerAdvanced") === "1"} onToggle={(e) => store.set("composerAdvanced", e.currentTarget.open ? "1" : "0")}>
+        <summary><span class="st">Advanced team controls</span><span class="ss">Roles, models, permissions and limits</span></summary>
+        <div class="settings-body">
         <div class="patterns">
           {patterns.value.map((x) => (
             <button key={x.id} type="button" class={`pattern ${x.id === p?.id ? "selected" : ""}`} aria-pressed={x.id === p?.id} onClick={() => setPattern(x.id)}>
@@ -191,38 +239,25 @@ export function Composer() {
         </div>
         {p ? <p class="pattern-why">{p.description}</p> : null}
         {p ? <Team p={p} roles={roles} /> : null}
-        {p && CHECKPOINTS[p.id] && (p.id !== "debate" || roles.builder?.length) ? (
-          <label class="checkpoint">
-            <input type="checkbox" checked={planApprovalFor(p.id)} onChange={(e) => setApprovePlan(e.currentTarget.checked, p.id)} />
-            <span>
-              <b>Let me approve {CHECKPOINTS[p.id]}</b> before agents build — the run pauses (and its time budget with it) until you approve, ask for changes, or reject.
-            </span>
-          </label>
-        ) : null}
-        <div class={`donewhen ${p?.requiresCheck && !checkCmd.value.trim() ? "required" : ""}`}>
-          <label class="lbl" for="checkCmd">
-            Done when this passes
-          </label>
-          <div class="dw-row">
-            <span class="dw-prompt">$</span>
-            <input class="field" id="checkCmd" placeholder="e.g. npm test" spellcheck={false} autocomplete="off" value={checkCmd.value} onInput={(e) => setCheck(e.currentTarget.value)} />
-          </div>
-          <div class="help">
-            {checkHint.value ? `${checkHint.value} ` : ""}code-flow runs this itself after every change, so loops end on evidence. Leave empty to rely on the agents' judgment.
-          </div>
-        </div>
-      </div>
-
+        <div class="section"><label class="lbl" for="verification-profile">Verification gates</label><select class="field" id="verification-profile" value={verificationPreset} disabled={!repo.value} onChange={async (event) => { const selected = event.currentTarget.value; const request = ++profileRequest.current; setVerificationPreset(selected); if (!selected) { setVerificationProfile(null); setProfileLoading(false); return; } const current = repo.value; setProfileLoading(true); try { const profile = await api<VerificationProfile>(`/api/verification/profile?repo=${enc(current)}&preset=${selected}`); if (repo.value === current && request === profileRequest.current) setVerificationProfile(profile); } catch (error) { if (repo.value === current && request === profileRequest.current) { setError((error as Error).message); setVerificationPreset(""); setVerificationProfile(null); } } finally { if (request === profileRequest.current) setProfileLoading(false); } }}><option value="">Single configured check</option><option value="lightweight">Lightweight profile</option><option value="standard">Standard profile</option><option value="thorough">Thorough profile</option></select>{verificationProfile ? <p class="help">Required gates: {verificationProfile.checks.map((gate) => gate.command).join(" · ") || "No runnable gates detected"}. Each gate appears in the run's evidence.</p> : null}</div>
       {p ? <Settings p={p} roles={roles} /> : null}
+        </div>
+      </details>
+      <RepositoryReadiness />
+      {p ? <ComposerLibraryEditor p={p} onToolApprovalsChange={setToolApprovals} /> : null}
+      {p ? <EffectiveSettings p={p} verificationProfile={verificationProfile} container={{ enabled: containerEnabled, image: containerImage, authVolume: containerVolume }} /> : null}
+      <ContextInspector />
 
+      <details class="settings"><summary>Agent isolation</summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} onChange={(event) => setContainerEnabled(event.currentTarget.checked)} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label>Image<input class="field" placeholder="Your prepared image:tag" value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label>Authentication volume<input class="field" placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is enabled for inference. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
+      <label class="checkpoint"><input type="checkbox" checked={toolApprovals} onChange={(event) => { setToolApprovals(event.currentTarget.checked); store.set("interactiveApprovals", event.currentTarget.checked ? "1" : "0"); }} /><span><b>Ask me for tool permissions</b> · Supported Codex requests appear in an approval inbox. Unattended and locked-down runs always decline them.</span></label>
       <div class="start-row">
         <button class="btn primary" disabled={!!problem || starting} onClick={start}>
           {starting ? "Starting…" : "Start run"} <span class="kbd">⌘↵</span>
         </button>
-        <button class="btn" disabled={!!problem} title="Run this task with several patterns or teams at once and see them side by side" onClick={() => setComparing(true)}>
+        <button class="btn secondary-run-action" disabled={!!problem} title="Run this task with several patterns or teams at once and see them side by side" onClick={() => setComparing(true)}>
           <Icon name="compare" /> Compare setups…
         </button>
-        <button class="btn" disabled={!!problem} title="Run this task with this team on a schedule or from a webhook" onClick={() => setSaving(true)}>
+        <button class="btn secondary-run-action" disabled={!!problem} title="Run this task with this team on a schedule or from a webhook" onClick={() => setSaving(true)}>
           <Icon name="clock" /> Save as automation…
         </button>
         <span class="why">{problem}</span>
@@ -362,7 +397,9 @@ function CompareDialog({ base, onClose, onStarted }: { base: Record<string, any>
 /** Why the run can't start yet ("" when it can); `needsTask: false` for sweeps, whose items bring their tasks. */
 export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true): string {
   if (p?.id === "auto-team" && teamRollout.value?.enabled === false) return "New Auto teams are disabled. Existing teams can still be resumed.";
+  if (repoChecking.value) return "Checking repository…";
   if (!repo.value) return "Choose a repository first";
+  if (configChecking.value) return "Loading repository configuration…";
   if (needsTask && !task.value.trim()) return "Describe the task to start";
   if (!p) return "Pick how the agents work together";
   for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return `Pick an agent for ${role.label}`;
@@ -828,6 +865,8 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
               </label>
               <input class="field" type="number" id="maxSteps" min={1} max={200} value={String(limits.value.maxSteps)} onInput={(e) => setLimits({ maxSteps: Number(e.currentTarget.value) || 40 })} />
             </div>
+            <div><label class="lbl" for="maxTokens">Reported token ceiling</label><input class="field" id="maxTokens" type="number" min={1} placeholder="Optional" value={limits.value.maxTokens ?? ""} onInput={(event) => setLimits({ maxTokens: Number(event.currentTarget.value) || undefined })} /></div>
+            <div><label class="lbl" for="maxCostUsd">Reported API-equivalent ceiling ($)</label><input class="field" id="maxCostUsd" type="number" min={0.001} step={0.01} placeholder="Optional" value={limits.value.maxCostUsd ?? ""} onInput={(event) => setLimits({ maxCostUsd: Number(event.currentTarget.value) || undefined })} /></div>
             <div>
               <label class="lbl" for="setupCmd">
                 Setup each worktree
@@ -835,7 +874,7 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
               <input class="field mono" id="setupCmd" placeholder="optional, e.g. npm ci" spellcheck={false} autocomplete="off" value={setupCmd.value} onInput={(e) => setSetup(e.currentTarget.value)} />
             </div>
           </div>
-          <div class="help">Work done before a limit is kept on its branch. Setup runs once in every new worktree before the agents start.</div>
+          <div class="help">Ceilings use reported usage; they cannot count missing provider data and are checked between operations. API-equivalent cost is not your subscription bill. Work done before a limit is kept on its branch. Setup runs once in every new worktree before the agents start.</div>
         </div>
         <div>
           <span class="lbl">What agents may do while building</span>

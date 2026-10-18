@@ -1,0 +1,142 @@
+import { useEffect, useLayoutEffect, useState } from "preact/hooks";
+import { api, enc, post, showToast } from "./lib.js";
+import { IntegrationsView } from "./integrations.js";
+import { NotificationsView } from "./notifications.js";
+import { LaunchProfilesPanel } from "./launch-profiles.js";
+import { repo, runs, route, externalSource, source, setTask } from "./state.js";
+import type { VerificationProfile, VerificationReport } from "../src/verification.js";
+import type { CodeHit } from "../src/workspace.js";
+import type { CheckpointHunks } from "../src/workspace-changes.js";
+import { loadFileDraft, retainFileDraft } from "./file-drafts.js";
+
+type Tab = "verification" | "code" | "dependencies" | "context" | "history" | "diagnostics" | "sources" | "notifications" | "services";
+interface Editable { path: string; text: string; hash: string; bytes: number; folder?: string }
+interface Checkpoint { sha: string; at: number; subject: string }
+
+export function downloadArtifact(name: string, contents: string, type = "application/json") {
+  const url = URL.createObjectURL(new Blob([contents], { type }));
+  const link = document.createElement("a");
+  link.href = url; link.download = name; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export function WorkbenchView() {
+  const [tab, setTab] = useState<Tab>("verification");
+  const [folder, setFolder] = useState(repo.value);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [profile, setProfile] = useState<VerificationProfile | null>(null);
+  const [preset, setPreset] = useState("standard");
+  const [base, setBase] = useState("HEAD");
+  const [baseline, setBaseline] = useState("");
+  const [setup, setSetup] = useState("");
+  const [repeats, setRepeats] = useState(1);
+  const [report, setReport] = useState<(VerificationReport & { markdown: string; commit: string }) | null>(null);
+  const [query, setQuery] = useState("");
+  const [mode, setMode] = useState("text");
+  const [hits, setHits] = useState<CodeHit[]>([]);
+  const [searchNote, setSearchNote] = useState("");
+  const [file, setFile] = useState<Editable | null>(null);
+  const [draft, setDraft] = useState("");
+  const [preview, setPreview] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const [draftRecovery, setDraftRecovery] = useState("");
+  const [mergeNote, setMergeNote] = useState("");
+  const [mergeConflict, setMergeConflict] = useState(false);
+  const [graph, setGraph] = useState<{ nodes: string[]; edges: { from: string; to: string }[]; truncated: boolean; language: string } | null>(null);
+  const [paths, setPaths] = useState("");
+  const [context, setContext] = useState<any>(null);
+  const [history, setHistory] = useState<{ head: string; checkpoints: Checkpoint[] } | null>(null);
+  const [checkpoint, setCheckpoint] = useState("");
+  const [applyPaths, setApplyPaths] = useState("");
+  const [hunkPath, setHunkPath] = useState("");
+  const [hunks, setHunks] = useState<CheckpointHunks | null>(null);
+  const [chosenHunks, setChosenHunks] = useState<string[]>([]);
+  const [diagnostics, setDiagnostics] = useState<any>(null);
+  const availableRuns = [...runs.value.values()].filter((run) => run.repo === repo.value || run.worktrees.some((tree) => tree.path === folder));
+  const selectedRun = availableRuns.find((run) => run.worktrees.some((tree) => tree.path === folder));
+  const selectedTree = selectedRun?.worktrees.find((tree) => tree.path === folder);
+  const runAction = async (path: string, body: unknown) => perform(async () => { await post(path, body); showToast("Updated"); });
+  const perform = async (action: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true); setError("");
+    try { await action(); } catch (error) { setError((error as Error).message); } finally { setBusy(false); }
+  };
+  useEffect(() => { if (!folder && repo.value) setFolder(repo.value); }, [repo.value]);
+  useEffect(() => { setFile(null); setReport(null); setProfile(null); setGraph(null); setHistory(null); setContext(null); setHits([]); setHunks(null); setError(""); }, [folder]);
+  useLayoutEffect(() => { if (file?.folder === folder) setDraftRecovery(retainFileDraft(folder, file, draft, mergeConflict)); }, [folder, file, mergeConflict]);
+  useEffect(() => {
+    if (!file || draft === file.text) return;
+    const beforeUnload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [file, draft]);
+  const loadFile = (path: string) => perform(async () => {
+    const loaded = { ...await api<Editable>(`/api/workspace/file?repo=${enc(folder)}&path=${enc(path)}`), folder };
+    const retained = loadFileDraft(folder, loaded.path);
+    setMergeConflict(retained?.mergeConflict === true);
+    setFile(retained ? { ...loaded, text: retained.text, hash: retained.hash } : loaded); setDraft(retained?.draft ?? loaded.text); setConflict(!!retained && retained.hash !== loaded.hash); setPreview(false); setMergeNote(""); setTab("code");
+    if (retained) showToast("Recovered your unsaved draft for this tab. Review it before saving.", 5000);
+  });
+  const refreshForMerge = () => perform(async () => {
+    if (!file) return;
+    const merged = await post<{ current: Editable; text: string; conflicts: number; clean: boolean }>("/api/workspace/merge-file", { repo: folder, path: file.path, base: file.text, draft });
+    setFile({ ...merged.current, folder }); setDraft(merged.text); setConflict(false); setPreview(true);
+    setMergeConflict(!merged.clean);
+    setMergeNote(merged.clean ? "Independent edits merged. Review the result before saving." : `${merged.conflicts} overlapping change(s). Edit the marked sections to preserve the intended result, then remove every conflict marker before saving.`);
+  });
+  const save = () => perform(async () => {
+    if (!file) return;
+    try {
+      const saved = await post<{ hash: string; bytes: number }>("/api/workspace/file", { repo: folder, path: file.path, text: draft, expectedHash: file.hash });
+      setFile({ ...file, ...saved, text: draft }); setMergeConflict(false); setPreview(false); showToast("File saved");
+    } catch (error) { setConflict(true); throw error; }
+  });
+  return <div class="composer workbench">
+    <style>{`.workbench{max-width:1100px}.workbench .wb-tabs{display:flex;flex-wrap:wrap;gap:6px;margin:20px 0}.workbench .wb-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:12px 0}.workbench .wb-row input{flex:1;min-width:100px}.workbench table{width:100%;border-collapse:collapse;font-size:13px}.workbench th,.workbench td{text-align:left;padding:8px;border-bottom:1px solid var(--border);overflow-wrap:anywhere}.workbench pre{white-space:pre-wrap;max-height:360px;overflow:auto;font-size:12px}.workbench .wb-editor{width:100%;min-height:360px;font-family:monospace;box-sizing:border-box}.workbench .wb-diff{display:grid;grid-template-columns:1fr 1fr;gap:16px}.workbench .wb-diff>div{min-width:0}.workbench .wb-check{display:grid;grid-template-columns:100px 1fr auto;gap:8px;align-items:center;margin:8px 0}.workbench .wb-check input[type=text]{min-width:0}.workbench .wb-path{font-family:monospace;font-size:12px;text-align:left}.workbench .wb-scroll{overflow:auto}@media(max-width:760px){.workbench .wb-diff{grid-template-columns:1fr}.workbench .wb-check{grid-template-columns:1fr}.workbench .wb-tabs button{flex:1}.workbench .wb-row .btn{min-height:40px}}`}</style>
+    <div class="eyebrow">Workspace</div><h1>Inspect, verify, and recover</h1>
+    <p class="lede">Check the repository, inspect code and context, and manage results with evidence.</p>
+    <label class="lbl" for="wb-folder">Repository or run worktree</label>
+    <select id="wb-folder" class="field" value={folder} disabled={busy} onChange={(event) => setFolder(event.currentTarget.value)}>
+      {repo.value ? <option value={repo.value}>{repo.value}</option> : <option value="">Choose a repository in New run</option>}
+      {availableRuns.flatMap((run) => run.worktrees.map((tree) => <option key={`${run.id}/${tree.name}`} value={tree.path}>{(run.task.split("\n")[0] || "(no task)").slice(0, 50)} · {tree.name}</option>))}
+    </select>
+    <nav class="wb-tabs" aria-label="Workspace tools">{([ ["verification", "Verification"], ["code", "Code"], ["dependencies", "Dependencies"], ["context", "Context"], ["history", "History"], ["services", "Services"], ["diagnostics", "Diagnostics"], ["sources", "Sources"], ["notifications", "Notifications"] ] as [Tab, string][]).map(([id, label]) => <button class={`btn ${tab === id ? "primary" : ""}`} aria-current={tab === id ? "page" : undefined} onClick={() => setTab(id)}>{label}</button>)}</nav>
+    {!folder && tab !== "diagnostics" ? <p class="help">Choose a repository in New run first.</p> : null}
+    {error ? <div class="msg err" role="alert">{error}</div> : null}
+    {busy ? <p role="status">Working…</p> : null}
+    {tab === "verification" ? <section>
+      <h2>Verification profile</h2>
+      <div class="wb-row"><label>Profile <select class="field" value={preset} onChange={(event) => setPreset(event.currentTarget.value)}><option value="lightweight">Lightweight</option><option value="standard">Standard</option><option value="thorough">Thorough</option></select></label><button class="btn" disabled={!folder || busy} onClick={() => perform(async () => { const detected = await api<VerificationProfile>(`/api/verification/profile?repo=${enc(folder)}&preset=${preset}`); setProfile(detected); setSetup(detected.setup ?? ""); })}>Detect checks</button></div>
+      {profile ? <>
+        <p class="help">{profile.source ? `Detected from ${profile.source}. ` : ""}Required gates must pass. A skipped gate or flaky result cannot verify a change.</p>
+        {profile.checks.map((check, index) => <div class="wb-check" key={check.id}><span>{check.title ?? check.id}</span><input class="field" type="text" aria-label={`Command for ${check.id}`} value={check.command} onInput={(event) => setProfile({ ...profile, checks: profile.checks.map((item, n) => n === index ? { ...item, command: event.currentTarget.value } : item) })} /><label><input type="checkbox" checked={check.required} onChange={(event) => setProfile({ ...profile, checks: profile.checks.map((item, n) => n === index ? { ...item, required: event.currentTarget.checked } : item) })} /> Required</label></div>)}
+        <button class="btn small" disabled={profile.checks.length >= 12} onClick={() => setProfile({ ...profile, checks: [...profile.checks, { id: `custom-${profile.checks.length + 1}`, kind: "custom", command: "", required: true, timeoutMs: 300000 }] })}>Add custom gate</button>
+        <details><summary>Requirement evidence mapping</summary><p class="help">Describe each criterion and select the checks that exercise it. A criterion with no checks, or a failing mapped check, remains uncovered. Review whether the checks actually test the stated behavior.</p>{(profile.requirements ?? []).map((requirement, index) => <div key={requirement.id}><label>{requirement.id}<input class="field" aria-label={`Description for ${requirement.id}`} value={requirement.description} onInput={(event) => setProfile({ ...profile, requirements: profile.requirements!.map((item, n) => n === index ? { ...item, description: event.currentTarget.value } : item) })} /></label><div class="wb-row">{profile.checks.map((check) => <label class="check" key={check.id}><input type="checkbox" checked={requirement.checks.includes(check.id)} onChange={(event) => setProfile({ ...profile, requirements: profile.requirements!.map((item, n) => n === index ? { ...item, checks: event.currentTarget.checked ? [...item.checks, check.id] : item.checks.filter((id) => id !== check.id) } : item) })} /> {check.title ?? check.id}</label>)}</div></div>)}<button class="btn small" disabled={(profile.requirements?.length ?? 0) >= 48} onClick={() => setProfile({ ...profile, requirements: [...(profile.requirements ?? []), { id: `criterion-${(profile.requirements?.length ?? 0) + 1}`, description: "", checks: [] }] })}>Add criterion</button></details>
+        <div class="wb-row"><label>Commit or branch<input class="field" value={base} onInput={(event) => setBase(event.currentTarget.value)} /></label><label>Compare baseline<input class="field" placeholder="Optional base commit" value={baseline} onInput={(event) => setBaseline(event.currentTarget.value)} /></label><label>Attempts per gate<select class="field" value={repeats} onChange={(event) => setRepeats(Number(event.currentTarget.value))}>{[1, 2, 3].map((n) => <option value={n}>{n}</option>)}</select></label></div>
+        <label>Setup command<input class="field" placeholder="Optional, e.g. npm ci" value={setup} onInput={(event) => setSetup(event.currentTarget.value)} /></label>
+        <p class="help">Executes repository code in a temporary worktree at the selected commit. Uncommitted changes are excluded. Baseline comparison runs the same profile on both commits.</p>
+        <div class="wb-row"><button class="btn primary" disabled={busy || !profile.checks.length || profile.checks.some((check) => !check.command.trim())} onClick={() => perform(async () => { setReport(null); setReport(await post("/api/verification", { repo: folder, profile, baseRef: base, baseline, setup, repeats })); })}>Run verification</button><button class="btn" onClick={() => downloadArtifact("verification-profile.json", JSON.stringify(profile, null, 2))}>Export profile</button></div>
+      </> : <p class="help">Detect commands from this repository, then review the profile before executing it.</p>}
+      {report ? <><h3>Result: {report.state}</h3><p class="help">Commit {report.commit.slice(0, 12)}</p><div class="wb-scroll"><table><thead><tr><th>Gate</th><th>Required</th><th>Result</th><th>Evidence</th></tr></thead><tbody>{report.checks.map((gate) => <tr key={gate.check.id}><td>{gate.check.title ?? gate.check.id}</td><td>{gate.check.required ? "Yes" : "No"}</td><td>{gate.diagnosis}</td><td><details><summary>{gate.attempts.length} attempts</summary>{gate.attempts.map((attempt, index) => <pre key={index}>{attempt.output || `Exit ${attempt.exitCode}`}</pre>)}</details></td></tr>)}</tbody></table></div>{report.skipped.map((gate) => <p class="msg err">{gate.check.id}: {gate.reason}</p>)}{report.requirements?.length ? <section aria-label="Requirement verification results"><h4>Requirement evidence</h4><ul>{report.requirements.map((requirement) => <li key={requirement.id}>{requirement.covered ? "Covered" : "Uncovered"}: {requirement.description}{requirement.missing.length ? ` · missing ${requirement.missing.join(", ")}` : !requirement.covered ? " · no checks mapped" : ""}</li>)}</ul></section> : null}<button class="btn" onClick={() => downloadArtifact("verification.md", report.markdown, "text/markdown")}>Export report</button></> : null}
+    </section> : null}
+    {tab === "code" ? <section>
+      <h2>Search and edit</h2><div class="wb-row"><select class="field" aria-label="Code search mode" value={mode} onChange={(event) => setMode(event.currentTarget.value)}><option value="text">Text</option><option value="symbols">Definitions</option></select><input class="field" aria-label="Search code" placeholder={mode === "symbols" ? "Function, class, or variable" : "Search file contents"} value={query} onInput={(event) => setQuery(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === "Enter") void perform(async () => { const result = await api<{ hits: CodeHit[]; scanned: number; truncated: boolean }>(`/api/workspace/search?repo=${enc(folder)}&q=${enc(query)}&mode=${mode}`); setHits(result.hits); setSearchNote(`${result.scanned} files inspected${result.truncated ? " · results limited; narrow your query" : ""}`); }); }} /><button class="btn" disabled={!folder || busy} onClick={() => perform(async () => { const result = await api<{ hits: CodeHit[]; scanned: number; truncated: boolean }>(`/api/workspace/search?repo=${enc(folder)}&q=${enc(query)}&mode=${mode}`); setHits(result.hits); setSearchNote(`${result.scanned} files inspected${result.truncated ? " · results limited" : ""}`); })}>Search</button></div>
+      <p class="help">Definition search recognizes common declaration forms. It does not resolve language-server references.</p><p class="help">{searchNote}</p>
+      <div>{hits.map((hit) => <p key={`${hit.path}:${hit.line}`}><button class="btn ghost wb-path" onClick={() => loadFile(hit.path)}>{hit.path}:{hit.line} {hit.symbol ?? ""}</button><code>{hit.text}</code></p>)}</div>
+      <div class="wb-row"><input class="field" aria-label="File to edit" placeholder="Repository-relative file path" value={paths} onInput={(event) => setPaths(event.currentTarget.value)} /><button class="btn" disabled={busy || !folder || !paths.trim()} onClick={() => loadFile(paths.trim())}>Open file</button></div>
+      {file ? <><h3>{file.path}</h3><textarea class="field wb-editor" aria-label="File contents" spellcheck={false} disabled={busy} value={draft} onInput={(event) => { const value = event.currentTarget.value; setDraft(value); if (file.folder === folder) setDraftRecovery(retainFileDraft(folder, file, value, mergeConflict)); }} />{mergeNote ? <p class="at-notice" role="status">{mergeNote}</p> : null}<div class="wb-row"><button class="btn" onClick={() => setPreview(!preview)}>{preview ? "Hide comparison" : "Preview changes"}</button><button class="btn primary" disabled={busy || conflict || draft === file.text || mergeConflict && /^(?:<<<<<<< |=======$|>>>>>>> |\|\|\|\|\|\|\| )/m.test(draft)} onClick={save}>Save file</button>{conflict ? <button class="btn" onClick={refreshForMerge}>Load current version and keep draft</button> : null}<button class="btn" onClick={() => downloadArtifact(file.path.split("/").pop() ?? "draft.txt", draft, "text/plain")}>Export draft</button></div>{preview ? <div class="wb-diff"><div><h4>Current file</h4><pre>{file.text}</pre></div><div><h4>Your draft</h4><pre>{draft}</pre></div></div> : null}<p class="help">Saving checks the loaded version and preserves concurrent edits. Files in active run worktrees cannot be edited here. {draftRecovery === "sensitive" ? "This credential filename is excluded from browser draft recovery; export your draft before leaving." : draftRecovery === "full" ? "Browser draft storage is unavailable; export your draft before leaving." : "Unsaved drafts can be recovered in this browser tab for 24 hours."}</p></> : null}
+    </section> : null}
+    {tab === "dependencies" ? <section><h2>Relative imports</h2><p class="help">Explore JavaScript and TypeScript file dependencies. Dynamic or package-level dependencies require additional inspection.</p><button class="btn" disabled={!folder || busy} onClick={() => perform(async () => setGraph(await api(`/api/workspace/dependencies?repo=${enc(folder)}`)))}>Inspect dependencies</button>{graph ? <><p>{graph.nodes.length} files · {graph.edges.length} import relationships{graph.truncated ? " · first 500 source files" : ""}</p><div class="wb-scroll"><table><thead><tr><th>Source</th><th>Imports</th></tr></thead><tbody>{graph.edges.map((edge, i) => <tr key={i}><td><button class="btn ghost wb-path" onClick={() => loadFile(edge.from)}>{edge.from}</button></td><td><button class="btn ghost wb-path" onClick={() => loadFile(edge.to)}>{edge.to}</button></td></tr>)}</tbody></table></div></> : null}</section> : null}
+    {tab === "context" ? <section><h2>Context inspector</h2><p class="help">Preview explicit file context before selecting it for a task. Credential-file contents are excluded, and recognizable secrets are redacted.</p><textarea class="field" aria-label="Context file paths" rows={5} placeholder="One repository-relative file per line" value={paths} onInput={(event) => setPaths(event.currentTarget.value)} /><button class="btn" disabled={!folder || busy || !paths.trim()} onClick={() => perform(async () => setContext(await post("/api/workspace/context", { repo: folder, paths: paths.split("\n").map((path) => path.trim()).filter(Boolean) })))}>Inspect context</button>{context ? <><p>{context.bytes.toLocaleString()} bytes · approximately {context.approximateTokens.toLocaleString()} tokens</p><p class="help">{context.note}</p>{context.files.map((file: any) => <details key={file.path}><summary>{file.path} {file.sensitive ? "· sensitive" : `· ${file.bytes} bytes`}</summary><pre>{file.omitted ?? file.preview}</pre></details>)}</> : null}</section> : null}
+    {tab === "history" ? <section><h2>Checkpoints and run controls</h2>{selectedRun ? <><p>{selectedRun.task.split("\n")[0]} · {selectedRun.status}{selectedRun.pauseRequested ? " · pause requested" : ""}</p><div class="wb-row"><button class="btn" onClick={() => { route.value = { view: "run", id: selectedRun.id }; }}>Open run</button>{selectedRun.status === "running" ? <button class="btn" disabled={busy} onClick={() => runAction(`/api/runs/${selectedRun.id}/pause`, { paused: !selectedRun.pauseRequested })}>{selectedRun.pauseRequested ? "Continue dispatch" : "Pause after active work"}</button> : null}<label>Priority<select class="field" value={selectedRun.priority ?? 0} onChange={(event) => runAction(`/api/runs/${selectedRun.id}/priority`, { priority: Number(event.currentTarget.value) })}>{[-10, 0, 10].map((priority) => <option value={priority}>{priority === 10 ? "High" : priority === -10 ? "Background" : "Normal"}</option>)}</select></label><button class="btn" disabled={busy} onClick={() => perform(async () => downloadArtifact(`run-${selectedRun.id}.json`, JSON.stringify(await api(`/api/runs/${selectedRun.id}/export?transcript=1`), null, 2)))}>Export run evidence</button></div></> : <p class="help">Select a run worktree above to pause, prioritize, fork, or apply its checkpoint files.</p>}
+      <button class="btn" disabled={!folder || busy} onClick={() => perform(async () => { const data = await api<{ head: string; checkpoints: Checkpoint[] }>(`/api/workspace/checkpoints?repo=${enc(folder)}`); setHistory(data); setCheckpoint(data.checkpoints[0]?.sha ?? ""); })}>Load checkpoints</button>
+      {history ? <><div class="wb-row"><select class="field" aria-label="Checkpoint" value={checkpoint} onChange={(event) => setCheckpoint(event.currentTarget.value)}>{history.checkpoints.map((item) => <option value={item.sha}>{item.sha.slice(0, 8)} · {item.subject}</option>)}</select>{selectedRun ? <button class="btn" disabled={busy || !checkpoint} onClick={() => perform(async () => { const fork = await post<{ id: string }>(`/api/runs/${selectedRun.id}/fork`, { commit: checkpoint }); route.value = { view: "run", id: fork.id }; })}>Fork from checkpoint</button> : null}</div>{selectedRun ? <><textarea class="field" aria-label="Checkpoint paths" placeholder="Files to restore from this checkpoint, one per line" value={applyPaths} onInput={(event) => setApplyPaths(event.currentTarget.value)} /><p class="help">Applying selected files changes this worktree without committing them. The worktree must be clean and idle; existing changes are preserved by refusing the operation.</p><button class="btn" disabled={busy || selectedRun.status === "running" || !applyPaths.trim()} onClick={() => perform(async () => { await post("/api/workspace/apply-checkpoint", { repo: folder, runId: selectedRun.id, source: checkpoint, expectedHead: history.head, paths: applyPaths.split("\n").map((path) => path.trim()).filter(Boolean) }); showToast("Selected checkpoint files applied; review before committing"); })}>Apply selected files</button></> : null}</> : null}
+    </section> : null}
+    {tab === "history" && history && selectedRun ? <section><h3>Apply selected hunks</h3><p class="help">Compare one existing text file against the selected checkpoint. Selected hunks remain unstaged for review; the run worktree must be clean and idle.</p><div class="wb-row"><input class="field" aria-label="File for checkpoint hunks" value={hunkPath} placeholder="Repository-relative file" onInput={(event) => setHunkPath(event.currentTarget.value)} /><button class="btn" disabled={busy || selectedRun.status === "running" || !hunkPath.trim()} onClick={() => perform(async () => { setHunks(await post("/api/workspace/checkpoint-hunks", { repo: folder, runId: selectedRun.id, source: checkpoint, path: hunkPath.trim() })); setChosenHunks([]); })}>Compare hunks</button></div>{hunks ? <><p>{hunks.hunks.length} hunks · {hunks.source.slice(0, 12)}</p>{hunks.hunks.map((hunk) => <details key={hunk.id}><summary><label><input type="checkbox" checked={chosenHunks.includes(hunk.id)} onChange={(event) => setChosenHunks(event.currentTarget.checked ? [...chosenHunks, hunk.id] : chosenHunks.filter((id) => id !== hunk.id))} /> {hunk.header}</label></summary><pre>{hunk.patch}</pre></details>)}<button class="btn" disabled={busy || !chosenHunks.length || selectedRun.status === "running"} onClick={() => perform(async () => { await post("/api/workspace/apply-hunks", { repo: folder, runId: selectedRun.id, source: hunks.source, path: hunks.path, expectedHead: hunks.head, hunks: chosenHunks }); setHunks(null); showToast("Selected hunks applied; review the unstaged changes"); })}>Apply chosen hunks</button></> : null}</section> : null}
+    {tab === "sources" ? <IntegrationsView onImport={(imported) => { externalSource.value = imported; source.value = null; setTask(`Address ${imported.provider} ${imported.kind} ${imported.key}: ${imported.title}`); route.value = { view: "composer" }; }} /> : null}
+    {tab === "notifications" ? <NotificationsView /> : null}
+    {tab === "services" ? selectedRun && selectedTree ? <LaunchProfilesPanel key={`${selectedRun.id}/${selectedTree.name}`} runId={selectedRun.id} worktree={selectedTree.name} /> : <p class="help">Select a run worktree to preview and launch its configured services.</p> : null}
+    {tab === "diagnostics" ? <section><h2>Diagnostics</h2><p class="help">Inspect connection and persistence health, versions, resource queues, and recent server logs. Credential-like values are redacted before export.</p><button class="btn" disabled={busy} onClick={() => perform(async () => setDiagnostics(await api(`/api/diagnostics${folder ? `?repo=${enc(folder)}` : ""}`)))}>Collect diagnostics</button>{diagnostics ? <><pre>{JSON.stringify(diagnostics, null, 2)}</pre><button class="btn" onClick={() => downloadArtifact("codeflow-diagnostics.json", JSON.stringify(diagnostics, null, 2))}>Export diagnostics</button></> : null}</section> : null}
+  </div>;
+}

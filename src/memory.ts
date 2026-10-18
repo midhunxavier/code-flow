@@ -137,7 +137,7 @@ export class MemoryStore {
 
   async load(): Promise<void> { await this.read(); }
 
-  async propose(raw: MemoryInput, authority: MemoryAuthority): Promise<MemoryEntry> {
+  async propose(raw: MemoryInput, authority: MemoryAuthority, options: { expectedSources?: MemoryRef[] } = {}): Promise<MemoryEntry> {
     return this.change((doc) => {
       const input = validateInput(raw);
       if (authority.kind === "run" && input.scope === "project") input.runId ??= authority.runId;
@@ -149,6 +149,21 @@ export class MemoryStore {
           authorize(previous, authority, true);
           if (previous.operationHash !== operationHash) throw new Error("Memory operation ID was already used for different content");
           return clone(previous);
+        }
+      }
+      // Publication previews need an atomic source check. Ordinary derivations may refer
+      // to historical revisions; guarded publication must use exactly the live revisions
+      // the user reviewed and must not race deletion, expiry or negative feedback.
+      if (options.expectedSources !== undefined) {
+        const expected = uniqueRefs(options.expectedSources);
+        if (JSON.stringify(expected) !== JSON.stringify(input.derivedFrom ?? [])) throw new Error("Guarded publication must identify every derivation source");
+        for (const sourceRef of expected) {
+          const source = doc.entries.find((entry) => entry.id === sourceRef.id);
+          if (!source) throw new Error("Memory publication source does not exist");
+          authorize(source, authority, false);
+          if (source.status === "deleted" || source.revision !== sourceRef.revision
+            || (source.expiresAt !== undefined && source.expiresAt <= Date.now())
+            || source.feedback?.some((item) => item.revision === source.revision && (item.rating === "stale" || item.rating === "incorrect"))) throw new MemoryConflictError(clone(source));
         }
       }
       const live = doc.entries.filter((entry) => entry.status !== "deleted");

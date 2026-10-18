@@ -86,6 +86,12 @@ if (alertPath) {
     print(alert);
   }
 } else if (group === "api" && command === "user") print({ login: process.env.FAKE_GH_USER ?? "me" });
+else if (group === "api" && /^repos\/\{owner\}\/\{repo\}\/pulls\/\d+\/comments\?/.test(command)) {
+  const number = command.match(/\/pulls\/(\d+)\//)[1];
+  const page = Number(command.match(/[?&]page=(\d+)/)?.[1] ?? 1);
+  const size = Number(command.match(/[?&]per_page=(\d+)/)?.[1] ?? 30);
+  print((state.prs[number]?.inlineComments ?? []).slice((page - 1) * size, page * size));
+}
 else if (group === "api" && /^repos\/\{owner\}\/\{repo\}\/issues\/\d+$/.test(command)) {
   // Issues and PRs share GitHub's issues endpoint, which says who wrote them.
   const number = Number(command.split("/").pop());

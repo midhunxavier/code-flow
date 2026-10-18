@@ -38,21 +38,23 @@ export class DevServers {
     return [...this.servers.values()].map(({ child: _child, logs: _logs, ...rest }) => ({ ...rest }));
   }
 
-  async start(key: string, cwd: string, command: string, preferredPort?: number): Promise<DevServer> {
+  async start(key: string, cwd: string, command: string, preferredPort?: number, generatedEnv: NodeJS.ProcessEnv = {}, signal?: AbortSignal): Promise<DevServer> {
     this.stop(key);
     const port = await freePort(preferredPort);
+    if (signal?.aborted) throw new Error("Service startup was cancelled before spawning");
+    if (generatedEnv.PORT !== undefined && generatedEnv.PORT !== String(port)) throw new Error("The allocated service port became busy. Restart the launch profile to allocate fresh ports.");
     const child = spawn("/bin/sh", ["-c", command], {
       cwd,
       detached: true, // own process group: stopping it stops whatever the command started
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...childEnv(), PORT: String(port), BROWSER: "none", FORCE_COLOR: "0" },
+      env: { ...childEnv(generatedEnv), PORT: String(port), BROWSER: "none", FORCE_COLOR: "0" },
     });
     trackGroup(child.pid);
     const server = { key, command, cwd, port, url: `http://localhost:${port}`, status: "running" as const, startedAt: Date.now(), logs: [] as string[], child };
     const collect = (chunk: Buffer) => {
       for (const line of chunk.toString().split("\n")) {
         if (!line.trim()) continue;
-        server.logs.push(line);
+        server.logs.push(line.slice(-4000));
         if (server.logs.length > MAX_LOG_LINES) server.logs.shift();
       }
     };
@@ -63,7 +65,7 @@ export class DevServers {
       (server as DevServer).status = "exited";
       (server as DevServer).exitCode = code;
     });
-    child.on("error", (err) => server.logs.push(`Failed to start: ${err.message}`));
+    child.on("error", (err) => { (server as DevServer).status = "exited"; server.logs.push(`Failed to start: ${err.message}`); });
     this.servers.set(key, server);
     return this.get(key)!;
   }

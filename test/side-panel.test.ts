@@ -119,7 +119,7 @@ test("/api/file reads a file inside the repository, says when it's binary, and r
 });
 
 test("/api/notes keeps a note per repository and a general one, across requests", async () => {
-  assert.deepEqual((await api(`/api/notes?key=${encodeURIComponent(repo)}`)).body, { text: "", updatedAt: 0 });
+  assert.deepEqual((await api(`/api/notes?key=${encodeURIComponent(repo)}`)).body, { text: "", updatedAt: 0, revision: 0 });
   const saved = await api("/api/notes", { key: repo, text: "check the tests" });
   assert.equal(saved.status, 200);
   assert.equal(saved.body.text, "check the tests");

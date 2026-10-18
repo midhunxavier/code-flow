@@ -16,7 +16,7 @@ const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
 const { PrWatcher } = await import("../src/watch.js");
 const { resolveAuto } = await import("../src/routing.js");
-const { createPullRequest, fitPrBody, PR_BODY_LIMIT } = await import("../src/github.js");
+const { createPullRequest, fitPrBody, PR_BODY_LIMIT, prStatus } = await import("../src/github.js");
 type Run = import("../src/engine.js").Run;
 
 let repo: string;
@@ -100,6 +100,37 @@ async function idle(run: Run) {
 }
 const prompts = (dir: string) => readdirSync(dir).map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as { vendor: string; prompt: string });
 const logs = async (run: Run) => (await manager.events(run.id)).map((e) => (e.type === "log" ? e.text : "")).join("\n");
+
+test("PR status includes paginated inline comments and preserves review location and replies", async () => {
+  const inline = Array.from({ length: 101 }, (_, i) => ({
+    id: i + 1, node_id: `RC_${i + 1}`, user: { login: "bob" }, author_association: "MEMBER",
+    body: `Review finding ${i + 1}`, created_at: "2026-01-02T00:00:00Z", path: "src/loop.ts",
+    line: i === 100 ? null : 12, original_line: 12, side: "RIGHT", pull_request_review_id: 7,
+    ...(i === 100 ? { in_reply_to_id: 1 } : {}), html_url: `https://github.com/o/r/pull/1#discussion_r${i + 1}`,
+  }));
+  setState((s) => { s.prs[1].inlineComments = inline; });
+  try {
+    const status = await prStatus(repo, "https://github.com/o/r/pull/1");
+    assert.equal(status.comments.length, 102, "conversation plus both pages of inline comments");
+    assert.equal(status.commentsTruncated, false);
+    const reply = status.comments.find((c) => c.id === "review-comment:101")!;
+    assert.equal(reply.path, "src/loop.ts");
+    assert.equal(reply.line, 12);
+    assert.equal(reply.threadId, "review-thread:1");
+    assert.equal(reply.replyTo, "review-comment:1");
+    assert.equal(reply.reviewId, "7");
+    assert.equal(reply.outdated, true);
+  } finally { setState((s) => { delete s.prs[1].inlineComments; }); }
+});
+
+test("PR review history is capped and explicitly reports truncation", async () => {
+  setState((s) => { s.prs[1].inlineComments = Array.from({ length: 1_001 }, (_, i) => ({ id: i, body: "finding" })); });
+  try {
+    const status = await prStatus(repo, "1");
+    assert.equal(status.comments.filter((c) => c.threadId).length, 1_000);
+    assert.equal(status.commentsTruncated, true);
+  } finally { setState((s) => { delete s.prs[1].inlineComments; }); }
+});
 
 test("start from an issue: its text reaches the agents and the PR closes it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "codeflow-record-"));

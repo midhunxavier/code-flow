@@ -25,7 +25,7 @@
 
 ---
 
-You pick how the agents work together (plan → build → review, a race, a debate, a supervisor with workers…), assign an agent to each role, and watch them work live in your browser. An experimental, opt-in **Auto team** lets code-flow propose the team and workflow from your task instead. code-flow runs the official CLIs on your own logins, does all the work in git worktrees so your checkout is never touched, and only calls a result done when your tests pass.
+You pick how the agents work together (plan → build → review, a race, a debate, a supervisor with workers…), assign an agent to each role, and watch them work live in your browser. An experimental, opt-in **Auto team** lets code-flow propose the team and workflow from your task instead. Agent work runs in Git worktrees on your own CLI logins. Results distinguish passing independent checks, failed checks, and finished work that remains unverified.
 
 ## Quickstart
 
@@ -41,6 +41,8 @@ npm start
 Open **http://localhost:4317**, choose a repository, describe the task, pick a team, and press **Start run** (⌘↵). Each result lands on a branch such as `codeflow/<run>/build`, ready to review, merge or open as a pull request. More in [Getting started](docs/getting-started.md).
 
 ## Highlights
+
+The **Workspace** page adds verification profiles and requirement mappings, code editing with three-way conflicts, selective checkpoint files/hunks, service launch profiles, diagnostics, external sources and opt-in notifications. The composer includes simple/advanced modes, named presets, task templates, readiness checks and settings provenance. Auto-team plans can be edited before approval; dispatch can be paused or prioritized. See the [implementation checklist and remaining scope](docs/application-improvements.md), [API/client](docs/api.md), [verification](docs/verification.md), and [backup/maintenance](docs/maintenance.md).
 
 - **A team, not one agent.** Seven patterns, from Plan → Build → Review to a Best-of-N race judged blind, with any agent in any role and a model and effort per role. Having a different vendor review or judge catches what a model misses in its own work.
 - **Auto team (experimental, opt-in).** [Auto team](docs/auto-team.md) proposes members, tasks and acceptance criteria, asks for plan approval, then adapts within your limits. Members ask each other addressed questions and keep private, team and project memory. It is kept opt-in until its [measured evidence](docs/dynamic-teams-evaluation.md) supports more.

@@ -13,7 +13,7 @@ process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-auto-home-"));
 
 const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
-const { Automations, nextFire, describeSchedule, readWebhook, resumeSchedule, stillDue, validateSchedule } = await import("../src/automation.js");
+const { Automations, nextFire, describeSchedule, previewSchedule, readWebhook, resumeSchedule, stillDue, validateSchedule, validateFireInput } = await import("../src/automation.js");
 const { changeRemote, isOwnAddress, loadRemote, renderRemote, saveRemote } = await import("../src/remote.js");
 type Run = import("../src/engine.js").Run;
 type AgentId = import("../src/adapters/index.js").AgentId;
@@ -60,11 +60,77 @@ test("schedules: every N minutes, or at a time on chosen days; missed times are 
   assert.equal(nextFire({ every: 30 }, monday9), monday9 + 30 * 60_000);
   assert.equal(new Date(nextFire({ at: "07:30" }, monday9)).toString(), new Date(2026, 9, 13, 7, 30).toString(), "07:30 has passed today → tomorrow");
   assert.equal(new Date(nextFire({ at: "07:30", days: [6] }, monday9)).getDay(), 6, "only on Saturdays");
-  assert.equal(describeSchedule({ at: "07:30", days: [1, 2, 3, 4, 5] }), "Mon, Tue, Wed, Thu, Fri at 07:30");
+  assert.equal(describeSchedule({ at: "07:30", days: [1, 2, 3, 4, 5] }), "Mon, Tue, Wed, Thu, Fri at 07:30 (server local time)");
   assert.equal(describeSchedule({ every: 120 }), "every 2 h");
   assert.throws(() => validateSchedule({ every: 1 }), /every 5 minutes/);
   assert.throws(() => validateSchedule({ at: "25:00" }), /07:30/);
+  assert.throws(() => validateSchedule({ at: "07:30", days: [] }), /at least one/);
+  assert.throws(() => validateSchedule({ at: "07:30", days: [-1] }), /valid day/);
   assert.deepEqual(validateSchedule({ at: "07:30", days: [0, 1, 2, 3, 4, 5, 6] }), { at: "07:30", days: undefined });
+});
+
+test("explicit time zones follow daylight-saving gaps and repeated times once per local day", () => {
+  const iso = (at: number) => new Date(at).toISOString();
+  const spring = { at: "02:30", timezone: "Europe/Stockholm" };
+  const shifted = nextFire(spring, Date.parse("2026-03-28T22:00:00Z"));
+  assert.equal(iso(shifted), "2026-03-29T01:30:00.000Z", "missing 02:30 moves to 03:30 local time");
+  assert.equal(iso(nextFire(spring, shifted)), "2026-03-30T00:30:00.000Z", "following day returns to 02:30 local time");
+  const fall = nextFire(spring, Date.parse("2026-10-24T22:00:00Z"));
+  assert.equal(iso(fall), "2026-10-25T00:30:00.000Z", "first occurrence of a repeated time is used");
+  assert.equal(iso(nextFire(spring, fall)), "2026-10-26T01:30:00.000Z", "the repeated hour does not cause a second run");
+  assert.equal(iso(nextFire({ at: "02:15", timezone: "Australia/Lord_Howe" }, Date.parse("2026-10-03T12:00:00Z"))), "2026-10-03T15:45:00.000Z", "half-hour transitions shift by their actual gap");
+  const monday = { at: "00:15", timezone: "Pacific/Auckland", days: [1] };
+  const due = nextFire(monday, Date.parse("2026-10-18T00:00:00Z"));
+  assert.equal(stillDue(monday, due, due + 30 * 60_000), true, "weekday is evaluated in the schedule's time zone");
+  assert.equal(previewSchedule(spring, fall, 3).length, 3);
+  assert.throws(() => validateSchedule({ at: "07:00", timezone: "Not/AZone" }), /IANA/);
+  assert.throws(() => previewSchedule(spring, fall, 100), /1–10/);
+});
+
+test("event history records failures, preserves bounded queues and replays validated data", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "codeflow-event-history-")), "triggers.json");
+  let fail = true;
+  const started: Record<string, any>[] = [];
+  const live = new Map<string, Run>();
+  const stubManager = { get: (id: string) => live.get(id) } as InstanceType<typeof RunManager>;
+  const auto = new Automations(stubManager, async (body) => {
+    started.push(body);
+    if (fail) throw new Error("Provider unavailable");
+    const run = { id: `run-${started.length}`, status: "running" } as Run;
+    live.set(run.id, run);
+    return run;
+  }, undefined, file);
+  await auto.load();
+  const t = await auto.create({ name: "History", enabled: true, webhook: true, isolate: false, run: { repo, pattern: "pipeline", task: "Saved task", roles: team, trust: "safe", loop: { maxInvocations: 4, maxMinutes: 10 } } });
+  await assert.rejects(() => auto.fire(t.id, { via: "webhook", details: "Original validated event", source: { kind: "issue", number: 9 } }), /Provider unavailable/);
+  const failed = auto.events(t.id)[0]!;
+  assert.equal(failed.state, "failed");
+  assert.match(failed.reason!, /Provider unavailable/);
+  fail = false;
+  const retried = await auto.retryEvent(t.id, failed.id);
+  assert.equal(auto.events(t.id)[0]!.state, "started");
+  assert.equal(auto.events(t.id)[0]!.retries, 1);
+  assert.equal(retried.run?.id, "run-2");
+  assert.equal(started[1]!.source.number, 9);
+  assert.match(started[1]!.task, /Original validated event/);
+  await assert.rejects(() => auto.retryEvent(t.id, failed.id), /Only failed or dropped/);
+  for (let i = 0; i < 12; i++) await auto.fire(t.id, { via: "webhook", details: `queued ${i}` });
+  assert.equal(auto.get(t.id)!.queued!.length, 10);
+  assert.equal(auto.events(t.id).filter((e) => e.state === "dropped").length, 2);
+  assert.match(auto.events(t.id).find((e) => e.state === "dropped")!.reason!, /queue limit/);
+  const before = JSON.stringify(auto.get(t.id));
+  const preview = await auto.dryRun(t.id, { via: "webhook" });
+  assert.equal(preview.wouldQueue, true);
+  assert.equal(preview.permissions.trust, "safe");
+  assert.equal(preview.limits.maxInvocations, 4);
+  assert.equal(JSON.stringify(auto.get(t.id)), before, "dry runs never mutate automation state");
+  await auto.update(t.id, { enabled: false });
+  assert.equal(auto.get(t.id)!.queued, undefined);
+  assert.equal(auto.events(t.id).filter((e) => e.state === "dropped").length, 12);
+  assert.throws(() => validateFireInput({ via: "webhook", source: { kind: "issue", number: -1 } }), /Invalid automation event source/);
+  const reloaded = new Automations(stubManager, async () => { throw new Error("unexpected start"); }, undefined, file);
+  await reloaded.load();
+  assert.equal(reloaded.events(t.id).filter((e) => e.state === "dropped").length, 12, "dead-letter history survives restarts");
 });
 
 test("a scheduled run lands in the inbox; another fire while it runs is skipped; approving never merges", async () => {
@@ -334,6 +400,8 @@ test("two fires at once start one run; a webhook while it runs waits and fires o
       assert.match((auto.accept(t.id, { details: "pushed abc" }, "delivery-1") as { ignored: string }).ignored, /already handled/);
       await new Promise((r) => setTimeout(r, 50));
       assert.equal(auto.get(t.id)!.queued?.length, 1);
+      assert.equal(auto.events(t.id).filter((event) => event.state === "queued").length, 1, "superseded concurrent deliveries do not remain queued in history");
+      assert.equal(auto.events(t.id).filter((event) => event.state === "deduplicated").length, 2);
     } finally {
       delete process.env.FAKE_SLEEP_MS;
     }

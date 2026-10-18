@@ -8,6 +8,14 @@
 - [Automations and away mode](automations.md): schedules, webhooks, the inbox, Docker isolation, the phone view.
 - [Configuration](configuration.md): `.codeflow/config.json`, permissions, health, environment variables.
 - [Security, subscriptions and caveats](security.md): how the CLIs and their logins are used, what runs where, known limits.
+- [Verification profiles](verification.md): required gates, baseline/flaky diagnosis, requirements, human review and merge-target checks.
+- [API and CLI](api.md): authenticated versioned operations and the local HTTP client.
+- [Agent containers](agent-containers.md): explicit images, authentication volumes, filesystem mounts and cancellation.
+- [Service launch profiles](launch-profiles.md): named dependent services, readiness, logs and cleanup.
+- [External sources](external-sources.md): read-only GitLab, Bitbucket, Linear and Jira imports.
+- [Notifications](notifications.md): opt-in outbound destinations, scopes, retries and delivery history.
+- [Backup and maintenance](maintenance.md): encrypted recovery, safe restore, retention, compaction and startup checkpoints.
+- [Application improvement checklist](application-improvements.md): implemented behavior, partial coverage and remaining roadmap work.
 - [Architecture and development](architecture.md): the code layout, adding patterns and agents, the dev server, tests, what's next.
 - [Dynamic teams implementation plan](dynamic-teams-implementation-plan.md): architecture, completed P0–P8 packages, and evaluation gates.
 - [Dynamic team implementation evidence](dynamic-teams-evaluation.md): automated checks, real CLI trials, comparison measurements and the rollout decision.

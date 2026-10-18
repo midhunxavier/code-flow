@@ -43,12 +43,24 @@ export interface PrComment {
   association: string;
   body: string;
   createdAt: string;
+  /** Inline review location; absent for conversation comments and review summaries. */
+  path?: string;
+  line?: number;
+  side?: "LEFT" | "RIGHT";
+  /** Stable root comment ID, shared by replies in the same review thread. */
+  threadId?: string;
+  replyTo?: string;
+  reviewId?: string;
+  url?: string;
+  outdated?: boolean;
 }
 
 export interface PrStatus {
   state: "OPEN" | "CLOSED" | "MERGED";
   headRefOid: string;
   comments: PrComment[];
+  /** More inline comments may exist than the bounded listing returned. */
+  commentsTruncated?: boolean;
 }
 
 export type AlertTool = "dependabot" | "code-scanning";
@@ -236,18 +248,42 @@ export async function fetchPullRequest(repo: string, number: number): Promise<{ 
 }
 
 export async function prStatus(repo: string, pr: string): Promise<PrStatus> {
-  const data = JSON.parse(await gh(repo, ["pr", "view", pr, "--json", "state,headRefOid,comments,reviews"]));
+  const data = JSON.parse(await gh(repo, ["pr", "view", pr, "--json", "number,state,headRefOid,comments,reviews"]));
   const comments: PrComment[] = [];
   for (const c of data.comments ?? []) {
     comments.push({ id: String(c.id), author: c.author?.login ?? "", association: c.authorAssociation ?? "", body: c.body ?? "", createdAt: c.createdAt ?? "" });
   }
-  // A review's summary is a comment too; line comments live in its threads (not fetched).
+  // Review summaries and inline comments are separate GitHub resources.
   for (const r of data.reviews ?? []) {
     if (!r.body?.trim()) continue;
     comments.push({ id: String(r.id), author: r.author?.login ?? "", association: r.authorAssociation ?? "", body: r.body, createdAt: r.submittedAt ?? "" });
   }
-  comments.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  return { state: data.state, headRefOid: data.headRefOid, comments };
+  if (!Number.isSafeInteger(data.number) || data.number < 1) throw new Error("GitHub returned an invalid pull request number");
+  let commentsTruncated = false;
+  // Bound both output and API requests. `--paginate` alone can fetch an unlimited history.
+  for (let page = 1; page <= 10; page++) {
+    const inline = JSON.parse(await gh(repo, ["api", `repos/{owner}/{repo}/pulls/${data.number}/comments?per_page=100&page=${page}`]));
+    if (!Array.isArray(inline)) throw new Error("GitHub returned an invalid review comment list");
+    for (const c of inline.slice(0, 100)) {
+      const root = c.in_reply_to_id ?? c.id;
+      comments.push({
+        id: `review-comment:${c.id}`,
+        author: c.user?.login ?? "", association: c.author_association ?? "",
+        body: c.body ?? "", createdAt: c.created_at ?? "",
+        path: c.path, line: c.line ?? c.original_line,
+        side: c.side === "LEFT" ? "LEFT" : c.side === "RIGHT" ? "RIGHT" : undefined,
+        threadId: `review-thread:${root}`,
+        replyTo: c.in_reply_to_id === undefined ? undefined : `review-comment:${c.in_reply_to_id}`,
+        reviewId: c.pull_request_review_id === undefined ? undefined : String(c.pull_request_review_id),
+        url: c.html_url, outdated: c.line === null,
+      });
+    }
+    if (inline.length < 100) break;
+    if (page === 10) commentsTruncated = true;
+  }
+  const unique = [...new Map(comments.map((c) => [c.id, c])).values()];
+  unique.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  return { state: data.state, headRefOid: data.headRefOid, comments: unique, commentsTruncated };
 }
 
 export async function prChecks(repo: string, pr: string): Promise<Check[]> {

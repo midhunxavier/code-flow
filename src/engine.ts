@@ -22,6 +22,15 @@ import { cantRunMessage, cantRunReason, isPlainTestCommand, proofOutcome, reproO
 import { commandExists } from "./adapters/process.js";
 import { contextPrompt, copyMessageFiles, hasStagedFiles, prepareContext, stageMessageFiles, type ContextInput, type RunContext } from "./context.js";
 import { fitDiff } from "./diff.js";
+import type { ExternalSource } from "./integrations.js";
+import { externalSourcePrompt } from "./source-context.js";
+import { editableTeamPlan, summarizeTeamPlan, teamPlanPolicy, validateTeamPlanEdit, TeamPlanEditError } from "./workflow-control.js";
+import { encodeRunCursor, decodeRunCursor, compareRuns, afterRunCursor } from "./run-history.js";
+import { validateMergeTarget, type MergeValidation } from "./merge-validation.js";
+import { approvals } from "./approvals.js";
+import { validateAgentContainer, type AgentContainer } from "./agent-container.js";
+import { runVerification, validateVerificationProfile, assessChangeRisk, reviewCoverage, type VerificationProfile, type VerificationReport } from "./verification.js";
+import { verificationIntegrity, VerificationIntegrityError } from "./verification-integrity.js";
 import { writeFileInside } from "./fs.js";
 import { describeIssues, inspectChanges, isTestFile, isTestSide, unverifiedIssue, type IntegrityIssue } from "./integrity.js";
 import { extractJson, shapeProblem } from "./json.js";
@@ -58,7 +67,7 @@ import {
   type Snapshot,
   type Worktree,
 } from "./git.js";
-import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines, RUNS_DIR } from "./store.js";
+import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines, readRunCheckpoint, RUNS_DIR } from "./store.js";
 import { branchDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
@@ -326,6 +335,9 @@ export interface Run {
   lastCheck?: { ok: boolean; command: string; worktree: string; at: number };
   /** Set by patterns: did the result pass its check? */
   verdict?: "passed" | "failing";
+  verification?: VerificationReport & { head?: string; branch?: string };
+  pauseRequested?: boolean;
+  priority?: number;
   /**
    * The check can't run in this environment: its first run failed in a way that says the
    * environment is wrong, not the code (see `cantRunReason`), and it fails the same way on the
@@ -344,9 +356,9 @@ export interface Run {
    */
   notes: Note[];
   /** Checkpoints you asked to approve (e.g. the plan before building). */
-  approvals: { plan?: boolean };
+  approvals: { plan?: boolean; tools?: boolean };
   /** Set while the run is paused for your decision. */
-  awaiting?: { kind: "plan"; title: string; content: string; at: number };
+  awaiting?: { kind: "plan"; title: string; content: string; at: number; teamPlanRound?: number };
   /** The run this one continues (a "whole team again" reply). */
   parentRunId?: string;
   /** Source trust follows related work even when the child has no GitHub source. */
@@ -358,10 +370,14 @@ export interface Run {
   followUps: FollowUp[];
   /** Result branches merged from the UI; `pr` when it was the branch's pull request, on GitHub. */
   merges: { branch: string; into: string; commit: string; at: number; pr?: string }[];
+  mergeValidation?: MergeValidation;
+  humanReview?: Record<string, { head: string; files: string[]; at: number }>;
+  humanRework?: { id: string; branch: string; head: string; minutes: number; note: string; at: number }[];
   /** Pull requests opened from the UI (or the PR the run started from, once pushed to), by branch. */
   prs: Record<string, string>;
   /** The GitHub issue or pull request the run started from. */
   source?: RunSource;
+  externalSource?: ExternalSource;
   /** Commit the changes under review are compared against (a PR's merge base). */
   reviewBase?: string;
   /** A review council's merged review. */
@@ -541,10 +557,16 @@ export interface LoopSettings {
   maxSteps: number;
   /** Optional ceiling on actual CLI launches, including retries, per execution allocation. */
   maxInvocations?: number;
+  /** Ceilings apply to provider-reported usage; unreported usage cannot be counted. */
+  maxTokens?: number;
+  maxCostUsd?: number;
+  verification?: VerificationProfile;
   /** Per check/setup command. */
   checkTimeoutMin: number;
   /** Run check and setup commands in this Docker container instead of on your machine. */
   container?: Container;
+  /** Explicit prebuilt image; authentication lives in an explicitly named container volume. */
+  agentContainer?: AgentContainer;
 }
 
 /** What steering a teammate's message into a running turn came to: unknown when the CLI had not answered by the deadline. */
@@ -681,6 +703,7 @@ export class CancelledError extends Error {
     super("Run cancelled");
   }
 }
+export class RunConflictError extends Error {}
 
 /** The `parallel()` branch the current code runs in, so ctx calls made there stop with it. */
 const branchScope = new AsyncLocalStorage<{ ctx: TeamContext; signal: AbortSignal }>();
@@ -788,31 +811,37 @@ export class TeamContext {
   }
 
   private clock?: { timer?: ReturnType<typeof setTimeout>; remaining: number; startedAt: number };
+  private clockPauses = 0;
 
   /** Start the run's time budget; it pauses while the run waits for you. */
   startClock(minutes: number) {
+    this.stopClock();
     this.clock = { remaining: minutes * 60_000, startedAt: Date.now() };
     this.armClock();
   }
   private armClock() {
-    if (!this.clock) return;
+    if (!this.clock || this.clockPauses > 0) return;
     this.clock.startedAt = Date.now();
     // Clamped: past setTimeout's range (or NaN) a timer fires at once and would stop the run.
     this.clock.timer = setTimeout(() => this.stop(`time limit (${this.run.loop.maxMinutes} min)`), timerMs(this.clock.remaining));
     this.clock.timer.unref?.();
   }
   pauseClock() {
-    if (!this.clock?.timer) return;
+    if (!this.clock) return;
+    this.clockPauses++;
+    if (!this.clock.timer) return;
     clearTimeout(this.clock.timer);
     this.clock.timer = undefined;
     this.clock.remaining -= Date.now() - this.clock.startedAt;
   }
   resumeClock() {
-    if (this.clock && !this.clock.timer) this.armClock();
+    if (this.clockPauses > 0) this.clockPauses--;
+    if (this.clock && !this.clock.timer && this.clockPauses === 0) this.armClock();
   }
   stopClock() {
     if (this.clock?.timer) clearTimeout(this.clock.timer);
     this.clock = undefined;
+    this.clockPauses = 0;
   }
 
   /**
@@ -822,6 +851,7 @@ export class TeamContext {
    */
   freshBudget() {
     this.attemptSteps = 0;
+    this.actualInvocations = 0;
     this.stopClock();
     this.startClock(this.run.loop.maxMinutes);
   }
@@ -831,11 +861,11 @@ export class TeamContext {
    * too) until you approve, ask for changes, or reject. Answers are journaled, so a resumed run
    * doesn't ask again. Without the checkpoint enabled, this approves immediately.
    */
-  async approve(kind: "plan", title: string, content: string): Promise<ApprovalAnswer> {
+  async approve(kind: "plan", title: string, content: string, context?: { teamPlanRound?: number }): Promise<ApprovalAnswer> {
     if (!this.run.approvals?.[kind]) return { decision: "approve" };
     this.checkCancelled();
     return this.remember("approval", title, async () => {
-      this.run.awaiting = { kind, title, content, at: Date.now() };
+      this.run.awaiting = { kind, title, content, at: Date.now(), ...context };
       this.run.seen = false;
       this.pauseClock();
       this.manager.emitRun(this.run);
@@ -903,6 +933,18 @@ export class TeamContext {
     }
     this.run.team = state;
     this.publish();
+  }
+
+  /** Restore the last durable human edit before replaying its approval or dispatching work. */
+  restoreTeamPlanEdit(state: TeamState, round: number) {
+    const saved = this.journal.get(`team-plan-edit:${round}`) as { version: number; revision: number; editCount: number; plan: ReturnType<typeof editableTeamPlan> } | undefined;
+    if (!saved) return;
+    if (saved.version !== 1 || !Number.isSafeInteger(saved.revision) || saved.revision <= state.revision || !Number.isSafeInteger(saved.editCount) || saved.editCount < 1) throw new Error("The saved workflow edit is invalid; no tasks were dispatched");
+    const plan = validateTeamPlanEdit({ ...saved.plan, revision: state.revision }, state, teamPlanPolicy(state, this.run));
+    Object.assign(state, plan, { revision: saved.revision });
+    state.subplans = undefined;
+    state.strategyInstances = undefined;
+    state.metrics.revisions += saved.editCount;
   }
 
   /** The logical commit at this point in replay, not a later HEAD already on disk. */
@@ -1224,7 +1266,7 @@ export class TeamContext {
    * attached context, the repo's conventions and the problems reviewers keep raising here.
    */
   get task() {
-    return this.run.task + sourcePrompt(this.run.source) + contextPrompt(this.run.context) + knowledgePrompt(this.run);
+    return this.run.task + externalSourcePrompt(this.run.externalSource) + sourcePrompt(this.run.source) + contextPrompt(this.run.context) + knowledgePrompt(this.run);
   }
 
   /** Record a review council's result (shown as the run's review, postable to the PR). */
@@ -1261,6 +1303,9 @@ export class TeamContext {
   }
 
   checkCancelled() {
+    const tokens = (this.run.usage.inputTokens ?? 0) + (this.run.usage.outputTokens ?? 0) + (this.run.usage.cacheReadTokens ?? 0);
+    if (this.run.loop.maxTokens && tokens >= this.run.loop.maxTokens) this.stop("reported token limit");
+    if (this.run.loop.maxCostUsd && (this.run.usage.costUsd ?? 0) >= this.run.loop.maxCostUsd) this.stop("reported API-equivalent usage limit");
     if (this.persistenceError) throw this.persistenceError;
     if (this.signal.aborted) throw new CancelledError();
   }
@@ -1316,16 +1361,45 @@ export class TeamContext {
     const result = await this.remember(
       "check",
       `${wt.name}|${title}|${command}`,
-      async (): Promise<CheckResult & { head?: string }> => {
-        const result = await this.command("check", title, wt, command);
+      async (): Promise<CheckResult & { head?: string; verification?: Run["verification"] }> => {
+        let result: CheckResult;
+        let verification: Run["verification"];
+        const head = await resolveCommit(wt.path).catch(() => undefined);
+        if (doneWhen && this.run.loop.verification) {
+          const configured = this.run.loop.verification;
+          const profile = configured.checks.some((check) => check.command === command) ? configured : { ...configured, checks: [...configured.checks, { id: "primary-check", kind: "custom" as const, command, required: true, timeoutMs: this.run.loop.checkTimeoutMin * 60_000 }] };
+          const changes = head ? await branchDiff(wt.path, this.run.baseRef, head) : [];
+          const reviewed = this.run.humanReview?.[wt.branch];
+          const startedAt = Date.now();
+          this.run.verification = undefined;
+          try {
+            const integrity = await verificationIntegrity(wt.path, this.signal);
+            if (integrity.head !== head) throw new VerificationIntegrityError("The checkout commit moved while verification was being prepared. Refresh and verify the current commit.");
+            verification = { ...await runVerification(wt.path, profile, { signal: this.signal, changedFiles: changes, reviewedFiles: reviewed && reviewed.head === head ? reviewed.files : [], execute: async (gate, opts) => {
+              await integrity.assert(`before gate ${gate.id}`);
+              const checked = await this.command("check", `${title}: ${gate.title ?? gate.id}`, wt, gate.command, undefined, opts.timeoutMs);
+              await integrity.assert(`gate ${gate.id}`);
+              return checked;
+            } }), head: integrity.head, branch: wt.branch };
+            await integrity.assert("completion");
+          } catch (error) {
+            if (!(error instanceof VerificationIntegrityError)) throw error;
+            this.checkCancelled();
+            verification = { version: 1, profile: profile.name, state: "blocked", startedAt, endedAt: Date.now(), checks: [], skipped: profile.checks.map((check) => ({ check, reason: error.message })), head, branch: wt.branch };
+          }
+          const primary = verification.checks.find((gate) => gate.check.command === command)?.attempts[0];
+          result = { ...(primary ?? { command, exitCode: null, timedOut: false, output: "", durationMs: 0 }), command, ok: verification.state === "verified", output: [...verification.checks.map((gate) => `[${gate.check.id}: ${gate.diagnosis}]\n${gate.attempts.at(-1)?.output ?? gate.reason ?? ""}`), ...verification.skipped.map((gate) => `[${gate.check.id}: blocked]\n${gate.reason}`)].join("\n\n"), durationMs: verification.endedAt - verification.startedAt };
+          this.run.verification = verification;
+        } else result = await this.command("check", title, wt, command);
         this.run.usage.checks++;
         this.run.lastCheck = { ok: result.ok, command, worktree: wt.name, at: Date.now() };
         this.manager.emitRun(this.run);
-        return { ...result, head: await resolveCommit(wt.path).catch(() => undefined) };
+        return { ...result, head, verification };
       },
       (recorded) => !recorded.head || !head || recorded.head === head,
     );
-    if (doneWhen && !(await this.checkCanRun(wt, result))) return null;
+    if ((result as CheckResult & {verification?: Run["verification"]}).verification) this.run.verification = (result as CheckResult & {verification?: Run["verification"]}).verification;
+    if (doneWhen && !this.run.loop.verification && !(await this.checkCanRun(wt, result))) return null;
     if (doneWhen) this.lastChecks.set(wt.name, { head: head ?? result.head, ok: result.ok, tests: result.tests });
     if (doneWhen && result.tests !== undefined) {
       const counts = this.testCounts.get(wt.name) ?? {};
@@ -1637,13 +1711,45 @@ export class TeamContext {
    * Run a shell command in a worktree as a visible step (used for checks and setup). `describe`
    * says how the step reads when passing isn't what's wanted (a proof should fail).
    */
+  private async readyForWork() {
+    if (!this.run.pauseRequested) return;
+    this.pauseClock();
+    try { await this.manager.waitWhilePaused(this.run, this.signal); }
+    finally { this.resumeClock(); }
+    this.checkCancelled();
+  }
+
+  /** A pause can arrive while queued. Leave that queue without holding a slot or a budget. */
+  private async acquireWorkSlot(slots: Slots): Promise<() => void> {
+    const signal = this.signal;
+    for (;;) {
+      await this.readyForWork();
+      this.checkCancelled();
+      const waiting = new AbortController();
+      const abort = () => waiting.abort();
+      signal.addEventListener("abort", abort, { once: true });
+      const unsubscribe = this.manager.subscribe(this.run.id, () => { if (this.run.pauseRequested) waiting.abort(); });
+      try {
+        if (signal.aborted || this.run.pauseRequested) waiting.abort();
+        const release = await slots.acquire(waiting.signal, { priority: () => this.run.priority ?? 0, group: this.run.project ?? this.run.repo }).catch(() => undefined);
+        if (release) {
+          if (!this.run.pauseRequested && !signal.aborted) return release;
+          release();
+        }
+        this.checkCancelled();
+      } finally { unsubscribe(); signal.removeEventListener("abort", abort); }
+    }
+  }
+
   private async command(
     kind: "check" | "setup",
     title: string,
     wt: Worktree,
     command: string,
     describe?: (result: CheckResult) => { ok: boolean; text: string },
+    timeoutMs?: number,
   ): Promise<CheckResult> {
+    await this.readyForWork();
     this.checkCancelled();
     const step: Step = {
       id: `s${this.run.steps.length + 1}`,
@@ -1673,10 +1779,8 @@ export class TeamContext {
       if (this.run.lockdown && !container && !this.run.lockdownOnHost) {
         throw new Error(`${this.run.lockdown}, and Docker isn't available, so code-flow won't run \`${command}\` on this machine`);
       }
-      release = await checkSlots.acquire(this.signal).catch(() => undefined);
-      result = release
-        ? await runCheck(wt.path, command, { timeoutMs: timerMs(this.run.loop.checkTimeoutMin * 60_000, 1_000), signal: this.signal, container })
-        : { command, ok: false, exitCode: null, timedOut: false, durationMs: 0, output: "Cancelled before it started" };
+      release = await this.acquireWorkSlot(checkSlots);
+      result = await runCheck(wt.path, command, { timeoutMs: timeoutMs ?? timerMs(this.run.loop.checkTimeoutMin * 60_000, 1_000), signal: this.signal, container });
     } catch (err) {
       // Couldn't even start it: the step still ends, as a failure that says why.
       result = { command, ok: false, exitCode: null, timedOut: false, durationMs: 0, output: `code-flow couldn't run it: ${(err as Error).message}` };
@@ -1939,6 +2043,7 @@ export class TeamContext {
   }
 
   private async askLive(params: AskParams): Promise<StepOutcome> {
+    await this.readyForWork();
     if (this.attemptSteps >= this.run.loop.maxSteps) {
       this.stop(`step limit (${this.run.loop.maxSteps} agent steps)`);
       this.checkCancelled();
@@ -1984,7 +2089,7 @@ export class TeamContext {
     const slot: AgentSlot = {
       take: async () => {
         if (agentSlots.busy >= agentSlots.size) onEvent({ kind: "status", text: `Waiting for a free agent slot (${agentSlots.size} agents run at once; CODEFLOW_MAX_AGENTS)` });
-        release = await agentSlots.acquire(this.signal).catch(() => undefined);
+        release = await this.acquireWorkSlot(agentSlots);
         return !!release;
       },
       give: () => {
@@ -2163,7 +2268,7 @@ export class TeamContext {
         return activeTurn && !this.signal.aborted && this.run.status === "running" && !!currentMember && currentMember.status !== "retired" &&
           (!params.taskId || !!currentTask && currentTask.owner === currentMember.id && currentTask.attempts === attempt);
       };
-      const grant = member && params.agent !== "agy" ? await teamToolBridge.issue({
+      const grant = member && params.agent !== "agy" && !this.run.loop.agentContainer ? await teamToolBridge.issue({
         identity: { runId: this.run.id, memberId: member.id, taskId: params.taskId, attempt, stepId: step.id, attemptId: logicalAttemptId },
         handler: (request, identity) => this.teamTool(request, identity, params.cwd, activeCapability), signal: this.signal, ttlMs: STEP_TIMEOUT_MS,
         isActive: activeCapability,
@@ -2180,6 +2285,13 @@ export class TeamContext {
           jsonSchema: params.schema,
           questionProtocol: params.memberId ? "structured" : undefined,
           teamTools: grant?.connection,
+          agentContainer: this.run.loop.agentContainer,
+          interactiveApprovals: this.run.approvals.tools === true && !this.run.trigger && !this.run.lockdown,
+          onApproval: async (request, signal) => {
+            this.pauseClock();
+            try { return await approvals.request(this.run.id, step.id, request, signal); }
+            finally { this.resumeClock(); }
+          },
           trust: params.trust ?? this.run.trust,
           signal: this.signal,
           timeoutMs: STEP_TIMEOUT_MS,
@@ -2188,7 +2300,7 @@ export class TeamContext {
         },
         onEvent,
       );
-      } finally { activeTurn = false; grant?.revoke(); }
+      } finally { activeTurn = false; grant?.revoke(); approvals.cancelStep(this.run.id, step.id); }
       if (result.ok || this.signal.aborted) return result;
       const kind = failureKind(result, !!resume);
       if (kind === "session_not_found" && resume && !freshSession) {
@@ -2380,12 +2492,13 @@ export interface StartRunInput {
   context?: ContextInput;
   agentSettings?: AgentSettings;
   loop?: Partial<LoopSettings>;
-  approvals?: { plan?: boolean };
+  approvals?: { plan?: boolean; tools?: boolean };
   parentRunId?: string;
   roleSettings?: Record<string, AgentSettings>;
   trust?: Trust;
   /** Start from a GitHub issue or PR (a PR's branch becomes the base). */
   source?: SourceInput;
+  externalSource?: ExternalSource;
   /** How "Auto" roles were resolved, for the log. */
   routing?: string[];
   /** Set when an automation starts the run. */
@@ -2404,6 +2517,8 @@ export interface StartRunInput {
 const QUOTA_FILE = join(CODEFLOW_HOME, "quota.json");
 
 export class RunManager {
+  private readonly mergeValidating = new Map<string, AbortController>();
+  private readonly mergeValidationWork = new Map<string, Promise<MergeValidation>>();
   private readonly runs = new Map<string, Run>();
   /** Event history of running runs (finished runs are read back from disk when needed). */
   private readonly history = new Map<string, RunEvent[]>();
@@ -2439,6 +2554,12 @@ export class RunManager {
     return () => this.bus.off("activity", listener);
   }
 
+  /** Workspace services abort startup before cancellation or cleanup can remove their files. */
+  onWorkspaceStop(listener: (runId: string) => void): () => void {
+    this.bus.on("workspace-stop", listener);
+    return () => this.bus.off("workspace-stop", listener);
+  }
+
   /** How busy code-flow is: processes running and waiting across all runs. */
   get busy() {
     return { agents: { running: agentSlots.busy, waiting: agentSlots.queued, max: agentSlots.size }, checks: { running: checkSlots.busy, waiting: checkSlots.queued, max: checkSlots.size } };
@@ -2449,12 +2570,17 @@ export class RunManager {
     await this.loadQuota();
     const ids = (await listRunIds()).filter((id) => !this.runs.has(id));
     // A few logs at a time: one by one is slow with hundreds of runs, all at once opens too many files.
-    const logs = await mapLimit(ids, 8, (id) =>
-      readJsonLines<RunEvent>(`${id}.jsonl`).catch((err: Error) => {
+    const logs = await mapLimit(ids, 8, async (id) => {
+      const checkpoint = await readRunCheckpoint<Run>(id);
+      if (checkpoint) return [
+        { seq: checkpoint.seq, ts: checkpoint.run.endedAt ?? checkpoint.run.createdAt, runId: id, type: "run", run: strip(checkpoint.run) },
+        ...checkpoint.run.steps.map((step) => ({ seq: checkpoint.seq, ts: step.endedAt ?? step.startedAt, runId: id, type: "step", step })),
+      ] as RunEvent[];
+      return readJsonLines<RunEvent>(`${id}.jsonl`).catch((err: Error) => {
         logWarn(`Couldn't read the log of run ${id}; it's left out`, { error: err.message });
         return [] as RunEvent[];
-      }),
-    );
+      });
+    });
     ids.forEach((id, i) => {
       const events = logs[i]!;
       for (const e of events) if (typeof e.seq === "number" && e.seq > this.seq) this.seq = e.seq;
@@ -2467,6 +2593,7 @@ export class RunManager {
       this.runs.set(id, run);
       const wasRunning = run.status === "running";
       if (wasRunning) {
+        run.pauseRequested = false;
         run.status = "interrupted";
         run.error = "code-flow stopped while this run was in progress. Resume to continue.";
         run.endedAt = run.endedAt ?? Date.now();
@@ -2513,6 +2640,18 @@ export class RunManager {
     return [...this.runs.values()].map(strip).sort((a, b) => b.createdAt - a.createdAt);
   }
 
+  page(input: { limit?: number; before?: number; cursor?: string; query?: string; project?: string } = {}) {
+    if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)) throw new Error("History page size must be between 1 and 100");
+    if (input.before !== undefined && (!Number.isSafeInteger(input.before) || input.before < 0)) throw new Error("Invalid history timestamp");
+    const cursor = input.cursor === undefined ? undefined : decodeRunCursor(input.cursor);
+    const limit = input.limit ?? 50;
+    const query = input.query?.trim().toLowerCase();
+    const matches = [...this.runs.values()].filter((run) => (!input.project || run.project === input.project) && (!query || query.split(/\s+/).every((word) => [run.task, run.id, run.repo, run.pattern, run.branchPrefix, run.source ? `#${run.source.number} ${run.source.title}` : "", run.externalSource?.title ?? "", run.trigger?.name ?? "", run.group?.label ?? ""].join("\n").toLowerCase().includes(word)))).sort(compareRuns);
+    const remaining = matches.filter((run) => (!cursor || afterRunCursor(run, cursor)) && (input.before === undefined || run.createdAt < input.before));
+    const selected = remaining.slice(0, limit);
+    return { runs: selected.map(strip), total: matches.length, nextCursor: remaining.length > limit ? encodeRunCursor(selected.at(-1)!) : undefined, nextBefore: remaining.length > limit ? selected.at(-1)?.createdAt : undefined };
+  }
+
   get(id: string): Run | undefined {
     return this.runs.get(id);
   }
@@ -2536,11 +2675,44 @@ export class RunManager {
     return () => this.bus.off("*", listener);
   }
 
+  setPaused(id: string, paused: boolean) {
+    const run = this.require(id);
+    if (run.status !== "running") throw new Error("Only a running run can be paused");
+    run.pauseRequested = paused;
+    this.emitRun(run);
+    this.bus.emit(`pause:${id}`);
+    return { paused, pending: paused && run.steps.some((step) => step.status === "running") };
+  }
+
+  setPriority(id: string, priority: number) {
+    if (!Number.isInteger(priority) || priority < -10 || priority > 10) throw new Error("Priority must be an integer from -10 to 10");
+    const run = this.require(id);
+    run.priority = priority;
+    this.emitRun(run);
+    return { priority };
+  }
+
+  async waitWhilePaused(run: Run, signal: AbortSignal) {
+    while (run.pauseRequested && !signal.aborted) await new Promise<void>((resolve) => {
+      const finish = () => { this.bus.off(`pause:${run.id}`, finish); signal.removeEventListener("abort", finish); resolve(); };
+      this.bus.once(`pause:${run.id}`, finish);
+      signal.addEventListener("abort", finish, { once: true });
+      if (!run.pauseRequested || signal.aborted) finish();
+    });
+  }
+
   cancel(id: string): boolean {
+    approvals.cancelRun(id);
+    this.bus.emit("workspace-stop", id);
+    const validation = this.mergeValidating.get(id);
+    validation?.abort();
     // A resume still waiting for the last attempt to wrap up: that controller is the old one.
     if (this.starting.has(id)) this.stoppedWhileStarting.add(id);
     const controller = this.controllers.get(id);
-    if (!controller) return this.starting.has(id);
+    const run = this.runs.get(id);
+    if (run) run.pauseRequested = false;
+    this.bus.emit(`pause:${id}`);
+    if (!controller) return this.starting.has(id) || !!validation;
     controller.abort();
     return true;
   }
@@ -2554,7 +2726,7 @@ export class RunManager {
 
   /** Running, or claimed by a resume that's about to start it. */
   private busyRun(run: Run): boolean {
-    return run.status === "running" || this.starting.has(run.id);
+    return run.status === "running" || this.starting.has(run.id) || this.mergeValidating.has(run.id);
   }
 
   setArchived(id: string, archived: boolean) {
@@ -2618,6 +2790,7 @@ export class RunManager {
   async archive(id: string, opts: { cleanup?: boolean; deleteBranches?: boolean } = {}) {
     const run = this.require(id);
     this.setArchived(id, true);
+    this.bus.emit("workspace-stop", id);
     this.devServers.stopMatching(`${id}/`);
     if (!opts.cleanup) return { removed: [], deletedBranches: [] };
     const result = await removeWorktrees(run.repo, run.worktrees, !!opts.deleteBranches);
@@ -2753,13 +2926,74 @@ export class RunManager {
   }
 
   /** Merge a result branch into one of your branches (see `mergeInto` for how it stays safe). */
-  async merge(id: string, input: { branch: string; into: string; archiveAfter?: boolean }) {
+  async reviewCoverage(id: string, branch: string) {
+    const run = this.require(id);
+    if (!run.worktrees.some((tree) => tree.branch === branch)) throw new Error("That branch doesn't belong to this run");
+    const head = await resolveCommit(run.repo, `refs/heads/${branch}`);
+    const files = await branchDiff(run.repo, run.baseRef, head);
+    const review = run.humanReview?.[branch];
+    const reviewed = review?.head === head ? review.files : [];
+    return { head, files: files.map((file) => file.path), reviewed, coverage: reviewCoverage(files.map((file) => file.path), reviewed), risk: assessChangeRisk(files), stale: !!review && review.head !== head, rework: (run.humanRework ?? []).filter((item) => item.branch === branch) };
+  }
+
+  async recordFileReview(id: string, input: { branch: string; expectedHead: string; path: string; reviewed: boolean }) {
+    const run = this.require(id);
+    const current = await this.reviewCoverage(id, input.branch);
+    if (input.expectedHead !== current.head || await resolveCommit(run.repo, `refs/heads/${input.branch}`) !== current.head) throw new RunConflictError("This branch changed. Review the current file before recording coverage.");
+    if (!current.files.includes(input.path) || typeof input.reviewed !== "boolean") throw new Error("Choose a changed file and its review state");
+    const existing = run.humanReview?.[input.branch];
+    const files = new Set(existing?.head === current.head ? existing.files : []);
+    if (input.reviewed) files.add(input.path); else files.delete(input.path);
+    Object.defineProperty(run.humanReview ??= Object.create(null), input.branch, { value: { head: current.head, files: [...files], at: Date.now() }, enumerable: true, writable: true, configurable: true });
+    if (run.verification?.head === current.head && run.verification.branch === input.branch) run.verification.review = reviewCoverage(current.files, [...files]);
+    this.emitRun(run);
+    return this.reviewCoverage(id, input.branch);
+  }
+
+  async recordHumanRework(id: string, input: { branch: string; expectedHead: string; minutes: number; note?: string }) {
+    const run = this.require(id);
+    if (!Number.isFinite(input.minutes) || input.minutes < 1 || input.minutes > 1440 || (input.note !== undefined && (typeof input.note !== "string" || input.note.length > 2000))) throw new Error("Record 1–1,440 minutes and an optional note under 2,000 characters");
+    if ((run.humanRework?.length ?? 0) >= 100) throw new Error("This run already has 100 rework records");
+    const current = await this.reviewCoverage(id, input.branch);
+    if (input.expectedHead !== current.head) throw new RunConflictError("This branch changed. Refresh before recording rework");
+    (run.humanRework ??= []).push({ id: randomBytes(12).toString("hex"), branch: input.branch, head: current.head, minutes: input.minutes, note: input.note?.trim() ?? "", at: Date.now() });
+    this.emitRun(run);
+    return this.reviewCoverage(id, input.branch);
+  }
+
+  async validateMerge(id: string, input: { branch: string; into: string; allowUntrusted?: boolean }, signal?: AbortSignal) {
+    const run = this.require(id);
+    if (this.busyRun(run)) throw new Error("Wait for the run and its validation to finish");
+    if (!run.worktrees.some((tree) => tree.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
+    if (run.lockdown && !run.loop.container && !run.lockdownOnHost && !input.allowUntrusted) throw new UntrustedSourceError(`${run.lockdown}. Merge validation executes repository code on this machine.`);
+    const profile = run.loop.verification ?? (run.loop.check ? { name: "Run check", checks: [{ id: "run-check", kind: "custom" as const, command: run.loop.check, required: true, timeoutMs: timerMs(run.loop.checkTimeoutMin * 60000, 1000) }] } : undefined);
+    if (!profile) throw new Error("Configure a verification profile or check before validating a merge target");
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    this.mergeValidating.set(id, controller);
+    this.noteActivity();
+    run.mergeValidation = undefined;
+    this.emitRun(run);
+    const work = validateMergeTarget(run.repo, { ...input, profile, setup: run.loop.setup, container: run.loop.container, signal: controller.signal });
+    this.mergeValidationWork.set(id, work);
+    try {
+      run.mergeValidation = await work;
+      this.emitRun(run);
+      return run.mergeValidation;
+    } finally { signal?.removeEventListener("abort", abort); this.mergeValidating.delete(id); this.mergeValidationWork.delete(id); }
+  }
+
+  async merge(id: string, input: { branch: string; into: string; archiveAfter?: boolean; requireValidation?: boolean }) {
     const run = this.require(id);
     if (this.busyRun(run)) throw new Error("Wait for the run to finish before merging");
     if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
     // git would say "Already up to date" and code-flow would call that a merge.
     if (await isAncestor(run.repo, input.branch, `refs/heads/${input.into}`)) throw new Error(`Nothing to merge: ${input.into} already has everything on ${input.branch}`);
-    const outcome = await mergeInto(run.repo, input.branch, input.into, `Merge ${input.branch} into ${input.into} (code-flow run ${run.id})`);
+    const verified = run.mergeValidation;
+    if (input.requireValidation && (!verified?.tree || verified.branch !== input.branch || verified.into !== input.into || verified.report?.state !== "verified" || verified.conflicts.length)) throw new Error("Validate this merge target successfully before merging");
+    const outcome = await mergeInto(run.repo, input.branch, input.into, `Merge ${input.branch} into ${input.into} (code-flow run ${run.id})`, input.requireValidation ? verified : undefined);
     if (outcome.ok) {
       run.merges.push({ branch: input.branch, into: input.into, commit: outcome.commit, at: Date.now() });
       this.emit(run, { type: "log", level: "info", text: `Merged ${input.branch} into ${input.into} (${outcome.commit.slice(0, 8)})` });
@@ -2964,6 +3198,7 @@ export class RunManager {
   private readonly waiters = new Map<string, (answer: ApprovalAnswer) => void>();
   private readonly teamWaiters = new Map<string, (answer: string) => void>();
   private readonly teamReplyWrites = new Map<string, Promise<Note>>();
+  private readonly teamPlanWrites = new Map<string, Promise<TeamState>>();
   /** Turns that take input while they run, by run and step: where notes can go right away. */
   private readonly steerers = new Map<string, Map<string, { agent: AgentId; steer: (text: string) => Promise<boolean> }>>();
   /** Latest plan-usage signal per vendor (Claude reports windows; others only "limited"). */
@@ -3036,8 +3271,37 @@ export class RunManager {
     const run = this.require(id);
     const waiter = this.waiters.get(id);
     if (!run.awaiting || !waiter) throw new Error("This run isn't waiting for a decision");
+    if (this.teamPlanWrites.has(id)) throw new TeamPlanEditError("Wait for the workflow edit to finish saving before answering.", 409);
     if (answer.decision === "revise" && !answer.note?.trim()) throw new Error("Say what should change");
     waiter({ decision: answer.decision, note: answer.note?.trim() || undefined });
+  }
+
+  /** A plan edit is durable before its held approval projection changes. */
+  async editTeamPlan(id: string, input: unknown): Promise<TeamState> {
+    if (this.teamPlanWrites.has(id)) throw new TeamPlanEditError("A workflow edit is already being saved. Refresh and try again.", 409);
+    const run = this.require(id);
+    const team = run.team;
+    const awaiting = run.awaiting;
+    if (run.pattern !== "auto-team" || run.status !== "running" || !team || !awaiting || !Number.isSafeInteger(awaiting.teamPlanRound) || !this.waiters.has(id)) throw new TeamPlanEditError("This run is not waiting for an editable workflow plan.", 409);
+    const plan = validateTeamPlanEdit(input, team, teamPlanPolicy(team, run));
+    const write = (async () => {
+      const key = `team-plan-edit:${awaiting.teamPlanRound}`;
+      const journal = await loadJournal(id, { strict: true });
+      const previous = journal.get(key) as { editCount?: number } | undefined;
+      const revision = team.revision + 1;
+      await journalEntry(id, key, { version: 1, revision, editCount: (previous?.editCount ?? 0) + 1, plan: editableTeamPlan({ ...team, ...plan }), at: Date.now() });
+      if (run.status !== "running" || run.team !== team || run.awaiting !== awaiting) throw new TeamPlanEditError("The run stopped while saving. The edit is retained for resume.", 409);
+      Object.assign(team, plan, { revision });
+      team.subplans = undefined;
+      team.strategyInstances = undefined;
+      team.metrics.revisions++;
+      awaiting.content = summarizeTeamPlan(team);
+      this.emitRun(run);
+      return team;
+    })();
+    this.teamPlanWrites.set(id, write);
+    try { return await write; }
+    finally { this.teamPlanWrites.delete(id); }
   }
 
   async waitForTeamAnswer(id: string, requestId: string, signal: AbortSignal): Promise<string> {
@@ -3239,7 +3503,11 @@ export class RunManager {
     };
     if (given.check === undefined) loop.check = config.check;
     if (given.setup === undefined) loop.setup = config.setup;
-    loop.check = loop.check?.trim() || undefined;
+    if (loop.verification) loop.verification = validateVerificationProfile(loop.verification);
+    if (loop.agentContainer) { loop.agentContainer = validateAgentContainer(loop.agentContainer); if (!(await commandExists("docker"))) throw new Error("Agent isolation needs Docker installed and running"); }
+    loop.check = loop.check?.trim() || loop.verification?.checks.find((check) => check.required)?.command || undefined;
+    loop.maxTokens = positive(loop.maxTokens);
+    loop.maxCostUsd = positive(loop.maxCostUsd);
     loop.setup = loop.setup?.trim() || undefined;
     // Budgets are positive numbers; anything else (0, "abc", a negative) falls back to the default.
     // Very long ones are clamped where the timers are set.
@@ -3262,6 +3530,7 @@ export class RunManager {
       throw new Error(`Base branch "${baseLabel}" not found in ${repo}`);
     });
     const source = fromGitHub?.source ?? (parent?.repo === repo ? parent.source : undefined);
+    const externalSource = input.externalSource ?? (parent?.repo === repo ? parent.externalSource : undefined);
     const reviewBase = source?.kind === "pr" ? await mergeBase(repo, `origin/${source.baseRefName}`, baseRef) : undefined;
 
     // Text from outside the repo's maintainers can carry instructions aimed at the agents, and
@@ -3271,10 +3540,10 @@ export class RunManager {
     let trust: Trust = input.trust ?? config.trust ?? "standard";
     let lockdown: string | undefined;
     let lockdownOnHost: boolean | undefined;
-    if (source?.trusted === false || parent?.lockdown) {
+    if (externalSource || source?.trusted === false || parent?.lockdown) {
       const who = source?.author ? `@${source.author}` : "someone the repository doesn't know";
       const relation = source?.isCrossRepository ? "from a fork" : `who isn't one of its maintainers (${(source?.association ?? "unknown").toLowerCase()})`;
-      lockdown = parent?.lockdown ? `Continued from locked-down run ${parent.id}: ${parent.lockdown}` : `${source!.kind === "issue" ? "Issue" : source!.kind === "pr" ? "Pull request" : "Alert"} #${source!.number} comes from ${who}, ${relation}`;
+      lockdown = parent?.lockdown ? `Continued from locked-down run ${parent.id}: ${parent.lockdown}` : externalSource ? `Imported ${externalSource.provider} ${externalSource.kind} ${externalSource.key} is untrusted external context` : `${source!.kind === "issue" ? "Issue" : source!.kind === "pr" ? "Pull request" : "Alert"} #${source!.number} comes from ${who}, ${relation}`;
       trust = "safe";
       loop.copy = undefined;
       if (loop.container) {
@@ -3356,6 +3625,7 @@ export class RunManager {
       merges: [],
       prs: {},
       source,
+      externalSource: externalSource ? structuredClone(externalSource) : undefined,
       reviewBase,
       watches: {},
       routing: input.routing?.length ? input.routing : undefined,
@@ -3396,7 +3666,7 @@ export class RunManager {
   async resume(id: string): Promise<Run> {
     const run = this.runs.get(id);
     if (!run) throw new Error("Run not found");
-    if (run.status === "running" || this.starting.has(id)) throw new Error("This run is already running");
+    if (this.busyRun(run)) throw new Error("This run is already running or validating a merge");
     const pattern = this.findPattern(run.pattern);
     if (!pattern) throw new Error(`Unknown pattern "${run.pattern}"`);
     if (run.pattern === "auto-team" && run.team && run.team.version !== 1) throw new Error("This team uses an unsupported plan version; update code-flow to resume it");
@@ -3408,6 +3678,9 @@ export class RunManager {
     try {
       // The last attempt may still be wrapping up (listing its work, the inbox): let it finish.
       await this.active.get(id)?.catch(() => undefined);
+      // Human plan writes may still be reading the journal before their append is queued.
+      // Replay cannot load an earlier plan while an accepted edit is becoming durable.
+      await this.teamPlanWrites.get(id)?.catch((error) => { if (!(error instanceof TeamPlanEditError)) throw error; });
       if (this.stoppedWhileStarting.has(id)) return run; // you pressed Stop meanwhile
       return await this.resumeClaimed(run, pattern);
     } finally {
@@ -3601,9 +3874,10 @@ export class RunManager {
   async shutdown(timeoutMs = 10_000): Promise<void> {
     this.shuttingDown = true;
     this.devServers.stopAll();
+    for (const controller of this.mergeValidating.values()) controller.abort();
     for (const controller of this.controllers.values()) controller.abort();
     await Promise.race([
-      Promise.allSettled([...this.active.values()]),
+      Promise.allSettled([...this.active.values(), ...this.mergeValidationWork.values()]),
       new Promise((resolve) => setTimeout(resolve, timeoutMs).unref?.()),
     ]);
     await flushWrites();
@@ -3619,7 +3893,7 @@ export class RunManager {
     this.bus.emit(run.id, event);
     if (event.type === "run") this.bus.emit("*", event.run);
     // A finished run's last snapshot is synced: after a power cut it must not reload as running.
-    appendLine(`${run.id}.jsonl`, event, { sync: event.type === "run" && event.run.status !== "running" });
+    appendLine(`${run.id}.jsonl`, event, { sync: event.type === "run" && event.run.status !== "running", checkpoint: event.type === "run" && event.run.status !== "running" ? { seq: event.seq, run } : undefined });
   }
 }
 

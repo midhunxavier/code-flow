@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, readFileSync, unlinkSync, type Stats } from "node:fs";
 import { appendFile, link, mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
@@ -25,6 +25,52 @@ let writeQueue: Promise<unknown> = mkdir(RUNS_DIR, { recursive: true }).catch(()
 
 /** Failed writes: event projections are best-effort; authoritative callers fail closed. */
 export const writeHealth: { failures: number; lastError?: string; at?: number } = { failures: 0 };
+/** Checkpoints accelerate startup; their failure never changes journal write health. */
+export const checkpointHealth: { failures: number; lastError?: string; at?: number } = { failures: 0 };
+const MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024;
+const checkpointId = (file: string) => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}\.jsonl$/.test(file) && !file.endsWith(".journal.jsonl") ? file.slice(0, -6) : undefined;
+interface CheckpointSource { size: string; mtimeNs: string; ctimeNs: string; dev: string; ino: string }
+const sourceIdentity = (info: import("node:fs").BigIntStats): CheckpointSource => ({ size: String(info.size), mtimeNs: String(info.mtimeNs), ctimeNs: String(info.ctimeNs), dev: String(info.dev), ino: String(info.ino) });
+const checksum = (text: string) => createHash("sha256").update(text).digest("hex");
+
+async function writeRunCheckpoint(file: string, seq: number, runJson: string) {
+  const id = checkpointId(file);
+  if (!id) return;
+  const source = sourceIdentity(await stat(join(RUNS_DIR, file), { bigint: true }));
+  const payload = `${JSON.stringify({ version: 1, source, seq }).slice(0, -1)},"run":${runJson}}`;
+  const text = `${payload.slice(0, -1)},"checksum":"${checksum(payload)}"}\n`;
+  if (Buffer.byteLength(text) > MAX_CHECKPOINT_BYTES) return;
+  const path = join(RUNS_DIR, `${id}.checkpoint.json`);
+  const temp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    await writeFile(temp, text, { mode: 0o600, flag: "wx" });
+    await rename(temp, path);
+  } finally { await unlink(temp).catch(() => undefined); }
+}
+
+/** A bounded optional projection. Missing, damaged or stale checkpoints fall back to the log. */
+export async function readRunCheckpoint<T = unknown>(id: string): Promise<{ run: T; seq: number } | undefined> {
+  if (checkpointId(`${id}.jsonl`) !== id) return undefined;
+  const sourcePath = join(RUNS_DIR, `${id}.jsonl`);
+  try {
+    const before = sourceIdentity(await stat(sourcePath, { bigint: true }));
+    const handle = await open(join(RUNS_DIR, `${id}.checkpoint.json`), "r");
+    let text: string;
+    try {
+      const size = (await handle.stat()).size;
+      if (size === 0 || size > MAX_CHECKPOINT_BYTES) return undefined;
+      text = await handle.readFile("utf8");
+    } finally { await handle.close(); }
+    if (Buffer.byteLength(text) > MAX_CHECKPOINT_BYTES) return undefined;
+    const cached = JSON.parse(text);
+    if (cached?.version !== 1 || !Number.isSafeInteger(cached.seq) || cached.seq < 0 || !cached.source || typeof cached.checksum !== "string" || !cached.run || typeof cached.run !== "object" || Array.isArray(cached.run) || cached.run.id !== id || !Array.isArray(cached.run.steps)) return undefined;
+    const payload = JSON.stringify({ version: cached.version, source: cached.source, seq: cached.seq, run: cached.run });
+    if (checksum(payload) !== cached.checksum) return undefined;
+    const after = sourceIdentity(await stat(sourcePath, { bigint: true }));
+    if (JSON.stringify(before) !== JSON.stringify(after) || JSON.stringify(cached.source) !== JSON.stringify(after)) return undefined;
+    return { run: cached.run as T, seq: cached.seq };
+  } catch { return undefined; }
+}
 
 /**
  * Files whose last write this process succeeded, so they end in "\n". Anything else is checked
@@ -104,8 +150,16 @@ async function truncateIncompleteTail(path: string): Promise<void> {
  * the line to reach the disk (fsync) before the next write: for lines that must survive a
  * power loss, not for every event (`flushWrites` syncs those at shutdown).
  */
-export function appendLine(file: string, value: unknown, opts: { sync?: boolean; strict?: boolean } = {}): Promise<void> {
+export function appendLine(file: string, value: unknown, opts: { sync?: boolean; strict?: boolean; checkpoint?: { seq: number; run: unknown } } = {}): Promise<void> {
   const line = `${JSON.stringify(value)}\n`;
+  // Capture now, alongside the event: the live run may change before its queued write executes.
+  let checkpoint: { seq: number; runJson: string } | undefined;
+  if (opts.checkpoint && Number.isSafeInteger(opts.checkpoint.seq) && opts.checkpoint.seq >= 0 && typeof value === "object" && value && "seq" in value && value.seq === opts.checkpoint.seq) {
+    try {
+      const runJson = JSON.stringify(opts.checkpoint.run);
+      if (runJson && Buffer.byteLength(runJson) <= MAX_CHECKPOINT_BYTES) checkpoint = { seq: opts.checkpoint.seq, runJson };
+    } catch { /* The event log remains authoritative if a projection cannot be serialized. */ }
+  }
   const written = writeQueue
     .then(async () => {
       const path = join(RUNS_DIR, file);
@@ -123,6 +177,10 @@ export function appendLine(file: string, value: unknown, opts: { sync?: boolean;
       repaired.add(file);
       if (opts.sync) unsynced.delete(file);
       else unsynced.add(file);
+      if (checkpoint) await writeRunCheckpoint(file, checkpoint.seq, checkpoint.runJson).catch((error: Error) => {
+        checkpointHealth.failures++; checkpointHealth.lastError = error.message; checkpointHealth.at = Date.now();
+        if (checkpointHealth.failures === 1 || checkpointHealth.failures % 100 === 0) logWarn("couldn't save optional run checkpoint", { file, error: error.message });
+      });
     });
   const observed = written.catch((err: Error) => {
       writeHealth.failures++;
@@ -386,9 +444,9 @@ async function takeOverLock(file: string, temp: string, judged: { text: string; 
  * numbers. Waits briefly for a previous instance that is still shutting down (a restart).
  * Returns a release function.
  */
-export async function acquireLock(waitMs = 20_000): Promise<() => void> {
-  const file = join(CODEFLOW_HOME, "server.lock");
-  await mkdir(CODEFLOW_HOME, { recursive: true });
+export async function acquireLock(waitMs = 20_000, home = CODEFLOW_HOME): Promise<() => void> {
+  const file = join(home, "server.lock");
+  await mkdir(home, { recursive: true });
   const info: LockInfo = { pid: process.pid, started: Math.round(Date.now() - process.uptime() * 1000), ticks: startTicks(process.pid), boot: Math.round(bootTime()) };
   const content = JSON.stringify(info);
   const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
@@ -407,7 +465,7 @@ export async function acquireLock(waitMs = 20_000): Promise<() => void> {
         continue;
       }
       if (Date.now() > deadline) {
-        throw new Error(`Another code-flow server${holder.pid ? ` (pid ${holder.pid})` : ""} is using ${CODEFLOW_HOME}. Stop it, or set CODEFLOW_HOME to a different folder.`);
+          throw new Error(`Another code-flow server${holder.pid ? ` (pid ${holder.pid})` : ""} is using ${home}. Stop it, or set CODEFLOW_HOME to a different folder.`);
       }
       await new Promise((r) => setTimeout(r, 250));
     }

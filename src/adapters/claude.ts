@@ -69,9 +69,10 @@ export const claudeAdapter: AgentAdapter = {
   },
 
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
-    const supportsTools = opts.teamTools && (await adapterTeamCapabilities("claude")).scopedTools === "tested";
+    const supportsTools = !opts.agentContainer && opts.teamTools && (await adapterTeamCapabilities("claude")).scopedTools === "tested";
     const teamTools = supportsTools ? await prepareTeamTools(opts.teamTools!) : undefined;
-    if (opts.teamTools && !teamTools) onEvent({ kind: "status", text: "This Claude CLI has no verified per-turn team tools; use structured outcomes and next-turn replies." });
+    if (opts.agentContainer) onEvent({ kind: "status", text: `Claude runs in Docker image ${opts.agentContainer.image}. Live team tools are unavailable in containers; use structured outcomes and next-turn replies.` });
+    else if (opts.teamTools && !teamTools) onEvent({ kind: "status", text: "This Claude CLI has no verified per-turn team tools; use structured outcomes and next-turn replies." });
     try {
     // The prompt goes on stdin (no positional argument), so its size isn't limited by argv.
     const args = ["-p", "--output-format", "stream-json", "--verbose"];
@@ -106,6 +107,7 @@ export const claudeAdapter: AgentAdapter = {
     let rejected: { resetsAt?: number } | undefined;
 
     const proc = startJsonlProcess({
+      agentContainer: opts.agentContainer ? { config: opts.agentContainer, mode: opts.mode } : undefined,
       command: "claude",
       args,
       input: opts.prompt,

@@ -1,6 +1,9 @@
+import { lstatSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { classifyError } from "./errors.js";
 import { startJsonlProcess, stderrTail, stringify, truncate, type ProcessOutcome } from "./process.js";
-import type { ErrorKind } from "./types.js";
+import type { AgentApprovalRequest, ApprovalDecision, ErrorKind } from "./types.js";
+import type { AgentContainer } from "../agent-container.js";
 
 /**
  * One Codex turn through `codex app-server`: JSON-RPC over stdio (one JSON object per line, no
@@ -36,6 +39,11 @@ export interface AppServerTurn {
   onMessage: (msg: any) => void;
   onText: (line: string) => void;
   onSteerable?: (steer: ((text: string) => Promise<boolean>) | undefined) => void;
+  interactiveApprovals?: boolean;
+  onApproval?: (request: AgentApprovalRequest, signal: AbortSignal) => Promise<ApprovalDecision>;
+  /** Upper bounded independently of the process timeout. Defaults to two minutes. */
+  approvalTimeoutMs?: number;
+  agentContainer?: AgentContainer;
 }
 
 /** The installed Codex can't serve this (no app-server, or a protocol this client doesn't speak). */
@@ -110,6 +118,8 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
   let nextId = 1;
   const pending = new Map<number, { resolve: (result: any) => void; reject: (err: Error) => void }>();
   let exit: ProcessOutcome | undefined;
+  const approvalRequests = new Map<string, { controller: AbortController; replyAllowed: boolean }>();
+  const approvalItems = new Map<string, any>();
 
   // Cancelling interrupts the turn first (so Codex records it, and a resume picks up from there),
   // then stops the server: the process gets its own signal, aborted only after that.
@@ -122,6 +132,7 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     timeoutMs: turn.timeoutMs,
     idleTimeoutMs: turn.idleTimeoutMs,
     interactive: true,
+    agentContainer: turn.agentContainer ? { config: turn.agentContainer, mode: turn.sandbox === "read-only" ? "read" : "write" } : undefined,
     onText: turn.onText,
     onJson: (msg) => {
       if (msg.method === undefined && msg.id !== undefined) {
@@ -138,6 +149,7 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
   });
   const exited = proc.outcome.then((outcome) => {
     exit = outcome;
+    abortApprovals(false);
     for (const waiter of pending.values()) waiter.reject(new Error("codex app-server exited"));
     pending.clear();
     return outcome;
@@ -177,6 +189,10 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
 
       case "item/started":
       case "item/completed": {
+        if (method === "item/started" && params.item?.id && params.threadId === threadId && params.turnId === turnId) {
+          if (approvalItems.size < 256) approvalItems.set(params.item.id, params.item);
+        }
+        if (method === "item/completed") approvalItems.delete(params.item?.id);
         const item = execItem(params.item);
         if (item) turn.onMessage({ type: method === "item/started" ? "item.started" : "item.completed", item });
         break;
@@ -208,16 +224,24 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
       case "turn/completed":
         if (!turnId || !params.turn?.id || params.turn.id === turnId) {
           turnEnded = true;
+          abortApprovals(false);
           proc.resultSeen(); // the server gets a grace period to exit, not the whole step timeout
           completed?.(params.turn ?? {});
         }
         break;
+
+      case "serverRequest/resolved": {
+        if (params.threadId !== threadId) break;
+        const approval = approvalRequests.get(String(params.requestId));
+        if (approval) { approval.replyAllowed = false; approval.controller.abort(); }
+        break;
+      }
     }
   }
 
   /**
-   * Native approvals remain off. Auto members use structured questions at turn boundaries;
-   * unsupported native requests are answered immediately rather than holding a slot open.
+   * Only explicit interactive runs can approve known, fully displayed one-shot actions.
+   * Policy amendments, session grants and unknown methods never reach the approval callback.
    */
   function answerServerRequest(msg: any) {
     const method = String(msg.method);
@@ -229,13 +253,20 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     switch (method) {
       case "item/commandExecution/requestApproval":
       case "item/fileChange/requestApproval":
-        turn.onText(`Codex asked for approval (${method.split("/")[1]}); ${declined}`);
-        reply({ decision: "decline" });
+        if (turn.interactiveApprovals && turn.onApproval) void answerApproval(msg);
+        else {
+          turn.onText(`Codex asked for approval (${method.split("/")[1]}); ${declined}`);
+          reply({ decision: "decline" });
+        }
         break;
       case "execCommandApproval":
       case "applyPatchApproval":
         turn.onText(`Codex asked for approval (${method}); ${declined}`);
         reply({ decision: { denied: { rejection: "code-flow runs Codex without approval prompts" } } });
+        break;
+      case "item/permissions/requestApproval":
+        turn.onText(`Codex asked for ${method}${requestDetail(msg.params)}; additional permissions declined`);
+        reply({ permissions: {}, scope: "turn" });
         break;
       default: {
         const detail = requestDetail(msg.params);
@@ -253,6 +284,51 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     }
   }
 
+  async function answerApproval(msg: any): Promise<void> {
+    const id = String(msg.id);
+    const duplicate = approvalRequests.get(id);
+    if (duplicate) { duplicate.controller.abort(); return; }
+    const params = msg.params ?? {};
+    const item = approvalItems.get(params.itemId);
+    const action = approvalAction(msg, item, turn.cwd, turn.sandbox);
+    if (!action || approvalRequests.size >= 32 || !threadId || !turnId || params.threadId !== threadId || params.turnId !== turnId || turnEnded || exit || turn.signal?.aborted) {
+      turn.onText(`Codex approval declined: the action is outside this turn's supported scope`);
+      proc.send({ id: msg.id, result: { decision: "decline" } });
+      return;
+    }
+    const approval = { controller: new AbortController(), replyAllowed: true };
+    approvalRequests.set(id, approval);
+    proc.pauseIdle(true);
+    const timeout = Number.isFinite(turn.approvalTimeoutMs) && turn.approvalTimeoutMs! > 0 ? Math.min(10 * 60_000, turn.approvalTimeoutMs!) : 2 * 60_000;
+    const timer = setTimeout(() => approval.controller.abort(), timeout);
+    turn.onText(`Codex is waiting for approval of this ${action.kind === "command" ? "command" : "file change"}`);
+    let decision: ApprovalDecision = "decline";
+    try {
+      const cancelled = new Promise<ApprovalDecision>((resolve) => approval.controller.signal.addEventListener("abort", () => resolve("decline"), { once: true }));
+      decision = await Promise.race([Promise.resolve().then(() => turn.onApproval!(action, approval.controller.signal)), cancelled]);
+    } catch (error) {
+      turn.onText(`Codex approval declined: ${(error as Error).message}`);
+    } finally {
+      clearTimeout(timer);
+      approvalRequests.delete(id);
+      proc.pauseIdle(approvalRequests.size > 0);
+    }
+    // Cancellation, completion, timeout or server resolution invalidates even a late accept.
+    if (approval.replyAllowed && !exit && !turnEnded) {
+      const accepted = decision === "approve" && !approval.controller.signal.aborted && !turn.signal?.aborted;
+      proc.send({ id: msg.id, result: { decision: accepted ? "accept" : "decline" } });
+      turn.onText(`Codex ${action.kind === "command" ? "command" : "file change"} ${accepted ? "approved once" : "declined"}`);
+    }
+    approval.controller.abort();
+  }
+
+  function abortApprovals(replyAllowed: boolean): void {
+    for (const approval of approvalRequests.values()) {
+      approval.replyAllowed = replyAllowed;
+      approval.controller.abort();
+    }
+  }
+
   const steer = async (text: string): Promise<boolean> => {
     if (!threadId || !turnId || exit) return false;
     try {
@@ -267,6 +343,7 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
   const cancel = () => {
     if (cancelling) return;
     cancelling = true;
+    abortApprovals(true);
     void (async () => {
       if (threadId && turnId && turnStarted && !turnEnded && !exit) {
         request("turn/interrupt", { threadId, turnId }, INTERRUPT_MS).catch(() => undefined);
@@ -305,7 +382,7 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     }
     proc.send({ method: "initialized" });
 
-    const threadParams = { cwd: turn.cwd, sandbox: turn.sandbox, approvalPolicy: "never", model: turn.model };
+    const threadParams = { cwd: turn.cwd, sandbox: turn.sandbox, approvalPolicy: turn.interactiveApprovals && turn.onApproval ? "on-request" : "never", model: turn.model };
     let thread: any;
     try {
       thread = turn.resumeThreadId
@@ -376,9 +453,53 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     proc.kill();
     return await exited;
   } finally {
+    abortApprovals(false);
     if (steerable) turn.onSteerable?.(undefined);
     turn.signal?.removeEventListener("abort", cancel);
   }
+}
+
+/** Normalize only approval kinds whose effect and complete scope can be shown in the UI. */
+function approvalAction(msg: any, item: any, cwd: string, sandbox: AppServerTurn["sandbox"]): AgentApprovalRequest | undefined {
+  const params = msg.params ?? {};
+  if (sandbox === "read-only" || params.grantRoot || params.networkApprovalContext || params.additionalPermissions || (params.kind && params.kind !== "command") || (params.environmentId !== undefined && params.environmentId !== null)) return;
+  const reason = typeof params.reason === "string" ? params.reason.slice(0, 4_000) : undefined;
+  const id = String(msg.id);
+  if (!id || id.length > 240) return;
+  if (msg.method === "item/commandExecution/requestApproval") {
+    const command = params.command ?? item?.command;
+    const requestedCwd = params.cwd ?? item?.cwd ?? cwd;
+    if (typeof command !== "string" || !command.trim() || command.length > 16_000 || command.includes("\0") || typeof requestedCwd !== "string" || !isAbsolute(requestedCwd) || !workspacePath(cwd, requestedCwd)) return;
+    return { id, kind: "command", command, cwd: requestedCwd, ...(reason ? { reason } : {}) };
+  }
+  if (!item || item.type !== "fileChange" || !Array.isArray(item.changes) || !item.changes.length || item.changes.length > 200) return;
+  if (item.changes.some((change: any) => !["add", "delete", "update"].includes(change.kind?.type ?? change.kind))) return;
+  const paths = item.changes.flatMap((change: any) => [change.path, ...(change.kind?.move_path ? [change.kind.move_path] : [])]);
+  if (paths.some((path: unknown) => typeof path !== "string" || !path || path.length > 4_096 || path.includes("\0") || !workspacePath(cwd, path))) return;
+  return { id, kind: "file-change", paths, cwd, ...(reason ? { reason } : {}) };
+}
+
+/** Resolve the nearest existing ancestor to catch links escaping the workspace. */
+function workspacePath(cwd: string, requested: string): boolean {
+  try {
+    const root = realpathSync(cwd);
+    const target = isAbsolute(requested) ? resolve(requested) : resolve(root, requested);
+    let existing = target;
+    while (true) {
+      try {
+        const info = lstatSync(existing);
+        if (info.isSymbolicLink()) return false;
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+        const parent = dirname(existing);
+        if (parent === existing) return false;
+        existing = parent;
+      }
+    }
+    const canonical = resolve(realpathSync(existing), relative(existing, target));
+    return canonical === root || canonical.startsWith(root + sep);
+  } catch { return false; }
 }
 
 /** App-server items (camelCase) in the shape `codex exec --json` reports them. */

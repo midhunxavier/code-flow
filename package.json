@@ -11,9 +11,12 @@
     "dev": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs --fake-agents",
     "dev:real": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts",
-    "test:e2e": "tsx --test test/e2e/*.e2e.ts",
-    "evaluate:teams": "tsx scripts/evaluate-teams.ts"
+    "test": "tsx --test --test-concurrency=4 test/*.test.ts",
+    "test:e2e": "tsx --test --test-concurrency=2 test/e2e/*.e2e.ts",
+    "evaluate:teams": "tsx scripts/evaluate-teams.ts",
+    "client": "node scripts/codeflow.mjs",
+    "maintenance": "tsx scripts/maintenance.ts",
+    "test:containers": "CODEFLOW_TEST_DOCKER=1 tsx --test test/agent-container-docker.test.ts"
   },
   "engines": {
     "node": ">=20"

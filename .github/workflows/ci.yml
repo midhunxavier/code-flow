@@ -37,12 +37,10 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
-  # The real UI in headless Chrome (preinstalled on GitHub's Ubuntu runners) against fake
-  # agents. Informational for now: a browser-driven test is the likeliest to flake on CI.
+  # Critical UI flows in headless Chrome against deterministic provider fixtures.
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

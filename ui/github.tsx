@@ -134,7 +134,9 @@ export function Templates() {
   const single = templates.value.filter((t) => !t.sweep);
   const sweeps = templates.value.filter((t) => t.sweep);
   return (
-    <>
+    <details class="settings task-starters">
+      <summary><span class="st">Task starters</span><span class="ss">GitHub issues, pull requests and sweeps</span></summary>
+      <div class="settings-body">
       <div class="templates">
         <span class="lbl">Start from</span>
         {single.map((t) => (
@@ -157,7 +159,8 @@ export function Templates() {
           ))}
         </div>
       ) : null}
-    </>
+      </div>
+    </details>
   );
 }
 

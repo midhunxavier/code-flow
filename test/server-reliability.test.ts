@@ -79,7 +79,7 @@ before(async () => {
     }),
   );
   [a, b] = await Promise.all([
-    startServer({ FAKE_GH_STATE: ghState, CODEFLOW_LAN_ALLOW_LOCAL: "1" }),
+    startServer({ FAKE_GH_STATE: ghState, CODEFLOW_LAN_ALLOW_LOCAL: "1", CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL: "1" }),
     startServer({ FAKE_GH_STATE: ghState, FAKE_SIGNED_OUT: "codex", CODEFLOW_SSE_STALL_MS: "500" }),
   ]);
 });

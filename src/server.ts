@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { createServer as createSecureServer } from "node:https";
+import { PhoneSessions } from "./phone-sessions.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -14,16 +17,27 @@ import { listTree, readRepoFile, searchFiles } from "./repo-tree.js";
 import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig } from "./repo-config.js";
 import { openFolder } from "./serve.js";
+import { LaunchProfiles, LaunchProfileError, readLaunchProfiles } from "./launch-profiles.js";
 import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
 import { Previews } from "./preview.js";
 import { SnapshotError, takeSnapshot } from "./snapshot.js";
-import { Notes } from "./notes.js";
+import { Integrations } from "./integrations.js";
+import { Notifications } from "./notifications.js";
+import { approvals } from "./approvals.js";
+import { validateAgentContainer } from "./agent-container.js";
+import { Notes, NotesConflictError } from "./notes.js";
+import { HttpError, readJson, send } from "./http.js";
+import { handleWorkspaceApi } from "./workspace-api.js";
+import { TeamPlanEditError } from "./workflow-control.js";
+import { analyzeProjectMemory } from "./memory-analysis.js";
+import { redactExport } from "./privacy.js";
+import { validateVerificationProfile, renderVerificationReport } from "./verification.js";
 import { CODEFLOW_HOME, autoTeamEnabled, envNumber, PORT } from "./config.js";
-import { RunManager, UntrustedSourceError, type LoopSettings, type Pattern } from "./engine.js";
+import { RunManager, RunConflictError, UntrustedSourceError, type LoopSettings, type Pattern } from "./engine.js";
 import { detectCheckCommand } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
-import { listBranches, repoRoot, worktreeRoot } from "./git.js";
+import { git, listBranches, repoRoot, worktreeRoot } from "./git.js";
 import { stat } from "node:fs/promises";
 import { folderSizes, remoteBranches, removeWorktrees } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
@@ -35,7 +49,7 @@ import { listSweep, runSweep, sourceKeys, type SweepKind } from "./sweeps.js";
 import { resolveAuto } from "./routing.js";
 import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
-import { Automations, describeSchedule, readWebhook, validateSchedule } from "./automation.js";
+import { Automations, describeSchedule, readWebhook, validateSchedule, previewSchedule } from "./automation.js";
 import { changeRemote, isOwnAddress, lanAddresses, loadRemote, renderRemote, saveRemote, tokenMatches, type RemoteSettings } from "./remote.js";
 import { projectOf, Projects } from "./projects.js";
 import { memoryStore, MemoryConflictError, type MemoryAuthority, type MemoryEntry } from "./memory.js";
@@ -71,54 +85,47 @@ if (reaped) logInfo(`Stopped ${reaped} process group(s) a previous code-flow lef
 
 const projects = new Projects();
 const manager = new RunManager(findPattern, projects);
+const launchProfiles = new LaunchProfiles(manager.devServers);
+manager.onWorkspaceStop((runId) => launchProfiles.stopMatching(`${runId}/`));
+const integrations = new Integrations();
+await integrations.load().catch((error) => logError("External sources disabled: invalid integration configuration", error));
+const notifications = new Notifications();
+const notificationsReady = await notifications.load().then(() => true, (error) => { logError("Notifications disabled: configuration or delivery state cannot be read", error); return false; });
 /** The side panel's terminals and notes. */
 const shells = new Shells();
 const notes = new Notes();
 const watcher = new PrWatcher(manager);
 const automations = new Automations(manager, (body, extra) => startFromBody(body, extra), (repo, kind) => listSweep(repo, kind, manager.list()));
 let remote: RemoteSettings;
+let changingRemote: Promise<unknown> = Promise.resolve();
+/** Apply each patch to the latest saved generation so concurrent tabs cannot revive old links. */
+function changeSavedRemote(patch: Parameters<typeof changeRemote>[1]): Promise<RemoteSettings> {
+  const change = changingRemote.catch(() => undefined).then(async () => {
+    const before = remote;
+    const next = changeRemote(before, patch);
+    await saveRemote(next);
+    remote = next;
+    return before;
+  });
+  changingRemote = change.catch(() => undefined);
+  return change;
+}
 const REMOTE_PORT = envNumber("CODEFLOW_REMOTE_PORT", PORT + 1, { min: 1, max: 65_535 });
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
 const HOST = "127.0.0.1";
+const tlsConfigured = !!process.env.CODEFLOW_TLS_CERT && !!process.env.CODEFLOW_TLS_KEY;
+if (!!process.env.CODEFLOW_TLS_CERT !== !!process.env.CODEFLOW_TLS_KEY) throw new Error("Configure both CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY");
+const phoneTls = tlsConfigured ? { cert: readFileSync(process.env.CODEFLOW_TLS_CERT!), key: readFileSync(process.env.CODEFLOW_TLS_KEY!) } : undefined;
+const insecurePhoneDevelopment = process.env.CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL === "1";
+const phoneProtocol = phoneTls ? "https" : "http";
+const phoneSessions = new PhoneSessions();
+
 const allowedHosts = new Set([`${HOST}:${PORT}`, `localhost:${PORT}`]);
 /** Local apps in the side panel's Browser, each on a port of its own (src/preview.ts). */
 const previews = new Previews(
   () => [`http://localhost:${PORT}`, `http://${HOST}:${PORT}`],
   () => [PORT, REMOTE_PORT],
 );
-
-class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
-  }
-}
-
-function send(res: ServerResponse, status: number, body: unknown) {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify(body));
-}
-
-// Run requests can carry base64 attachments (up to 25 MB of files).
-const MAX_BODY_BYTES = 40 * 1024 * 1024;
-
-async function readJson(req: IncomingMessage): Promise<any> {
-  // Requiring JSON forces a CORS preflight, which this server never approves.
-  if (!req.headers["content-type"]?.startsWith("application/json")) {
-    throw new HttpError(415, "Expected application/json");
-  }
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req as AsyncIterable<Buffer>) {
-    size += chunk.length;
-    if (size > MAX_BODY_BYTES) throw new HttpError(413, "Request too large: attached files must total under 25 MB");
-    chunks.push(chunk);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-  } catch {
-    throw new HttpError(400, "Invalid JSON");
-  }
-}
 
 /** This server launches coding agents, so only accept requests from its own page. */
 function checkOrigin(req: IncomingMessage) {
@@ -199,14 +206,14 @@ function signedIn(req: IncomingMessage): boolean {
  */
 const PHONE_COOKIE = `codeflow_phone_${REMOTE_PORT}`;
 const PHONE_COOKIE_DAYS = 30;
-const phoneControl = (s: RemoteSettings = remote) => s.enabled && s.lan && s.control;
+const phoneControl = (s: RemoteSettings = remote) => s.enabled && s.lan && s.control && (!!phoneTls || insecurePhoneDevelopment);
 
-function phoneCookie(): string {
-  return `${PHONE_COOKIE}=${remote.controlToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${PHONE_COOKIE_DAYS * 86_400}`;
+function phoneCookie(token: string): string {
+  return `${PHONE_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/${phoneTls ? "; Secure" : ""}; Max-Age=${PHONE_COOKIE_DAYS * 86_400}`;
 }
 
 function phoneSignedIn(req: IncomingMessage): boolean {
-  return phoneControl() && readCookies(req, PHONE_COOKIE).some((cookie) => tokenMatches(cookie, remote.controlToken));
+  return phoneControl() && readCookies(req, PHONE_COOKIE).some((cookie) => phoneSessions.valid(cookie, remote.controlToken));
 }
 
 /**
@@ -216,7 +223,7 @@ function phoneSignedIn(req: IncomingMessage): boolean {
  */
 function checkLanOrigin(req: IncomingMessage) {
   const origin = req.headers.origin;
-  if (origin && origin !== `http://${req.headers.host}`) throw new HttpError(403, "Cross-origin request refused");
+  if (origin && origin !== `${phoneProtocol}://${req.headers.host}`) throw new HttpError(403, "Cross-origin request refused");
 }
 
 const lockedPage = (title: string, body: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -258,7 +265,7 @@ async function attempt<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err) {
-    throw err instanceof HttpError ? err : new HttpError(400, (err as Error).message);
+    throw err instanceof HttpError ? err : new HttpError(err instanceof TeamPlanEditError ? err.status : err instanceof MemoryConflictError || err instanceof RunConflictError ? 409 : 400, (err as Error).message);
   }
 }
 
@@ -297,7 +304,7 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string): P
     if (!Array.isArray(supplied.pool)) requested.pool = [...installed];
   }
   const wantsAuto = Object.values(requested).some((list) => list.includes("auto"));
-  const rank = wantsAuto && repo ? rankAgents(manager.list(), repo) : undefined;
+  const rank = wantsAuto && repo ? rankAgents(manager.list(), repo, { pattern: pattern.id }) : undefined;
   const resolved = resolveAuto(requested, manager.quota, installed, rank);
   const roles: Record<string, AgentId[]> = {};
   const needed = new Set<AgentId>();
@@ -418,6 +425,8 @@ function validateLoop(input: unknown): Partial<LoopSettings> {
     maxMinutes: number("maxMinutes", 1, 720),
     maxSteps: number("maxSteps", 1, 200),
     maxInvocations: number("maxInvocations", 1, 200),
+    maxTokens: number("maxTokens", 1, 1_000_000_000),
+    maxCostUsd: number("maxCostUsd", 0.001, 1_000_000),
     checkTimeoutMin: number("checkTimeoutMin", 1, 120),
   };
 }
@@ -447,8 +456,19 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   const repo = String(body.repo ?? "").trim();
   if (!task) throw new HttpError(400, "Describe the task");
   if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
+  if (body.externalSource !== undefined || (body.externalSourceId !== undefined && typeof body.externalSourceId !== "string")) throw new HttpError(400, "Import the external source through its configured integration first");
+  if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
   const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo));
+  let externalSource = typeof body.externalSourceId === "string" ? await attempt(async () => integrations.resolveSource(body.externalSourceId)) : undefined;
+  if (body.externalSourceRef) {
+    const ref = body.externalSourceRef;
+    if (typeof ref.integration !== "string" || !["issue", "pr"].includes(ref.kind) || typeof ref.key !== "string") throw new HttpError(400, "Choose a configured external source");
+    externalSource = await attempt(() => integrations.importSource(ref.integration, ref.kind, ref.key));
+  }
+  if (externalSource && body.source) throw new HttpError(400, "Choose one external source for this run");
   const loop = validateLoop(body.loop);
+  if (body.loop?.verification) loop.verification = await attempt(async () => validateVerificationProfile(body.loop.verification));
+  if (body.loop?.agentContainer) loop.agentContainer = await attempt(async () => validateAgentContainer(body.loop.agentContainer));
   const container = body.loop?.container;
   if (container && typeof container.image === "string" && /^[\w./:@-]{1,200}$/.test(container.image)) {
     loop.container = { image: container.image, network: container.network !== false };
@@ -462,7 +482,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
     branchPrefix: body.branchPrefix ? String(body.branchPrefix) : undefined,
     context: body.context && typeof body.context === "object" ? body.context : undefined,
     loop,
-    approvals: { plan: typeof body.approvals?.plan === "boolean" ? body.approvals.plan : pattern.id === "auto-team" },
+    approvals: { plan: typeof body.approvals?.plan === "boolean" ? body.approvals.plan : pattern.id === "auto-team", tools: body.approvals?.tools === true },
     parentRunId: typeof body.parentRunId === "string" && manager.get(body.parentRunId) ? body.parentRunId : undefined,
     trust: ["safe", "standard", "trusted", "full"].includes(body.trust) ? body.trust : undefined,
     roleSettings: validateRoleSettings(body.roleSettings),
@@ -474,6 +494,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
       }
     })(),
     source: validateSource(body.source),
+    externalSource,
     allowUntrusted: body.allowUntrusted === true,
     routing: notes,
     roles,
@@ -493,6 +514,11 @@ async function startFromBody(body: Record<string, any>, extra: { trigger?: Run["
 function automationRun(body: Record<string, any>) {
   const keep = ["repo", "project", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
   const run: Record<string, any> = Object.fromEntries(keep.filter((k) => body[k] !== undefined).map((k) => [k, body[k]]));
+  if (typeof body.externalSourceId === "string") {
+    try { const source = integrations.resolveSource(body.externalSourceId); run.externalSourceRef = { integration: source.integration, kind: source.kind, key: source.key }; }
+    catch (error) { throw new HttpError(400, (error as Error).message); }
+  }
+  else if (body.externalSourceRef) run.externalSourceRef = body.externalSourceRef;
   if (Array.isArray(body.context?.paths)) run.context = { paths: body.context.paths.map((p: any) => ({ path: String(p.path ?? "") })) };
   return run as { repo: string; pattern: string; task: string };
 }
@@ -539,9 +565,10 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
     if (!remote.enabled) throw new HttpError(404, "Not found");
     const base = `/r/${token}`;
     if (via === "lan" && phoneControl() && tokenMatches(token, remote.controlToken)) {
-      // Full control: the link signs this phone in and opens the app (on the run it linked to).
+      if (Date.now() >= (remote.pairingUntil ?? 0)) throw new HttpError(403, "This pairing link expired. Choose New link on this computer to pair a phone.");
+      const paired = await phoneSessions.pair(String(req.headers["user-agent"] ?? "Phone"), remote.controlToken);
       const run = url.pathname.slice(base.length).match(/^\/run\/([\w-]+)$/)?.[1];
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "set-cookie": phoneCookie(), "cache-control": "no-store", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "set-cookie": phoneCookie(paired.token), "cache-control": "no-store", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
       res.end(signingInPage(run ? `/#/run/${run}` : "/"));
       return true;
     }
@@ -562,11 +589,14 @@ function remoteInfo() {
   return {
     enabled: remote.enabled,
     lan: remote.lan,
-    control: remote.control,
+    control: phoneControl(),
+    secure: !!phoneTls,
+    insecureDevelopment: insecurePhoneDevelopment,
+    pairingUntil: remote.pairingUntil ?? 0,
     path: `/r/${remote.token}`,
     phonePath,
     local: `http://localhost:${PORT}/r/${remote.token}`,
-    lanUrls: remote.lan && lanServer && !lanError ? lanAddresses().map((ip) => `http://${ip}:${REMOTE_PORT}${phonePath}`) : [],
+    lanUrls: remote.lan && lanServer && !lanError ? lanAddresses().map((ip) => `${phoneProtocol}://${ip}:${REMOTE_PORT}${phonePath}`) : [],
     lanError: remote.enabled && remote.lan ? lanError : undefined,
   };
 }
@@ -593,7 +623,7 @@ const LAN_ALLOW_LOCAL = process.env.CODEFLOW_LAN_ALLOW_LOCAL === "1";
 function syncLanServer(signOut = false): Promise<void> {
   if (remote.enabled && remote.lan && !lanServer) {
     lanError = undefined;
-    const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("lan"));
+    const server = phoneTls ? createSecureServer({ ...phoneTls, maxHeaderSize: MAX_HEADER_SIZE }, listener("lan")) : createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("lan"));
     server.on("connection", (socket) => {
       if (!LAN_ALLOW_LOCAL && isOwnAddress(socket.remoteAddress)) socket.destroy();
     });
@@ -724,7 +754,8 @@ manager.subscribeAll((run) => {
  * from before a restart, or that missed too much) starts with the whole list, in step with the
  * stream; a reconnect gets the snapshots it missed.
  */
-function streamAllRuns(req: IncomingMessage, res: ServerResponse) {
+function streamAllRuns(req: IncomingMessage, res: ServerResponse, limit?: number) {
+  const page = limit === undefined ? undefined : manager.page({ limit });
   const stream = openStream(res);
   const after = lastEventSeq(req);
   const oldest = runFeed.recent[0]?.seq ?? runFeed.seq + 1;
@@ -732,7 +763,10 @@ function streamAllRuns(req: IncomingMessage, res: ServerResponse) {
     stream.send({ type: "hello", epoch: EPOCH, seq: runFeed.seq, resumed: true });
     for (const e of runFeed.recent) if (e.seq > after) stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq);
   } else {
-    stream.send({ type: "hello", epoch: EPOCH, seq: runFeed.seq, runs: manager.list() }, runFeed.seq);
+    // Active and attention items remain visible even when their creation is outside the recent page.
+    const attention = page ? manager.list().filter((run) => run.status === "running" || !run.archived && (!run.seen || run.status === "interrupted" || !!run.awaiting || !!run.team?.awaitingRequestId || run.triage?.state === "pending")) : [];
+    const runs = page ? [...new Map([...page.runs, ...attention].map((run) => [run.id, run])).values()] : manager.list();
+    stream.send({ type: "hello", epoch: EPOCH, seq: runFeed.seq, runs, ...(page ? { nextCursor: page.nextCursor, total: page.total } : {}) }, runFeed.seq);
   }
   const client = (e: { seq: number; run: RunSummary }) => stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq);
   runFeed.clients.add(client);
@@ -745,6 +779,7 @@ type Via = "local" | "lan";
 async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   const url = new URL(req.url ?? "/", "http://localhost");
   const parts = url.pathname.split("/").filter(Boolean);
+  if (parts[0] === "api" && parts[1] === "v1" && parts[2] !== "capabilities") parts.splice(1, 1);
   if (await handlePublic(req, res, url, parts, via)) return;
   if (via === "lan") {
     checkLanOrigin(req);
@@ -783,6 +818,52 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     throw Object.assign(new HttpError(401, via === "lan" ? "Not signed in: scan the phone QR code again" : "Not signed in: reload code-flow, or open it from the link printed at startup"), { signIn: true });
   }
 
+  if (["readiness", "verification", "workspace", "diagnostics", "v1"].includes(parts[1] ?? "")) {
+    const abort = new AbortController();
+    res.once("close", () => abort.abort());
+    const result = await attempt(() => handleWorkspaceApi(req, url, parts, manager, abort.signal));
+    if (result) return send(res, result.status, result.body);
+  }
+
+  if (parts[1] === "integrations") {
+    if (req.method === "GET" && !parts[2]) return send(res, 200, integrations.list());
+    if (req.method === "GET" && parts[2] && parts[3] === "items") {
+      const kind = url.searchParams.get("kind");
+      if (kind !== "issue" && kind !== "pr") throw new HttpError(400, "Choose issues or review requests");
+      return send(res, 200, await attempt(() => integrations.items(parts[2]!, kind, url.searchParams.get("cursor") ?? undefined)));
+    }
+    if (req.method === "POST" && parts[2] && parts[3] === "import") {
+      const body = await readJson(req);
+      if (!["issue", "pr"].includes(body.kind) || typeof body.key !== "string") throw new HttpError(400, "Choose a source item");
+      return send(res, 201, await attempt(() => integrations.importSource(parts[2]!, body.kind, body.key)));
+    }
+    throw new HttpError(404, "Unknown external source operation");
+  }
+  if (parts[1] === "notifications") {
+    if (!notificationsReady) throw new HttpError(503, "Notifications are disabled until their configuration and storage are repaired");
+    if (req.method === "GET" && !parts[2]) return send(res, 200, notifications.list());
+    if (req.method === "GET" && parts[2] === "deliveries") return send(res, 200, notifications.deliveries());
+    if (req.method === "POST" && parts[2] === "deliveries" && parts[3] && parts[4] === "retry") return send(res, 202, await attempt(() => notifications.retry(parts[3]!)));
+    if (req.method === "POST" && parts[2] && parts[3] === "test") return send(res, 202, await attempt(() => notifications.test(parts[2]!)));
+    if (req.method === "POST" && parts[2] && !parts[3]) return send(res, 200, await attempt(async () => notifications.update(parts[2]!, await readJson(req))));
+    throw new HttpError(404, "Unknown notification operation");
+  }
+
+  if (parts[1] === "approvals") {
+    if (req.method === "GET") return send(res, 200, redactExport(approvals.list(url.searchParams.get("run") ?? undefined)));
+    if (req.method === "POST" && parts[2]) {
+      const body = await readJson(req);
+      if (body.decision !== "approve" && body.decision !== "decline") throw new HttpError(400, "Choose approve or decline");
+      const request = approvals.list().find((record) => record.id === parts[2]);
+      const run = request ? manager.get(request.runId) : undefined;
+      if (!request || !run || run.status !== "running" || !run.approvals.tools || !run.steps.some((step) => step.id === request.stepId && step.status === "running")) throw new HttpError(409, "This approval is no longer active");
+      if (!approvals.respond(request.id, body.decision, { runId: run.id, stepId: request.stepId })) throw new HttpError(409, "This approval has expired or was already answered");
+      manager.log(run.id, `You ${body.decision === "approve" ? "approved" : "declined"} one ${request.kind} action in ${request.stepId}`);
+      return send(res, 200, { resolved: true });
+    }
+    throw new HttpError(404, "Unknown approval operation");
+  }
+
   if (req.method === "GET" && parts[1] === "team-capabilities") return send(res, 200, await Promise.all((["claude", "codex", "agy"] as const).map(adapterTeamCapabilities)));
   if (parts[1] === "team-rollout") {
     if (req.method === "GET") return send(res, 200, await teamEvaluationStore.rollout(autoTeamEnabled()));
@@ -797,7 +878,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, { reports, assessment: assessTeamRollout(reports), rollout: await teamEvaluationStore.rollout(autoTeamEnabled()) });
   }
   if (req.method === "GET" && parts[1] === "agents") return send(res, 200, await agentAvailability());
-  if (req.method === "GET" && parts[1] === "events") return streamAllRuns(req, res);
+  if (req.method === "GET" && parts[1] === "events") {
+    const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : undefined;
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) throw new HttpError(400, "History page size must be between 1 and 100");
+    return streamAllRuns(req, res, limit);
+  }
   if (req.method === "GET" && parts[1] === "patterns") return send(res, 200, patterns.map(describePattern));
   if (req.method === "GET" && parts[1] === "fs") {
     const listing = await listDirectories(url.searchParams.get("path") ?? undefined, url.searchParams.get("hidden") === "1")
@@ -858,6 +943,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const requested = url.searchParams.get("repo");
       if (requested && !project.repos.includes(requested)) throw new HttpError(400, "That repository is not in this project");
       const repos = requested ? [requested] : project.repos;
+      if (parts[4] === "analysis") {
+        const body = req.method === "POST" ? await readJson(req) : {};
+        const repo = typeof body.repo === "string" ? body.repo : requested ?? (project.repos.length === 1 ? project.repos[0] : undefined);
+        if (!repo || !project.repos.includes(repo)) throw new HttpError(400, "Choose a repository in this project");
+        const entries = await memoryStore.list({ repo, projectId: id, scope: "project" }, { kind: "user", repo, projectId: id });
+        const analysis = await attempt(() => analyzeProjectMemory({ repo, projectId: id, entries }));
+        if (req.method === "GET" && !parts[5]) return send(res, 200, analysis);
+        if (req.method === "POST" && parts[5] === "publish") {
+          if (!Array.isArray(body.expectedSources) || JSON.stringify(body.expectedSources) !== JSON.stringify(analysis.onboarding.sourceRefs)) throw new HttpError(409, "The onboarding sources changed. Review the current summary before publishing");
+          if (!analysis.onboarding.sourceRefs.length) throw new HttpError(400, "There is no current trusted user guidance to publish");
+          return send(res, 201, await attempt(() => memoryStore.propose({ scope: "project", repo, projectId: id, title: analysis.onboarding.title, body: analysis.onboarding.body, tags: ["onboarding-summary"], derivedFrom: analysis.onboarding.sourceRefs, sourceRefs: analysis.onboarding.sourceRefs.map((ref) => `${ref.id}@${ref.revision}`) }, { kind: "user", repo, projectId: id }, { expectedSources: analysis.onboarding.sourceRefs })));
+        }
+        throw new HttpError(404, "Unknown memory analysis operation");
+      }
       if (req.method === "GET" && !parts[4]) {
         const entries = (await Promise.all(repos.map((repo) => memoryStore.list({ repo, projectId: id, scope: "project" }, { kind: "user", repo, projectId: id })))).flat();
         return send(res, 200, entries.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)));
@@ -921,13 +1020,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (req.method === "GET" && parts[1] === "templates") return send(res, 200, templates);
   if (parts[1] === "remote") {
+    if (parts[2] === "devices") {
+      if (req.method === "GET") return send(res, 200, phoneSessions.list(remote.controlToken));
+      if (req.method === "DELETE" && parts[3]) return send(res, 200, { revoked: await phoneSessions.revoke(parts[3], remote.controlToken) });
+      throw new HttpError(404, "Unknown paired device operation");
+    }
     if (req.method === "POST") {
       const body = await readJson(req);
-      const before = remote;
+      if (body.control === true && !phoneTls && !insecurePhoneDevelopment) throw new HttpError(400, "Full phone control requires HTTPS. Configure CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY, then restart code-flow.");
       // Turning anything off makes new secrets: old links and phones' cookies stop working.
-      remote = changeRemote(before, { enabled: body.enabled, lan: body.lan, control: body.control, rotate: !!body.rotate });
-      await saveRemote(remote).catch((err) => {
-        remote = before; // what's in effect stays what's saved
+      const before = await changeSavedRemote({ enabled: body.enabled, lan: body.lan, control: body.control, rotate: !!body.rotate }).catch((err) => {
         logError("Couldn't save the phone settings", err);
         throw new HttpError(500, `Couldn't save the phone settings: ${(err as Error).message}`);
       });
@@ -941,6 +1043,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, remoteInfo());
   }
   if (parts[1] === "automations") {
+    if (parts[2] === "schedule-preview" && req.method === "POST") {
+      const body = await readJson(req);
+      const schedule = await attempt(async () => validateSchedule(body.schedule));
+      if (!schedule) throw new HttpError(400, "Choose a schedule");
+      return send(res, 200, { times: await attempt(async () => previewSchedule(schedule, body.after, body.count)) });
+    }
     const id = parts[2];
     if (!id && req.method === "GET") return send(res, 200, automations.list().map(describeAutomation));
     if (!id && req.method === "POST") {
@@ -955,6 +1063,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       return send(res, 201, describeAutomation(trigger));
     }
     if (id && !automations.get(id)) throw new HttpError(404, "Automation not found");
+    if (id && parts[3] === "events" && req.method === "GET") return send(res, 200, redactExport(automations.events(id)));
+    if (id && parts[3] === "events" && parts[4] && parts[5] === "retry" && req.method === "POST") return send(res, 200, await attempt(() => automations.retryEvent(id, parts[4]!)));
+    if (id && parts[3] === "preview" && req.method === "POST") {
+      const body = await readJson(req);
+      return send(res, 200, redactExport(await attempt(() => automations.dryRun(id, Object.keys(body).length ? body : undefined))));
+    }
     if (id && req.method === "DELETE") {
       await automations.remove(id);
       return send(res, 200, { deleted: true });
@@ -973,6 +1087,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (typeof body.isolate === "boolean") patch.isolate = body.isolate;
       if (typeof body.image === "string") patch.image = body.image.trim() || undefined;
       if ("schedule" in body) patch.schedule = await attempt(async () => validateSchedule(body.schedule));
+      if (body.run) { const run = automationRun(body.run); await buildStartInput(run); patch.run = run; }
       if (body.rotateToken) patch.rotateToken = true;
       return send(res, 200, describeAutomation(await automations.update(id, patch)));
     }
@@ -1009,12 +1124,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   // The side panel's Notes: one per repository, and a general one.
   if (parts[1] === "notes") {
+    if (req.method === "GET" && parts[2] === "search") return send(res, 200, await attempt(() => notes.search(url.searchParams.get("q") ?? "")));
     if (req.method === "GET" && parts[2] === "all") return send(res, 200, await notes.keys());
+    if (req.method === "GET" && parts[2] === "history") return send(res, 200, await notes.history(url.searchParams.get("key") ?? ""));
+    if (req.method === "POST" && parts[2] === "restore") {
+      const body = await readJson(req);
+      try { return send(res, 200, await notes.restore(String(body.key ?? ""), body.revision, body.expectedRevision)); }
+      catch (error) { if (error instanceof NotesConflictError) throw new HttpError(409, error.message); throw error; }
+    }
     if (req.method === "GET") return send(res, 200, await notes.get(url.searchParams.get("key") ?? ""));
     if (req.method === "POST") {
       const body = await readJson(req);
       if (typeof body.text !== "string") throw new HttpError(400, "Send the note's text");
-      return send(res, 200, await attempt(() => notes.set(String(body.key ?? ""), body.text)));
+      try { return send(res, 200, await notes.set(String(body.key ?? ""), body.text, body.expectedRevision)); }
+      catch (error) { if (error instanceof NotesConflictError) return send(res, 409, { error: error.message, current: error.current }); throw new HttpError(400, (error as Error).message); }
     }
   }
   // Every app started with "Run app", for the side panel's Browser.
@@ -1104,7 +1227,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (parts[1] === "runs") {
     const runId = parts[2];
     if (!runId) {
-      if (req.method === "GET") return send(res, 200, manager.list());
+      if (req.method === "GET") return send(res, 200, url.searchParams.has("limit") ? await attempt(async () => manager.page({ limit: Number(url.searchParams.get("limit")), cursor: url.searchParams.get("cursor") ?? undefined, before: url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined, query: url.searchParams.get("q") ?? undefined, project: url.searchParams.get("project") ?? undefined })) : manager.list());
       if (req.method === "POST") {
         const body = await readJson(req);
         const run = await startFromBody(body);
@@ -1127,11 +1250,59 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const memoryEntries = run.project && projects.get(run.project)?.repos.includes(run.repo) ? await memoryStore.list({ repo: run.repo, projectId: run.project, scope: "project" }, { kind: "user", repo: run.repo, projectId: run.project }) : [];
       return send(res, 200, buildTeamEvaluation(run, { replay: run.recovery, journal, memoryEntries }));
     }
+    if (req.method === "GET" && parts[3] === "export") {
+      return send(res, 200, redactExport({ version: 1, exportedAt: Date.now(), run, verificationMarkdown: run.verification ? renderVerificationReport(run.verification) : undefined, events: url.searchParams.get("transcript") === "1" ? await manager.events(run.id) : undefined }));
+    }
+    if (parts[3] === "review-coverage") {
+      if (req.method === "GET") return send(res, 200, await attempt(() => manager.reviewCoverage(run.id, url.searchParams.get("branch") ?? "")));
+      if (req.method === "POST") { const body = await readJson(req); return send(res, 200, await attempt(() => manager.recordFileReview(run.id, body))); }
+    }
+    if (parts[3] === "human-rework" && req.method === "POST") { const body = await readJson(req); return send(res, 201, await attempt(() => manager.recordHumanRework(run.id, body))); }
+    if (parts[3] === "launch-profiles") {
+      const body = req.method === "POST" ? await readJson(req) : {};
+      const name = typeof body.worktree === "string" ? body.worktree : url.searchParams.get("worktree");
+      const worktree = run.worktrees.find((tree) => tree.name === name);
+      if (!worktree) throw new HttpError(400, "Choose a worktree owned by this run");
+      const key = `${run.id}/${worktree.name}/launch`;
+      if (req.method === "DELETE") return send(res, 200, { stopped: launchProfiles.stop(key) });
+      const config = await readLaunchProfiles(worktree.path);
+      if (req.method === "GET") return send(res, 200, redactExport({ ...config, session: launchProfiles.get(key) ?? null }));
+      if (req.method === "POST") {
+        const profile = config.profiles.find((profile) => profile.id === body.profile);
+        if (!profile) throw new HttpError(400, config.error ?? "Choose a configured launch profile");
+        const abort = new AbortController(); res.once("close", () => abort.abort());
+        try {
+          manager.noteActivity();
+          return send(res, 201, redactExport(await launchProfiles.start(key, worktree.path, profile, { signal: abort.signal, lockdown: run.lockdown, allowUntrusted: body.allowUntrusted === true })));
+        } catch (error) {
+          if (error instanceof LaunchProfileError) throw Object.assign(new HttpError(error.status, error.message), { confirm: error.confirm });
+          throw new HttpError(400, (error as Error).message);
+        }
+      }
+      throw new HttpError(404, "Unknown launch profile operation");
+    }
     if (req.method === "GET" && parts[3] === "events") return await streamEvents(req, res, run.id);
     if (req.method === "POST" && parts[3] === "revise-goal") {
       const body = await readJson(req);
       const revised = await attempt(() => manager.reviseGoal(run.id, { message: body.message, budget: body.budget === undefined ? undefined : { maxSteps: body.budget?.maxSteps, maxInvocations: body.budget?.maxInvocations, maxMinutes: body.budget?.maxMinutes } }));
       return send(res, 201, { id: revised.id });
+    }
+    if (req.method === "POST" && parts[3] === "pause") {
+      const body = await readJson(req);
+      return send(res, 200, await attempt(async () => manager.setPaused(run.id, body.paused !== false)));
+    }
+    if (req.method === "POST" && parts[3] === "priority") {
+      const body = await readJson(req);
+      return send(res, 200, await attempt(async () => manager.setPriority(run.id, body.priority)));
+    }
+    if (req.method === "POST" && parts[3] === "fork") {
+      const body = await readJson(req);
+      const checkpoint = typeof body.commit === "string" ? body.commit : undefined;
+      if (!checkpoint || !/^[a-f0-9]{40,64}$/i.test(checkpoint)) throw new HttpError(400, "Choose an exact checkpoint commit");
+      const owned = await Promise.all(run.worktrees.map(async (tree) => (await git(["merge-base", "--is-ancestor", checkpoint, tree.branch], run.repo)).code === 0));
+      if (!owned.some(Boolean)) throw new HttpError(400, "The checkpoint is not part of this run");
+      const fork = await startFromBody({ repo: run.repo, project: run.project, pattern: run.pattern, task: typeof body.task === "string" ? body.task : run.task, baseRef: checkpoint, parentRunId: run.id, roles: run.roles, options: run.options, loop: run.loop, agentSettings: run.agentSettings, roleSettings: run.roleSettings, trust: run.trust, approvals: run.approvals });
+      return send(res, 201, { id: fork.id });
     }
     if (req.method === "POST" && parts[3] === "cancel") return send(res, 200, { cancelled: manager.cancel(run.id) });
     if (req.method === "POST" && parts[3] === "resume") {
@@ -1221,12 +1392,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       await attempt(async () => manager.answer(run.id, { decision, note: typeof body.note === "string" ? body.note : undefined }));
       return send(res, 200, { ok: true });
     }
+    if (req.method === "POST" && parts[3] === "team-plan") {
+      const body = await readJson(req);
+      return send(res, 200, { team: await attempt(() => manager.editTeamPlan(run.id, body)) });
+    }
     if (req.method === "POST" && parts[3] === "merge") {
       const body = await readJson(req);
       const outcome = await attempt(() =>
-        manager.merge(run.id, { branch: String(body.branch ?? ""), into: String(body.into ?? ""), archiveAfter: !!body.archiveAfter }),
+        manager.merge(run.id, { branch: String(body.branch ?? ""), into: String(body.into ?? ""), archiveAfter: !!body.archiveAfter, requireValidation: body.requireValidation === true }),
       );
       return send(res, 200, outcome);
+    }
+    if (req.method === "POST" && parts[3] === "validate-merge") {
+      const body = await readJson(req);
+      const abort = new AbortController();
+      res.once("close", () => abort.abort());
+      try { return send(res, 200, await manager.validateMerge(run.id, { branch: String(body.branch ?? ""), into: String(body.into ?? ""), allowUntrusted: body.allowUntrusted === true }, abort.signal)); }
+      catch (error) { if (error instanceof UntrustedSourceError) throw Object.assign(new HttpError(409, error.message), { confirm: "allowUntrusted" }); throw new HttpError(400, (error as Error).message); }
     }
     if (req.method === "GET" && parts[3] === "pr-merge") {
       return send(res, 200, await attempt(() => manager.prMergeInfo(run.id, url.searchParams.get("branch") ?? "")));
@@ -1285,6 +1467,17 @@ await manager.load();
 await projects.load(manager.list());
 await automations.load();
 remote = await loadRemote();
+await phoneSessions.load().catch((error) => logError("Phone pairing disabled: session storage cannot be read", error));
+if (notificationsReady) {
+  manager.subscribeAll((run) => { void notifications.observe(run).catch((error) => logError("Notification event could not be retained", error)); });
+  approvals.subscribe(() => {
+    for (const request of approvals.list()) {
+      const run = request.status === "pending" ? manager.get(request.runId) : undefined;
+      if (run) void notifications.observe(run, `tool-approval:${request.id}`).catch((error) => logError("Approval notification could not be retained", error));
+    }
+  });
+  notifications.start();
+}
 watcher.start();
 automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 }));
 void syncLanServer();
@@ -1418,6 +1611,8 @@ async function stop(reason: string, code = 0) {
     server.close();
     lanServer?.close();
     watcher.stop();
+    approvals.close();
+    launchProfiles.stopAll();
     shells.closeAll();
     previews.closeAll();
     automationsSaved = automations.stop();
@@ -1427,6 +1622,7 @@ async function stop(reason: string, code = 0) {
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));
   await teamToolBridge.close().catch(() => undefined);
   await automationsSaved;
+  await notifications.stop();
   process.exit(code);
 }
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {

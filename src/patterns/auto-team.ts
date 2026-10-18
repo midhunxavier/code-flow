@@ -131,9 +131,15 @@ export const autoTeamPattern: Pattern = {
       await ctx.drainTeamCommands(state, `plan:${round}:after-decision`);
       coordinator = state.members.find((m) => m.role === "coordinator")!;
       rememberSession(coordinator, integration, planned.outcome);
-      state.status = "awaiting_approval"; publish();
-      const approval = await ctx.approve("plan", `Approve Auto team${round ? ` revision ${round}` : ""}`, approvalText(state));
-      if (approval.decision === "approve") break;
+      state.status = "awaiting_approval";
+      ctx.restoreTeamPlanEdit(state, round);
+      publish();
+      const approval = await ctx.approve("plan", `Approve Auto team${round ? ` revision ${round}` : ""}`, approvalText(state), { teamPlanRound: round });
+      if (approval.decision === "approve") {
+        const problem = planProblem(state, policy);
+        if (problem) throw new Error(`The accepted workflow plan is invalid: ${problem}`);
+        break;
+      }
       if (approval.decision === "reject") throw new RejectedError(`You rejected the Auto team plan.${approval.note ? ` ${approval.note}` : ""}`);
       if (ctx.teamBudgetRemaining(true) < 1) throw new Error("The coordination budget cannot fund another plan revision; resume with a larger budget");
       planned = await ctx.decide<TeamPlan>({ ...callFields(coordinator), coordination: true, identity: `plan:${round + 1}`, title: `Revise Auto team plan (${round + 1})`, mode: "read", cwd: integration, resume: resumeFor(coordinator, integration), schema: planSchema, what: "team plan", validate: validatePlan, prompt: planPrompt + section("User requested changes", approval.note ?? "Revise the plan") });

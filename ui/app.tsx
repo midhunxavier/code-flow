@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { ApprovalInbox } from "./approval-inbox.js";
 import { Composer } from "./composer.js";
+import { WorkbenchView } from "./workbench.js";
+import { CommandPalette } from "./command-palette.js";
 import { SidePanel } from "./side.js";
 import { RunView } from "./run.js";
 import { Review } from "./review.js";
@@ -20,6 +23,8 @@ import {
   projectsOpen,
   announcement,
   shortcutsOpen,
+  commandPaletteOpen,
+  connection,
   closeSide,
   openSide,
   sideOpen,
@@ -104,6 +109,7 @@ function MainApp() {
   return (
     <>
       <TopBar />
+      <ApprovalInbox />
       <div class={`app ${sideOpen.value ? "with-side" : ""}`} style={`--side-w:${sideWidth.value}px`}>
         <Rail />
         {railOpen.value ? <div class="rail-scrim" aria-hidden="true" onClick={() => (railOpen.value = false)} /> : null}
@@ -118,6 +124,14 @@ function MainApp() {
             <InsightsView group={route.value.group} />
           ) : route.value.view === "project" ? (
             <ProjectView key={route.value.id} id={route.value.id} />
+          ) : route.value.view === "workspace" ? (
+            <WorkbenchView />
+          ) : route.value.view === "invalid" ? (
+            <div class="composer" role="alert">
+              <h1>This link is invalid</h1>
+              <p>The address contains an incomplete or invalid URL escape. Your saved work is available from the run list.</p>
+              <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>Open new run</button>
+            </div>
           ) : (
             <Composer />
           )}
@@ -131,6 +145,7 @@ function MainApp() {
       {projectsOpen.value ? <ProjectsDialog /> : null}
       {healthOpen.value ? <HealthDialog /> : null}
       {shortcutsOpen.value ? <ShortcutsDialog /> : null}
+      {commandPaletteOpen.value ? <CommandPalette /> : null}
       <div class="sr-only" role="status" aria-live="polite">
         {announcement.value}
       </div>
@@ -155,6 +170,10 @@ function TopBar() {
         <span class="brand-name">code-flow</span>
       </span>
       <Crumbs />
+      <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.state === "connected" ? "Live updates are connected" : "Live updates are unavailable; displayed run information may be out of date"}>
+        <span aria-hidden="true">●</span> {connection.value.state === "connected" ? "Connected" : connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}
+      </span>
+      <button class="btn ghost command-btn" aria-label="Open command palette" title="Commands and navigation (⌘K / Ctrl+K)" onClick={() => (commandPaletteOpen.value = true)}>⌘K</button>
       <button
         class="btn ghost side-btn"
         aria-pressed={sideOpen.value}
@@ -259,6 +278,7 @@ export function notifyFinished(run: RunSummary) {
 
 // ---------------------------------------------------------------- keyboard
 const SHORTCUTS: [string, string][] = [
+  ["⌘K / Ctrl+K", "Commands, projects and runs"],
   ["/", "Search runs"],
   ["j / k", "Next / previous run in the list"],
   ["[ / ]", "Previous / next step of the open run"],
@@ -273,6 +293,11 @@ const SHORTCUTS: [string, string][] = [
 ];
 
 function onShortcut(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    commandPaletteOpen.value = !commandPaletteOpen.value;
+    return;
+  }
   if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
   const target = e.target as HTMLElement | null;
   if (target?.closest("input, textarea, select, [contenteditable=true], dialog")) return;
@@ -482,10 +507,12 @@ function FolderPicker() {
   const parts = dir ? dir.path.split("/").filter(Boolean) : [];
   const recent = dir && dir.path === dir.home ? recentRepos() : [];
   const row = (icon: string, name: string, p: string, isRepo: boolean) => (
-    <div key={p} class="dir" tabIndex={0} title={p} onClick={() => browse(p)} onKeyDown={(e) => e.key === "Enter" && browse(p)}>
+    <div key={p} class="dir" title={p}>
+      <button type="button" class="dir-browse" aria-label={`Open folder ${name}`} onClick={() => browse(p)}>
       <span class="di">{icon}</span>
       <span class="dn">{name}</span>
       {isRepo ? <span class="git-badge">GIT</span> : null}
+      </button>
       {isRepo ? (
         <button
           class="btn small"
@@ -534,15 +561,15 @@ function FolderPicker() {
               Go
             </button>
           </div>
-          <div class="crumbs">
-            <a onClick={() => browse("/")}>/</a>
+          <nav class="crumbs" aria-label="Folder breadcrumbs">
+            <button type="button" onClick={() => browse("/")}>/</button>
             {parts.map((part, i) => (
               <span key={i}>
-                <a onClick={() => browse("/" + parts.slice(0, i + 1).join("/"))}>{part}</a>
+                <button type="button" aria-current={i === parts.length - 1 ? "location" : undefined} onClick={() => browse("/" + parts.slice(0, i + 1).join("/"))}>{part}</button>
                 {i < parts.length - 1 ? "/" : ""}
               </span>
             ))}
-          </div>
+          </nav>
         </div>
         <div class="picker-list">
           {recent.length ? <div class="picker-section">Recent</div> : null}

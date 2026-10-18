@@ -81,6 +81,10 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 | `CODEFLOW_MAX_DIFF_CHARS` | `60000` | Diffs longer than this are fitted (whole files first) before being passed to another agent |
 | `CODEFLOW_CLAUDE_WRITE_TOOLS` | build/test allow-list | Comma-separated Claude tool rules for write mode, e.g. `Edit,Bash` |
 | `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view (or the full app, with phone control) and webhooks on your network, when *Reachable from my Wi-Fi* is on |
+| `CODEFLOW_TLS_CERT`, `CODEFLOW_TLS_KEY` | unset | Configure both certificate/key file paths for the HTTPS network listener; normal full phone control requires TLS |
+| `CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL` | unset | Explicit `1` permits full phone control over HTTP for development |
+| `CODEFLOW_INTEGRATIONS_FILE`, `CODEFLOW_INTEGRATIONS_JSON` | unset | Explicit read-only external source definitions with server credential references; see [sources](external-sources.md) |
+| `CODEFLOW_NOTIFICATIONS_FILE`, `CODEFLOW_NOTIFICATIONS_JSON` | unset | Explicit outbound destinations; targets remain disabled until event/project opt-in; see [notifications](notifications.md) |
 | `CODEFLOW_SCHEDULER_TICK_MS` | `30000` | How often due automations are checked |
 | `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments |
 | `CODEFLOW_CODEX_TRANSPORT` | `auto` | `auto`: `codex app-server` when the installed Codex has it, else `codex exec`. A Codex without app-server is re-checked every 10 minutes; a slow or failed app-server start fails only that turn. `app-server`: require it. `exec`: always `codex exec` (your notes then wait for Codex's next turn) |
@@ -90,7 +94,7 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 
 A numeric setting that isn't a valid number (`30m`, say) or is out of range falls back to its default, with a warning in the terminal.
 
-The processes code-flow starts (agent CLIs, checks, setup, **Run app**, `gh`, `git`) get your environment minus what belongs to code-flow itself: `CODEFLOW_TOKEN`, the `npm_*` variables `npm start` sets about code-flow's own script (your `npm_config_*` settings, like a registry or proxy, are kept), and code-flow's own `node_modules/.bin` on `PATH`. A check's `tsc` or `vitest` comes from your repo, never from code-flow's install.
+Child processes exclude the application API token, scoped team capabilities, integration/notification configuration and their registered server credential variables. They also exclude npm lifecycle variables about code-flow itself and its own dependency bin paths; your `npm_config_*` settings remain. A check's tools come from its repository. Explicit agent containers use a smaller environment and only their configured authentication volume; see [container setup](agent-containers.md).
 
 ## Files in `~/.codeflow`
 

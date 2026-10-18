@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { BrowserTab } from "./browser.js";
 import { ChangesTab } from "./changes.js";
 import { addContext, FileTree } from "./composer.js";
@@ -87,7 +87,7 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
       <ScopeHeader popped={popped} />
       <div class="side-tabs" role="tablist" aria-label="Side panel tabs">
         {tabs.map((t) => (
-          <button key={t} type="button" role="tab" id={`side-tab-${t}`} aria-selected={t === tab} aria-controls={`side-pane-${t}`} class={`side-tab ${t === tab ? "on" : ""}`} aria-label={TABS[t].label} title={TABS[t].title} onClick={() => openSide(t)}>
+          <button key={t} type="button" role="tab" id={`side-tab-${t}`} aria-selected={t === tab} aria-controls={`side-pane-${t}`} class={`side-tab ${t === tab ? "on" : ""}`} aria-label={TABS[t].label} title={TABS[t].title} tabIndex={t === tab ? 0 : -1} onKeyDown={(event) => { const at = tabs.indexOf(t); const index = event.key === "ArrowRight" ? (at + 1) % tabs.length : event.key === "ArrowLeft" ? (at + tabs.length - 1) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1; if (index >= 0) { event.preventDefault(); const next = tabs[index]!; openSide(next); document.getElementById(`side-tab-${next}`)?.focus(); } }} onClick={() => openSide(t)}>
             <Icon name={TABS[t].icon} />
             <span>{TABS[t].label}</span>
           </button>
@@ -259,9 +259,18 @@ function FileViewer({ root, path, onClose }: { root: string; path: string; onClo
 function NotesTab() {
   const here = sideScope.value.repo;
   const [scope, setScope] = useState<"repo" | "general">(here ? "repo" : "general");
-  const key = scope === "repo" && here ? here : "general";
+  const [pickedNote, setPickedNote] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [matches, setMatches] = useState<{ hits: { key: string; revision: number; excerpt: string }[]; truncated: boolean } | null>(null);
+  const key = pickedNote ?? (scope === "repo" && here ? here : "general");
   const [text, setText] = useState("");
-  const [saved, setSaved] = useState<{ at: number; text: string } | null>(null);
+  const [saved, setSaved] = useState<{ at: number; text: string; revision: number } | null>(null);
+  const [history, setHistory] = useState<{ text: string; updatedAt: number; revision: number }[]>([]);
+  const [latest, setLatest] = useState<{ text: string; updatedAt: number; revision: number } | null>(null);
+  const bases = useRef(new Map<string, { text: string; revision: number }>());
+  const saving = useRef(Promise.resolve());
+  const activeKey = useRef(key);
+  activeKey.current = key;
   const [status, setStatus] = useState("");
   /** The note for `key` has loaded: until then the box is off, so typing can't be overwritten by the load. */
   const [ready, setReady] = useState(false);
@@ -269,12 +278,16 @@ function NotesTab() {
     setReady(false);
     setStatus("Loading…");
     let current = true;
-    api<{ text: string; updatedAt: number }>(`/api/notes?key=${enc(key)}`).then(
+    api<{ text: string; updatedAt: number; revision: number }>(`/api/notes?key=${enc(key)}`).then(
       (n) => {
         if (!current) return;
-        setText(n.text);
-        setSaved({ at: n.updatedAt, text: n.text });
-        setStatus("");
+        let draft: string | null = null;
+        try { draft = localStorage.getItem(`notes-draft:${key}`); } catch {}
+        setText(draft ?? n.text);
+        bases.current.set(key, { text: n.text, revision: n.revision });
+        setSaved({ at: n.updatedAt, text: n.text, revision: n.revision });
+        setLatest(null); setHistory([]);
+        setStatus(draft !== null && draft !== n.text ? "Recovered your unsaved draft" : "");
         setReady(true);
       },
       (err) => current && setStatus((err as Error).message),
@@ -283,21 +296,30 @@ function NotesTab() {
       current = false;
     };
   }, [key]);
-  // Saved as you type, a moment after you stop.
+  // Queue writes so the next save uses the revision returned by the preceding one.
+  // Browser drafts survive navigation and an unavailable server.
   useEffect(() => {
-    if (!ready || saved?.text === text) return;
+    if (!ready || saved?.text === text || latest) return;
     setStatus("Saving…");
     const timer = setTimeout(() => {
-      post<{ updatedAt: number }>("/api/notes", { key, text }).then(
-        (n) => {
-          setSaved({ at: n.updatedAt, text });
-          setStatus("");
-        },
-        (err) => setStatus(`Couldn't save: ${(err as Error).message}`),
-      );
+      saving.current = saving.current.catch(() => undefined).then(async () => {
+        const base = bases.current.get(key);
+        if (!base || base.text === text) return;
+        try {
+          const note = await post<{ updatedAt: number; revision: number }>("/api/notes", { key, text, expectedRevision: base.revision });
+          bases.current.set(key, { text, revision: note.revision });
+          try { if (localStorage.getItem(`notes-draft:${key}`) === text) localStorage.removeItem(`notes-draft:${key}`); } catch {}
+          if (activeKey.current === key) { setSaved({ at: note.updatedAt, text, revision: note.revision }); setStatus(""); }
+        } catch (error) {
+          if (activeKey.current !== key) return;
+          setStatus(`Couldn't save: ${(error as Error).message}. Your draft is kept in this browser.`);
+          const current = await api<{ text: string; updatedAt: number; revision: number }>(`/api/notes?key=${enc(key)}`).catch(() => null);
+          if (current && current.revision !== base.revision && activeKey.current === key) setLatest(current);
+        }
+      });
     }, 600);
     return () => clearTimeout(timer);
-  }, [text, key]);
+  }, [text, key, ready, saved?.revision, latest]);
   const selection = () => {
     const el = document.getElementById("side-notes") as HTMLTextAreaElement | null;
     const picked = el && el.selectionStart !== el.selectionEnd ? el.value.slice(el.selectionStart, el.selectionEnd) : "";
@@ -308,10 +330,10 @@ function NotesTab() {
       <div class="side-toolbar">
         {here ? (
           <div class="segmented small" role="group" aria-label="Which notes">
-            <button type="button" class={scope === "repo" ? "on" : ""} aria-pressed={scope === "repo"} onClick={() => setScope("repo")} title={here}>
+            <button type="button" class={!pickedNote && scope === "repo" ? "on" : ""} aria-pressed={!pickedNote && scope === "repo"} onClick={() => { setScope("repo"); setPickedNote(null); }} title={here}>
               {baseName(here)}
             </button>
-            <button type="button" class={scope === "general" ? "on" : ""} aria-pressed={scope === "general"} onClick={() => setScope("general")}>
+            <button type="button" class={!pickedNote && scope === "general" ? "on" : ""} aria-pressed={!pickedNote && scope === "general"} onClick={() => { setScope("general"); setPickedNote(null); }}>
               General
             </button>
           </div>
@@ -346,7 +368,12 @@ function NotesTab() {
           → Chat
         </button>
       </div>
-      <textarea id="side-notes" class="notes-area" aria-label="Notes" placeholder="Notes to yourself: what to check, ideas, commands… Saved as you type." spellcheck={false} disabled={!ready} value={text} onInput={(e) => setText(e.currentTarget.value)} />
+      <details><summary>Search saved notes</summary><div class="side-toolbar"><input class="field" aria-label="Search saved notes" placeholder="Words or repository path" value={search} onInput={(event) => setSearch(event.currentTarget.value)} /><button class="btn small" onClick={async () => { try { setMatches(await api(`/api/notes/search?q=${enc(search)}`)); } catch (error) { setStatus((error as Error).message); } }}>Search notes</button></div>{matches ? <>{matches.hits.length ? matches.hits.map((match) => <p key={match.key}><button class="btn ghost small" onClick={() => { setPickedNote(match.key); setMatches(null); }}>{match.key} · revision {match.revision}</button><span class="help">{match.excerpt}</span></p>) : <p class="help">No saved notes match.</p>}{matches.truncated ? <p class="help">Results are limited; narrow the query.</p> : null}</> : null}</details>
+      {pickedNote ? <div class="side-toolbar"><span class="help">Editing {pickedNote}</span><button class="btn small" onClick={() => setPickedNote(null)}>Return to current notes</button></div> : null}
+      {latest ? <div class="msg err" role="alert"><p>This note changed in another window. Your draft is preserved.</p><details><summary>Compare saved version</summary><pre>{latest.text}</pre></details><button class="btn small" onClick={() => { bases.current.set(key, latest); setText(latest.text); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); try { localStorage.removeItem(`notes-draft:${key}`); } catch {} }}>Use saved version</button><button class="btn small" onClick={() => { bases.current.set(key, latest); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); }}>Save my draft over this version</button></div> : null}
+      <div class="side-toolbar"><button class="btn small" disabled={!ready} onClick={async () => { try { setHistory(await api(`/api/notes/history?key=${enc(key)}`)); } catch (error) { setStatus((error as Error).message); } }}>Revision history</button></div>
+      {history.length ? <details open><summary>{history.length} saved revisions</summary>{history.map((note) => <div key={note.revision}><details><summary>Revision {note.revision} · {new Date(note.updatedAt).toLocaleString()}</summary><pre>{note.text || "(empty)"}</pre><button class="btn small" disabled={note.revision === saved?.revision || saved?.text !== text} onClick={async () => { try { const restored = await post<{ text: string; updatedAt: number; revision: number }>("/api/notes/restore", { key, revision: note.revision, expectedRevision: saved?.revision }); bases.current.set(key, restored); setSaved({ at: restored.updatedAt, text: restored.text, revision: restored.revision }); setText(restored.text); setHistory([]); setStatus("Restored as a new revision"); } catch (error) { setStatus((error as Error).message); } }}>Restore as new revision</button></details></div>)}</details> : null}
+      <textarea id="side-notes" class="notes-area" aria-label="Notes" placeholder="Notes to yourself: what to check, ideas, commands… Saved as you type." spellcheck={false} disabled={!ready} value={text} onInput={(e) => { setText(e.currentTarget.value); try { localStorage.setItem(`notes-draft:${key}`, e.currentTarget.value); } catch {} }} />
       <div class="notes-foot">
         <span>{status || (saved?.at ? `Saved ${ago(saved.at)}` : "")}</span>
         <span class="spacer" />

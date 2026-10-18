@@ -4,6 +4,7 @@ import { AgentPicker } from "./run.js";
 import { api, enc, post, showToast } from "./lib.js";
 import { navigate, sideOpen, sideTab } from "./state.js";
 import type { AgentId, DiffFile, Run, RunSummary } from "./types.js";
+import { ReviewCoveragePanel } from "./review-coverage.js";
 
 const STATUS = { added: "A", modified: "M", deleted: "D", renamed: "R" } as const;
 
@@ -110,6 +111,7 @@ export function ChangesTab({ run }: { run: RunSummary }) {
           Full review
         </button>
       </div>
+      {!last ? <ReviewCoveragePanel runId={run.id} branch={branch} refreshKey={moved} onOpen={setOpen} /> : null}
       <div class="changes">
         {error ? <div class="side-empty msg err">{error}</div> : null}
         {!files && !error ? <div class="side-empty help">Loading…</div> : null}
