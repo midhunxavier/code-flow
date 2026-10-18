@@ -24,8 +24,10 @@ export interface RemoteSettings {
    * apart from `token`, so a read-only link someone saw can't become a full-control one.
    */
   controlToken: string;
-  /** Also listen on your local network (so a phone on the same Wi-Fi can open it). */
+  /** Enable the network listener, on Wi-Fi or the selected Tailscale address. */
   lan: boolean;
+  /** Missing in older settings: the existing Wi-Fi listener. */
+  transport?: "lan" | "tailscale";
   /** The link opens the whole app on the network listener: start, answer, merge — everything. */
   control: boolean;
   /** Persisted pairing deadline. Existing device sessions have their own expiry. */
@@ -73,7 +75,9 @@ export async function loadRemote(file = FILE): Promise<RemoteSettings> {
     token: raw.token,
     // Saved before full control had a secret of its own: phones sign in again, once.
     controlToken: validToken(raw.controlToken) && raw.controlToken !== raw.token ? raw.controlToken : newToken(),
-    lan: raw.lan === true,
+    // Unknown transports must not silently become a listener on every LAN interface.
+    lan: raw.lan === true && (raw.transport === undefined || raw.transport === "lan" || raw.transport === "tailscale"),
+    transport: raw.transport === "tailscale" ? "tailscale" : "lan",
     control: raw.control === true,
     ...(Number.isSafeInteger(raw.pairingUntil) && raw.pairingUntil > 0 ? { pairingUntil: raw.pairingUntil } : {}),
   };
@@ -102,13 +106,15 @@ export async function saveRemote(settings: RemoteSettings, file = FILE) {
  * let in: the phone link, the Wi-Fi listener or full control off makes new secrets, so turning
  * it back on later doesn't revive old links or phones' cookies. `rotate` (New link) makes both.
  */
-export function changeRemote(before: RemoteSettings, patch: { enabled?: boolean; lan?: boolean; control?: boolean; rotate?: boolean }): RemoteSettings {
+export function changeRemote(before: RemoteSettings, patch: { enabled?: boolean; lan?: boolean; transport?: "lan" | "tailscale"; control?: boolean; rotate?: boolean }): RemoteSettings {
   const next = { ...before };
   if (typeof patch.enabled === "boolean") next.enabled = patch.enabled;
   if (typeof patch.lan === "boolean") next.lan = patch.lan;
+  if (patch.transport === "lan" || patch.transport === "tailscale") next.transport = patch.transport;
   if (typeof patch.control === "boolean") next.control = patch.control;
   const turnedOff = (key: "enabled" | "lan" | "control") => before[key] && !next[key];
-  if (patch.rotate || turnedOff("enabled") || turnedOff("lan")) {
+  const changedTransport = (before.transport ?? "lan") !== (next.transport ?? "lan");
+  if (patch.rotate || turnedOff("enabled") || turnedOff("lan") || changedTransport) {
     next.token = newToken();
     next.controlToken = newToken();
   } else if (turnedOff("control")) {
@@ -116,7 +122,7 @@ export function changeRemote(before: RemoteSettings, patch: { enabled?: boolean;
   }
   const wasControl = before.enabled && before.lan && before.control;
   const isControl = next.enabled && next.lan && next.control;
-  if (isControl && (patch.rotate || !wasControl)) next.pairingUntil = Date.now() + 10 * 60_000;
+  if (isControl && (patch.rotate || changedTransport || !wasControl)) next.pairingUntil = Date.now() + 10 * 60_000;
   else if (!isControl) delete next.pairingUntil;
   return next;
 }

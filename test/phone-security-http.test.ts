@@ -56,6 +56,7 @@ after(async () => { for (const child of children) { child.kill("SIGKILL"); } awa
 test("phone control requires TLS and secure device sessions remain independently revocable", async () => {
   const insecure = await start(false);
   assert.equal((await local(insecure, "/api/remote", { enabled: true, lan: true, control: true })).status, 400);
+  assert.equal((await local(insecure, "/api/remote", { enabled: true, lan: true, transport: "tailscale", control: true })).status, 400, "Tailscale encryption cannot isolate HTTP cookies from other services on the same host");
   await stop(insecure);
   const secure = await start(true);
   try {
