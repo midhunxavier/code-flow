@@ -62,8 +62,8 @@ export function RemoteAccess() {
   const expired = full && now >= (info?.pairingUntil ?? 0);
   const links = !info || expired || error ? [] : tailscale ? (info.tailscaleUrl ? [info.tailscaleUrl] : []) : info.lanUrls;
   const short = (url: string) => url.replace(/\/r\/(\w{6})\w+/, "/r/$1…");
-  return <section class="section" aria-label="Remote access">
-    <div class="section-title">Remote access</div>
+  return <section class="section auto-card phone-card" aria-label="Remote access">
+    <h2 class="section-title">Remote access</h2>
     <p class="help">Open Codeflow from your phone, tablet or another computer. This computer must stay awake and Codeflow must remain running.</p>
     {error ? <p class="msg err" role="alert">{error} <button class="btn small" disabled={busy} onClick={() => void refresh(true)}>Retry</button></p> : null}
     {!info ? <p class="help">{error ? "Remote access settings could not be loaded." : "Loading remote access…"}</p> : <>

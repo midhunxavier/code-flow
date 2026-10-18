@@ -1,3 +1,4 @@
+import { effect } from "@preact/signals";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -6,6 +7,7 @@ import { api, baseName, copy, enc, post, showToast, store, usePoll } from "./lib
 import { defaultPlace, Menu, MenuItem, MenuTitle, placeName, placesFor, Strip, type StripItem } from "./panel-bits.js";
 import { rememberSide, sideMemo, sideOpen, sideScope, sideTab } from "./state.js";
 import { subscribe } from "./stream.js";
+import { theme } from "./theme.js";
 import type { DevServer, ShellEvent, ShellInfo } from "./types.js";
 
 /** As in src/shell.ts: past this, a new terminal takes the place of the oldest idle one. */
@@ -312,10 +314,10 @@ function TermView({ id, places, split, focused, shown, onFocus, onReplace }: Vie
     resized.observe(el);
     refit();
 
-    // Light or dark, as the app is.
-    const scheme = matchMedia("(prefers-color-scheme: dark)");
-    const retheme = () => (t.options.theme = termTheme());
-    scheme.addEventListener("change", retheme);
+    // Light or dark, as the app is (the theme button, or the system).
+    const unTheme = effect(() => {
+      if (theme.value) t.options.theme = termTheme();
+    });
 
     receive.current = (ev) => {
       if (closed) return;
@@ -357,7 +359,7 @@ function TermView({ id, places, split, focused, shown, onFocus, onReplace }: Vie
     return () => {
       closed = true;
       resized.disconnect();
-      scheme.removeEventListener("change", retheme);
+      unTheme();
       clearTimeout(timer);
       clearTimeout(sizeTimer);
       term.current = undefined;
@@ -401,28 +403,28 @@ function ShellHead({ shell, places, onClear, onRestart }: { shell: ShellInfo | n
 }
 
 /** System monospace fonts first: they have the box-drawing and other symbols full-screen programs draw with. */
-const TERM_FONT = 'Menlo, "SF Mono", Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", "Roboto Mono", monospace';
+const TERM_FONT = 'Menlo, "SF Mono", "SFMono-Regular", Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace';
 
 /** The terminal's colours from the app's own (light or dark), with ANSI colours readable on each. */
 function termTheme(): ITheme {
   const css = getComputedStyle(document.documentElement);
   const v = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
-  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-  const base = { background: v("--sunken", dark ? "#0d1514" : "#eef1ed"), foreground: v("--text", dark ? "#f5f8f7" : "#222f30"), cursor: v("--accent-edge", "#86c24e") };
+  const dark = theme.value === "dark";
+  const base = { background: v("--sunken", dark ? "#121310" : "#f0efe9"), foreground: v("--text", dark ? "#ecebe4" : "#292a26"), cursor: v("--ink", dark ? "#e9e8df" : "#343932") };
   return dark
     ? {
         ...base,
         cursorAccent: base.background,
-        selectionBackground: "#a7e26e4d",
-        black: "#1b2627", red: "#f2786a", green: "#6fd39a", yellow: "#e2a64b", blue: "#6aa8f0", magenta: "#c792ea", cyan: "#5fd0d0", white: "#c9cbbe",
-        brightBlack: "#849495", brightRed: "#ff9a8e", brightGreen: "#a7e26e", brightYellow: "#f2c46d", brightBlue: "#8fc0ff", brightMagenta: "#dbb0f5", brightCyan: "#8ae6e6", brightWhite: "#f5f8f7",
+        selectionBackground: "#4fd0a04d",
+        black: "#26281f", red: "#e47a62", green: "#4fd0a0", yellow: "#e0b35a", blue: "#74a6d8", magenta: "#c792ea", cyan: "#5fc8c8", white: "#c9c8be",
+        brightBlack: "#8a8b80", brightRed: "#f0a08d", brightGreen: "#8fe3c4", brightYellow: "#eac77f", brightBlue: "#a3c6ea", brightMagenta: "#dbb0f5", brightCyan: "#8ae0e0", brightWhite: "#ecebe4",
       }
     : {
         ...base,
         cursorAccent: base.background,
-        selectionBackground: "#86c24e59",
-        black: "#222f30", red: "#c73a2e", green: "#2f8a57", yellow: "#a86200", blue: "#2b6cb0", magenta: "#8e44ad", cyan: "#13808a", white: "#c9cfc9",
-        brightBlack: "#6f7f80", brightRed: "#e0544a", brightGreen: "#3f6f12", brightYellow: "#c27c0e", brightBlue: "#3b82c4", brightMagenta: "#a35bc4", brightCyan: "#1a9aa6", brightWhite: "#fdfdfc",
+        selectionBackground: "#36b98a40",
+        black: "#292a26", red: "#a44a36", green: "#2d6a4b", yellow: "#87662e", blue: "#36608a", magenta: "#8e44ad", cyan: "#13808a", white: "#d4d2c7",
+        brightBlack: "#6b6d64", brightRed: "#b5503b", brightGreen: "#2a9b72", brightYellow: "#a8802f", brightBlue: "#4f82b3", brightMagenta: "#a35bc4", brightCyan: "#1a9aa6", brightWhite: "#fdfcf9",
       };
 }
 

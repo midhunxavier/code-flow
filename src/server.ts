@@ -343,12 +343,14 @@ function checkLanOrigin(req: IncomingMessage) {
 
 const lockedPage = (title: string, body: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>code-flow — ${title}</title><style>
-:root{--bg:#f7f7f5;--text:#222f30;--muted:#445e5f;--panel:#fdfdfc;--border:#e4e3e3}
-@media (prefers-color-scheme:dark){:root{--bg:#111918;--text:#f5f8f7;--muted:#c9cbbe;--panel:#192425;--border:#2b3a3c}}
-body{margin:0;padding:0 16px;background:var(--bg);color:var(--text);font:15px/1.55 Manrope,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
-main{max-width:520px;margin:12vh auto;padding:28px;background:var(--panel);border:1px solid var(--border);border-radius:24px;box-shadow:0 12px 30px rgba(34,47,48,.06),0 2px 10px rgba(34,47,48,.04)}
-h1{font-size:22px;letter-spacing:-.03em;margin:0 0 10px}p{color:var(--muted);margin:8px 0}code{font:13px ui-monospace,Menlo,monospace}
-</style></head><body><main>${body}</main></body></html>`;
+:root{--bg:#f8f7f3;--raised:#fdfcf9;--sunken:#f0efe9;--border:#e4e2da;--text:#292a26;--muted:#65675e;--link:#2d6a4b;--shadow:0 2px 6px rgba(34,35,24,.06),0 24px 64px rgba(34,35,24,.16);color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#161713;--raised:#1e1f1a;--sunken:#121310;--border:#2e3029;--text:#ecebe4;--muted:#9c9d92;--link:#8fe3c4;--shadow:0 2px 6px rgba(0,0,0,.35),0 24px 64px rgba(0,0,0,.55);color-scheme:dark}}
+body{margin:0;padding:0 16px;background:var(--bg);color:var(--text);font:14px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:480px;margin:12vh auto;padding:24px;background:var(--raised);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow)}
+.brand{font-size:15px;font-weight:600;letter-spacing:-.4px;margin:0 0 18px}.brand span{font-weight:400}
+h1{font:400 24px/1.2 Georgia,"Times New Roman",serif;letter-spacing:-.5px;margin:0 0 12px}p{color:var(--muted);margin:8px 0}b{color:var(--text);font-weight:600}a{color:var(--link);font-weight:500}
+code{font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--text);background:var(--sunken);padding:1px 5px;border-radius:6px;overflow-wrap:anywhere}
+</style></head><body><main><div class="brand">code<span>-flow</span></div>${body}</main></body></html>`;
 
 const LOCKED_PAGE = lockedPage(
   "sign in",

@@ -196,8 +196,8 @@ export function SweepDialog() {
                     </span>
                   ) : null}
                 </span>
-                <a class="si-link" href={i.url} target="_blank" rel="noreferrer" title="Open on GitHub" onClick={(e) => e.stopPropagation()}>
-                  ↗
+                <a class="si-link" href={i.url} target="_blank" rel="noreferrer" title="Open on GitHub" aria-label={`Open ${i.ref} on GitHub`} onClick={(e) => e.stopPropagation()}>
+                  <Icon name="external" />
                 </a>
               </label>
             ))}

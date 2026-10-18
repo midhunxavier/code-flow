@@ -228,8 +228,9 @@ function FileViewer({ root, path, onClose }: { root: string; path: string; onClo
         <button type="button" class="btn ghost small" aria-label="Back to the files" title="Back to the files" onClick={onClose}>
           ←
         </button>
+        {/* cut from the start (see .fp): the path isolated, so a leading dot stays in front */}
         <span class="fp" title={path}>
-          {path}
+          <bdi>{path}</bdi>
         </span>
         {file ? <span class="help">{fmtSize(file.size)}</span> : null}
         {inComposer ? (
@@ -276,6 +277,7 @@ function NotesTab() {
   const [pickedNote, setPickedNote] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [matches, setMatches] = useState<{ hits: { key: string; revision: number; excerpt: string }[]; truncated: boolean } | null>(null);
+  const [searching, setSearching] = useState(false);
   const key = pickedNote ?? (scope === "repo" && here ? here : "general");
   const [text, setText] = useState("");
   const [saved, setSaved] = useState<{ at: number; text: string; revision: number } | null>(null);
@@ -382,12 +384,17 @@ function NotesTab() {
           → Chat
         </button>
       </div>
-      <details><summary>Search saved notes</summary><div class="side-toolbar"><input class="field" aria-label="Search saved notes" placeholder="Words or repository path" value={search} onInput={(event) => setSearch(event.currentTarget.value)} /><button class="btn small" onClick={async () => { try { setMatches(await api(`/api/notes/search?q=${enc(search)}`)); } catch (error) { setStatus((error as Error).message); } }}>Search notes</button></div>{matches ? <>{matches.hits.length ? matches.hits.map((match) => <p key={match.key}><button class="btn ghost small" onClick={() => { setPickedNote(match.key); setMatches(null); }}>{match.key} · revision {match.revision}</button><span class="help">{match.excerpt}</span></p>) : <p class="help">No saved notes match.</p>}{matches.truncated ? <p class="help">Results are limited; narrow the query.</p> : null}</> : null}</details>
-      {pickedNote ? <div class="side-toolbar"><span class="help">Editing {pickedNote}</span><button class="btn small" onClick={() => setPickedNote(null)}>Return to current notes</button></div> : null}
-      {latest ? <div class="msg err" role="alert"><p>This note changed in another window. Your draft is preserved.</p><details><summary>Compare saved version</summary><pre>{latest.text}</pre></details><button class="btn small" onClick={() => { bases.current.set(key, latest); setText(latest.text); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); try { store.remove(`notes-draft:${key}`); } catch {} }}>Use saved version</button><button class="btn small" onClick={() => { bases.current.set(key, latest); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); }}>Save my draft over this version</button></div> : null}
-      <div class="side-toolbar"><button class="btn small" disabled={!ready} onClick={async () => { try { setHistory(await api(`/api/notes/history?key=${enc(key)}`)); } catch (error) { setStatus((error as Error).message); } }}>Revision history</button></div>
-      {history.length ? <details open><summary>{history.length} saved revisions</summary>{history.map((note) => <div key={note.revision}><details><summary>Revision {note.revision} · {new Date(note.updatedAt).toLocaleString()}</summary><pre>{note.text || "(empty)"}</pre><button class="btn small" disabled={note.revision === saved?.revision || saved?.text !== text} onClick={async () => { try { const restored = await post<{ text: string; updatedAt: number; revision: number }>("/api/notes/restore", { key, revision: note.revision, expectedRevision: saved?.revision }); bases.current.set(key, restored); setSaved({ at: restored.updatedAt, text: restored.text, revision: restored.revision }); setText(restored.text); setHistory([]); setStatus("Restored as a new revision"); } catch (error) { setStatus((error as Error).message); } }}>Restore as new revision</button></details></div>)}</details> : null}
-      <textarea id="side-notes" class="notes-area" aria-label="Notes" placeholder="Notes to yourself: what to check, ideas, commands… Saved as you type." spellcheck={false} disabled={!ready} value={text} onInput={(e) => { setText(e.currentTarget.value); try { store.set(`notes-draft:${key}`, e.currentTarget.value); } catch {} }} />
+      {/* Searching and the revision history: one quiet row of tools over the note */}
+      <div class="notes-tools">
+        <button type="button" class="btn ghost small" aria-expanded={searching} aria-controls={searching ? "notes-search" : undefined} onClick={() => setSearching(!searching)}><Icon name="search" /> Search saved notes</button>
+        <span class="spacer" />
+        <button type="button" class="btn ghost small" disabled={!ready} onClick={async () => { try { setHistory(await api(`/api/notes/history?key=${enc(key)}`)); } catch (error) { setStatus((error as Error).message); } }}><Icon name="clock" /> Revision history</button>
+      </div>
+      {searching ? <div id="notes-search" class="notes-search"><form class="notes-search-row" onSubmit={async (event) => { event.preventDefault(); try { setMatches(await api(`/api/notes/search?q=${enc(search)}`)); } catch (error) { setStatus((error as Error).message); } }}><input class="field" aria-label="Search saved notes" placeholder="Words or repository path" value={search} onInput={(event) => setSearch(event.currentTarget.value)} /><button class="btn small">Search notes</button></form>{matches ? <>{matches.hits.length ? matches.hits.map((match) => <div class="notes-hit" key={match.key}><button type="button" class="notes-hit-key" onClick={() => { setPickedNote(match.key); setMatches(null); }}>{match.key} · revision {match.revision}</button><span class="help">{match.excerpt}</span></div>) : <p class="help">No saved notes match.</p>}{matches.truncated ? <p class="help">Results are limited; narrow the query.</p> : null}</> : null}</div> : null}
+      {pickedNote ? <div class="notes-picked"><span class="help">Editing <code>{pickedNote}</code></span><button class="btn small" onClick={() => setPickedNote(null)}>Return to current notes</button></div> : null}
+      {latest ? <div class="notes-conflict" role="alert"><p>This note changed in another window. Your draft is preserved.</p><details><summary>Compare saved version</summary><pre>{latest.text}</pre></details><div class="row"><button class="btn small" onClick={() => { bases.current.set(key, latest); setText(latest.text); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); store.remove(`notes-draft:${key}`); }}>Use saved version</button><button class="btn small" onClick={() => { bases.current.set(key, latest); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); }}>Save my draft over this version</button></div></div> : null}
+      {history.length ? <details open class="notes-history"><summary>{history.length} saved revisions</summary>{history.map((note) => <div key={note.revision}><details><summary>Revision {note.revision} · {new Date(note.updatedAt).toLocaleString()}</summary><pre>{note.text || "(empty)"}</pre><button class="btn small" disabled={note.revision === saved?.revision || saved?.text !== text} onClick={async () => { try { const restored = await post<{ text: string; updatedAt: number; revision: number }>("/api/notes/restore", { key, revision: note.revision, expectedRevision: saved?.revision }); bases.current.set(key, restored); setSaved({ at: restored.updatedAt, text: restored.text, revision: restored.revision }); setText(restored.text); setHistory([]); setStatus("Restored as a new revision"); } catch (error) { setStatus((error as Error).message); } }}>Restore as new revision</button></details></div>)}</details> : null}
+      <textarea id="side-notes" class="notes-area" aria-label="Notes" placeholder="Notes to yourself: what to check, ideas, commands… Saved as you type." spellcheck={false} disabled={!ready} value={text} onInput={(e) => { setText(e.currentTarget.value); store.set(`notes-draft:${key}`, e.currentTarget.value); }} />
       <div class="notes-foot">
         <span>{status || (saved?.at ? `Saved ${ago(saved.at)}` : "")}</span>
         <span class="spacer" />

@@ -31,11 +31,11 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
     <section class="auto-team" aria-label="Auto team">
       <div class="at-head">
         <div><h3>Team and workflow</h3><span class="help">Revision {team.revision} · {team.scheduler === "event" ? "Ready work starts when dependencies resolve" : team.wave ? `${team.wave} waves so far · limit ${team.maxWaves} per execution` : "Before the first wave"}</span></div>
-        <span class={`badge ${team.gaps.length || team.status === "blocked" ? "warn" : ""}`}>{teamAwaitingAnswer(run) ? "Waiting for your answer" : STATUS[team.status]}</span>
+        <span class={`badge ${team.gaps.length || team.status === "blocked" ? "warn" : team.status === "completed" ? "ok" : ""}`}>{teamAwaitingAnswer(run) ? "Waiting for your answer" : STATUS[team.status]}</span>
       </div>
       <TeamRunMetrics runId={run.id} running={run.status === "running"} />
       <TeamCapabilities providers={[...new Set(team.members.map((member) => member.provider))]} />
-      <div class="at-metrics" aria-label="Coordination usage">
+      <div class="at-metrics" role="group" aria-label="Coordination usage">
         <span><b>{metrics.coordinatorInvocations}</b> coordinator calls (lifetime) · limit {team.coordinationLimit} per execution</span>
         <span><b>{metrics.invocations}</b> total calls (lifetime) · limit {team.invocationLimit} per execution</span>
         <span><b>{metrics.questionCount}</b> questions</span>
@@ -51,10 +51,10 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
       {team.reviewFallback ? <div class="at-notice">{team.reviewFallback}</div> : null}
       {team.gaps.length ? <div class="at-notice"><b>Still unresolved</b><ul>{team.gaps.map((gap, i) => <li key={i}>{gap}</li>)}</ul></div> : null}
       {teamNeedsResume(run) ? <p class="help">Resume continues this team's unfinished work with a fresh execution budget. Completed work and recorded answers are kept.</p> : null}
-      <div class="at-roster" aria-label="Team members">
+      <div class="at-roster" role="group" aria-label="Team members">
         {team.members.map((member) => (
           <article class="at-member" key={member.id}>
-            <div class="at-row"><b>{member.name}</b><span class="badge">{member.role}</span></div>
+            <div class="at-row"><b>{member.name}</b><span class="badge">{member.role.charAt(0).toUpperCase() + member.role.slice(1)}</span></div>
             <AgentTag id={member.provider} note={[member.model, member.effort].filter(Boolean).join(" · ") || "CLI defaults"} />
             <div class="help">{memberProgress(team, member)} · <code>{member.id}</code></div>
             <button class="btn small" onClick={() => setInbox(member.id)}>Inbox · {team.messages.filter((message) => message.recipient === member.id && message.delivery?.status !== "context" && message.status !== "delivered").length} pending</button>
@@ -148,7 +148,7 @@ function TaskRerunPanel({ run }: { run: RunSummary }) {
     <p class="help">Baseline: {head ? <code>{head.slice(0, 12)}</code> : "Loading current integration commit…"} <button class="btn ghost small" disabled={busy} onClick={() => setRefresh((value) => value + 1)}>Refresh rerun baseline</button></p>
     {head && (team.verification?.head !== head || !team.verification?.approved) ? <p class="at-notice">This baseline has no passing parent verification at its current commit. The child starts unverified.</p> : null}
     <fieldset disabled={busy}><legend>Tasks to execute again</legend>{team.tasks.map((task) => <div key={task.id}><label class="check"><input type="checkbox" checked={selected.includes(task.id)} onChange={(event) => setSelected(event.currentTarget.checked ? [...selected, task.id] : selected.filter((id) => id !== task.id))} />Rerun {task.title}</label>{selected.includes(task.id) ? <label>New instructions for {task.id}<textarea class="field" rows={2} maxLength={16000} placeholder="Leave blank to reuse the accepted instructions" value={instructions[task.id] ?? ""} onInput={(event) => setInstructions({ ...instructions, [task.id]: event.currentTarget.value })} /></label> : null}</div>)}</fieldset>
-    <div aria-label="Task rerun preview"><p>Execute: {team.tasks.filter((task) => invalidated.has(task.id)).map((task) => task.id).join(", ") || "Choose a task"}</p><p>Retain as baseline inputs: {retained.map((task) => task.id).join(", ") || "None"}</p></div>
+    <div class="rerun-preview" role="group" aria-label="Task rerun preview"><p>Execute: {team.tasks.filter((task) => invalidated.has(task.id)).map((task) => task.id).join(", ") || "Choose a task"}</p><p>Retain as baseline inputs: {retained.map((task) => task.id).join(", ") || "None"}</p></div>
     {unfinished.length ? <p class="at-notice">Also select unfinished or stale tasks: {unfinished.map((task) => task.id).join(", ")}.</p> : null}
     <div class="at-row"><label>New invocation budget<input class="field" type="number" min={minimum} max="200" value={calls} disabled={busy} onInput={(event) => setCalls(Number(event.currentTarget.value))} /></label><label>Rerun time budget (minutes)<input class="field" type="number" min="1" max="720" value={minutes} disabled={busy} onInput={(event) => setMinutes(Number(event.currentTarget.value))} /></label></div>
     <p class="help">At least {minimum} calls fund invalidated work, independent review and one recovery allowance. Provider/model/permission settings stay pinned. An unchanged implementation must still pass the current check and independent review; it does not create new fail-to-pass proof.</p>
@@ -167,10 +167,11 @@ function WorkflowGraph({ run, steps }: { run: RunSummary; steps?: Step[] }) {
   const timing = steps ? analyzeRunTiming(run, steps) : null;
   return <details class="at-section workflow-graph"><summary>Workflow graph and timing · {graph.nodes.length} tasks</summary>
     <p class="help">Arrows show dependencies. Highlighted tasks form the longest measured dependency chain. Untimed work, provider limits, shared files and queue delays can change the actual bottleneck.</p>
-    <div class="workflow-dag-scroll"><svg role="img" aria-label={`Workflow dependencies: ${graph.edges.map((edge) => `${edge.from} to ${edge.to}`).join(", ") || "independent tasks"}`} viewBox={`0 0 ${width} ${height}`} width={width} height={height}>
+    {/* focusable: a wide graph scrolls (always on a phone), and keyboard users need to reach it to scroll it */}
+    <div class="workflow-dag-scroll" tabIndex={0}><svg role="img" aria-label={`Workflow dependencies: ${graph.edges.map((edge) => `${edge.from} to ${edge.to}`).join(", ") || "independent tasks"}`} viewBox={`0 0 ${width} ${height}`} width={width} height={height}>
       <defs><marker id={`dag-arrow-${run.id}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>
-      {graph.edges.map((edge) => { const from = positions.get(edge.from)!; const to = positions.get(edge.to)!; const x1 = from.x + 204; const x2 = to.x; const y1 = from.y + 31; const y2 = to.y + 31; return <path key={`${edge.from}-${edge.to}`} class={`dag-edge ${edge.kind}`} d={`M ${x1} ${y1} C ${x1 + 22} ${y1}, ${x2 - 22} ${y2}, ${x2} ${y2}`} marker-end={`url(#dag-arrow-${run.id})`}><title>{edge.from} → {edge.to} · {edge.kind}</title></path>; })}
-      {graph.nodes.map((node) => { const position = positions.get(node.id)!; return <g key={node.id} class={`dag-node ${node.status} ${node.critical ? "critical" : ""}`} transform={`translate(${position.x} ${position.y})`}><title>{node.title} · {node.owner} · {node.status}{node.durationMs !== undefined ? ` · ${duration(node.durationMs)} measured` : " · no task timing"}</title><rect width="204" height="64" rx="10" /><text x="10" y="23" class="dag-title">{node.title.length > 25 ? `${node.title.slice(0, 24)}…` : node.title}</text><text x="10" y="43">{node.owner.slice(0, 20)} · {node.durationMs === undefined ? "untimed" : duration(node.durationMs)}</text><text x="10" y="58" class="dag-status">{TASK_STATUS[node.status as keyof typeof TASK_STATUS] ?? node.status}</text></g>; })}
+      {graph.edges.map((edge) => { const from = positions.get(edge.from)!; const to = positions.get(edge.to)!; const x1 = from.x + 204; const x2 = to.x; const y1 = from.y + 33; const y2 = to.y + 33; return <path key={`${edge.from}-${edge.to}`} class={`dag-edge ${edge.kind}`} d={`M ${x1} ${y1} C ${x1 + 22} ${y1}, ${x2 - 22} ${y2}, ${x2} ${y2}`} marker-end={`url(#dag-arrow-${run.id})`}><title>{edge.from} → {edge.to} · {edge.kind}</title></path>; })}
+      {graph.nodes.map((node) => { const position = positions.get(node.id)!; return <g key={node.id} class={`dag-node ${node.status} ${node.critical ? "critical" : ""}`} transform={`translate(${position.x} ${position.y})`}><title>{node.title} · {node.owner} · {node.status}{node.durationMs !== undefined ? ` · ${duration(node.durationMs)} measured` : " · no task timing"}</title><rect width="204" height="66" rx="8" /><text x="12" y="23" class="dag-title">{node.title.length > 25 ? `${node.title.slice(0, 24)}…` : node.title}</text><text x="12" y="40">{node.owner.slice(0, 20)} · {node.durationMs === undefined ? "untimed" : duration(node.durationMs)}</text><circle cx="15" cy="52.5" r="3" class="dag-dot" /><text x="23" y="56" class="dag-status">{TASK_STATUS[node.status as keyof typeof TASK_STATUS] ?? node.status}</text></g>; })}
     </svg></div>
     <p class="help">Observed chain: {graph.criticalPath.map((id) => team.tasks.find((task) => task.id === id)?.title ?? id).join(" → ") || "unavailable"}{graph.timedTasks ? ` · ${duration(graph.measuredCriticalPathMs)}` : " · timing unavailable"}. {graph.timedTasks}/{graph.nodes.length} tasks have timing.{!graph.completeTiming ? " This is partial timing, not a completion estimate." : ""}</p>
     {timing ? <dl class="workflow-timing"><div><dt>Since run creation</dt><dd>{duration(timing.elapsedMs)}</dd></div><div><dt>Worker process time</dt><dd>{duration(timing.workerMs)}</dd></div><div><dt>Coordination process time</dt><dd>{duration(timing.coordinationMs)}</dd></div><div><dt>Check and setup time</dt><dd>{duration(timing.checksMs)}</dd></div><div><dt>Recorded wait periods</dt><dd>{duration(timing.waitingMs)}</dd></div><div><dt>Other elapsed time</dt><dd>{duration(timing.unattributedMs)}</dd></div></dl> : null}
@@ -209,10 +210,10 @@ export function TeamPlanEditor({ run, onClose }: { run: RunSummary; onClose: () 
   return <dialog class="picker team-plan-editor" ref={ref} aria-labelledby="team-plan-editor-title"><div class="picker-inner">
     <div class="picker-head"><h3 id="team-plan-editor-title">Edit pending team plan</h3><p class="help">Members, requirements, model settings, permissions and execution limits stay fixed. Edit assignments, dependencies, paths, acceptance and contracts before dispatch.</p></div>
     <div class="dialog-body">
-      {changed ? <div class="at-notice" role="alert">The saved plan changed. Your draft is kept. Export or copy your changes before replacing it with the current plan.<button class="btn" onClick={() => { setDraft(editableTeamPlan(team)); setError(""); }}>Replace draft with latest plan</button><details><summary>Latest plan for comparison</summary><pre class="template-preview">{JSON.stringify(editableTeamPlan(team), null, 2)}</pre></details></div> : null}
+      {changed ? <div class="at-notice" role="alert">The saved plan changed. Your draft is kept. Export or copy your changes before replacing it with the current plan.<button class="btn" onClick={() => { setDraft(editableTeamPlan(team)); setError(""); }}>Replace draft with latest plan</button><details><summary>Latest plan for comparison</summary><pre class="template-preview" tabIndex={0}>{JSON.stringify(editableTeamPlan(team), null, 2)}</pre></details></div> : null}
       <label class="lbl" for="team-plan-rationale">Rationale</label><textarea class="field" id="team-plan-rationale" rows={3} maxLength={4000} value={draft.rationale} onInput={(event) => setDraft({ ...draft, rationale: event.currentTarget.value })} />
       <div class="at-row"><h4>Tasks · {draft.tasks.length}/{maxTasks}</h4><button class="btn small" disabled={draft.tasks.length >= maxTasks} onClick={() => setDraft({ ...draft, tasks: [...draft.tasks, { id: `task-${crypto.randomUUID().slice(0, 8)}`, title: "New task", instructions: "", kind: "implementation", owner: team.members.find((member) => member.role === "worker" && member.status !== "retired")?.id ?? "", dependsOn: [], requirements: team.requirements[0] ? [team.requirements[0].id] : [], acceptance: [""], paths: [""] }] })}>Add task</button></div>
-      {draft.tasks.map((task) => <details class="plan-task-editor" key={task.id} open><summary>{task.title || "Untitled task"} · <code>{task.id}</code></summary><div class="plan-task-body">
+      {draft.tasks.map((task) => <details class="plan-task-editor" key={task.id} open><summary><span class="pt-title">{task.title || "Untitled task"}</span><code>{task.id}</code></summary><div class="plan-task-body">
         <label>Title<input class="field" aria-label={`Title for ${task.id}`} maxLength={180} value={task.title} onInput={(event) => updateTask(task.id, { title: event.currentTarget.value })} /></label>
         <div class="settings-grid"><label>Kind<select class="field" aria-label={`Kind for ${task.id}`} value={task.kind} onChange={(event) => { const kind = event.currentTarget.value as EditableTeamTask["kind"]; const owner = team.members.find((member) => member.id === task.owner); updateTask(task.id, { kind, ...(kind === "implementation" && owner?.role !== "worker" ? { owner: team.members.find((member) => member.role === "worker" && member.status !== "retired")?.id ?? "" } : {}) }); }}><option value="implementation">Implementation</option><option value="investigation">Investigation</option></select></label>
           <label>Owner<select class="field" aria-label={`Owner for ${task.id}`} value={task.owner} onChange={(event) => updateTask(task.id, { owner: event.currentTarget.value })}>{team.members.filter((member) => member.status !== "retired" && member.role !== "reviewer" && (task.kind === "investigation" || member.role === "worker")).map((member) => <option key={member.id} value={member.id}>{member.name} · {member.provider}</option>)}</select></label></div>
@@ -238,10 +239,11 @@ export function TeamQuestionCard({ run }: { run: RunSummary }) {
   if (!team || !message) return null;
   const sender = team.members.find((member) => member.id === message.sender);
   const task = team.tasks.find((item) => item.id === message.taskId);
-  return <section class="at-section at-notice" aria-label="The team needs your answer">
-    <div class="at-row"><b>The team needs your answer</b><span class="help">{sender?.name ?? message.sender}{task ? ` · ${task.title}` : ""}</span></div>
-    <Markdown text={message.body} />
-    <QuestionReply run={run} message={message} />
+  // Laid out like a plan approval (an attention card with a warn strip), since it's the same kind of ask.
+  return <section class="awaiting-card team-question" aria-label="The team needs your answer">
+    <div class="aw-head"><span class="status-pill awaiting">Waiting for you</span><b>The team needs your answer</b><span class="help">{sender?.name ?? message.sender}{task ? ` · ${task.title}` : ""}</span></div>
+    <div class="aw-body"><Markdown text={message.body} /></div>
+    <div class="aw-actions"><QuestionReply run={run} message={message} /></div>
   </section>;
 }
 
@@ -259,7 +261,7 @@ export function QuestionReply({ run, message }: { run: RunSummary; message: Team
     finally { setBusy(false); }
   };
   if (sent) return <p class="help" role="status">Answer sent.</p>;
-  if (run.status !== "running") return <p class="help">Press ▶ Resume in the header to continue the run, then answer here.</p>;
+  if (run.status !== "running") return <p class="help">Press Resume in the header to continue the run, then answer here.</p>;
   const field = `team-answer-${message.id}`;
   return <div class="at-reply"><label class="lbl" for={field}>Your answer</label><textarea class="field" id={field} placeholder="Your answer…" rows={2} value={text} onInput={(event) => setText(event.currentTarget.value)} /><button class="btn primary small" disabled={!text.trim() || busy} onClick={answer}>{busy ? "Sending…" : "Send answer"}</button>{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
 }

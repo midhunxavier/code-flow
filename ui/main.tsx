@@ -1,3 +1,4 @@
+import "./theme.js"; // first: the theme follows your pick (or the system) before anything renders
 import { loadExecutionHost, executionHost } from "./ssh-projects.js";
 import { effect } from "@preact/signals";
 import { render } from "preact";
@@ -29,7 +30,7 @@ function BootError({ message, seconds, onRetry }: { message: string; seconds: nu
     return () => clearTimeout(timer);
   }, [left]);
   return (
-    <div role="alert" style="max-width:480px;margin:15vh auto;padding:0 16px">
+    <div role="alert" class="boot-error">
       <h3>code-flow couldn't load</h3>
       <div class="msg err">{message}</div>
       <p class="help">{left > 0 ? `Trying again in ${left}s…` : "Trying again…"}</p>

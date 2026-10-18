@@ -8,7 +8,8 @@ ui/*.tsx                 UI: Preact + TypeScript, compiled against the server's 
                           · project: a project's page · side: the side panel, its files and notes · side-chat, changes, terminal, browser: its other tabs
                           · panel-bits: what the tabs share (folders, the strip of open sessions, menus))
 ui/bits.tsx              small shared pieces: agent tags, the Markdown renderer, QR codes
-ui/styles.css, ui/fonts  the stylesheet and its fonts (Manrope, Roboto Mono; licences included)
+ui/styles.css, ui/fonts  the stylesheet (the paper theme, light and dark) and its font (Inter; licence included)
+ui/theme.ts              light or dark: follows the system until you pick one with the top bar's theme button
 scripts/build-ui.mjs     bundles the UI, fonts and images into one self-contained public/index.html (npm start builds it)
 scripts/check-node.mjs   stops npm start and npm run dev on a Node older than 20, saying why
 scripts/pty.py           the Terminal's pseudo-terminal (Python 3 standard library, no native npm module): runs your login shell in a pty, relays its bytes, takes resizes and reports the shell's pid, its terminal and the foreground on fd 3; when it ends, it hangs up everything in the shell's session
