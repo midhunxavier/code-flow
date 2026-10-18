@@ -399,7 +399,7 @@ test("a webhook-fired sweep follows the sweep's own rules: its kind, its picks, 
       { number: 16, title: "Slow start", body: "", url: "https://github.com/o/r/issues/16", labels: [] },
     ),
   );
-  const hook = (source: object) => automations.fire(t.id, { via: "webhook", source: source as never, details: "GitHub: issue opened by @someone" });
+  const hook = (source: object) => automations.fire(t.id, { via: "webhook", source: source as never, event: "GitHub: issue opened by @someone" });
 
   // Not this sweep's kind, or not one its list would pick: nothing starts.
   assert.match((await hook({ kind: "alert", tool: "code-scanning", number: 21 })).skipped!, /issues sweep doesn't start from an alert/);

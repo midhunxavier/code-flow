@@ -81,7 +81,7 @@ export interface StripItem {
 export function Strip({ items, active, onPick, onClose, label, children }: { items: StripItem[]; active?: string; onPick: (key: string) => void; onClose?: (key: string) => void; label: string; children?: ComponentChildren }) {
   return (
     <div class="sess-strip">
-      <div class="sess-list" role="tablist" aria-label={label}>
+      <div class="sess-list" role={items.length ? "tablist" : undefined} aria-label={items.length ? label : undefined}>
         {items.map((it) => (
           <span key={it.key} class={`sess ${it.key === active ? "on" : ""} ${it.below ? "below" : ""} ${it.state === "failed" ? "failed" : ""}`}>
             <button type="button" role="tab" aria-selected={it.key === active} class="sess-pick" title={it.title ?? it.label} onClick={() => onPick(it.key)}>
@@ -108,17 +108,31 @@ export function Strip({ items, active, onPick, onClose, label, children }: { ite
 }
 
 // ---------------------------------------------------------------- a small menu
-/** A menu under an icon button; a pick, Escape or a click elsewhere closes it. */
+/**
+ * A menu under an icon button; a pick, Escape or a click elsewhere closes it. Opened, its first
+ * item has focus and ↓ ↑ (Home, End) move between items; a pick or Escape goes back to the button.
+ */
 export function Menu({ label, icon, title, children }: { label: string; icon: IconName; title?: string; children: (close: () => void) => ComponentChildren }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const items = () => [...(menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? [])];
+  /** Closed by a pick or Escape: back to the button, where the keyboard was. */
+  const close = () => {
+    setOpen(false);
+    button.current?.focus();
+  };
   useEffect(() => {
     if (!open) return;
+    items()[0]?.focus();
     const away = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node)) setOpen(false);
     };
     const esc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      close();
     };
     document.addEventListener("mousedown", away);
     document.addEventListener("keydown", esc);
@@ -127,14 +141,23 @@ export function Menu({ label, icon, title, children }: { label: string; icon: Ic
       document.removeEventListener("keydown", esc);
     };
   }, [open]);
+  const onKey = (e: KeyboardEvent) => {
+    const list = items();
+    if (!list.length) return;
+    const at = list.indexOf(document.activeElement as HTMLElement);
+    const next = e.key === "ArrowDown" ? (at + 1) % list.length : e.key === "ArrowUp" ? (at <= 0 ? list.length : at) - 1 : e.key === "Home" ? 0 : e.key === "End" ? list.length - 1 : -1;
+    if (next < 0) return;
+    e.preventDefault();
+    list[next]!.focus();
+  };
   return (
     <div class="pop-wrap" ref={ref}>
-      <button type="button" class={`icon-btn ${open ? "on" : ""}`} aria-label={label} aria-haspopup="menu" aria-expanded={open} title={title ?? label} onClick={() => setOpen(!open)}>
+      <button type="button" ref={button} class={`icon-btn ${open ? "on" : ""}`} aria-label={label} aria-haspopup="menu" aria-expanded={open} title={title ?? label} onClick={() => setOpen(!open)}>
         <Icon name={icon} />
       </button>
       {open ? (
-        <div class="pop-menu" role="menu">
-          {children(() => setOpen(false))}
+        <div class="pop-menu" role="menu" aria-label={label} ref={menu} onKeyDown={onKey}>
+          {children(close)}
         </div>
       ) : null}
     </div>

@@ -8,6 +8,8 @@ const ACTIVE = new Set<PrWatch["state"]>(["watching", "fixing", "green"]);
 export const FAILURES_BEFORE_NEEDS_YOU = 3;
 /** The longest a failing watch waits between polls. */
 const MAX_BACKOFF_MS = 30 * 60_000;
+/** The longest a quiet watch (CI green, no new comments) waits between polls. */
+const MAX_QUIET_MS = 10 * 60_000;
 
 /** A watch whose polls keep failing (gh signed out, rate-limited, offline). */
 interface Failing {
@@ -15,6 +17,19 @@ interface Failing {
   /** Don't poll again before this. */
   nextAt: number;
   error: string;
+}
+
+/**
+ * A watch whose last polls found nothing to do: CI green, no new comments. Each one costs two gh
+ * calls, so it's polled less and less often, up to MAX_QUIET_MS apart, until something changes.
+ */
+interface Quiet {
+  /** Polls in a row that found the PR just like this. */
+  count: number;
+  /** What they found (the head, its checks, when watching started); anything else is a change. */
+  seen: string;
+  /** Don't poll again before this (0: on the next tick). */
+  nextAt: number;
 }
 
 /**
@@ -30,12 +45,22 @@ interface Failing {
  * A poll that fails (gh signed out, rate-limited, no network) is retried with a growing wait.
  * After three in a row the watch needs you, with the reason; it keeps retrying at that pace
  * and goes back to watching once gh answers again.
+ *
+ * A green PR with no new comments is checked less often the longer it stays that way (every
+ * interval at first, then 2, 4, 8… up to MAX_QUIET_MS), and every interval again once anything
+ * changes: a comment, a push, CI starting or failing.
+ *
+ * Line comments on the diff (review threads) aren't read yet: only PR comments and review
+ * summaries are. Each watch says so once, in the run's log.
  */
 export class PrWatcher {
   private timer?: ReturnType<typeof setInterval>;
   private polling?: Promise<void>;
+  private stopped = false;
   /** Watches whose polls are failing, by `<run id>/<branch>`; forgotten on restart. */
   private readonly failing = new Map<string, Failing>();
+  /** Watches with nothing to do lately, by `<run id>/<branch>`; forgotten on restart. */
+  private readonly quiet = new Map<string, Quiet>();
 
   constructor(
     private readonly manager: RunManager,
@@ -43,16 +68,22 @@ export class PrWatcher {
   ) {}
 
   start() {
+    if (this.timer) return;
+    this.stopped = false;
     this.timer = setInterval(() => void this.poll(), this.intervalMs);
     this.timer.unref?.();
   }
 
   stop() {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    return this.polling;
   }
 
   /** One pass over every active watch; concurrent calls share the pass in progress. `now` is for tests. */
   poll(now?: number): Promise<void> {
+    if (this.stopped) return Promise.resolve();
     this.polling ??= this.pollAll(now).finally(() => (this.polling = undefined));
     return this.polling;
   }
@@ -60,23 +91,41 @@ export class PrWatcher {
   private async pollAll(now = Date.now()) {
     for (const run of this.manager.watchedRuns()) {
       for (const watch of Object.values(run.watches)) {
+        if (this.stopped) return;
         const key = `${run.id}/${watch.branch}`;
         const failing = this.failing.get(key);
         // A watch handed back to you for failing polls is still retried, so it recovers on its own.
         const retrying = watch.state === "needs-you" && !!failing;
         if ((!ACTIVE.has(watch.state) && !retrying) || run.status === "running" || run.archived) {
           if (!retrying) this.failing.delete(key);
+          this.quiet.delete(key);
           continue;
         }
         if (failing && failing.nextAt > now) continue;
+        if ((this.quiet.get(key)?.nextAt ?? 0) > now) continue;
         try {
-          await this.pollOne(run, watch);
+          this.noteQuiet(key, await this.pollOne(run, watch), now);
           this.failing.delete(key);
         } catch (err) {
+          this.quiet.delete(key);
           await this.pollFailed(run, watch, key, err as Error, now);
         }
       }
     }
+  }
+
+  /** After a poll: `seen` is what a poll with nothing to do found (undefined when it found something). */
+  private noteQuiet(key: string, seen: string | undefined, now: number) {
+    if (!seen) {
+      this.quiet.delete(key);
+      return;
+    }
+    const prev = this.quiet.get(key);
+    const count = prev?.seen === seen ? prev.count + 1 : 1;
+    const wait = Math.min(MAX_QUIET_MS, this.intervalMs * 2 ** Math.min(count - 1, 20));
+    // Polls come on the interval's ticks: half an interval early, so a tick landing just before
+    // nextAt doesn't cost a whole extra interval. No longer than an interval: the next tick.
+    this.quiet.set(key, { count, seen, nextAt: wait > this.intervalMs ? now + wait - this.intervalMs / 2 : 0 });
   }
 
   /** Count a failed poll and wait longer before the next; the third in a row hands the PR to you. */
@@ -99,12 +148,17 @@ export class PrWatcher {
     }
   }
 
-  private async pollOne(run: Run, w: PrWatch) {
-    const update = (patch: Partial<PrWatch>) => this.manager.updateWatch(run.id, w.branch, { lastPolled: Date.now(), ...patch });
+  /** One poll. Returns what it found when there was nothing to do (green, no new comments), else undefined. */
+  private async pollOne(run: Run, w: PrWatch): Promise<string | undefined> {
+    const update = (patch: Partial<PrWatch>): undefined => {
+      this.manager.updateWatch(run.id, w.branch, { lastPolled: Date.now(), ...patch });
+      return undefined;
+    };
     const status = await prStatus(run.repo, w.pr);
     if (status.state !== "OPEN") {
       return update({ state: "closed", detail: status.state === "MERGED" ? "The pull request was merged" : "The pull request was closed" });
     }
+    if (status.commentsTruncated) return update({ state: "needs-you", detail: "The PR has at least 1,000 inline review comments; review its complete discussion before restarting follow-through" });
     if (w.state === "fixing" || run.status !== "done") {
       // A fix that never finished (e.g. code-flow restarted mid-way).
       return update({ state: "needs-you", detail: `The run is ${run.status}; resume it, then watch again` });
@@ -114,6 +168,10 @@ export class PrWatcher {
 
     // Comments that were there when watching started are context, not instructions.
     const seen = new Set(w.seenComments ?? status.comments.filter((c) => Date.parse(c.createdAt) < w.startedAt).map((c) => c.id));
+    // The first poll of this watch (seenComments is set from here on): say once what isn't read.
+    if (!w.seenComments) {
+      this.manager.log(run.id, `Watching ${w.pr}: line comments on the diff (review threads) aren't read yet; only PR comments and review summaries reach the agent`);
+    }
     const fresh = status.comments.filter((c) => !seen.has(c.id));
     const seenComments = [...seen, ...fresh.map((c) => c.id)];
     const me = await githubUser(run.repo).catch(() => "");
@@ -142,7 +200,11 @@ export class PrWatcher {
         worktree: worktree.name,
         agent: w.agent,
         from: `${who} on the pull request`,
-        message: actionable.map((c) => `@${c.author}:\n${safeFence(c.body.trim())}`).join("\n\n"),
+        message: actionable.map((c) => {
+          // Repository filenames are user-controlled too; keep locations inside the data fence.
+          const location = c.path ? `File: ${c.path}${c.line ? `:${c.line}` : ""}${c.side ? ` (${c.side.toLowerCase()} side)` : ""}${c.outdated ? " [outdated diff]" : ""}` : "";
+          return `@${c.author}:\n${safeFence([location, c.threadId ? `Thread: ${c.threadId}` : "", c.body.trim()].filter(Boolean).join("\n\n"))}`;
+        }).join("\n\n"),
         push: w.remoteBranch,
         watch: w.branch,
         trust: unattendedTrust(run),
@@ -158,7 +220,11 @@ export class PrWatcher {
       pending: checks.filter((c) => c.bucket === "pending").length,
     };
     if (counts.pending) return update({ seenComments, checks: counts, state: "watching", detail: `CI is running (${counts.pending} pending)` });
-    if (!counts.fail) return update({ seenComments, checks: counts, state: "green", detail: checks.length ? "All checks pass" : "No CI checks reported" });
+    if (!counts.fail) {
+      update({ seenComments, checks: counts, state: "green", detail: checks.length ? "All checks pass" : "No CI checks reported" });
+      // Nothing to do; any change to this (a push, a re-watch) or a new comment, even an ignored one, is activity.
+      return fresh.length ? undefined : `${status.headRefOid} ${counts.pass}/${counts.fail}/${counts.pending} ${w.startedAt}`;
+    }
     if (w.fixedHeads.includes(status.headRefOid)) {
       return update({ seenComments, checks: counts, state: "needs-you", detail: "CI still fails on a commit code-flow already tried to fix" });
     }

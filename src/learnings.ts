@@ -13,7 +13,7 @@ import { git } from "./git.js";
  *   found once is about that change; one that keeps coming back is about how to work here.
  */
 
-const CONVENTION_FILES = ["AGENTS.md", "CLAUDE.md", "GEMINI.md", ".github/copilot-instructions.md", ".cursorrules"];
+const CONVENTION_FILES = [".codeflow/conventions.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md", ".github/copilot-instructions.md", ".cursorrules"];
 const MAX_CONVENTIONS = 6_000;
 
 /** The repo's conventions files at `ref`, combined (or "" when it has none). */

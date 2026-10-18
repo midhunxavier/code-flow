@@ -17,7 +17,7 @@ export async function integrateBranch(ctx: TeamContext, integration: Worktree, b
   const merge = await ctx.merge(integration, branch);
   if (merge.ok) return false;
   await resolve(merge.conflicts);
-  if (await hasConflictMarkers(integration)) throw new Error(`Conflict markers remain after merging ${branch}`);
+  if (await hasConflictMarkers(await ctx.gitAt(integration))) throw new Error(`Conflict markers remain after merging ${branch}`);
   await ctx.commit(integration, commitMessage);
   return true;
 }

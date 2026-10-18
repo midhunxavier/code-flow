@@ -8,6 +8,36 @@
 - [Automations and away mode](automations.md): schedules, webhooks, the inbox, Docker isolation, the phone view.
 - [Configuration](configuration.md): `.codeflow/config.json`, permissions, health, environment variables.
 - [Security, subscriptions and caveats](security.md): how the CLIs and their logins are used, what runs where, known limits.
+- [Verification profiles](verification.md): required gates, baseline/flaky diagnosis, requirements, human review and merge-target checks.
+- [API and CLI](api.md): authenticated versioned operations and the local HTTP client.
+- [Agent containers](agent-containers.md): explicit images, authentication volumes, filesystem mounts and cancellation.
+- [Service launch profiles](launch-profiles.md): named dependent services, readiness, logs and cleanup.
+- [Dependency discovery](dependency-discovery.md): explicit Git, provider, terminal, browser and Docker readiness checks.
+- [Selective task reruns](task-reruns.md): pinned baselines, downstream resets and fresh final verification.
+- [Deferred starts](deferred-runs.md): durable start conditions, quota windows and ambiguous-launch recovery.
+- [Context inspection](context-inspection.md): folder previews, explicit input budgets and recorded measurements.
+- [Project conventions](project-conventions.md): private version history and guarded publication to committed instructions.
+- [Commit comparison and revert](checkpoint-review.md): complete comparisons and reviewed staged inverse changes.
+- [Review inbox](review-inbox.md): grouped and prioritized attention across manual and unattended runs.
+- [Code intelligence](code-intelligence.md): isolated JavaScript/TypeScript symbol and reference resolution.
+- [Architecture explorer](architecture-explorer.md): static imports, packages, cycles and directory boundaries across six languages.
+- [Semantic memory claims](memory-claims.md): bounded duplicate/contradiction evidence with source revisions and overlapping applicability.
+- [Shared projects](shared-projects.md): local viewer/reviewer accounts, scoped results, reviews and immediate revocation.
+- [SSH workers](remote-workers.md): explicit remote targets, source/result bundles, durable receipts and recovery.
+- [Coordinated changes](coordinated-changes.md): pinned dependencies and per-repository validation/shipping.
+- [GitHub review threads](github-review-threads.md): inspect, reply, resolve and reopen real review threads with stale-state checks.
+- [GitLab and Bitbucket code workflows](code-hosts.md): fetch, isolated review, comments, guarded pushes, PR creation and pinned Git merges.
+- [Provider/workflow extensions](extensions.md): explicit trusted bundles, API negotiation and immutable version pins.
+- [Provider compatibility](provider-compatibility.md): continuous official CLI version/help probes and separate protocol fixtures.
+- [Accessibility](accessibility.md): browser audits, keyboard/focus behavior, contrast and mobile acceptance.
+- [Run storage](run-storage.md): streamed recovery and bounded archived detail caches.
+- [Filesystem policies](filesystem-policy.md): literal per-project allow/deny rules and conservative execution pauses.
+- [Filtered Docker tasks](filtered-tasks.md): allowed-file snapshots, private runtime provisioning and explicit review-branch imports.
+- [VS Code integration](../integrations/vscode/README.md): local authenticated task creation, run inspection and result worktrees.
+- [External sources](external-sources.md): read-only GitLab, Bitbucket, Linear and Jira imports.
+- [Notifications](notifications.md): opt-in outbound destinations, scopes, retries and delivery history.
+- [Backup and maintenance](maintenance.md): encrypted recovery, safe restore, retention, compaction and startup checkpoints.
+- [Application improvement checklist](application-improvements.md): implemented behavior, partial coverage and remaining roadmap work.
 - [Architecture and development](architecture.md): the code layout, adding patterns and agents, the dev server, tests, what's next.
 - [Dynamic teams implementation plan](dynamic-teams-implementation-plan.md): architecture, completed P0–P8 packages, and evaluation gates.
 - [Dynamic team implementation evidence](dynamic-teams-evaluation.md): automated checks, real CLI trials, comparison measurements and the rollout decision.

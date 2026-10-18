@@ -69,11 +69,11 @@ export function GitHubPicker() {
   const shown = (items ?? []).filter((i) => !q || `#${i.number} ${i.title} ${(i.labels ?? []).join(" ")} ${i.author ?? ""}`.toLowerCase().includes(q));
 
   return (
-    <dialog class="picker gh-picker" ref={ref}>
+    <dialog class="picker gh-picker" ref={ref} aria-labelledby="github-picker-title">
       {open ? (
         <div class="picker-inner">
           <div class="picker-head">
-            <h3>{template ? `${template.name}: pick ${kind === "issue" ? "an issue" : "a pull request"}` : "Start from GitHub"}</h3>
+            <h3 id="github-picker-title">{template ? `${template.name}: pick ${kind === "issue" ? "an issue" : "a pull request"}` : "Start from GitHub"}</h3>
             {!template?.needs ? (
               <div class="segmented" role="radiogroup" aria-label="Issues or pull requests">
                 <button type="button" role="radio" aria-checked={kind === "issue"} class={kind === "issue" ? "on" : ""} onClick={() => setKind("issue")}>
@@ -134,7 +134,9 @@ export function Templates() {
   const single = templates.value.filter((t) => !t.sweep);
   const sweeps = templates.value.filter((t) => t.sweep);
   return (
-    <>
+    <details class="settings task-starters">
+      <summary><span class="st">Task starters</span><span class="ss">GitHub issues, pull requests and sweeps</span></summary>
+      <div class="settings-body">
       <div class="templates">
         <span class="lbl">Start from</span>
         {single.map((t) => (
@@ -156,7 +158,8 @@ export function Templates() {
           ))}
         </div>
       ) : null}
-    </>
+      </div>
+    </details>
   );
 }
 

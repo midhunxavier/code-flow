@@ -1,7 +1,7 @@
 import { RejectedError, type Pattern, type StepOutcome } from "../engine.js";
 import { isPlainTestCommand, type CheckResult } from "../checks.js";
 import { changedFiles, resolveCommit, restorePaths } from "../git.js";
-import { isPlainSource, isTestFile } from "../integrity.js";
+import { changesRunner, describeIssues, isPlainSource, isRunnerConfig, isTestFile, type IntegrityIssue } from "../integrity.js";
 import { TEST_SPEC_SCHEMA, TEST_VERDICT_SCHEMA } from "./schemas.js";
 import { checkSection, fence, jsonInstruction, preamble, proofLine, section, WRITE } from "./prompts.js";
 
@@ -20,8 +20,11 @@ interface TestVerdict {
  * The tester writes failing tests that pin down the behaviour; a different agent implements
  * until they pass, without touching the tests. The tester then runs the suite, probes for
  * gaps with extra tests, and sends failures back to the builder.
- * Each side stays in its lane: code-flow undoes any change the builder makes to the tests, and
- * any change the tester makes outside them, and tells the agent it did.
+ * Each side stays in its lane: code-flow undoes any change the builder makes to the tests (and to
+ * the test runner's own config), and any change the tester makes outside them, and tells the agent
+ * it did. What can't be put back file by file (the runner's settings in package.json or
+ * pyproject.toml, a skip, fewer tests running) goes back to the builder, and a pass doesn't count
+ * until it's undone.
  */
 export const tddPattern: Pattern = {
   id: "tdd",
@@ -89,7 +92,7 @@ export const tddPattern: Pattern = {
     // fixtures, snapshots, test config (and whatever the tester named). Only a plain source file
     // the tester added, a stub for the tests to import, is the builder's to fill in.
     const named = (spec?.test_files ?? []).map((f) => f.replace(/^\.\//, ""));
-    const testsIn = async (commit: string | null) => (commit ? (await changedFiles(wt.path, wt.base, commit)).filter((f) => !isPlainSource(f) || named.includes(f)) : named);
+    const testsIn = async (commit: string | null) => (commit ? (await changedFiles(await ctx.gitAt(wt), wt.base, commit)).filter((f) => !isPlainSource(f) || named.includes(f)) : named);
     let testFiles = await testsIn(testsCommit);
 
     // Evidence comes from code-flow running the tests itself. An agent-chosen command is only run
@@ -156,10 +159,18 @@ export const tddPattern: Pattern = {
     let verdict: TestVerdict | undefined;
     let feedback = "";
     let green = false;
+    /** How the builder changed the way the tests run, when the tests passed with it and it wasn't undone. */
+    let unresolved: IntegrityIssue[] = [];
+    /**
+     * The commit before the round where the builder's changes to how the tests run began, while
+     * they stand. Every commit since is the builder's (or code-flow's): such a round goes straight
+     * back to it, without the tester's probe.
+     */
+    let tamperedSince: string | undefined;
 
     for (let round = 1; round <= maxRounds; round++) {
       // Only the builder's own changes count when checking for edited tests.
-      const before = await ctx.remember("head", `before round ${round}`, () => resolveCommit(wt.path));
+      const before = await ctx.remember("head", `before round ${round}`, async () => resolveCommit(await ctx.gitAt(wt)));
       builderStep = await ctx.ask({
         title: round === 1 ? "Implement to pass tests" : `Fix failures (round ${round})`,
         role: "builder",
@@ -181,8 +192,10 @@ export const tddPattern: Pattern = {
       });
       await ctx.commit(wt, `${builder}: implementation round ${round}`);
 
-      // The tests are the spec: the builder's changes to them are undone, not just reported.
-      const touched = (await changedFiles(wt.path, before)).filter((f) => testFiles.includes(f));
+      // The tests are the spec: the builder's changes to them are undone, not just reported. So
+      // are its changes to the test runner's own config, a new conftest.py or vitest.config too:
+      // those can make the tests pass as surely as editing them.
+      const touched = (await ctx.changedFiles(wt, before)).filter((f) => testFiles.includes(f) || isRunnerConfig(f));
       let tamperNote = "";
       if (touched.length) {
         ctx.log(`Builder modified test files: ${touched.join(", ")}; code-flow put them back`, "warn");
@@ -194,15 +207,29 @@ export const tddPattern: Pattern = {
         feedback = "";
       }
 
-      if (evidence()) {
-        const failing = await runTests(`Tests after round ${round}`);
-        if (failing) {
-          feedback += checkSection(failing);
-          continue; // straight back to the builder; no point probing red code
-        }
+      const failing = evidence() ? await runTests(`Tests after round ${round}`) : null;
+      // What can't simply be put back: the runner's settings in package.json or pyproject.toml, the
+      // check's script, skips, fewer tests running. Until the builder undoes it, a pass isn't one.
+      // From where they began, so one the builder leaves in place is found again.
+      const issues = await ctx.testChanges(wt, tamperedSince ?? before);
+      const tampered = issues.filter((i) => i.severity === "high" || changesRunner(i));
+      tamperedSince = tampered.length ? tamperedSince ?? before : undefined;
+      unresolved = failing ? [] : tampered;
+      const other = issues.filter((i) => !tampered.includes(i));
+      if (other.length) tamperNote += `\nNote: the builder also changed these, which the tests read; check they don't hide anything:\n${describeIssues(other)}`;
+      if (tampered.length) {
+        ctx.log(`Builder changed how the tests run:\n${describeIssues(tampered)}`, "warn");
+        feedback +=
+          section(
+            "You changed how the tests run",
+            `code-flow found these in your changes. They can make the tests pass without implementing anything:\n${describeIssues(tampered)}\n\n` +
+              "Undo them: the tests and how they run are the spec. Make the tests pass by changing the implementation.",
+          ) + "\n";
       }
+      if (failing) feedback += checkSection(failing);
+      if (failing || tampered.length) continue; // straight back to the builder; no point probing red code
 
-      const beforeProbe = await ctx.remember("head", `before probe ${round}`, () => resolveCommit(wt.path));
+      const beforeProbe = await ctx.remember("head", `before probe ${round}`, async () => resolveCommit(await ctx.gitAt(wt)));
       const probed = await ctx.decide<TestVerdict>({
         title: `Try to break it (round ${round})`,
         schema: TEST_VERDICT_SCHEMA,
@@ -222,7 +249,7 @@ export const tddPattern: Pattern = {
       });
       await ctx.commit(wt, `${tester}: edge-case tests round ${round}`);
       // The tester probes with tests; changes it makes to the implementation are undone.
-      const probeChanges = await changedFiles(wt.path, beforeProbe);
+      const probeChanges = await ctx.changedFiles(wt, beforeProbe);
       const outside = probeChanges.filter((f) => !isTestFile(f) && !testFiles.includes(f));
       for (const f of probeChanges) if (!outside.includes(f) && !testFiles.includes(f)) testFiles.push(f);
       if (outside.length) {
@@ -252,11 +279,14 @@ export const tddPattern: Pattern = {
     }
 
     await ctx.artifact("Result", wt);
-    if (evidence()) ctx.setVerdict(green ? "passed" : "failing");
+    // Tests that pass only the way the builder changed them to run say nothing either way: no verdict.
+    if (evidence() && !unresolved.length) ctx.setVerdict(green ? "passed" : "failing");
     ctx.setFacts({ proof: ctx.proofOf(wt)?.status });
     const headline = green
       ? evidence() ? "All tests pass (run by code-flow)" : "The tester reports all tests pass"
-      : "Tests still failing after the last round";
+      : unresolved.length
+        ? "The tests pass only with the builder's changes to how they run"
+        : "Tests still failing after the last round";
     return [
       `**${headline}** — branch \`${wt.branch}\``,
       `Test command: \`${testCommand}\``,

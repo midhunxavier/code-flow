@@ -1,4 +1,4 @@
-import { adapters } from "../adapters/index.js";
+import { getAdapter, adapters } from "../adapters/index.js";
 import type { Pattern } from "../engine.js";
 import { proofLine, section, WRITE } from "./prompts.js";
 
@@ -21,7 +21,7 @@ export const soloPattern: Pattern = {
 
   async run(ctx) {
     const agent = ctx.agent("agent");
-    const name = adapters[agent].displayName;
+    const name = getAdapter(agent).displayName;
     const wt = await ctx.worktree("solo");
 
     const turn = await ctx.ask({

@@ -52,6 +52,36 @@ test("revision-scoped user feedback tunes retrieval without changing trust or le
   assert.doesNotMatch(await readFile(store.file, "utf8"), /Outdated convention/);
 });
 
+test("guarded publication atomically rejects sources edited, deleted, expired or rated stale after preview", async () => {
+  const store = await fresh();
+  const source = await store.propose(input({ title: "Source guidance" }), user);
+  const refs = [{ id: source.id, revision: source.revision }];
+  const summary = input({ title: "Reviewed summary", derivedFrom: refs });
+  // Queue the competing write before publication without awaiting it. Both instances share
+  // the file transaction queue, so the publication checks the committed competing version.
+  const other = new MemoryStore(store.file);
+  const edit = other.revise(source.id, source.revision, { body: "New source guidance" }, user);
+  await assert.rejects(store.propose(summary, user, { expectedSources: refs }), MemoryConflictError);
+  const edited = await edit;
+  assert.equal((await store.list({ repo, projectId }, user)).length, 1, "conflict must not save a partial summary");
+  assert.equal((await store.propose(summary, user)).derivedFrom[0]!.revision, source.revision, "ordinary historical derivation remains backwards compatible");
+  const currentRefs = [{ id: edited.id, revision: edited.revision }];
+  const currentSummary = input({ title: "Current summary", derivedFrom: currentRefs });
+  const feedback = other.recordFeedback(edited.id, edited.revision, { rating: "stale" }, user);
+  await assert.rejects(store.propose(currentSummary, user, { expectedSources: currentRefs }), MemoryConflictError);
+  await feedback;
+  await other.recordFeedback(edited.id, edited.revision, { rating: "useful" }, user);
+  const published = await store.propose(currentSummary, user, { expectedSources: currentRefs });
+  assert.deepEqual(published.derivedFrom, currentRefs);
+  const deletion = other.remove(edited.id, edited.revision, user);
+  await assert.rejects(store.propose(currentSummary, user, { expectedSources: currentRefs }), MemoryConflictError);
+  await deletion;
+  const expiring = await store.propose(input({ expiresAt: Date.now() - 1 }), user);
+  const expiredRefs = [{ id: expiring.id, revision: expiring.revision }];
+  await assert.rejects(store.propose(input({ derivedFrom: expiredRefs }), user, { expectedSources: expiredRefs }), MemoryConflictError);
+  await assert.rejects(store.propose(input({ derivedFrom: refs }), user, { expectedSources: [] }), /every derivation source/);
+});
+
 test("a crashed temporary snapshot cannot overwrite the last complete snapshot", async () => {
   const store = await fresh();
   const saved = await store.propose(input(), user);

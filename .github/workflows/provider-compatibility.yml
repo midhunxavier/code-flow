@@ -1,0 +1,46 @@
+name: Provider compatibility
+on:
+  pull_request:
+    paths: ["src/adapters/**", "src/doctor.ts", "scripts/check-provider-compatibility.ts", ".github/workflows/provider-compatibility.yml", "package-lock.json"]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "19 5 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { provider: claude, version: "2.1.300" }
+          - { provider: claude, version: "2.1.302" }
+          - { provider: codex, version: "0.162.0" }
+          - { provider: codex, version: "0.162.1" }
+          - { provider: agy, version: current }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Probe official CLI version and required flags without authentication
+        run: node --import tsx scripts/check-provider-compatibility.ts '${{ matrix.provider }}' '${{ matrix.version }}' output/compatibility.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compatibility-${{ matrix.provider }}-${{ matrix.version }}
+          path: output/compatibility.json
+          retention-days: 30
+  protocol-fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: node --import tsx --test test/adapters-reliability.test.ts test/codex-app-server.test.ts test/agent-container.test.ts test/provider-contract.test.ts

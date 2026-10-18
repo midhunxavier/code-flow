@@ -1,7 +1,9 @@
-import { copyFile, mkdir, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { CONTEXT_DIR, objectTypeAt, workingCopyDiffers } from "./git.js";
+import { copyFileInside } from "./repo-config.js";
 import { normalizeRepoPath, resolveInsideRepo } from "./repo-tree.js";
+import { assertContextPathAllowed, assertNoContextSymlinks, sensitiveContextPath } from "./context-inspection.js";
 
 /**
  * Context the user hands to every agent in a run: repo files/folders dragged from the
@@ -69,6 +71,8 @@ export async function prepareContext(repo: string, baseRef: string, input: Conte
   for (const { path: raw } of rawPaths) {
     const path = normalizeRepoPath(String(raw ?? ""));
     if (!path || seen.has(path)) continue;
+    assertContextPathAllowed(String(raw));
+    await assertNoContextSymlinks(repo, path, baseRef);
     seen.add(path);
 
     const inBase = await objectTypeAt(repo, baseRef, path);
@@ -103,6 +107,7 @@ export async function prepareContext(repo: string, baseRef: string, input: Conte
 
   const names = new Set<string>();
   for (const att of rawAttachments) {
+    if (sensitiveContextPath(String(att.name ?? "file").replace(/\\/g, "/").split("/").at(-1)!)) throw new Error("Potential credential attachments are not allowed as explicit context");
     const data = Buffer.from(String(att.data ?? ""), "base64");
     if (data.length > LIMITS.fileBytes) throw new Error(`"${att.name}" is larger than ${mb(LIMITS.fileBytes)}`);
     total += data.length;
@@ -129,6 +134,7 @@ export async function stageMessageFiles(stageDir: string, prefix: string, files:
   const paths: string[] = [];
   let total = 0;
   for (const f of files) {
+    if (sensitiveContextPath(String(f.name ?? "file").replace(/\\/g, "/").split("/").at(-1)!)) throw new Error("Potential credential attachments are not allowed as message context");
     const data = Buffer.from(String(f.data ?? ""), "base64");
     if (data.length > LIMITS.fileBytes) throw new Error(`"${f.name}" is larger than ${mb(LIMITS.fileBytes)}`);
     total += data.length;
@@ -142,12 +148,38 @@ export async function stageMessageFiles(stageDir: string, prefix: string, files:
   return paths;
 }
 
-/** Copy files staged by `stageMessageFiles` into an attached worktree, at the paths it returned. */
+/**
+ * Copy files staged by `stageMessageFiles` into an attached worktree, at the paths it returned.
+ * The agent works in that worktree and may have made CONTEXT_DIR (or a file in it) a link: the
+ * copy refuses to go through one rather than write wherever it points.
+ */
 export async function copyMessageFiles(stageDir: string, worktree: string, files: string[]): Promise<void> {
-  if (!files.length) return;
-  const dir = join(worktree, CONTEXT_DIR, "messages");
-  await mkdir(dir, { recursive: true });
-  for (const file of files) await copyFile(join(stageDir, "messages", basename(file)), join(dir, basename(file)));
+  for (const file of files) {
+    const rel = `${CONTEXT_DIR}/messages/${basename(file)}`;
+    const done = await copyFileInside(worktree, rel, join(stageDir, "messages", basename(file)));
+    if (!done.copied) throw new Error(`Couldn't put ${basename(file)} in the worktree: ${done.why ?? "it's in the way"}`);
+  }
+}
+
+/**
+ * Copy the run's staged context (working copies, attachments) into a worktree's CONTEXT_DIR, the
+ * way `cp -r` would but never through a symbolic link: a re-attached worktree holds whatever the
+ * agents committed, a link at `.codeflow-context` included. Returns what it refused, and why.
+ */
+export async function copyStagedContext(stageDir: string, worktree: string): Promise<{ path: string; why: string }[]> {
+  const refused: { path: string; why: string }[] = [];
+  const walk = async (rel: string): Promise<void> => {
+    for (const entry of await readdir(join(stageDir, rel), { withFileTypes: true })) {
+      const path = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.isFile()) {
+        const done = await copyFileInside(worktree, `${CONTEXT_DIR}/${path}`, join(stageDir, path));
+        if (!done.copied) refused.push({ path: `${CONTEXT_DIR}/${path}`, why: done.why ?? "it's in the way" });
+      }
+    }
+  };
+  await walk("");
+  return refused;
 }
 
 /** The prompt section every agent gets. Empty when the user gave no context. */

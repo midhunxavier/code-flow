@@ -47,6 +47,9 @@ export function projectOf(run: { project?: string; repo: string }, projects: Pro
 
 export class Projects {
   private projects: Project[] = [];
+  /** Public reads retain the last committed snapshot while an async mutation writes. */
+  private committedWhileWriting?: Project[];
+  private listeners = new Set<() => void>();
   /**
    * Changes happen one at a time, so two runs starting in a new repo make one project, not two,
    * and a change counts only once it's saved (see `change`).
@@ -122,17 +125,20 @@ export class Projects {
   }
 
   list(): Project[] {
-    return this.projects.map(copy);
+    return (this.committedWhileWriting ?? this.projects).map(copy);
   }
 
+  /** Membership and metadata changes notify authorization streams after persistence succeeds. */
+  onChange(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+
   get(id: string): Project | undefined {
-    const p = this.find(id);
+    const p = (this.committedWhileWriting ?? this.projects).find((project) => project.id === id);
     return p && copy(p);
   }
 
   /** The project a repo's runs go in when none is named: the first one holding it. */
   forRepo(repo: string): Project | undefined {
-    const p = this.projects.find((x) => x.repos.includes(repo));
+    const p = (this.committedWhileWriting ?? this.projects).find((x) => x.repos.includes(repo));
     return p && copy(p);
   }
 
@@ -176,8 +182,9 @@ export class Projects {
    * A project that was asked for but no longer exists is an error, unless `lenient` (an
    * automation saved before you deleted it): then the repo decides.
    */
-  place(repo: string, opts: { requested?: string; parent?: string; lenient?: boolean } = {}): Promise<{ project: Project; created: boolean; added: boolean }> {
+  place(repo: string, opts: { requested?: string; parent?: string; lenient?: boolean; requireRepo?: boolean } = {}): Promise<{ project: Project; created: boolean; added: boolean }> {
     return this.change(() => {
+      if (opts.requireRepo && (!opts.requested || !this.find(opts.requested)?.repos.includes(repo))) throw new Error("The repository is no longer an explicit member of the requested project");
       let project = opts.requested ? this.find(opts.requested) : undefined;
       if (opts.requested && !project && !opts.lenient) throw new Error("That project no longer exists; pick another one");
       project ??= (opts.parent ? this.find(opts.parent) : undefined) ?? this.projects.find((p) => p.repos.includes(repo));
@@ -226,15 +233,18 @@ export class Projects {
     const next = this.queue.then(async () => {
       if (!this.writable) throw new Error(`Projects are off: ${this.file} couldn't be read (see server.log)`);
       const before = JSON.stringify(this.projects);
-      const result = await fn();
-      if (JSON.stringify(this.projects) === before) return result;
+      this.committedWhileWriting = JSON.parse(before) as Project[];
       try {
-        await this.write();
+        const result = await fn();
+        if (JSON.stringify(this.projects) === before) return result;
+        try { await this.write(); } catch (err) { throw new Error(`code-flow couldn't save projects: ${(err as Error).message}`); }
+        this.committedWhileWriting = undefined;
+        for (const listener of this.listeners) { try { listener(); } catch { /* Notification errors cannot undo persisted membership changes. */ } }
+        return result;
       } catch (err) {
         this.projects = JSON.parse(before);
-        throw new Error(`code-flow couldn't save projects: ${(err as Error).message}`);
-      }
-      return result;
+        throw err;
+      } finally { this.committedWhileWriting = undefined; }
     });
     this.queue = next.catch(() => undefined);
     return next;

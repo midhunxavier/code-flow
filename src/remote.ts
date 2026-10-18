@@ -28,6 +28,8 @@ export interface RemoteSettings {
   lan: boolean;
   /** The link opens the whole app on the network listener: start, answer, merge — everything. */
   control: boolean;
+  /** Persisted pairing deadline. Existing device sessions have their own expiry. */
+  pairingUntil?: number;
 }
 
 const FILE = join(CODEFLOW_HOME, "remote.json");
@@ -73,6 +75,7 @@ export async function loadRemote(file = FILE): Promise<RemoteSettings> {
     controlToken: validToken(raw.controlToken) && raw.controlToken !== raw.token ? raw.controlToken : newToken(),
     lan: raw.lan === true,
     control: raw.control === true,
+    ...(Number.isSafeInteger(raw.pairingUntil) && raw.pairingUntil > 0 ? { pairingUntil: raw.pairingUntil } : {}),
   };
   // Saved right away, or every restart would make a new one and sign the phone out again.
   if (settings.controlToken !== raw.controlToken) {
@@ -111,6 +114,10 @@ export function changeRemote(before: RemoteSettings, patch: { enabled?: boolean;
   } else if (turnedOff("control")) {
     next.controlToken = newToken();
   }
+  const wasControl = before.enabled && before.lan && before.control;
+  const isControl = next.enabled && next.lan && next.control;
+  if (isControl && (patch.rotate || !wasControl)) next.pairingUntil = Date.now() + 10 * 60_000;
+  else if (!isControl) delete next.pairingUntil;
   return next;
 }
 

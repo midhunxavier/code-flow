@@ -140,6 +140,10 @@ const session = randomUUID();
 
 // One line far over code-flow's limit (a runaway tool output, FAKE_HUGE_LINE_MB), before the stream.
 if (when("HUGE_LINE")) out({ type: "noise", data: "x".repeat(Number(process.env.FAKE_HUGE_LINE_MB ?? 17) * 1024 * 1024) });
+// What hooks and MCP servers print to the CLI's stderr: never the CLI's own error.
+if (process.env.FAKE_STDERR_NOISE) process.stderr.write(`${process.env.FAKE_STDERR_NOISE}\n`);
+// FAKE_DRIFT_VENDOR: a CLI update with events this code-flow doesn't know (Codex: its answer among them).
+const drift = when("DRIFT");
 
 if (when("CRASH")) {
   // Some output, then the CLI dies without a result.
@@ -180,7 +184,12 @@ if (when("CRASH")) {
   out({ type: "rate_limit_event", rate_limit_info: { status: "allowed", unifiedWindows: { five_hour: { utilization: 0.42, resetsAt: 1792092600 }, seven_day: { utilization: 0.1, resetsAt: 1792350000 } } } });
   out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "x" } }] } });
   out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } });
-  out({ type: "assistant", message: { content: [{ type: "text", text: answer }] } });
+  if (drift) {
+    out({ type: "future_event", data: 1 });
+    out({ type: "future_event", data: 2 });
+    out({ type: "stream_event", event: {} }); // known, and ignored on purpose
+  }
+  out({ type: "assistant", message: { content: [...(drift ? [{ type: "citation" }] : []), { type: "text", text: answer }] } });
   out({ type: "result", subtype: "success", is_error: false, result: answer, structured_output: structured, session_id: session, total_cost_usd: 0.25, usage: { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 500, output_tokens: 40 } });
 } else if (vendor === "codex") {
   out({ type: "thread.started", thread_id: session });
@@ -189,7 +198,7 @@ if (when("CRASH")) {
   out({ type: "item.completed", item: { id: "i1", type: "command_execution", command: "ls", aggregated_output: "a.txt", exit_code: 0 } });
   // Codex reports a reconnect as an `error` event and then carries on: not a failure.
   if (process.env.FAKE_CODEX_WARN) out({ type: "error", message: "Reconnecting... 1/5" });
-  out({ type: "item.completed", item: { id: "i2", type: "agent_message", text: answer } });
+  out({ type: "item.completed", item: { id: "i2", type: drift ? "agent_reply" : "agent_message", text: answer } });
   out({ type: "turn.completed", usage: { input_tokens: 300, cached_input_tokens: 200, output_tokens: 2 } });
 } else if (vendor === "agy" && process.env.FAKE_AGY_DENY) {
   // Real agy 1.3.5 behaviour when a tool needs a permission headless mode cannot grant.
@@ -198,8 +207,14 @@ if (when("CRASH")) {
   out({ event: "step_update", step_update: { conversation_id: session, step_index: 2, state: "ACTIVE", step_type: "tool", tool_name: "run_command", tool_info: tool } });
   out({ event: "step_update", step_update: { conversation_id: session, step_index: 2, state: "ERROR", step_type: "tool", tool_name: "run_command", tool_info: { ...tool, error: { type: "TOOL_ERROR", message: "permission check failed" } } } });
   out({ event: "result", result: { conversation_id: session, status: "SUCCESS", response: "", denied_actions: [{ action: "command", display_name: "RunCommand" }] } });
+} else if (vendor === "agy" && process.env.FAKE_AGY_STATUS) {
+  // A failed turn as agy reports it: a gRPC-style status, and Google's message (FAKE_AGY_ERROR).
+  out({ event: "init", conversation_id: session, init: { cwd: process.cwd() } });
+  out({ event: "result", result: { conversation_id: session, status: process.env.FAKE_AGY_STATUS, error: { message: process.env.FAKE_AGY_ERROR ?? "" } } });
+  process.exitCode = 1;
 } else if (vendor === "agy") {
   out({ event: "init", conversation_id: session, init: { cwd: process.cwd() } });
+  if (drift) out({ event: "future_event" });
   for (const chunk of answer.match(/[\s\S]{1,10}/g)) {
     out({ event: "step_update", step_update: { step_type: "agent_response", state: "ACTIVE", text_delta: chunk } });
   }

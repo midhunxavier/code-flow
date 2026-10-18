@@ -1,4 +1,4 @@
-import { adapters, type AgentId } from "../adapters/index.js";
+import { getAdapter, adapters, type AgentId } from "../adapters/index.js";
 import { failureExcerpt, type CheckResult } from "../checks.js";
 import { RejectedError, type Proof, type StepOutcome, type TeamContext } from "../engine.js";
 import { changedFiles, resolveCommit, restorePaths, type Worktree } from "../git.js";
@@ -7,7 +7,7 @@ import { changedFiles, resolveCommit, restorePaths, type Worktree } from "../git
 export function preamble(role: string, agent: AgentId, duty: string): string {
   return [
     `You are the ${role} on a team of AI coding agents (Claude Code, Codex, Antigravity) coordinated by code-flow.`,
-    `You are running as ${adapters[agent].displayName}, non-interactively: nobody can answer questions, so make reasonable assumptions and state them.`,
+    `You are running as ${getAdapter(agent).displayName}, non-interactively: nobody can answer questions, so make reasonable assumptions and state them.`,
     duty,
     "Do not run `git commit`, `git push` or change branches — code-flow commits your work after you finish.",
   ].join("\n");
@@ -99,6 +99,14 @@ export function proofEvidence(proof: Proof | null): string {
       `code-flow put ${tests} onto the original code and ran \`${proof.command}\`: it fails there and passes with the change, so the tests need the change.\n${fence(proof.detail)}`,
     );
   }
+  if (proof.status === "weak") {
+    return section(
+      "Fail-to-pass: weak (run by code-flow)",
+      `code-flow put ${tests} onto the original code and ran \`${proof.command}\`: it fails there, but only because the tests can't load (an import or build error), ` +
+        "so they show the change adds what they import, not that it works. Look for a test that fails on the behaviour itself.\n" +
+        fence(proof.detail),
+    );
+  }
   if (proof.status === "unproven") {
     return section(
       "Fail-to-pass: not proven (run by code-flow)",
@@ -113,6 +121,7 @@ export function proofEvidence(proof: Proof | null): string {
 export function proofLine(proof: Proof | null): string {
   if (!proof) return "";
   if (proof.status === "proven") return `Proven: \`${proof.command}\` fails without the change${proof.tests.length ? ` (with ${proof.tests.join(", ")})` : ""}, so its tests need it.`;
+  if (proof.status === "weak") return `⚠ Weak proof: \`${proof.command}\` fails without the change only because its tests can't load there (an import or build error), not on what they check.`;
   if (proof.status === "unproven") return "⚠ Not proven: no test fails without the change.";
   return `Couldn't prove it fails without the change: ${proof.detail}.`;
 }
@@ -142,7 +151,7 @@ export async function proveOrAsk(
   let proof = await ctx.prove(opts.wt);
   if (proof?.status !== "unproven" || !opts.ask) return { check, proof, session, asked: false };
   session = session?.agent === opts.agent ? session : undefined;
-  const before = await ctx.remember("head", `before proof test in ${opts.wt.name}`, () => resolveCommit(opts.wt.path));
+  const before = await ctx.remember("head", `before proof test in ${opts.wt.name}`, async () => resolveCommit(await ctx.gitAt(opts.wt)));
   session = await ctx.ask({
     title: "Add a test that fails without the change",
     role: opts.role,
@@ -162,7 +171,7 @@ export async function proveOrAsk(
   });
   const sha = await ctx.commit(opts.wt, `${opts.agent}: add a test that fails without the change`);
   if (!sha) {
-    ctx.log(`${adapters[opts.agent].displayName} added no test; the result stays unproven`, "warn");
+    ctx.log(`${getAdapter(opts.agent).displayName} added no test; the result stays unproven`, "warn");
     return { check, proof, session, asked: true };
   }
   const fixed = await fixUntilGreen(ctx, { agent: opts.agent, role: opts.role, wt: opts.wt, session, attempts: opts.attempts, context: opts.context });
@@ -170,9 +179,10 @@ export async function proveOrAsk(
   session = fixed.session ?? session;
   if (check && !check.ok) {
     // Asking for a proof mustn't cost a green result: undo what never passed, and it stays unproven.
-    ctx.log(`The check fails since ${adapters[opts.agent].displayName} added its test, and fixing didn't help; undoing that`, "warn");
-    const changed = await ctx.remember("changed", `since proof test in ${opts.wt.name}`, () => changedFiles(opts.wt.path, before));
+    ctx.log(`The check fails since ${getAdapter(opts.agent).displayName} added its test, and fixing didn't help; undoing that`, "warn");
+    const changed = await ctx.remember("changed", `since proof test in ${opts.wt.name}`, async () => changedFiles(await ctx.gitAt(opts.wt), before));
     await ctx.remember("restore-before-proof", opts.wt.name, () => restorePaths(ctx.run.repo, opts.wt, before, changed).then(() => true));
+
     await ctx.commit(opts.wt, `code-flow: undo ${opts.agent}'s test that never passed`);
     check = await ctx.check(opts.wt);
     return { check, proof: check?.ok ? await ctx.prove(opts.wt) : null, session, asked: true };

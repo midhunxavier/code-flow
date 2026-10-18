@@ -3,7 +3,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -96,7 +96,7 @@ before(async () => {
       FAKE_GH_STATE: ghState,
       CODEFLOW_TOKEN: TOKEN,
       // The phone test reaches the Wi-Fi listener from this machine, which it otherwise refuses.
-      CODEFLOW_LAN_ALLOW_LOCAL: "1",
+      CODEFLOW_LAN_ALLOW_LOCAL: "1", CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL: "1",
     },
     stdio: process.env.E2E_DEBUG ? "inherit" : "ignore",
   });
@@ -143,7 +143,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   assert.equal(await page.locator("#checkCmd").inputValue(), "npm test", "the check is detected from package.json");
 
   // Describe the task, pick the pipeline, start with the keyboard.
-  await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
+  await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
   await page.getByLabel("Task", { exact: true }).fill("E2E: make the check pass");
   await page.getByLabel("Task", { exact: true }).press("Meta+Enter");
 
@@ -175,7 +175,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
 
 test("approve the plan from the UI: ask for changes, then approve", async () => {
   await page.goto(BASE);
-  await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
+  await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
   await page.getByText("Let me approve the plan").click();
   await page.getByLabel("Task", { exact: true }).fill("E2E: checkpoint");
   await page.getByRole("button", { name: /^Start run/ }).click();
@@ -192,7 +192,7 @@ test("approve the plan from the UI: ask for changes, then approve", async () => 
 
 test("a message sent while Codex is working reaches its running turn", async () => {
   await page.goto(BASE);
-  await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
+  await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from the last test
   // The fake Codex keeps this turn open until a message is steered into it.
   await page.getByLabel("Task", { exact: true }).fill("E2E: steer WAIT-FOR-STEER");
@@ -215,6 +215,7 @@ test("a message sent while Codex is working reaches its running turn", async () 
 
 test("start from a PR with a template: the council's findings are ranked, and posting takes your click", async () => {
   await page.goto(BASE);
+  await page.locator(".task-starters > summary").click();
   await page.getByRole("button", { name: /Review a PR as a council/ }).click();
   await page.locator(".gh-item", { hasText: "Add feature loop" }).click();
   assert.match(await page.getByLabel("Task", { exact: true }).inputValue(), /^Review pull request #1\./);
@@ -307,6 +308,7 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   writeFileSync(ghState, JSON.stringify(s));
 
   await page.goto(BASE);
+  await page.locator(".task-starters > summary").click();
   await page.getByRole("button", { name: /Fix open issues/ }).click();
   const dialog = page.locator("dialog.sweep-dialog");
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).waitFor();
@@ -322,6 +324,7 @@ test("sweep: pick open issues, start one run each, and approve the results in th
 
   // The next sweep knows #41 has a run.
   await page.goto(BASE);
+  await page.locator(".task-starters > summary").click();
   await page.getByRole("button", { name: /Fix open issues/ }).click();
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).getByText("Already has a run").waitFor();
   assert.equal(await dialog.getByRole("checkbox", { name: /fix the greeting/ }).isChecked(), false);
@@ -350,6 +353,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   assert.equal((await fetch(`${PHONE}/api/runs`, { headers: { cookie } })).status, 200, "the phone's cookie opens the API");
   assert.equal((await fetch(`${PHONE}/api/runs`)).status, 401);
   assert.equal((await fetch(`${PHONE}/api/runs`, { headers: bearer })).status, 401, "the computer's token isn't a phone sign-in");
+  assert.equal((await fetch(`${PHONE}/?token=${TOKEN}`, { redirect: "manual" })).status, 403, "the network listener must never issue a local owner cookie");
   assert.equal((await fetch(`${BASE}/api/runs`, { headers: { cookie } })).status, 401, "nor is the phone's cookie a sign-in on the computer's listener");
   const crossSite = await fetch(`${PHONE}/api/remote`, { method: "POST", headers: { cookie, origin: "http://evil.example", "content-type": "application/json" }, body: "{}" });
   assert.equal(crossSite.status, 403);
@@ -412,7 +416,8 @@ test("insights and run search", async () => {
 
 test("supervisor: the reviewer defaults to a different vendor than the supervisor", async () => {
   await page.goto(BASE);
-  await page.getByRole("button", { name: /^Supervisor → Workers/ }).click();
+  await page.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
+  if (!(await page.locator(".advanced-controls").getAttribute("open"))) await page.locator(".advanced-controls > summary").click();
   const role = (label: string) => page.locator(".role").filter({ has: page.locator(".rl", { hasText: new RegExp(`^${label}`) }) });
   const pressed = async (label: string) =>
     (await role(label).locator(".pill[aria-pressed=true]").allInnerTexts()).map((t) => t.trim());
@@ -443,7 +448,7 @@ test("projects: the first run made one; the sidebar lists runs under their proje
   await page.getByRole("button", { name: "Create project" }).click();
   await page.locator(".where .project-btn", { hasText: "E2E side" }).waitFor(); // new runs start in it
 
-  await page.getByRole("button", { name: /^Plan → Build → Review/ }).click();
+  await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from earlier tests: the run mustn't wait for approval
   await page.getByLabel("Task", { exact: true }).fill("E2E: in the side project");
   await page.getByRole("button", { name: /^Start run/ }).click();
@@ -769,4 +774,109 @@ test("projects: the Automations page and its inbox follow the project you're in;
   await page.locator(".project-btn", { hasText: "All projects" }).waitFor();
   assert.equal(await page.locator(".auto-row").count(), total);
   assert.equal(await page.locator(".inbox-item").count(), pending);
+});
+
+test("simple composer supports reusable teams, parameterized tasks, readiness and keyboard navigation", async () => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const fresh = await context.newPage();
+  try {
+    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    await fresh.getByLabel("Workflow", { exact: true }).waitFor();
+    assert.equal(await fresh.locator(".advanced-controls").getAttribute("open"), null, "advanced controls start collapsed");
+    assert.equal(await fresh.getByRole("button", { name: "Side panel", exact: true }).getAttribute("aria-pressed"), "false", "first run leaves room for the task");
+    if (process.env.CODEFLOW_UI_SCREENSHOTS) {
+      mkdirSync(join(root, "output/playwright"), { recursive: true });
+      await fresh.screenshot({ path: join(root, "output/playwright/composer-desktop.png") });
+    }
+
+    await fresh.goto(`${BASE}/#/run/%`);
+    await fresh.getByRole("heading", { name: "This link is invalid" }).waitFor();
+    await fresh.getByRole("button", { name: "Open new run", exact: true }).click();
+    await fresh.keyboard.press("Meta+k");
+    const commands = fresh.getByRole("combobox", { name: "Find a command, project or run" });
+    await commands.fill("choose repository");
+    const listedPaths: string[] = [];
+    fresh.on("request", (request) => { const url = new URL(request.url()); if (url.pathname === "/api/fs") listedPaths.push(url.searchParams.get("path") ?? ""); });
+    await commands.press("Enter");
+    // Pasting and pressing Enter may happen before Preact commits its input state.
+    await fresh.getByLabel("Folder path").evaluate((element, path) => {
+      const input = element as HTMLInputElement;
+      input.value = path;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    }, repo);
+    await fresh.getByText("✓ This folder is a git repository").waitFor();
+    assert.equal(listedPaths.at(-1), repo, "a delayed default listing cannot supersede same-tick explicit navigation");
+    await fresh.getByRole("button", { name: "Use this folder", exact: true }).click();
+    await fresh.waitForFunction(() => (document.querySelector("#checkCmd") as HTMLInputElement | null)?.value === "npm test");
+    await fresh.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+    await fresh.getByLabel("Task", { exact: true }).fill("E2E: improve {{component}} in {{package}}");
+    // A slower earlier preset must not overwrite the user's newer choice. Starting while a
+    // profile is being resolved would silently omit its gates, so execution stays disabled.
+    let releaseLight!: () => void; let lightSeen!: () => void;
+    const holdLight = new Promise<void>((resolve) => { releaseLight = resolve; });
+    const lightRequested = new Promise<void>((resolve) => { lightSeen = resolve; });
+    await fresh.route(/\/api\/verification\/profile\?/, async (route) => {
+      const response = await route.fetch();
+      if (new URL(route.request().url()).searchParams.get("preset") === "lightweight") { lightSeen(); await holdLight; }
+      await route.fulfill({ response });
+    });
+    try {
+      await fresh.locator(".advanced-controls > summary").click();
+      const profile = fresh.getByLabel("Verification gates", { exact: true });
+      const lightResponse = fresh.waitForResponse((response) => new URL(response.url()).pathname === "/api/verification/profile" && new URL(response.url()).searchParams.get("preset") === "lightweight");
+      await profile.selectOption("lightweight"); await lightRequested;
+      assert.equal(await fresh.getByRole("button", { name: /^Start run/ }).isDisabled(), true, "pending verification gates cannot be omitted from a run");
+      await profile.selectOption("thorough");
+      await fresh.locator(".effective-settings > summary").click();
+      const gates = fresh.locator(".effective-settings tr", { has: fresh.getByRole("rowheader", { name: "Verification gates", exact: true }) });
+      await gates.getByText(/^thorough:/).waitFor();
+      releaseLight(); await lightResponse;
+      await fresh.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      assert.match(await gates.innerText(), /thorough:/, "late earlier profile response cannot replace the current gates");
+      assert.match(await fresh.locator(".effective-settings tr", { has: fresh.getByRole("rowheader", { name: "Agent container", exact: true }) }).innerText(), /Host CLI execution/);
+      await profile.selectOption("");
+      await fresh.locator(".effective-settings > summary").click();
+      await fresh.locator(".advanced-controls > summary").click();
+    } finally { releaseLight(); await fresh.unroute(/\/api\/verification\/profile\?/); }
+    await fresh.locator(".acceptance-editor > summary").click();
+    await fresh.getByLabel("One requirement per line").fill("{{component}} has automated tests.\nExisting behavior is preserved.");
+    await fresh.locator(".composer-library > summary").click();
+    await fresh.getByLabel("Team name", { exact: true }).fill("E2E saved team");
+    await fresh.getByRole("button", { name: "Save current team", exact: true }).click();
+    await fresh.getByLabel("Revision to apply").waitFor();
+    await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
+    await fresh.getByRole("button", { name: "Save new revision", exact: true }).click();
+    await fresh.getByLabel("Revision to apply").selectOption("1");
+    await fresh.getByRole("button", { name: "Apply team", exact: true }).click();
+    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "pipeline", "a previous team revision restores the original workflow");
+
+    await fresh.getByLabel("Template name", { exact: true }).fill("E2E parameterized task");
+    await fresh.getByRole("button", { name: "Save current task as template", exact: true }).click();
+    await fresh.getByLabel("Task", { exact: true }).fill("temporary draft");
+    await fresh.getByRole("button", { name: "Apply template", exact: true }).click();
+    await fresh.getByLabel("component", { exact: true }).fill("login form");
+    await fresh.getByLabel("package", { exact: true }).fill("frontend");
+    await fresh.getByRole("button", { name: "Use template", exact: true }).click();
+    assert.equal(await fresh.getByLabel("Task", { exact: true }).inputValue(), "E2E: improve login form in frontend");
+    assert.match(await fresh.getByLabel("One requirement per line").inputValue(), /^login form has automated tests/);
+
+    await fresh.locator(".readiness > summary").click();
+    await fresh.getByRole("button", { name: "Inspect readiness", exact: true }).click();
+    await fresh.locator(".readiness-results").getByText("Repository and base", { exact: true }).waitFor({ timeout: 30_000 });
+    await fresh.getByLabel("Task", { exact: true }).press("Meta+Enter");
+    await fresh.waitForURL(/#\/run\//);
+    const id = decodeURIComponent(fresh.url().split("#/run/")[1]!);
+    const created = await fetch(`${BASE}/api/runs/${id}`, { headers: bearer }).then((res) => res.json());
+    assert.match(created.task, /Acceptance criteria:\n1\. login form has automated tests\.\n2\. Existing behavior is preserved\./);
+
+    await fresh.keyboard.press("Meta+k");
+    await commands.fill("new run");
+    await commands.press("Enter");
+    await fresh.getByLabel("Workflow", { exact: true }).waitFor();
+    await fresh.setViewportSize({ width: 390, height: 844 });
+    const start = await fresh.getByRole("button", { name: /^Start run/ }).boundingBox();
+    assert.ok(start && start.y >= 0 && start.y + start.height <= 844, "primary action is visible on a phone without scrolling");
+    if (process.env.CODEFLOW_UI_SCREENSHOTS) await fresh.screenshot({ path: join(root, "output/playwright/composer-mobile.png") });
+  } finally { await context.close(); }
 });

@@ -21,7 +21,14 @@ if (!statePath) {
 const state = JSON.parse(readFileSync(statePath, "utf8"));
 const save = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
 const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
-const print = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+const print = (value) => {
+  const bytes = Buffer.from(JSON.stringify(value) + "\n");
+  // `splitUtf8`: written in two pieces cut inside a multi-byte character, the way a pipe can deliver it.
+  const cut = state.splitUtf8 ? bytes.findIndex((b) => b >= 0xc0) + 1 : 0;
+  if (cut <= 0) return process.stdout.write(bytes);
+  process.stdout.write(bytes.subarray(0, cut));
+  setTimeout(() => process.stdout.write(bytes.subarray(cut)), 50);
+};
 const fail = (message) => {
   process.stderr.write(`${message}\n`);
   process.exit(1);
@@ -65,6 +72,29 @@ const ALERT_ERRORS = {
 };
 
 const [group, command, target] = args;
+if (group === "api" && command === "graphql") {
+  let input = ""; for await (const chunk of process.stdin) input += chunk;
+  const { query, variables = {} } = JSON.parse(input);
+  const connection = (items, after, size) => { const offset = after ? Number(after) : 0; return { nodes: items.slice(offset, offset + size), totalCount: items.length, pageInfo: { hasNextPage: offset + size < items.length, endCursor: String(offset + size) } }; };
+  const identity = (pr) => ({ id: pr.nodeId ?? `PR_${pr.number}`, number: pr.number, url: pr.url, state: pr.state, headRefOid: headOf(pr) });
+  const threadValue = (thread, after, size) => ({ ...thread, comments: connection(thread.comments ?? [], after, size) });
+  if (query.includes("query CodeflowReviewThreads(")) {
+    const pr = state.prs[variables.number]; if (!pr) fail("Pull request not found");
+    const threads = connection(pr.reviewThreads ?? [], variables.after, 25);
+    print({ data: { repository: { pullRequest: { ...identity(pr), reviewThreads: { ...threads, nodes: threads.nodes.map((thread) => threadValue(thread, undefined, 10)) } } } } });
+  } else if (query.includes("query CodeflowReviewThread(")) {
+    const pr = Object.values(state.prs).find((pr) => (pr.reviewThreads ?? []).some((thread) => thread.id === variables.id));
+    const thread = pr?.reviewThreads.find((thread) => thread.id === variables.id);
+    print({ data: { node: thread ? { ...threadValue(thread, variables.after, 25), pullRequest: identity(pr) } : null } });
+  } else if (query.includes("mutation CodeflowSetReviewThread(")) {
+    const pr = Object.values(state.prs).find((pr) => (pr.reviewThreads ?? []).some((thread) => thread.id === variables.id));
+    const thread = pr?.reviewThreads.find((thread) => thread.id === variables.id); if (!thread) fail("Review thread not found");
+    const resolved = query.includes("{resolveReviewThread("); thread.isResolved = resolved; thread.resolvedBy = resolved ? { login: "me" } : null;
+    (state.reviewThreadActions ??= []).push({ id: variables.id, resolved, hostname: flag("--hostname") }); save();
+    print({ data: { [resolved ? "resolveReviewThread" : "unresolveReviewThread"]: { thread: { id: thread.id, isResolved: resolved } } } });
+  } else fail("Unsupported fake GraphQL operation");
+  process.exit(0);
+}
 const alertPath = group === "api" ? command?.match(/^repos\/\{owner\}\/\{repo\}\/(dependabot|code-scanning|secret-scanning)\/alerts(?:\/(\d+))?(?:\?.*)?$/) : null;
 if (alertPath) {
   const [, tool, number] = alertPath;
@@ -86,6 +116,12 @@ if (alertPath) {
     print(alert);
   }
 } else if (group === "api" && command === "user") print({ login: process.env.FAKE_GH_USER ?? "me" });
+else if (group === "api" && /^repos\/\{owner\}\/\{repo\}\/pulls\/\d+\/comments\?/.test(command)) {
+  const number = command.match(/\/pulls\/(\d+)\//)[1];
+  const page = Number(command.match(/[?&]page=(\d+)/)?.[1] ?? 1);
+  const size = Number(command.match(/[?&]per_page=(\d+)/)?.[1] ?? 30);
+  print((state.prs[number]?.inlineComments ?? []).slice((page - 1) * size, page * size));
+}
 else if (group === "api" && /^repos\/\{owner\}\/\{repo\}\/issues\/\d+$/.test(command)) {
   // Issues and PRs share GitHub's issues endpoint, which says who wrote them.
   const number = Number(command.split("/").pop());

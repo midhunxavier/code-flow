@@ -1,7 +1,9 @@
 import { useEffect, useState } from "preact/hooks";
 import { Markdown } from "./bits.js";
-import { api, post, showToast } from "./lib.js";
+import { api, ApiError, post, showToast } from "./lib.js";
 import type { MemoryEntry } from "../src/memory.js";
+import { memoryDraft, mergeMemoryDraft, resolveMemoryMerge, type MemoryDraft, type MemoryDraftField } from "./memory-merge.js";
+import { MemoryAnalysisPanel, MemoryDeleteImpact } from "./memory-analysis.js";
 
 /** Knowledge remains inspectable and editable at the scope where later runs read it. */
 export function ProjectMemory({ projectId, repo, refreshKey = "" }: { projectId: string; repo: string; refreshKey?: string }) {
@@ -34,11 +36,12 @@ export function ProjectMemory({ projectId, repo, refreshKey = "" }: { projectId:
   return <details class="project-memory" onToggle={(event) => setOpen(event.currentTarget.open)}>
     <summary>Project memory{entries ? ` · ${visible.length} entries${proposals ? ` · ${proposals} to review` : ""}` : ""}</summary>
     <p class="help">Accepted knowledge can be used in future runs in this repository. Proposals need review before they become project guidance.</p>
-    <p class="help">Deleting removes the memory entry and memory derived from it. Source run transcripts remain under normal run retention.</p>
+    <p class="help">Deleting erases this entry's text and removes it from future retrieval. Entries written with it in context retain their own text and the source reference; review and delete those separately. Source run transcripts remain under normal run retention.</p>
     <div class="at-row"><button class="btn small" disabled={loading} onClick={load}>{loading ? "Loading…" : "Refresh"}</button><button class="btn small" onClick={() => setCreating(!creating)}>{creating ? "Cancel new entry" : "Add project knowledge"}</button></div>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
     {creating ? <MemoryEditor endpoint={endpoint} repo={repo} onSaved={async () => { setCreating(false); await load(); }} onCancel={() => setCreating(false)} /> : null}
     {entries && !visible.length ? <p class="help">No project knowledge saved for this repository yet.</p> : null}
+    {entries ? <MemoryAnalysisPanel endpoint={endpoint} repo={repo} entries={entries} refreshKey={refreshKey} onPublished={load} /> : null}
     <div class="memory-list">{visible.map((entry) => <MemoryCard key={entry.id} entry={entry} endpoint={endpoint} onChanged={load} />)}</div>
   </details>;
 }
@@ -48,6 +51,7 @@ function MemoryCard({ entry, endpoint, onChanged }: { entry: MemoryEntry; endpoi
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [impactReady, setImpactReady] = useState(false);
   const change = async (op: "approve" | "delete") => {
     setBusy(true);
     setError("");
@@ -56,7 +60,7 @@ function MemoryCard({ entry, endpoint, onChanged }: { entry: MemoryEntry; endpoi
     finally { setBusy(false); }
   };
   const sensitiveOrigin = entry.origins.some((origin) => origin.lockedDown || origin.trust !== "trusted");
-  return <article class="memory-card">
+  return <article class="memory-card" id={`memory-${entry.id}`} tabIndex={-1}>
     <div class="at-row"><b>{entry.title}</b><span class={`badge ${entry.status === "accepted" ? "ok" : "warn"}`}>{entry.status === "accepted" ? "Accepted" : "Proposal"}</span></div>
     <div class="help">Revision {entry.revision} · {entry.applicability.kind === "branch" ? `Branch ${entry.applicability.branch}${entry.applicability.commit ? ` at ${entry.applicability.commit.slice(0, 12)}` : ""}` : "This repository"}{entry.acceptedBy ? ` · accepted by ${entry.acceptedBy === "user" ? "you" : entry.acceptedBy}` : ""}</div>
     {editing ? <MemoryEditor entry={entry} endpoint={endpoint} repo={entry.repo} onSaved={async () => { setEditing(false); await onChanged(); }} onCancel={() => setEditing(false)} /> : <Markdown text={entry.body} />}
@@ -75,8 +79,8 @@ function MemoryCard({ entry, endpoint, onChanged }: { entry: MemoryEntry; endpoi
       {entry.status === "proposed" ? <button class="btn small primary" disabled={busy || editing} onClick={() => change("approve")}>{busy ? "Saving…" : "Accept for future runs"}</button> : null}
       {!editing ? <button class="btn small" disabled={busy} onClick={() => setEditing(true)}>Edit</button> : null}
       {confirmingDelete
-        ? <span class="at-row" role="group" aria-label="Confirm deletion"><span class="help">Delete this knowledge? Its text is erased; entries written with it in context keep theirs.</span><button class="btn small danger" disabled={busy} onClick={() => { setConfirmingDelete(false); void change("delete"); }}>Delete</button><button class="btn small" disabled={busy} onClick={() => setConfirmingDelete(false)}>Keep</button></span>
-        : <button class="btn small danger" disabled={busy || editing} onClick={() => setConfirmingDelete(true)}>Delete…</button>}
+        ? <div role="group" aria-label="Confirm deletion"><span class="help">Delete this knowledge? Its text is erased; entries written with it in context keep theirs.</span><MemoryDeleteImpact endpoint={endpoint} repo={entry.repo} entryId={entry.id} onReady={() => setImpactReady(true)} /><button class="btn small danger" disabled={busy || !impactReady} onClick={() => { setConfirmingDelete(false); void change("delete"); }}>Delete</button><button class="btn small" disabled={busy} onClick={() => setConfirmingDelete(false)}>Keep</button></div>
+        : <button class="btn small danger" disabled={busy || editing} onClick={() => { setImpactReady(false); setConfirmingDelete(true); }}>Delete…</button>}
     </div>
     {error ? <p class="msg err" role="alert">{error} Refresh to see the latest revision.</p> : null}
   </article>;
@@ -107,15 +111,46 @@ function MemoryEditor({ entry, endpoint, repo, onSaved, onCancel }: { entry?: Me
   const [branch, setBranch] = useState(entry?.applicability.kind === "branch" ? entry.applicability.branch : "");
   const [commit, setCommit] = useState(entry?.applicability.kind === "branch" ? entry.applicability.commit ?? "" : "");
   // Keep the revision on which this draft is based even if a refreshed entry arrives.
-  const [revision] = useState(entry?.revision);
+  const [base, setBase] = useState(entry);
+  const [revision, setRevision] = useState(entry?.revision);
+  const [asNew, setAsNew] = useState(false);
+  const [conflict, setConflict] = useState<{ latest: MemoryEntry | null } | null>(null);
+  const [choices, setChoices] = useState<Partial<Record<MemoryDraftField, "draft" | "latest">>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const draft: MemoryDraft = {
+    title, body, paths: paths.split("\n").map((path) => path.trim()).filter(Boolean),
+    applicability: scope === "repository" ? { kind: "repository" } : { kind: "branch", branch: branch.trim(), ...(commit.trim() ? { commit: commit.trim() } : {}) },
+  };
+  const merge = base && conflict?.latest ? mergeMemoryDraft(memoryDraft(base), draft, memoryDraft(conflict.latest)) : null;
+  const fieldLabels: Record<MemoryDraftField, string> = { title: "title", body: "knowledge", paths: "relevant paths", applicability: "where this applies" };
+  const refreshConflict = async () => {
+    const latest = await api<MemoryEntry[]>(`${endpoint}?repo=${encodeURIComponent(repo)}`);
+    setConflict({ latest: latest.find((candidate) => candidate.id === entry?.id) ?? null });
+    setChoices({});
+  };
+  const applyMerge = () => {
+    if (!base || !conflict?.latest) return;
+    const next = resolveMemoryMerge(memoryDraft(base), draft, memoryDraft(conflict.latest), choices);
+    setTitle(next.title); setBody(next.body); setPaths(next.paths.join("\n"));
+    setScope(next.applicability.kind);
+    setBranch(next.applicability.kind === "branch" ? next.applicability.branch : "");
+    setCommit(next.applicability.kind === "branch" ? next.applicability.commit ?? "" : "");
+    setBase(conflict.latest); setRevision(conflict.latest.revision); setConflict(null); setError("");
+    showToast("Changes merged into your draft. Review it, then save.");
+  };
   const save = async () => {
-    if (!title.trim() || !body.trim() || (scope === "branch" && !branch.trim()) || busy) return;
+    if (!title.trim() || !body.trim() || (scope === "branch" && !branch.trim()) || busy || conflict) return;
     setBusy(true);
     setError("");
-    try { await post(`${endpoint}/commands`, { op: entry ? "update" : "create", id: entry?.id, expectedRevision: revision, repo, title, body, paths: paths.split("\n").map((path) => path.trim()).filter(Boolean), applicability: scope === "repository" ? { kind: "repository" } : { kind: "branch", branch: branch.trim(), ...(commit.trim() ? { commit: commit.trim() } : {}) } }); await onSaved(); }
-    catch (err) { setError((err as Error).message); }
+    try { await post(`${endpoint}/commands`, { op: entry && !asNew ? "update" : "create", id: asNew ? undefined : entry?.id, expectedRevision: revision, repo, ...draft }); await onSaved(); }
+    catch (err) {
+      setError((err as Error).message);
+      if (entry && !asNew && err instanceof ApiError && (err.status === 409 || err.status === 404)) {
+        try { await refreshConflict(); }
+        catch (problem) { setError(`${(err as Error).message}. Couldn't load the latest revision: ${(problem as Error).message}`); }
+      }
+    }
     finally { setBusy(false); }
   };
   return <form class="memory-editor" onSubmit={(event) => { event.preventDefault(); void save(); }}>
@@ -124,7 +159,17 @@ function MemoryEditor({ entry, endpoint, repo, onSaved, onCancel }: { entry?: Me
     <label>Relevant paths, one per line<textarea class="field" aria-label="Memory paths" rows={2} placeholder="Leave empty for the whole repository" value={paths} onInput={(event) => setPaths(event.currentTarget.value)} /></label>
     <label>Where this applies<select class="field" aria-label="Where memory applies" value={scope} onChange={(event) => setScope(event.currentTarget.value as "repository" | "branch")}><option value="repository">Use across this repository</option><option value="branch">Only a specific branch</option></select></label>
     {scope === "branch" ? <><label>Branch<input class="field" aria-label="Memory branch" value={branch} onInput={(event) => setBranch(event.currentTarget.value)} /></label><label>Commit, if required<input class="field" aria-label="Memory commit" value={commit} onInput={(event) => setCommit(event.currentTarget.value)} placeholder="Optional commit that must be present" /></label></> : <p class="help">Saving makes this guidance eligible for future runs on any branch in this repository.</p>}
-    <div class="memory-actions"><button type="submit" class="btn small primary" disabled={busy || !title.trim() || !body.trim() || (scope === "branch" && !branch.trim())}>{busy ? "Saving…" : "Save knowledge"}</button><button type="button" class="btn small" disabled={busy} onClick={onCancel}>Cancel</button></div>
+    {conflict ? <section class="at-notice" aria-label="Resolve memory revision conflict">
+      <b>{conflict.latest ? `This entry is now at revision ${conflict.latest.revision}. Your draft is preserved.` : "This entry was removed in another session. Your draft is preserved."}</b>
+      {conflict.latest ? <>
+        <details><summary>Latest saved knowledge</summary><b>{conflict.latest.title}</b><Markdown text={conflict.latest.body} /><p class="help">Paths: {conflict.latest.paths.join(", ") || "whole repository"} · {conflict.latest.applicability.kind === "repository" ? "This repository" : `Branch ${conflict.latest.applicability.branch}${conflict.latest.applicability.commit ? ` at ${conflict.latest.applicability.commit}` : ""}`}</p></details>
+        {merge?.conflicts.length ? <><p class="help">Both versions changed these fields. Choose each one to keep. Independent edits will be combined.</p>{merge.conflicts.map((field) => <label key={field}>Conflict: {fieldLabels[field]}<select class="field" aria-label={`Resolve memory ${fieldLabels[field]}`} value={choices[field] ?? ""} onChange={(event) => { const value = event.currentTarget.value as "draft" | "latest"; setChoices((previous) => ({ ...previous, [field]: value })); }}><option value="">Choose a version…</option><option value="draft">Keep my draft</option><option value="latest">Use latest saved version</option></select></label>)}</> : <p class="help">Your edits and the latest edits affect different fields and can be combined.</p>}
+        <button type="button" class="btn small primary" disabled={busy || !!merge?.conflicts.some((field) => !choices[field])} onClick={applyMerge}>Apply reviewed merge</button>
+      </> : <><p class="help">You can keep editing this draft and save it as a separate entry.</p><button type="button" class="btn small" onClick={() => { setAsNew(true); setRevision(undefined); setBase(undefined); setConflict(null); setError(""); }}>Keep draft as new knowledge</button></>}
+      <button type="button" class="btn small" disabled={busy} onClick={async () => { setBusy(true); try { await refreshConflict(); } catch (problem) { setError((problem as Error).message); } finally { setBusy(false); } }}>Refresh latest revision</button>
+    </section> : null}
+    {asNew ? <p class="help">This draft will be saved as a new entry.</p> : null}
+    <div class="memory-actions"><button type="submit" class="btn small primary" disabled={busy || !!conflict || !title.trim() || !body.trim() || (scope === "branch" && !branch.trim())}>{busy ? "Saving…" : "Save knowledge"}</button><button type="button" class="btn small" disabled={busy} onClick={onCancel}>Cancel</button></div>
     {error ? <p class="msg err" role="alert">{error} Your draft is still here.</p> : null}
   </form>;
 }

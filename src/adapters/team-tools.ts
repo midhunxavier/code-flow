@@ -40,6 +40,7 @@ export function adapterTeamCapabilities(provider: AgentId): Promise<AdapterTeamC
 }
 
 async function probe(provider: AgentId): Promise<AdapterTeamCapabilities> {
+  if (provider.startsWith("plugin:")) return { provider, structuredOutput: "unknown", sessionResume: "unknown", liveInput: "unsupported", scopedTools: "unsupported", sandbox: "unknown", nestedAgentControl: "unknown", nestedUsage: "unknown", evidence: ["Owner-configured provider plugin. Built-in provider protocol fixtures and sandbox probes do not establish compatibility for this extension."] };
   const [versionResult, helpResult] = await Promise.allSettled([
     captureOutput(provider, ["--version"], 5_000), captureOutput(provider, ["--help"], 5_000),
   ]);

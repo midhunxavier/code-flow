@@ -17,7 +17,7 @@ process.env.CODEFLOW_RETRY_DELAYS_MS = "300,300";
 
 const { RunManager, failureKind } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
-const { adapters } = await import("../src/adapters/index.js");
+const { getAdapter, adapters } = await import("../src/adapters/index.js");
 const { inspectChanges } = await import("../src/integrity.js");
 const { readRepoConfig } = await import("../src/repo-config.js");
 const { flushWrites, RUNS_DIR } = await import("../src/store.js");
@@ -81,7 +81,7 @@ type Stub = (opts: RunOptions, onEvent: (e: AgentEvent) => void, original: (opts
 
 /** Replace one agent's adapter with `stub` while `fn` runs (the stub can hand turns to the real fake). */
 async function withStub<T>(agent: AgentId, stub: Stub, fn: () => Promise<T>): Promise<T> {
-  const adapter = adapters[agent];
+  const adapter = getAdapter(agent);
   const saved = adapter.run;
   const original = saved.bind(adapter);
   adapter.run = (opts, onEvent) => stub(opts, onEvent, original);
@@ -307,6 +307,20 @@ test("a usage limit with no reset time keeps the reset times already known; quot
   const file = join(HOME, "quota.json");
   await until(() => existsSync(file) && JSON.parse(readFileSync(file, "utf8")).codex?.status === "limited", 5_000);
   assert.deepEqual(readdirSync(HOME).filter((f) => f.endsWith(".tmp")), []);
+});
+
+test("a usage limit with no reset time doesn't bench an agent until its weekly reset on a guess", () => {
+  const manager = new RunManager(findPattern);
+  const hour = Date.now() + 3_600_000;
+  const week = Date.now() + 6 * 86_400_000;
+  // Neither window is full: the limit lasts until the soonest reset, not the weekly one.
+  manager.quota.claude = { status: "allowed", windows: { five_hour: { utilization: 0.4, resetsAt: hour }, seven_day: { utilization: 0.7, resetsAt: week } }, at: Date.now() };
+  manager.recordLimit("claude");
+  assert.deepEqual(manager.quota.claude!.windows, { five_hour: { utilization: 0.4, resetsAt: hour } });
+  // The weekly window reported full: that's the one that says when the plan has room again.
+  manager.quota.claude = { status: "allowed", windows: { five_hour: { utilization: 0.4, resetsAt: hour }, seven_day: { utilization: 1, resetsAt: week } }, at: Date.now() };
+  manager.recordLimit("claude");
+  assert.deepEqual(manager.quota.claude!.windows, { seven_day: { utilization: 1, resetsAt: week } });
 });
 
 test("an HTTP status only makes an error transient with words around it", () => {

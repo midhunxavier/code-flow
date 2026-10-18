@@ -3,7 +3,7 @@ import { closeSync, openSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { adapters, agentCatalog, AGENT_IDS, type AgentId } from "./adapters/index.js";
+import { getAdapter, adapters, agentCatalog, AGENT_IDS, type AgentId, type BuiltinAgentId } from "./adapters/index.js";
 import { childEnv } from "./env.js";
 import { gitAtLeast, gitVersion } from "./git.js";
 
@@ -42,7 +42,7 @@ interface Need {
   when: string;
   optional?: boolean;
 }
-const NEEDS: Record<AgentId, { args: string[]; needs: Need[] }[]> = {
+const NEEDS: Record<BuiltinAgentId, { args: string[]; needs: Need[] }[]> = {
   claude: [
     {
       args: ["--help"],
@@ -52,7 +52,7 @@ const NEEDS: Record<AgentId, { args: string[]; needs: Need[] }[]> = {
         { name: "--verbose", when: "every step" },
         { name: "--permission-mode", when: "every step" },
         { name: "--allowedTools", when: "every step" },
-        { name: "--disallowedTools", when: "read-only steps" },
+        { name: "--disallowedTools", when: "read-only steps, and write steps in Safe and Standard" },
         { name: "--resume", when: "follow-ups and retries in the same conversation" },
         { name: "--json-schema", when: "structured answers (plans, reviews, verdicts)" },
         { name: "--model", when: "steps with a model chosen" },
@@ -99,7 +99,7 @@ const NEEDS: Record<AgentId, { args: string[]; needs: Need[] }[]> = {
   ],
 };
 
-const UPDATE: Record<AgentId, string> = {
+const UPDATE: Record<BuiltinAgentId, string> = {
   claude: "Update Claude Code: `claude update` (or npm install -g @anthropic-ai/claude-code).",
   codex: "Update Codex: npm install -g @openai/codex.",
   agy: "Update Antigravity CLI (antigravity.google).",
@@ -135,15 +135,21 @@ export async function checkGit(): Promise<GitHealth> {
 }
 
 async function check(id: AgentId, quota: HealthEntry["quota"]): Promise<HealthEntry> {
-  const adapter = adapters[id];
+  const adapter = getAdapter(id);
   const entry: HealthEntry = { id, name: adapter.displayName, installed: false, signedIn: null, quota };
+  if (id.startsWith("plugin:")) {
+    entry.installed = await adapter.available().catch(() => false);
+    entry.warnings = ["Owner-configured provider plugin; authentication, sandbox and live provider compatibility are not verified by built-in CLI probes."];
+    return entry;
+  }
+  const builtin = id as BuiltinAgentId;
   const path = (await capture("which", [adapter.binary])).stdout.trim();
   if (!path) {
     entry.fix = {
       claude: "Install Claude Code: npm install -g @anthropic-ai/claude-code, then run `claude` once and sign in.",
       codex: "Install Codex: npm install -g @openai/codex, then run `codex login`.",
       agy: "Install Antigravity CLI from antigravity.google, then run `agy` once and sign in.",
-    }[id];
+    }[builtin];
     return entry;
   }
   entry.installed = true;
@@ -187,7 +193,7 @@ async function check(id: AgentId, quota: HealthEntry["quota"]): Promise<HealthEn
       }
     }
   }
-  if (entry.compatible === false) entry.fix ??= UPDATE[id];
+  if (entry.compatible === false) entry.fix ??= UPDATE[builtin];
   return entry;
 }
 
@@ -196,10 +202,12 @@ async function check(id: AgentId, quota: HealthEntry["quota"]): Promise<HealthEn
  * an old install) that dropped one shows here instead of as every step failing on an unknown
  * option. Help that can't be read leaves the entry unchecked rather than flagging everything.
  */
-async function probeFlags(id: AgentId, entry: HealthEntry): Promise<void> {
+async function probeFlags(id: AgentId, entry: HealthEntry, binary = getAdapter(id).binary): Promise<void> {
+  if (id.startsWith("plugin:")) return;
+  const builtin = id as BuiltinAgentId;
   const missing: Need[] = [];
-  for (const probe of NEEDS[id]) {
-    const help = await helpText(adapters[id].binary, probe.args);
+  for (const probe of NEEDS[builtin]) {
+    const help = await helpText(binary, probe.args);
     if (help.trim().length < 40) return; // no usable help: unknown, not incompatible
     for (const need of probe.needs) if (!listed(help, need.name)) missing.push(need);
   }
@@ -210,10 +218,26 @@ async function probeFlags(id: AgentId, entry: HealthEntry): Promise<void> {
   if (required.length) {
     const names = required.map((n) => n.name).join(", ");
     const uses = [...new Set(required.map((n) => n.when))].join("; ");
-    warnings.push(`This ${adapters[id].displayName} doesn't list ${names} in its --help. code-flow passes ${required.length === 1 ? "it" : "them"} (${uses}), so those steps will fail with an unknown option. ${UPDATE[id]}`);
+    warnings.push(`This ${getAdapter(id).displayName} doesn't list ${names} in its --help. code-flow passes ${required.length === 1 ? "it" : "them"} (${uses}), so those steps will fail with an unknown option. ${UPDATE[builtin]}`);
   }
-  for (const need of missing.filter((n) => n.optional)) warnings.push(`No \`${adapters[id].binary} ${need.name}\`: ${need.when}.`);
+  for (const need of missing.filter((n) => n.optional)) warnings.push(`No \`${getAdapter(id).binary} ${need.name}\`: ${need.when}.`);
   if (warnings.length) entry.warnings = warnings;
+}
+
+/** CI contract probe: version/help only, with no sign-in, model listing or inference request. */
+export async function probeProviderContract(id: AgentId, binary = getAdapter(id).binary) {
+  const entry: HealthEntry = { id, name: getAdapter(id).displayName, installed: false, signedIn: null };
+  const version = await capture(binary, ["--version"]);
+  entry.installed = version.code === 0;
+  entry.version = (version.stdout.trim() || version.stderr.trim()).split("\n")[0]?.slice(0, 300);
+  if (entry.installed) await probeFlags(id, entry, binary);
+  return { id, installed: entry.installed, version: entry.version, compatible: entry.compatible ?? null, missing: entry.missing ?? [], warnings: entry.warnings ?? [], scope: "version-and-help-only" as const };
+}
+
+/** Compare the first complete CLI semantic version, never a substring of another release. */
+export function providerVersionMatches(output: string | undefined, requested: string): boolean {
+  const reported = output?.match(/(?:^|[^\w.+-])v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?=$|[^\w.+-])/);
+  return reported?.[1] === requested;
 }
 
 /** Whether `--help` output lists a flag (`--json-schema <schema>`, `-c, --config`) or a subcommand. */
@@ -256,9 +280,9 @@ async function helpText(cmd: string, args: string[]): Promise<string> {
 
 function capture(cmd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 20_000, env: childEnv() }, (err, stdout, stderr) => {
+    try { execFile(cmd, args, { timeout: 20_000, maxBuffer: 1024 * 1024, env: childEnv() }, (err, stdout, stderr) => {
       const code = err ? (typeof (err as any).code === "number" ? (err as any).code : 1) : 0;
       resolve({ code, stdout: stdout?.toString() ?? "", stderr: stderr?.toString() ?? "" });
-    });
+    }); } catch (error) { resolve({ code: 1, stdout: "", stderr: (error as Error).message }); }
   });
 }

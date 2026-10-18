@@ -73,7 +73,12 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     answer = json({ requirements: [{ id: "goal", description: "Implement the requested sample" }], members: [makeMember("coordinator", "coordinator", vendor), makeMember("builder", "worker", builder), ...(same ? [makeMember("builder-two", "worker", builder)] : []), makeMember("verifier", "reviewer", reviewer)], tasks: prompt.includes("AUTO-SUBPLAN") ? [] : tasks.map((task) => ({ ...task, dependencyTypes: [] })), ...(prompt.includes("AUTO-SUBPLAN") ? { subplans: [{ id: "sample", strategy: "investigate-implement", owner: "builder", requirements: ["goal"], acceptance: ["The requested behavior has evidence"], paths: ["*"], dependsOn: [], instructions: "Implement the requested sample" }] } : { subplans: [] }), contracts: ["Each task preserves the accepted dependency artifacts"], rationale: "A small team with independent review" });
   } else if (prompt.includes("AUTO_TEAM_TASK")) {
     const { task, member, attempt } = JSON.parse(prompt.match(/## Assignment JSON\n```json\n([\s\S]*?)\n```/)[1]);
-    if (task.instructions.includes("AUTO-SLOW-TURN")) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2500);
+    if (task.instructions.includes("AUTO-SLOW-TURN")) {
+      if (process.env.FAKE_AUTO_SLOW_RELEASE) {
+        const deadline = Date.now() + 60000;
+        while (!existsSync(process.env.FAKE_AUTO_SLOW_RELEASE) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      } else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2500);
+    }
     const needsInfo = attempt === 1 && task.id === "alpha" && /AUTO-(USER-)?QUESTION/.test(task.instructions);
     const failed = prompt.includes("AUTO-FAILURE") || prompt.includes("AUTO-CONTRACT-CHANGE") && task.id === "beta" && attempt === 1 || prompt.includes("AUTO-HANDOVER") && member.id === "builder";
     if (write && !needsInfo && !failed && !prompt.includes("AUTO-NO-CHANGE")) writeFileSync(`${vendor}-${task.id}.txt`, `${task.id} implementation\n`);
@@ -151,12 +156,18 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
           ],
     });
   } else if (prompt.includes("Other reviewers are reviewing the same changes")) {
+    // "council-false-alarms": the reviewers raise only the false alarm, as the chair reports. A
+    // confirmed bug the chair leaves out comes back in (see restoreConfirmed in council.ts).
     const offByOne = { severity: "high", file: "feature.txt", problem: "Off-by-one in the loop", fix: "Use <" };
+    const nullCheck = { severity: "high", file: "feature.txt", problem: "Missing null check", fix: "Check for null", repro: passingRepro };
     answer = json({
       verdict: "changes_requested",
-      issues: process.env.FAKE_REPRO
-        ? [{ ...offByOne, repro: failingRepro }, { severity: "high", file: "feature.txt", problem: "Missing null check", fix: "Check for null", repro: passingRepro }]
-        : [{ ...offByOne, repro: noRepro }],
+      issues:
+        process.env.FAKE_REPRO === "council-false-alarms"
+          ? [nullCheck]
+          : process.env.FAKE_REPRO
+            ? [{ ...offByOne, repro: failingRepro }, nullCheck]
+            : [{ ...offByOne, repro: noRepro }],
     });
   } else if (prompt.includes('"verdict": "approve" | "changes_requested"') && process.env.FAKE_REPRO) {
     // A reviewer that shows its finding with a test (FAKE_REPRO): fails (a real bug, raised in the
@@ -195,6 +206,33 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     // Gaming the check: delete the test that fails instead of fixing the code.
     execFileSync("git", ["rm", "-q", "failing.test.mjs"]);
     answer = "Removed a broken test.";
+  } else if (write && process.env.FAKE_IMPORT_TEST) {
+    // A module and a test of it: without the module (on the base code), the test can't even load.
+    writeFileSync("feature.mjs", "export const feature = () => 1;\n");
+    writeFileSync("feature.test.mjs", testFile('import { feature } from "./feature.mjs";', 'test("feature", () => assert.equal(feature(), 1));'));
+    answer = "Added the feature and its test.";
+  } else if (write && process.env.FAKE_CI_TAMPER && prompt.includes("CI fails on the pull request")) {
+    // Gaming CI instead of fixing it: "workflow" comments out the failing job; "fewer" drops one of
+    // the tests the check counts (t-*.txt), which no test file shows.
+    if (process.env.FAKE_CI_TAMPER === "workflow") writeFileSync(".github/workflows/ci.yml", "jobs:\n  # test:\n  #   runs-on: ubuntu-latest\n  lint:\n    runs-on: ubuntu-latest\n");
+    else execFileSync("git", ["rm", "-q", "t-2.txt"]);
+    writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
+    answer = "CI passes now.";
+  } else if (write && process.env.FAKE_BUILDER_TAMPER && (prompt.includes("Make the tests pass") || prompt.includes("You changed how the tests run"))) {
+    // A builder that changes how the tests run as well as implementing: "conftest" adds a
+    // conftest.py that ignores the tests; "jest" adds a jest block to package.json that ignores
+    // them, and takes it out when told; "jest-keeps" never does.
+    const mode = process.env.FAKE_BUILDER_TAMPER;
+    const told = prompt.includes("You changed how the tests run");
+    if (mode === "conftest") writeFileSync("conftest.py", 'collect_ignore = ["spec.test.mjs"]\n');
+    else if (!told || mode === "jest") {
+      const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+      if (told) delete pkg.jest;
+      else pkg.jest = { testPathIgnorePatterns: ["spec.test.mjs"] };
+      writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+    }
+    writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
+    answer = told && mode === "jest" ? "Took the jest settings out and implemented it." : "Implemented it and set up the tests.";
   } else if (write && process.env.FAKE_EDIT_TESTS && prompt.includes("Make the tests pass") && existsSync("spec.test.mjs")) {
     writeFileSync("spec.test.mjs", 'import { test } from "node:test";\ntest("always passes", () => {});\n');
     writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);

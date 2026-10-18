@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { envNumber, timerMs } from "./config.js";
 import {
   assertWorktree,
   classifyGitFailure,
@@ -10,6 +11,8 @@ import {
   gitError,
   withRepoLock,
   worktreeRoot,
+  type Checkout,
+  type GitCwd,
   type GitFailure,
   type GitResult,
 } from "./git.js";
@@ -36,11 +39,12 @@ export interface DiffFile {
 const MAX_PATCH = 200_000;
 
 /** Changes on `branch` since `base`, split per file. */
-export async function branchDiff(repo: string, base: string, branch: string): Promise<DiffFile[]> {
+export async function branchDiff(repo: GitCwd, base: string, branch: string): Promise<DiffFile[]> {
   const range = `${base}..${branch}`;
-  const numstat = await gitOrThrow(["diff", "--numstat", "-M", "-z", range], repo);
-  const status = await gitOrThrow(["diff", "--name-status", "-M", "-z", range], repo);
-  const patch = await gitOrThrow(["diff", "--no-color", "-M", range], repo);
+  const safeDiff = ["-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv"];
+  const numstat = await gitOrThrow([...safeDiff, "--numstat", "-M", "-z", range], repo);
+  const status = await gitOrThrow([...safeDiff, "--name-status", "-M", "-z", range], repo);
+  const patch = await gitOrThrow([...safeDiff, "--no-color", "-M", range], repo);
 
   // --name-status -z: STATUS\0path\0 (renames: R100\0old\0new\0)
   const statusTokens = status.split("\0").filter((t) => t !== "");
@@ -104,8 +108,16 @@ async function checkedOutAt(repo: string, branch: string): Promise<string | unde
 }
 
 export type MergeOutcome =
-  | { ok: true; commit: string; method: "checkout" | "ref" }
+  /** `warning`: merged, but something about it needs a look (git stopped while a hook ran). */
+  | { ok: true; commit: string; method: "checkout" | "ref"; warning?: string }
   | { ok: false; conflicts: string[]; message: string };
+
+/**
+ * How long a merge in a checkout (yours, or a worktree) may take. It runs that checkout's hooks
+ * and filters (a post-merge `npm install`, an LFS download), which can take far longer than the
+ * usual git timeout; stopped then, the merge commit may already be made.
+ */
+const CHECKOUT_TIMEOUT_MS = timerMs(envNumber("CODEFLOW_MERGE_TIMEOUT_SEC", 1_800, { min: 1 }) * 1000);
 
 /**
  * Merge `branch` into `into` without touching anything else:
@@ -117,60 +129,138 @@ export type MergeOutcome =
  * that stops the merge (untracked files in the way, a lock, a hook, no git identity) is an
  * error that says what to do.
  */
-export async function mergeInto(repo: string, branch: string, into: string, message: string): Promise<MergeOutcome> {
+export async function mergeInto(repo: string, branch: string, into: string, message: string, expected?: { source: string; target: string; tree?: string }): Promise<MergeOutcome> {
   if ((await git(["show-ref", "--verify", "--quiet", `refs/heads/${into}`], repo)).code !== 0) {
     throw new Error(`Branch "${into}" doesn't exist`);
   }
   // Nothing else code-flow does may change worktrees or refs meanwhile (the lock isn't re-entrant).
   return withRepoLock(repo, async () => {
+    if (expected) {
+      const [source, target] = await Promise.all([gitOrThrow(["rev-parse", branch], repo), gitOrThrow(["rev-parse", `refs/heads/${into}`], repo)]);
+      if (source.trim() !== expected.source || target.trim() !== expected.target) throw new Error("The result or merge target moved after validation. Validate the current merge target again.");
+    }
     const checkout = await checkedOutAt(repo, into);
-    return checkout ? mergeInCheckout(repo, checkout, branch, into, message) : mergeByRef(repo, branch, into, message);
+    if (!checkout) await refuseIfBusy(repo, into);
+    return checkout ? mergeInCheckout(repo, checkout, expected?.source ?? branch, into, message, expected) : mergeByRef(repo, expected?.source ?? branch, into, message, expected);
   });
 }
 
-async function mergeInCheckout(repo: string, checkout: string, branch: string, into: string, message: string): Promise<MergeOutcome> {
+/**
+ * A branch being rebased or bisected somewhere isn't checked out there (the worktree lists as
+ * detached), but it isn't free to move either: `git rebase --abort` (or the rebase finishing)
+ * would put it back where it was, dropping a merge code-flow moved it to. Refused, saying where.
+ */
+async function refuseIfBusy(repo: string, into: string): Promise<void> {
+  const out = await gitOrThrow(["worktree", "list", "--porcelain"], repo);
+  const detached: string[] = [];
+  let path: string | undefined;
+  for (const line of out.split("\n")) {
+    if (line.startsWith("worktree ")) path = line.slice("worktree ".length);
+    else if (line === "detached" && path) detached.push(path);
+  }
+  const ref = `refs/heads/${into}`;
+  for (const wt of detached.filter((p) => existsSync(p))) {
+    const res = await git(["rev-parse", "--git-path", "rebase-merge/head-name", "--git-path", "rebase-apply/head-name", "--git-path", "BISECT_START"], wt);
+    if (res.code !== 0) continue;
+    const [merge = "", apply = "", bisect = ""] = res.stdout.split("\n").map((p) => resolve(wt, p.trim()));
+    const read = (file: string) => (existsSync(file) ? readFileSync(file, "utf8").trim() : "");
+    if (read(merge) === ref || read(apply) === ref) {
+      throw new Error(`"${into}" is being rebased in ${wt}. Finish the rebase (\`git rebase --continue\`) or abort it (\`git rebase --abort\`) there, then merge again.`);
+    }
+    const started = read(bisect);
+    if (started === into || started === ref) {
+      throw new Error(`"${into}" is being bisected in ${wt}. End the bisect there (\`git bisect reset\`), then merge again.`);
+    }
+  }
+}
+
+async function mergeInCheckout(repo: string, checkout: string, branch: string, into: string, message: string, expected?: { source: string; target: string; tree?: string }): Promise<MergeOutcome> {
+
   if (!existsSync(checkout)) throw new Error(`"${into}" is checked out at ${checkout}, which no longer exists`);
   // `into` can be a run's own branch, checked out in its worktree (catching a result up with its
-  // pull request's base), where an agent may have broken `.git`.
-  await assertWorktree(repo, { path: checkout, branch: into });
+  // pull request's base), where an agent may have broken `.git`. All the git below uses the git
+  // folder checked here.
+  const at = await assertWorktree(repo, { path: checkout, branch: into });
   // Changes to tracked files, staged or not. Untracked files only matter when the merge would
   // overwrite them, and git refuses that itself (told apart below).
-  const status = await git(["status", "--porcelain", "--untracked-files=no"], checkout);
+  const status = await git(["status", "--porcelain", "--untracked-files=no"], at);
   if (status.code !== 0) throw new Error(`Couldn't read the state of ${checkout}: ${gitError(["status"], status)}`);
   if (status.stdout.trim()) {
     throw new Error(`"${into}" is checked out at ${checkout} and has uncommitted changes. Commit or stash them, then merge again.`);
   }
-  if (await midMerge(checkout)) throw new Error(`${checkout} is in the middle of another merge. Finish it, or run \`git merge --abort\` there, then merge again.`);
+  if (await midMerge(at)) throw new Error(`${checkout} is in the middle of another merge. Finish it, or run \`git merge --abort\` there, then merge again.`);
   // With the index locked, git still starts the merge (and calls it a conflict) but can't undo
   // it either: don't start.
-  const lockPath = (await git(["rev-parse", "--git-path", "index.lock"], checkout)).stdout.trim();
+  const lockPath = (await git(["rev-parse", "--git-path", "index.lock"], at)).stdout.trim();
   const lock = lockPath && resolve(checkout, lockPath);
   if (lock && existsSync(lock)) throw new Error(`Couldn't merge into ${into}: ${describeGitFailure("locked")} (${lock})`);
 
-  // Your hooks run on a merge into your checkout, as on your own merges; not in code-flow's worktrees.
-  const res = await git(["merge", "--no-ff", "-m", message, branch], checkout, { hooks: !isInside(worktreeRoot(repo), checkout) });
-  if (res.code === 0) return { ok: true, commit: (await gitOrThrow(["rev-parse", "HEAD"], checkout)).trim(), method: "checkout" };
+  const before = (await gitOrThrow(["rev-parse", "HEAD"], at)).trim();
+  const merging = (await gitOrThrow(["rev-parse", branch], at)).trim();
+  if (expected && (before !== expected.target || merging !== expected.source)) throw new Error("The checkout moved after merge validation; validate the current target again");
+  const options = { timeoutMs: CHECKOUT_TIMEOUT_MS, hooks: !isInside(worktreeRoot(repo), checkout) };
+  const finish = async (commit: string, warning?: string): Promise<MergeOutcome> => {
+    if (expected?.tree && (await gitOrThrow(["rev-parse", `${commit}^{tree}`], at)).trim() !== expected.tree) {
+      const status = await git(["status", "--porcelain", "--untracked-files=no"], at);
+      const stillOurCommit = (await gitOrThrow(["rev-parse", "HEAD"], at)).trim() === commit;
+      const rollback = status.code === 0 && !status.stdout.trim() && stillOurCommit ? await git(["reset", "--merge", expected.target], at) : undefined;
+      throw new Error(rollback?.code === 0 ? "A commit hook changed the verified merge tree. The merge was undone; review the hook and validate again." : "A commit hook changed the verified merge tree and the checkout changed afterwards. It was retained; inspect the checkout before proceeding.");
+    }
+    return { ok: true, commit, method: "checkout", ...(warning ? { warning } : {}) };
+  };
+  let res = await git(["merge", "--no-ff", ...(expected?.tree ? ["--no-commit"] : []), "-m", message, branch], at, options);
+  if (res.code === 0 && expected?.tree) {
+    const tree = (await gitOrThrow(["write-tree"], at)).trim();
+    if (tree !== expected.tree) {
+      if (await midMerge(at)) {
+        const abort = await git(["merge", "--abort"], at, { timeoutMs: CHECKOUT_TIMEOUT_MS });
+        if (abort.code) throw new Error("The merge tree differed from the verified tree and abort failed. Inspect the checkout before proceeding.");
+      }
+      throw new Error("The merge produced a different tree than validation. No merge was committed; validate the current result again.");
+    }
+    if (await midMerge(at)) res = await git(["commit", "-m", message], at, options);
+  }
+  if (res.code === 0) return finish((await gitOrThrow(["rev-parse", "HEAD"], at)).trim());
+  if (res.timedOut) {
+    const head = (await git(["rev-parse", "HEAD"], at)).stdout.trim();
+    const parents = (await git(["log", "-1", "--format=%P", head], at)).stdout.trim();
+    if (head !== before && parents === `${before} ${merging}`) {
+      const after = CHECKOUT_TIMEOUT_MS >= 60_000 ? `${Math.round(CHECKOUT_TIMEOUT_MS / 60_000)} min` : `${Math.round(CHECKOUT_TIMEOUT_MS / 1000)} s`;
+      const left = lock && existsSync(lock) ? `, and it left ${lock} behind; remove it once no git is running there` : "";
+      const warning = `Merged into ${into}, but git was stopped after ${after}, once the merge commit was made: a post-merge hook (an install, a download) may not have finished in ${checkout}${left}.`;
+      logWarn(warning, { checkout, commit: head });
+      return finish(head, warning);
+    }
+
+  }
   let kind = mergeFailure(res);
-  const conflicts = kind === "conflict" ? (await git(["diff", "--name-only", "--diff-filter=U"], checkout)).stdout.trim().split("\n").filter(Boolean) : [];
+  const conflicts = kind === "conflict" ? (await git(["diff", "--name-only", "--no-ext-diff", "--diff-filter=U"], at)).stdout.trim().split("\n").filter(Boolean) : [];
   // "Automatic merge failed" with nothing unmerged wasn't a conflict.
   if (kind === "conflict" && !conflicts.length) kind = "other";
   // A conflict, a failed hook or a missing identity can leave the merge half done: undo it, and
   // say so when that fails, rather than leave your checkout mid-merge without a word.
-  if (await midMerge(checkout)) {
-    const abort = await git(["merge", "--abort"], checkout);
+  if (await midMerge(at)) {
+    const abort = await git(["merge", "--abort"], at, { timeoutMs: CHECKOUT_TIMEOUT_MS });
     if (abort.code !== 0) {
       throw new Error(`Merging into ${into} failed (${describeGitFailure(kind)}), and undoing it failed too: ${gitError(["merge", "--abort"], abort)}. Run \`git merge --abort\` in ${checkout}.`);
     }
   }
   if (kind === "conflict") return { ok: false, conflicts, message: `Merging into ${into} would conflict` };
-  throw new Error(`Couldn't merge into ${into} at ${checkout}: ${describeGitFailure(kind)}${details(kind, res)}`);
+  // A git stopped mid-way can leave its lock behind.
+  const left = res.timedOut && lock && existsSync(lock) ? ` It left ${lock} behind; remove it once no git is running there.` : "";
+  throw new Error(`Couldn't merge into ${into} at ${checkout}: ${describeGitFailure(kind)}${details(kind, res)}${left}`);
 }
 
-async function mergeByRef(repo: string, branch: string, into: string, message: string): Promise<MergeOutcome> {
+async function mergeByRef(repo: string, branch: string, into: string, message: string, expected?: { source: string; target: string; tree?: string }): Promise<MergeOutcome> {
   if (!(await gitAtLeast(2, 38))) {
     throw new Error(`Merging into "${into}" without checking it out needs git 2.38 or later. Check out ${into} somewhere and merge there, or upgrade git.`);
   }
-  const tree = await git(["merge-tree", "--write-tree", "--name-only", into, branch], repo);
+  // Pin both parents before constructing their tree. Reading parents afterwards can
+  // combine an old tree with a concurrently moved branch's new parent commits.
+  const intoSha = (await gitOrThrow(["rev-parse", `refs/heads/${into}`], repo)).trim();
+  const branchSha = (await gitOrThrow(["rev-parse", branch], repo)).trim();
+  if (expected && (intoSha !== expected.target || branchSha !== expected.source)) throw new Error("The result or merge target moved after validation; validate again");
+  const tree = await git(["merge-tree", "--write-tree", "--name-only", intoSha, branchSha], repo);
   if (tree.code === 1) {
     // Output: tree id, then the conflicted paths, then a blank line and messages.
     const lines = tree.stdout.split("\n");
@@ -179,8 +269,7 @@ async function mergeByRef(repo: string, branch: string, into: string, message: s
   }
   if (tree.code !== 0) throw new Error(gitError(["merge-tree", "--write-tree", into, branch], tree));
   const treeId = tree.stdout.split("\n")[0]!.trim();
-  const intoSha = (await gitOrThrow(["rev-parse", into], repo)).trim();
-  const branchSha = (await gitOrThrow(["rev-parse", branch], repo)).trim();
+  if (expected?.tree && treeId !== expected.tree) throw new Error("The merge produced a different tree than validation. No branch was changed; validate again.");
   const commit = await git(["commit-tree", treeId, "-p", intoSha, "-p", branchSha, "-m", message], repo);
   if (commit.code !== 0) throw new Error(`Couldn't make the merge commit: ${describeGitFailure(classifyGitFailure(commit))}${details("other", commit)}`);
   // Moves the branch only if it's still where the merge started from.
@@ -198,7 +287,7 @@ const isInside = (dir: string, path: string) => {
 };
 
 /** True while a merge in `checkout` is started but not committed. */
-async function midMerge(checkout: string): Promise<boolean> {
+async function midMerge(checkout: Checkout): Promise<boolean> {
   return (await git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], checkout)).code === 0;
 }
 
@@ -359,7 +448,7 @@ function shortError(res: GitResult): string {
   return kind === "other" ? last.replace(/^(fatal|error):\s*/, "") || "git failed" : describeGitFailure(kind);
 }
 
-async function gitOrThrow(args: string[], cwd: string): Promise<string> {
+async function gitOrThrow(args: string[], cwd: GitCwd): Promise<string> {
   const res = await git(args, cwd);
   if (res.code !== 0) throw new Error(`git ${args[0]} failed: ${res.stderr.trim() || res.stdout.trim()}`);
   return res.stdout;

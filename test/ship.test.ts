@@ -331,6 +331,35 @@ test("a side chat's question keeps the run's verdict and leaves edits you make i
   }
 });
 
+test("a side chat's question that breaks its worktree's .git fails, saying what changed couldn't be checked", async () => {
+  const run = await runPattern("pipeline", pipelineRoles);
+  const wt = run.worktrees.find((w) => w.name === "build")!;
+  const dotGit = join(wt.path, ".git");
+  const original = readFileSync(dotGit, "utf8");
+  const record = mkdtempSync(join(tmpdir(), "codeflow-side-record-"));
+  process.env.FAKE_RECORD_DIR = record;
+  process.env.FAKE_SLEEP_VENDOR = "claude";
+  process.env.FAKE_SLEEP_MS = "1500";
+  try {
+    await manager.followUp(run.id, { kind: "side", worktree: "build", agent: "claude", message: "What's in the README?", side: { chat: "c11", mode: "ask", title: "README" } });
+    // The agent has its prompt, so code-flow took its snapshot: now the agent edits a file and deletes `.git`.
+    for (let i = 0; i < 200 && !readdirSync(record).length; i++) await pause(25);
+    writeFileSync(join(wt.path, "README.md"), "the agent's edit\n");
+    rmSync(dotGit);
+    await finished(run);
+    const f = run.followUps.at(-1)!;
+    assert.equal(f.status, "failed", "not done as if nothing changed");
+    assert.match(f.result ?? "", /Couldn't check what this read-only step changed \(anything it changed is still there\): .*its \.git is missing/);
+    assert.match(await logs(run), /Side chat: README \(claude\) is read-only, but what changed in build while it ran couldn't be checked/);
+    assert.equal(readFileSync(join(wt.path, "README.md"), "utf8"), "the agent's edit\n", "left in place, as a question's changes are");
+  } finally {
+    writeFileSync(dotGit, original);
+    delete process.env.FAKE_RECORD_DIR;
+    delete process.env.FAKE_SLEEP_VENDOR;
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});
+
 test("a side chat's change that changed nothing isn't reported as a change", async () => {
   const run = await runPattern("pipeline", pipelineRoles);
   const head = git("rev-parse", run.artifacts[0]!.branch).trim();
@@ -351,16 +380,32 @@ test("a side chat's change that changed nothing isn't reported as a change", asy
 test("files sent to a run whose worktrees were removed: the worktree is checked out again first, and nothing lands in your checkout", async () => {
   const run = await runPattern("pipeline", pipelineRoles);
   const wt = run.worktrees.find((w) => w.name === "build")!;
-  await manager.archive(run.id, { cleanup: true });
-  assert.ok(!existsSync(wt.path), "removed; its branch is kept");
-  const head = git("rev-parse", "HEAD").trim();
-  writeFileSync(join(repo, "mine.txt"), "yours, not committed\n");
-  const status = git("status", "--porcelain");
+  // Hold an already-captured archive projection while followUp awaits its policy lookup.
+  // A slow disk must not replace the live run after a mutation has adopted it.
+  const cold = (manager as unknown as { coldRuns: import("../src/run-cold-store.js").RunColdStore }).coldRuns, save = cold.save.bind(cold);
+  let saveEntered!: () => void, releaseSave!: () => void, policyEntered!: () => void, releasePolicy!: () => void;
+  const saving = new Promise<void>((resolve) => saveEntered = resolve), saveGate = new Promise<void>((resolve) => releaseSave = resolve), checking = new Promise<void>((resolve) => policyEntered = resolve), policyGate = new Promise<void>((resolve) => releasePolicy = resolve);
+  let saved: boolean | undefined;
+  cold.save = async (value, seq) => { const snapshot = structuredClone(value); saveEntered(); await saveGate; saved = await save(snapshot, seq); return saved; };
   try {
+    await manager.archive(run.id, { cleanup: true });
+    await saving;
+    await (await import("../src/store.js")).flushWrites();
+    assert.ok(!existsSync(wt.path), "removed; its branch is kept");
+    const head = git("rev-parse", "HEAD").trim();
+    writeFileSync(join(repo, "mine.txt"), "yours, not committed\n");
+    const status = git("status", "--porcelain");
     const png = Buffer.from("89504e470d0a1a0a", "hex").toString("base64");
-    await manager.followUp(run.id, { kind: "reply", worktree: "build", agent: "codex", message: "See the screenshot", attachments: [{ name: "pin.png", data: png }] });
+    manager.setFilesystemPolicyGuard(async () => { policyEntered(); await policyGate; return []; });
+    const follow = manager.followUp(run.id, { kind: "reply", worktree: "build", agent: "codex", message: "See the screenshot", attachments: [{ name: "pin.png", data: png }] });
+    await checking; releaseSave();
+    while (manager.inspectStorage().pending) await pause(1);
+    assert.equal(saved, true, "the captured archive projection reached disk");
+    releasePolicy(); await follow;
     await finished(run);
-    const f = run.followUps.at(-1)!;
+    assert.equal(manager.get(run.id), run, "the retained handle is the authoritative live run");
+    const f = manager.get(run.id)!.followUps.at(-1)!;
+    assert.ok(f, "the accepted attachment follow-up survives the older archive write");
     assert.equal(f.status, "done", f.result);
     assert.ok(existsSync(join(wt.path, ".git")), "a worktree again, not a plain folder");
     assert.ok(existsSync(join(wt.path, f.files![0]!)), "with the file in it");
@@ -368,8 +413,24 @@ test("files sent to a run whose worktrees were removed: the worktree is checked 
     assert.equal(git("rev-parse", "HEAD").trim(), head, "nothing committed in your checkout");
     assert.equal(git("status", "--porcelain"), status, "and your own changes there are as they were");
   } finally {
+    releaseSave(); releasePolicy(); cold.save = save; manager.setFilesystemPolicyGuard(async () => []);
     rmSync(join(repo, "mine.txt"), { force: true });
   }
+});
+
+test("a refused archived follow-up stages no files, returns to cold storage and permits a valid retry", async () => {
+  const run = await runPattern("pipeline", pipelineRoles);
+  const waitForCold = async () => {
+    const deadline = Date.now() + 10_000;
+    while (!manager.list().find((item) => item.id === run.id)?.cold) { assert.ok(Date.now() < deadline, "the archived run returns to bounded cold storage"); await pause(5); }
+  };
+  await manager.archive(run.id); await waitForCold();
+  await assert.rejects(manager.followUp(run.id, { kind: "reply", worktree: "missing", agent: "codex", message: "Refused", attachments: [{ name: "not-staged.txt", data: Buffer.from("private").toString("base64") }] }), /Unknown worktree/);
+  assert.equal(manager.get(run.id)!.archived, true); assert.deepEqual(manager.get(run.id)!.followUps, []);
+  assert.equal(existsSync(join(run.worktreeDir, ".context", "messages")), false);
+  await waitForCold();
+  const retried = await manager.followUp(run.id, { kind: "reply", worktree: "build", agent: "codex", message: "Accepted retry" }); await finished(retried);
+  assert.equal(manager.get(run.id)!.followUps.length, 1); assert.equal(manager.get(run.id)!.followUps[0]!.status, "done"); assert.equal(manager.get(run.id)!.archived, false);
 });
 
 test("a plain folder at a removed worktree's path: code-flow's own leftovers are cleared, anything else is left for you", async () => {

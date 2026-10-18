@@ -1,4 +1,4 @@
-import { adapters } from "../adapters/index.js";
+import { getAdapter, adapters } from "../adapters/index.js";
 import type { Pattern, ReviewFinding, StepOutcome } from "../engine.js";
 import { describeIssues } from "../integrity.js";
 import { approves, builderReply, checkReview, findingsForBuilder, findingsLine, findingsSection, REVIEW_SHAPE, reproRule, type ReviewVerdict } from "./findings.js";
@@ -63,7 +63,7 @@ export const debatePattern: Pattern = {
     // Round 0: independent proposals, in parallel (one failing stops the others).
     let positions: StepOutcome[] = await ctx.parallel(debaters, (agent, i) =>
       ctx.ask({
-        title: `Proposal — ${adapters[agent].displayName}`,
+        title: `Proposal — ${getAdapter(agent).displayName}`,
         role: "debaters",
         agent,
         mode: "read",
@@ -86,7 +86,7 @@ export const debatePattern: Pattern = {
           .map((p, j) => (j === i ? "" : section(label(j), p.finalText)))
           .join("");
         return ctx.ask({
-          title: `Critique round ${round} — ${adapters[own.agent].displayName}`,
+          title: `Critique round ${round} — ${getAdapter(own.agent).displayName}`,
           role: "debaters",
           agent: own.agent,
           mode: "read",

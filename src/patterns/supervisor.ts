@@ -1,4 +1,4 @@
-import { adapters, isAgentId, type AgentId } from "../adapters/index.js";
+import { getAdapter, adapters, isAgentId, type AgentId } from "../adapters/index.js";
 import { RejectedError, type Pattern, type ReviewFinding, type StepOutcome } from "../engine.js";
 import { changedFiles } from "../git.js";
 import { describeIssues } from "../integrity.js";
@@ -66,7 +66,7 @@ export const supervisorPattern: Pattern = {
     const workers = ctx.agents("workers");
     if (workers.length === 0) throw new Error("Assign at least one worker");
     const maxSubtasks = ctx.option("maxSubtasks", 3);
-    const roster = workers.map((w) => `"${w}" (${adapters[w].displayName})`).join(", ");
+    const roster = workers.map((w) => `"${w}" (${getAdapter(w).displayName})`).join(", ");
 
     const integration = await ctx.worktree("integration");
     let decomposed = await ctx.decide<Split>({
@@ -163,7 +163,7 @@ export const supervisorPattern: Pattern = {
       await ctx.commit(wt, `${agent}: ${sub.title}`);
       // A turn can end fine without changing anything (blocked, or nothing seemed needed):
       // that part is missing, not done.
-      const changed = (await changedFiles(wt.path, wt.base)).length > 0;
+      const changed = (await changedFiles(await ctx.gitAt(wt), wt.base)).length > 0;
       if (result.ok && !changed) ctx.failStep(result, `Made no changes: ${firstLine(result.finalText)}`);
       return { sub, agent, wt, result, changed };
     });

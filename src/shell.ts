@@ -119,7 +119,8 @@ function ptyPython(python = defaultPython()): Promise<string | undefined> {
 }
 
 /** Whether `python` can run scripts/pty.py. */
-export function ptyAvailable(python = defaultPython()): Promise<boolean> {
+export function ptyAvailable(python = defaultPython(), options: { refresh?: boolean } = {}): Promise<boolean> {
+  if (options.refresh) probes.delete(python);
   return ptyPython(python).then(Boolean);
 }
 

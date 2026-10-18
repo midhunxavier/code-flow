@@ -13,7 +13,7 @@ test("fake evaluation runs paired workflows, retrieves canonical project memory 
   const output = join(directory, "trial"), registration = join(directory, "registered");
   try {
     const root = fileURLToPath(new URL("..", import.meta.url));
-    const result = await promisify(execFile)(process.execPath, ["--import", "tsx", "scripts/evaluate-teams.ts", "--fake", "--runs", "1", "--max-steps", "12", "--max-minutes", "1", "--out", output, "--register-home", registration], { cwd: root, timeout: 75_000, maxBuffer: 500_000 });
+    const result = await promisify(execFile)(process.execPath, ["--import", "tsx", "scripts/evaluate-teams.ts", "--fake", "--runs", "1", "--models", "claude=sonnet,codex=gpt-a", "--efforts", "claude=high,codex=high", "--max-steps", "12", "--max-minutes", "1", "--out", output, "--register-home", registration], { cwd: root, timeout: 75_000, maxBuffer: 500_000 });
     assert.match(result.stdout, /Results:/);
     const comparison = JSON.parse(await readFile(join(output, "comparison.json"), "utf8")) as { mode: string; reports: TeamEvaluation[]; assessment: { realRuns: number } };
     assert.equal(comparison.mode, "fake");
@@ -21,6 +21,11 @@ test("fake evaluation runs paired workflows, retrieves canonical project memory 
     assert.ok(comparison.reports.every((report) => report.mode === "fake" && report.verified && report.metrics.invocations <= 12));
     assert.equal(comparison.reports[0]!.taskHash, comparison.reports[1]!.taskHash);
     assert.equal(comparison.reports[0]!.baseRef, comparison.reports[1]!.baseRef);
+    assert.match(comparison.reports[0]!.reproducibility!.fixtureTree!, /^[0-9a-f]{40,64}$/);
+    assert.equal(comparison.reports[0]!.reproducibility!.fixtureTree, comparison.reports[1]!.reproducibility!.fixtureTree);
+    assert.match(comparison.reports[0]!.reproducibility!.applicationRevision!, /^[0-9a-f]{40,64}$/);
+    assert.deepEqual(comparison.reports[0]!.reproducibility!.requestedSettings, { claude: { model: "sonnet", effort: "high" }, codex: { model: "gpt-a", effort: "high" } });
+    assert.ok(comparison.reports[0]!.reproducibility!.stepSettings.length > 0);
     assert.match(comparison.reports[0]!.pairId!, /^[0-9a-f-]{36}-pair-1$/, "pair identities include the unique evaluation batch");
     assert.equal(comparison.reports[0]!.pairId, comparison.reports[1]!.pairId);
     assert.equal(comparison.assessment.realRuns, 0, "fake trials never count toward rollout");

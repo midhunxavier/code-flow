@@ -1,4 +1,4 @@
-import { adapters, AGENT_IDS, type AgentId } from "./adapters/index.js";
+import { getAdapter, adapters, AGENT_IDS, type AgentId } from "./adapters/index.js";
 
 /**
  * "Auto" in a role: pick an agent for it when the run starts, steering away from plans that
@@ -62,10 +62,10 @@ export function resolveAuto(
       const reasons: string[] = [];
       const pickedFull = exhausted(pick, quota);
       // Everyone is out of room: say so rather than implying the pick has some.
-      if (pickedFull) reasons.push(`every agent is out of room; ${adapters[pick].displayName} ${pickedFull}`);
-      else if (skipped.length) reasons.push(`${adapters[skipped[0]!].displayName} ${exhausted(skipped[0]!, quota)}`);
+      if (pickedFull) reasons.push(`every agent is out of room; ${getAdapter(pick).displayName} ${pickedFull}`);
+      else if (skipped.length) reasons.push(`${getAdapter(skipped[0]!).displayName} ${exhausted(skipped[0]!, quota)}`);
       if (rank.why[pick] && rank.order[0] === pick) reasons.push(rank.why[pick]!);
-      notes.push(`Auto picked ${adapters[pick].displayName} for ${role}${reasons.length ? ` (${reasons.join("; ")})` : ""}`);
+      notes.push(`Auto picked ${getAdapter(pick).displayName} for ${role}${reasons.length ? ` (${reasons.join("; ")})` : ""}`);
     }
     out[role] = [...new Set(chosen)];
   }

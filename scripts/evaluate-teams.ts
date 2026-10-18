@@ -8,12 +8,12 @@ import { fileURLToPath } from "node:url";
 
 const argv = process.argv.slice(2);
 if (argv.includes("--help")) {
-  process.stdout.write("Usage: npm run evaluate:teams -- [--fake | --real --confirm] [--runs 1] [--providers claude,codex] [--max-steps 12] [--max-minutes 5] [--out DIR] [--register-home DIR]\nEach run is one matched Auto/Supervisor pair in an isolated generated repository. --real uses the official signed-in CLIs and consumes subscription quota (up to runs × 2 × max-steps invocations), so it also needs --confirm. Defaults to fake. Results, repositories and CLI versions remain local in DIR. --register-home explicitly copies only measurement reports into another code-flow installation; it never changes rollout.\n");
+  process.stdout.write("Usage: npm run evaluate:teams -- [--fake | --real --confirm] [--runs 1] [--providers claude,codex] [--models claude=MODEL,codex=MODEL] [--efforts claude=high,codex=high] [--max-steps 12] [--max-minutes 5] [--out DIR] [--register-home DIR]\nEach run is one matched Auto/Supervisor pair in an isolated generated repository. --real uses the official signed-in CLIs and consumes subscription quota (up to runs × 2 × max-steps invocations), so it also needs --confirm. Defaults to fake. Results, repositories, CLI versions, requested model settings, application revision and fixture tree hashes remain local in DIR. Use provider snapshot model IDs when supported; aliases and defaults can change. --register-home explicitly copies only measurement reports into another code-flow installation; it never changes rollout.\n");
   process.exit(0);
 }
 const option = (name: string, fallback: string) => { const index = argv.indexOf(name); if (index < 0) return fallback; if (!argv[index + 1] || argv[index + 1]!.startsWith("--")) throw new Error(`Missing ${name} value`); return argv[index + 1]!; };
 const numberOption = (name: string, fallback: number, min: number, max: number) => { const value = Number(option(name, String(fallback))); if (!Number.isFinite(value) || value < min || value > max) throw new Error(`${name} must be between ${min} and ${max}`); return value; };
-const allowed = new Set(["--fake", "--real", "--confirm", "--runs", "--providers", "--max-steps", "--max-minutes", "--out", "--register-home"]);
+const allowed = new Set(["--fake", "--real", "--confirm", "--runs", "--providers", "--models", "--efforts", "--max-steps", "--max-minutes", "--out", "--register-home"]);
 for (const argument of argv.filter((value) => value.startsWith("--"))) if (!allowed.has(argument)) throw new Error(`Unknown option ${argument}`);
 if (argv.includes("--real") && argv.includes("--fake")) throw new Error("Choose --real or --fake");
 const mode = argv.includes("--real") ? "real" : "fake";
@@ -25,6 +25,17 @@ if (!Number.isInteger(runs) || !Number.isInteger(maxSteps)) throw new Error("--r
 if (mode === "real" && !argv.includes("--confirm")) throw new Error(`--real spends signed-in CLI quota: up to ${runs * 2 * maxSteps} invocations across ${runs} matched pair(s). Add --confirm to proceed.`);
 const providers = [...new Set(option("--providers", "claude,codex").split(","))];
 if (!providers.length || providers.some((id) => !["claude", "codex", "agy"].includes(id))) throw new Error("Providers must be claude,codex,agy");
+const assignments = (flag: string) => {
+  const entries = option(flag, "").split(",").filter(Boolean).map((part) => {
+    const [provider, ...valueParts] = part.split("=");
+    const value = valueParts.join("=").trim();
+    if (!provider || !providers.includes(provider) || !value || value.length > 200 || /[\x00-\x1f]/.test(value)) throw new Error(`${flag} must use selected provider=VALUE assignments`);
+    return [provider, value] as const;
+  });
+  if (new Set(entries.map(([provider]) => provider)).size !== entries.length) throw new Error(`${flag} has duplicate providers`);
+  return Object.fromEntries(entries);
+};
+const requestedModels = assignments("--models"), requestedEfforts = assignments("--efforts");
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Only make a temporary directory when none was given; an eager default leaves an empty one behind on every run.
 const output = resolve(argv.includes("--out") ? option("--out", "") : await mkdtemp(join(tmpdir(), `codeflow-team-${mode}-evaluation-`)));
@@ -47,6 +58,9 @@ type Run = import("../src/engine.js").Run;
 type AgentId = import("../src/adapters/types.js").AgentId;
 type TeamEvaluation = import("../src/team-evaluation.js").TeamEvaluation;
 const ids = providers as AgentId[];
+const agentSettings: import("../src/adapters/types.js").AgentSettings = Object.fromEntries(ids.filter((id) => requestedModels[id] || requestedEfforts[id]).map((id) => [id, { ...(requestedModels[id] ? { model: requestedModels[id] } : {}), ...(requestedEfforts[id] ? { effort: requestedEfforts[id] } : {}) }]));
+const applicationRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", timeout: 15_000 }).trim();
+const applicationDirty = !!execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8", timeout: 15_000 }).trim();
 const versions: Record<string, string> = {};
 for (const id of ids) versions[id] = execFileSync(id, ["--version"], { encoding: "utf8", timeout: 15_000, maxBuffer: 64_000 }).trim().slice(0, 1000) || "version not reported";
 if (mode === "real" && Object.values(versions).some((version) => /fake/i.test(version))) throw new Error("A fake CLI cannot produce real evaluation evidence");
@@ -55,10 +69,10 @@ const settings = {
   approvals: { plan: false },
   autoTeam: { maxWaves: 4, maxRepairs: 1, eventDriven: true },
   supervisor: { maxSubtasks: 2 },
-  models: "provider defaults; no agentSettings or roleSettings are passed",
+  models: ids.map((provider) => ({ provider, model: requestedModels[provider] ?? "provider default (unresolved)", effort: requestedEfforts[provider] ?? "provider default" })),
   loop: { check: "node --test", maxSteps, maxMinutes, maxInvocations: maxSteps },
 };
-await writeFile(join(output, "configuration.json"), JSON.stringify({ version: 1, mode, runs, providers, maxSteps, maxMinutes, registerHome, cliVersions: versions, settings, seededMemory: "Synthetic accepted repository rule: use dependency-free node:test; no usefulness claim", at: new Date().toISOString() }, null, 2));
+await writeFile(join(output, "configuration.json"), JSON.stringify({ version: 1, mode, runs, providers, maxSteps, maxMinutes, registerHome, cliVersions: versions, settings, reproducibility: { applicationRevision, applicationDirty, nodeVersion: process.version, platform: `${process.platform}/${process.arch}` }, seededMemory: "Synthetic accepted repository rule: use dependency-free node:test; no usefulness claim", at: new Date().toISOString() }, null, 2));
 const evaluations = new TeamEvaluationStore(join(output, "reports"));
 const appEvaluations = new TeamEvaluationStore(join(process.env.CODEFLOW_HOME, "team-evaluations"));
 const registration = registerHome ? new TeamEvaluationStore(join(registerHome, "team-evaluations")) : undefined;
@@ -97,6 +111,7 @@ try {
     }
     execFileSync("git", ["add", "."], { cwd: repo });
     execFileSync("git", ["-c", "user.name=code-flow evaluation", "-c", "user.email=evaluation@localhost", "commit", "-qm", "Evaluation baseline"], { cwd: repo });
+    const fixtureTree = execFileSync("git", ["rev-parse", "main^{tree}"], { cwd: repo, encoding: "utf8", timeout: 15_000 }).trim();
     const project = await projects.create({ name: `Evaluation case ${index + 1}`, repos: [repo] });
     const canonicalRepo = project.repos[0]!;
     await memoryStore.propose({ scope: "project", repo: canonicalRepo, projectId: project.id, title: "Synthetic evaluation fixture: test convention", body: "This generated evaluation repository is dependency-free. Use node:test and node --test; do not install packages or contact external services.", tags: ["test", "dependency-free", "evaluation-fixture"], paths: [], applicability: { kind: "repository" }, sourceRefs: ["Evaluation fixture setup; synthetic accepted seed, not a learned result"] }, { kind: "user", repo: canonicalRepo, projectId: project.id });
@@ -110,6 +125,7 @@ try {
         roles: pattern === "auto-team" ? { coordinator: [ids[0]!], pool: ids } : { supervisor: [ids[0]!], workers: ids, reviewer: [ids[1] ?? ids[0]!] },
         options: pattern === "auto-team" ? { maxWaves: 4, maxRepairs: 1, eventDriven: true } : { maxSubtasks: 2 },
         approvals: { plan: false }, loop: { check: "node --test", maxSteps, maxMinutes, maxInvocations: maxSteps },
+        agentSettings,
         group: { id: pairId, label: pattern },
       });
       // A signal can arrive while start() is preparing the run, before activeRun is assigned.
@@ -119,7 +135,7 @@ try {
       const started = performance.now(); const journal = await loadJournal(activeRun.id, { strict: pattern === "auto-team" });
       const bytes = await stat(file).then((info) => info.size, (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return 0; throw error; });
       const replay = { bytes, records: journal.size, durationMs: performance.now() - started, kind: "journal-load" as const };
-      const report = buildTeamEvaluation(activeRun, { mode, cliVersions: versions, caseId: mode === "real" ? "sum-numbers-v2-seeded-memory" : "fake-peer-question-v2-seeded-memory", pairId, replay, journal, memoryEntries: await memoryStore.list({ repo: activeRun.repo, scope: "project", projectId: activeRun.project }, { kind: "user", repo: activeRun.repo, projectId: activeRun.project }) });
+      const report = buildTeamEvaluation(activeRun, { mode, cliVersions: versions, caseId: mode === "real" ? "sum-numbers-v2-seeded-memory" : "fake-peer-question-v2-seeded-memory", pairId, replay, journal, reproducibility: { applicationRevision, applicationDirty, fixtureTree }, memoryEntries: await memoryStore.list({ repo: activeRun.repo, scope: "project", projectId: activeRun.project }, { kind: "user", repo: activeRun.repo, projectId: activeRun.project }) });
       report.limitations.push("This trial seeds one synthetic accepted repository memory about dependency-free node:test. Selection measures retrieval plumbing, not learned-memory usefulness.");
       await evaluations.record(report); await appEvaluations.record(report); if (registration) await registration.record(report); reports.push(report);
       process.stdout.write(`${activeRun.id}: ${activeRun.status}, verified=${report.verified}, calls=${report.metrics.invocations}, coordinator=${report.metrics.coordinatorInvocations}\n`);
@@ -129,6 +145,7 @@ try {
 const assessment = assessTeamRollout(reports);
 await writeFile(join(output, "comparison.json"), JSON.stringify({ version: 1, mode, interrupted, reports, assessment }, null, 2));
 const lines = ["# Local team comparison", "", `Mode: **${mode}**. ${mode === "fake" ? "These fixtures do not measure real-agent quality or cost." : "These bounded generated tasks are not a representative product benchmark."}`, "", "One synthetic accepted repository memory about dependency-free node:test is seeded before each pair. Selection measures retrieval plumbing, not learned-memory usefulness.", "", "| Case | Pattern | Status | Verified | Calls | Coordinator | Worker turns | Selected memory | Elapsed ms | Journal bytes | Journal load ms |", "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|", ...reports.map((report) => `| ${report.pairId} | ${report.pattern} | ${report.status} | ${report.verified} | ${report.metrics.invocations} | ${report.metrics.coordinatorInvocations} | ${report.metrics.workerTurns} | ${report.metrics.selectedMemories} | ${report.metrics.elapsedMs ?? "unknown"} | ${report.metrics.replay?.bytes ?? "unknown"} | ${report.metrics.replay?.durationMs.toFixed(2) ?? "unknown"} |`), "", "## Rollout assessment", "", ...assessment.blockers.map((blocker) => `- ${blocker}`), "", "No rollout stage was changed. Reports contain task hashes and measurements; source run transcripts remain in this evaluation directory.", `To inspect these runs in the app, start it with CODEFLOW_HOME set to ${process.env.CODEFLOW_HOME}.`, ...(registerHome ? [`Measurement reports were also registered in ${registerHome}; run transcripts were not copied.`] : []), "", "## CLI versions", "", ...Object.entries(versions).map(([provider, version]) => `- ${provider}: ${version.replaceAll("\n", " ")}`), ""];
+lines.push("## Reproducibility", "", `Application revision: ${applicationRevision}${applicationDirty ? " (working tree contains uncommitted changes)" : ""}. Node ${process.version}, ${process.platform}/${process.arch}.`, "", ...settings.models.map((model) => `- ${model.provider}: requested model ${model.model}, effort ${model.effort}`), "", "Requested aliases and provider defaults are not immutable model identities. Each report records its generated fixture tree and the model settings actually requested by each turn.", "");
 await writeFile(join(output, "comparison.md"), lines.join("\n"));
 process.stdout.write(`Results: ${join(output, "comparison.md")}\n`);
 if (interrupted || reports.some((report) => !report.verified)) process.exitCode = 1;

@@ -1,0 +1,9 @@
+import { useEffect, useState } from "preact/hooks";
+import { api } from "./lib.js";
+import type { ExtensionStatus } from "../src/extensions.js";
+
+export function ExtensionsPanel() {
+  const [status, setStatus] = useState<{ api: { major: number; minor: number }; extensions: ExtensionStatus[] }>(), [error, setError] = useState("");
+  useEffect(() => { let active = true; api<typeof status>("/api/extensions").then((value) => { if (active) setStatus(value); }, (error) => { if (active) setError(error.message); }); return () => { active = false; }; }, []);
+  return <section aria-label="Provider and workflow extensions"><h2>Provider and workflow extensions</h2><p>Load explicitly configured, SHA-256 pinned local JavaScript bundles with API version negotiation. Loaded providers appear in team selection; workflows appear in New run.</p><p class="help">Extensions are trusted server code with the server owner's permissions. Configure CODEFLOW_EXTENSIONS_FILE and restart after reviewing each bundle. Repository files cannot enable extensions. See docs/extensions.md for the contract and configuration example.</p>{status ? <><p>Host extension API {status.api.major}.{status.api.minor}</p>{!status.extensions.length ? <p class="help">No extensions configured.</p> : status.extensions.map((extension) => <article class="section" key={extension.id}><h3>{extension.id} {extension.version} · {extension.state}</h3><p class="help">SHA-256 {extension.sha256}</p>{extension.api ? <p>Negotiated API {extension.api.major}.{extension.api.minor}</p> : null}<p>Providers: {extension.providers.join(", ") || "None"} · Workflows: {extension.workflows.join(", ") || "None"}</p>{extension.error ? <p class="msg err" role="alert">{extension.error}</p> : null}</article>)}</> : null}{error ? <p role="alert" class="msg err">{error}</p> : null}</section>;
+}

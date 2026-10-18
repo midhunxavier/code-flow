@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { CODEFLOW_HOME, timerMs } from "../config.js";
 import { childEnv } from "../env.js";
 import type { ErrorKind } from "./types.js";
+import { agentContainerLaunch, isAgentContainerName, stopAgentContainer, stopAgentContainerSync, type AgentContainer } from "../agent-container.js";
 
 export interface JsonlProcessOptions {
   command: string;
@@ -21,6 +22,7 @@ export interface JsonlProcessOptions {
   input?: string;
   /** Keep stdin open for `send` (a CLI that serves JSON-RPC on stdio) instead of closing it. */
   interactive?: boolean;
+  agentContainer?: { config: AgentContainer; mode: "read" | "write"; readOnly?: string[] };
   /** Called for every stdout line that parses as JSON. */
   onJson: (obj: any) => void;
   /** Called for stdout lines that are not JSON. */
@@ -56,6 +58,7 @@ interface GroupRecord {
   pid: number;
   /** When code-flow started it (ms since epoch): tells it apart from a later process that got the same pid. */
   startedAt: number;
+  containerName?: string;
 }
 
 /**
@@ -70,6 +73,7 @@ const dyingGroups = new Map<number, GroupRecord>();
 const GROUPS_FILE = join(CODEFLOW_HOME, "processes.json");
 
 process.once("exit", () => {
+  for (const record of [...liveGroups.values(), ...dyingGroups.values()]) if (record.containerName) stopAgentContainerSync(record.containerName);
   for (const pid of [...liveGroups.keys(), ...dyingGroups.keys()]) signalGroup(pid, "SIGKILL");
   liveGroups.clear();
   dyingGroups.clear();
@@ -93,9 +97,9 @@ function persistGroups() {
   }
 }
 
-export function trackGroup(pid: number | undefined) {
+export function trackGroup(pid: number | undefined, containerName?: string) {
   if (!pid) return;
-  liveGroups.set(pid, { pid, startedAt: Date.now() });
+  liveGroups.set(pid, { pid, startedAt: Date.now(), ...(containerName ? { containerName } : {}) });
   persistGroups();
 }
 export function untrackGroup(pid: number | undefined) {
@@ -151,6 +155,7 @@ export async function reapOrphanGroups(): Promise<number> {
   if (sameBoot && Array.isArray(saved?.groups)) {
     for (const g of saved!.groups) {
       if (!Number.isInteger(g?.pid) || g.pid <= 1 || g.pid === process.pid || liveGroups.has(g.pid)) continue;
+      if (isAgentContainerName(g.containerName)) await stopAgentContainer(g.containerName);
       if (!(await isOurGroup(g))) continue;
       signalGroup(g.pid, "SIGKILL");
       killed++;
@@ -177,7 +182,13 @@ export function killGroup(pid: number | undefined, graceMs = 5_000) {
   if (!pid) return;
   signalGroup(pid, "SIGTERM");
   if (dyingGroups.has(pid)) return; // a SIGKILL is already scheduled
-  dyingGroups.set(pid, liveGroups.get(pid) ?? { pid, startedAt: Date.now() });
+  const record = liveGroups.get(pid) ?? { pid, startedAt: Date.now() };
+  dyingGroups.set(pid, record);
+  if (record.containerName) {
+    void stopAgentContainer(record.containerName);
+    // Cancellation can race daemon-side creation after the client was killed.
+    setTimeout(() => void stopAgentContainer(record.containerName!), 300).unref();
+  }
   persistGroups();
   setTimeout(() => {
     signalGroup(pid, "SIGKILL");
@@ -199,6 +210,8 @@ export interface JsonlProcess {
    * exited within `resultGraceMs`, it's stopped and the outcome resolves anyway.
    */
   resultSeen(): void;
+  /** Pause only the idle watchdog while an explicit user decision is pending. */
+  pauseIdle(paused: boolean): void;
   readonly outcome: Promise<ProcessOutcome>;
 }
 
@@ -215,17 +228,19 @@ export function runJsonlProcess(opts: JsonlProcessOptions): Promise<ProcessOutco
 
 export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
   const piped = opts.input !== undefined || !!opts.interactive;
-  const child = spawn(opts.command, opts.args, {
+  const container = opts.agentContainer ? agentContainerLaunch(opts.command, opts.args, opts.cwd, opts.agentContainer.mode, opts.agentContainer.config, opts.agentContainer.readOnly) : undefined;
+  const child = spawn(container?.command ?? opts.command, container?.args ?? opts.args, {
     cwd: opts.cwd,
     env: opts.env ?? childEnv(),
     detached: true,
     stdio: [piped ? "pipe" : "ignore", "pipe", "pipe"],
   });
-  trackGroup(child.pid);
+  trackGroup(child.pid, container?.name);
   child.stdin?.on("error", () => {}); // the CLI may exit before reading everything
   if (opts.input !== undefined && !opts.interactive) child.stdin?.end(opts.input);
 
   let markResult = () => {};
+  let pauseIdle = (_paused: boolean) => {};
 
   const outcome = new Promise<ProcessOutcome>((resolve) => {
     let stderr = "";
@@ -254,14 +269,20 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
     // Any output at all, a partial line or stderr included, is a sign of life.
     const idleMs = validMs(opts.idleTimeoutMs);
     let idle: NodeJS.Timeout | undefined;
+    let idlePaused = false;
     const alive = () => {
-      if (idleMs === undefined || resultSeen || settled) return;
+      if (idleMs === undefined || resultSeen || settled || idlePaused) return;
       clearTimeout(idle);
       idle = setTimeout(() => {
         stalled = true;
         kill();
       }, timerMs(idleMs));
       idle.unref();
+    };
+    pauseIdle = (paused) => {
+      idlePaused = paused;
+      clearTimeout(idle);
+      if (!paused) alive();
     };
     alive();
 
@@ -326,7 +347,17 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
       clearTimeout(grace);
       untrackGroup(child.pid);
       opts.signal?.removeEventListener("abort", onAbort);
-      resolve({ exitCode, stderr, aborted, timedOut, stalled, idleMs: stalled ? idleMs : undefined, resultSeen, killedAfterResult });
+      const outcome = { exitCode, stderr, aborted, timedOut, stalled, idleMs: stalled ? idleMs : undefined, resultSeen, killedAfterResult };
+      if (container) {
+        void (async () => {
+          await stopAgentContainer(container.name);
+          if (aborted || timedOut || stalled || exitCode !== 0) {
+            await new Promise((done) => setTimeout(done, 300));
+            await stopAgentContainer(container.name);
+          }
+          resolve(outcome);
+        })();
+      } else resolve(outcome);
     };
 
     child.on("error", (err) => {
@@ -356,6 +387,7 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
     endInput: () => child.stdin?.end(),
     kill: () => killGroup(child.pid),
     resultSeen: () => markResult(),
+    pauseIdle: (paused) => pauseIdle(paused),
     outcome,
   };
 }
@@ -450,6 +482,36 @@ export function processErrorKind(outcome: ProcessOutcome): ErrorKind | undefined
 /** The last `lines` lines of what the CLI wrote to stderr. */
 export function stderrTail(outcome: ProcessOutcome, lines = 5): string {
   return outcome.stderr.trim().split("\n").slice(-lines).join("\n");
+}
+
+/**
+ * Event and item types a CLI printed that its adapter doesn't know, over one turn. Adapters
+ * skip what they don't recognise, so a CLI update that renames an event (the agent's answer, a
+ * tool call) would otherwise only show as a turn with something missing. `report` gives one
+ * status line per turn naming them, or nothing when every event was known.
+ */
+export function unknownEvents(cli: string) {
+  const counts = new Map<string, number>();
+  let total = 0;
+  return {
+    add(type: unknown) {
+      const name = typeof type === "string" && type.trim() ? type.trim().slice(0, 60) : "(no type)";
+      total++;
+      if (counts.has(name) || counts.size < 20) counts.set(name, (counts.get(name) ?? 0) + 1);
+    },
+    get count() {
+      return total;
+    },
+    /** The status line for the turn (once: later calls return undefined). */
+    report(): string | undefined {
+      if (!total) return undefined;
+      const names = [...counts.entries()].map(([name, n]) => (n > 1 ? `${name} (${n})` : name)).join(", ");
+      const line = `${cli} emitted ${total} event${total === 1 ? "" : "s"} code-flow doesn't know: ${names}. If this turn's output looks incomplete, the CLI's format may have changed: update code-flow.`;
+      total = 0;
+      counts.clear();
+      return line;
+    },
+  };
 }
 
 function duration(ms: number): string {
