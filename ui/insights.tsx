@@ -56,7 +56,6 @@ export function InsightsView({ group }: { group?: string }) {
   return (
     <div class="insights">
       <div class="ins-head">
-        <h1>Insights</h1>
         <ProjectButton />
         <div class="segmented" role="group" aria-label="Which runs">
           {inProject ? (

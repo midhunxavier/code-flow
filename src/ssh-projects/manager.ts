@@ -6,9 +6,9 @@ import { CODEFLOW_HOME } from "../config.js";
 import { HttpError } from "../http.js";
 import { sshAliases } from "./config.js";
 import { SshGateway, parseRuntime } from "./gateway.js";
-import { SshTransport, validSshHost } from "./transport.js";
+import { SshTransport, validSshHost, validSshOptions, type SshOptions } from "./transport.js";
 
-interface Host { id: string; name: string; sshHost: string }
+interface Host extends SshOptions { id: string; name: string; sshHost: string }
 interface Session { transport: SshTransport; gateway: SshGateway }
 export class SshProjects {
   private hosts: Host[] = [];
@@ -22,7 +22,7 @@ export class SshProjects {
   private load() {
     return this.loaded ??= readFile(this.file, "utf8").then((text) => {
       const raw = JSON.parse(text);
-      if (!raw || raw.version !== 1 || !Array.isArray(raw.hosts) || raw.hosts.length > 32 || raw.hosts.some((host: Host) => !host || typeof host !== "object" || !/^[a-f0-9]{16}$/.test(host.id) || !validSshHost(host.sshHost) || typeof host.name !== "string" || !host.name || host.name.length > 80) || new Set(raw.hosts.map((host: Host) => host.id)).size !== raw.hosts.length) throw new Error("Repair the SSH connections file before continuing");
+      if (!raw || raw.version !== 1 || !Array.isArray(raw.hosts) || raw.hosts.length > 32 || raw.hosts.some((host: Host) => !host || typeof host !== "object" || !/^[a-f0-9]{16}$/.test(host.id) || !validSshHost(host.sshHost) || !validSshOptions(host) || typeof host.name !== "string" || !host.name || host.name.length > 80) || new Set(raw.hosts.map((host: Host) => host.id)).size !== raw.hosts.length) throw new Error("Repair the SSH connections file before continuing");
       this.hosts = raw.hosts;
     }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
   }
@@ -38,17 +38,18 @@ export class SshProjects {
     });
     this.writes = work; return work;
   }
-  async add(body: { name?: unknown; sshHost?: unknown }) {
-    if (!validSshHost(body.sshHost)) throw new HttpError(400, "Enter an SSH alias or user@hostname. Configure custom ports and keys in ~/.ssh/config.");
+  async add(body: { name?: unknown; sshHost?: unknown; port?: unknown; identityFile?: unknown }) {
+    if (!validSshHost(body.sshHost)) throw new HttpError(400, "Enter an SSH alias or user@hostname.");
+    if (!validSshOptions(body)) throw new HttpError(400, "Use a port from 1 to 65535 and an absolute or ~/ SSH key path without control characters or % tokens");
     const name = typeof body.name === "string" ? body.name.trim() : body.sshHost;
     if (!name || name.length > 80) throw new HttpError(400, "Name the server using at most 80 characters");
-    const host: Host = { id: randomBytes(8).toString("hex"), name, sshHost: body.sshHost };
-    await this.change(() => { if (this.hosts.length >= 32) throw new HttpError(409, "Remove an unused SSH connection first (32 maximum)"); if (this.hosts.some((item) => item.sshHost === host.sshHost)) throw new HttpError(409, "This SSH host is already saved"); this.hosts.push(host); }); return host;
+    const host: Host = { id: randomBytes(8).toString("hex"), name, sshHost: body.sshHost, ...(body.port === undefined ? {} : { port: body.port as number }), ...(body.identityFile === undefined ? {} : { identityFile: body.identityFile as string }) };
+    await this.change(() => { if (this.hosts.length >= 32) throw new HttpError(409, "Remove an unused SSH connection first (32 maximum)"); if (this.hosts.some((item) => item.sshHost === host.sshHost && item.port === host.port && item.identityFile === host.identityFile)) throw new HttpError(409, "This SSH host is already saved"); this.hosts.push(host); }); return host;
   }
   private async setup(host: Host) {
     const [code, payload] = await Promise.all([readFile(new URL("./bootstrap.mjs", import.meta.url), "utf8"), readFile(this.options.packagePath ?? fileURLToPath(new URL("../../dist/remote-host.json", import.meta.url)), "utf8").catch(() => { throw new Error("Build the SSH host package with npm run build:host, then connect again."); })]);
     if (payload.length > 32 * 1024 * 1024) throw new Error("Remote host package exceeds 32 MiB");
-    const transport = new SshTransport(host.sshHost, this.options.sshBinary); await transport.init();
+    const transport = new SshTransport(host.sshHost, this.options.sshBinary, host); await transport.init();
     try { const runtime = parseRuntime(await transport.bootstrap(code, payload)); return { transport, runtime }; }
     catch (error) { await transport.close(); throw error; }
   }

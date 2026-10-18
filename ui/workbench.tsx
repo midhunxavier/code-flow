@@ -1,19 +1,9 @@
 import { useEffect, useLayoutEffect, useState } from "preact/hooks";
 import { api, enc, post, showToast } from "./lib.js";
-import { IntegrationsView } from "./integrations.js";
-import { NotificationsView } from "./notifications.js";
 import { LaunchProfilesPanel } from "./launch-profiles.js";
-import { ConventionsPanel } from "./conventions.js";
-import { DeferredRunsPanel } from "./deferred-runs.js";
-import { WorkbenchRetentionPanel } from "./retention.js";
-import { CodeHostsPanel } from "./code-hosts.js";
-import { FilePolicyPanel } from "./filesystem-policy.js";
 import { FilteredTasksPanel } from "./filtered-tasks.js";
-import { SharedAccountsPanel } from "./shared.js";
-import { RemoteWorkersView } from "./remote-workers.js";
 import { CoordinatedChangesPanel } from "./repo-coordination.js";
-import { ExtensionsPanel } from "./extensions.js";
-import { repo, runs, route, externalSource, source, setTask, projects } from "./state.js";
+import { repo, runs, route, projects } from "./state.js";
 import type { VerificationProfile, VerificationReport } from "../src/verification.js";
 import type { CodeHit } from "../src/workspace.js";
 import type { SymbolHit } from "../src/code-intelligence.js";
@@ -22,12 +12,10 @@ import type { CheckpointHunks } from "../src/workspace-changes.js";
 import type { ArchitectureGraph } from "../src/architecture.js";
 import { loadFileDraft, retainFileDraft } from "./file-drafts.js";
 
-type Tab = "verification" | "code" | "dependencies" | "context" | "history" | "diagnostics" | "sources" | "notifications" | "services" | "conventions" | "deferred" | "retention" | "accounts" | "workers" | "coordination" | "extensions" | "filesystem" | "code-hosts";
+type Tab = "verification" | "code" | "dependencies" | "context" | "history" | "services" | "coordination" | "filtered-tasks";
 const TOOL_GROUPS: readonly { label: string; tools: readonly (readonly [Tab, string])[] }[] = [
   { label: "Code and verification", tools: [["verification", "Verification"], ["code", "Code"], ["dependencies", "Dependencies"], ["context", "Context"], ["history", "History"]] },
-  { label: "Execution", tools: [["services", "Services"], ["deferred", "Deferred runs"], ["workers", "SSH workers"], ["coordination", "Coordinated changes"]] },
-  { label: "Project and collaboration", tools: [["conventions", "Conventions"], ["accounts", "Shared accounts"], ["sources", "Sources"], ["code-hosts", "Code hosts"], ["notifications", "Notifications"]] },
-  { label: "Administration", tools: [["filesystem", "Filesystem policy"], ["retention", "Retention"], ["extensions", "Extensions"], ["diagnostics", "Diagnostics"]] },
+  { label: "Repository operations", tools: [["services", "Services"], ["coordination", "Coordinated changes"], ["filtered-tasks", "Filtered tasks"]] },
 ];
 interface Editable { path: string; text: string; hash: string; bytes: number; folder?: string }
 interface Checkpoint { sha: string; at: number; subject: string }
@@ -73,12 +61,11 @@ export function WorkbenchView() {
   const [hunkPath, setHunkPath] = useState("");
   const [hunks, setHunks] = useState<CheckpointHunks | null>(null);
   const [chosenHunks, setChosenHunks] = useState<string[]>([]);
-  const [diagnostics, setDiagnostics] = useState<any>(null);
-  const [conventionsProjectId, setConventionsProjectId] = useState("");
+  const [taskProjectId, setTaskProjectId] = useState("");
   const availableRuns = [...runs.value.values()].filter((run) => run.repo === repo.value || run.worktrees.some((tree) => tree.path === folder));
   const selectedRun = availableRuns.find((run) => run.worktrees.some((tree) => tree.path === folder));
   const selectedTree = selectedRun?.worktrees.find((tree) => tree.path === folder);
-  const conventionsProject = projects.value.find((project) => project.id === conventionsProjectId) ?? projects.value.find((project) => project.repos.includes(selectedRun?.repo ?? folder)) ?? projects.value[0];
+  const taskProject = projects.value.find((project) => project.id === taskProjectId) ?? projects.value.find((project) => project.repos.includes(selectedRun?.repo ?? folder)) ?? projects.value[0];
   const runAction = async (path: string, body: unknown) => perform(async () => { await post(path, body); showToast("Updated"); });
   const perform = async (action: () => Promise<void>) => {
     if (busy) return;
@@ -115,9 +102,9 @@ export function WorkbenchView() {
       setFile({ ...file, ...saved, text: draft }); setMergeConflict(false); setPreview(false); showToast("File saved");
     } catch (error) { setConflict(true); throw error; }
   });
-  return <div class="composer workbench">
+  return <div class="workbench">
     <style>{`.workbench{max-width:1100px}.workbench .wb-mobile-tool{display:none}.workbench .wb-tabs{display:flex;flex-wrap:wrap;gap:6px;margin:20px 0}.workbench .wb-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:12px 0}.workbench .wb-row input{flex:1;min-width:100px}.workbench table{width:100%;border-collapse:collapse;font-size:13px}.workbench th,.workbench td{text-align:left;padding:8px;border-bottom:1px solid var(--border);overflow-wrap:anywhere}.workbench pre{white-space:pre-wrap;max-height:360px;overflow:auto;font-size:12px}.workbench .wb-editor{width:100%;min-height:360px;font-family:monospace;box-sizing:border-box}.workbench .wb-diff{display:grid;grid-template-columns:1fr 1fr;gap:16px}.workbench .wb-diff>div{min-width:0}.workbench .wb-check{display:grid;grid-template-columns:100px 1fr auto;gap:8px;align-items:center;margin:8px 0}.workbench .wb-check input[type=text]{min-width:0}.workbench .wb-path{font-family:monospace;font-size:12px;text-align:left}.workbench .wb-scroll{overflow:auto}@media(max-width:760px){.workbench .wb-tabs{display:none}.workbench .wb-mobile-tool{display:block;margin:16px 0}.workbench .wb-mobile-tool .field{width:100%}.workbench .wb-diff{grid-template-columns:1fr}.workbench .wb-check{grid-template-columns:1fr}.workbench .wb-tabs button{flex:1}.workbench .wb-row .btn{min-height:40px}}`}</style>
-    <div class="eyebrow">Workspace</div><h1>Inspect, verify, and recover</h1>
+    <h3>Inspect, verify, and recover</h3>
     <p class="lede">Check the repository, inspect code and context, and manage results with evidence.</p>
     <label class="lbl" for="wb-folder">Repository or run worktree</label>
     <select id="wb-folder" class="field" value={folder} disabled={busy} onChange={(event) => setFolder(event.currentTarget.value)}>
@@ -126,10 +113,9 @@ export function WorkbenchView() {
     </select>
     <div class="wb-mobile-tool"><label class="lbl" for="wb-tool">Workspace tool</label><select id="wb-tool" class="field" value={tab} disabled={busy} onChange={(event) => setTab(event.currentTarget.value as Tab)}>{TOOL_GROUPS.map((group) => <optgroup key={group.label} label={group.label}>{group.tools.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</optgroup>)}</select></div>
     <nav class="wb-tabs" aria-label="Workspace tools">{TOOL_GROUPS.flatMap((group) => group.tools).map(([id, label]) => <button class={`btn ${tab === id ? "primary" : ""}`} aria-current={tab === id ? "page" : undefined} onClick={() => setTab(id)}>{label}</button>)}</nav>
-    {!folder && tab !== "diagnostics" ? <p class="help">Choose a repository in New run first.</p> : null}
+    {!folder && tab !== "coordination" && tab !== "filtered-tasks" ? <p class="help">Choose a repository in New run first.</p> : null}
     {error ? <div class="msg err" role="alert">{error}</div> : null}
     {busy ? <p role="status">Working…</p> : null}
-    {tab === "conventions" ? conventionsProject ? <section><label class="lbl" for="wb-conventions-project">Conventions project</label><select id="wb-conventions-project" class="field" value={conventionsProject.id} onChange={(event) => setConventionsProjectId(event.currentTarget.value)}>{projects.value.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><ConventionsPanel key={conventionsProject.id} projectId={conventionsProject.id} repos={conventionsProject.repos} /></section> : <p class="help">Create a project in the sidebar before saving shared conventions.</p> : null}
     {tab === "verification" ? <section>
       <h2>Verification profile</h2>
       <div class="wb-row"><label>Profile <select class="field" value={preset} onChange={(event) => setPreset(event.currentTarget.value)}><option value="lightweight">Lightweight</option><option value="standard">Standard</option><option value="thorough">Thorough</option></select></label><button class="btn" disabled={!folder || busy} onClick={() => perform(async () => { const detected = await api<VerificationProfile>(`/api/verification/profile?repo=${enc(folder)}&preset=${preset}`); setProfile(detected); setSetup(detected.setup ?? ""); })}>Detect checks</button></div>
@@ -160,17 +146,8 @@ export function WorkbenchView() {
     </section> : null}
     {tab === "history" && history ? <section aria-label="Full checkpoint comparison"><h3>Compare and revert commits</h3><p class="help">Compare every changed file between the selected checkpoint and the observed current HEAD. Reverting computes the inverse of one non-merge commit on a disposable checkout, then stages that reviewed change in a clean, idle owned worktree. Commit it yourself to record the revert.</p><div class="wb-row"><button class="btn" disabled={busy || !checkpoint} onClick={() => perform(async () => setComparison(await post("/api/workspace/compare-checkpoint", { repo:folder,from:checkpoint,to:history.head })))}>Compare selected checkpoint to HEAD</button>{selectedRun ? <button class="btn" disabled={busy || selectedRun.status === "running" || !checkpoint} onClick={() => perform(async () => { setRevertPreview(null); setRevertPreview(await post("/api/workspace/preview-revert", { repo:folder,runId:selectedRun.id,commit:checkpoint,expectedHead:history.head })); })}>Preview inverse commit</button> : null}</div>{comparison ? <><p class="help">{comparison.from.slice(0,12)} → {comparison.to.slice(0,12)} · {comparison.files.length} changed paths{comparison.truncated ? " · preview truncated" : ""}</p><pre>{comparison.stat}</pre><details><summary>Full commit patch</summary><pre>{comparison.patch || "No changes between these commits."}</pre></details></> : null}{revertPreview && selectedRun ? <div class="at-notice" aria-label="Reviewed commit revert"><h4>Revert: {revertPreview.subject}</h4><p class="help">Commit {revertPreview.commit.slice(0,12)} · current HEAD {revertPreview.head.slice(0,12)}. Review the entire inverse patch before applying it. Conflicting reversions leave this worktree unchanged.</p><pre>{revertPreview.stat}</pre><details open><summary>Inverse patch to stage</summary><pre>{revertPreview.patch}</pre></details><button class="btn primary" disabled={busy || selectedRun.status === "running"} onClick={() => perform(async () => { await post("/api/workspace/apply-revert", { repo:folder,runId:selectedRun.id,commit:revertPreview.commit,expectedHead:revertPreview.head,fingerprint:revertPreview.fingerprint }); setRevertPreview(null); showToast("Inverse change staged. Review and commit it to record the revert.",6000); })}>Stage reviewed inverse change</button></div> : null}</section> : null}
     {tab === "history" && history && selectedRun ? <section><h3>Apply selected hunks</h3><p class="help">Compare one existing text file against the selected checkpoint. Selected hunks remain unstaged for review; the run worktree must be clean and idle.</p><div class="wb-row"><input class="field" aria-label="File for checkpoint hunks" value={hunkPath} placeholder="Repository-relative file" onInput={(event) => setHunkPath(event.currentTarget.value)} /><button class="btn" disabled={busy || selectedRun.status === "running" || !hunkPath.trim()} onClick={() => perform(async () => { setHunks(await post("/api/workspace/checkpoint-hunks", { repo: folder, runId: selectedRun.id, source: checkpoint, path: hunkPath.trim() })); setChosenHunks([]); })}>Compare hunks</button></div>{hunks ? <><p>{hunks.hunks.length} hunks · {hunks.source.slice(0, 12)}</p>{hunks.hunks.map((hunk) => <details key={hunk.id}><summary><label><input type="checkbox" checked={chosenHunks.includes(hunk.id)} onChange={(event) => setChosenHunks(event.currentTarget.checked ? [...chosenHunks, hunk.id] : chosenHunks.filter((id) => id !== hunk.id))} /> {hunk.header}</label></summary><pre>{hunk.patch}</pre></details>)}<button class="btn" disabled={busy || !chosenHunks.length || selectedRun.status === "running"} onClick={() => perform(async () => { await post("/api/workspace/apply-hunks", { repo: folder, runId: selectedRun.id, source: hunks.source, path: hunks.path, expectedHead: hunks.head, hunks: chosenHunks }); setHunks(null); showToast("Selected hunks applied; review the unstaged changes"); })}>Apply chosen hunks</button></> : null}</section> : null}
-    {tab === "sources" ? <IntegrationsView onImport={(imported) => { externalSource.value = imported; source.value = null; setTask(`Address ${imported.provider} ${imported.kind} ${imported.key}: ${imported.title}`); route.value = { view: "composer" }; }} /> : null}
-    {tab === "notifications" ? <NotificationsView /> : null}
-    {tab === "deferred" ? <DeferredRunsPanel /> : null}
-    {tab === "retention" ? <WorkbenchRetentionPanel /> : null}
-    {tab === "code-hosts" ? <CodeHostsPanel projects={projects.value} /> : null}
-    {tab === "filesystem" ? <section class="section"><label class="lbl" for="filesystem-project">Filesystem policy project</label><select class="field" id="filesystem-project" value={conventionsProject?.id ?? ""} onChange={(event) => setConventionsProjectId(event.currentTarget.value)}>{projects.value.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>{conventionsProject ? <><FilePolicyPanel projectId={conventionsProject.id} projectName={conventionsProject.name} /><FilteredTasksPanel key={conventionsProject.id} projectId={conventionsProject.id} repos={conventionsProject.repos} /></> : <p>Create a project first.</p>}</section> : null}
-    {tab === "accounts" ? <SharedAccountsPanel projects={projects.value} /> : null}
-    {tab === "workers" ? <RemoteWorkersView /> : null}
+    {tab === "filtered-tasks" ? <section class="section"><label class="lbl" for="filtered-tasks-project">Filtered tasks project</label><select class="field" id="filtered-tasks-project" value={taskProject?.id ?? ""} onChange={(event) => setTaskProjectId(event.currentTarget.value)}>{projects.value.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>{taskProject ? <><p class="help">Manage project filesystem rules in <a href="#/settings/projects">Settings → Projects &amp; access</a>.</p><FilteredTasksPanel key={taskProject.id} projectId={taskProject.id} repos={taskProject.repos} /></> : <p>Create a project in <a href="#/settings/projects">Settings</a> first.</p>}</section> : null}
     {tab === "coordination" ? <CoordinatedChangesPanel /> : null}
-    {tab === "extensions" ? <ExtensionsPanel /> : null}
     {tab === "services" ? selectedRun && selectedTree ? <LaunchProfilesPanel key={`${selectedRun.id}/${selectedTree.name}`} runId={selectedRun.id} worktree={selectedTree.name} /> : <p class="help">Select a run worktree to preview and launch its configured services.</p> : null}
-    {tab === "diagnostics" ? <section><h2>Diagnostics</h2><p class="help">Inspect connection and persistence health, versions, resource queues, and recent server logs. Credential-like values are redacted before export.</p><button class="btn" disabled={busy} onClick={() => perform(async () => setDiagnostics(await api(`/api/diagnostics${folder ? `?repo=${enc(folder)}` : ""}`)))}>Collect diagnostics</button>{diagnostics ? <><pre>{JSON.stringify(diagnostics, null, 2)}</pre><button class="btn" onClick={() => downloadArtifact("codeflow-diagnostics.json", JSON.stringify(diagnostics, null, 2))}>Export diagnostics</button></> : null}</section> : null}
   </div>;
 }

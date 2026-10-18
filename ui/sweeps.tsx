@@ -128,7 +128,7 @@ export function SweepDialog() {
         out.failed.length ? 8000 : 5000,
       );
       sweepPicker.value = null;
-      route.value = { view: "automations" };
+      route.value = { view: "settings", section: "automations" };
     } catch (err) {
       setError((err as Error).message);
     } finally {

@@ -1,3 +1,4 @@
+import { SETTINGS_SECTIONS } from "./settings-sections.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { commandPaletteOpen, healthOpen, openSide, pickerOpen, projects, projectsOpen, route, runs, selectProject } from "./state.js";
@@ -12,12 +13,11 @@ export function CommandPalette() {
   const [active, setActive] = useState(0);
   const actions: Command[] = [
     { id: "new", label: "New run", detail: "Actions", run: () => (route.value = { view: "composer" }) },
-    { id: "workspace", label: "Repository workspace", detail: "Files, verification and operations", run: () => (route.value = { view: "workspace" }) },
+    { id: "settings", label: "Settings", detail: "Preferences, agents and remote connections", run: () => (route.value = { view: "settings" }) },
+    ...SETTINGS_SECTIONS.map((section): Command => ({ id: `settings:${section.id}`, label: section.label, detail: `Settings · ${section.keywords}`, run: () => (route.value = { view: "settings", section: section.id }) })),
     { id: "repo", label: "Choose repository", detail: "Actions", run: () => (pickerOpen.value = true) },
     { id: "projects", label: "Manage projects", detail: "Actions", run: () => (projectsOpen.value = true) },
     { id: "health", label: "Check provider and Git health", detail: "Actions", run: () => (healthOpen.value = true) },
-    { id: "insights", label: "Insights", detail: "Navigation", run: () => (route.value = { view: "insights" }) },
-    { id: "automations", label: "Automations", detail: "Navigation", run: () => (route.value = { view: "automations" }) },
     { id: "files", label: "Open files panel", detail: "Actions", run: () => openSide("files") },
     { id: "terminal", label: "Open terminal", detail: "Actions", run: () => openSide("terminal") },
     ...projects.value.map((p): Command => ({ id: `project:${p.id}`, label: p.name, detail: "Project", run: () => { selectProject(p.id); route.value = { view: "project", id: p.id }; } })),

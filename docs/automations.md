@@ -2,11 +2,13 @@
 
 Set up a run in the composer (task, team, check, settings), then choose **Save as automation…** next to *Start run*. It runs unattended.
 
+Open **Settings → Automations** or press **a** to manage schedules, webhooks, deferred runs and the review inbox. Older `#/automations` links open this same Settings category.
+
 ## Projects
 
 An automation's runs start in the [project](runs.md#projects) you were in when you saved it (from *All projects*, in its repository's project). If that project is deleted later, they start in the repository's project. Turning it off and on, or making a new webhook secret, keeps its project.
 
-The **Automations** page follows the project you're in (the project button next to its title picks it). It lists that project's automations and the results waiting for you there. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The count on **Automations** in the sidebar always counts every project's results, so nothing waiting for you is out of sight.
+**Settings → Automations** follows the project you're in (the project button next to its title picks it). It lists that project's automations and the results waiting for you there. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The count on **Settings** in the sidebar and **Automations** within Settings always counts every project's results, so nothing waiting for you is out of sight.
 
 ## When it runs
 
@@ -70,7 +72,7 @@ Check isolation runs the repository's scripts in the selected image. Agents norm
 
 ## Phone view
 
-Turn on **Enable remote access** under **Remote access** on the Automations page. Choose **This computer only**, **Tailscale · access anywhere**, or **Wi-Fi · local network**.
+Turn on **Enable remote access** in **Settings → Remote access**. Choose **This computer only**, **Tailscale · access anywhere**, or **Wi-Fi · local network**.
 
 - On its own it's a read-only view: what's running and what needs you, and each run's summary, review, results and steps. It refreshes itself and has no buttons.
 - Runs are listed under their project's name. Projects with runs that need you come first, then those with runs going; runs in no project come last.
@@ -82,7 +84,7 @@ Turn on **Enable remote access** under **Remote access** on the Automations page
 ### Remote access with Tailscale
 
 1. Install [Tailscale](https://tailscale.com/download) on the computer running code-flow and your phone, tablet or second computer. Sign in to the same tailnet and connect both devices.
-2. Open **Automations → Remote access**, enable remote access and select **Tailscale · access anywhere**.
+2. Open **Settings → Remote access**, enable remote access and select **Tailscale · access anywhere**.
 3. Code-flow detects the local Tailscale client and shows its connection status. If it is missing, signed out, awaiting approval or disconnected, follow the displayed instructions and select **Refresh Tailscale**. Detection also refreshes automatically.
 4. Once connected and listening, copy the link or scan the QR code on the other device. The link uses this computer's Tailscale IPv4 address and `CODEFLOW_REMOTE_PORT` (normally 4318). For full control, configure HTTPS with `CODEFLOW_TLS_CERT` and `CODEFLOW_TLS_KEY`, restart Codeflow, then turn on **Full control from remote devices** and use the new pairing link.
 

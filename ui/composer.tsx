@@ -290,7 +290,7 @@ export function Composer() {
             resetComposer();
             void refreshRuns();
             void loadProjects();
-            route.value = { view: "insights", group };
+            route.value = { view: "settings", section: "insights", group };
           }}
         />
       ) : null}
@@ -838,7 +838,7 @@ function Team({ p, roles, providers, remote }: { p: PatternInfo; roles: Record<s
 }
 
 /** What agents may do while building, from least to most. */
-const TRUST = {
+export const TRUST = {
   safe: { label: "Safe", help: "Edit files only. Claude can't run commands; Codex stays sandboxed." },
   standard: { label: "Standard", help: "Edit files and run common build/test commands (npm, node, pytest, uv, poetry, cargo, go, make…)." },
   trusted: { label: "Trusted", help: "Any command for Claude; network access inside Codex's sandbox. Use on repos you trust." },
@@ -1102,7 +1102,7 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
   );
 }
 
-function ModelRow({ agent, used }: { agent: AgentInfo; used: boolean }) {
+export function ModelRow({ agent, used }: { agent: AgentInfo; used: boolean }) {
   const cat = catalogs.value[agent.id];
   const s = agentSettings.value[agent.id] ?? {};
   // Hooks before any early return; null = "derive from the saved model".

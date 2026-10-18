@@ -313,9 +313,8 @@ function TermView({ id, places, split, focused, shown, onFocus, onReplace }: Vie
     refit();
 
     // Light or dark, as the app is.
-    const scheme = matchMedia("(prefers-color-scheme: dark)");
     const retheme = () => (t.options.theme = termTheme());
-    scheme.addEventListener("change", retheme);
+    window.addEventListener("codeflow-theme", retheme);
 
     receive.current = (ev) => {
       if (closed) return;
@@ -357,7 +356,7 @@ function TermView({ id, places, split, focused, shown, onFocus, onReplace }: Vie
     return () => {
       closed = true;
       resized.disconnect();
-      scheme.removeEventListener("change", retheme);
+      window.removeEventListener("codeflow-theme", retheme);
       clearTimeout(timer);
       clearTimeout(sizeTimer);
       term.current = undefined;
@@ -407,7 +406,7 @@ const TERM_FONT = 'Menlo, "SF Mono", Monaco, Consolas, "DejaVu Sans Mono", "Libe
 function termTheme(): ITheme {
   const css = getComputedStyle(document.documentElement);
   const v = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
-  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const dark = document.documentElement.dataset.theme === "dark";
   const base = { background: v("--sunken", dark ? "#0d1514" : "#eef1ed"), foreground: v("--text", dark ? "#f5f8f7" : "#222f30"), cursor: v("--accent-edge", "#86c24e") };
   return dark
     ? {

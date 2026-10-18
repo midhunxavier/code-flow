@@ -250,10 +250,10 @@ test("automations: a webhook starts a run, it waits in the inbox, you approve it
   assert.equal(fired.status, 202);
   const run = await startedRun(automation.id);
 
-  await page.goto(`${BASE}/#/automations`);
+  await page.goto(`${BASE}/#/settings/automations`);
   const item = page.locator(".inbox-item", { hasText: "E2E: automated chore" });
   await item.waitFor({ timeout: 30_000 });
-  assert.match(await page.locator(".auto-nav .count").innerText(), /^\d+$/, "the inbox count shows in the sidebar");
+  assert.match(await page.locator(".settings-entry .count").innerText(), /^\d+$/, "the inbox count shows in the sidebar");
   await item.getByRole("button", { name: "✓ Approve" }).click();
   await item.waitFor({ state: "detached" });
   assert.equal((await api(`/api/runs/${run}`)).triage.state, "approved");
@@ -280,7 +280,7 @@ test("a check that can't run here: the result is still reviewed, and the inbox a
   assert.equal(fired.status, 202);
   const id = await startedRun(automation.id);
 
-  await page.goto(`${BASE}/#/automations`);
+  await page.goto(`${BASE}/#/settings/automations`);
   const item = page.locator(".inbox-item", { hasText: "E2E: check can't run" });
   await item.waitFor({ timeout: 30_000 });
   await item.locator(".cant-run", { hasText: "nosuchtool-e2e" }).waitFor();
@@ -316,7 +316,7 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   await dialog.getByRole("checkbox", { name: /tidy the readme/ }).uncheck();
   await dialog.getByRole("button", { name: "Start 1 run" }).click();
 
-  await page.waitForURL(/#\/automations/);
+  await page.waitForURL(/#\/settings\/automations/);
   const item = page.locator(".inbox-item", { hasText: "E2E sweep: fix the greeting" });
   await item.waitFor({ timeout: 30_000 });
   await item.getByRole("button", { name: "✓ Approve" }).click();
@@ -404,7 +404,7 @@ test("sign-in: the first browser claims code-flow; once agents have run, others 
 });
 
 test("insights and run search", async () => {
-  await page.goto(`${BASE}/#/insights`);
+  await page.goto(`${BASE}/#/settings/insights`);
   await page.getByRole("heading", { name: "Insights" }).waitFor();
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   assert.ok(await page.getByRole("table").first().isVisible());
@@ -609,7 +609,7 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
 
   // Pinned, the panel stays on the run while you look at something else.
   await side.getByRole("button", { name: "Pin the panel to this run" }).click();
-  await page.goto(`${BASE}/#/insights`);
+  await page.goto(`${BASE}/#/settings/insights`);
   await scope.getByText("Pinned").waitFor();
   await side.getByRole("tab", { name: "Chat" }).click();
   assert.match(await side.locator("#side-pane-chat .sess.on").innerText(), /E2E: what did this run change\?/, "still the run's side chat");
@@ -743,7 +743,7 @@ test("projects: the Automations page and its inbox follow the project you're in;
   const fired = await fetch(`${BASE}/hooks/${automation.id}`, { method: "POST", headers: { authorization: `Bearer ${automation.token}`, "content-type": "application/json" }, body: "{}" });
   assert.equal(fired.status, 202);
 
-  await page.goto(`${BASE}/#/automations`);
+  await page.goto(`${BASE}/#/settings/automations`);
   await page.locator(".project-btn").click(); // start from every project, whichever one earlier tests left selected
   await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
   await page.locator(".inbox-item", { hasText: "E2E: side chore" }).waitFor({ timeout: 30_000 });
@@ -758,7 +758,7 @@ test("projects: the Automations page and its inbox follow the project you're in;
   assert.deepEqual(await page.locator(".auto-row b").allInnerTexts(), ["E2E side hook"], "only this project's automations");
   await page.locator(".automations .rail-hint", { hasText: `${pending - 1} in other projects need${pending === 2 ? "s" : ""} you` }).waitFor();
   await page.locator(".automations .rail-hint", { hasText: `${total - 1} more in other projects` }).waitFor();
-  assert.equal(await page.locator(".auto-nav .count").innerText(), String(pending), "the sidebar still counts every project's results");
+  assert.equal(await page.locator(".settings-entry .count").innerText(), String(pending), "the sidebar still counts every project's results");
 
   // The read-only phone view lists each project's runs under its name.
   const remote = await api("/api/remote", { enabled: true });

@@ -1,12 +1,12 @@
 import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
-import { api, post } from "./lib.js";
+import { api, post, showToast } from "./lib.js";
 import { useDialog } from "./app.js";
 
 type HostContext = { kind: "local" | "host" } | { kind: "ssh"; name: string; returnUrl: string; error?: string };
 export const executionHost = signal<HostContext>({ kind: "local" });
 export async function loadExecutionHost() { executionHost.value = await api<HostContext>("/api/ssh-context"); }
-interface SavedHost { id: string; name: string; sshHost: string; state: string; error?: string }
+interface SavedHost { id: string; name: string; sshHost: string; port?: number; identityFile?: string; state: string; error?: string }
 
 export function HostControl() {
   const [open, setOpen] = useState(false);
@@ -17,27 +17,47 @@ export function HostControl() {
   </>;
 }
 function HostDialog({ close }: { close: () => void }) {
-  const ref = useDialog(true, close), context = executionHost.value;
+  const ref = useDialog(true, close);
+  return <dialog class="picker small-dialog" ref={ref} aria-labelledby="ssh-title"><div class="picker-inner">
+    <div class="picker-head"><h3 id="ssh-title">SSH connections</h3><p class="help">Open a server's projects and work remotely.</p></div>
+    <SshConnections />
+    <div class="picker-foot"><button class="btn" onClick={close}>Close</button></div>
+  </div></dialog>;
+}
+
+/** Shared by Settings and the quick host switcher. */
+export function SshConnections() {
+  const context = executionHost.value;
+
   const [hosts, setHosts] = useState<SavedHost[]>([]), [aliases, setAliases] = useState<string[]>([]);
   const [sshHost, setSshHost] = useState(""), [name, setName] = useState("");
+  const [port, setPort] = useState(""), [identityFile, setIdentityFile] = useState("");
+  const [loading, setLoading] = useState(context.kind === "local");
   const [busy, setBusy] = useState(""), [error, setError] = useState("");
   const refresh = async () => { const data = await api<{ hosts: SavedHost[]; aliases: string[] }>("/api/ssh-hosts"); setHosts(data.hosts); setAliases(data.aliases); };
-  useEffect(() => { if (context.kind === "local") void refresh().catch((error) => setError(error.message)); }, []);
+  useEffect(() => { if (context.kind === "local") void refresh().catch((error) => setError(error.message)).finally(() => setLoading(false)); }, []);
   const act = async (label: string, work: () => Promise<unknown>) => { setBusy(label); setError(""); try { await work(); } catch (error) { setError((error as Error).message); } finally { setBusy(""); } };
   const connect = async (id: string) => { const result = await post<{ url: string }>(`/api/ssh-hosts/${id}/connect`, {}); location.assign(result.url); };
-  return <dialog class="picker small-dialog" ref={ref} aria-labelledby="ssh-title"><div class="picker-inner">
-    <div class="picker-head"><h3 id="ssh-title">SSH connections</h3>
-      <p class="help">Open a server's project folders and run agents, terminals, Git, builds, and tests on that server.</p>
-    </div>
-    <div class="ssh-connections">
+  const save = (open: boolean) => act(open ? `Connecting to ${name || sshHost}…` : "Saving connection…", async () => {
+    const host = await post<SavedHost>("/api/ssh-hosts", { sshHost: sshHost.trim(), name: name.trim() || sshHost.trim(), ...(port ? { port: Number(port) } : {}), ...(identityFile.trim() ? { identityFile: identityFile.trim() } : {}) });
+    // Keep the saved connection visible even if opening it fails, so retry never creates a duplicate.
+    setHosts((current) => [...current, { ...host, state: "disconnected" }]);
+    setSshHost(""); setName(""); setPort(""); setIdentityFile("");
+    if (open) await connect(host.id); else showToast("SSH connection saved");
+  });
+  return <div class="ssh-connections" aria-busy={!!busy || loading}>
       {context.kind === "ssh" ? <>
         <p><strong>Working on {context.name}</strong></p>
         <p class="help">Your projects and running work stay on this server when you leave. Reconnecting restores the workspace without repeating commands.</p>
         <button class="btn" disabled={!!busy} onClick={() => void act("Reconnecting…", async () => { await post("/api/ssh-reconnect", {}); location.reload(); })}>Reconnect</button>{" "}
         <a class="btn primary" href={context.returnUrl}>Back to this computer</a>
       </> : context.kind === "host" ? <p>Manage SSH connections in the app on your computer.</p> : <>
+        <div class="ssh-local"><strong>This computer</strong><span class="badge ok">Local workspace</span></div>
+        <div class="ssh-saved-heading"><h3>Saved connections</h3><button class="btn small" disabled={!!busy || loading} onClick={() => void act("Refreshing…", refresh)}>Refresh connections</button></div>
+        {loading ? <p role="status">Loading connections…</p> : !hosts.length ? <p class="help">No remote machines yet. Connect your first VM below.</p> : null}
         {hosts.map((host) => <article class="section" key={host.id}>
-          <p><strong>{host.name}</strong> <span class="help">{host.sshHost} · {host.state}</span></p>
+          <p><strong>{host.name}</strong> <span class="help">{host.sshHost}{host.port ? `:${host.port}` : ""} · {host.state}</span></p>
+          {host.identityFile ? <p class="help">Key: <code>{host.identityFile}</code></p> : null}
           {host.error ? <p class="msg err">{host.error}</p> : null}
           <div class="ssh-actions">
             <button class="btn primary" disabled={!!busy} onClick={() => void act(`Connecting to ${host.name}…`, () => connect(host.id))}>Open {host.name}</button>
@@ -48,18 +68,24 @@ function HostDialog({ close }: { close: () => void }) {
             <button class="btn" disabled={!!busy} onClick={() => void act("Removing connection…", async () => { await api(`/api/ssh-hosts/${host.id}`, { method: "DELETE" }); await refresh(); })}>Remove</button>
           </div>
         </article>)}
-        <form onSubmit={(event) => { event.preventDefault(); void act(`Connecting to ${name || sshHost}…`, async () => { const host = await post<SavedHost>("/api/ssh-hosts", { sshHost: sshHost.trim(), name: name.trim() || sshHost.trim() }); await refresh(); setSshHost(""); setName(""); await connect(host.id); }); }}>
-          <label>SSH host<input class="field" list="ssh-aliases" value={sshHost} onInput={(event) => setSshHost(event.currentTarget.value)} placeholder="devbox or user@server" required disabled={!!busy} /></label>
+        <form class="ssh-new" onSubmit={(event) => { event.preventDefault(); const submitter = (event as SubmitEvent).submitter as HTMLButtonElement | null; void save(submitter?.value !== "save"); }}>
+          <h3>Add a remote machine</h3>
+          <p class="help">Your repository, agents, terminal, builds and tests run on the VM.</p>
+          <label>SSH host<input class="field" list="ssh-aliases" value={sshHost} onInput={(event) => setSshHost(event.currentTarget.value)} placeholder="devbox or user@server" maxLength={200} required disabled={!!busy} /></label>
           <datalist id="ssh-aliases">{aliases.map((alias) => <option key={alias} value={alias} />)}</datalist>
           <label>Display name<input class="field" value={name} onInput={(event) => setName(event.currentTarget.value)} placeholder="Development server" maxLength={80} disabled={!!busy} /></label>
+          <div class="settings-grid">
+            <label>SSH port<input class="field" type="number" min={1} max={65535} step={1} value={port} onInput={(event) => setPort(event.currentTarget.value)} placeholder="From SSH config (usually 22)" disabled={!!busy} /></label>
+            <label>Identity file<input class="field" value={identityFile} onInput={(event) => setIdentityFile(event.currentTarget.value)} placeholder="~/.ssh/id_ed25519 (optional)" maxLength={4096} disabled={!!busy} /></label>
+          </div>
+          <p class="help">Leave port and key blank to use your SSH config and agent. Jump hosts are read from ~/.ssh/config. Only the key path is saved; key contents stay on this computer.</p>
           <p class="help">Use a Linux or macOS server with Node.js 20+ and Git. Install and sign in to your agent CLIs there. Python 3 enables interactive terminals.</p>
           <p class="help">Uses your SSH config and keys. First verify the host with SSH in a terminal; unlock protected keys in your SSH agent. Connecting installs the backend under ~/.codeflow/ssh-host on the server.</p>
-          <button class="btn primary" disabled={!!busy || !sshHost.trim()}>Connect and open</button>
+          <div class="ssh-actions"><button class="btn" type="submit" value="save" disabled={!!busy || loading || !sshHost.trim()}>Save connection</button><button class="btn primary" type="submit" value="connect" disabled={!!busy || loading || !sshHost.trim()}>Connect and open</button></div>
         </form>
       </>}
-      {busy ? <p role="status">{busy} Initial setup can take a minute.</p> : null}
+      {busy ? <p role="status">{busy}{busy.startsWith("Connecting") ? " Initial setup can take a minute." : ""}</p> : null}
       {error ? <p class="msg err" role="alert">{error}</p> : null}
-    </div>
-    <div class="picker-foot"><span class="help">Disconnecting or removing a connection leaves remote work running.</span><button class="btn" onClick={close}>Close</button></div>
-  </div></dialog>;
+    <p class="help">Disconnecting or removing a connection leaves remote work running.</p>
+  </div>;
 }

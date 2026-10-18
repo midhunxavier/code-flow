@@ -26,10 +26,10 @@ test("real OpenSSH opens a remote project through the authenticated gateway and 
     server.stdout!.on("data", (data) => output += data); server.stderr!.on("data", (data) => output += data); await pause(300);
     if (server.exitCode !== null) { t.skip(`Unprivileged sshd unavailable: ${output.slice(-500)}`); return; }
     const client = join(f.directory, "ssh_config");
-    await writeFile(client, [`Host project-fixture`, " HostName 127.0.0.1", ` Port ${sshPort}`, ` User ${user}`, ` IdentityFile ${clientKey}`, " IdentitiesOnly yes", " HostKeyAlias codeflow-project-test", ` UserKnownHostsFile ${known}`, " GlobalKnownHostsFile /dev/null"].join("\n") + "\n");
+    await writeFile(client, [`Host project-fixture`, " HostName 127.0.0.1", ` User ${user}`, " IdentitiesOnly yes", " HostKeyAlias codeflow-project-test", ` UserKnownHostsFile ${known}`, " GlobalKnownHostsFile /dev/null"].join("\n") + "\n");
     const wrapper = join(f.bin, "real-ssh"); await writeFile(wrapper, `#!/bin/sh\nexec /usr/bin/ssh -F ${quote(client)} "$@"\n`, { mode: 0o700 });
     service = new SshProjects({ home: f.localHome, returnUrl: "http://localhost:4317/", sshBinary: wrapper });
-    const host = await service.add({ sshHost: "project-fixture" });
+    const host = await service.add({ sshHost: "project-fixture", port: sshPort, identityFile: clientKey });
     let link;
     try { link = await service.connect(host.id); }
     catch (error) { if (/setgroups|privilege|sandbox|not permitted/.test(output)) { t.skip(`Cannot run sshd for this account: ${output.slice(-500)}`); return; } throw error; }

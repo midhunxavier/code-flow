@@ -1,6 +1,6 @@
 # Versioned project conventions
 
-Workspace → Conventions keeps human-authored project guidance privately beneath `CODEFLOW_HOME/conventions/`. A saved draft does not change a repository and is never inserted into agent context automatically. External run content cannot author guidance through the team capability API.
+Settings → Projects & access keeps human-authored project guidance privately beneath `CODEFLOW_HOME/conventions/`. A saved draft does not change a repository and is never inserted into agent context automatically. External run content cannot author guidance through the team capability API.
 
 Each save requires the exact observed revision. A concurrent edit returns HTTP 409 and preserves the editor draft. Compare the latest saved text, then deliberately keep your draft against that newer base or export it. Versions retain their original text, timestamp, hash, and note. The latest 32 revisions are retained; each holds at most 64 KiB of UTF-8 text. Line endings normalize to LF and nonempty guidance ends with a newline. History files use atomic durable replacement with private file permissions. Corrupt or inaccessible histories are left untouched, and a failed operation does not poison later writes.
 

@@ -1,10 +1,16 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { Duplex } from "node:stream";
 
 export const validSshHost = (host: unknown): host is string => typeof host === "string" && /^[A-Za-z0-9][A-Za-z0-9._@-]{0,199}$/.test(host);
+export interface SshOptions { port?: number; identityFile?: string }
+export function validSshOptions(options: { port?: unknown; identityFile?: unknown }): boolean {
+  return (options.port === undefined || Number.isInteger(options.port) && Number(options.port) >= 1 && Number(options.port) <= 65535)
+    && (options.identityFile === undefined || typeof options.identityFile === "string" && options.identityFile.length <= 4096
+      && (isAbsolute(options.identityFile) || options.identityFile.startsWith("~/")) && !/[\x00-\x1f\x7f%]/.test(options.identityFile));
+}
 export const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const OPTIONS = ["-T", "-a", "-k", "-o", "GSSAPIDelegateCredentials=no", "-o", "SendEnv=-*", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "PermitLocalCommand=no", "-o", "RemoteCommand=none", "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
 
@@ -13,15 +19,17 @@ export class SshTransport {
   private directory = "";
   private children = new Set<ChildProcess>();
   private closed = false;
-  constructor(readonly host: string, private readonly binary = "ssh") {
+  constructor(readonly host: string, private readonly binary = "ssh", private readonly options: SshOptions = {}) {
     if (!validSshHost(host)) throw new Error("Enter an SSH host alias or user@hostname");
+    if (!validSshOptions(options)) throw new Error("Use a port from 1 to 65535 and an absolute or ~/ SSH key path without control characters or % tokens");
   }
   async init() { this.directory = await mkdtemp(join(tmpdir(), "cf-ssh-")); }
   private start(args: string[], command?: string) {
     if (this.closed) throw new Error("SSH connection is closed");
     const env: NodeJS.ProcessEnv = {};
     for (const name of ["PATH", "HOME", "USER", "LOGNAME", "SSH_AUTH_SOCK", "SYSTEMROOT", "SystemRoot", "TMPDIR"]) if (process.env[name]) env[name] = process.env[name];
-    const child = spawn(this.binary, [...OPTIONS, "-o", "ControlMaster=auto", "-o", "ControlPersist=60", "-o", `ControlPath=${join(this.directory, "socket")}`, ...args, this.host, ...(command ? [command] : [])], { env, stdio: ["pipe", "pipe", "pipe"] });
+    const connection = [...(this.options.port ? ["-p", String(this.options.port)] : []), ...(this.options.identityFile ? ["-i", this.options.identityFile] : [])];
+    const child = spawn(this.binary, [...OPTIONS, ...connection, "-o", "ControlMaster=auto", "-o", "ControlPersist=60", "-o", `ControlPath=${join(this.directory, "socket")}`, ...args, this.host, ...(command ? [command] : [])], { env, stdio: ["pipe", "pipe", "pipe"] });
     this.children.add(child); child.once("close", () => this.children.delete(child));
     return child;
   }
@@ -37,7 +45,7 @@ export class SshTransport {
       child.stderr!.on("data", (data) => { stderr = (stderr + data).slice(-8192); });
       child.once("error", finish);
       child.stdin!.on("error", () => undefined);
-      child.once("close", (code) => finish(code === 0 ? undefined : new Error(`SSH setup failed: ${stderr.trim() || `exit ${code}`}. Verify this host with ssh ${this.host} in a terminal first.`)));
+      child.once("close", (code) => finish(code === 0 ? undefined : new Error(`SSH setup failed: ${stderr.trim() || `exit ${code}`}. Verify ${this.host} with the same port and key in an SSH terminal first.`)));
       child.stdin!.end(payload);
     });
   }

@@ -192,7 +192,7 @@ test("Auto team approval, addressed question, distinct members, and verified cov
 });
 
 test("evaluation UI records an explicit experimental decision and cannot promote missing evidence", { timeout: 30_000 }, async () => {
-  await page.goto(`${base}/#/insights`);
+  await page.goto(`${base}/#/settings/insights`);
   const evaluations = page.getByLabel("Team evaluations", { exact: true });
   await evaluations.getByText("Rollout decision and requirements", { exact: true }).click();
   await evaluations.getByLabel("Auto team rollout stage", { exact: true }).selectOption("default");

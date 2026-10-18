@@ -33,7 +33,7 @@ before(async () => {
   browser = await chromium.launch({ channel: "chrome", headless: true });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await page.addInitScript((repo) => localStorage.setItem("repo", repo), repo);
-  await page.goto(`${base}/#/workspace`);
+  await page.goto(`${base}/#/settings/workspace`);
   await page.getByRole("heading", { name: "Inspect, verify, and recover" }).waitFor();
   await page.waitForFunction(() => !!(document.querySelector("#wb-folder") as HTMLSelectElement)?.value);
 });
@@ -78,21 +78,24 @@ test("workspace editing preserves a conflicting draft, searches definitions, and
   await page.getByRole("button", { name: "Dependencies", exact: true }).click();
   await page.getByRole("button", { name: "Inspect dependencies", exact: true }).click();
   await page.getByRole("cell").getByRole("button", { name: "sum.test.mjs", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
+  await page.goto(`${base}/#/settings/advanced`);
   writeFileSync(join(folder, "data", "server.log"), `old-log-marker\n${"x".repeat(1_000_000)}\ncurrent-log-marker\n`);
   await page.getByRole("button", { name: "Collect diagnostics", exact: true }).click();
   await page.getByRole("button", { name: "Export diagnostics", exact: true }).waitFor();
-  const diagnostics = await page.locator(".workbench pre").last().innerText();
+  await page.getByText("Collected diagnostics", { exact: true }).click();
+  const diagnostics = await page.locator(".settings-content pre").innerText();
   assert.match(diagnostics, /current-log-marker/); assert.doesNotMatch(diagnostics, /old-log-marker/);
 });
 
 test("ordinary Markdown dividers do not block file saves or tab draft recovery", async () => {
+  await page.goto(`${base}/#/settings/workspace`);
   await page.getByRole("button", { name: "Code", exact: true }).click();
   await page.getByLabel("File to edit").fill("README.md"); await page.getByRole("button", { name: "Open file", exact: true }).click();
   await page.getByRole("heading", { name: "README.md", exact: true }).waitFor();
   await page.getByLabel("File contents").fill("Title\n=======\n\nRecovered documentation draft.\n");
   await page.getByRole("button", { name: "New run", exact: true }).click();
-  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await page.getByRole("button", { name: /^Settings/ }).click();
+  await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: "Workspace", exact: true }).click();
   await page.getByRole("button", { name: "Code", exact: true }).click();
   await page.getByLabel("File to edit").fill("README.md"); await page.getByRole("button", { name: "Open file", exact: true }).click();
   await page.getByRole("heading", { name: "README.md", exact: true }).waitFor();

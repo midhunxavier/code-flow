@@ -14,10 +14,13 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     browser = await chromium.launch({ channel: "chrome", headless: true });
     page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     await page.goto(`${base}/?token=${token}`);
-    await page.getByRole("button", { name: "SSH connections", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "SSH connections", exact: true });
+    await page.getByRole("button", { name: /^Settings/ }).click();
+    await page.getByRole("link", { name: "SSH connections", exact: true }).click();
+    const dialog = page.locator(".settings-content");
     await dialog.getByLabel("SSH host", { exact: true }).fill("fixture");
     await dialog.getByLabel("Display name").fill("Linux development");
+    await dialog.getByLabel("SSH port", { exact: true }).fill("2222");
+    await dialog.getByLabel("Identity file", { exact: true }).fill("~/.ssh/development");
     await dialog.getByRole("button", { name: "Connect and open" }).click();
     await page.getByRole("button", { name: "SSH connections", exact: true }).filter({ hasText: "SSH · Linux development" }).waitFor({ timeout: 90_000 });
     assert.notEqual(new URL(page.url()).origin, base);

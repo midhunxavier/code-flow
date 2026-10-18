@@ -22,7 +22,7 @@ export function TeamCapabilities({ providers }: { providers: AgentId[] }) {
 export function TeamRolloutNotice() {
   const rollout = teamRollout.value;
   if (!rollout) return null;
-  return <section class="at-notice" aria-label="Auto team availability"><b>Auto team · {rollout.enabled ? rollout.stage === "beta" ? "opt-in beta" : rollout.stage : "new runs disabled"}</b><p>{rollout.reason}</p><a href="#/insights">View evaluation evidence</a></section>;
+  return <section class="at-notice" aria-label="Auto team availability"><b>Auto team · {rollout.enabled ? rollout.stage === "beta" ? "opt-in beta" : rollout.stage : "new runs disabled"}</b><p>{rollout.reason}</p><a href="#/settings/insights">View evaluation evidence</a></section>;
 }
 
 /** Runtime facts, not provider claims. Missing measurements remain visibly unknown. */
