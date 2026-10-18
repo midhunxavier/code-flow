@@ -1,8 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import {
   adapters,
@@ -56,6 +56,8 @@ import {
   validRef,
   worktreeRoot,
   WorktreeMismatchError,
+  worktreeGit,
+  type Checkout,
   type MergeResult,
   type Snapshot,
   type Worktree,
@@ -961,6 +963,14 @@ export class TeamContext {
   }
 
   /**
+   * A worktree (or scratch checkout) of this run, for code-flow's git: run there, git uses the
+   * git folder your repository has for it, never one its `.git` names (see worktreeGit).
+   */
+  gitAt(wt: { path: string }): Promise<Checkout> {
+    return worktreeGit(this.run.repo, wt.path);
+  }
+
+  /**
    * Provider availability, quota and model catalogs. Pass the planning inventory on later
    * observations: availability and quota are read again, while the catalogs (a CLI call per
    * provider, and a network fetch for agy) are reused rather than probed at every event.
@@ -1373,7 +1383,7 @@ export class TeamContext {
         this.run.usage.checks++;
         this.run.lastCheck = { ok: result.ok, command, worktree: wt.name, at: Date.now() };
         this.manager.emitRun(this.run);
-        return { ...result, head: await resolveCommit(wt.path).catch(() => undefined) };
+        return { ...result, head: await this.gitAt(wt).then(resolveCommit).catch(() => undefined) };
       },
       (recorded) => !recorded.head || !head || recorded.head === head,
     );
@@ -1461,7 +1471,7 @@ export class TeamContext {
     if (!this.proves) return null;
     this.checkCancelled();
     const from = opts.from ?? wt.base;
-    const head = this.heads.get(wt.name) ?? (await resolveCommit(wt.path));
+    const head = this.heads.get(wt.name) ?? (await resolveCommit(await this.gitAt(wt)));
     const key = `${from}..${head}`;
     let proving = this.proofCache.get(key);
     const fresh = !proving;
@@ -1507,7 +1517,7 @@ export class TeamContext {
     const run = async (): Promise<Proof> => {
       let tests: string[] = [];
       try {
-        const changed = await changedFiles(wt.path, from, head);
+        const changed = await changedFiles(await this.gitAt(wt), from, head);
         tests = changed.filter(isTestSide);
         let result = !tests.length && known ? known : undefined;
         if (!result) {
@@ -1548,7 +1558,7 @@ export class TeamContext {
    * once. `title` names the step.
    */
   async reproduce(wt: Worktree, repro: Repro | undefined, title: string): Promise<FindingCheck> {
-    const head = this.heads.get(wt.name) ?? (await resolveCommit(wt.path));
+    const head = this.heads.get(wt.name) ?? (await resolveCommit(await this.gitAt(wt)));
     const path = repro?.path.trim() ?? "";
     const command = repro?.command.trim() || (path ? this.run.loop.check : undefined);
     const unconfirmed = (detail: string): FindingCheck => ({ status: "unconfirmed", detail, head });
@@ -1679,7 +1689,7 @@ export class TeamContext {
     await discardChanges(this.run.repo, wt, commit);
     wt.base = commit;
     if (this.run.loop.copy?.length) await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
-    if (current.setupAt !== commit && this.run.loop.setup && (await changedFiles(wt.path, current.setupAt, commit)).some((f) => DEPENDENCY_FILE.test(f))) {
+    if (current.setupAt !== commit && this.run.loop.setup && (await changedFiles(await this.gitAt(wt), current.setupAt, commit)).some((f) => DEPENDENCY_FILE.test(f))) {
       current.ready = (await this.command("setup", `${title} (dependencies changed)`, wt, this.run.loop.setup)).ok;
       current.setupAt = commit;
     }
@@ -1818,7 +1828,7 @@ export class TeamContext {
     if (!this.heads.has(name)) {
       // Replaying, the pattern starts from the base; otherwise from wherever the branch is.
       const replayed = !live && !this.followUpsOnly;
-      this.heads.set(name, replayed ? wt.base : await resolveCommit(wt.path).catch(() => wt.base));
+      this.heads.set(name, replayed ? wt.base : await this.gitAt(wt).then(resolveCommit).catch(() => wt.base));
     }
     return wt;
   }
@@ -1839,7 +1849,7 @@ export class TeamContext {
     if (!created) {
       // Recorded only once it's set up, so an earlier attempt may have stopped mid-setup (a crash
       // during `npm ci`): agents would get a worktree without its dependencies.
-      if (await isPrepared(wt)) {
+      if (await isPrepared(this.run.repo, wt)) {
         this.log(`Reusing existing worktree ${wt.path} (branch ${wt.branch})`);
         return wt;
       }
@@ -1872,9 +1882,9 @@ export class TeamContext {
     if (this.run.loop.setup) {
       const setup = await this.command("setup", `Setup ${wt.name}`, wt, this.run.loop.setup);
       if (!setup.ok) throw new Error(`Setup command \`${this.run.loop.setup}\` failed in worktree ${wt.name}`);
-      if (!(await isClean(wt.path))) this.manager.log(this.run.id, `Setup left changes in ${wt.name}; they'll appear in its diff`, "warn");
+      if (!(await isClean(await this.gitAt(wt)))) this.manager.log(this.run.id, `Setup left changes in ${wt.name}; they'll appear in its diff`, "warn");
     }
-    const marker = await preparedMarker(wt);
+    const marker = await preparedMarker(this.run.repo, wt);
     const written = marker && (await writeFile(marker, `${new Date().toISOString()}\n`).then(() => true, () => false));
     if (!written) this.manager.log(this.run.id, `Couldn't mark ${wt.name} as set up; it will be set up again if it's reused`, "warn");
   }
@@ -1890,7 +1900,7 @@ export class TeamContext {
         return sha;
       },
       // A recorded commit only stands if it's still in the branch's history.
-      async (recorded) => recorded === null || (await isAncestor(wt.path, recorded)),
+      async (recorded) => recorded === null || (await this.gitAt(wt).then((at) => isAncestor(at, recorded), () => false)),
     );
     if (sha) this.heads.set(wt.name, sha);
     return sha;
@@ -1902,10 +1912,11 @@ export class TeamContext {
    */
   private async recoverCommit(wt: Worktree, message: string): Promise<string | null> {
     const known = this.heads.get(wt.name);
-    const head = await resolveCommit(wt.path).catch(() => "");
-    if (!head || !known || head === known) return null;
-    const subject = (await git(["log", "-1", "--format=%s", head], wt.path)).stdout.trim();
-    return subject === message && (await isAncestor(wt.path, known, head)) ? head : null;
+    const at = await this.gitAt(wt).catch(() => undefined);
+    const head = at ? await resolveCommit(at).catch(() => "") : "";
+    if (!at || !head || !known || head === known) return null;
+    const subject = (await git(["log", "-1", "--format=%s", head], at)).stdout.trim();
+    return subject === message && (await isAncestor(at, known, head)) ? head : null;
   }
 
   /** Merge another branch into a worktree (the conflicts, if any, are left for an agent). */
@@ -1913,7 +1924,7 @@ export class TeamContext {
     this.checkCancelled();
     const result = await this.remember("merge", this.run.team ? `${wt.name}|${branch}` : branch, async (): Promise<MergeResult & { head?: string }> => {
       const merged = await mergeBranch(this.run.repo, wt, branch);
-      return { ...merged, head: merged.ok ? await resolveCommit(wt.path) : undefined };
+      return { ...merged, head: merged.ok ? await resolveCommit(await this.gitAt(wt)) : undefined };
     });
     if (result.head) this.heads.set(wt.name, result.head);
     return result;
@@ -1921,7 +1932,7 @@ export class TeamContext {
 
   /** Diff of the worktree against its base, fitted to a prompt (whole files first; see fitDiff). */
   async diff(wt: Worktree, base = wt.base): Promise<string> {
-    const full = await diffSince(wt, base);
+    const full = await diffSince(await this.gitAt(wt), base);
     if (!full.trim()) return "(no changes)";
     return fitDiff(full, MAX_DIFF_CHARS, base);
   }
@@ -1938,7 +1949,7 @@ export class TeamContext {
 
   /** Files changed in `wt` since `from`, as the pattern's pass through it sees them (see `readAt`). */
   async changedFiles(wt: Worktree, from: string): Promise<string[]> {
-    return changedFiles(wt.path, from, this.readAt(wt));
+    return changedFiles(await this.gitAt(wt), from, this.readAt(wt));
   }
 
   /**
@@ -1947,15 +1958,19 @@ export class TeamContext {
    */
   async testChanges(wt: Worktree, from = wt.base): Promise<IntegrityIssue[]> {
     const counts = this.testCounts.get(wt.name);
-    return inspectChanges(wt.path, from, this.readAt(wt), {
-      check: this.run.loop.check,
-      tests: counts ? { before: counts.first, after: counts.last } : undefined,
-    }).catch((err: Error) => [unverifiedIssue(err.message)]); // not knowing isn't the same as no issues
+    return this.gitAt(wt)
+      .then((at) =>
+        inspectChanges(at, from, this.readAt(wt), {
+          check: this.run.loop.check,
+          tests: counts ? { before: counts.first, after: counts.last } : undefined,
+        }),
+      )
+      .catch((err: Error) => [unverifiedIssue(err.message)]); // not knowing isn't the same as no issues
   }
 
   /** Publish a result branch (replaces an earlier artifact with the same label). */
   async artifact(label: string, wt: Worktree) {
-    const stat = await diffStat(wt, this.run.baseRef).catch((err: Error) => {
+    const stat = await this.gitAt(wt).then((at) => diffStat(at, this.run.baseRef)).catch((err: Error) => {
       this.log(`${label}: couldn't read its changes (${err.message})`, "warn");
       return "";
     });
@@ -2194,7 +2209,7 @@ export class TeamContext {
       }
     }
     let restore: { undone: string[] } | { error: Error } | undefined;
-    let changed: string[] = [];
+    let changed: string[] | Error = [];
     let result: RunResult;
     try {
       result = await this.attempts(params, step, onEvent, slot, start);
@@ -2203,7 +2218,7 @@ export class TeamContext {
       // chat's question: you may be editing its worktree meanwhile (its terminal, your editor),
       // and undoing everything would undo your work too, so what changed is only reported.
       if (params.mode === "read" && start && params.side) {
-        changed = await changedSince(this.run.repo, params.cwd, start).catch(() => []);
+        changed = await changedSince(this.run.repo, params.cwd, start).catch((error: Error) => error);
       } else if (params.mode === "read" && start) {
         restore = await restoreSnapshot(this.run.repo, params.cwd, start).then((undone) => ({ undone }), (error: Error) => ({ error }));
       }
@@ -2214,6 +2229,11 @@ export class TeamContext {
     }
     if (restore?.undone.length) {
       this.log(`${params.title} (${params.agent}) modified files in read-only mode; changes were reverted (${restore.undone.join(", ")})`, "warn");
+    }
+    // Not knowing what changed isn't the same as nothing changed (its `.git` may be broken).
+    if (changed instanceof Error) {
+      this.log(`${params.title} (${params.agent}) is read-only, but what changed in ${params.cwd.name} while it ran couldn't be checked, so anything it changed is still there: ${changed.message}`, "warn");
+      return { ...result, ok: false, errorKind: "other", error: `Couldn't check what this read-only step changed (anything it changed is still there): ${changed.message}` };
     }
     if (changed.length) {
       this.log(
@@ -2306,7 +2326,7 @@ export class TeamContext {
         // An earlier attempt of this write step may have edited files before failing: the whole
         // task again starts from the worktree as the step found it, or not at all.
         if (params.mode === "write" && retries > 0) {
-          if (!start || (await isMerging(params.cwd.path)) || !(await restoreSnapshot(this.run.repo, params.cwd, start).then(() => true, () => false))) return result;
+          if (!start || (await this.gitAt(params.cwd).then(isMerging, () => false)) || !(await restoreSnapshot(this.run.repo, params.cwd, start).then(() => true, () => false))) return result;
         }
         freshSession = true;
         onEvent({ kind: "status", text: `The ${name} conversation to continue no longer exists; starting a new one with the whole task` });
@@ -2326,7 +2346,7 @@ export class TeamContext {
             `Your previous attempt at this stopped with an error (${firstLine(result.error)}). ` +
             "Continue from the current state of the worktree: finish what was asked, then reply as asked.\n\n" +
             `For reference, the request was:\n${initial.prompt}`;
-        } else if (start && !(await isMerging(params.cwd.path))) {
+        } else if (start && !(await this.gitAt(params.cwd).then(isMerging, () => false))) {
           // (Not mid-merge: resetting would drop the merge, and its commit would lose a parent.)
           startOver = true;
           ({ resume, prompt } = initial);
@@ -2633,6 +2653,11 @@ export class RunManager {
 
   get(id: string): Run | undefined {
     return this.runs.get(id);
+  }
+
+  /** The run worktree (or scratch checkout) `path` is or is in, for code-flow's git there (see runWorktreeAt). */
+  worktreeAt(path: string): Promise<Checkout | undefined> {
+    return runWorktreeAt(this.runs.values(), path);
   }
 
   /** Full event history of a run (from memory, or from its log for runs loaded from disk). */
@@ -3887,10 +3912,8 @@ async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
     // and its passing check cannot extend approval of a different integrated commit.
     const verification = run.team?.verification;
     if (verification && wt.name === "integration") {
-      const [head, pending] = await Promise.all([
-        resolveCommit(wt.path).catch(() => undefined),
-        uncommittedCount(wt.path).catch(() => undefined),
-      ]);
+      const at = await ctx.gitAt(wt).catch(() => undefined);
+      const [head, pending] = at ? await Promise.all([resolveCommit(at).catch(() => undefined), uncommittedCount(at).catch(() => undefined)]) : [undefined, undefined];
       if (head !== verification.head || pending !== 0) {
         run.team!.verification = { head: head ?? verification.head, check: "unknown", reviewed: false, approved: false };
         const gap = `${head === undefined || pending === undefined ? "The integrated result could not be confirmed" : "The integrated result changed"} after the team's review. Run the whole team again to verify the updated result.`;
@@ -3906,7 +3929,7 @@ async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
 
 async function runFollowUpInWorktree(ctx: TeamContext, run: Run, f: FollowUp, wt: Worktree) {
   await placeFiles(run, wt, f);
-  const before = await ctx.remember("head", `before ${f.id}`, () => resolveCommit(wt.path));
+  const before = await ctx.remember("head", `before ${f.id}`, async () => resolveCommit(await ctx.gitAt(wt)));
   if (f.kind === "resolve-conflicts" && f.mergeFrom) {
     // code-flow starts the merge; the agent only resolves the conflict markers.
     await ctx.remember("merge-start", `${f.id}|${f.mergeFrom}`, () => mergeBranch(run.repo, wt, f.mergeFrom!));
@@ -4059,7 +4082,7 @@ async function sideTurn(ctx: TeamContext, run: Run, f: FollowUp, side: SideTurn)
   const wt = await ctx.worktree(f.worktree);
   await placeFiles(run, wt, f);
   const change = side.mode === "change";
-  const before = change ? await ctx.remember("head", `before ${f.id}`, () => resolveCommit(wt.path)) : undefined;
+  const before = change ? await ctx.remember("head", `before ${f.id}`, async () => resolveCommit(await ctx.gitAt(wt))) : undefined;
   const earlier = run.followUps.filter((x) => x.side?.chat === side.chat && x.id !== f.id && x.status === "done" && x.stepId);
   const previous = earlier
     .map((x) => run.steps.find((s) => s.id === x.stepId))
@@ -4131,6 +4154,23 @@ async function unchanged(run: Run): Promise<boolean> {
   return true;
 }
 
+/**
+ * The worktree (or scratch checkout) of one of `runs` that `path` is or is in, for code-flow's
+ * git there (see worktreeGit); undefined when `path` isn't in any run's worktrees folder. Throws
+ * a WorktreeMismatchError when it is, but that run's repository has no checkout there.
+ */
+export async function runWorktreeAt(runs: Iterable<Pick<Run, "repo" | "worktreeDir">>, path: string): Promise<Checkout | undefined> {
+  const targets = [...new Set([resolve(path), await realpath(path).catch(() => resolve(path))])];
+  for (const run of runs) {
+    for (const target of targets) {
+      const rel = relative(resolve(run.worktreeDir), target);
+      const name = rel.split(sep)[0];
+      if (rel && name && name !== ".." && !isAbsolute(rel)) return worktreeGit(run.repo, join(run.worktreeDir, name));
+    }
+  }
+  return undefined;
+}
+
 /** When a run doesn't finish, list each worktree that holds work so you can still use it. */
 async function collectUnfinishedWork(run: Run) {
   const listed = new Set(run.artifacts.map((a) => a.branch));
@@ -4138,8 +4178,9 @@ async function collectUnfinishedWork(run: Run) {
     if (listed.has(wt.branch)) continue;
     // Listed when git can't say, too: better a "Work so far" that's empty than work you can't find.
     const unreadable = "(couldn't read its changes)";
-    const stat = await diffStat({ ...wt, base: run.baseRef }, run.baseRef).catch(() => (existsSync(wt.path) ? unreadable : ""));
-    const pending = await uncommittedCount(wt.path).catch(() => 0);
+    const at = worktreeGit(run.repo, wt.path);
+    const stat = await at.then((at) => diffStat(at, run.baseRef)).catch(() => (existsSync(wt.path) ? unreadable : ""));
+    const pending = await at.then(uncommittedCount).catch(() => 0);
     if (!stat && !pending) continue;
     const note = pending ? `${pending} uncommitted change${pending === 1 ? "" : "s"} left in the worktree` : "";
     run.artifacts.push({ label: `Work so far: ${wt.name}`, branch: wt.branch, path: wt.path, stat: [stat, note].filter(Boolean).join("\n") });
@@ -4264,14 +4305,18 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) 
   return out;
 }
 
-/** The file in a worktree's private git dir (never in the files agents see) that says it's set up. */
-async function preparedMarker(wt: Worktree): Promise<string | undefined> {
-  const res = await git(["rev-parse", "--git-dir"], wt.path);
-  const dir = res.stdout.trim();
-  return res.code === 0 && dir ? join(resolve(wt.path, dir), "codeflow-prepared") : undefined;
+/**
+ * The file in a worktree's private git dir (never in the files agents see) that says it's set
+ * up: the git folder `repo` has for it, not one an agent's `.git` names (see worktreeGit).
+ */
+async function preparedMarker(repo: string, wt: Worktree): Promise<string | undefined> {
+  return worktreeGit(repo, wt.path).then(
+    (at) => join(at.gitDir, "codeflow-prepared"),
+    () => undefined,
+  );
 }
 
-async function isPrepared(wt: Worktree): Promise<boolean> {
-  const marker = await preparedMarker(wt);
+async function isPrepared(repo: string, wt: Worktree): Promise<boolean> {
+  const marker = await preparedMarker(repo, wt);
   return !!marker && existsSync(marker);
 }

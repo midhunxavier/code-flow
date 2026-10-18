@@ -89,7 +89,7 @@ export const tddPattern: Pattern = {
     // fixtures, snapshots, test config (and whatever the tester named). Only a plain source file
     // the tester added, a stub for the tests to import, is the builder's to fill in.
     const named = (spec?.test_files ?? []).map((f) => f.replace(/^\.\//, ""));
-    const testsIn = async (commit: string | null) => (commit ? (await changedFiles(wt.path, wt.base, commit)).filter((f) => !isPlainSource(f) || named.includes(f)) : named);
+    const testsIn = async (commit: string | null) => (commit ? (await changedFiles(await ctx.gitAt(wt), wt.base, commit)).filter((f) => !isPlainSource(f) || named.includes(f)) : named);
     let testFiles = await testsIn(testsCommit);
 
     // Evidence comes from code-flow running the tests itself. An agent-chosen command is only run
@@ -159,7 +159,7 @@ export const tddPattern: Pattern = {
 
     for (let round = 1; round <= maxRounds; round++) {
       // Only the builder's own changes count when checking for edited tests.
-      const before = await ctx.remember("head", `before round ${round}`, () => resolveCommit(wt.path));
+      const before = await ctx.remember("head", `before round ${round}`, async () => resolveCommit(await ctx.gitAt(wt)));
       builderStep = await ctx.ask({
         title: round === 1 ? "Implement to pass tests" : `Fix failures (round ${round})`,
         role: "builder",
@@ -202,7 +202,7 @@ export const tddPattern: Pattern = {
         }
       }
 
-      const beforeProbe = await ctx.remember("head", `before probe ${round}`, () => resolveCommit(wt.path));
+      const beforeProbe = await ctx.remember("head", `before probe ${round}`, async () => resolveCommit(await ctx.gitAt(wt)));
       const probed = await ctx.decide<TestVerdict>({
         title: `Try to break it (round ${round})`,
         schema: TEST_VERDICT_SCHEMA,
