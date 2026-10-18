@@ -31,10 +31,10 @@ import {
   changedSince,
   commitAll,
   diffSince,
+  discardChanges,
   diffStat,
   ensureCodeflowExcludes,
   git,
-  gitError,
   isAncestor,
   isClean,
   isMerging,
@@ -51,6 +51,7 @@ import {
   validateBranchPrefix,
   validRef,
   worktreeRoot,
+  WorktreeMismatchError,
   type MergeResult,
   type Snapshot,
   type Worktree,
@@ -1070,7 +1071,7 @@ export class TeamContext {
           // are installed, or the missing package would make the tests fail as if they needed the
           // change's code.
           const deps = changed.filter((f) => DEPENDENCY_FILE.test(f) && !isTestSide(f));
-          await restorePaths(checkout.path, head, [...tests, ...deps]);
+          await restorePaths(this.run.repo, checkout, head, [...tests, ...deps]);
           if (deps.length && this.run.loop.setup && !(await this.setupScratch("proof", checkout, head, "Setup proof checkout (the change's dependencies)"))) {
             return make("unverified", `setup failed on the base code with the change's dependencies (${deps.join(", ")})`, tests);
           }
@@ -1198,10 +1199,8 @@ export class TeamContext {
       current = await opening;
     }
     const { wt } = current;
-    for (const args of [["reset", "-q", "--hard", commit], ["clean", "-fdq"]]) {
-      const res = await git(args, wt.path);
-      if (res.code !== 0) throw new Error(gitError(args, res));
-    }
+    // The check that ran here last ran the agents' code, which could have broken its `.git`.
+    await discardChanges(this.run.repo, wt, commit);
     wt.base = commit;
     if (this.run.loop.copy?.length) await copyIntoWorktree(this.run.repo, wt.path, this.run.loop.copy);
     if (current.setupAt !== commit && this.run.loop.setup && (await changedFiles(wt.path, current.setupAt, commit)).some((f) => DEPENDENCY_FILE.test(f))) {
@@ -1407,7 +1406,7 @@ export class TeamContext {
       "commit",
       `${wt.name}|${message}`,
       async () => {
-        const sha = (await commitAll(wt, message)) ?? (await this.recoverCommit(wt, message));
+        const sha = (await commitAll(this.run.repo, wt, message)) ?? (await this.recoverCommit(wt, message));
         if (sha) this.log(`Committed ${sha.slice(0, 8)} on ${wt.branch}: ${message}`);
         return sha;
       },
@@ -1434,7 +1433,7 @@ export class TeamContext {
   async merge(wt: Worktree, branch: string): Promise<MergeResult> {
     this.checkCancelled();
     const result = await this.remember("merge", branch, async (): Promise<MergeResult & { head?: string }> => {
-      const merged = await mergeBranch(wt, branch);
+      const merged = await mergeBranch(this.run.repo, wt, branch);
       return { ...merged, head: merged.ok ? await resolveCommit(wt.path) : undefined };
     });
     if (result.head) this.heads.set(wt.name, result.head);
@@ -1647,9 +1646,14 @@ export class TeamContext {
     // retried without a session to continue starts over from it.
     let start: Snapshot | undefined;
     try {
-      start = await snapshot(params.cwd.path);
+      start = await snapshot(this.run.repo, params.cwd.path);
     } catch (err) {
-      // Read-only can't be enforced without it: don't run the agent at all (fail closed).
+      // Read-only can't be enforced without it, and in a worktree whose `.git` is broken the
+      // agent's own git would act on another checkout (yours): don't run the agent at all (fail closed).
+      if (err instanceof WorktreeMismatchError) {
+        this.log(`${params.title} (${params.agent}) didn't start: ${err.message}`, "warn");
+        return { ok: false, finalText: "", errorKind: "other", error: err.message };
+      }
       if (params.mode === "read") {
         return { ok: false, finalText: "", errorKind: "other", error: `Couldn't record the worktree's state, so read-only mode can't be enforced: ${(err as Error).message}` };
       }
@@ -1664,12 +1668,13 @@ export class TeamContext {
       // chat's question: you may be editing its worktree meanwhile (its terminal, your editor),
       // and undoing everything would undo your work too, so what changed is only reported.
       if (params.mode === "read" && start && params.side) {
-        changed = await changedSince(params.cwd.path, start).catch(() => []);
+        changed = await changedSince(this.run.repo, params.cwd, start).catch(() => []);
       } else if (params.mode === "read" && start) {
-        restore = await restoreSnapshot(params.cwd.path, start).then((undone) => ({ undone }), (error: Error) => ({ error }));
+        restore = await restoreSnapshot(this.run.repo, params.cwd, start).then((undone) => ({ undone }), (error: Error) => ({ error }));
       }
     }
     if (restore && "error" in restore) {
+      this.log(`${params.title} (${params.agent}) is read-only, but what it changed couldn't be undone: ${restore.error.message}`, "warn");
       return { ...result, ok: false, errorKind: "other", error: `Couldn't undo what this read-only step changed: ${restore.error.message}` };
     }
     if (restore?.undone.length) {
@@ -1723,7 +1728,7 @@ export class TeamContext {
         // An earlier attempt of this write step may have edited files before failing: the whole
         // task again starts from the worktree as the step found it, or not at all.
         if (params.mode === "write" && retries > 0) {
-          if (!start || (await isMerging(params.cwd.path)) || !(await restoreSnapshot(params.cwd.path, start).then(() => true, () => false))) return result;
+          if (!start || (await isMerging(params.cwd.path)) || !(await restoreSnapshot(this.run.repo, params.cwd, start).then(() => true, () => false))) return result;
         }
         freshSession = true;
         onEvent({ kind: "status", text: `The ${name} conversation to continue no longer exists; starting a new one with the whole task` });
@@ -1756,7 +1761,7 @@ export class TeamContext {
       onEvent({ kind: "status", text: `${name} failed (${firstLine(result.error).slice(0, 160)}); trying again in ${Math.round(wait / 1000)}s` });
       slot.give();
       if (!(await sleep(wait, this.signal)) || !(await slot.take())) return result;
-      if (startOver && !(await restoreSnapshot(params.cwd.path, start!).then(() => true, () => false))) return result;
+      if (startOver && !(await restoreSnapshot(this.run.repo, params.cwd, start!).then(() => true, () => false))) return result;
     }
   }
 
@@ -3039,7 +3044,7 @@ async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
   const before = await ctx.remember("head", `before ${f.id}`, () => resolveCommit(wt.path));
   if (f.kind === "resolve-conflicts" && f.mergeFrom) {
     // code-flow starts the merge; the agent only resolves the conflict markers.
-    await ctx.remember("merge-start", `${f.id}|${f.mergeFrom}`, () => mergeBranch(wt, f.mergeFrom!));
+    await ctx.remember("merge-start", `${f.id}|${f.mergeFrom}`, () => mergeBranch(run.repo, wt, f.mergeFrom!));
   }
   // Continue the agent's own session in this worktree when it has one — from a turn that worked:
   // a failed or stopped turn's session may never have existed, or may be gone. A side chat's
