@@ -3652,7 +3652,8 @@ export class RunManager {
     this.bus.emit(run.id, event);
     if (event.type === "run") this.bus.emit("*", event.run);
     // A finished run's last snapshot is synced: after a power cut it must not reload as running.
-    appendLine(`${run.id}.jsonl`, this.logWriter.encode(event), { sync: event.type === "run" && event.run.status !== "running" });
+    // A line that didn't make it: the next snapshot is written whole, not as a patch on a lost one.
+    appendLine(`${run.id}.jsonl`, this.logWriter.encode(event), { sync: event.type === "run" && event.run.status !== "running", onFailed: () => this.logWriter.forget(run.id) });
   }
 }
 

@@ -104,7 +104,7 @@ async function truncateIncompleteTail(path: string): Promise<void> {
  * the line to reach the disk (fsync) before the next write: for lines that must survive a
  * power loss, not for every event (`flushWrites` syncs those at shutdown).
  */
-export function appendLine(file: string, value: unknown, opts: { sync?: boolean; strict?: boolean } = {}): Promise<void> {
+export function appendLine(file: string, value: unknown, opts: { sync?: boolean; strict?: boolean; onFailed?: () => void } = {}): Promise<void> {
   const line = `${JSON.stringify(value)}\n`;
   const written = writeQueue
     .then(async () => {
@@ -125,6 +125,7 @@ export function appendLine(file: string, value: unknown, opts: { sync?: boolean;
       else unsynced.add(file);
     });
   const observed = written.catch((err: Error) => {
+      opts.onFailed?.();
       writeHealth.failures++;
       writeHealth.lastError = err.message;
       writeHealth.at = Date.now();

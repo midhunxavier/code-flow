@@ -188,7 +188,7 @@ const windows = new Map<string, { ids: Map<number, number>; cursors: Map<number,
 type Shared = { kind: "leader" } | { kind: "subs"; window: string; subs: [number, string, string | undefined][] } | { kind: "bye"; window: string };
 
 function share() {
-  if (typeof BroadcastChannel !== "function" || !navigator.locks?.request) {
+  if (typeof BroadcastChannel !== "function" || typeof navigator === "undefined" || !navigator.locks?.request) {
     role = "solo";
     return;
   }

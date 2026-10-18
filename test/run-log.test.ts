@@ -70,6 +70,22 @@ test("a patch whose snapshot was lost is skipped until the next full one; other 
   assert.deepEqual(decoded.map((e) => e.seq), [99, third.seq]);
 });
 
+test("a patch on a snapshot that never reached the disk isn't applied: the run reads as of the last one that did, until the next full one", () => {
+  const writer = new RunLogWriter();
+  const events = [snapshot({ status: "running", body: BIG, n: 1 }), snapshot({ status: "running", body: BIG, n: 2 }), snapshot({ status: "running", body: BIG, n: 3 }), snapshot({ status: "running", body: BIG, n: 4 })];
+  const written = events.map((e) => writer.encode(e)) as { type: string; base?: number }[];
+  assert.deepEqual(written.map((l) => [l.type, l.base]), [["run", undefined], ["run-patch", events[0]!.seq], ["run-patch", events[1]!.seq], ["run-patch", events[2]!.seq]]);
+  // The second line was lost (a failed write): nothing after it is pieced onto the first.
+  const decoded = decodeRunLog([written[0], written[2], written[3]]);
+  assert.deepEqual(decoded.map((e) => e.seq), [events[0]!.seq]);
+  // The write failed, so the writer starts over: the next snapshot is whole, and reads again.
+  writer.forget("r1");
+  const next = snapshot({ status: "running", body: BIG, n: 5 });
+  const full = writer.encode(next);
+  assert.equal(full.type, "run");
+  assert.deepEqual(decodeRunLog([written[0], written[2], written[3], full]).map((e) => e.type === "run" && (e.run as unknown as { n: number }).n), [1, 5]);
+});
+
 test("compacting an old log: the same events in fewer bytes, its last snapshot a full one for an older code-flow", () => {
   const events = [snapshot({ status: "running", body: BIG, n: 0 }), snapshot({ status: "running", body: BIG, n: 1 }), snapshot({ status: "running", body: BIG, n: 2 }), snapshot({ status: "done", body: BIG, n: 3, seen: false }), snapshot({ status: "done", body: BIG, n: 3, seen: true })];
   const compacted = compactRunLog(events);

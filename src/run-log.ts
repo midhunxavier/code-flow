@@ -19,21 +19,25 @@ export function replayEvents(events: RunEvent[]): RunEvent[] {
 
 // ---------------------------------------------------------------- run snapshots on disk
 /**
- * In a run's log (`<id>.jsonl`), a snapshot that follows another is written as what changed: the
- * top-level fields set (`set`) or removed (`unset`), and for a string or a list that kept its start
- * (a summary with a line added, a follow-up appended or finished), the index it changed from and
- * the rest (`tail`). Fields that never change (the task, the issue's text, CI logs, conventions)
- * are then only in full snapshots: the first one this code-flow writes for a run, the one at the
- * end of each time it runs, and one now and then (see `checkpoint`). Reading a log turns patches
- * back into snapshots (`decodeRunLog`), so nothing else sees them, and logs written before this
- * read as they always did. An older code-flow skips the patches and shows a run as of its last
- * full snapshot.
+ * In a run's log (`<id>.jsonl`), a snapshot that follows another is written as what changed since
+ * the snapshot numbered `base`: the top-level fields set (`set`) or removed (`unset`), and for a
+ * string or a list that kept its start (a summary with a line added, a follow-up appended or
+ * finished), the index it changed from and the rest (`tail`). Fields that never change (the task,
+ * the issue's text, CI logs, conventions) are then only in full snapshots: the first one this
+ * code-flow writes for a run, the one at the end of each time it runs, one now and then (see
+ * RunLogWriter), and the next one after a line failed to save. Reading a log turns patches back
+ * into snapshots (`decodeRunLog`), so nothing else sees them, and logs written before this read
+ * as they always did. A patch whose base isn't the snapshot before it in the log (that line was
+ * lost) is skipped, and so is everything after it until the next full snapshot. An older
+ * code-flow skips the patches and shows a run as of its last full snapshot.
  */
 export type RunPatch = {
   seq: number;
   ts: number;
   runId: string;
   type: "run-patch";
+  /** The `seq` of the snapshot this patch changes. */
+  base: number;
   set?: Record<string, unknown>;
   tail?: Record<string, [number, unknown]>;
   unset?: string[];
@@ -45,6 +49,7 @@ const MAX_PATCHES = 100;
 const MIN_STRING_KEPT = 64;
 
 interface Written {
+  seq: number;
   run: RunSummary;
   json: Map<string, string>;
   patches: number;
@@ -63,16 +68,21 @@ export class RunLogWriter {
 
   constructor(private readonly fullAtEnd = true) {}
 
+  /** A line for this run didn't make it to disk: its next snapshot is written whole. */
+  forget(runId: string) {
+    this.last.delete(runId);
+  }
+
   encode(event: RunEvent, opts: { full?: boolean } = {}): RunEvent | RunPatch {
     if (event.type !== "run") return event;
     const json = fieldsOf(event.run);
     const prev = this.last.get(event.runId);
     const ended = this.fullAtEnd && prev?.run.status === "running" && event.run.status !== "running";
     if (!prev || opts.full || ended || prev.patches >= MAX_PATCHES || prev.bytes >= prev.full) {
-      this.last.set(event.runId, { run: event.run, json, patches: 0, bytes: 0, full: sizeOf(json) });
+      this.last.set(event.runId, { seq: event.seq, run: event.run, json, patches: 0, bytes: 0, full: sizeOf(json) });
       return event;
     }
-    const patch: RunPatch = { seq: event.seq, ts: event.ts, runId: event.runId, type: "run-patch" };
+    const patch: RunPatch = { seq: event.seq, ts: event.ts, runId: event.runId, type: "run-patch", base: prev.seq };
     for (const [key, value] of json) {
       const before = prev.json.get(key);
       if (before === value) continue;
@@ -81,7 +91,7 @@ export class RunLogWriter {
       else (patch.set ??= {})[key] = (event.run as Record<string, unknown>)[key];
     }
     for (const key of prev.json.keys()) if (!json.has(key)) (patch.unset ??= []).push(key);
-    this.last.set(event.runId, { ...prev, run: event.run, json, patches: prev.patches + 1, bytes: prev.bytes + JSON.stringify(patch).length });
+    this.last.set(event.runId, { ...prev, seq: event.seq, run: event.run, json, patches: prev.patches + 1, bytes: prev.bytes + JSON.stringify(patch).length });
     return patch;
   }
 }
@@ -120,18 +130,25 @@ function tailOf(before: unknown, after: unknown, afterJson: string): [number, un
 
 /**
  * A run's log as events, with every patch turned back into the snapshot it describes. A patch
- * whose snapshot is missing (a line lost to a crash) is skipped until the next full one. Unchanged
- * fields are shared with the snapshot before, so treat the snapshots as read-only.
+ * whose base isn't the snapshot before it (a line lost to a failed write or a crash) is skipped,
+ * and so are the patches after it, until the next full snapshot: a run is never pieced together
+ * from snapshots that don't follow each other. Unchanged fields are shared with the snapshot
+ * before, so treat the snapshots as read-only.
  */
 export function decodeRunLog(lines: unknown[]): RunEvent[] {
   const out: RunEvent[] = [];
   let current: RunSummary | undefined;
+  let currentSeq = -1;
   for (const line of lines as (RunEvent | RunPatch)[]) {
     if (line?.type === "run") {
       current = line.run;
+      currentSeq = line.seq;
       out.push(line);
     } else if (line?.type === "run-patch") {
-      if (!current || current.id !== line.runId) continue;
+      if (!current || current.id !== line.runId || line.base !== currentSeq) {
+        current = undefined;
+        continue;
+      }
       const next: Record<string, unknown> = { ...current };
       for (const [key, value] of Object.entries(line.set ?? {})) next[key] = value;
       for (const [key, [at, rest]] of Object.entries(line.tail ?? {})) {
@@ -141,6 +158,7 @@ export function decodeRunLog(lines: unknown[]): RunEvent[] {
       }
       for (const key of line.unset ?? []) delete next[key];
       current = next as unknown as RunSummary;
+      currentSeq = line.seq;
       out.push({ seq: line.seq, ts: line.ts, runId: line.runId, type: "run", run: current });
     } else if (line) {
       out.push(line);
