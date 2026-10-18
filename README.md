@@ -19,7 +19,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/run-dark.png">
-    <img src="docs/images/run-light.png" alt="A code-flow run: the task, four steps by Claude and Codex, and the approved result with its branch (demo data)" width="100%">
+    <img src="docs/images/run-light.png" alt="A code-flow run: the task, eight steps by Claude and Codex, and the approved, proven result with its branch (demo data)" width="100%">
   </picture>
 </p>
 
@@ -57,7 +57,7 @@ Open **http://localhost:4317**, choose a repository, describe the task, pick a t
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/composer-dark.png">
-  <img src="docs/images/composer-light.png" alt="The composer: the task, the seven team patterns, and a team with an agent, model and effort per role (demo data)" width="100%">
+  <img src="docs/images/composer-light.png" alt="The composer: the project and repository, templates to start from, the task, and the team patterns with Plan → Build → Review picked (demo data)" width="100%">
 </picture>
 
 | Pattern | How the agents work | Reach for it when |
