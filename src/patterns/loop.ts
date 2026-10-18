@@ -2,7 +2,7 @@ import { adapters, type AgentId } from "../adapters/index.js";
 import { failureFingerprint, type CheckResult } from "../checks.js";
 import type { Pattern, StepOutcome } from "../engine.js";
 import { changedFiles, restorePaths } from "../git.js";
-import { describeIssues, issuesKey } from "../integrity.js";
+import { describeIssues, issuesKey, type IntegrityIssue } from "../integrity.js";
 import { checkSection, preamble, proofLine, proofRule, section, WRITE } from "./prompts.js";
 
 /**
@@ -17,7 +17,9 @@ import { checkSection, preamble, proofLine, proofRule, section, WRITE } from "./
  * (more tests failing, or no test results where there were some) is undone: the code goes back
  * to that state, so the branch never ends worse than the loop got it.
  * A pass only counts if the tests are still the tests: when the change deletes or skips tests
- * or edits what the check runs, the agent is told to undo that and fix the code instead.
+ * or edits what the check runs, the agent is told to undo that and fix the code instead. A pass it
+ * keeps them for (or that the rounds run out on) isn't one: the result is flagged and gets no
+ * verdict, and nobody is credited with getting it green.
  * And a pass should prove something: when the change's tests pass on the base code too (say the
  * check passed before anything changed), the agent is asked once for a test that fails without it.
  */
@@ -75,6 +77,8 @@ export const loopPattern: Pattern = {
     let rounds = 0;
     /** Test changes the agent was already told about (it may keep them if the task needs them). */
     let toldAbout = "";
+    /** Test changes the latest pass came with, not undone since: with these, the pass doesn't count. */
+    let unresolved: IntegrityIssue[] = [];
     /** What the last pass lacked (honest tests, or a test that needs the change), for the next round. */
     let nudge = "";
     let askedForProof = false;
@@ -125,8 +129,8 @@ export const loopPattern: Pattern = {
         const what =
           result.failed !== undefined ? `left ${plural(result.failed)} failing, more than the ${best.failed} ${best.where}` : `left no test results, where there were some ${best.where}`;
         ctx.log(`Round ${round} ${what}; undoing it`, "warn");
-        const changed = await ctx.remember("changed", `${wt.name}|undo round ${round}`, () => changedFiles(wt.path, best.head));
-        await ctx.remember("restore", `${wt.name}|undo round ${round}`, () => restorePaths(wt.path, best.head, changed).then(() => true));
+        const changed = await ctx.remember("changed", `${wt.name}|undo round ${round}`, async () => changedFiles(await ctx.gitAt(wt), best.head));
+        await ctx.remember("restore", `${wt.name}|undo round ${round}`, () => restorePaths(ctx.run.repo, wt, best.head, changed).then(() => true));
         head = (await ctx.commit(wt, `code-flow: undo round ${round}, which made the check worse`)) ?? head;
         history[history.length - 1] += ` — worse than ${best.where}, so code-flow undid it`;
         undone = `Your last change ${what}, so code-flow undid it: the code is as it was ${best.where} (\`git log\` shows both). Take a different approach.`;
@@ -148,6 +152,7 @@ export const loopPattern: Pattern = {
         // assertions are the evidence left: they block too.
         const uncounted = baseline.tests === undefined || result.tests === undefined;
         const issues = (await ctx.testChanges(wt)).filter((i) => i.severity === "high" || (uncounted && i.kind === "weakened-test"));
+        unresolved = issues;
         if (!issues.length) {
           if (!worse) best = { head, distance: 0, failed: 0, where: `after round ${round}`, agent };
           // The baseline is the check on the base code: reused when the change touches no tests.
@@ -167,9 +172,9 @@ export const loopPattern: Pattern = {
           break;
         }
         if (issuesKey(issues) === toldAbout) {
-          // Told once and kept them: the task may need it. It's flagged on the result for you.
-          ctx.log(`${name(agent)} kept its test changes after being asked to undo them; review them before merging`, "warn");
-          solvedBy = agent;
+          // Told once and kept them: the task may need it, so the result stays, flagged for you. But
+          // the pass isn't evidence: no verdict, and nobody is credited with getting it green.
+          ctx.log(`${name(agent)} kept its test changes after being asked to undo them; the pass doesn't count until you've reviewed them`, "warn");
           break;
         }
         toldAbout = issuesKey(issues);
@@ -199,15 +204,22 @@ export const loopPattern: Pattern = {
     }
 
     await ctx.artifact("Result", wt);
-    ctx.setVerdict(last.ok ? "passed" : "failing");
-    ctx.setFacts({ solvedBy: last.ok ? solvedBy ?? workers[current] : undefined, handoffs, proof: ctx.proofOf(wt)?.status });
+    // A pass that only came with changes to the tests says nothing either way: no verdict (as when
+    // the check can't run), so it neither passes nor feeds who gets picked next.
+    const passed = last.ok && !unresolved.length;
+    if (passed || !last.ok) ctx.setVerdict(passed ? "passed" : "failing");
+    ctx.setFacts({ solvedBy: passed ? solvedBy ?? workers[current] : undefined, handoffs, proof: ctx.proofOf(wt)?.status });
+    const s = rounds === 1 ? "" : "s";
     return [
-      last.ok
-        ? `**Check passes** after ${rounds} round${rounds === 1 ? "" : "s"} — branch \`${wt.branch}\``
-        : `**Check still failing** after ${rounds} rounds — branch \`${wt.branch}\` has ${
-            last.failed !== undefined ? `the best attempt (${plural(last.failed)} failing)` : "the latest attempt"
-          }`,
-      last.ok ? proofLine(ctx.proofOf(wt)) : "",
+      passed
+        ? `**Check passes** after ${rounds} round${s} — branch \`${wt.branch}\``
+        : last.ok
+          ? `**The check passes only with changes to the tests** after ${rounds} round${s} — branch \`${wt.branch}\`; review them before merging`
+          : `**Check still failing** after ${rounds} rounds — branch \`${wt.branch}\` has ${
+              last.failed !== undefined ? `the best attempt (${plural(last.failed)} failing)` : "the latest attempt"
+            }`,
+      passed ? proofLine(ctx.proofOf(wt)) : "",
+      last.ok && !passed ? section("Changes to the tests that could hide the failure", describeIssues(unresolved)) : "",
       section("Rounds", history.join("\n")),
       last.ok ? "" : section("Last failure", "```\n" + last.output.slice(-1_500).trim() + "\n```"),
     ].join("\n");

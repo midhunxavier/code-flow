@@ -105,7 +105,7 @@ Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and t
 ## Insights, comparisons and finding runs
 
 - **Insights** (in the sidebar, or <kbd>i</kbd>) shows, per agent and per pattern, for the project you're in, one repo, or everything, over 7 days, 30 days or all time:
-  - runs, how often the result passed its check, and how often it was proven (a test fails without the change);
+  - runs, how often the result passed its check, and how often it was proven (a test fails without the change; a weak proof, where the tests only fail to load without it, doesn't count);
   - race wins, loops each agent got green, and review findings other reviewers agreed with;
   - failed steps, tokens (input, output, cached) and time per step;
   - Claude's API-equivalent cost. Your plan isn't billed per token; it's a measure of size.

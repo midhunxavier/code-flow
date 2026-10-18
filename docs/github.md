@@ -81,7 +81,7 @@ A read-only pattern: several agents review the same changes independently, and a
 
 - **Failing CI:** the failed jobs' logs go to the agent you picked, which fixes the cause. code-flow commits and pushes to the PR.
 - **New comments** from you (the account `gh` is signed in as), or from people you list under *Also act on comments from*, go to the agent in the same way. Nobody reviews these fixes before they're pushed, so anyone else's comments are logged and ignored, even an org member's. Comments that were there before you started watching are never acted on.
-- These unattended fixes never run with more than *standard* permissions, and a fix that changes tests in ways that could hide the failure isn't pushed. It's handed back to you instead.
+- These unattended fixes never run with more than *standard* permissions, and a fix that touches the tests at all isn't pushed: a deleted, skipped or weakened test, a changed test config or CI workflow, the runner's settings in `package.json` or `pyproject.toml`, or fewer tests running than before the fix. It's handed back to you instead.
 - **Stops:** after the number of fixes you allow, if someone else pushed to the PR, or when the PR is merged or closed. It then shows under *Needs you* with a notification.
 - **Can't check:** when checking the PR fails (`gh` signed out, rate-limited, offline), code-flow waits longer before each retry. After three failures in a row the watch shows under *Needs you* with the reason, e.g. *gh isn't signed in — run `gh auth login`* (it asks `gh auth status` to tell). It keeps retrying, and goes back to watching once `gh` answers again.
 - It **never merges**.

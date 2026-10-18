@@ -135,11 +135,12 @@ test("loop until green hands off to the next vendor when one is stuck", async ()
 });
 
 /**
- * A check that reports how many tests fail, like node --test: 2 at first, one fewer per file an
- * agent implements, two more per broken-*.txt (FAKE_BREAKS_VENDOR writes those).
+ * A check that reports how many of its 5 tests fail, like node --test: 2 at first, one fewer per
+ * file an agent implements, two more per broken-*.txt (FAKE_BREAKS_VENDOR writes those). The rest
+ * pass, so as many tests run every time: fixing one isn't running fewer.
  */
 const FAILING_CHECK =
-  'good=$(ls claude-*.txt codex-*.txt agy-*.txt 2>/dev/null | wc -l); bad=$(ls broken-*.txt 2>/dev/null | wc -l); f=$((2 - good + 2 * bad)); [ "$f" -lt 0 ] && f=0; echo "# pass 3"; echo "# fail $f"; [ "$f" -eq 0 ]';
+  'good=$(ls claude-*.txt codex-*.txt agy-*.txt 2>/dev/null | wc -l); bad=$(ls broken-*.txt 2>/dev/null | wc -l); f=$((2 - good + 2 * bad)); [ "$f" -lt 0 ] && f=0; [ "$f" -gt 5 ] && f=5; echo "# pass $((5 - f))"; echo "# fail $f"; [ "$f" -eq 0 ]';
 
 test("loop until green: more failing tests isn't progress, and the round is undone", async () => {
   process.env.FAKE_BREAKS_VENDOR = "codex";

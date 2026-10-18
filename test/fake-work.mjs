@@ -1,7 +1,7 @@
 // What a fake agent does with a prompt, whichever way it was asked (one-shot CLI or Codex's
 // app-server): its side effects in the working directory, then its answer. Answers the structured
 // prompts the patterns send, so workflows can be exercised end to end.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
@@ -16,6 +16,11 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     writeFileSync("committed-in-read.txt", "x\n");
     execFileSync("git", ["add", "committed-in-read.txt"]);
     execFileSync("git", ["-c", "user.name=x", "-c", "user.email=x@x", "commit", "-qm", "sneaky commit from a read-only step"]);
+  }
+  // A read-only step that breaks its worktree: git run there afterwards finds your checkout.
+  if (prompt.includes("DELETES-GIT-IN-READ") && !write) {
+    writeFileSync("written-in-read.txt", "x\n");
+    rmSync(".git");
   }
   // Leave a background process holding stdout open, like `npm run dev &` would.
   if (process.env.FAKE_LINGER_VENDOR === vendor) {
@@ -42,7 +47,14 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
   let answer = `${vendor} handled the request.`;
   const json = (obj) => `Done.\n\`\`\`json\n${JSON.stringify(obj)}\n\`\`\``;
 
-  if (prompt.includes("AUTO_TEAM_PLAN")) {
+  if (prompt.includes("## Task to improve")) {
+    // The composer's Improve: the task restated with a done line. IMPROVE-EMPTY answers with nothing usable.
+    const original = prompt.slice(prompt.indexOf("## Task to improve") + "## Task to improve".length).trim();
+    const repo = prompt.includes("look around the repository");
+    answer = prompt.includes("IMPROVE-EMPTY")
+      ? "I'd rather not."
+      : json({ prompt: `Goal: ${original}\n\nDone when: the tests pass.`, summary: `Stated the goal and when it's done (${repo ? "repo" : "quick"}, ${vendor}).` });
+  } else if (prompt.includes("AUTO_TEAM_PLAN")) {
     const inventoryText = prompt.match(/## Inventory and constraints\n```json\n([\s\S]*?)\n```/);
     const policy = inventoryText ? JSON.parse(inventoryText[1]) : { coordinator: vendor, pool: ["claude", "codex"], inventory: { providers: [] } };
     const eligible = policy.inventory.providers.filter((p) => p.available && !p.blockedReason && (policy.pool.includes(p.id) || p.id === policy.coordinator));
@@ -183,6 +195,33 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     // Gaming the check: delete the test that fails instead of fixing the code.
     execFileSync("git", ["rm", "-q", "failing.test.mjs"]);
     answer = "Removed a broken test.";
+  } else if (write && process.env.FAKE_IMPORT_TEST) {
+    // A module and a test of it: without the module (on the base code), the test can't even load.
+    writeFileSync("feature.mjs", "export const feature = () => 1;\n");
+    writeFileSync("feature.test.mjs", testFile('import { feature } from "./feature.mjs";', 'test("feature", () => assert.equal(feature(), 1));'));
+    answer = "Added the feature and its test.";
+  } else if (write && process.env.FAKE_CI_TAMPER && prompt.includes("CI fails on the pull request")) {
+    // Gaming CI instead of fixing it: "workflow" comments out the failing job; "fewer" drops one of
+    // the tests the check counts (t-*.txt), which no test file shows.
+    if (process.env.FAKE_CI_TAMPER === "workflow") writeFileSync(".github/workflows/ci.yml", "jobs:\n  # test:\n  #   runs-on: ubuntu-latest\n  lint:\n    runs-on: ubuntu-latest\n");
+    else execFileSync("git", ["rm", "-q", "t-2.txt"]);
+    writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
+    answer = "CI passes now.";
+  } else if (write && process.env.FAKE_BUILDER_TAMPER && (prompt.includes("Make the tests pass") || prompt.includes("You changed how the tests run"))) {
+    // A builder that changes how the tests run as well as implementing: "conftest" adds a
+    // conftest.py that ignores the tests; "jest" adds a jest block to package.json that ignores
+    // them, and takes it out when told; "jest-keeps" never does.
+    const mode = process.env.FAKE_BUILDER_TAMPER;
+    const told = prompt.includes("You changed how the tests run");
+    if (mode === "conftest") writeFileSync("conftest.py", 'collect_ignore = ["spec.test.mjs"]\n');
+    else if (!told || mode === "jest") {
+      const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+      if (told) delete pkg.jest;
+      else pkg.jest = { testPathIgnorePatterns: ["spec.test.mjs"] };
+      writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+    }
+    writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
+    answer = told && mode === "jest" ? "Took the jest settings out and implemented it." : "Implemented it and set up the tests.";
   } else if (write && process.env.FAKE_EDIT_TESTS && prompt.includes("Make the tests pass") && existsSync("spec.test.mjs")) {
     writeFileSync("spec.test.mjs", 'import { test } from "node:test";\ntest("always passes", () => {});\n');
     writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
