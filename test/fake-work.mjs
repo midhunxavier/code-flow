@@ -1,7 +1,7 @@
 // What a fake agent does with a prompt, whichever way it was asked (one-shot CLI or Codex's
 // app-server): its side effects in the working directory, then its answer. Answers the structured
 // prompts the patterns send, so workflows can be exercised end to end.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
@@ -16,6 +16,11 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     writeFileSync("committed-in-read.txt", "x\n");
     execFileSync("git", ["add", "committed-in-read.txt"]);
     execFileSync("git", ["-c", "user.name=x", "-c", "user.email=x@x", "commit", "-qm", "sneaky commit from a read-only step"]);
+  }
+  // A read-only step that breaks its worktree: git run there afterwards finds your checkout.
+  if (prompt.includes("DELETES-GIT-IN-READ") && !write) {
+    writeFileSync("written-in-read.txt", "x\n");
+    rmSync(".git");
   }
   // Leave a background process holding stdout open, like `npm run dev &` would.
   if (process.env.FAKE_LINGER_VENDOR === vendor) {
@@ -42,7 +47,14 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
   let answer = `${vendor} handled the request.`;
   const json = (obj) => `Done.\n\`\`\`json\n${JSON.stringify(obj)}\n\`\`\``;
 
-  if (prompt.includes("AUTO_TEAM_PLAN")) {
+  if (prompt.includes("## Task to improve")) {
+    // The composer's Improve: the task restated with a done line. IMPROVE-EMPTY answers with nothing usable.
+    const original = prompt.slice(prompt.indexOf("## Task to improve") + "## Task to improve".length).trim();
+    const repo = prompt.includes("look around the repository");
+    answer = prompt.includes("IMPROVE-EMPTY")
+      ? "I'd rather not."
+      : json({ prompt: `Goal: ${original}\n\nDone when: the tests pass.`, summary: `Stated the goal and when it's done (${repo ? "repo" : "quick"}, ${vendor}).` });
+  } else if (prompt.includes("AUTO_TEAM_PLAN")) {
     const inventoryText = prompt.match(/## Inventory and constraints\n```json\n([\s\S]*?)\n```/);
     const policy = inventoryText ? JSON.parse(inventoryText[1]) : { coordinator: vendor, pool: ["claude", "codex"], inventory: { providers: [] } };
     const eligible = policy.inventory.providers.filter((p) => p.available && !p.blockedReason && (policy.pool.includes(p.id) || p.id === policy.coordinator));

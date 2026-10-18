@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { appendFile, copyFile, lstat, mkdir, readFile, rm } from "node:fs/promises";
+import { appendFile, copyFile, lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { envNumber, timerMs, WORKTREE_DIR } from "./config.js";
 import { childEnv } from "./env.js";
@@ -25,6 +25,10 @@ export interface GitOptions {
   env?: NodeJS.ProcessEnv;
   /** Written to stdin. */
   input?: string;
+  /** Look for the repository in the folders above `cwd` too: only to find the one a folder you picked is in. */
+  discover?: boolean;
+  /** Run the repository's hooks: only for a merge into your checkout and a push (see gitCommand). */
+  hooks?: boolean;
 }
 
 const GIT_TIMEOUT_MS = timerMs(envNumber("CODEFLOW_GIT_TIMEOUT_SEC", 300, { min: 1 }) * 1000);
@@ -40,6 +44,32 @@ function gitEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /**
+ * The arguments and environment for code-flow's own git in `cwd`:
+ * - git looks for the repository in `cwd` and nowhere above it (GIT_CEILING_DIRECTORIES). A
+ *   worktree lives inside your checkout, and once an agent deletes its `.git`, git run there
+ *   would find your checkout instead: a `reset --hard` meant for the worktree would reset yours.
+ * - no fsmonitor and no hooks, whatever a config file says. An agent can point a worktree's
+ *   `.git` at a git folder of its own making, whose config would otherwise have code-flow run
+ *   the agent's commands outside its sandbox. Your hooks still run where you'd expect them to:
+ *   a merge into your checkout and a push (Git LFS uploads its files in pre-push).
+ */
+function gitCommand(args: string[], cwd: string, opts: GitOptions = {}): { args: string[]; env: NodeJS.ProcessEnv } {
+  const own = ["-c", "core.fsmonitor=false", ...(opts.hooks ? [] : ["-c", "core.hooksPath=/dev/null"])];
+  const ceiling = opts.discover ? {} : { GIT_CEILING_DIRECTORIES: dirname(realPathSync(cwd)) };
+  return { args: [...own, ...args], env: gitEnv({ ...ceiling, ...opts.env }) };
+}
+
+function realPathSync(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+const realPath = (path: string) => realpath(path).catch(() => resolve(path));
+
+/**
  * Run git. Never throws: a non-zero `code` says it failed. Bounded in time (a hook, an LFS
  * fetch or a stalled remote can't hang a run) and in output (a huge diff fails cleanly instead
  * of ending up in an error message).
@@ -47,8 +77,9 @@ function gitEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export function git(args: string[], cwd: string, opts: GitOptions = {}): Promise<GitResult> {
   const timeoutMs = opts.timeoutMs ?? GIT_TIMEOUT_MS;
   return new Promise((resolve) => {
+    const command = gitCommand(args, cwd, opts);
     // Its own process group, so a timeout also stops the hooks (and their children) git started.
-    const child = spawn("git", args, { cwd, env: gitEnv(opts.env), detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("git", command.args, { cwd, env: command.env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let outBytes = 0;
@@ -225,7 +256,7 @@ function withWorktreeLock<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
 }
 
 export async function repoRoot(path: string): Promise<string> {
-  return gitOk(["rev-parse", "--show-toplevel"], path);
+  return gitOk(["rev-parse", "--show-toplevel"], path, { discover: true });
 }
 
 export async function resolveCommit(repo: string, ref = "HEAD"): Promise<string> {
@@ -238,6 +269,74 @@ export interface Worktree {
   branch: string;
   /** Commit the worktree was created from. */
   base: string;
+}
+
+/** A checkout to change: its folder, and the branch it must be on (none for a detached one). */
+export type CheckoutRef = { path: string; branch?: string };
+
+/** A checkout that isn't the one code-flow means to change (see assertWorktree). */
+export class WorktreeMismatchError extends Error {}
+
+/**
+ * Before code-flow changes a checkout of `repo` (resets it, cleans it, puts a stash back, commits,
+ * merges, removes it): make sure git will act on that checkout and nothing else. An agent can
+ * delete or rewrite the worktree's `.git` (it's a file in the worktree), and git would then act
+ * on your checkout above it, or on a repository of the agent's making. Throws, saying what's
+ * wrong, instead. What it checks:
+ * - `.git` is the file git wrote, pointing at the worktree's folder in `repo`'s git folder, which
+ *   points back at it (an agent can't write there). For your main checkout, `.git` is `repo`'s
+ *   git folder itself.
+ * - git sees the checkout as its own top folder.
+ * - with `wt.branch`, HEAD is that branch: a reset or commit on another one would change it.
+ */
+export async function assertWorktree(repo: string, wt: CheckoutRef): Promise<void> {
+  const problem = await worktreeProblem(repo, wt);
+  if (problem) {
+    throw new WorktreeMismatchError(
+      `${wt.path} isn't the checkout code-flow expects (${problem}), so code-flow didn't run git there: it could have changed another checkout or branch, such as yours. Nothing was changed.`,
+    );
+  }
+}
+
+async function worktreeProblem(repo: string, wt: CheckoutRef): Promise<string | undefined> {
+  const common = await realPath(resolve(repo, await gitOk(["rev-parse", "--git-common-dir"], repo)));
+  const path = await realPath(wt.path);
+  const dotGit = join(path, ".git");
+  const info = await lstat(dotGit).catch(() => undefined);
+  if (!info) return "its .git is missing";
+  let gitDir: string;
+  if (info.isDirectory()) gitDir = await realPath(dotGit);
+  else if (info.isFile()) {
+    const named = /^gitdir: *(.+?)\s*$/m.exec(await readFile(dotGit, "utf8").catch(() => ""))?.[1];
+    if (!named) return "its .git doesn't name a git folder";
+    gitDir = await realPath(resolve(path, named));
+  } else return `its .git is a ${info.isSymbolicLink() ? "symbolic link" : "special file"}`;
+
+  if (gitDir === common) {
+    const main = await mainWorktree(repo);
+    if (!main || (await realPath(main)) !== path) return `its .git points to the git folder of ${main ?? repo} itself`;
+  } else if (dirname(gitDir) === join(common, "worktrees")) {
+    const back = (await readFile(join(gitDir, "gitdir"), "utf8").catch(() => "")).trim();
+    if (!back) return `its .git points to ${gitDir}, which isn't there any more`;
+    if ((await realPath(resolve(gitDir, back))) !== dotGit) return `its .git points to the git folder of another worktree (${gitDir})`;
+  } else return `its .git points to ${gitDir}, which isn't one of ${repo}'s worktrees`;
+
+  const top = await git(["rev-parse", "--show-toplevel"], path);
+  if (top.code !== 0) return `git can't read it: ${gitError(["rev-parse"], top)}`;
+  if ((await realPath(top.stdout.trim())) !== path) return `git sees ${top.stdout.trim()} as its top folder`;
+  if (wt.branch) {
+    const head = (await git(["symbolic-ref", "-q", "HEAD"], path)).stdout.trim();
+    if (head !== `refs/heads/${wt.branch}`) return head ? `it's on ${head.replace(/^refs\/heads\//, "")}, not ${wt.branch}` : `its HEAD is detached, not on ${wt.branch}`;
+  }
+  return undefined;
+}
+
+/** `repo`'s main checkout (the one its git folder belongs to); undefined for a bare repository. */
+async function mainWorktree(repo: string): Promise<string | undefined> {
+  const lines = (await gitOk(["worktree", "list", "--porcelain"], repo)).split("\n");
+  const end = lines.indexOf("");
+  const first = lines.slice(0, end === -1 ? undefined : end);
+  return first.includes("bare") ? undefined : first.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
 }
 
 // Agents commit as this identity so their work is clearly attributed in history.
@@ -409,10 +508,11 @@ export async function validateBranchPrefix(repo: string, prefix: string): Promis
 }
 
 /**
- * Stage and commit everything in the worktree, except files that must not leave this machine
- * (`unstageSecrets`; `onWarning` names them). Returns the new commit, or null if clean.
+ * Stage and commit everything in a worktree of `repo`, except files that must not leave this
+ * machine (`unstageSecrets`; `onWarning` names them). Returns the new commit, or null if clean.
  */
-export async function commitAll(wt: Worktree, message: string, onWarning?: (text: string) => void): Promise<string | null> {
+export async function commitAll(repo: string, wt: Worktree, message: string, onWarning?: (text: string) => void): Promise<string | null> {
+  await assertWorktree(repo, wt);
   await gitOk(["add", "-A"], wt.path);
   await unstageSecrets(wt.path, onWarning);
   const staged = await git(["diff", "--cached", "--quiet"], wt.path);
@@ -475,7 +575,8 @@ export interface MergeResult {
   output: string;
 }
 
-export async function mergeBranch(wt: Worktree, branch: string): Promise<MergeResult> {
+export async function mergeBranch(repo: string, wt: Worktree, branch: string): Promise<MergeResult> {
+  await assertWorktree(repo, wt);
   const res = await git([...IDENTITY, "merge", "--no-ff", "--no-edit", branch], wt.path);
   if (res.code === 0) return { ok: true, conflicts: [], output: res.stdout };
   const conflicts = await git(["diff", "--name-only", "--diff-filter=U"], wt.path);
@@ -495,10 +596,11 @@ export async function uncommittedCount(cwd: string): Promise<number> {
   return out ? out.split("\n").length : 0;
 }
 
-/** Drop uncommitted changes and untracked (non-ignored) files in a disposable worktree. */
-export async function discardChanges(cwd: string): Promise<void> {
-  await gitOk(["reset", "--hard", "-q", "HEAD"], cwd);
-  await gitOk(["clean", "-fdq"], cwd);
+/** Move a disposable worktree of `repo` to `to`, dropping its changes and untracked (non-ignored) files. */
+export async function discardChanges(repo: string, wt: CheckoutRef, to = "HEAD"): Promise<void> {
+  await assertWorktree(repo, wt);
+  await gitOk(["reset", "--hard", "-q", to], wt.path);
+  await gitOk(["clean", "-fdq"], wt.path);
 }
 
 /** A worktree's state before a read-only step: its commit, uncommitted changes, untracked files. */
@@ -538,7 +640,8 @@ function writeBlob(cwd: string, id: string, path: string): Promise<void> {
     const target = join(cwd, path);
     mkdirSync(dirname(target), { recursive: true });
     const fd = openSync(target, "w");
-    const child = spawn("git", ["cat-file", "blob", id], { cwd, env: gitEnv(), stdio: ["ignore", fd, "pipe"] });
+    const command = gitCommand(["cat-file", "blob", id], cwd);
+    const child = spawn("git", command.args, { cwd, env: command.env, stdio: ["ignore", fd, "pipe"] });
     let stderr = "";
     child.stderr?.on("data", (c: Buffer) => (stderr += c.toString()));
     child.on("error", (err) => {
@@ -591,8 +694,13 @@ async function uncommittedTree(cwd: string): Promise<string> {
 
 const untrackedFiles = async (cwd: string) => (await gitOk(["ls-files", "--others", "--exclude-standard", "-z"], cwd)).split("\0").filter(Boolean);
 
-export async function snapshot(cwd: string): Promise<Snapshot> {
+/**
+ * The state of the worktree of `repo` at `cwd` (see Snapshot). Refused when its `.git` is broken
+ * (see assertWorktree): an agent's own git there would act on another checkout.
+ */
+export async function snapshot(repo: string, cwd: string): Promise<Snapshot> {
   return withWorktreeLock(cwd, async () => {
+    await assertWorktree(repo, { path: cwd });
     const untracked = await untrackedFiles(cwd);
     return {
       head: await resolveCommit(cwd),
@@ -604,24 +712,29 @@ export async function snapshot(cwd: string): Promise<Snapshot> {
 }
 
 /**
- * Put a worktree back the way `snapshot` found it, undoing whatever a read-only step did:
- * commits, edits, new files. Returns what was undone (empty when nothing changed).
+ * Put a worktree of `repo` back the way `snapshot` found it, undoing whatever a read-only step
+ * did: commits, edits, new files. Returns what was undone (empty when nothing changed). Throws
+ * a WorktreeMismatchError, undoing nothing, when the step broke the worktree's `.git` or moved it
+ * to another branch (see assertWorktree).
  */
-export async function restoreSnapshot(cwd: string, snap: Snapshot): Promise<string[]> {
-  return compareSnapshot(cwd, snap, true);
+export async function restoreSnapshot(repo: string, wt: CheckoutRef, snap: Snapshot): Promise<string[]> {
+  return compareSnapshot(repo, wt, snap, true);
 }
 
 /**
- * What changed in a worktree since `snapshot`, in the same words as `restoreSnapshot`, with all of
- * it left in place (empty when nothing changed).
+ * What changed in a worktree of `repo` since `snapshot`, in the same words as `restoreSnapshot`,
+ * with all of it left in place (empty when nothing changed).
  */
-export async function changedSince(cwd: string, snap: Snapshot): Promise<string[]> {
-  return compareSnapshot(cwd, snap, false);
+export async function changedSince(repo: string, wt: CheckoutRef, snap: Snapshot): Promise<string[]> {
+  return compareSnapshot(repo, wt, snap, false);
 }
 
 /** What changed since `snap`; with `undo`, each change is undone as it's found. */
-function compareSnapshot(cwd: string, snap: Snapshot, undo: boolean): Promise<string[]> {
+function compareSnapshot(repo: string, wt: CheckoutRef, snap: Snapshot, undo: boolean): Promise<string[]> {
+  const cwd = wt.path;
   return withWorktreeLock(cwd, async () => {
+    // Only undoing changes the branch, so only then must it be the worktree's own.
+    await assertWorktree(repo, undo ? wt : { path: cwd });
     const found: string[] = [];
     const head = await resolveCommit(cwd);
     const changesNow = await uncommittedTree(cwd);
@@ -673,8 +786,10 @@ export async function isAncestor(cwd: string, a: string, b = "HEAD"): Promise<bo
   return (await git(["merge-base", "--is-ancestor", a, b], cwd)).code === 0;
 }
 
-/** Put `paths` back to how they are in `ref` (deleting the ones `ref` doesn't have). */
-export async function restorePaths(cwd: string, ref: string, paths: string[]): Promise<void> {
+/** Put `paths` in a worktree of `repo` back to how they are in `ref` (deleting the ones `ref` doesn't have). */
+export async function restorePaths(repo: string, wt: CheckoutRef, ref: string, paths: string[]): Promise<void> {
+  const cwd = wt.path;
+  if (paths.length) await assertWorktree(repo, wt);
   for (const path of paths) {
     if (await objectTypeAt(cwd, ref, path)) await gitOk(["checkout", ref, "--", path], cwd);
     else await git(["rm", "-q", "-f", "--ignore-unmatch", "--", path], cwd);

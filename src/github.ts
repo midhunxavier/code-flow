@@ -384,7 +384,8 @@ export const GH_AUTH_ERROR = /isn't signed in|not logged|auth login|HTTP 401|Bad
 
 /** Push a local branch to `origin/<remote>`; never forced, so it fails if the PR moved on. */
 export async function pushBranch(repo: string, local: string, remote: string): Promise<string> {
-  const res = await git(["push", "origin", `refs/heads/${local}:refs/heads/${remote}`], repo);
+  // Your pre-push hooks run, as on your own pushes (Git LFS uploads its files in one).
+  const res = await git(["push", "origin", `refs/heads/${local}:refs/heads/${remote}`], repo, { hooks: true });
   if (res.code !== 0) {
     const why = res.stderr.trim();
     throw new Error(

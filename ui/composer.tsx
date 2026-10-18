@@ -61,6 +61,7 @@ import { TeamRolloutNotice } from "./team-evaluation.js";
 import { SourceChip, Templates } from "./github.js";
 import { SaveAutomationDialog } from "./automations.js";
 import { Icon } from "./icons.js";
+import { Menu, MenuItem, MenuTitle } from "./panel-bits.js";
 import type { AgentId, AgentInfo, ContextItem, ModelCatalog, PatternInfo, TreeEntry } from "./types.js";
 
 const DRAG_TYPE = "application/x-codeflow-path";
@@ -380,10 +381,81 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
 }
 
 // ---------------------------------------------------------------- task box
+type ImproveMode = "quick" | "repo";
+
+/**
+ * Improve: one read-only agent turn rewrites the task so agents can act on it (src/improve.ts).
+ * Quick works from the text alone; Repo reads the repository first. Undo brings yours back
+ * while the rewrite is still what's in the box.
+ */
+function useImprove() {
+  const [busy, setBusy] = useState<{ stop: AbortController; mode: ImproveMode } | null>(null);
+  const [done, setDone] = useState<{ before: string; after: string; note: string } | null>(null);
+  const [error, setError] = useState<{ message: string; text: string } | null>(null);
+  const [mode, setMode] = useState<ImproveMode>(store.get("improveMode") === "repo" ? "repo" : "quick");
+  // Leaving the composer (starting the run, opening another page) stops the turn.
+  const live = useRef<AbortController | null>(null);
+  useEffect(() => () => live.current?.abort(), []);
+  const run = async (how: ImproveMode = mode) => {
+    if (busy) return busy.stop.abort();
+    const text = task.value;
+    if (!text.trim() || !repo.value) return;
+    const stop = new AbortController();
+    live.current = stop;
+    setBusy({ stop, mode: how });
+    setError(null);
+    setDone(null);
+    try {
+      const r = await api<{ prompt: string; summary: string; agent: AgentId }>("/api/improve-prompt", {
+        method: "POST",
+        signal: stop.signal,
+        body: JSON.stringify({
+          text,
+          repo: repo.value,
+          mode: how,
+          context: [...[...contextPaths.value.values()].map((c) => c.path), ...attachments.value.map((a) => a.name)],
+          source: source.value ? { kind: source.value.kind, number: source.value.number, title: source.value.title } : undefined,
+        }),
+      });
+      // Typed over, started or cleared meanwhile: that wins over the rewrite.
+      if (task.value !== text) return;
+      setTask(r.prompt);
+      const name = agents.value.find((a) => a.id === r.agent)?.displayName ?? r.agent;
+      setDone({ before: text, after: r.prompt, note: `${name}: ${r.summary}` });
+    } catch (err) {
+      if (!stop.signal.aborted) setError({ message: (err as Error).message, text });
+    } finally {
+      if (live.current === stop) live.current = null;
+      setBusy(null);
+    }
+  };
+  const pick = (how: ImproveMode) => {
+    setMode(how);
+    store.set("improveMode", how);
+    void run(how);
+  };
+  const undo = () => {
+    if (done) setTask(done.before);
+    setDone(null);
+  };
+  // Both apply to the text they were about; editing it puts the usual hint back.
+  return {
+    busy,
+    mode,
+    run,
+    pick,
+    undo,
+    error: error && task.value === error.text ? error.message : "",
+    done: done && task.value === done.after ? done : null,
+  };
+}
+
 function TaskBox({ onStart }: { onStart: () => void }) {
   const [over, setOver] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const improve = useImprove();
+  const canImprove = !!task.value.trim() && !!repo.value;
   const autosize = () => {
     const t = area.current;
     if (!t) return;
@@ -445,6 +517,8 @@ function TaskBox({ onStart }: { onStart: () => void }) {
         aria-label="Task"
         placeholder="e.g. Add rate limiting to the /login endpoint, with tests…"
         value={task.value}
+        readOnly={!!improve.busy}
+        aria-busy={!!improve.busy}
         onInput={(e) => setTask(e.currentTarget.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -464,9 +538,45 @@ function TaskBox({ onStart }: { onStart: () => void }) {
         <button class="btn ghost small" title="Show the repository's files in the side panel" onClick={() => openSide("files")}>
           <Icon name="files" /> Files
         </button>
-        <span class="hint">
-          {count ? `${count} item${count === 1 ? "" : "s"} of context — agents read these before starting` : "Drag files here from the file list or Finder to give the agents context"}
-        </span>
+        {improve.busy ? (
+          <span class="hint status" role="status">{improve.busy.mode === "repo" ? "Reading the repository and rewriting the task…" : "Rewriting the task…"}</span>
+        ) : improve.error ? (
+          <span class="hint status bad" role="alert" title={improve.error}>{improve.error}</span>
+        ) : improve.done ? (
+          <span class="hint status" title={improve.done.note}>{improve.done.note}</span>
+        ) : (
+          <span class="hint">
+            {count ? `${count} item${count === 1 ? "" : "s"} of context — agents read these before starting` : "Drag files here from the file list or Finder to give the agents context"}
+          </span>
+        )}
+        {improve.done ? (
+          <button class="btn ghost small" title="Put back the task as you wrote it" onClick={improve.undo}>
+            Undo
+          </button>
+        ) : null}
+        <div class="improve">
+          <button
+            class="btn ghost small"
+            disabled={!improve.busy && !canImprove}
+            title={improve.busy ? "Stop rewriting" : !repo.value ? "Choose a repository first" : improve.mode === "repo" ? "Rewrite the task so agents can act on it, after reading the repository" : "Rewrite the task so agents can act on it"}
+            onClick={() => void improve.run()}
+          >
+            {improve.busy ? <span class="spin" /> : <Icon name="sparkle" />} {improve.busy ? "Stop" : "Improve"}
+          </button>
+          <Menu label="How Improve works" icon="chevron">
+            {(close) => (
+              <>
+                <MenuTitle>Improve the task</MenuTitle>
+                <MenuItem on={improve.mode === "quick"} disabled={!!improve.busy} sub="From your text alone, on a fast model" onClick={() => (close(), improve.pick("quick"))}>
+                  Quick rewrite
+                </MenuItem>
+                <MenuItem on={improve.mode === "repo"} disabled={!!improve.busy} sub="Reads the repo first to name real files. Slower." onClick={() => (close(), improve.pick("repo"))}>
+                  Use the repository
+                </MenuItem>
+              </>
+            )}
+          </Menu>
+        </div>
       </div>
       <div class="overlay">Drop to add as context</div>
       <input

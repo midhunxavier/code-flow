@@ -35,6 +35,14 @@ Text from issues, PRs, comments and CI logs is treated as untrusted, and runs st
 
 Files copied into worktrees from your checkout (`copy`, e.g. `.env`) never go into the agents' commits, and neither do new files named like secrets. They're never copied through a symlink an agent left in the worktree. See [Per-repo config](configuration.md#per-repo-config).
 
+## Your checkout and the worktrees
+
+A broken worktree is never mistaken for your checkout. Worktrees live inside your repository (`.worktrees/<run>/<name>`), and the `.git` file that ties each one to it is a file in the worktree that any agent can change. Without it, git run in the worktree would find your checkout instead. So code-flow guards its own git:
+
+- Before it changes a worktree (undoing a read-only step, putting back test files, committing, merging, resetting a scratch checkout, removing it, or starting an agent there), code-flow checks that the worktree's `.git` is still the file git wrote: it points to the worktree's own folder in your repository's git folder, and that folder points back. git must also see the worktree as its own top folder, and before anything that moves a branch (undoing commits, committing, merging), the worktree must be on its run's branch. If any of that fails, the step fails and the run log says what's wrong ("its .git is missing", "it's on another branch…"). Nothing in the worktree or your checkout is changed. Remove the run's worktree, or put its `.git` back, before running it again.
+- code-flow's git never looks above the folder it runs in (`GIT_CEILING_DIRECTORIES`), so a worktree without `.git` is an error, not your checkout.
+- code-flow's git runs without `core.fsmonitor` and without hooks, whatever a config file says. An agent could otherwise point `.git` at a git folder of its own, whose config names a command for code-flow to run outside the agent's sandbox. Your own hooks still run where you'd expect them: when code-flow merges a result into your checkout, and when it pushes (Git LFS uploads its files in `pre-push`).
+
 ## Caveats
 
 - **agy permissions** (tested with agy 1.3.5): when headless agy hits a tool it isn't allowed to use, it doesn't work around it. The turn ends with an empty answer, which code-flow reports as a failed step that names the denied action. That's why code-flow passes `--dangerously-skip-permissions` together with `--sandbox` by default. The sandbox confines writes to the worktree, and code-flow reverts any changes made during read-only steps. Older agy versions printed nothing when piped; code-flow reports that as an error too.

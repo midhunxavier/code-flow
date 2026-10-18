@@ -189,7 +189,7 @@ test("files copied in from your checkout, and new files named like secrets, are 
   writeFileSync(join(path, "config", ".env.test"), "TRACKED=2\n");
   sh(path, "add", "-f", ".env", "config/dev.local.json");
   const warnings: string[] = [];
-  const sha = await commitAll({ name: "a", path, branch: "codeflow/a", base: "" }, "agent work", (w) => warnings.push(w));
+  const sha = await commitAll(r, { name: "a", path, branch: "codeflow/a", base: "" }, "agent work", (w) => warnings.push(w));
   assert.ok(sha);
   const files = sh(path, "show", "--name-only", "--format=", sha!).split("\n").sort();
   assert.deepEqual(files, [".env.example", ".gitignore", "app.js", "config/.env.test"], "the work is committed, the secrets aren't");

@@ -202,8 +202,17 @@
   .taskbox textarea { display: block; width: 100%; min-height: 128px; max-height: 420px; resize: none; border: 0; background: transparent; padding: 20px 20px 10px; font-size: 15.5px; line-height: 1.6; outline: none; }
   .taskbox .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px; }
   .taskbox .chips:not(:empty) { padding-bottom: 10px; }
-  .taskbox .bar { display: flex; align-items: center; gap: 4px; padding: 8px 12px; border-top: 1px solid var(--border); }
-  .taskbox .bar .hint { flex: 1; font-size: 12px; color: var(--faint); padding-left: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .taskbox .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 12px; border-top: 1px solid var(--border); }
+  .taskbox .bar .hint { flex: 1; min-width: 0; font-size: 12px; color: var(--faint); padding-left: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .taskbox .bar .hint.bad { color: var(--err); }
+  .taskbox .improve { display: flex; align-items: center; flex: none; margin-left: auto; }
+  /* Narrow: Improve wraps below the other buttons, and only its own status shows, on a line of its own. */
+  @media (max-width: 760px) {
+    .taskbox .bar .hint { order: 10; flex-basis: 100%; white-space: normal; padding: 2px 6px; }
+    .taskbox .bar .hint:not(.status) { display: none; }
+  }
+  .taskbox .improve > .btn:not(:disabled) { color: var(--accent-ink); }
+  .taskbox textarea[aria-busy="true"] { opacity: .55; cursor: progress; }
   .taskbox.over { border-color: var(--accent-edge); box-shadow: 0 0 0 4px var(--ring); }
   .taskbox .overlay { position: absolute; inset: 0; border-radius: 24px; background: color-mix(in srgb, var(--accent-soft) 90%, transparent); display: none; align-items: center; justify-content: center; font-weight: 650; color: var(--accent-ink); pointer-events: none; border: 2px dashed var(--accent-edge); }
   .taskbox.over .overlay { display: flex; }
