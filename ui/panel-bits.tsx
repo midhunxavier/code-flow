@@ -81,10 +81,11 @@ export interface StripItem {
 export function Strip({ items, active, onPick, onClose, label, children }: { items: StripItem[]; active?: string; onPick: (key: string) => void; onClose?: (key: string) => void; label: string; children?: ComponentChildren }) {
   return (
     <div class="sess-strip">
-      <div class="sess-list" role={items.length ? "tablist" : undefined} aria-label={items.length ? label : undefined}>
+      {/* A group of buttons, not a tablist: each session has its own close button, which a tablist can't hold. */}
+      <div class="sess-list" role={items.length ? "group" : undefined} aria-label={items.length ? label : undefined}>
         {items.map((it) => (
           <span key={it.key} class={`sess ${it.key === active ? "on" : ""} ${it.below ? "below" : ""} ${it.state === "failed" ? "failed" : ""}`}>
-            <button type="button" role="tab" aria-selected={it.key === active} class="sess-pick" title={it.title ?? it.label} onClick={() => onPick(it.key)}>
+            <button type="button" aria-current={it.key === active ? "true" : undefined} class="sess-pick" title={it.title ?? it.label} onClick={() => onPick(it.key)}>
               {it.state === "working" || it.state === "queued" ? (
                 <span class={`spin ${it.state}`} role="img" aria-label={it.state === "working" ? "working" : "queued"} />
               ) : it.agent ? (

@@ -132,7 +132,7 @@ function MainApp() {
             ) : route.value.view === "invalid" ? (
               <div class="composer" role="alert">
                 <h1>This link is invalid</h1>
-                <p>The address contains an incomplete or invalid URL escape. Your saved work is available from the run list.</p>
+                <p class="lede">The address contains an incomplete or invalid URL escape. Your saved work is available from the run list.</p>
                 <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>Open new run</button>
               </div>
             ) : (
@@ -163,7 +163,10 @@ function MainApp() {
 }
 
 // ---------------------------------------------------------------- top bar
-/** Above the page, beside the sidebar: where you are, then the theme and the side panel. */
+/** The command palette's modifier as this keyboard labels it: ⌘ on Apple devices, Ctrl elsewhere. */
+const MOD_KEY = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent) ? "⌘" : "Ctrl ";
+
+/** Above the page, beside the sidebar: where you are, live updates, commands, then the theme and the side panel. */
 function TopBar() {
   const dark = theme.value === "dark";
   return (
@@ -173,9 +176,14 @@ function TopBar() {
       </button>
       <Crumbs />
       <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.state === "connected" ? "Live updates are connected" : "Live updates are unavailable; displayed run information may be out of date"}>
-        <span aria-hidden="true">●</span> {connection.value.state === "connected" ? "Connected" : connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}
+        <span class="cs-dot" aria-hidden="true" />
+        <span class="cs-label">{connection.value.state === "connected" ? "Connected" : connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}</span>
       </span>
-      <button class="btn ghost command-btn" aria-label="Open command palette" title="Commands and navigation (⌘K / Ctrl+K)" onClick={() => (commandPaletteOpen.value = true)}>⌘K</button>
+      {/* a search glass and the shortcut as a key; a phone shows only the glass */}
+      <button class="btn ghost command-btn" aria-label="Open command palette" title={`Commands and navigation (${MOD_KEY}K)`} onClick={() => (commandPaletteOpen.value = true)}>
+        <Icon name="search" />
+        <kbd class="kbd-key" aria-hidden="true">{MOD_KEY}K</kbd>
+      </button>
       <button class="icon-btn" aria-label={dark ? "Use the light theme" : "Use the dark theme"} title={dark ? "Light theme" : "Dark theme"} onClick={toggleTheme}>
         <Icon name={dark ? "sun" : "moon"} />
       </button>
@@ -578,10 +586,10 @@ function FolderPicker() {
         <div class="picker-head">
           <h3 id="folder-picker-title">{adding ? adding.title : "Choose a repository"}</h3>
           <div class="row">
-            <button class="btn" type="button" title="Parent folder" disabled={!dir?.parent} onClick={() => dir?.parent && browse(dir.parent)}>
+            <button class="btn" type="button" title="Parent folder" aria-label="Parent folder" disabled={!dir?.parent} onClick={() => dir?.parent && browse(dir.parent)}>
               ↑
             </button>
-            <button class="btn" type="button" title="Home folder" onClick={() => browse(dir?.home)}>
+            <button class="btn" type="button" title="Home folder" aria-label="Home folder" onClick={() => browse(dir?.home)}>
               ~
             </button>
             <input

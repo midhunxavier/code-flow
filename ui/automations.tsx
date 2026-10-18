@@ -89,7 +89,7 @@ function SchedulePreview({ schedule }: { schedule?: Schedule }) {
   }, [key]);
   const timezone = schedule && "at" in schedule ? schedule.timezone : undefined;
   const format = (at: number) => { try { return new Date(at).toLocaleString([], { timeZone: timezone, weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }); } catch { return "Choose a valid time zone"; } };
-  return <div aria-label="Next scheduled times"><p class="help">Next runs{timezone ? ` in ${timezone}` : ""}:</p>{times.length ? <ol class="help">{times.map((at) => <li key={at}>{format(at)}</li>)}</ol> : <p class="help">{schedule ? "Calculating…" : "No schedule"}</p>}{timezone ? <p class="help">Runs once per local day. A skipped daylight-saving time moves forward; a repeated time uses its first occurrence.</p> : null}{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
+  return <div role="group" aria-label="Next scheduled times"><p class="help">Next runs{timezone ? ` in ${timezone}` : ""}:</p>{times.length ? <ol class="help">{times.map((at) => <li key={at}>{format(at)}</li>)}</ol> : <p class="help">{schedule ? "Calculating…" : "No schedule"}</p>}{timezone ? <p class="help">Runs once per local day. A skipped daylight-saving time moves forward; a repeated time uses its first occurrence.</p> : null}{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
 }
 
 function ScheduleEditor({ automation: a, save }: { automation: Automation; save: (patch: object) => unknown }) {

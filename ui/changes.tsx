@@ -130,7 +130,7 @@ export function ChangesTab({ run }: { run: RunSummary }) {
                 <span class="add">+{file.additions}</span> <span class="del">−{file.deletions}</span>
               </span>
             </div>
-            <div class="changes-diff">
+            <div class="changes-diff" role="region" aria-label={`Diff of ${file.path}`}>
               <FileDiff
                 key={`${branch}:${file.path}:${last}`}
                 file={file}

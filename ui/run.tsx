@@ -455,10 +455,10 @@ function ResultCard({ run, steps, onSelectStep, chat }: { run: RunSummary; steps
   if (chat) Object.assign(titles, { done: run.verdict === "passed" ? "✓ The check passes" : "", failing: "⚠ The check fails", unchecked: "⚠ The check couldn't run, so nothing was tested" });
   const title = titles[state] ?? run.status;
   return (
-    <div class={`result ${state} ${chat ? "chat" : ""}`}>
+    <div class={`result ${state}${state === "done" && run.verdict !== "passed" ? " unverified" : ""}${chat ? " chat" : ""}`}>
       {title ? <div class="rh">{title}</div> : null}
       {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
-      {run.verification ? <details><summary>Verification profile: {run.verification.state} · {run.verification.checks.length} gates</summary>{run.verification.head ? <p class="help">Commit {run.verification.head.slice(0, 12)}</p> : null}<ul>{run.verification.checks.map((gate) => <li key={gate.check.id}>{gate.check.title ?? gate.check.id}: {gate.diagnosis}{gate.check.required ? " (required)" : ""}</li>)}</ul>{run.verification.risk ? <p class="help">Change risk: {run.verification.risk.level} · {run.verification.risk.reasons.join("; ") || "No configured sensitive-path rule matched."}</p> : null}{run.verification.review ? <p class="help">Human file review: {run.verification.review.reviewed}/{run.verification.review.changed} at this commit.</p> : null}{run.verification.requirements?.length ? <ul>{run.verification.requirements.map((requirement) => <li key={requirement.id}>{requirement.covered ? "Covered" : "Uncovered"}: {requirement.description}{requirement.missing.length ? ` · missing ${requirement.missing.join(", ")}` : ""}</li>)}</ul> : null}</details> : null}
+      {run.verification ? <details class="verify-profile"><summary>Verification profile: {run.verification.state} · {run.verification.checks.length} gates</summary>{run.verification.head ? <p class="help">Commit {run.verification.head.slice(0, 12)}</p> : null}<ul>{run.verification.checks.map((gate) => <li key={gate.check.id}>{gate.check.title ?? gate.check.id}: {gate.diagnosis}{gate.check.required ? " (required)" : ""}</li>)}</ul>{run.verification.risk ? <p class="help">Change risk: {run.verification.risk.level} · {run.verification.risk.reasons.join("; ") || "No configured sensitive-path rule matched."}</p> : null}{run.verification.review ? <p class="help">Human file review: {run.verification.review.reviewed}/{run.verification.review.changed} at this commit.</p> : null}{run.verification.requirements?.length ? <ul>{run.verification.requirements.map((requirement) => <li key={requirement.id}>{requirement.covered ? "Covered" : "Uncovered"}: {requirement.description}{requirement.missing.length ? ` · missing ${requirement.missing.join(", ")}` : ""}</li>)}</ul> : null}</details> : null}
       {failedSteps.length && run.status !== "done" ? (
         <div class="failures">
           <div class="lbl">What went wrong</div>
@@ -872,7 +872,8 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
       {run.integrity?.[artifact.branch]?.length ? <IntegrityNote issues={run.integrity[artifact.branch]!} /> : null}
       {run.proofs?.[artifact.branch] ? <ProofNote proof={run.proofs[artifact.branch]!} /> : null}
       {run.findings?.[artifact.branch]?.findings.length ? <FindingsNote review={run.findings[artifact.branch]!} /> : null}
-      {artifact.stat ? <pre>{artifact.stat}</pre> : <div class="help">No changes</div>}
+      {/* focusable: a long stat scrolls (max-height), and keyboard users need to reach it to scroll it */}
+      {artifact.stat ? <pre tabIndex={0}>{artifact.stat}</pre> : <div class="help">No changes</div>}
       {worktree && existsHint(run) ? <WorkspaceTools run={run} worktree={worktree.name} /> : null}
       {panel === "merge" && worktree ? (
         pr ? <PrMergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} />
@@ -1071,7 +1072,7 @@ function WatchPanel({ run, branch, steps, worktree }: { run: RunSummary; branch:
         <div class="row">
           <span class="lbl">Follow through</span>
           <span>When CI fails or you comment,</span>
-          <AgentPicker value={agent} onChange={setAgent} />
+          <AgentPicker value={agent} onChange={setAgent} label="Agent that fixes CI failures and comments" />
           <span>fixes it and pushes — up to</span>
           <input class="field inline num" type="number" min={1} max={10} value={maxFixes} aria-label="Most fixes" onInput={(e) => setMaxFixes(Number(e.currentTarget.value) || 3)} />
           <span>times. Never merges.</span>
@@ -1168,7 +1169,7 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
           {busy ? "Merging…" : `Merge into ${target || "…"}`}
         </button>
       </div>
-      {run.loop.check || run.loop.verification ? <div class="row"><label class="check"><input type="checkbox" checked={requireValidation} onChange={(event) => setRequireValidation(event.currentTarget.checked)} /> require verification of the current merge target</label><button class="btn small" disabled={busy || !target} onClick={() => validateTarget()}>Validate merge result</button>{validation?.into === target ? <span role="status" class="help">{validation.conflicts.length ? `Conflicts: ${validation.conflicts.join(", ")}` : `Merge verification: ${validation.report?.state ?? "unchecked"}`} · target {validation.target.slice(0, 12)}{validation.report ? ` · ${validation.report.checks.length} gates` : ""}</span> : null}</div> : null}
+      {run.loop.check || run.loop.verification ? <div class="row"><label class="check"><input type="checkbox" checked={requireValidation} onChange={(event) => setRequireValidation(event.currentTarget.checked)} /> Require verification of the current merge target</label><button class="btn small" disabled={busy || !target} onClick={() => validateTarget()}>Validate merge result</button>{validation?.into === target ? <span role="status" class="help">{validation.conflicts.length ? `Conflicts: ${validation.conflicts.join(", ")}` : `Merge verification: ${validation.report?.state ?? "unchecked"}`} · target {validation.target.slice(0, 12)}{validation.report ? ` · ${validation.report.checks.length} gates` : ""}</span> : null}</div> : null}
       <div class="help">If {target || "the branch"} is checked out, code-flow merges there only when it has no uncommitted changes, and aborts cleanly on conflicts.</div>
       {conflicts ? (
         <div class="conflicts">
@@ -1416,9 +1417,10 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
   );
 }
 
-export function AgentPicker({ value, onChange }: { value: AgentId; onChange: (id: AgentId) => void }) {
+/** A select of the available agents; named "Agent" unless told otherwise (several sit inline in a sentence, with no label of their own). */
+export function AgentPicker({ value, onChange, label = "Agent" }: { value: AgentId; onChange: (id: AgentId) => void; label?: string }) {
   return (
-    <select class="field inline" value={value} onChange={(e) => onChange(e.currentTarget.value as AgentId)}>
+    <select class="field inline" aria-label={label} value={value} onChange={(e) => onChange(e.currentTarget.value as AgentId)}>
       {agents.value
         .filter((a) => a.available)
         .map((a) => (
@@ -1791,7 +1793,7 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
   const hidden = Math.max(0, items.length - shown);
   const model = modelNote(run, step.agent);
   return (
-    <div class="transcript" aria-label={`Transcript of ${step.title}`}>
+    <div class="transcript" role="group" aria-label={`Transcript of ${step.title}`}>
       {step.remote ? <RemoteStepReceipt key={`${run.id}/${step.id}`} runId={run.id} step={step} /> : null}
       <div class="tr-head">
         {model ? <span>{model}</span> : null}

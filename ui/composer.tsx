@@ -241,6 +241,8 @@ export function Composer() {
         </div>
       </div>
 
+      {/* The optional controls read as one accordion: a card whose rows open in place. */}
+      <div class="composer-more">
       <details class="settings advanced-controls" open={store.get("composerAdvanced") === "1"} onToggle={(e) => store.set("composerAdvanced", e.currentTarget.open ? "1" : "0")}>
         <summary><span class="st">Advanced team controls</span><span class="ss">Roles, models, permissions and limits</span></summary>
         <div class="settings-body">
@@ -264,10 +266,10 @@ export function Composer() {
       {p ? <ComposerLibraryEditor p={p} onToolApprovalsChange={setToolApprovals} /> : null}
       {p ? <EffectiveSettings p={p} verificationProfile={verificationProfile} container={{ enabled: containerEnabled, image: containerImage, authVolume: containerVolume }} /> : null}
       <ContextInspector />
-      {p && repo.value && task.value.trim() ? <details class="settings"><summary>Start later or wait for provider capacity</summary><div class="settings-body"><DeferredRunsPanel runRequest={runBody(p)} project={target.value.project?.id} repo={repo.value} /></div></details> : null}
-
-      <details class="settings"><summary>Agent isolation</summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} disabled={!!remoteWorker} onChange={(event) => { improve.stop(); setContainerEnabled(event.currentTarget.checked); }} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label>Image<input class="field" placeholder="Your prepared image:tag" value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label>Authentication volume<input class="field" placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is enabled for inference. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
+      {p && repo.value && task.value.trim() ? <details class="settings deferred-start"><summary><span class="st">Start later</span><span class="ss">At a set time or when provider capacity frees up</span></summary><div class="settings-body"><DeferredRunsPanel runRequest={runBody(p)} project={target.value.project?.id} repo={repo.value} /></div></details> : null}
+      <details class="settings agent-isolation"><summary><span class="st">Agent isolation</span><span class="ss">{containerEnabled && !remoteWorker ? `Prebuilt Docker image${containerImage.trim() ? ` · ${containerImage.trim()}` : ""}` : "Off · agents use this computer's CLIs"}</span></summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} disabled={!!remoteWorker} onChange={(event) => { improve.stop(); setContainerEnabled(event.currentTarget.checked); }} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label class="iso-field">Image<input class="field mono" placeholder="Your prepared image:tag" spellcheck={false} value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label class="iso-field">Authentication volume<input class="field mono" spellcheck={false} placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is enabled for inference. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
       <label class="checkpoint"><input type="checkbox" checked={!remoteWorker && toolApprovals} disabled={!!remoteWorker} onChange={(event) => { setToolApprovals(event.currentTarget.checked); store.set("interactiveApprovals", event.currentTarget.checked ? "1" : "0"); }} /><span><b>Ask me for tool permissions</b> · Supported Codex requests appear in an approval inbox. Unattended and locked-down runs always decline them.</span></label>
+      </div>
       <div class="start-row">
         <button class="btn primary" disabled={!!problem || starting} onClick={start}>
           {starting ? "Starting…" : "Start run"} <span class="kbd">⌘↵</span>
@@ -1224,17 +1226,20 @@ export function FileTree({ root, onOpen }: { root: string; onOpen: (path: string
       <input type="search" class="field files-search" placeholder="Search files…" aria-label="Search files" autocomplete="off" spellcheck={false} value={query} onInput={(e) => setQuery(e.currentTarget.value)} />
       <div class="tree">
         {message ? <div class="tree-empty">{message}</div> : null}
-        <div role="tree" aria-label={results ? "Matching files" : "Files"}>
-          {results
-            ? results.map((r) => <TreeNode key={`s:${r.path}`} entry={r} depth={0} sub={r.path.includes("/") ? r.path.slice(0, r.path.lastIndexOf("/")) : ""} root={root} onOpen={onOpen} context={inComposer} />)
-            : entries?.map((e) => <TreeNode key={e.path} entry={e} depth={0} root={root} onOpen={onOpen} context={inComposer} />)}
-        </div>
+        {/* a tree only once it has items: an empty one (loading, no matches) reads as a broken tree */}
+        {(results ?? entries)?.length ? (
+          <div role="tree" aria-label={results ? "Matching files" : "Files"}>
+            {results
+              ? results.map((r) => <TreeNode key={`s:${r.path}`} entry={r} depth={0} sub={r.path.includes("/") ? r.path.slice(0, r.path.lastIndexOf("/")) : ""} root={root} onOpen={onOpen} context={inComposer} />)
+              : entries?.map((e) => <TreeNode key={e.path} entry={e} depth={0} root={root} onOpen={onOpen} context={inComposer} />)}
+          </div>
+        ) : null}
         {results && !results.length ? <div class="tree-empty">No matching files</div> : null}
         {!results && truncated ? <div class="tree-empty">Showing the first 1000 — use search</div> : null}
       </div>
       {inComposer ? (
         <div class="files-foot">
-          Click a file to read it; <b>+</b> or drag adds it to the task. <b style="color:var(--warn)">M</b> changed · <b style="color:var(--ok)">U</b> new
+          Click a file to read it; <b>+</b> or drag adds it to the task. <b class="mark-m">M</b> changed · <b class="mark-u">U</b> new
         </div>
       ) : null}
     </>

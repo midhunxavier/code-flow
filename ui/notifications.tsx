@@ -27,18 +27,19 @@ export function NotificationsView() {
     catch (err) { setError((err as Error).message); }
     finally { setBusy(""); }
   };
-  return <section class="composer" aria-label="Outbound notifications">
-    <h1>Notifications</h1>
+  return <section class="wb-card notifications-panel" aria-label="Outbound notifications">
+    <h2>Notifications</h2>
     <p>Choose a destination, the events to send and the projects it covers. Notifications include task titles, run IDs, workflow and result status.</p>
-    {!destinations.length ? <p class="help">Configure HTTPS webhook or Slack destinations with CODEFLOW_NOTIFICATIONS_FILE or CODEFLOW_NOTIFICATIONS_JSON on the server. New destinations start disabled.</p> : destinations.map((target) => <DestinationSettings key={target.id} destination={target} refresh={reload} />)}
-    <h2>Delivery history</h2>
+    {!destinations.length ? <p class="help">Configure HTTPS webhook or Slack destinations with CODEFLOW_NOTIFICATIONS_FILE or CODEFLOW_NOTIFICATIONS_JSON on the server. New destinations start disabled.</p> : <div class="wb-list">{destinations.map((target) => <DestinationSettings key={target.id} destination={target} refresh={reload} />)}</div>}
+    <h3>Delivery history</h3>
     <p class="help">Keeps 200 deliveries. Temporary failures retry up to three times. A delivery interrupted by restart needs an explicit retry; the recipient may already have received it.</p>
-    {deliveries.length ? <div class="table-wrap"><table class="ins-table"><thead><tr><th>Created</th><th>Destination</th><th>Event</th><th>Run</th><th>Status</th><th>Attempts</th><th>Action</th></tr></thead><tbody>{deliveries.map((delivery) => <tr key={delivery.id}>
-      <td>{new Date(delivery.createdAt).toLocaleString()}</td><td>{destinations.find((target) => target.id === delivery.target)?.name ?? delivery.target}</td><td>{delivery.manual ? "Manual test" : delivery.event}</td>
-      <td>{delivery.runId === "test" ? "Test" : <a href={`#/run/${delivery.runId}`}>{delivery.runId}</a>}</td>
-      <td>{delivery.state}{delivery.httpStatus ? ` · HTTP ${delivery.httpStatus}` : ""}{delivery.reason ? <div class="help">{delivery.reason}</div> : null}{delivery.nextAttemptAt ? <div class="help">Next: {new Date(delivery.nextAttemptAt).toLocaleTimeString()}</div> : null}</td>
-      <td>{delivery.totalAttempts ?? delivery.attempts}{delivery.retryCount ? <div class="help">{delivery.retryCount} manual retries</div> : null}</td>
-      <td>{delivery.state === "failed" ? <button class="btn small" disabled={!!busy} onClick={() => retry(delivery)}>{busy === delivery.id ? "Queuing…" : "Retry delivery"}</button> : "–"}</td>
+    {/* data-label names each cell's column where phones stack a delivery's cells (styles.css, workspace) */}
+    {deliveries.length ? <div class="table-wrap delivery-history"><table class="ins-table"><thead><tr><th>Created</th><th>Destination</th><th>Event</th><th>Run</th><th>Status</th><th>Attempts</th><th>Action</th></tr></thead><tbody>{deliveries.map((delivery) => <tr key={delivery.id}>
+      <td data-label="Created">{new Date(delivery.createdAt).toLocaleString()}</td><td data-label="Destination">{destinations.find((target) => target.id === delivery.target)?.name ?? delivery.target}</td><td data-label="Event">{delivery.manual ? "Manual test" : EVENTS.find((event) => event.id === delivery.event)?.label ?? delivery.event}</td>
+      <td data-label="Run">{delivery.runId === "test" ? "Test" : <a href={`#/run/${delivery.runId}`}>{delivery.runId}</a>}</td>
+      <td data-label="Status"><span class={`badge${delivery.state === "delivered" ? " ok" : delivery.state === "failed" ? " err" : delivery.state === "sending" ? " run" : ""}`}>{delivery.state.charAt(0).toUpperCase() + delivery.state.slice(1)}</span>{delivery.httpStatus ? ` · HTTP ${delivery.httpStatus}` : ""}{delivery.reason ? <div class="help">{delivery.reason}</div> : null}{delivery.nextAttemptAt ? <div class="help">Next: {new Date(delivery.nextAttemptAt).toLocaleTimeString()}</div> : null}</td>
+      <td data-label="Attempts">{delivery.totalAttempts ?? delivery.attempts}{delivery.retryCount ? <div class="help">{delivery.retryCount} manual retries</div> : null}</td>
+      <td data-label="Action">{delivery.state === "failed" ? <button class="btn small" disabled={!!busy} onClick={() => retry(delivery)}>{busy === delivery.id ? "Queuing…" : "Retry delivery"}</button> : "–"}</td>
     </tr>)}</tbody></table></div> : <p class="help">No notifications have been queued.</p>}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
   </section>;
@@ -63,14 +64,14 @@ function DestinationSettings({ destination: target, refresh }: { destination: De
     catch (err) { setError((err as Error).message); }
     finally { setBusy(""); }
   };
-  return <article class="section" aria-label={`Notification settings for ${target.name}`}>
-    <h2>{target.name}</h2><p class="help">{target.protocol}{target.host ? ` · ${target.host}` : ""}</p>
+  return <article class="wb-item notification-destination" aria-label={`Notification settings for ${target.name}`}>
+    <div class="wb-item-head"><h3>{target.name}</h3><span class={`badge${target.settings.enabled ? " ok" : ""}`}>{target.settings.enabled ? "Enabled" : "Off"}</span></div><p class="help">{target.protocol}{target.host ? ` · ${target.host}` : ""}</p>
     {!target.available ? <p class="msg err">Saved notification state is unavailable. Check the server log before enabling delivery.</p> : !target.configured ? <p class="msg warn">A valid HTTPS destination and its credentials are required on the server.</p> : null}
     <label class="check"><input type="checkbox" checked={settings.enabled} disabled={!target.available || !target.configured || !!busy} onChange={(event) => setSettings({ ...settings, enabled: event.currentTarget.checked })} />Enable notifications to this destination</label>
     <fieldset disabled={!!busy || !target.available}><legend>Events</legend>{EVENTS.map((event) => <label class="check" key={event.id}><input type="checkbox" checked={settings.events.includes(event.id)} onChange={(input) => setSettings({ ...settings, events: input.currentTarget.checked ? [...settings.events, event.id] : settings.events.filter((id) => id !== event.id) })} />{event.label}</label>)}</fieldset>
     <fieldset disabled={!!busy || !target.available}><legend>Projects</legend><label class="check"><input type="checkbox" checked={settings.projects === "all"} onChange={(event) => setSettings({ ...settings, projects: event.currentTarget.checked ? "all" : [] })} />All projects</label>{settings.projects !== "all" ? choices.map((project) => <label class="check" key={project.id}><input type="checkbox" checked={selected.includes(project.id)} onChange={(event) => setSettings({ ...settings, projects: event.currentTarget.checked ? [...selected, project.id] : selected.filter((id) => id !== project.id) })} />{project.name}</label>) : null}</fieldset>
-    <button class="btn primary" disabled={!!busy || !target.available || settings.enabled && (!target.configured || !settings.events.length || settings.projects !== "all" && !settings.projects.length)} onClick={save}>{busy === "save" ? "Saving…" : "Save notification settings"}</button>
-    <button class="btn" disabled={!!busy || !target.configured || !target.available} onClick={sendTest}>{busy === "test" ? "Queuing…" : "Send test notification"}</button>
+    <div class="wb-actions"><button class="btn primary" disabled={!!busy || !target.available || settings.enabled && (!target.configured || !settings.events.length || settings.projects !== "all" && !settings.projects.length)} onClick={save}>{busy === "save" ? "Saving…" : "Save notification settings"}</button>
+    <button class="btn" disabled={!!busy || !target.configured || !target.available} onClick={sendTest}>{busy === "test" ? "Queuing…" : "Send test notification"}</button></div>
     {target.dropped ? <p class="msg warn">{target.dropped} events exceeded the queue limit.</p> : null}{target.lastError ? <p class="msg warn">{target.lastError}</p> : null}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
   </article>;

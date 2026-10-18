@@ -1,5 +1,5 @@
 import { signal } from "@preact/signals";
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
 import { AgentPicker } from "./run.js";
 import { api, enc, post, showToast, store } from "./lib.js";
@@ -179,7 +179,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
             />
           </div>
         </div>
-        <div class="review-diff">
+        <div class="review-diff" role="region" aria-label={file ? `Diff of ${file.path}` : "Diff"}>
           {file ? (
             <FileDiff
               key={file.path}
@@ -211,8 +211,34 @@ export function FileDiff({ file, comments, onAdd, onRemove }: { file: DiffFile; 
   const rows = useMemo(() => parsePatch(file.patch), [file.patch]);
   const [editing, setEditing] = useState<{ side: "old" | "new"; line: number; code: string } | null>(null);
   const [text, setText] = useState("");
+  // The diff is one tab stop (a roving tabindex): Tab lands on the last line you were on, the arrow
+  // keys move between lines, Enter or Space comments on one. A tab stop per line would trap Tab in a long diff.
+  const [active, setActive] = useState(-1);
+  const body = useRef<HTMLTableSectionElement>(null);
+  const editor = useRef<HTMLTextAreaElement>(null);
+  // a new comment box takes focus, opened by click or by key
+  useEffect(() => {
+    if (editing) editor.current?.focus();
+  }, [editing]);
   if (file.binary) return <div class="tree-empty">Binary file — no text diff.</div>;
   const at = (side: "old" | "new", line?: number) => comments.filter((c) => c.side === side && c.line === line);
+  const isLine = (row: Row) => row.type === "add" || row.type === "del" || row.type === "ctx";
+  // (a live diff can change under the remembered line: fall back to the first line)
+  const stop = rows[active] && isLine(rows[active]!) ? active : rows.findIndex(isLine);
+  // closing the editor removes the focused textarea: put focus back on its line, not on the page
+  const close = (i: number) => {
+    body.current?.querySelector<HTMLElement>(`tr[data-i="${i}"]`)?.focus();
+    setEditing(null);
+  };
+  const move = (e: KeyboardEvent) => {
+    const lines = [...(body.current?.querySelectorAll<HTMLElement>("tr.dl[tabindex]") ?? [])];
+    const from = lines.indexOf(e.currentTarget as HTMLElement);
+    const steps: Record<string, number> = { ArrowDown: 1, ArrowUp: -1, PageDown: 20, PageUp: -20, Home: -lines.length, End: lines.length };
+    if (from < 0 || !(e.key in steps) || e.altKey || e.ctrlKey || e.metaKey) return false;
+    e.preventDefault();
+    lines[Math.max(0, Math.min(lines.length - 1, from + steps[e.key]!))]!.focus();
+    return true;
+  };
   return (
     <div>
       <div class="diff-file-head">
@@ -221,23 +247,34 @@ export function FileDiff({ file, comments, onAdd, onRemove }: { file: DiffFile; 
         {file.truncated ? <span class="help"> · diff truncated</span> : null}
       </div>
       <table class="diff">
-        <tbody>
+        <tbody ref={body}>
           {rows.map((row, i) => {
             const side: "old" | "new" = row.type === "del" ? "old" : "new";
             const line = side === "old" ? row.old : row.new;
-            const commentable = row.type === "add" || row.type === "del" || row.type === "ctx";
+            const commentable = isLine(row);
             const here = commentable ? at(side, line) : [];
             const isEditing = editing && commentable && editing.side === side && editing.line === line;
+            const comment = () => {
+              if (!commentable || line === undefined) return;
+              setEditing({ side, line, code: row.text });
+              setText("");
+            };
             return [
               <tr
                 key={`r${i}`}
                 class={`dl ${row.type}`}
-                onClick={() => {
-                  if (!commentable || line === undefined) return;
-                  setEditing({ side, line, code: row.text });
-                  setText("");
+                data-i={i}
+                tabIndex={commentable ? (i === stop ? 0 : -1) : undefined}
+                onClick={comment}
+                onFocus={() => setActive(i)}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget || move(e)) return;
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    comment();
+                  }
                 }}
-                title={commentable ? "Click to comment on this line" : undefined}
+                title={commentable ? "Click or press Enter to comment on this line" : undefined}
               >
                 <td class="ln">{row.old ?? ""}</td>
                 <td class="ln">{row.new ?? ""}</td>
@@ -263,22 +300,23 @@ export function FileDiff({ file, comments, onAdd, onRemove }: { file: DiffFile; 
                   <td colSpan={3}>
                     <div class="comment editing">
                       <textarea
+                        ref={editor}
                         class="field"
                         rows={3}
-                        autoFocus
+                        aria-label={`Comment on line ${line}`}
                         placeholder="What should change here?"
                         value={text}
                         onInput={(e) => setText(e.currentTarget.value)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) {
                             onAdd({ file: file.path, side, line: line!, code: row.text, text });
-                            setEditing(null);
+                            close(i);
                           }
-                          if (e.key === "Escape") setEditing(null);
+                          if (e.key === "Escape") close(i);
                         }}
                       />
                       <div class="row">
-                        <button class="btn small" onClick={() => setEditing(null)}>
+                        <button class="btn small" onClick={() => close(i)}>
                           Cancel
                         </button>
                         <button
@@ -286,7 +324,7 @@ export function FileDiff({ file, comments, onAdd, onRemove }: { file: DiffFile; 
                           disabled={!text.trim()}
                           onClick={() => {
                             onAdd({ file: file.path, side, line: line!, code: row.text, text });
-                            setEditing(null);
+                            close(i);
                           }}
                         >
                           Add comment <span class="kbd">⌘↵</span>

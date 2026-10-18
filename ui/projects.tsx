@@ -69,7 +69,7 @@ export function ProjectsDialog() {
     const c = counts(id);
     const on = currentProject.value === id;
     return (
-      <div key={id || "all"} class={`project-row ${on ? "on" : ""}`}>
+      <div key={id || "all"} class={`project-row ${on ? "on" : ""}`} role="listitem">
         <button type="button" class="pr-main" aria-current={on ? "true" : undefined} onClick={() => choose(id)}>
           <span class="pr-name">
             {name}
