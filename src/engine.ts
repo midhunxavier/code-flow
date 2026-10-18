@@ -2917,7 +2917,7 @@ export class RunManager {
     let after = 0;
     for (const id of ids) {
       if (this.shuttingDown) break;
-      await rewriteLines(`${id}.jsonl`, (lines) => {
+      const rewritten = await rewriteLines(`${id}.jsonl`, (lines) => {
         if (lines.some((l) => (l as { type?: string } | null)?.type === "run-patch")) return undefined;
         const events = decodeRunLog(lines);
         const compacted = compactRunLog(events);
@@ -2926,10 +2926,12 @@ export class RunManager {
         before += was;
         after += is;
         return compacted;
-      }).catch((err: Error) => logWarn(`Couldn't compact the log of run ${id}; it's left as it was`, { error: err.message }));
+      }).catch((err: Error) => { logWarn(`Couldn't compact the log of run ${id}; it's left as it was`, { error: err.message }); return false; });
       // Rewriting changes the authoritative source identity. Refresh one cold projection at a
       // time so the next history listing cannot promote every compacted archived run at once.
-      if (this.coldRuns.has(id) && !this.coldRuns.valid(id)) {
+      // A concurrent listing may already have promoted the stale projection while the rewrite
+      // completed. Refresh that live record too; coolRun still excludes active/mutating runs.
+      if (rewritten || this.coldRuns.has(id) && !this.coldRuns.valid(id)) {
         const run = this.get(id); if (run) await this.coolRun(run);
       }
     }
