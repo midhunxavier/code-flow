@@ -939,7 +939,7 @@
   .proof { margin-top: 8px; padding: 10px 14px; border-radius: 14px; font-size: 13px; background: var(--bg); border: 1px solid var(--border); }
   .proof.proven { background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 30%, var(--border)); }
   .proof.proven > b { color: var(--ok); }
-  .proof.unproven { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+  .proof.unproven, .proof.weak { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
   .proof details { margin-top: 6px; }
   .proof summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   .proof pre { margin: 6px 0 0; max-height: 220px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
