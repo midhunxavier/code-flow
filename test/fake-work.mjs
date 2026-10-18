@@ -201,6 +201,33 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     // Gaming the check: delete the test that fails instead of fixing the code.
     execFileSync("git", ["rm", "-q", "failing.test.mjs"]);
     answer = "Removed a broken test.";
+  } else if (write && process.env.FAKE_IMPORT_TEST) {
+    // A module and a test of it: without the module (on the base code), the test can't even load.
+    writeFileSync("feature.mjs", "export const feature = () => 1;\n");
+    writeFileSync("feature.test.mjs", testFile('import { feature } from "./feature.mjs";', 'test("feature", () => assert.equal(feature(), 1));'));
+    answer = "Added the feature and its test.";
+  } else if (write && process.env.FAKE_CI_TAMPER && prompt.includes("CI fails on the pull request")) {
+    // Gaming CI instead of fixing it: "workflow" comments out the failing job; "fewer" drops one of
+    // the tests the check counts (t-*.txt), which no test file shows.
+    if (process.env.FAKE_CI_TAMPER === "workflow") writeFileSync(".github/workflows/ci.yml", "jobs:\n  # test:\n  #   runs-on: ubuntu-latest\n  lint:\n    runs-on: ubuntu-latest\n");
+    else execFileSync("git", ["rm", "-q", "t-2.txt"]);
+    writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
+    answer = "CI passes now.";
+  } else if (write && process.env.FAKE_BUILDER_TAMPER && (prompt.includes("Make the tests pass") || prompt.includes("You changed how the tests run"))) {
+    // A builder that changes how the tests run as well as implementing: "conftest" adds a
+    // conftest.py that ignores the tests; "jest" adds a jest block to package.json that ignores
+    // them, and takes it out when told; "jest-keeps" never does.
+    const mode = process.env.FAKE_BUILDER_TAMPER;
+    const told = prompt.includes("You changed how the tests run");
+    if (mode === "conftest") writeFileSync("conftest.py", 'collect_ignore = ["spec.test.mjs"]\n');
+    else if (!told || mode === "jest") {
+      const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+      if (told) delete pkg.jest;
+      else pkg.jest = { testPathIgnorePatterns: ["spec.test.mjs"] };
+      writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+    }
+    writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
+    answer = told && mode === "jest" ? "Took the jest settings out and implemented it." : "Implemented it and set up the tests.";
   } else if (write && process.env.FAKE_EDIT_TESTS && prompt.includes("Make the tests pass") && existsSync("spec.test.mjs")) {
     writeFileSync("spec.test.mjs", 'import { test } from "node:test";\ntest("always passes", () => {});\n');
     writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);

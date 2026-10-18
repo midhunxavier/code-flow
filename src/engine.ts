@@ -185,10 +185,12 @@ export interface RunFacts {
 export interface Proof {
   /**
    * proven: the check fails on the base code with the change's tests (and passes on the change).
-   * unproven: it passes there too, so no test needs the change. unverified: code-flow couldn't
-   * tell (setup failed on the base commit, the test runner didn't start, a timeout…).
+   * weak: it fails there, but only because the tests can't load (an import or build error): that
+   * shows the change adds what they import, not that it works. unproven: it passes there too, so
+   * no test needs the change. unverified: code-flow couldn't tell (setup failed on the base
+   * commit, the test runner didn't start, a timeout…).
    */
-  status: "proven" | "unproven" | "unverified";
+  status: "proven" | "weak" | "unproven" | "unverified";
   command: string;
   /** The change's test files, fixtures and runner settings that were put onto the base code. */
   tests: string[];
@@ -385,6 +387,12 @@ export interface Run {
   triage?: { state: "pending" | "approved" | "rejected" | "empty"; at: number; note?: string };
   /** Changes to tests in each result branch that could make the check pass without a fix. */
   integrity?: Record<string, IntegrityIssue[]>;
+  /**
+   * How many tests the run's check ran on each result branch, the first time and the latest, and
+   * at which commit. A later pass (a follow-up, a resume) starts from these, so a change that makes
+   * fewer tests run shows there too (see TeamContext.testChanges).
+   */
+  testCounts?: Record<string, { first: TestCount; last: TestCount }>;
   /** Fail-to-pass proof of each result branch whose check passes (see Proof). */
   proofs?: Record<string, Proof>;
   /** The latest review of each result branch, its findings checked (see CheckedReview). */
@@ -419,6 +427,12 @@ export interface Run {
 }
 
 export type RunSummary = Omit<Run, "steps">;
+
+/** How many tests the run's check ran at a commit. */
+export interface TestCount {
+  head: string;
+  tests: number;
+}
 
 export interface Note {
   id: string;
@@ -720,6 +734,11 @@ export class TeamContext {
   private readonly heads = new Map<string, string>();
   /** How many tests the run's check ran in each worktree: the first time, and the latest. */
   private readonly testCounts = new Map<string, { first?: number; last?: number }>();
+  /**
+   * How many tests the run's check ran at each commit: in this pass, and the counts the run kept
+   * from earlier ones (Run.testCounts), so a follow-up knows how many ran before its change.
+   */
+  private readonly testsAt = new Map<string, number>();
   /** Why the run's check can't run here (null: it can), settled by its first result. */
   private checkRunsHere?: Promise<string | null>;
   /** Whether the run's check passed in each worktree, at which commit, and how many tests ran. */
@@ -747,6 +766,10 @@ export class TeamContext {
     readonly followUpsOnly = false,
   ) {
     this.replaying = journal.size > 0;
+    for (const { first, last } of Object.values(run.testCounts ?? {})) {
+      this.testsAt.set(first.head, first.tests);
+      this.testsAt.set(last.head, last.tests);
+    }
   }
 
   /**
@@ -1394,6 +1417,13 @@ export class TeamContext {
       counts.first ??= result.tests;
       counts.last = result.tests;
       this.testCounts.set(wt.name, counts);
+      const at = head ?? result.head;
+      if (at) {
+        this.testsAt.set(at, result.tests);
+        const kept = this.run.testCounts?.[wt.branch];
+        const count = { head: at, tests: result.tests };
+        if (wt.branch) this.run.testCounts = { ...this.run.testCounts, [wt.branch]: { first: kept?.first ?? count, last: count } };
+      }
     }
     return result;
   }
@@ -1486,6 +1516,7 @@ export class TeamContext {
     if (fresh) {
       const what = proof.tests.length ? `this change's tests (${proof.tests.join(", ")})` : "the existing tests";
       if (proof.status === "proven") this.log(`Proven: with ${what} on the base code, \`${proof.command}\` fails there, so the tests need the change`);
+      else if (proof.status === "weak") this.log(`Weakly proven: with ${what} on the base code, \`${proof.command}\` fails there, but only because the tests can't load (an import or build error), not on what they check`, "warn");
       else if (proof.status === "unproven") this.log(`Not proven: ${proof.detail}, so no test fails without the change`, "warn");
       else this.log(`Couldn't prove the change: ${proof.detail}`, "warn");
     }
@@ -1536,7 +1567,9 @@ export class TeamContext {
             const outcome = proofOutcome(r);
             return outcome.status === "proven"
               ? { ok: true, text: `Fails without the change, as it should (exit code ${r.exitCode})` }
-              : { ok: false, text: outcome.status === "unproven" ? "Passes without the change too: no test needs it" : `Couldn't tell: ${outcome.detail}` };
+              : outcome.status === "weak"
+                ? { ok: true, text: `Fails without the change, but only because the tests can't load (exit code ${r.exitCode})` }
+                : { ok: false, text: outcome.status === "unproven" ? "Passes without the change too: no test needs it" : `Couldn't tell: ${outcome.detail}` };
           });
           this.run.usage.checks++;
         }
@@ -1955,16 +1988,16 @@ export class TeamContext {
   /**
    * Changes since `from` that could make the check pass without fixing anything: deleted or
    * skipped tests, weakened assertions, a changed test script or config, fewer tests running.
+   * Fewer tests is told from the check's counts at `from` and at the current commit, so check
+   * the change first; without a count at `from`, the first one in this worktree stands in.
    */
   async testChanges(wt: Worktree, from = wt.base): Promise<IntegrityIssue[]> {
     const counts = this.testCounts.get(wt.name);
+    const head = this.heads.get(wt.name);
+    const before = this.testsAt.get(from) ?? counts?.first;
+    const after = (head ? this.testsAt.get(head) : undefined) ?? counts?.last;
     return this.gitAt(wt)
-      .then((at) =>
-        inspectChanges(at, from, this.readAt(wt), {
-          check: this.run.loop.check,
-          tests: counts ? { before: counts.first, after: counts.last } : undefined,
-        }),
-      )
+      .then((at) => inspectChanges(at, from, this.readAt(wt), { check: this.run.loop.check, tests: { before, after } }))
       .catch((err: Error) => [unverifiedIssue(err.message)]); // not knowing isn't the same as no issues
   }
 
@@ -3992,19 +4025,22 @@ async function runFollowUpInWorktree(ctx: TeamContext, run: Run, f: FollowUp, wt
           : `${f.agent}: address review comments (${f.id})`,
   );
   f.commit = sha ?? undefined;
+  // Checked first, so its test count is there to compare with the one before the change.
+  const check = await ctx.check(wt, `Check after follow-up ${f.id}`);
   // A merge brings in someone else's test changes; anything else is this agent's.
   const issues = sha && f.kind !== "resolve-conflicts" ? await ctx.testChanges(wt, before) : [];
   f.integrity = issues.length ? issues : undefined;
   if (issues.length) ctx.log(`Follow-up ${f.id} (${f.agent}) changed tests:\n${describeIssues(issues)}`, "warn");
-  const check = await ctx.check(wt, `Check after follow-up ${f.id}`);
   // The result changed: prove it again (or drop a proof of code that's no longer there).
   if (sha) ctx.setFacts({ proof: (await ctx.refreshProof(wt))?.status });
   f.status = outcome.ok ? "done" : "failed";
   f.result = outcome.ok ? outcome.finalText : outcome.error;
   f.checkPassed = check ? check.ok : undefined;
-  // Nobody reviews an unattended fix before it's pushed, so one that weakens tests isn't pushed.
-  const blocked = !!f.watch && issues.some((i) => i.severity === "high");
-  if (blocked) f.pushError = "it changes tests in ways that could hide the failure";
+  // Nobody reviews an unattended fix before it's pushed, so one that touches the tests at all —
+  // their config, CI workflows, a skip, an assertion fewer, not only what's likely to hide a
+  // failure — waits for you.
+  const blocked = !!f.watch && issues.length > 0;
+  if (blocked) f.pushError = "it changes tests, their config or CI, and nobody has reviewed that";
   if (f.push && outcome.ok && sha && !blocked) {
     try {
       f.pushed = await ctx.remember("push", `${f.id}|${f.push}`, () => pushBranch(run.repo, wt.branch, f.push!));
@@ -4127,11 +4163,12 @@ async function sideTurn(ctx: TeamContext, run: Run, f: FollowUp, side: SideTurn)
     // The branch's proof was of the code before this change: it goes now, not once the check is done
     // (which a stop could keep from happening).
     if (sha) await ctx.refreshProof(wt);
+    const check = await ctx.check(wt, `Check after side chat ${f.id}`);
+    f.checkPassed = check ? check.ok : undefined;
+    // After the check, so fewer tests running shows too.
     const issues = sha ? await ctx.testChanges(wt, before) : [];
     f.integrity = issues.length ? issues : undefined;
     if (issues.length) ctx.log(`Side chat ${f.id} (${f.agent}) changed tests:\n${describeIssues(issues)}`, "warn");
-    const check = await ctx.check(wt, `Check after side chat ${f.id}`);
-    f.checkPassed = check ? check.ok : undefined;
     // Proven again (or not) at the new code, as a reply is, and what Insights counts with it.
     if (sha) ctx.setFacts({ proof: (await ctx.refreshProof(wt))?.status });
     if (artifact) await ctx.artifact(artifact.label, wt);
