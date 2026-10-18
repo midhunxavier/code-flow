@@ -1,5 +1,4 @@
 import { signal } from "@preact/signals";
-import { store } from "./lib.js";
 
 /**
  * Light or dark. Until you pick one with the theme button the app follows the system; your pick is
@@ -7,7 +6,24 @@ import { store } from "./lib.js";
  */
 export type Theme = "light" | "dark";
 
+// One pick per browser, not per workspace (lib.ts's store namespaces SSH workspaces): index.html reads this same key.
 const KEY = "theme";
+const store = {
+  get: (k: string) => {
+    try {
+      return localStorage.getItem(k);
+    } catch {
+      return null;
+    }
+  },
+  set: (k: string, v: string) => {
+    try {
+      localStorage.setItem(k, v);
+    } catch {
+      // private mode or blocked storage: the pick just won't persist
+    }
+  },
+};
 // Absent where the UI is bundled for tests without a browser: there the app is simply light.
 const system = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: dark)") : undefined;
 const root = typeof document === "undefined" ? undefined : document.documentElement;

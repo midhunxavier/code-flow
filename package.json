@@ -6,9 +6,9 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "build": "node scripts/build-ui.mjs",
+    "build": "node scripts/build-ui.mjs && node scripts/build-host.mjs",
     "build:worker": "node scripts/build-worker.mjs",
-    "start": "node scripts/build-ui.mjs && tsx src/server.ts",
+    "start": "npm run build && tsx src/server.ts",
     "dev": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs --fake-agents",
     "dev:real": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs",
     "typecheck": "tsc --noEmit",
@@ -19,7 +19,8 @@
     "evaluate:teams": "tsx scripts/evaluate-teams.ts",
     "client": "node scripts/codeflow.mjs",
     "maintenance": "tsx scripts/maintenance.ts",
-    "test:containers": "CODEFLOW_TEST_DOCKER=1 tsx --test --test-concurrency=1 test/agent-container-docker.test.ts test/filtered-tasks-docker.test.ts"
+    "test:containers": "CODEFLOW_TEST_DOCKER=1 tsx --test --test-concurrency=1 test/agent-container-docker.test.ts test/filtered-tasks-docker.test.ts",
+    "build:host": "node scripts/build-ui.mjs && node scripts/build-host.mjs"
   },
   "engines": {
     "node": ">=20"

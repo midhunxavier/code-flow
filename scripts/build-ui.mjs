@@ -2,7 +2,8 @@
 // self-contained public/index.html (so any version of the server can serve it).
 import "./check-node.mjs";
 import * as esbuild from "esbuild";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { watch as watchFile } from "node:fs";
 import { createRequire } from "node:module";
 
@@ -26,7 +27,11 @@ async function assemble(js) {
     .replace("/*__CSS__*/", () => css)
     .replace("//__JS__", () => js.replace(/<\/script/gi, "<\\/script"));
   await mkdir("public", { recursive: true }); // not in git: a fresh checkout has no public/
-  await writeFile("public/index.html", html);
+  // Servers and SSH packaging can read while another build is finishing.
+  // Publish the complete page at once, never a truncated or partially written bundle.
+  const temporary = `public/index.${randomBytes(8).toString("hex")}.tmp`;
+  await writeFile(temporary, html);
+  await rename(temporary, "public/index.html");
 }
 
 const options = {

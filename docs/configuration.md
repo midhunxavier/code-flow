@@ -86,8 +86,8 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 | `CODEFLOW_TOKEN` | random per start | The session token (set it to keep browsers signed in across restarts; anything that can read it can use the API) |
 | `CODEFLOW_MAX_DIFF_CHARS` | `60000` | Diffs longer than this are fitted (whole files first) before being passed to another agent |
 | `CODEFLOW_CLAUDE_WRITE_TOOLS` | build/test allow-list | Comma-separated Claude tool rules for write mode, e.g. `Edit,Bash` |
-| `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view (or the full app, with phone control) and webhooks on your network, when *Reachable from my Wi-Fi* is on |
-| `CODEFLOW_TLS_CERT`, `CODEFLOW_TLS_KEY` | unset | Configure both certificate/key file paths for the HTTPS network listener; normal full phone control requires TLS |
+| `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view (or the full app, with phone control) and webhooks on your network, when Wi-Fi or Tailscale is selected under **Remote access** |
+| `CODEFLOW_TLS_CERT`, `CODEFLOW_TLS_KEY` | unset | Configure both certificate/key file paths for the HTTPS network listener; full control requires TLS on Wi-Fi and Tailscale so browser session cookies remain Secure |
 | `CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL` | unset | Explicit `1` permits full phone control over HTTP for development |
 | `CODEFLOW_INTEGRATIONS_FILE`, `CODEFLOW_INTEGRATIONS_JSON` | unset | Explicit external source definitions with server credential references; imports are read-only, while [GitLab/Bitbucket code actions](code-hosts.md) require separate explicit previews/actions |
 | `CODEFLOW_REMOTE_WORKERS_FILE`, `CODEFLOW_REMOTE_WORKERS_JSON` | unset | Explicit provisioned SSH targets and repository mapping names; see [remote workers](remote-workers.md) |

@@ -1,3 +1,4 @@
+import { executionHost } from "./ssh-projects.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, post } from "./lib.js";
 import type { WorkerCapabilities } from "../src/remote-workers/protocol.js";
@@ -13,7 +14,7 @@ export function RemoteWorkerSelect({ value, onChange, disabled }: { value?: Work
   const worker = workers.find((item) => item.id === value?.workerId);
   return <div aria-label="Agent execution location">
     <label>Agent execution<select aria-label="Agent execution" value={value?.workerId ?? ""} disabled={disabled} onChange={(event) => { const selected = workers.find((item) => item.id === event.currentTarget.value); onChange(selected ? { workerId: selected.id, repoMapping: selected.repoMappings[0]! } : undefined); }}>
-      <option value="">This computer</option>{workers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}{value && !worker ? <option value={value.workerId}>Unavailable worker: {value.workerId}</option> : null}
+      <option value="">{executionHost.value.kind === "local" ? "This computer" : "This server"}</option>{workers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}{value && !worker ? <option value={value.workerId}>Unavailable worker: {value.workerId}</option> : null}
     </select></label>
     {worker ? <><label>Worker repository mapping<select aria-label="Worker repository mapping" value={value?.repoMapping} disabled={disabled} onChange={(event) => onChange({ workerId: worker.id, repoMapping: event.currentTarget.value })}>{worker.repoMappings.map((mapping) => <option key={mapping} value={mapping}>{mapping}</option>)}</select></label><p class="help">Agents use the worker’s installed CLI and login in a disposable checkout. Exact commits and staged references are transferred over SSH. Native approval prompts and live team tools are unavailable; replies use structured outcomes on the next turn.{worker.containerProfile ? ` Worker container profile: ${worker.containerProfile}.` : ""}</p></> : value ? <p class="msg err">This worker is no longer registered. Choose an available worker before starting.</p> : null}
     {error ? <p class="msg err">Worker configuration could not be loaded: {error}</p> : null}

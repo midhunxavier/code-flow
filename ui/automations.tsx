@@ -1,8 +1,8 @@
-import { PhoneDevices } from "./phone-devices.js";
+import { RemoteAccess } from "./remote-access.js";
 import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
-import { AgentTag, CantRunNote, QrCode } from "./bits.js";
+import { AgentTag, CantRunNote } from "./bits.js";
 import { Icon } from "./icons.js";
 import { ago, api, baseName, copy, post, showToast, STATUS_TEXT } from "./lib.js";
 import { activeProject, ALL, currentProject, inScope, NONE, patterns, projectFor, projects, route, runs, runState, selectProject } from "./state.js";
@@ -44,23 +44,6 @@ export interface Automation {
   handled?: string[];
   /** Webhook events waiting for the running run to end. */
   queued?: unknown[];
-}
-interface RemoteInfo {
-  secure?: boolean;
-  insecureDevelopment?: boolean;
-  pairingUntil?: number;
-  enabled: boolean;
-  lan: boolean;
-  /** The phone link opens the whole app (on the Wi-Fi listener), not the read-only view. */
-  control: boolean;
-  /** The read-only view. */
-  path: string;
-  /** What the QR code opens: with full control, the sign-in link (a secret of its own). */
-  phonePath: string;
-  local: string;
-  lanUrls: string[];
-  /** Why the Wi-Fi listener isn't listening (its port is taken…): shown instead of a QR code. */
-  lanError?: string;
 }
 
 export const automations = signal<Automation[]>([]);
@@ -166,7 +149,7 @@ export function AutomationsView() {
         )}
       </section>
 
-      <PhoneView />
+      <RemoteAccess />
     </div>
   );
 }
@@ -424,91 +407,6 @@ function AutomationInspector({ automation: a }: { automation: Automation }) {
     </tr>)}</tbody></table></div> : <p class="help">No events recorded yet.</p>}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
   </section>;
-}
-
-function PhoneView() {
-  const [info, setInfo] = useState<RemoteInfo | null>(null);
-  useEffect(() => {
-    api<RemoteInfo>("/api/remote").then(setInfo, () => setInfo(null));
-  }, []);
-  const set = (patch: object) => post<RemoteInfo>("/api/remote", patch).then(setInfo, (e) => showToast(e.message, 5000));
-  if (!info) return null;
-  const full = info.control && info.lan;
-  const short = (u: string) => u.replace(/\/r\/(\w{6})\w+/, "/r/$1…");
-  return (
-    <section class="section auto-card phone-card" aria-labelledby="phone-title">
-      <h2 class="section-title" id="phone-title">
-        Phone
-      </h2>
-      <label class="checkpoint">
-        <input type="checkbox" checked={info.enabled} onChange={(e) => set({ enabled: e.currentTarget.checked })} />
-        <span>
-          <b>Phone link</b> — a secret link to what's running, what needs you, and each result. On its own it's a read-only view: nothing can be started, approved or merged from it.
-        </span>
-      </label>
-      {info.enabled ? (
-        <>
-          <label class="checkpoint">
-            <input type="checkbox" checked={info.lan} onChange={(e) => set({ lan: e.currentTarget.checked })} />
-            <span>
-              <b>Reachable from my Wi-Fi</b> — also serve it on your local network. HTTPS is required for full control; the read-only view can use HTTP on a network you trust.
-            </span>
-          </label>
-          {info.lan ? (
-            <label class={`checkpoint${info.control ? " danger" : ""}`}>
-              <input type="checkbox" disabled={!info.secure && !info.insecureDevelopment} checked={info.control} onChange={(e) => set({ control: e.currentTarget.checked })} />
-              <span>
-                <b>Full control from my phone</b> — the link opens all of code-flow, the same as on this computer: start runs, answer questions, review, approve, merge and open pull requests.
-                Anyone who gets the link can run agents and commands on this computer, so keep it to your own phone; <b>New link</b>, or turning this off, signs every phone out.
-              </span>
-            </label>
-          ) : null}
-          {!info.secure ? <p class="help">{info.insecureDevelopment ? "Development override: this listener uses unencrypted HTTP." : "To enable full phone control, configure CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY with a certificate trusted by your phone, then restart code-flow."}</p> : <p class="help">Encrypted HTTPS · pairing links expire after 10 minutes.</p>}
-          <PhoneDevices />
-          {info.lanError ? <p class="msg err">{info.lanError}</p> : null}
-          {/* The QR code on its white quiet zone, and beside it the links it stands for. */}
-          <div class="phone-qr">
-            {info.lanUrls[0] ? (
-              <QrCode text={info.lanUrls[0]} />
-            ) : (
-              <div class="qr-off" aria-hidden="true">
-                <Icon name="phone" />
-              </div>
-            )}
-            <div class="phone-qr-text">
-              <b>{info.lanUrls[0] ? "Scan with your phone" : "Scanning needs your Wi-Fi"}</b>
-              <span class="help">
-                {info.lanUrls[0]
-                  ? `${full ? "Signs your phone in to code-flow" : "Opens the read-only view"} at ${short(info.lanUrls[0])} — your phone has to be on the same Wi-Fi (or VPN).${full ? " It stays signed in for up to 30 days, even after code-flow restarts." : ""}`
-                  : info.lan && info.lanError
-                    ? "No QR code while code-flow can't listen on your network."
-                    : "The link below only opens on this computer. Turn on “Reachable from my Wi-Fi” to get a QR code your phone can open."}
-              </span>
-              <div class="phone-links">
-                {/* With full control the phone gets the whole app, so a read-only preview here would mislead. */}
-                {[...(full ? [] : [info.local]), ...info.lanUrls].map((u) => (
-                  <div key={u} class="pl-row">
-                    <code title={u}>{short(u)}</code>
-                    <button class="btn small" onClick={() => copy(u, "Link copied")}>
-                      Copy link
-                    </button>
-                    <a class="btn small" href={u} target="_blank" rel="noreferrer">
-                      Open
-                    </a>
-                  </div>
-                ))}
-                <div>
-                  <button class="btn small ghost" onClick={() => confirm(full ? "Make a new link? The old one stops working, and phones signed in with it are signed out." : "Make a new link? The old one stops working.") && set({ rotate: true })}>
-                    <Icon name="refresh" /> New link
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </>
-      ) : null}
-    </section>
-  );
 }
 
 // ---------------------------------------------------------------- save from the composer

@@ -488,7 +488,9 @@ test("two fires at once start one run; a webhook while it runs waits and fires o
       assert.deepEqual(auto.accept(t.id, { details: "pushed abc" }, "delivery-2"), { accepted: true });
       // GitHub sending the same delivery again starts nothing.
       assert.match((auto.accept(t.id, { details: "pushed abc" }, "delivery-1") as { ignored: string }).ignored, /already handled/);
-      await new Promise((r) => setTimeout(r, 50));
+      // accept() dispatches asynchronously, including serialized disk saves. A fixed
+      // 50 ms sleep can observe "received" on a busy runner before enqueue settles.
+      for (let i = 0; i < 200 && auto.events(t.id).some((event) => event.state === "received"); i++) await new Promise((r) => setTimeout(r, 10));
       assert.equal(auto.get(t.id)!.queued?.length, 1);
       assert.equal(auto.events(t.id).filter((event) => event.state === "queued").length, 1, "superseded concurrent deliveries do not remain queued in history");
       assert.equal(auto.events(t.id).filter((event) => event.state === "deduplicated").length, 2);
