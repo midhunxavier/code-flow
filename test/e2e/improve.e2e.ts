@@ -85,9 +85,15 @@ async function holdReplies(page: Page) {
 }
 async function chooseRepo(page: Page, path: string) {
   await page.locator(".repo-btn:not(.project-btn)").click();
+  const picker = page.getByRole("dialog", { name: "Choose a repository", exact: true });
+  await picker.waitFor();
+  // Let the initial listing settle before replacing its path, so this helper tests
+  // selection rather than racing the initial request's update of the input.
+  await picker.locator(".ps").filter({ hasNotText: "Loading…" }).filter({ hasText: /git repository|Open a folder/ }).waitFor();
   await page.getByLabel("Folder path").fill(path); await page.getByLabel("Folder path").press("Enter");
   await page.getByText("✓ This folder is a git repository").waitFor();
   await page.getByRole("button", { name: "Use this folder", exact: true }).click();
+  await picker.waitFor({ state: "hidden" });
   await page.locator(".repo-btn:not(.project-btn) .name", { hasText: path.split("/").pop()! }).waitFor();
 }
 async function chooseProject(page: Page, name: string) {

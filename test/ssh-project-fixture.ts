@@ -31,8 +31,9 @@ if (args.includes('-O')) process.exit(0);
 if (args.includes('-W')) {
  const target = args[args.indexOf('-W') + 1], p = Number(target.split(':').pop());
  const socket = connect(p, '127.0.0.1', () => process.stdin.pipe(socket).pipe(process.stdout));
- socket.on('error', err => { console.error(err.message); process.exit(1); });
- socket.on('close', () => process.exit());
+ socket.on('error', err => { console.error(err.message); process.exitCode = 1; });
+ // Let stdout drain naturally: process.exit() can truncate a large HTTP response.
+ socket.on('close', () => { process.stdin.unpipe(socket); process.stdin.destroy(); });
 } else {
  const child = spawn('/bin/sh', ['-c', args[args.length-1]], { stdio: 'inherit', env: { ...process.env, HOME: ${JSON.stringify(remoteHome)}, SHELL: ${JSON.stringify(login)}, PATH: ${JSON.stringify(`${join(root, "test/fake-bin")}:${dirname(process.execPath)}:${process.env.PATH}`)} } });
  child.on('exit', code => process.exit(code ?? 1));

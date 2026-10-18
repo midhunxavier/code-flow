@@ -39,7 +39,9 @@ test("full remote backend browses, edits, runs checks and agents, streams termin
     assert.equal(await new Promise<number>((resolve, reject) => { request(origin + "/api/fs", { headers: { cookie, host: "evil.example" } }, (res) => { res.resume(); resolve(res.statusCode!); }).on("error", reject).end(); }), 403);
     assert.equal((await call("/api/fs")).home, f.remoteHome);
     assert.equal((await call("/api/ssh-context")).name, "Remote fixture");
-    const html = await fetch(origin + "/", { headers: { cookie } }).then((res) => res.text());
+    const pageResponse = await fetch(origin + "/", { headers: { cookie } });
+    const html = await pageResponse.text();
+    assert.equal(pageResponse.status, 200, html.slice(0, 1000));
     assert.ok(html.includes(`window.__CODEFLOW_WORKSPACE="${host.id}"`));
     assert.ok(!html.includes(remote.token), "backend token is never exposed to the browser");
     const file = await call(`/api/workspace/file?repo=${encodeURIComponent(f.repo)}&path=remote.txt`);

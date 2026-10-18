@@ -25,6 +25,9 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     await picker.getByRole("button", { name: "Open folder project", exact: true }).waitFor();
     assert.equal(await picker.getByLabel("Folder path").inputValue(), f.remoteHome);
     await picker.locator(".dir", { has: page.getByRole("button", { name: "Open folder project", exact: true }) }).getByRole("button", { name: "Use", exact: true }).click();
+    // A closing modal still makes the composer inert until its native close runs.
+    await picker.waitFor({ state: "hidden" });
+    await page.locator(".repo-btn:not(.project-btn) .name", { hasText: "project" }).waitFor();
     await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
     await page.getByLabel("Task", { exact: true }).fill("SSH E2E: work on the server");
     await page.getByRole("button", { name: /^Start run/ }).click();
