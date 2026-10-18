@@ -1775,16 +1775,9 @@ const PAGE = 200;
 
 function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: RunData; version: number }) {
   const body = useRef<HTMLDivElement>(null);
-  // A live step follows its newest line, and a failed one opens at its end, where it went wrong;
-  // any other finished step opens at its start, so it reads from the top.
-  const tail = (s?: Step) => s?.status === "running" || s?.status === "failed";
-  const stick = useRef(tail(step));
+  const stick = useRef(true);
   const [shown, setShown] = useState(PAGE);
-  useEffect(() => {
-    setShown(PAGE);
-    stick.current = tail(step);
-    if (!stick.current && body.current) body.current.scrollTop = 0;
-  }, [step?.id]);
+  useEffect(() => setShown(PAGE), [step?.id]);
   useEffect(() => {
     if (stick.current && body.current) body.current.scrollTop = body.current.scrollHeight;
   });
