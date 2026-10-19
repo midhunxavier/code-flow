@@ -12,6 +12,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const arg = (name: string, fallback: string) => process.argv[process.argv.indexOf(name) + 1] && process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1]! : fallback;
 const ref = execFileSync("git", ["rev-parse", "--verify", `${arg("--baseline", "origin/main")}^{commit}`], { cwd: root, encoding: "utf8" }).trim();
 const trials = Number(arg("--trials", "7")); assert.ok(Number.isInteger(trials) && trials >= 3 && trials <= 30);
+const apiRepeats = Number(arg("--api-repeats", "5")); assert.ok(Number.isInteger(apiRepeats) && apiRepeats >= 1 && apiRepeats <= 20);
 const output = resolve(arg("--output", "output/performance/comparison.json"));
 const temp = await mkdtemp(join(tmpdir(), "codeflow-comparison-"));
 const token = "isolated-performance-fixture";
@@ -123,7 +124,7 @@ try {
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo }); await writeFile(join(repo, "README.md"), "Benchmark fixture\n");
   execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "user.name=Benchmark", "-c", "user.email=benchmark@example.invalid", "commit", "-qm", "fixture"], { cwd: repo });
   browser = await chromium.launch({ channel: "chrome", headless: true });
-  const result: any = { baseline: ref, optimized: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), trials, machine: { platform: platform(), arch: arch(), cpu: cpus()[0]?.model, cores: cpus().length, memoryBytes: totalmem(), node: process.version, browser: browser.version(), rust: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim(), loadAverage: loadavg() }, method: "One unmeasured browser warmup per variant, then fresh browser context per trial; OS filesystem caches are not flushed. Variant order rotates each round. Timings include HTTP, JS parsing, rendering and native process startup/IPC. Browser heap is collected after GC. API requests are warm. Synthetic data; no provider inference.", scenarios: [] };
+  const result: any = { baseline: ref, optimized: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), trials, apiRepeats, machine: { platform: platform(), arch: arch(), cpu: cpus()[0]?.model, cores: cpus().length, memoryBytes: totalmem(), node: process.version, browser: browser.version(), rust: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim(), loadAverage: loadavg() }, method: "One unmeasured browser warmup per variant, then fresh browser context per trial; OS filesystem caches are not flushed. Variant order rotates each round. Timings include HTTP, JS parsing, rendering and native process startup/IPC. Browser heap is collected after GC. API requests are warm. Synthetic data; no provider inference.", scenarios: [] };
   for (const scenario of [{ name: "small", runs: 20, events: 1000 }, { name: "medium", runs: 200, events: 5000 }, { name: "stress", runs: 200, events: 100_000 }].filter((entry) => arg("--scenarios", "small,medium,stress").split(",").includes(entry.name))) {
     const sourceHome = join(temp, `${scenario.name}-fixture`); await fixture(sourceHome, repo, scenario.runs, scenario.events);
     const variants: any[] = [];
@@ -146,7 +147,7 @@ try {
           try { variant.browser.push(await browserTrial(browser, variant.address, repo, scenario.events)); }
           catch (error) { variant.browserFailed = true; variant.failures.push({ phase: `browser trial ${round + 1}`, error: String(error) }); console.error(String(error)); await stop(variant.child); continue; }
         }
-        for (let repeat = 0; repeat < 5; repeat++) {
+        for (let repeat = 0; repeat < apiRepeats; repeat++) {
           let start = performance.now();
           const page = await fetch(`${variant.address}/api/runs?limit=50&q=Fixture%201`, { headers, signal: AbortSignal.timeout(30_000) }).then((response) => { assert.equal(response.status, 200); return response.json(); });
           variant.historyMs.push(performance.now() - start); assert.ok(page.total > 0);

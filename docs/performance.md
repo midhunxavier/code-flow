@@ -133,7 +133,8 @@ experimental Rust transcript reader. It uses identical synthetic fixtures and re
 HTTP servers plus Chrome. One browser warmup precedes repeated fresh browser
 contexts, and variant order rotates. The OS filesystem cache remains warm. Default
 fixtures have 1,000, 5,000 and 100,000 events. `--scenarios small,medium` selects a
-subset. Raw samples, machine/tool versions, commit IDs and failures are saved to
+subset. `--api-repeats 1` makes one API measurement per browser trial instead of
+the default five. Raw samples, machine/tool versions, commit IDs and failures are saved to
 `output/performance/comparison.json`; `--output` overrides that destination.
 
 The UI measurement ends when the latest event is visible after opening Show work.
