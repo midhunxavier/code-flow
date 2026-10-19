@@ -160,6 +160,7 @@ const emptyResult = (): ReconcileResult => ({ attached: 0, finished: 0, removed:
 export class CollabRunner {
   readonly dir: string; private readonly attemptsDir: string; private readonly bundlesDir: string;
   private readonly records = new Map<string, LocalAttemptRecord>(); private loading?: Promise<void>;
+  private readonly journalVersions = new Map<string, number>();
   private readonly active = new Map<string, Active>(); private readonly chains = new Map<string, Promise<unknown>>(); private closed = false;
   /** Attempts between startAttempt's first journal write and its attach(): a recovery pass must not read them as claims that never got their answer. */
   private readonly starting = new Set<string>();
@@ -179,23 +180,29 @@ export class CollabRunner {
   private load(force = false): Promise<void> {
     if (force) this.loading = undefined;
     return this.loading ??= (async () => {
+      // A file handle can still read the old inode after save() atomically replaces it.
+      // Protect records busy when loading began, even if their chain ends during the read,
+      // and records saved/removed after this snapshot (including newly started attempts).
+      const versions = new Map(this.journalVersions), busy = new Set([...this.active.keys(), ...this.starting, ...this.chains.keys()]);
+      const protectedRecord = (id: string) => busy.has(id) || versions.get(id) !== this.journalVersions.get(id) || this.active.has(id) || this.starting.has(id) || this.chains.has(id);
       let names: string[]; try { names = await readdir(this.attemptsDir); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") logError(`Couldn't list ${this.attemptsDir}; local attempt records are unavailable`, error); names = []; }
       const seen = new Set<string>();
       for (const name of names) {
         if (!/^[a-f0-9]{32}\.json$/.test(name)) continue; const file = join(this.attemptsDir, name);
-        try { const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); let body: string; try { const info = await handle.stat(); if (!info.isFile() || info.size > RECORD_LIMIT) throw new Error("not a regular file within 256 KiB"); body = await handle.readFile("utf8"); } finally { await handle.close(); } const record = validateRecord(JSON.parse(body)); if (!record || `${record.attemptId}.json` !== name) throw new Error("the record does not describe the attempt its file is named after"); if (this.active.has(record.attemptId) || this.starting.has(record.attemptId) || this.chains.has(record.attemptId)) { seen.add(record.attemptId); continue; } this.records.set(record.attemptId, record); seen.add(record.attemptId); }
+        try { const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); let body: string; try { const info = await handle.stat(); if (!info.isFile() || info.size > RECORD_LIMIT) throw new Error("not a regular file within 256 KiB"); body = await handle.readFile("utf8"); } finally { await handle.close(); } const record = validateRecord(JSON.parse(body)); if (!record || `${record.attemptId}.json` !== name) throw new Error("the record does not describe the attempt its file is named after"); if (protectedRecord(record.attemptId)) { seen.add(record.attemptId); continue; } this.records.set(record.attemptId, record); seen.add(record.attemptId); }
         catch (error) { logError(`Skipping the unreadable attempt record ${file}; remove it if the attempt is over`, error); }
       }
-      for (const id of [...this.records.keys()]) if (!seen.has(id) && !this.active.has(id) && !this.starting.has(id) && !this.chains.has(id)) this.records.delete(id);
+      for (const id of [...this.records.keys()]) if (!seen.has(id) && !protectedRecord(id)) this.records.delete(id);
     })();
   }
   private async record(attemptId: string): Promise<LocalAttemptRecord | undefined> { await this.load(); return this.records.get(attemptId); }
   private async save(record: LocalAttemptRecord): Promise<void> {
+    this.journalVersions.set(record.attemptId, (this.journalVersions.get(record.attemptId) ?? 0) + 1);
     record.updatedAt = this.now(); this.records.set(record.attemptId, record); await mkdir(this.attemptsDir, { recursive: true, mode: 0o700 });
     const file = join(this.attemptsDir, `${record.attemptId}.json`), temp = `${file}.${randomBytes(4).toString("hex")}.tmp`;
     try { const handle = await open(temp, "wx", 0o600); try { await handle.writeFile(JSON.stringify(record)); await handle.sync(); } finally { await handle.close(); } await rename(temp, file); } finally { await rm(temp, { force: true }).catch(() => {}); }
   }
-  private async remove(attemptId: string): Promise<void> { this.records.delete(attemptId); await rm(join(this.attemptsDir, `${attemptId}.json`), { force: true }).catch(() => undefined); }
+  private async remove(attemptId: string): Promise<void> { this.journalVersions.set(attemptId, (this.journalVersions.get(attemptId) ?? 0) + 1); this.records.delete(attemptId); await rm(join(this.attemptsDir, `${attemptId}.json`), { force: true }).catch(() => undefined); }
   /** One operation at a time per attempt, so report numbers go out in order and a finish never races a publish. */
   private serial<T>(attemptId: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.chains.get(attemptId) ?? Promise.resolve(), next = previous.catch(() => undefined).then(fn);

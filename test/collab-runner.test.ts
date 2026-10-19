@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { open, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -581,6 +581,34 @@ test("a recovery pass that overlaps a finish in flight never replaces the record
   await until(() => store.task(owner, task.id), (t) => t.attempts[0]?.state === "finished", "the attempt to finish on the hub");
   assert.equal(finishes, 1, "the finish went out once"); const record = (await runner.attempts()).find((entry) => entry.attemptId === attemptId)!; assert.equal(record.state, "finished"); assert.equal(record.pendingFinish, undefined);
   assert.deepEqual(await runner.reconcile(), { attached: 0, finished: 0, removed: 0, unknown: 0, retried: 0 });
+});
+
+test("a journal read opened before a finish cannot restore the old inode after the finish chain drains", async (t) => {
+  const f = fixture("finish-read"), repo = f.clone("work"), store = await newStore("finish-read"), hub = new LocalHub(store), stub = stubManager(repo, join(f.folder, "wt")), dir = join(root, "finish-read", "runner");
+  let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; }); let finishes = 0;
+  const slow = wrap(hub, { finish: async (id, input) => { finishes++; await gate; return hub.finish(id, input); } });
+  const runner = new CollabRunner({ manager: stub.manager, hub: () => slow, findPattern, dir, retryIntervalMs: 0 }); runners.push(runner);
+  const task = await newTask(store), { attemptId, runId } = await runner.startAttempt(task.id, { ...solo, repo }); stub.end(runId, "done");
+  await until(() => finishes, (n) => n === 1, "the finish to wait at the hub");
+  const file = join(dir, "attempts", `${attemptId}.json`), handle = await open(file, "r"), prototype = Object.getPrototypeOf(handle), readFile = prototype.readFile;
+  await handle.close(); let intercepted = false;
+  t.mock.method(prototype, "readFile", async function (this: unknown, ...args: unknown[]) {
+    const body = await readFile.apply(this, args);
+    if (!intercepted && typeof body === "string" && body.includes(attemptId)) {
+      intercepted = true;
+      assert.equal(JSON.parse(body).state, "running", "the read captured the old journal inode");
+      const chains = (runner as unknown as { chains: Map<string, Promise<unknown>> }).chains;
+      release(); await Promise.all([...chains.values()]);
+      assert.equal(chains.has(attemptId), false, "the finish no longer has an in-flight chain");
+      assert.equal(JSON.parse(readFileSync(file, "utf8")).state, "finished", "the final journal is already on disk");
+    }
+    return body;
+  });
+  try {
+    assert.deepEqual(await runner.reconcile(), { attached: 0, finished: 0, removed: 0, unknown: 0, retried: 0 });
+    assert.equal(intercepted, true); assert.equal(finishes, 1, "recovery must not publish a second finish");
+    assert.equal((await runner.attempts())[0]!.state, "finished");
+  } finally { release(); t.mock.restoreAll(); }
 });
 
 test("the event stream stays up on a quiet board: the hub's comment pings reset the idle timer, and only silence reconnects", async () => {
