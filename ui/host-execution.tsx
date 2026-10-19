@@ -33,7 +33,7 @@ export function HostExecutionSettings({ board }: { board: Board }) {
     <p class="help">Map each repository above to a repository belonging to its project. Teammates can start tasks they own, see progress, cancel their requests and download checkpoints. The host owner handles agent approvals. Terminal access requires a separate grant below.</p>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
     {!data ? <p class="help">Loading host execution settings…</p> : <>
-      {!data.available ? <p class="msg warn">Host execution is unavailable while this computer is linked to another team server or filesystem restrictions are active.</p> : null}
+      {!data.available ? <p class="msg warn">Host execution is unavailable while filesystem restrictions are active.</p> : null}
       <div class="settings-actions"><label>Concurrent host tasks<input class="field" type="number" min={1} max={4} value={concurrency} onInput={(event) => setConcurrency(Number(event.currentTarget.value))} /></label><button class="btn small" disabled={busy || concurrency === data.concurrency || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4} onClick={() => void save({ concurrency })}>Save queue limit</button></div>
       {board.projects.map((project) => <ProjectExecution key={project.id} project={project} saved={data.policies.find((p) => p.projectId === project.id) as HostProjectPolicy | undefined} busy={busy} save={save} />)}
       {!board.projects.length ? <p class="help">Create a project and teammate accounts to grant execution.</p> : null}

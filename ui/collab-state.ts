@@ -1,7 +1,7 @@
 import { signal } from "@preact/signals";
 import type { SharedRole } from "../src/shared-accounts.js";
 import type { Attempt, AttemptState, Board, Checkpoint, InboxItem, InboxKind, RunnerPublic, Task, TaskStatus, Who } from "../src/collab/model.js";
-import { apiPath, api, ago as agoText, enc, latestOnly } from "./lib.js";
+import { apiPath, api, ago as agoText, enc, latestOnly, selectedTeamConnection } from "./lib.js";
 import { roleAtLeast } from "./shared-roles.js";
 import { subscribe } from "./stream.js";
 
@@ -82,7 +82,7 @@ export function applyTeamEvent(data: TeamEvent): void {
 }
 let watching: (() => void) | undefined;
 /** The owner app: the server's `team` stream topic (the local hub's events, or the hub's relayed through the link). Called once; the subscription lives as long as the page. */
-export function watchTeam(): void { if (watching) return; watching = subscribe("team", (data: TeamEvent) => applyTeamEvent(data)); }
+export function watchTeam(): void { if (watching) return; watching = subscribe(selectedTeamConnection ? `team:${selectedTeamConnection}` : "team", (data: TeamEvent) => applyTeamEvent(data)); }
 /** How long a shared Team tab waits before reopening a stream the browser gave up on (an HTTP error: the session ended, or the per-account cap of 4 streams). */
 export const TEAM_EVENTS_RETRY_MS = 30_000;
 /**
@@ -109,9 +109,10 @@ export function openTeamEvents(onState?: (state: "connected" | "reconnecting") =
  * with phone control on, the owner pairing link; neither may be handed to a teammate, and the link refuses any URL
  * with a path anyway. Without TLS there is no address to give: runner credentials travel only over HTTPS or loopback.
  */
-export function teamServerAddress(remote: { secure?: boolean; tailscaleUrl?: string } | null | undefined): string | undefined {
-  if (!remote?.secure || typeof remote.tailscaleUrl !== "string") return undefined;
-  try { const url = new URL(remote.tailscaleUrl); return url.protocol === "https:" ? url.origin : undefined; } catch { return undefined; }
+export function teamServerAddress(remote: { secure?: boolean; tailscaleUrl?: string; lanUrls?: string[] } | null | undefined): string | undefined {
+  const address = remote?.tailscaleUrl ?? remote?.lanUrls?.[0];
+  if (!remote?.secure || typeof address !== "string") return undefined;
+  try { const url = new URL(address); return url.protocol === "https:" ? url.origin : undefined; } catch { return undefined; }
 }
 
 export const TASK_STATUSES: readonly TaskStatus[] = ["planned", "working", "blocked", "review", "done"];

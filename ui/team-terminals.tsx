@@ -27,7 +27,7 @@ export function TeamTerminalSettings({ board }: { board: Board }) {
     <p class="help">Two terminals per teammate, eight in total. Sessions close after 30 minutes without keyboard input, on access revocation, or when Code Flow stops. The app shows each terminal’s output only to its creator. Detached processes and changes already made may outlive a closed terminal.</p>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
     {data ? <>
-      {!data.available ? <p class="msg warn">Team terminals are unavailable while linked to another team server or while filesystem restrictions are active.</p> : null}
+      {!data.available ? <p class="msg warn">Team terminals are unavailable while filesystem restrictions are active.</p> : null}
       {board.projects.map((project) => <TerminalProject key={project.id} project={project} saved={data.grants.find((g) => g.projectId === project.id) as TerminalGrant | undefined} busy={busy} save={save} />)}
       <h4>Open teammate terminals</h4>
       {data.sessions.length ? <ul>{data.sessions.map((s) => <li key={s.id}>{s.displayName} · {board.projects.find((p) => p.id === s.projectId)?.name ?? s.projectId} · {s.repository} <button class="btn small danger" disabled={busy} onClick={() => void stop(s.id)}>Close terminal</button></li>)}</ul> : <p class="help">No open teammate terminals.</p>}

@@ -8,22 +8,32 @@ import type { ProjectTeam, ProjectOpportunity, ProjectTeamMission } from "../src
 import type { AutomationPreview } from "../src/automation.js";
 
 type Provider = { id: string; name: string; available: boolean; reason?: string };
-type Inventory = { enabled: boolean; teams: ProjectTeam[]; providers: Provider[]; faults: Record<string, string> };
+type Inventory = { enabled: boolean; revision: number; autoTeamEnabled: boolean; source: string; teams: ProjectTeam[]; providers: Provider[]; faults: Record<string, string> };
 const key = () => crypto.randomUUID();
 const lines = (value: string) => value.split("\n").map((s) => s.trim()).filter(Boolean);
 export function ProjectTeamsPanel({ projectId, repos }: { projectId: string; repos: string[] }) {
   const [data, setData] = useState<Inventory>(), [error, setError] = useState(""), [creating, setCreating] = useState(false);
+  const [featureBusy, setFeatureBusy] = useState(false), [featureError, setFeatureError] = useState("");
   const load = () => api<Inventory>(`/api/project-teams?project=${encodeURIComponent(projectId)}`).then(setData, (e) => setError(e.message));
-  useEffect(() => { void load(); const refresh = () => { void load(); }; window.addEventListener("focus", refresh); const off = subscribe(`project-teams:${projectId}`, (event) => { if (event.type === "snapshot") setData((prior) => prior ? { ...prior, teams: event.teams } : prior); }); return () => { off(); window.removeEventListener("focus", refresh); }; }, [projectId]);
+  const toggle = async () => {
+    if (!data || featureBusy) return; setFeatureBusy(true); setFeatureError("");
+    try { await post("/api/project-teams/settings", { enabled: !data.enabled, revision: data.revision }); setCreating(false); await load(); }
+    catch (error) { setFeatureError((error as Error).message); await load(); }
+    finally { setFeatureBusy(false); }
+  };
+  useEffect(() => { void load(); const refresh = () => { void load(); }; window.addEventListener("focus", refresh); const off = subscribe(`project-teams:${projectId}`, (event) => { if (event.type === "snapshot") setData((prior) => prior ? { ...prior, teams: event.teams, enabled: event.enabled, revision: event.revision, source: event.source, autoTeamEnabled: event.autoTeamEnabled } : prior); }); return () => { off(); window.removeEventListener("focus", refresh); }; }, [projectId]);
   if (error) return <section class="pp-card"><h2>Standing team</h2><p role="alert">{error}</p></section>;
   if (!data) return null;
   return <section class="pp-card standing-teams" aria-label="Standing project teams">
-    <div class="pp-card-head"><h2>Standing teams</h2><button class="btn small" disabled={!data.enabled || !repos.length} onClick={() => setCreating(!creating)}>Connect a team</button></div>
+    <div class="pp-card-head"><h2>Standing teams</h2><button class="btn small" disabled={!data.enabled || !data.autoTeamEnabled || !repos.length} onClick={() => setCreating(!creating)}>Connect a team</button></div>
     <p class="help">Give a team a mission and a schedule. It investigates your repository, proposes improvements and can prepare one verified draft per cycle for your decision.</p>
-    {!data.enabled && <p class="help">Standing teams are in preview. Enable CODEFLOW_PROJECT_TEAMS_ENABLED=true on this host to create and activate them.</p>}
+    <div class="settings-actions"><button class="btn small" disabled={featureBusy || data.source === "unavailable"} onClick={() => void toggle()}>{featureBusy ? "Saving…" : data.enabled ? "Disable Standing teams" : "Enable Standing teams"}</button><span class="help">{data.enabled ? "Enabled on this host" : "Off on this host"} · saved across restarts</span></div>
+    <p class="help">This setting applies to all projects on this host. New teams need separate activation. Enabling it resumes schedules for teams already active; stop active cycles before disabling it.</p>
+    {!data.autoTeamEnabled && <p class="help">Auto team execution is disabled by this host’s configuration. Standing teams can run once the host permits Auto team execution.</p>}
+    {featureError && <p role="alert">{featureError}</p>}
     {Object.entries(data.faults).map(([id, reason]) => <p role="alert" key={id}>Team storage needs repair ({id}): {reason}</p>)}
-    {creating && <TeamForm projectId={projectId} repos={repos} providers={data.providers} saved={() => { setCreating(false); void load(); }} />}
-    {data.teams.map((t) => <TeamCard key={t.id} team={t} providers={data.providers} changed={load} />)}
+    {creating && data.enabled && data.autoTeamEnabled && <TeamForm projectId={projectId} repos={repos} providers={data.providers} saved={() => { setCreating(false); void load(); }} />}
+    {data.teams.map((t) => <TeamCard key={t.id} team={t} enabled={data.enabled && data.autoTeamEnabled} providers={data.providers} changed={load} />)}
   </section>;
 }
 function TeamForm({ projectId, repos, providers, team, saved }: { projectId: string; repos: string[]; providers: Provider[]; team?: ProjectTeam; saved: () => void }) {
@@ -61,7 +71,7 @@ function TeamForm({ projectId, repos, providers, team, saved }: { projectId: str
     {error && <p role="alert">{error}</p>}<button class="btn primary" disabled={busy || !eligible.length}>{busy ? "Saving…" : team ? "Save mission" : "Save draft team"}</button><button type="button" class="btn" onClick={saved}>Cancel</button>
   </form>;
 }
-function TeamCard({ team: t, providers, changed }: { team: ProjectTeam; providers: Provider[]; changed: () => unknown }) {
+function TeamCard({ team: t, enabled, providers, changed }: { team: ProjectTeam; enabled: boolean; providers: Provider[]; changed: () => unknown }) {
   const [editing, setEditing] = useState(false), [busy, setBusy] = useState(false), [preview, setPreview] = useState<AutomationPreview>();
   const act = async (suffix: string, body: object) => { setBusy(true); try { await post(`/api/project-teams/${t.id}${suffix}`, { operationId: key(), revision: t.revision, ...body }); await changed(); } catch (e) { showToast((e as Error).message, 7000); await changed(); } finally { setBusy(false); } };
   const running = t.cycles.find((c) => ["requested", "discovering", "selecting", "building", "unknown"].includes(c.status));
@@ -69,7 +79,7 @@ function TeamCard({ team: t, providers, changed }: { team: ProjectTeam; provider
   const calls = reserved.reduce((sum, l) => sum + (l.state === "settled" ? l.usedCalls ?? l.calls : l.calls), 0), minutes = reserved.reduce((sum, l) => sum + l.minutes, 0);
   return <article class="pt-team"><h3>{t.name} <span class="help">{t.status} · mission {t.missionRevision}</span></h3><p>{t.mission.mission}</p><p class="help">{t.repo} · {t.mission.baseBranch} · {t.mission.mode === "propose" ? "Proposals" : "Build within scope"}</p><p class="help">Rolling week: {calls}/{t.mission.budget.weeklyCalls} calls used or reserved · {minutes}/{t.mission.budget.weeklyMinutes} minutes reserved</p>
     {t.error && <p role="alert">{t.error}</p>}
-    {t.status !== "archived" && <div class="pt-actions"><button class="btn small" disabled={busy} onClick={() => act("", { status: t.status === "active" ? "paused" : "active" })}>{t.status === "active" ? "Pause" : "Activate"}</button><button class="btn small" disabled={busy || !!running || t.status !== "active"} onClick={() => { setBusy(true); post(`/api/project-teams/${t.id}/cycle`, { operationId: key() }).then(changed, (e) => showToast(e.message)).finally(() => setBusy(false)); }}>Run cycle now</button><button class="btn small" disabled={busy || !running} onClick={() => act("/stop", {})}>Stop cycle</button><button class="btn small" disabled={!!running} onClick={() => setEditing(!editing)}>Edit mission</button><button class="btn small" disabled={busy || !!running} onClick={() => act("", { status: "archived" })}>Archive team</button><button class="btn small" onClick={() => api<AutomationPreview>(`/api/project-teams/${t.id}/preview`).then(setPreview, (e) => showToast(e.message))}>Preview next cycle</button></div>}
+    {t.status !== "archived" && <div class="pt-actions"><button class="btn small" disabled={busy || !enabled && t.status !== "active"} onClick={() => act("", { status: t.status === "active" ? "paused" : "active" })}>{t.status === "active" ? "Pause" : "Activate"}</button><button class="btn small" disabled={busy || !enabled || !!running || t.status !== "active"} onClick={() => { setBusy(true); post(`/api/project-teams/${t.id}/cycle`, { operationId: key() }).then(changed, (e) => showToast(e.message)).finally(() => setBusy(false)); }}>Run cycle now</button><button class="btn small" disabled={busy || !running} onClick={() => act("/stop", {})}>Stop cycle</button><button class="btn small" disabled={!!running} onClick={() => setEditing(!editing)}>Edit mission</button><button class="btn small" disabled={busy || !!running} onClick={() => act("", { status: "archived" })}>Archive team</button><button class="btn small" onClick={() => api<AutomationPreview>(`/api/project-teams/${t.id}/preview`).then(setPreview, (e) => showToast(e.message))}>Preview next cycle</button></div>}
     {preview && <div role="status"><p>{preview.ready ? "Ready to discover" : preview.busy ? "A cycle is active" : "Not ready"}</p>{preview.warnings.map((w) => <p key={w}>{w}</p>)}<SchedulePreview schedule={t.mission.schedule} /></div>}
     {editing && <TeamForm projectId={t.projectId} repos={[t.repo]} providers={providers} team={t} saved={() => { setEditing(false); void changed(); }} />}
     {!running && t.status !== "archived" && <ScheduleEditor automation={{ name: t.name, schedule: t.mission.schedule }} save={(patch) => act("", { mission: { ...t.mission, ...(patch as { schedule: ProjectTeamMission["schedule"] }) } })} />}

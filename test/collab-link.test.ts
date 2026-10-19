@@ -2,7 +2,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -67,7 +67,7 @@ function expect(reply: Reply, status: number, what: string): any { assert.equal(
 async function until<T>(probe: () => Promise<T>, ok: (value: T) => boolean, what: string, timeoutMs = 60_000): Promise<T> { const deadline = Date.now() + timeoutMs; for (;;) { const value = await probe(); if (ok(value)) return value; if (Date.now() > deadline) throw new Error(`Timed out after ${timeoutMs / 1000} s waiting for ${what}: ${JSON.stringify(value).slice(0, 3000)}`); await sleep(200); } }
 const solo = { pattern: "solo", roles: { agent: ["claude"] }, trust: "safe", loop: { check: "true", maxSteps: 4, maxMinutes: 2 } };
 /** The runner credential each linked instance keeps in its link file (0600); the test owns the homes, so it may read them to speak to the hub as the runner itself. */
-const runnerToken = (server: Instance): string => { const document = JSON.parse(readFileSync(join(server.home, "team-link.json"), "utf8")); assert.match(document.token, /^tr-[A-Za-z0-9_-]{43}$/); return document.token; };
+const runnerToken = (server: Instance): string => { const document = JSON.parse(readFileSync(join(server.home, "team-connections", readdirSync(join(server.home, "team-connections")).find((name) => name.endsWith(".json"))!), "utf8")); assert.match(document.token, /^tr-[A-Za-z0-9_-]{43}$/); return document.token; };
 const bearer = (token: string) => (path: string, init: CallInit = {}) => call(hub.base, path, { ...init, headers: { authorization: `Bearer ${token}`, ...init.headers } });
 const runsOf = (body: any): any[] => Array.isArray(body) ? body : Array.isArray(body?.runs) ? body.runs : [];
 
@@ -181,7 +181,9 @@ phase("a viewer signs in on the hub with a cookie, reads the board and is refuse
   const task = expect(await carol(`/api/team/tasks/${taskId}`), 200, "GET /api/team/tasks/:id (carol)"); assert.equal(task.checkpoints.length, 2); assert.equal(JSON.stringify(task).includes(workA), false, "no local path leaves the hub"); assert.equal(JSON.stringify(task).includes("tokenHash"), false);
   const create = await carol("/api/team/tasks", { headers: { origin: hub.base }, json: { projectId, repository: "app", title: "A viewer's task", goal: "none", acceptance: "none" } }); assert.equal(create.status, 403, create.text); assert.match(create.body.error, /A project contributor role is required to create tasks/);
   const noOrigin = await carol(`/api/team/tasks/${taskId}/comments`, { json: { text: "hello" } }); assert.equal(noOrigin.status, 403, noOrigin.text); assert.match(noOrigin.body.error, /same-origin JSON/);
-  assert.equal((await carol("/api/team-link")).status, 403, "the link is the owner's alone"); assert.equal((await carol("/api/team/checkpoints/" + checkpoint.id + "/bundle")).status, 403, "viewers do not download bundles");
+  assert.equal((await carol("/api/team-link")).status, 403, "the link is the owner's alone");
+  assert.equal((await carol("/api/team-link/connections")).status, 403, "saved connections are owner-only");
+  assert.equal(expect(await carol("/api/team/board?teamConnection=unrelated"), 200, "shared board ignores owner selection").me.via, "browser"); assert.equal((await carol("/api/team/checkpoints/" + checkpoint.id + "/bundle")).status, 403, "viewers do not download bundles");
 });
 
 phase("revoking bob's runner on the hub cuts his computer off and the link reports it", async () => {
@@ -195,4 +197,46 @@ phase("revoking bob's runner on the hub cuts his computer off and the link repor
   // Alice's computer is unaffected, and bob's task start is refused by the hub rather than silently run.
   assert.equal(expect(await aApi("/api/team/board"), 200, "GET /api/team/board (A)").me.userId, aliceId);
   const start = await bApi(`/api/team-link/tasks/${taskId}/start`, { json: solo }); assert.equal(start.status, 401, start.text); assert.equal(runsOf(expect(await bApi("/api/runs"), 200, "GET /api/runs (B)")).length, 1, "nothing ran on bob's computer after the revocation");
+});
+
+phase("one computer keeps two team servers connected, runs work for each and preserves both across restart", async () => {
+  const first = expect(await aApi("/api/team-link/connections"), 200, "connection inventory").connections.find((entry: any) => entry.url === hub.base);
+  assert.ok(first?.id);
+  const scoped = (connectionId: string) => (path: string, init: CallInit = {}) => aApi(path, { ...init, headers: { ...init.headers, "x-codeflow-team": connectionId } });
+  const firstApi = scoped(first.id);
+  // Bob's computer also hosts its own independent board, even while its remote credential is revoked.
+  const bLocal = (path: string, init: CallInit = {}) => bApi(path, { ...init, headers: { ...init.headers, "x-codeflow-team": "local" } });
+  const secondProject = expect(await bApi("/api/projects", { json: { name: "Second team project", repos: [workB] } }), 201, "second project").id;
+  const boardB = expect(await bLocal("/api/team/board"), 200, "second local board");
+  expect(await bLocal(`/api/team/projects/${secondProject}/repositories`, { method: "PUT", json: { revision: boardB.revision, repositories: [{ key: "app", label: "Other app", defaultBranch: "main" }] } }), 200, "second repository key");
+  const accountsB = expect(await bApi("/api/accounts"), 200, "second accounts");
+  const membersB = expect(await bApi("/api/accounts", { json: { revision: accountsB.revision, username: "dana", displayName: "Dana", password: PASSWORD, roles: { [secondProject]: "contributor" } } }), 201, "second account");
+  const dana = membersB.users.find((entry: any) => entry.username === "dana").id;
+  const second = expect(await aApi("/api/team-link/connect", { json: { url: b.base, username: "dana", password: PASSWORD, name: "a-on-second-team" } }), 201, "add second connection");
+  const secondApi = scoped(second.id);
+  expect(await secondApi("/api/team-link/mappings", { method: "PUT", json: { projectId: secondProject, repository: "app", path: workB } }), 200, "second mapping");
+  assert.equal((await aApi("/api/team/board")).status, 409, "an ambiguous unscoped request cannot choose a team");
+  assert.equal((await scoped("c-0000000000000000")("/api/team/board")).status, 404, "a stale selection never falls back to another team");
+  assert.equal(expect(await firstApi("/api/team/board"), 200, "first board").me.userId, aliceId);
+  assert.equal(expect(await secondApi("/api/team/board"), 200, "second board").me.userId, dana);
+  assert.equal(expect(await scoped("local")("/api/team/board"), 200, "local board").me.userId, "owner");
+  const t1 = expect(await hubApi("/api/team/tasks", { json: { projectId, repository: "app", title: "First independent task", goal: "Write a short note in README.md", acceptance: "README changed", owner: aliceId } }), 201, "first task");
+  const t2 = expect(await bLocal("/api/team/tasks", { json: { projectId: secondProject, repository: "app", title: "Second independent task", goal: "Write a short note in README.md", acceptance: "README changed", owner: dana } }), 201, "second task");
+  const results = await Promise.all([firstApi(`/api/team-link/tasks/${t1.id}/start`, { json: solo }), secondApi(`/api/team-link/tasks/${t2.id}/start`, { json: solo })]);
+  for (const result of results) expect(result, 201, "start independent task");
+  await until(() => Promise.all([hubApi(`/api/team/tasks/${t1.id}`), bLocal(`/api/team/tasks/${t2.id}`)]), (tasks) => tasks.every((reply) => reply.body.attempts[0]?.state === "finished"), "both independent checkpoints");
+  const recordsA = expect(await firstApi("/api/team-link/attempts"), 200, "first attempts");
+  const recordsB = expect(await secondApi("/api/team-link/attempts"), 200, "second attempts");
+  assert.ok(recordsA.some((entry: any) => entry.taskId === t1.id)); assert.ok(recordsA.every((entry: any) => entry.taskId !== t2.id));
+  assert.equal(recordsB.length, 1); assert.equal(recordsB[0].taskId, t2.id); assert.equal(recordsB[0].repo, workB);
+  const downloaded = await aApi(`/api/team/checkpoints/${recordsB[0].checkpointId}/bundle?teamConnection=${second.id}`);
+  assert.equal(downloaded.status, 200, "download links use the selected connection too");
+  await stop(a); await start(a);
+  const after = expect(await aApi("/api/team-link/connections"), 200, "connections after restart");
+  assert.deepEqual(after.connections.filter((entry: any) => entry.linked).map((entry: any) => entry.id).sort(), [first.id, second.id].sort());
+  assert.equal(expect(await secondApi("/api/team-link"), 200, "second connection after restart").runnerId, second.runnerId);
+  assert.equal(expect(await firstApi("/api/team-link"), 200, "first connection after restart").runnerId, first.runnerId);
+  expect(await secondApi("/api/team-link", { method: "DELETE" }), 200, "disconnect second only");
+  assert.equal(expect(await firstApi("/api/team/board"), 200, "first remains connected").me.userId, aliceId);
+  assert.equal((await secondApi("/api/team/board")).status, 404);
 });

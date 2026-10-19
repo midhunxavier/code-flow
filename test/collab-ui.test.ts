@@ -125,3 +125,10 @@ test("the owner app's team topic says hello without a count, so the rail badge i
   source.send({ s: 1, d: { type: "inbox", seq: 13, unread: 1 } }); assert.equal(inboxUnread.value, 1);
   assert.equal(requests.filter((entry) => entry.url.pathname === "/api/team/inbox" && !entry.done).length, 0, "an inbox frame needs no fetch");
 });
+
+
+test("team server addresses also support configured HTTPS networks without sharing capability paths", () => {
+  assert.equal(teamServerAddress({ secure: true, lanUrls: ["https://code.example:4318/r/private-phone-secret"] }), "https://code.example:4318");
+  assert.equal(teamServerAddress({ secure: false, lanUrls: ["http://code.example:4318/r/private-phone-secret"] }), undefined);
+  assert.equal(teamServerAddress({ secure: true, lanUrls: ["http://code.example:4318/r/private-phone-secret"] }), undefined);
+});

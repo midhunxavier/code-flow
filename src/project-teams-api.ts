@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { HttpError, readJson, send } from "./http.js";
 import { ProjectTeams } from "./project-teams.js";
-import { allowance, closed, projectTeamsEnabled, text } from "./project-team-model.js";
+import { allowance, closed, text } from "./project-team-model.js";
 import { agentAvailability } from "./adapters/index.js";
 import { providerEligibility } from "./provider-eligibility.js";
 
@@ -9,7 +9,12 @@ import { providerEligibility } from "./provider-eligibility.js";
 export async function handleProjectTeams(service: ProjectTeams, req: IncomingMessage, res: ServerResponse, parts: string[], url: URL) {
   try {
     const id = parts[2];
-    if (req.method === "GET" && !id) return send(res, 200, { enabled: projectTeamsEnabled(), teams: service.list(url.searchParams.get("project") ?? undefined), faults: Object.fromEntries(service.store.faults), providers: (await agentAvailability()).map(({ id, displayName, available }) => ({ id, name: displayName, available, reason: providerEligibility(id, { trust: "standard", unattended: true, projectTeam: true }) })) });
+    if (id === "settings" && parts.length === 3) {
+      if (req.method === "GET") return send(res, 200, service.configuration());
+      if (req.method === "POST") return send(res, 200, await service.setEnabled(await readJson(req, 8192)));
+      throw new HttpError(405, "Use GET or POST for Standing teams settings");
+    }
+    if (req.method === "GET" && !id) return send(res, 200, { ...service.configuration(), teams: service.list(url.searchParams.get("project") ?? undefined), faults: Object.fromEntries(service.store.faults), providers: (await agentAvailability()).map(({ id, displayName, available }) => ({ id, name: displayName, available, reason: providerEligibility(id, { trust: "standard", unattended: true, projectTeam: true }) })) });
     if (req.method === "GET" && id && parts.length === 3) { const team = service.store.get(id); return send(res, 200, { team, allowance: allowance(team) }); }
     if (req.method === "GET" && id && parts[3] === "preview" && parts.length === 4) return send(res, 200, await service.preview(id));
     if (req.method !== "POST") throw new HttpError(405, "Use GET or POST for project teams");

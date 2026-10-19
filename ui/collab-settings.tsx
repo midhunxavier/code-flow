@@ -1,5 +1,7 @@
 import { TeamTerminalSettings } from "./team-terminals.js";
 import { HostExecutionSettings, HostQueue } from "./host-execution.js";
+import { TeamServerWizard } from "./team-server-wizard.js";
+import { TeamConnectionPicker, selectTeamConnection } from "./team-connections.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Board, BoardProject, RepoRef, RunnerPublic } from "../src/collab/model.js";
 import { ApiError, api, copy, enc, post, showToast, usePoll } from "./lib.js";
@@ -15,10 +17,14 @@ import { type TeamLinkInfo, ago, board, boardError, del, loadBoard, loadTeamLink
  */
 export function TeamSettings() {
   const host = executionHost.value;
+  const [setup, setSetup] = useState(false);
   usePoll(() => { void loadBoard(); void loadTeamLink(); }, 15_000, [teamTick.value]);
   const link = teamLink.value, b = board.value;
+  if (setup && host.kind !== "host") return <TeamServerWizard onClose={() => { setSetup(false); void loadBoard(); }} />;
   return <>
-    {host.kind === "local" ? <ThisComputerCard link={link} /> : <section class="settings-card"><h3>This computer</h3><p class="help">A team link belongs to the computer whose agents run the work. Connect from the code-flow on your own computer; this workspace runs on {host.kind === "ssh" ? host.name : "a remote server"}.</p>{host.kind === "ssh" ? <a class="btn" href="/#/settings/team">Back to this computer</a> : null}</section>}
+    {host.kind !== "host" ? <section class="settings-card"><h3>Host a team</h3><p class="help">Set up a shared board on this computer or a connected remote server, with secure access and teammate accounts in one guided flow. Existing team connections stay connected.</p><button class="btn primary" onClick={() => setSetup(true)}>Set up team server</button></section> : null}
+    {host.kind === "local" ? <TeamConnectionPicker /> : null}
+    {host.kind === "local" ? <ThisComputerCard link={link} /> : <section class="settings-card"><h3>This computer</h3><p class="help">A team link belongs to the computer whose agents run the work. Connect from the code-flow on your own computer; this workspace runs on {host.kind === "ssh" ? host.name : "a remote server"}.</p><p class="help">Use Set up team server to install a separate team server on a connected SSH machine. The wizard configures its projects, HTTPS and teammate accounts.</p>{host.kind === "ssh" ? <a class="btn" href="/#/settings/team">Back to this computer</a> : null}</section>}
     {host.kind === "local" ? <RepositoriesCard link={link} b={b} /> : null}
     <TeamServerCard link={link} b={b} />
     {b?.me.userId === "owner" && link && !link.linked ? <><HostExecutionSettings board={b} /><HostQueue board={b} /><TeamTerminalSettings board={b} /></> : null}
@@ -29,20 +35,21 @@ export function TeamSettings() {
 function ThisComputerCard({ link }: { link: TeamLinkInfo | null }) {
   const [url, setUrl] = useState(""), [username, setUsername] = useState(""), [password, setPassword] = useState(""), [name, setName] = useState("");
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const [adding, setAdding] = useState(false);
   useEffect(() => { if (link && !link.linked && !name && link.machineName) setName(link.machineName); }, [link?.machineName]);
   const connect = async (event: Event) => {
     event.preventDefault(); if (busy) return; setBusy(true); setError("");
-    try { await post("/api/team-link/connect", { url: url.trim(), username: username.trim(), password, ...(name.trim() ? { name: name.trim() } : {}) }); setPassword(""); showToast("Connected to the team server"); await Promise.all([loadTeamLink(), loadBoard()]); }
+    try { const connected = await post<{ id: string }>("/api/team-link/connect", { url: url.trim(), username: username.trim(), password, ...(name.trim() ? { name: name.trim() } : {}) }); setPassword(""); showToast("Connected to the team server"); selectTeamConnection(connected.id); }
     catch (err) { setPassword(""); setError((err as Error).message); } finally { setBusy(false); }
   };
   const disconnect = async () => {
     if (!link || !confirm(`Disconnect this computer from ${link.hubName || link.url || "the team server"}? Its runner credential is revoked; attempts you ran here stay on the board as they are.`)) return;
     setBusy(true); setError("");
-    try { await del("/api/team-link"); showToast("Disconnected"); await Promise.all([loadTeamLink(), loadBoard()]); } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
+    try { await del("/api/team-link"); showToast("Disconnected"); selectTeamConnection("local"); } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   };
   return <section class="settings-card" aria-busy={busy}>
     <h3>This computer</h3>
-    {!link ? <p class="help">{teamLinkError.value ? `The team link could not be read: ${teamLinkError.value}` : "Loading…"}</p> : link.linked ? <>
+    {!link ? <p class="help">{teamLinkError.value ? `The team link could not be read: ${teamLinkError.value}` : "Loading…"}</p> : link.linked && !adding ? <>
       <p class="help">Linked to a team server: its board shows under Team, and tasks you start here publish their progress and checkpoints to it.</p>
       <dl class="team-kv">
         <dt>Team server</dt><dd><code>{link.url}</code>{link.hubName ? ` · ${link.hubName}` : ""}</dd>
@@ -52,18 +59,19 @@ function ThisComputerCard({ link }: { link: TeamLinkInfo | null }) {
         {link.lastSync ? <><dt>Last sync</dt><dd>{ago(link.lastSync)}</dd></> : null}
       </dl>
       {link.error ? <p class="msg err" role="alert">{link.error}</p> : null}
-      <div class="settings-actions"><button class="btn" disabled={busy} onClick={() => void disconnect()}>Disconnect</button></div>
+      <div class="settings-actions"><button class="btn primary" disabled={busy} onClick={() => setAdding(true)}>Add team connection</button><button class="btn" disabled={busy} onClick={() => void disconnect()}>Disconnect this team</button></div>
     </> : <form class="team-connect" onSubmit={(event) => void connect(event)}>
-      <p class="help">Join a teammate's board: the team server is another code-flow reachable over Tailscale (HTTPS), and you sign in with the shared account its owner created for you with the contributor or maintainer role. This computer stays the only place your agents run. Linking is possible while this computer's own board holds no tasks.</p>
+      <p class="help">Join a teammate's board: the team server is another code-flow reachable over HTTPS (through Tailscale or another network), and you sign in with the shared account its owner created for you with the contributor or maintainer role. This computer stays the only place your agents run. You can save several team servers and keep using your own board.</p>
       <div class="settings-grid">
         <label>Team server URL<input class="field" type="url" required placeholder="https://hub.your-tailnet.ts.net:4318" value={url} disabled={busy} autoComplete="url" onInput={(event) => setUrl(event.currentTarget.value)} /></label>
         <label>Username<input class="field" required maxLength={64} value={username} disabled={busy} autoComplete="username" onInput={(event) => setUsername(event.currentTarget.value)} /></label>
         <label>Password<input class="field" type="password" required value={password} disabled={busy} autoComplete="current-password" onInput={(event) => setPassword(event.currentTarget.value)} /></label>
         <label>Machine name<input class="field" maxLength={80} value={name} disabled={busy} placeholder="How teammates see this computer" onInput={(event) => setName(event.currentTarget.value)} /></label>
       </div>
-      {error ? <p class="msg err" role="alert">{error}</p> : null}
       <div class="settings-actions"><button type="submit" class="btn primary" disabled={busy || !url.trim() || !username.trim() || !password}>{busy ? "Connecting…" : "Connect this computer"}</button></div>
+      {adding ? <button type="button" class="btn" onClick={() => setAdding(false)}>Cancel</button> : null}
     </form>}
+    {error ? <p class="msg err" role="alert">{error}</p> : null}
   </section>;
 }
 
@@ -90,7 +98,7 @@ function RepositoriesCard({ link, b }: { link: TeamLinkInfo | null; b: Board | n
 }
 
 /** What GET /api/remote reports: `tailscaleUrl` is the phone link (with a secret path), `secure` whether the listener has TLS; the card shows only the origin, and only over HTTPS (see teamServerAddress). */
-interface RemoteInfo { enabled?: boolean; lan?: boolean; transport?: string; tailscaleUrl?: string; secure?: boolean }
+interface RemoteInfo { enabled?: boolean; lan?: boolean; transport?: string; tailscaleUrl?: string; lanUrls?: string[]; secure?: boolean }
 function TeamServerCard({ link, b }: { link: TeamLinkInfo | null; b: Board | null }) {
   const hub = !!link && !link.linked;
   const [remote, setRemote] = useState<RemoteInfo | null>(null);
@@ -101,11 +109,11 @@ function TeamServerCard({ link, b }: { link: TeamLinkInfo | null; b: Board | nul
   const address = teamServerAddress(remote);
   return <section class="settings-card"><h3>Team server</h3>
     {!link ? <p class="help">Loading…</p> : hub ? <>
-      <p class="help">This computer is a team server: teammates reach its board over Tailscale with shared accounts, and work runs on their own computers or through the host permissions below.</p>
+      <p class="help">This computer is a team server: teammates reach its board over HTTPS with shared accounts, and work runs on their own computers or through the host permissions below.</p>
       <dl class="team-kv">
         <dt>Address</dt><dd>{address ? <><code>{address}</code> <button type="button" class="btn small" onClick={() => void copy(address, "Address copied")}>Copy</button><span class="help"> Teammates enter this address under Settings → Team → Connect this computer. Never share the phone link from Settings → Remote access: its path is a secret.</span></>
-          : remote?.tailscaleUrl ? <span class="help">Remote access is on without HTTPS. <a href="#/settings/remote-access">Set up secure remote access in Settings → Remote access</a>: teammates sign in and connect their computers over https:// only.</span>
-          : <span class="help"><a href="#/settings/remote-access">Turn on remote access over Tailscale in Settings → Remote access</a> so teammates can reach this computer.</span>}</dd>
+          : remote?.tailscaleUrl || remote?.lanUrls?.length ? <span class="help">Remote access is on without HTTPS. <a href="#/settings/remote-access">Set up secure remote access in Settings → Remote access</a>: teammates sign in and connect their computers over https:// only.</span>
+          : <span class="help"><a href="#/settings/remote-access">Turn on secure remote access in Settings → Remote access</a> so teammates can reach this computer.</span>}</dd>
         <dt>Accounts</dt><dd><a class="btn small" href="#/settings/projects">Accounts &amp; roles</a><span class="help"> Give teammates the contributor role to own and run tasks, maintainer to manage project repository keys. Only the hub owner manages other accounts’ runners.</span></dd>
       </dl>
       {b?.me.userId === "owner" ? <form class="team-inline" onSubmit={async (event) => { event.preventDefault(); if (busy) return; setBusy(true); setError(""); try { await put("/api/team/profile", { displayName: name.trim() }); showToast("Name saved"); void loadBoard(); } catch (err) { setError((err as Error).message); } finally { setBusy(false); } }}><label>Your name on the board<input class="field" required maxLength={120} value={name} disabled={busy} onInput={(event) => setName(event.currentTarget.value)} /></label><button type="submit" class="btn small" disabled={busy || !name.trim() || name.trim() === b.me.displayName}>Save name</button></form> : null}

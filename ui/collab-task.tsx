@@ -1,4 +1,5 @@
 import { HostTaskControl } from "./host-execution.js";
+import { TeamConnectionPicker } from "./team-connections.js";
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Attempt, Checkpoint, Comment, Instruction, Task, TaskStatus } from "../src/collab/model.js";
@@ -56,7 +57,7 @@ export function TeamTaskView({ id, shared = false, navigate }: { id: string; sha
     finally { setBusy(""); }
   };
   const b = board.value;
-  if (!task) return <div class="team-page">{error ? <p class="msg err" role="alert">{error} <button class="btn small" onClick={() => void load()}>Retry</button> <button class="btn small" onClick={() => navigate({ view: "team" })}>Back to the board</button></p> : <p class="help" role="status">Loading the task…</p>}</div>;
+  if (!task) return <div class="team-page">{!shared ? <TeamConnectionPicker /> : null}{error ? <p class="msg err" role="alert">{error} <button class="btn small" onClick={() => void load()}>Retry</button> <button class="btn small" onClick={() => navigate({ view: "team" })}>Back to the board</button></p> : <p class="help" role="status">Loading the task…</p>}</div>;
   const meId = b?.me.userId, project = b?.projects.find((entry) => entry.id === task.projectId), role = project?.role ?? (meId === "owner" ? "maintainer" : b?.me.roles[task.projectId]);
   const members: Member[] = project?.members ?? [];
   const canEdit = roleAtLeast(role, "contributor"), canComment = roleAtLeast(role, "reviewer"), maintainer = roleAtLeast(role, "maintainer");
@@ -74,6 +75,7 @@ export function TeamTaskView({ id, shared = false, navigate }: { id: string; sha
   const link_ = (path: string, body: unknown, label: string, done: string) => act(label, async () => { await post(`/api/team-link/tasks/${enc(id)}${path}`, body); }, () => { showToast(done); void load(); void loadLocalAttempts(); });
   const stale = attempt ? attemptStale(attempt, now) : false, live = attempt ? attemptLive(attempt, now) : false;
   return <div class="team-page team-task">
+    {!shared ? <TeamConnectionPicker /> : null}
     <nav class="team-back" aria-label="Team board"><a href={shared ? "#/team" : `#/team/project/${enc(task.projectId)}`} onClick={(event) => { event.preventDefault(); navigate({ view: "team", project: task.projectId }); }}><Icon name="chevron" class="back" /> {project?.name ?? "Team board"}</a></nav>
     <TaskHeader task={task} role={role} meId={meId} members={members} canEdit={canEdit} maintainer={maintainer} busy={busy} save={save} act={act} navigate={navigate} />
     {error ? <p class="msg err" role="alert">{error}</p> : null}
