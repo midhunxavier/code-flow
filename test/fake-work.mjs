@@ -44,6 +44,10 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
 
   if (process.env.FAKE_FAIL_VENDOR === vendor && write) fail("boom");
 
+  if (prompt.includes("Prepare a task draft for the user to review.")) {
+    const draft = { title: "Improve the team greeting", goal: "Make the greeting clear for teammates.\n\nProposed implementation plan:\n1. Read README.md.\n2. Update the greeting only.", acceptance: "README.md contains the team greeting. Other content is unchanged." };
+    return { answer: JSON.stringify(draft), structured: schemaRequested ? draft : undefined };
+  }
   let answer = `${vendor} handled the request.`;
   const json = (obj) => `Done.\n\`\`\`json\n${JSON.stringify(obj)}\n\`\`\``;
 
