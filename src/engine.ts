@@ -3537,6 +3537,7 @@ export class RunManager {
    */
   async mergePr(id: string, input: { branch: string; method: MergeMethod; archiveAfter?: boolean }) {
     const run = this.require(id);
+    await this.managedShipping(run, input.branch);
     if (this.busyRun(run)) throw new Error("Wait for the run to finish before merging");
     if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
     const url = run.prs[input.branch];

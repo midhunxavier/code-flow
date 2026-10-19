@@ -22,12 +22,29 @@ before(async () => {
   writeFileSync(join(repo, "README.md"), "Empty input is valid.\n"); writeFileSync(join(repo, "check.mjs"), "process.exit(0);\n");
   mkdirSync(join(repo, ".codeflow")); writeFileSync(join(repo, ".codeflow/config.json"), JSON.stringify({ prove: false }));
   execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], { cwd: repo });
-  server = spawn("npx", ["tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_REMOTE_PORT: String(await freePort()), CODEFLOW_HOME: join(home, "data"), CODEFLOW_TOKEN: token, CODEFLOW_PROJECT_TEAMS_ENABLED: "true", CODEFLOW_SCHEDULER_TICK_MS: "250", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+  // Own the server process directly: killing an npx wrapper can leave its server and pipes alive.
+  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_REMOTE_PORT: String(await freePort()), CODEFLOW_HOME: join(home, "data"), CODEFLOW_TOKEN: token, CODEFLOW_PROJECT_TEAMS_ENABLED: "true", CODEFLOW_SCHEDULER_TICK_MS: "250", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+  server.stdout?.resume();
   server.stderr?.on("data", (data) => errors.push(String(data)));
-  for (let i = 0; i < 100; i++) { if (await api("/api/health").then((r) => r.status === 200, () => false)) break; await new Promise((r) => setTimeout(r, 200)); }
+  let ready = false;
+  for (let i = 0; i < 100; i++) { ready = await api("/api/health").then((r) => r.status === 200, () => false); if (ready) break; await new Promise((r) => setTimeout(r, 200)); }
+  assert.equal(ready, true, `fixture server started: ${errors.join("\n")}`);
   browser = await chromium.launch({ channel: "chrome", headless: true });
 });
-after(async () => { await browser?.close(); server?.kill("SIGTERM"); /* Server owns worktree cleanup until it has exited. */ });
+after(async () => {
+  try { await browser?.close(); }
+  finally {
+    if (server && server.exitCode === null && server.signalCode === null) {
+      const exited = new Promise<void>((resolve) => server.once("exit", () => resolve()));
+      const timer = setTimeout(() => server.kill("SIGKILL"), 5000);
+      server.kill("SIGTERM");
+      try { await exited; } finally { clearTimeout(timer); }
+      assert.equal(server.exitCode, 0, `fixture server stopped cleanly: ${errors.join("\n")}`);
+    }
+    // The server may still be cleaning up worktrees until it has exited.
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 test("owner creates a standing team, previews, runs, reviews and approves with one shared stream", async () => {
   const project = await api("/api/projects", { name: "Standing product", repos: [repo] }); assert.equal(project.status, 201, JSON.stringify(project));

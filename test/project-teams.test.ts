@@ -234,6 +234,32 @@ test("publishing a managed result pushes the approved SHA without squash-base re
   } finally { delete process.env.FAKE_GH_STATE; }
 });
 
+test("managed PR merges require a current approval after publication", async (t) => {
+  for (const change of ["reject", "mission", "archive", "none"] as const) await t.test(change, async () => {
+    const f = await fixture(); await f.service.cycle(f.team.id, "first"); let team = await settled(f); const o = team.opportunities[0]!;
+    const remote = join(f.dir, "origin.git"); execFileSync("git", ["init", "--bare", "-q", "-b", "main", remote]); f.git("remote", "add", "origin", remote); f.git("push", "-q", "origin", "main");
+    const state = join(f.dir, "github.json"); writeFileSync(state, JSON.stringify({ issues: {}, prs: {} })); process.env.FAKE_GH_STATE = state;
+    try {
+      team = await f.service.decide(team.id, o.id, { operationId: "approve", revision: team.revision, opportunityRevision: o.revision, action: "approve" });
+      const url = await f.manager.pullRequest(o.result!.runId, { branch: o.result!.branch, into: "main" });
+      const number = url.split("/").pop()!;
+      if (change === "reject") team = await f.service.decide(team.id, o.id, { operationId: "reject", revision: team.revision, opportunityRevision: team.opportunities[0]!.revision, action: "reject", note: "Do not ship this" });
+      if (change === "mission") team = await f.service.update(team.id, { operationId: "change-mission", revision: team.revision, mission: mission({ mission: "Prioritize another problem" }) });
+      if (change === "archive") team = await f.service.update(team.id, { operationId: "archive", revision: team.revision, status: "archived" });
+      const input = { branch: o.result!.branch, method: "squash" as const };
+      if (change === "none") {
+        assert.equal((await f.manager.mergePr(o.result!.runId, input)).merged, true);
+        assert.equal(JSON.parse(readFileSync(state, "utf8")).prs[number].state, "MERGED");
+        await f.service.reconcile(); assert.equal(f.store.get(team.id).opportunities[0]!.status, "shipped");
+      } else {
+        await assert.rejects(f.manager.mergePr(o.result!.runId, input), change === "archive" ? /Archived/ : /Approve this exact result/);
+        assert.equal(JSON.parse(readFileSync(state, "utf8")).prs[number].state, "OPEN", "revoked approval must leave the remote PR open");
+        assert.equal(f.manager.get(o.result!.runId)!.merges.length, 0);
+      }
+    } finally { delete process.env.FAKE_GH_STATE; }
+  });
+});
+
 test("an interrupted or cancelled child does not refund unprovable invocation usage", async () => {
   const f = await fixture(); const t = await f.service.cycle(f.team.id, "cancelled-child"), launch = t.cycles[0]!.launches[0]!;
   f.manager.cancel(launch.runId!); const result = await settled(f);
