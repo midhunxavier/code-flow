@@ -1,3 +1,5 @@
+import { nextRunAction, executionLabel } from "./run-experience.js";
+import { RunEvidence, VerificationEvidence } from "./run-evidence.js";
 import { DeleteRunDialog } from "./run-actions.js";
 import { Menu, MenuItem } from "./panel-bits.js";
 import { Component } from "preact";
@@ -11,6 +13,7 @@ import { api, ApiError, baseName, copy, duration, enc, fmtCost, fmtSize, fmtToke
 import { loadLocalAttempts, localAttempts } from "./collab-state.js";
 import {
   agents,
+  healthOpen,
   attachments,
   checkCmd,
   checkLoaded,
@@ -65,6 +68,9 @@ export function RunView({ id }: { id: string }) {
   const listed = useRef<string[]>([]);
   const [archiving, setArchiving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [recovering, setRecovering] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
   const { run, problem, data } = useRunStream(id, (step) => {
     // A side chat's turn isn't in the timeline: following it would close the step you're watching.
     if (follow.current && step.status === "running" && !sideWork(step)) setSelected(step.id);
@@ -141,6 +147,29 @@ export function RunView({ id }: { id: string }) {
   /** A conversation with one agent (Single agent): the turns are the thread, not a list of steps. */
   const chat = !!p?.chat;
 
+  const next = nextRunAction(run);
+  const focusSection = (id: string) => {
+    const section = document.getElementById(id);
+    section?.scrollIntoView({ block: "center", behavior: "smooth" });
+    (section?.querySelector<HTMLElement>("textarea, button, summary") ?? section)?.focus({ preventScroll: true });
+  };
+  const resume = async () => {
+    if (actionBusy) return;
+    setActionBusy(true); setActionError("");
+    try { await post(`/api/runs/${run.id}/resume`); }
+    catch (error) { setActionError((error as Error).message); }
+    finally { setActionBusy(false); }
+  };
+  const act = () => {
+    if (!next) return;
+    if (next.kind === "resume") void resume();
+    else if (next.kind === "provider") healthOpen.value = true;
+    else if (next.kind === "check") setRecovering(true);
+    else if (next.kind === "review" && next.branch) navigate({ view: "review", id: run.id, branch: next.branch });
+    else if (next.kind === "revise") {
+      chatDrafts.value = [...chatDrafts.value, { to: `main:${run.id}`, text: `Investigate and fix the failing checks (${run.loop.check || "the configured verification profile"}). Preserve the existing work and report fresh verification evidence.`, images: [] }];
+    } else focusSection(`run-${next.kind}`);
+  };
   return (
     <div class="runview">
       <div class="run-scroll">
@@ -151,7 +180,7 @@ export function RunView({ id }: { id: string }) {
             <div class="run-name">
               <div class="run-kicker">
                 <span class={`status-pill ${awaitingInput ? "awaiting" : state}`}>
-                  {awaitingInput ? "Waiting for you" : teamNeedsResume(run) ? "Unresolved work" : state === "failing" ? "Done · check failing" : state === "unchecked" ? "Done · check can't run" : checking ? "Running checks" : STATUS_TEXT[run.status] ?? run.status}
+                  {executionLabel(run)}
                 </span>
                 <span class="run-pattern">{p?.name ?? run.pattern}</span>
                 {teamTask ? <a class="run-team-task" href={`#/team/task/${enc(teamTask)}`} title="This run executes a task of the team board">Team task</a> : null}
@@ -159,31 +188,11 @@ export function RunView({ id }: { id: string }) {
               <h2 title={run.task}>{run.task.split("\n")[0] || "(no task)"}</h2>
             </div>
             <div class="run-actions">
-              {["interrupted", "stopped", "failed", "cancelled"].includes(run.status) ? (
-                <button
-                  class="btn primary"
-                  title={run.status === "interrupted" ? "Continue where it stopped; finished steps aren't redone" : "Continue with a fresh budget; finished steps aren't redone"}
-                  onClick={() => post(`/api/runs/${run.id}/resume`).catch((e) => showToast(e.message))}
-                >
-                  Resume
-                </button>
-              ) : null}
-              {finished ? (
-                <button class="btn" onClick={() => editAndRerun(run)}>
-                  <Icon name="refresh" /> Edit &amp; run again
-                </button>
-              ) : null}
-              {finished && !run.archived ? (
-                <button class="btn ghost" onClick={() => setArchiving(true)}>
-                  <Icon name="archive" /> Archive…
-                </button>
-              ) : null}
-              {run.archived ? (
-                <button class="btn ghost" onClick={() => post(`/api/runs/${run.id}/archive`, { archived: false }).then(() => showToast("Moved back to your runs"), (e) => showToast(e.message))}>
-                  <Icon name="archive" /> Unarchive
-                </button>
-              ) : null}
-              {finished && !run.projectTeam ? <button class="btn ghost" onClick={() => setDeleting(true)}>Delete…</button> : null}
+              {finished ? <Menu label="More run actions" icon="more">{close => <>
+                <MenuItem onClick={() => { close(); editAndRerun(run); }}>Edit &amp; run again</MenuItem>
+                <MenuItem onClick={() => { close(); if (run.archived) void post(`/api/runs/${run.id}/archive`, { archived: false }).catch(e => showToast(e.message)); else setArchiving(true); }}>{run.archived ? "Unarchive" : "Archive…"}</MenuItem>
+                {!run.projectTeam ? <MenuItem onClick={() => { close(); setDeleting(true); }}>Delete…</MenuItem> : null}
+              </>}</Menu> : null}
               {!finished ? (
                 <button
                   class="btn danger"
@@ -201,6 +210,17 @@ export function RunView({ id }: { id: string }) {
         </header>
 
         <div class="thread">
+          <RunEvidence run={run} checking={checking} />
+          {next ? <section class={`next-action ${["resume", "provider", "check", "revise"].includes(next.kind) ? "needs-attention" : ""}`} aria-label="Next action">
+            <div><h3>{next.title}</h3><p>{next.detail}</p>
+              {next.kind === "resume" ? <p class="help">New allowance: {run.loop.maxInvocations ?? run.loop.maxSteps} calls · {run.loop.maxMinutes} minutes. Earlier usage is retained.</p> : null}
+              {finished && run.worktrees.length ? <p class="help">Saved work: {run.worktrees.length} {run.worktrees.length === 1 ? "worktree" : "worktrees"}. Branches and files are kept.</p> : null}
+            </div>
+            <div class="next-action-buttons"><button class="btn primary" disabled={actionBusy} onClick={act}>{actionBusy ? "Resuming…" : next.label}</button>
+              {next.kind === "provider" ? <button class="btn" disabled={actionBusy} onClick={() => void resume()}>Resume after reconnecting</button> : null}
+            </div>
+          </section> : null}
+          {actionError ? <p class="msg err" role="alert">{actionError}</p> : null}
           <RunMeta run={run} />
           {run.source?.kind === "pr" && !Object.values(run.prs ?? {}).includes(run.source.url) ? <GithubReviewThreadsPanel runId={run.id} /> : null}
           {run.lockdown ? (
@@ -226,12 +246,12 @@ export function RunView({ id }: { id: string }) {
             </div>
           </div>
 
-          {run.awaiting ? <AwaitingCard run={run} /> : null}
-          {teamAwaitingAnswer(run) ? <TeamQuestionCard run={run} /> : null}
+          {run.awaiting ? <div id="run-approval" tabIndex={-1}><AwaitingCard run={run} /></div> : null}
+          {teamAwaitingAnswer(run) ? <div id="run-question" tabIndex={-1}><TeamQuestionCard run={run} /></div> : null}
           {run.team ? <AutoTeam run={run} steps={steps} /> : null}
           {run.team && run.project ? <ProjectMemory projectId={run.project} repo={run.repo} refreshKey={`${run.status}:${run.team.revision}`} /> : null}
           {run.triage?.state === "pending" && run.status !== "running" ? (
-            <div class="awaiting-card">
+            <div class="awaiting-card" id="run-triage" tabIndex={-1}>
               <div class="aw-head">
                 <span class="status-pill awaiting">In your inbox</span>
                 <b>From your automation “{run.trigger?.name}”</b>
@@ -298,6 +318,7 @@ export function RunView({ id }: { id: string }) {
       </div>
 
       <ConversationBar run={run} steps={steps} chat={chat} />
+      {recovering ? <RecoveryCheckDialog run={run} onClose={() => setRecovering(false)} /> : null}
       {deleting ? <DeleteRunDialog run={run} onClose={() => setDeleting(false)} /> : null}
       {archiving ? <ArchiveDialog run={run} onClose={() => setArchiving(false)} /> : null}
     </div>
@@ -373,7 +394,7 @@ function RunMeta({ run }: { run: RunSummary }) {
         <Icon name="folder" /> {baseName(run.repo)}
       </span>
       {run.trigger ? (
-        <a class="src-link with-ic" href="#/settings/automations" title={`Started by ${run.trigger.via === "schedule" ? "its schedule" : run.trigger.via === "webhook" ? "a webhook" : run.trigger.via === "sweep" ? "a sweep" : "Run now"}`}>
+        <a class="src-link with-ic" href="#/automations" title={`Started by ${run.trigger.via === "schedule" ? "its schedule" : run.trigger.via === "webhook" ? "a webhook" : run.trigger.via === "sweep" ? "a sweep" : "Run now"}`}>
           <Icon name={run.trigger.via === "sweep" ? "layers" : "clock"} /> {run.trigger.name}
         </a>
       ) : null}
@@ -411,7 +432,7 @@ function RunMeta({ run }: { run: RunSummary }) {
         ))}
       </span>
       {run.group ? (
-        <a class="src-link with-ic" href={`#/settings/insights/${encodeURIComponent(run.group.id)}`} title="Started together with other setups on the same task">
+        <a class="src-link with-ic" href={`#/insights/${encodeURIComponent(run.group.id)}`} title="Started together with other setups on the same task">
           <Icon name="compare" /> Comparison: {run.group.label}
         </a>
       ) : null}
@@ -474,7 +495,7 @@ function ResultCard({ run, steps, onSelectStep, chat }: { run: RunSummary; steps
     <div class={`result ${state}${state === "done" && run.verdict !== "passed" ? " unverified" : ""}${chat ? " chat" : ""}`}>
       {title ? <div class="rh">{title}</div> : null}
       {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
-      {run.verification ? <details class="verify-profile"><summary>Verification profile: {run.verification.state} · {run.verification.checks.length} gates</summary>{run.verification.head ? <p class="help">Commit {run.verification.head.slice(0, 12)}</p> : null}<ul>{run.verification.checks.map((gate) => <li key={gate.check.id}>{gate.check.title ?? gate.check.id}: {gate.diagnosis}{gate.check.required ? " (required)" : ""}</li>)}</ul>{run.verification.risk ? <p class="help">Change risk: {run.verification.risk.level} · {run.verification.risk.reasons.join("; ") || "No configured sensitive-path rule matched."}</p> : null}{run.verification.review ? <p class="help">Human file review: {run.verification.review.reviewed}/{run.verification.review.changed} at this commit.</p> : null}{run.verification.requirements?.length ? <ul>{run.verification.requirements.map((requirement) => <li key={requirement.id}>{requirement.covered ? "Covered" : "Uncovered"}: {requirement.description}{requirement.missing.length ? ` · missing ${requirement.missing.join(", ")}` : ""}</li>)}</ul> : null}</details> : null}
+      <VerificationEvidence run={run} />
       {failedSteps.length && run.status !== "done" ? (
         <div class="failures">
           <div class="lbl">What went wrong</div>
@@ -824,7 +845,7 @@ function ReviewCard({ run }: { run: RunSummary }) {
   );
 }
 
-function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Artifact; steps: Step[] }) {
+export function ArtifactCard({ run, artifact, steps, reviewing = false }: { run: RunSummary; artifact: Artifact; steps: Step[]; reviewing?: boolean }) {
   const [panel, setPanel] = useState<"merge" | "pr" | null>(null);
   const worktree = (run.worktrees ?? []).find((w) => w.branch === artifact.branch);
   const merged = run.merges?.filter((m) => m.branch === artifact.branch) ?? [];
@@ -848,8 +869,8 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
           </a>
         ) : null}
         <span class="acts">
-          {canReview ? (
-            <button class="btn small primary" onClick={() => navigate({ view: "review", id: run.id, branch: artifact.branch })}>
+          {canReview && !reviewing ? (
+            <button class="btn small" onClick={() => navigate({ view: "review", id: run.id, branch: artifact.branch })}>
               Review changes
             </button>
           ) : null}
@@ -896,8 +917,8 @@ function ArtifactCard({ run, artifact, steps }: { run: RunSummary; artifact: Art
       {run.proofs?.[artifact.branch] ? <ProofNote proof={run.proofs[artifact.branch]!} /> : null}
       {run.findings?.[artifact.branch]?.findings.length ? <FindingsNote review={run.findings[artifact.branch]!} /> : null}
       {/* focusable: a long stat scrolls (max-height), and keyboard users need to reach it to scroll it */}
-      {artifact.stat ? <pre tabIndex={0}>{artifact.stat}</pre> : <div class="help">No changes</div>}
-      {worktree && existsHint(run) ? <WorkspaceTools run={run} worktree={worktree.name} /> : null}
+      {!reviewing ? artifact.stat ? <pre tabIndex={0}>{artifact.stat}</pre> : <div class="help">No changes</div> : null}
+      {!reviewing && worktree && existsHint(run) ? <WorkspaceTools run={run} worktree={worktree.name} /> : null}
       {panel === "merge" && worktree ? (
         pr ? <PrMergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} />
       ) : null}
@@ -2070,6 +2091,34 @@ export function editAndRerun(run: RunSummary) {
   navigate({ view: "composer" });
   // Once the repo's own "Done when" lookup is done: the run's check and setup win over it.
   void (run.repo !== repo.value ? setRepo(run.repo).then(checkLoaded) : checkLoaded()).then(restore, restore);
+}
+
+function RecoveryCheckDialog({ run, onClose }: { run: RunSummary; onClose: () => void }) {
+  const [check, setCheck] = useState(run.loop.check ?? "");
+  const [setup, setSetup] = useState(run.loop.setup ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const ref = useDialog(true, () => { if (!busy) onClose(); });
+  const branches = run.artifacts.filter(a => run.worktrees.some(w => w.branch === a.branch));
+  const [branch, setBranch] = useState(branches[0]?.branch ?? run.baseRef);
+  return <dialog ref={ref} class="picker small-dialog" aria-labelledby="recovery-check-title"><div class="picker-inner">
+    <div class="picker-head"><h3 id="recovery-check-title">Fix check command</h3></div>
+    <div class="dialog-body"><p>Start a continuation from the saved branch with corrected commands. The original run and its evidence are kept.</p>
+      <label>Continue from<select class="field" value={branch} onChange={event => setBranch(event.currentTarget.value)}>{branches.length ? branches.map(a => <option key={a.branch} value={a.branch}>{a.label} · {a.branch}</option>) : <option value={run.baseRef}>Original base · {run.baseRef.slice(0, 12)}</option>}</select></label>
+      <label>Setup command<input class="field" value={setup} placeholder="e.g. npm ci" onInput={event => setSetup(event.currentTarget.value)} /></label>
+      <label>Check command<input class="field" value={check} placeholder="e.g. npm test" onInput={event => setCheck(event.currentTarget.value)} /></label>
+      <p class="help">Uses a single check and this run's team and permissions. New allowance: {run.loop.maxInvocations ?? run.loop.maxSteps} calls · {run.loop.maxMinutes} minutes.</p>
+      {error ? <p class="msg err" role="alert">{error}</p> : null}
+    </div><div class="picker-foot"><button class="btn" disabled={busy} onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !check.trim()} onClick={async () => {
+      if (busy) return;
+      setBusy(true); setError("");
+      try {
+        const child = await post<{ id: string }>("/api/runs", { repo: run.repo, project: run.project, parentRunId: run.id, baseRef: branch, task: `${run.task}\n\nVerify the preserved work using the corrected setup and check commands. Fix any remaining failures and report the evidence.`, pattern: run.pattern, roles: run.roles, options: run.options, agentSettings: run.agentSettings, roleSettings: run.roleSettings, trust: run.trust, approvals: run.approvals, context: { paths: (run.context?.paths ?? []).map(c => ({ path: c.path })) }, loop: { ...run.loop, verification: undefined, check: check.trim(), setup: setup.trim() } });
+        onClose(); navigate({ view: "run", id: child.id });
+      } catch (err) { setError((err as Error).message); }
+      finally { setBusy(false); }
+    }}>{busy ? "Starting…" : "Start continuation"}</button></div>
+  </div></dialog>;
 }
 
 function ProviderChatDialog({ run, onClose }: { run: RunSummary; onClose: () => void }) {

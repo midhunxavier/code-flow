@@ -100,6 +100,21 @@ test("Quick asks Claude for a schema answer in a private empty repository; Repo 
   assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: repo }).toString(), "", "Improve changes nothing in the repository");
 });
 
+test("Improve forwards model and effort overrides, supports CLI defaults and refuses unsupported effort", async () => {
+  const repo = makeRepo();
+  try {
+    for (const agent of ["claude", "codex", "agy"] as const) {
+      const { calls } = await recorded(() => improvePrompt(agent, { text: "clarify this", repo, mode: "quick", settings: { model: agent === "claude" ? "sonnet" : "custom-model", effort: "high" } }));
+      assert.ok(calls[0]!.args.includes(agent === "claude" ? "sonnet" : "custom-model"));
+      assert.match(calls[0]!.args.join(" "), agent === "codex" ? /model_reasoning_effort="high"/ : /--effort high/);
+    }
+    const { calls } = await recorded(() => improvePrompt("claude", { text: "clarify", repo, mode: "repo", settings: { model: "", effort: "" } }));
+    assert.ok(!calls[0]!.args.includes("--model")); assert.ok(!calls[0]!.args.includes("--effort"));
+    await assert.rejects(improvePrompt("claude", { text: "clarify", repo, mode: "quick", settings: { model: "haiku", effort: "high" } }), /does not support high effort/);
+    await assert.rejects(improvePrompt("codex", { text: "clarify", repo, mode: "quick", settings: { effort: "bogus" } }), /does not support bogus effort/);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
 for (const agent of ["codex", "agy"] as AgentId[]) {
   test(`${agent} rewrites the task too, read-only at low effort`, async () => {
     const repo = makeRepo();

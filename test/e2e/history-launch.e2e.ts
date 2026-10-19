@@ -175,7 +175,8 @@ test("guided onboarding inspects required and optional dependencies through actu
 });
 
 test("review inbox controls have distinct labels, keyboard order and a bounded mobile layout", async () => {
-  await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${base}/#/settings/automations`);
+  await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${base}/#/inbox`);
+  await page.getByRole("heading", { name: "Review inbox", exact: true }).waitFor();
   const group = page.getByRole("combobox", { name: "Group review inbox", exact: true }); const filter = page.getByRole("combobox", { name: "Filter review inbox", exact: true }); const search = page.getByRole("textbox", { name: "Search review inbox", exact: true });
   assert.equal(await group.count(), 1); assert.equal(await filter.count(), 1); assert.equal(await search.count(), 1);
   await group.focus(); await page.keyboard.press("Tab"); assert.equal(await filter.evaluate((element) => element === document.activeElement), true);

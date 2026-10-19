@@ -1,3 +1,4 @@
+import { ActivityView } from "./activity.js";
 import { SettingsView } from "./settings.js";
 import { SETTINGS_SECTIONS } from "./settings-sections.js";
 import { canNotify, setDesktopNotifications } from "./preferences.js";
@@ -132,6 +133,8 @@ function MainApp() {
               <Review key={`${route.value.id}:${route.value.branch}`} id={route.value.id} branch={route.value.branch} />
             ) : route.value.view === "project" ? (
               <ProjectView key={route.value.id} id={route.value.id} />
+            ) : ["inbox", "automations", "workspace", "insights"].includes(route.value.view) ? (
+              <ActivityView key={route.value.view === "workspace" ? `workspace:${route.value.project ?? ""}` : route.value.view} current={route.value} />
             ) : route.value.view === "settings" ? (
               <SettingsView section={route.value.section} group={route.value.group} />
             ) : route.value.view === "team" ? (
@@ -282,6 +285,8 @@ function Crumbs() {
         Team
       </span>
     );
+  } else if (r.view === "inbox" || r.view === "automations" || r.view === "workspace" || r.view === "insights") {
+    trail = <>{r.view === "workspace" && r.project ? <><a class="crumb" href={`#/project/${encodeURIComponent(r.project)}`}>{projects.value.find(p => p.id === r.project)?.name ?? "Project"}</a>{sep}</> : null}<span class="crumb here" aria-current="page">{{ inbox: "Inbox", automations: "Automations", workspace: "Repository workspace", insights: "Insights" }[r.view]}</span></>;
   } else if (r.view === "settings") {
     const section = r.section ? SETTINGS_SECTIONS.find((item) => item.id === r.section) : undefined;
     trail = section ? (
@@ -370,8 +375,8 @@ const SHORTCUTS: [string, string][] = [
   ["[ / ]", "Previous / next step of the open run"],
   ["n", "New run"],
   ["p", "Pick the project for new runs, Insights and Automations"],
-  ["i", "Settings → Insights"],
-  ["a", "Settings → Automations"],
+  ["i", "Insights"],
+  ["a", "Automations"],
   ["⌘↵", "Start the run, or send what you typed"],
   ["Esc", "Close a dialog, or leave the search box"],
   ["\\", "Show or hide the side panel"],
@@ -412,9 +417,9 @@ function onShortcut(e: KeyboardEvent) {
       projectsOpen.value = true;
       return;
     case "i":
-      return go({ view: "settings", section: "insights" });
+      return go({ view: "insights" });
     case "a":
-      return go({ view: "settings", section: "automations" });
+      return go({ view: "automations" });
     case "?":
       e.preventDefault();
       shortcutsOpen.value = true;

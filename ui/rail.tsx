@@ -365,6 +365,10 @@ export function Rail() {
       <button class="btn primary new-run" aria-label="New run" title="New run (n)" onClick={() => go({ view: "composer" })}>
         <Icon name="plus" /> <span>New run</span>
       </button>
+      <div class="rail-destinations" role="group" aria-label="Work navigation">
+        <a class="nav-item" href="#/inbox" aria-label={`Inbox${pending ? `, ${pending} need attention` : ""}`} title="Inbox" aria-current={r.view === "inbox" ? "page" : undefined}><Icon name="bell" /><span>Inbox</span>{pending ? <span class="count">{pending}</span> : null}</a>
+        <a class="nav-item" href="#/automations" title="Automations" aria-label="Automations" aria-current={r.view === "automations" ? "page" : undefined}><Icon name="clock" /><span>Automations</span></a>
+      </div>
       {collapsed ? <button type="button" class="icon-btn rail-search-button" aria-label="Search runs" title="Search runs (/)" onClick={() => { setRailCollapsed(false); requestAnimationFrame(() => document.getElementById("run-search")?.focus()); }}><Icon name="search" /></button> : null}
       <div class="rail-search">
         <Icon name="search" />
@@ -476,7 +480,9 @@ export function Rail() {
             <MenuItem on={r.view === "team" || r.view === "team-task"} onClick={() => { close(); go({ view: "team" }); }}><Icon name="people" /><span>Team</span>{unread ? <span class="rail-menu-meta" aria-label={`${unread} unread`}>{unread}</span> : null}</MenuItem>
             <MenuItem on={r.view === "settings"} onClick={() => { close(); go({ view: "settings" }); }}><Icon name="sliders" /><span>Settings</span><kbd class="rail-menu-meta">⌘,</kbd></MenuItem>
             <MenuItem sub={`${agents.value.length} providers${agentProblems ? ` · ${agentProblems} need setup` : ""}`} onClick={() => { close(); railOpen.value = false; healthOpen.value = true; }}><Icon name="sparkle" /><span>Agents & usage</span></MenuItem>
-            <MenuItem onClick={() => { close(); go({ view: "settings", section: "automations" }); }}><Icon name="clock" /><span>Automations</span>{pending ? <span class="rail-menu-meta" aria-label={`${pending} runs need attention`}>{pending}</span> : null}</MenuItem>
+            <MenuItem onClick={() => { close(); go({ view: "workspace" }); }}><Icon name="files" /><span>Repository workspace</span></MenuItem>
+            <MenuItem onClick={() => { close(); go({ view: "insights" }); }}><Icon name="chart" /><span>Insights</span></MenuItem>
+            <MenuItem onClick={() => { close(); go({ view: "automations" }); }}><Icon name="clock" /><span>Automations</span>{pending ? <span class="rail-menu-meta" aria-label={`${pending} runs need attention`}>{pending}</span> : null}</MenuItem>
             <MenuItem onClick={() => { close(); go({ view: "settings", section: "notifications" }); }}><Icon name="bell" /><span>Notifications</span></MenuItem>
             <div class="rail-menu-divider" role="separator" />
             <MenuItem on={showFilters} onClick={() => { close(); setRailCollapsed(false); setShowFilters(!showFilters); if (!showFilters) requestAnimationFrame(() => document.querySelector<HTMLButtonElement>("#rail-filters button")?.focus()); }}><Icon name="sliders" /><span>View and filter runs</span></MenuItem>

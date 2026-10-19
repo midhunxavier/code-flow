@@ -1,3 +1,5 @@
+import { improveSettings } from "./improve-settings.js";
+import { IMPROVE_NAMES } from "../src/improve-settings.js";
 import { ModelSelect } from "./model-select.js";
 import { freeModelsFirst, isFreeModel } from "./model-order.js";
 import type { ComponentChildren } from "preact";
@@ -112,6 +114,19 @@ export function Composer() {
     if (next) setPattern(next.id);
   };
   const [moreOptions, setMoreOptions] = useState(false);
+  const [intent, setIntent] = useState<string | null>(null);
+  const intents = [
+    { id: "bug", label: "Fix a bug", pattern: "pipeline", why: "Plan a fix, implement it, then review it against the reported behavior.", prompt: "Fix the following bug:\n\nExpected behavior:\nActual behavior:\nSteps to reproduce:" },
+    { id: "feature", label: "Build a feature", pattern: "pipeline", why: "Plan → Build → Review gives a feature an implementation and an independent review.", prompt: "Build the following feature:\n\nWho it helps:\nExpected behavior:\nAcceptance criteria:" },
+    { id: "review", label: "Review code", pattern: "council", why: "Review council compares independent, read-only reviews and consolidates findings.", prompt: "Review the code for correctness and regressions.\n\nScope or branch to review:\nAreas of concern:" },
+    { id: "explore", label: "Explore an idea", pattern: "debate", why: "Compare proposals and synthesize a design. The builder and reviewer roles are disabled for this design-only workflow.", prompt: "Explore approaches to the following idea without implementing changes:\n\nGoal:\nConstraints:\nTrade-offs to consider:" },
+  ];
+  const chooseIntent = (choice: typeof intents[number]) => {
+    setPattern(choice.pattern); setIntent(choice.id);
+    if (choice.id === "explore") { setRoles("debate", "builder", []); setRoles("debate", "reviewer", []); }
+    if (!task.value.trim()) setTask(choice.prompt);
+    requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".taskbox textarea")?.focus());
+  };
   const selectVerification = async (selected: string) => {
     const request = ++profileRequest.current;
     const current = repo.value;
@@ -257,6 +272,10 @@ export function Composer() {
 
       {externalSource.value ? <div class="banner"><p>External context: {externalSource.value.provider} {externalSource.value.kind} {externalSource.value.key} · {externalSource.value.title}</p><p class="help">This source remains untrusted. The run uses Safe permissions and isolated checks.</p><button class="btn small" onClick={() => { externalSource.value = null; }}>Remove source</button></div> : null}
       {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
+      <div class="intent-starters" role="group" aria-label="Task intent">
+        {intents.filter(choice => patterns.value.some(p => p.id === choice.pattern)).map(choice => <button key={choice.id} type="button" class="btn small" aria-pressed={intent === choice.id && p?.id === choice.pattern} onClick={() => chooseIntent(choice)}>{choice.label}</button>)}
+      </div>
+      {intent && intents.find(choice => choice.id === intent)?.pattern === p?.id ? <p class="intent-explanation" role="status">{intents.find(choice => choice.id === intent)?.why} Your existing task text is kept. You can change the workflow below.</p> : null}
       {repoInfo.value ? <Templates /> : null}
       <TaskBox onStart={start} improve={improve} controls={<>
         <button type="button" class={`btn ghost team-toggle ${single ? "" : "on"}`} aria-label="Team mode" aria-pressed={!single} title={single ? "Use a team workflow" : "Switch to a single agent"} onClick={toggleTeam}><Icon name="people" /> Team</button>
@@ -272,7 +291,7 @@ export function Composer() {
         /> : <Menu above label="Provider" icon="layers" class="chat-choice" trigger={<><span>{soloAgent === "auto" ? "Auto provider" : "Choose provider"}</span><Icon name="chevron" /></>}>
           {(close) => <>{(remoteAgents ?? agents.value).map((entry) => <MenuItem key={entry.id} disabled={!entry.available} onClick={() => { setRoles(p!.id, "agent", [entry.id]); close(); }}>{entry.displayName}</MenuItem>)}</>}
         </Menu>}
-        </> : <label class="task-workflow"><span>Workflow</span><select class="field" id="workflow-select" aria-label="Workflow" value={p?.id ?? ""} onChange={(event) => setPattern(event.currentTarget.value)}>
+        </> : <label class="task-workflow"><span>Workflow</span><select class="field" id="workflow-select" aria-label="Workflow" value={p?.id ?? ""} onChange={(event) => { setIntent(null); setPattern(event.currentTarget.value); }}>
           {patterns.value.filter((entry) => entry.id !== "solo").map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
         </select></label>}
         {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); requestAnimationFrame(() => { const section = document.querySelector<HTMLDetailsElement>(".advanced-controls"); if (section) { section.open = true; section.querySelector<HTMLElement>("summary")?.focus(); } }); }}>Team setup</button><PermissionMenu permissions={{ trust: externalSource.value ? "safe" : trust.value, tools: !remoteWorker && !containerEnabled && !externalSource.value && toolApprovals }} onPermissions={(value) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some((id) => id === "codex" || id.startsWith("acp:"))} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} /></> : null}
@@ -285,7 +304,15 @@ export function Composer() {
           <MenuItem disabled={!!problem} onClick={() => { close(); setSaving(true); }}><Icon name="clock" />Save as automation…</MenuItem>
         </>}</Menu>
       </>} />
-      {<div class="single-run-summary"><span>{checkCmd.value.trim() ? `Checks: ${checkCmd.value.trim()}` : "No automated check configured"}</span>{problem ? <span>{problem}</span> : null}{trust.value === "full" ? <span class="warn">Full access · no provider sandbox</span> : null}<a href="#/settings/projects">Project Settings</a></div>}
+      <div class="composer-summary" aria-label="Run configuration summary">
+        <span><b>Repository</b> {repo.value ? baseName(repo.value) : "Choose repository"} · {baseRef.value || repoInfo.value?.current || "HEAD"}</span>
+        <span><b>{single ? "Agent" : "Team"}</b> {p ? teamSentence(p, roles) : "Choose workflow"}</span>
+        <span><b>Checks</b> {profileLoading ? "Detecting checks…" : verificationProfile ? verificationProfile.checks.map(gate => gate.command).join(" · ") || "No runnable gates" : checkCmd.value.trim() || "Not configured"}</span>
+        <span><b>Limit</b> {limits.value.maxSteps} calls · {limits.value.maxMinutes} minutes</span>
+        {problem ? <span class="composer-problem" role="status">{problem}</span> : null}
+        {trust.value === "full" ? <span class="warn">Full access · no provider sandbox</span> : null}
+        <button class="btn small ghost" onClick={() => setMoreOptions(!moreOptions)} aria-expanded={moreOptions}>Edit run options</button>
+      </div>
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
       <details class="composer-options compact" open={moreOptions} onToggle={(event) => setMoreOptions(event.currentTarget.open)}>
         <summary>Run options <span>Team, context, checks and limits for this task</span></summary>
@@ -339,7 +366,7 @@ export function Composer() {
             resetComposer();
             void refreshRuns();
             void loadProjects();
-            route.value = { view: "settings", section: "insights", group };
+            route.value = { view: "insights", group };
           }}
         />
       ) : null}
@@ -506,10 +533,10 @@ function useImprove(disabledReason: string) {
   const [busy, setBusy] = useState<{ mode: ImproveMode } | null>(null);
   const [done, setDone] = useState<{ before: string; note: string; revision: number; snapshot: ImproveSnapshot } | null>(null);
   const [error, setError] = useState<{ message: string; revision: number; snapshot: ImproveSnapshot } | null>(null);
-  const [mode, setMode] = useState<ImproveMode>(store.get("improveMode") === "repo" ? "repo" : "quick");
+  const [mode, setMode] = useState<ImproveMode>(improveSettings.value.defaultMode);
   const reason = useRef(disabledReason);
   reason.current = disabledReason;
-  const capture = () => [task.value, repo.value, repoInfo.value, currentProject.value, target.value.project?.id, baseRef.value, contextPaths.value, attachments.value, source.value, externalSource.value, acceptanceCriteria.value, contextBudget.value, reason.current] as const;
+  const capture = () => [task.value, repo.value, repoInfo.value, currentProject.value, target.value.project?.id, baseRef.value, contextPaths.value, attachments.value, source.value, externalSource.value, acceptanceCriteria.value, contextBudget.value, reason.current, improveSettings.value] as const;
   type ImproveSnapshot = ReturnType<typeof capture>;
   const same = (a: ImproveSnapshot, b: ImproveSnapshot) => a.every((value, index) => Object.is(value, b[index]));
   const observed = useRef(capture());
@@ -541,6 +568,7 @@ function useImprove(disabledReason: string) {
     return () => { mounted.current = false; live.current?.stop.abort(); live.current = null; dispose(); };
   }, []);
   useLayoutEffect(observe, [disabledReason]);
+  useEffect(() => setMode(improveSettings.value.defaultMode), [improveSettings.value.defaultMode]);
   const run = async (how: ImproveMode = mode) => {
     if (live.current) { stop(); return; }
     observe();
@@ -555,7 +583,7 @@ function useImprove(disabledReason: string) {
       const result = await api<{ prompt: string; summary: string; agent: AgentId }>("/api/improve-prompt", {
         method: "POST", signal: operation.stop.signal,
         body: JSON.stringify({
-          text, repo: repo.value, mode: how, execution: "local",
+          text, repo: repo.value, mode: how, execution: "local", settings: improveSettings.value,
           context: [...contextPaths.value.values()].map((item) => item.path).concat(attachments.value.map((item) => item.name)),
           source: source.value ? { kind: source.value.kind, number: source.value.number, title: source.value.title } : undefined,
         }),
@@ -574,7 +602,7 @@ function useImprove(disabledReason: string) {
       if (mounted.current && live.current === operation) { live.current = null; setBusy(null); }
     }
   };
-  const pick = (how: ImproveMode) => { setMode(how); store.set("improveMode", how); void run(how); };
+  const pick = (how: ImproveMode) => { setMode(how); void run(how); };
   const undo = () => {
     const result = completed.current;
     if (!result || result.revision !== revision.current || !same(result.snapshot, capture())) { stop(); return; }
@@ -582,7 +610,7 @@ function useImprove(disabledReason: string) {
     setTask(result.before);
   };
   return {
-    busy, mode, run, pick, undo, stop, disabledReason,
+    busy, mode, run, pick, undo, stop, disabledReason, agentName: IMPROVE_NAMES[improveSettings.value.agent],
     error: error && error.revision === revision.current && same(error.snapshot, capture()) ? error.message : "",
     done: done && done.revision === revision.current && same(done.snapshot, capture()) ? done : null,
   };
@@ -618,7 +646,7 @@ function ImproveMenu({ improve, disabled }: { improve: ReturnType<typeof useImpr
   }}>
     <button ref={trigger} type="button" class={`icon-btn ${open ? "on" : ""}`} aria-label="How Improve works" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? "improve-mode-menu" : undefined} disabled={disabled} title="How Improve works" onClick={() => { focusLast.current = false; setOpen(!open); }}><Icon name="chevron" /></button>
     {open ? <div class="pop-menu" role="menu" id="improve-mode-menu" aria-label="Improve mode"><MenuTitle>Improve the task</MenuTitle>
-      {([{ mode: "quick", title: "Quick rewrite", description: "From your text alone, on a fast local model" }, { mode: "repo", title: "Use the repository", description: "Reads a committed repository snapshot. Skips local edits." }] as const).map((item) => <button key={item.mode} type="button" role="menuitemradio" tabIndex={-1} aria-checked={improve.mode === item.mode} class={`pop-item ${improve.mode === item.mode ? "on" : ""}`} onClick={() => { close(); improve.pick(item.mode); (wrap.current?.previousElementSibling as HTMLButtonElement | null)?.focus(); }}><span class="pi-main">{item.title}</span><span class="pi-sub">{item.description}</span></button>)}
+      {([{ mode: "quick", title: "Quick rewrite", description: "From your text alone, using your configured model" }, { mode: "repo", title: "Use the repository", description: "Reads a committed repository snapshot. Skips local edits." }] as const).map((item) => <button key={item.mode} type="button" role="menuitemradio" tabIndex={-1} aria-checked={improve.mode === item.mode} class={`pop-item ${improve.mode === item.mode ? "on" : ""}`} onClick={() => { close(); improve.pick(item.mode); (wrap.current?.previousElementSibling as HTMLButtonElement | null)?.focus(); }}><span class="pi-main">{item.title}</span><span class="pi-sub">{item.description}</span></button>)}
     </div> : null}
   </div>;
 }
@@ -750,11 +778,13 @@ function TaskBox({ onStart, improve, controls }: { onStart: () => void; improve:
           <button
             class="btn ghost small"
             disabled={!improve.busy && !canImprove}
+            aria-label={improve.busy ? "Stop" : "Improve"}
+            aria-description={`Prompt improvement agent: ${improve.agentName}. Mode: ${improve.mode}. Configure in Settings, Agents & models.`}
             aria-describedby={improve.disabledReason ? "improve-execution-note" : undefined}
             title={improve.busy ? "Stop rewriting" : improve.disabledReason || (!repo.value ? "Choose a repository first" : improve.mode === "repo" ? "Rewrite the task using a committed repository snapshot" : "Rewrite the task so agents can act on it")}
             onClick={() => void improve.run()}
           >
-            {improve.busy ? <span class="spin" /> : <Icon name="sparkle" />} {improve.busy ? "Stop" : "Improve"}
+            {improve.busy ? <span class="spin" /> : <Icon name="sparkle" />} {improve.busy ? "Stop" : <>Improve <span class="improve-agent" aria-hidden="true">· {improve.agentName}</span></>}
           </button>
           <ImproveMenu improve={improve} disabled={!!improve.busy || !canImprove} />
         </div>

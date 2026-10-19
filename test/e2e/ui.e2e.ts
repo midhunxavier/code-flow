@@ -1,5 +1,6 @@
 // End-to-end: the real UI in Chrome against a real server with fake agents.
 // Run with `npm run test:e2e` (needs Google Chrome installed; no browser download).
+import { prioritizedReviewRuns } from "../../src/review-inbox.js";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
@@ -252,7 +253,7 @@ test("automations: a webhook starts a run, it waits in the inbox, you approve it
   assert.equal(fired.status, 202);
   const run = await startedRun(automation.id);
 
-  await page.goto(`${BASE}/#/settings/automations`);
+  await page.goto(`${BASE}/#/inbox`);
   const item = page.locator(".inbox-item", { hasText: "E2E: automated chore" });
   await item.waitFor({ timeout: 30_000 });
   assert.match(await page.locator(".rail-menu-count").innerText(), /^\d+$/, "the inbox count shows in the sidebar");
@@ -282,7 +283,7 @@ test("a check that can't run here: the result is still reviewed, and the inbox a
   assert.equal(fired.status, 202);
   const id = await startedRun(automation.id);
 
-  await page.goto(`${BASE}/#/settings/automations`);
+  await page.goto(`${BASE}/#/inbox`);
   const item = page.locator(".inbox-item", { hasText: "E2E: check can't run" });
   await item.waitFor({ timeout: 30_000 });
   await item.locator(".cant-run", { hasText: "nosuchtool-e2e" }).waitFor();
@@ -291,7 +292,7 @@ test("a check that can't run here: the result is still reviewed, and the inbox a
   await item.locator("a.t").click();
   await page.getByText("⚠ Finished — but the check couldn't run, so nothing was tested").waitFor();
   await page.locator(".result .cant-run", { hasText: ".codeflow/config.json" }).waitFor();
-  assert.equal(await page.locator(".run-head .status-pill").textContent(), "Done · check can't run");
+  assert.equal(await page.locator(".run-head .status-pill").textContent(), "Finished");
 
   const run = await api(`/api/runs/${id}`);
   assert.equal(run.verdict, undefined, "unknown, not failing");
@@ -318,7 +319,7 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   await dialog.getByRole("checkbox", { name: /tidy the readme/ }).uncheck();
   await dialog.getByRole("button", { name: "Start 1 run" }).click();
 
-  await page.waitForURL(/#\/settings\/automations/);
+  await page.waitForURL(/#\/inbox/);
   const item = page.locator(".inbox-item", { hasText: "E2E sweep: fix the greeting" });
   await item.waitFor({ timeout: 30_000 });
   await item.getByRole("button", { name: "✓ Approve" }).click();
@@ -754,11 +755,11 @@ test("projects: the Automations page and its inbox follow the project you're in;
   const fired = await fetch(`${BASE}/hooks/${automation.id}`, { method: "POST", headers: { authorization: `Bearer ${automation.token}`, "content-type": "application/json" }, body: "{}" });
   assert.equal(fired.status, 202);
 
-  await page.goto(`${BASE}/#/settings/automations`);
+  await page.goto(`${BASE}/#/inbox`);
   await page.locator(".project-btn").click(); // start from every project, whichever one earlier tests left selected
   await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
   await page.locator(".inbox-item", { hasText: "E2E: side chore" }).waitFor({ timeout: 30_000 });
-  const pending = (await api("/api/runs")).filter((r: { triage?: { state: string }; archived?: boolean }) => r.triage?.state === "pending" && !r.archived).length;
+  const pending = prioritizedReviewRuns(await api("/api/runs")).length;
   const total = (await api("/api/automations")).length;
   assert.ok(pending > 1 && total > 1, "earlier tests left results and automations in the repo's own project");
 
@@ -766,9 +767,7 @@ test("projects: the Automations page and its inbox follow the project you're in;
   await page.locator(".project-row", { hasText: "E2E scoped" }).locator(".pr-main").click();
   await page.locator(".project-btn", { hasText: "E2E scoped" }).waitFor();
   assert.deepEqual(await page.locator(".inbox-item a.t").allInnerTexts(), ["E2E: side chore"], "only this project's results");
-  assert.deepEqual(await page.locator(".auto-row b").allInnerTexts(), ["E2E side hook"], "only this project's automations");
   await page.locator(".automations .rail-hint", { hasText: `${pending - 1} in other projects need${pending === 2 ? "s" : ""} you` }).waitFor();
-  await page.locator(".automations .rail-hint", { hasText: `${total - 1} more in other projects` }).waitFor();
   assert.equal(await page.locator(".rail-menu-count").innerText(), String(pending), "the sidebar still counts every project's results");
 
   // The read-only phone view lists each project's runs under its name.
@@ -780,10 +779,16 @@ test("projects: the Automations page and its inbox follow the project you're in;
   assert.match(under(own.name), /E2E: check can&#39;t run/);
   await api("/api/remote", { enabled: false });
 
+  // Schedules are a separate destination but keep the same project scope.
+  await page.goto(`${BASE}/#/automations`);
+  await page.locator(".auto-row b", { hasText: "E2E side hook" }).waitFor();
+  assert.deepEqual(await page.locator(".auto-row b").allInnerTexts(), ["E2E side hook"]);
   // "Show all" goes back to every project, as the sidebar's does.
   await page.locator(".automations .rail-hint", { hasText: "more in other projects" }).getByRole("button", { name: "Show all" }).click();
   await page.locator(".project-btn", { hasText: "All projects" }).waitFor();
   assert.equal(await page.locator(".auto-row").count(), total);
+  await page.goto(`${BASE}/#/inbox`);
+  await page.locator(".inbox-item").first().waitFor();
   assert.equal(await page.locator(".inbox-item").count(), pending);
 });
 
@@ -1038,7 +1043,7 @@ test("single-agent setup is inline and completed replies show running checks cle
     await fresh.getByRole("button", { name: "Stop checks", exact: true }).waitFor();
     assert.match(await fresh.locator(".chat-check").innerText(), /The agent has finished/);
     assert.match(await fresh.locator(".chat-check code").innerText(), /setTimeout/);
-    await fresh.getByRole("button", { name: "Edit & run again", exact: true }).waitFor({ timeout: 30000 });
+    await fresh.getByRole("button", { name: "More run actions", exact: true }).waitFor({ timeout: 30000 });
     assert.equal(await fresh.getByRole("button", { name: "Stop run", exact: true }).count(), 0);
     const id = fresh.url().split("/run/")[1];
     const run = await fetch(`${BASE}/api/runs/${id}`, { headers: bearer }).then((response) => response.json());
@@ -1098,7 +1103,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(run.loop.setup, "node -e \"process.exit(0)\"");
     assert.equal(run.loop.agentContainer, undefined);
     assert.ok(!run.loop.verification);
-    await fresh.getByRole("button", { name: "Edit & run again", exact: true }).waitFor({ timeout: 30000 });
+    await fresh.getByRole("button", { name: "More run actions", exact: true }).waitFor({ timeout: 30000 });
   } finally { await fresh.close(); }
 });
 
@@ -1259,14 +1264,15 @@ test("sidebar archives, hides and deletes runs with confirmation across tabs", a
     await row.hover();
     await row.getByRole("button", { name: "Run actions", exact: true }).click();
     await row.getByRole("menuitem", { name: "Unarchive", exact: true }).click();
-    await fresh.getByRole("main").getByRole("button", { name: "Archive…", exact: true }).waitFor();
+    await fresh.getByRole("main").getByRole("button", { name: "More run actions", exact: true }).waitFor();
     await row.hover();
     await row.getByRole("button", { name: "Run actions", exact: true }).click();
     await row.getByRole("menuitem", { name: "Delete…", exact: true }).click();
     const dialog = fresh.getByRole("dialog", { name: "Delete this run?", exact: true });
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     assert.equal((await fetch(`${BASE}/api/runs/${created.id}`, { headers: bearer })).status, 200);
-    await fresh.getByRole("main").getByRole("button", { name: "Delete…", exact: true }).click();
+    await fresh.getByRole("main").getByRole("button", { name: "More run actions", exact: true }).click();
+    await fresh.getByRole("menuitem", { name: "Delete…", exact: true }).click();
     const runUrl = `${BASE}/api/runs/${created.id}`;
     await fresh.route(runUrl, async route => {
       if (route.request().method() === "DELETE") await route.fulfill({ status: 404, json: { error: "Not found" } });

@@ -4,7 +4,8 @@
 
 A run reads like a conversation, top to bottom:
 
-- **The header** stays at the top as you scroll (on wider screens): status, the task's first line, the pattern, and **Resume**, **Edit & run again**, **Archive…** or **Stop run**.
+- **The header** shows execution status, the task and workflow. **More run actions** contains Edit & run again, Archive and Delete; a running task keeps Stop run visible.
+- **Evidence and next action** separate execution, automated checks, agent review and human review. A contextual action opens the pending plan/question, reviews changes, or recovers unfinished work. A finished execution can still have failed, blocked or unverified checks.
 - **Your task**, as the message that started it, with any context you gave.
 - **The agents' work**, as one list of steps ("4 steps · 6m 2s"). It's open while the run is going and folds away once there's a result. Open any step to see its transcript inline: the agent's messages (rendered as Markdown), its tool calls as one-line rows that expand to the full input and output, and its thinking, collapsed. <kbd>[</kbd> and <kbd>]</kbd> move between steps.
 - **The result**, with its branches and what you can do with them (see [Review and ship](github.md#review-and-ship)).
@@ -14,6 +15,12 @@ A run reads like a conversation, top to bottom:
   <source media="(prefers-color-scheme: dark)" srcset="images/transcript-dark.png">
   <img src="images/transcript-light.png" alt="A step opened in a run: Codex's tool calls, its checklist and its summary (demo data)">
 </picture>
+
+## Recovering work
+
+The next-action card explains what happened and what is retained. **Retry unfinished work**, **Resume work**, and **Extend budget & resume** reuse recorded results with a fresh allowance of the displayed calls and minutes. **Reconnect provider** opens provider health and login instructions; resume after reconnecting.
+
+**Request a fix** prepares an editable follow-up without sending it. **Fix check command** opens a continuation dialog: choose the saved result branch and correct setup/check commands. Starting it creates a child run with the same team and permissions and a single configured check. Original history and evidence remain available.
 
 ## Talking to a run
 
@@ -55,8 +62,8 @@ Runs are grouped into projects. A project has a name and the repositories its ru
 - **No setup:** the first time you start a run in a repository that no project holds, code-flow makes a project named after it. The first time you start a code-flow that has projects, every repository that already has runs gets one, so your runs are grouped from the start.
 - **The sidebar** lists every project with its runs under it, the projects with the newest runs first. Click a project's name to open its page, or the arrow next to it to fold it. Hover it for **+** (a new run in that project) and **⋯** (rename it, change its repositories, or delete it). Projects with nothing to list fold into one *more projects* line, each with how many archived runs it has. **+** next to *Projects* makes a new one.
 - **A project's page** shows what needs you, what's running, recent results with their check and pull request state, the project's automations and inbox, and the week's numbers (runs, checks passed, cost). Its task box opens the composer in the project. The side panel shows the project meanwhile.
-- **The project button** (in the composer, in Settings → Insights and Settings → Automations, or <kbd>p</kbd>) picks the project you're in: new runs start in it, and Insights and the [Automations page](automations.md#projects) show it. With *All projects*, a new run goes in its repository's project.
-  - Settings → Automations says when other projects have results or automations too, with a link to show all.
+- **The project button** (in the composer, in Insights and Automations, or <kbd>p</kbd>) picks the project you're in: new runs start in it, and Insights and the [Automations page](automations.md#projects) show it. With *All projects*, a new run goes in its repository's project.
+  - Automations says when other projects have results or automations too, with a link to show all.
   - The read-only [phone view](automations.md#phone-view) lists every project's runs, each under its project's name.
 - **Switching projects** moves the composer to the project's repository you used last, and to the pattern and team you last started a run with there from the composer (chats in the side panel don't change it). Each project remembers its own.
 - **Several repositories:** a project can hold several, and a repository can be in several projects. Each run still works in one repository. **New project** and **Edit** in the switcher name a project and add or remove its repositories.

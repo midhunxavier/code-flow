@@ -95,8 +95,7 @@ test("ordinary Markdown dividers do not block file saves or tab draft recovery",
   await page.getByLabel("File contents").fill("Title\n=======\n\nRecovered documentation draft.\n");
   await page.getByRole("button", { name: "New run", exact: true }).click();
   await page.getByRole("button", { name: "Application menu", exact: true }).click();
-  await page.getByRole("menuitem", { name: /^Settings/ }).click();
-  await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: "Workspace", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Repository workspace", exact: true }).click();
   await page.getByRole("button", { name: "Code", exact: true }).click();
   await page.getByLabel("File to edit").fill("README.md"); await page.getByRole("button", { name: "Open file", exact: true }).click();
   await page.getByRole("heading", { name: "README.md", exact: true }).waitFor();

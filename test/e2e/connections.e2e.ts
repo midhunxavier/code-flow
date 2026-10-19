@@ -162,12 +162,17 @@ test("a run view with a side chat, two terminals and a second tab still gets its
   await pane.locator(".xterm-rows").getByText("conn-42").waitFor({ timeout: 5_000 });
 
   // A button still works in the second tab, and the first tab hears what it did: Archive (keeping the worktrees).
-  await second.getByRole("button", { name: "Archive…" }).click();
+  await second.getByRole("button", { name: "More run actions" }).click();
+  await second.getByRole("menuitem", { name: "Archive…" }).click();
   const dialog = second.locator("dialog", { hasText: "Archive this run" });
   await dialog.getByRole("checkbox").first().uncheck();
   await dialog.getByRole("button", { name: "Archive", exact: true }).click();
-  await second.locator(".run-head").getByRole("button", { name: "Unarchive" }).waitFor({ timeout: 5_000 });
-  await page.locator(".run-head").getByRole("button", { name: "Unarchive" }).waitFor({ timeout: 5_000 });
+  await second.getByRole("button", { name: "More run actions" }).click();
+  await second.getByRole("menuitem", { name: "Unarchive" }).waitFor({ timeout: 5_000 });
+  await second.getByRole("button", { name: "More run actions" }).click();
+  await page.getByRole("button", { name: "More run actions" }).click();
+  await page.getByRole("menuitem", { name: "Unarchive" }).waitFor({ timeout: 5_000 });
+  await page.getByRole("button", { name: "More run actions" }).click();
 
   // A tab that goes away stops being watched at once, even one that crashed without a word.
   const third = await context.newPage();
@@ -181,7 +186,8 @@ test("a run view with a side chat, two terminals and a second tab still gets its
   await page.close();
   await streamsAre({ streams: 1, subscriptions: 5 }, "the second tab's stream: its run list, Team inbox, its run, its terminals");
   await api(`/api/runs/${created.id}/archive`, { archived: false });
-  await second.locator(".run-head").getByRole("button", { name: "Archive…" }).waitFor({ timeout: 5_000 });
+  await second.getByRole("button", { name: "More run actions" }).click();
+  await second.getByRole("menuitem", { name: "Archive…" }).waitFor({ timeout: 5_000 });
   assert.equal(await fetchFrom(second, "/api/health"), 200);
   await second.close();
   await streamsAre({ streams: 0, subscriptions: 0 }, "no tabs, no streams");

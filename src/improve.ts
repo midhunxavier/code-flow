@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import { childEnv } from "./env.js";
+import { defaultImproveChoice, improveEfforts, IMPROVE_AGENTS, type ImproveAgent, type ImproveChoice } from "./improve-settings.js";
 import { sensitiveContextPath } from "./context-inspection.js";
 
 /**
@@ -21,6 +22,7 @@ export interface ImproveRequest {
   /** Source repository; the turn runs only in a private disposable Git namespace. */
   repo: string;
   mode: ImproveMode;
+  settings?: ImproveChoice;
   /** Paths added as context and names of attached files: the agents read these before starting. */
   context?: string[];
   /** The GitHub issue, PR or alert the run starts from. */
@@ -48,12 +50,6 @@ const SCHEMA = {
   properties: { prompt: { type: "string", maxLength: MAX_IMPROVE_CHARS }, summary: { type: "string", maxLength: MAX_SUMMARY_CHARS } },
   required: ["prompt", "summary"],
   additionalProperties: false,
-};
-
-/** Model and effort per CLI. Quick favors speed; Repo needs a model that reads code well. */
-const SETTINGS: Record<ImproveMode, Partial<Record<AgentId, { model?: string; effort?: string }>>> = {
-  quick: { claude: { model: "haiku" }, codex: { effort: "low" }, agy: { effort: "low" } },
-  repo: { claude: { model: "sonnet", effort: "low" }, codex: { effort: "low" }, agy: { effort: "low" } },
 };
 
 const TIMEOUT_MS: Record<ImproveMode, number> = { quick: 2 * 60_000, repo: 4 * 60_000 };
@@ -136,6 +132,17 @@ export async function improvePrompt(
   assertImproveEnvironment();
   let adapter;
   try { adapter = getAdapter(agent); } catch (error) { throw new ImproveError((error as Error).message, "other"); }
+  const defaults = IMPROVE_AGENTS.includes(agent as ImproveAgent) ? defaultImproveChoice(agent as ImproveAgent, req.mode) : {};
+  const settings = { ...defaults, ...req.settings };
+  // Empty strings explicitly use the CLI default, independently of main-task settings.
+  settings.model ||= undefined; settings.effort ||= undefined;
+  if (req.settings) {
+    const catalog = await adapter.catalog();
+    if (settings.model && !catalog.allowCustom && !catalog.models.some(model => model.id === settings.model)) throw new ImproveError(`Choose a supported ${adapter.displayName} model`, "other");
+    const allowed = improveEfforts(agent as ImproveAgent, settings.model, catalog);
+    if (req.settings.effort && !allowed.includes(req.settings.effort)) throw new ImproveError(`${adapter.displayName} does not support ${req.settings.effort} effort for this model`, "other");
+    if (!allowed.includes(settings.effort ?? "")) settings.effort = undefined;
+  }
   let workspace: string | undefined, scope = "", preparing = false, preparation: AbortSignal | undefined;
   let result: RunResult;
   try {
@@ -153,7 +160,7 @@ export async function improvePrompt(
         trust: "safe",
         questionProtocol: "structured",
         interactiveApprovals: false,
-        ...SETTINGS[req.mode][agent],
+        ...settings,
         jsonSchema: SCHEMA,
         signal: opts.signal,
         timeoutMs: TIMEOUT_MS[req.mode],

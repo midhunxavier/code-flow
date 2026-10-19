@@ -1,7 +1,10 @@
 import { signal } from "@preact/signals";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
-import { AgentPicker } from "./run.js";
+import { RunEvidence, VerificationEvidence } from "./run-evidence.js";
+import { ReviewCoveragePanel } from "./review-coverage.js";
+import { useRunStream } from "./run-feed.js";
+import { AgentPicker, ArtifactCard } from "./run.js";
 import { api, enc, post, showToast, store } from "./lib.js";
 import { route, runs } from "./state.js";
 import type { AgentId, DiffFile, Run } from "./types.js";
@@ -55,7 +58,9 @@ window.addEventListener("storage", (e) => {
 
 /** Review a result branch file by file; line comments go back to an agent as a follow-up. */
 export function Review({ id, branch }: { id: string; branch: string }) {
-  const summary = runs.value.get(id);
+  const { run: liveRun, data } = useRunStream(id);
+  const summary = liveRun ?? runs.value.get(id);
+  const [refresh, setRefresh] = useState(0);
   const draftKey = `comments:${id}:${branch}`;
   const [run, setRun] = useState<Run | null>(null);
   const [files, setFiles] = useState<DiffFile[] | null>(null);
@@ -69,18 +74,22 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   const [sending, setSending] = useState(false);
 
   useEffect(() => {
+    let current = true;
+    setError("");
     api<DiffFile[]>(`/api/runs/${id}/diff?branch=${enc(branch)}`).then(
       (d) => {
+        if (!current) return;
         setFiles(d);
-        setSelected(d[0]?.path ?? null);
+        setSelected(previous => d.some(file => file.path === previous) ? previous : d[0]?.path ?? null);
       },
-      (e) => setError((e as Error).message),
+      (e) => { if (current) setError((e as Error).message); },
     );
     // Without the run, comments still work, but "Send to" can't default to the agent that wrote the code.
-    api<Run>(`/api/runs/${id}`).then(setRun, (e) => setRunError(`Couldn't load this run: ${(e as Error).message}. Check who the comments go to before sending.`));
-  }, [id, branch]);
+    api<Run>(`/api/runs/${id}`).then(value => { if (current) { setRun(value); setRunError(""); } }, (e) => { if (current) setRunError(`Couldn't load this run: ${(e as Error).message}. Check who the comments go to before sending.`); });
+    return () => { current = false; };
+  }, [id, branch, refresh, summary?.status, summary?.lastCheck?.at]);
 
-  const worktree = ((run ?? summary)?.worktrees ?? []).find((w) => w.branch === branch);
+  const worktree = ((summary ?? run)?.worktrees ?? []).find((w) => w.branch === branch);
   // Default to the agent that last wrote code in this worktree.
   const defaultAgent = useMemo(() => lastWriter(run, worktree?.name), [run, worktree?.name]);
   const target: AgentId = agent ?? defaultAgent ?? "claude";
@@ -135,10 +144,16 @@ export function Review({ id, branch }: { id: string; branch: string }) {
           )}
         </div>
       </div>
+      {summary ? <div class="review-overview">
+        <RunEvidence run={summary} branch={branch} />
+        <div class="review-evidence-tools"><VerificationEvidence run={summary} /><button class="btn small" onClick={() => setRefresh(value => value + 1)}>Refresh changes</button></div>
+        {summary.artifacts.find(a => a.branch === branch) ? <details class="review-delivery"><summary>Publish changes</summary><p class="help">Review the diff and evidence before publishing. Merge validation and confirmation still apply.</p><ArtifactCard key={branch} run={summary} artifact={summary.artifacts.find(a => a.branch === branch)!} steps={[...data.current.steps.values()]} reviewing /></details> : null}
+      </div> : null}
       {error ? <div class="msg err review-msg">{error}</div> : null}
       {runError ? <div class="msg warn review-msg">{runError}</div> : null}
       <div class="review-body">
         <div class="review-files">
+          <ReviewCoveragePanel runId={id} branch={branch} refreshKey={`${refresh}:${summary?.status}:${summary?.lastCheck?.at}`} onOpen={setSelected} />
           {files?.map((f) => {
             const n = comments.filter((c) => c.file === f.path).length;
             const cut = f.path.lastIndexOf("/") + 1;
