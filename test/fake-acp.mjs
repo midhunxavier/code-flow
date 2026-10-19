@@ -16,7 +16,7 @@ const clineConfig = [
   { id: "mode", category: "mode", type: "select", currentValue: "act", options: [{ value: "act", name: "Act" }, { value: "plan", name: "Plan" }] },
   { id: "auto_approve", category: "other", type: "select", currentValue: "false", options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }] },
 ];
-const sessionConfig = scenario === "cline" ? clineConfig : configOptions;
+const sessionConfig = scenario.startsWith("cline") ? clineConfig : configOptions;
 let promptId;
 const finish = () => result(promptId, { stopReason: scenario === "refusal" ? "refusal" : "end_turn" });
 createInterface({ input: process.stdin }).on("line", (line) => {
@@ -48,10 +48,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     update({ sessionUpdate: "tool_call_update", toolCallId: "read-1", status: "completed", content: [{ type: "content", content: { type: "text", text: "file contents" } }] });
     update({ sessionUpdate: "tool_call_update", toolCallId: "read-1", status: "completed" });
     update({ sessionUpdate: "usage_update", used: 10000, size: 100000, cost: { amount: 1, currency: "USD" } });
-    if (scenario === "cline") {
+    if (scenario.startsWith("cline")) {
       const toolCall = { toolCallId: "edit-cline", kind: "edit", title: "editor: example.txt", status: "pending", rawInput: { path: "example.txt", new_text: "hello" } };
       update({ sessionUpdate: "tool_call_update", ...toolCall });
-      send({ id: "permission-1", method: "session/request_permission", params: { sessionId: "session-fixture", toolCall, options: [
+      send({ id: "permission-1", method: "session/request_permission", params: { sessionId: "session-fixture", toolCall: scenario === "cline-partial" ? { toolCallId: toolCall.toolCallId } : toolCall, options: [
         { optionId: "allow_once", kind: "allow_once", name: "Allow once" },
         { optionId: "allow_always", kind: "allow_always", name: "Allow always" },
         { optionId: "reject_once", kind: "reject_once", name: "Reject" },
@@ -71,7 +71,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     finish();
   } else if (method === "session/cancel") { if (promptId) result(promptId, { stopReason: "cancelled" }); }
   else if (id === "permission-1") {
-    if (scenario === "cline") update({ sessionUpdate: "tool_call_update", toolCallId: "edit-cline", status: "completed", rawOutput: "Wrote example.txt" });
+    if (scenario.startsWith("cline")) update({ sessionUpdate: "tool_call_update", toolCallId: "edit-cline", status: "completed", rawOutput: "Wrote example.txt" });
     update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.stringify(message.result) } }); finish();
   }
   else if (id === "host-1") finish();

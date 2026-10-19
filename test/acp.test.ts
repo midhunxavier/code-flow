@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentEvent, RunOptions } from "../src/adapters/types.js";
 import type { AcpConnection } from "../src/adapters/acp-types.js";
+import { ApprovalRegistry } from "../src/approvals.js";
 const home = mkdtempSync(join(tmpdir(), "cf-acp-tests-"));
 process.env.CODEFLOW_HOME = home;
 const { acpCatalog, probeAcp, runAcp } = await import("../src/adapters/acp.js");
@@ -51,11 +52,19 @@ test("Cline config discovers models instead of providers and keeps approval poli
   assert.deepEqual(probe.catalog.models.map((model) => model.id), ["fixture/model-a", "fixture/model-b"]);
   assert.equal(probe.catalog.defaultModel, "fixture/model-a");
   assert.deepEqual(probe.catalog.efforts, []);
-  for (const resumeSessionId of [undefined, "session-fixture"]) {
+  for (const [scenario, resumeSessionId] of [["cline", undefined], ["cline", "session-fixture"], ["cline-partial", undefined]] as const) {
     let asked = false;
-    const { result, events, messages } = await turn("cline", { model: "fixture/model-b", resumeSessionId, interactiveApprovals: true, onApproval: async (request) => {
-      asked = true; assert.equal(request.kind, "file-change"); assert.match(request.command!, /example.txt/); return "approve";
+    const registry = new ApprovalRegistry();
+    const { result, events, messages } = await turn(scenario, { model: "fixture/model-b", resumeSessionId, interactiveApprovals: true, onApproval: async (request, signal) => {
+      asked = true; assert.equal(request.kind, "file-change"); assert.deepEqual(request.paths, ["example.txt"]); assert.match(request.command!, /example.txt/);
+      const pending = registry.request("run", "step", request, signal);
+      const [record] = registry.list();
+      assert.ok(record, "Cline's edit must reach the real approval inbox instead of being silently declined");
+      assert.deepEqual(record.paths, ["example.txt"]);
+      assert.equal(registry.respond(record.id, "approve"), true);
+      return pending;
     } });
+    registry.close();
     assert.equal(result.ok, true, result.error); assert.equal(asked, true);
     assert.deepEqual(messages().filter((message) => message.method === "session/set_config_option").map((message) => message.params), [{ sessionId: "session-fixture", configId: "model", value: "fixture/model-b" }]);
     assert.equal(messages().find((message) => message.id === "permission-1").result.outcome.optionId, "allow_once");
