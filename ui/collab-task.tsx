@@ -1,3 +1,4 @@
+import { HostTaskControl } from "./host-execution.js";
 import { TeamConnectionPicker } from "./team-connections.js";
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -35,8 +36,8 @@ type Save = (patch: Record<string, unknown>, label?: string) => Promise<boolean>
  * One task: its fields, where it is executing, its checkpoints, reviews, discussion and decisions.
  * Every save carries the task's revision; a 409 means a teammate saved first, so the page reloads the
  * task and keeps what you typed: editors stay open and drafts stay marked unsaved until a save goes
- * through. Execution buttons need this computer (never the shared dashboard) and the task to be
- * yours: the hub never starts anything, your own code-flow does.
+ * through. Local-runner controls need this computer and task ownership; shared users get the
+ * separate host queue controls only when the host owner grants execution.
  */
 export function TeamTaskView({ id, shared = false, navigate }: { id: string; shared?: boolean; navigate: (to: TeamRoute) => void }) {
   const [task, setTask] = useState<Task | null>(null);
@@ -100,7 +101,7 @@ export function TeamTaskView({ id, shared = false, navigate }: { id: string; sha
             {!task.owner && canEdit && meId ? <button type="button" class="btn small" disabled={!!busy || !!ownerProblem(task, role, meId)} title={ownerProblem(task, role, meId)} onClick={() => void save({ owner: meId }, "Taking the task…")}>Take this task</button> : null}
           </div>
           {offered ? <p class="msg warn" role="status">Hand-over offered to {whoLabel(offered.to, meId)} by {whoLabel(offered.from, meId)} {ago(offered.offeredAt)}{offered.note ? `: ${offered.note}` : ""}</p> : null}
-          {shared && isOwner ? <p class="help">Run this task from your own code-flow: Settings → Team → Connect this computer.</p> : null}
+          {shared ? <HostTaskControl key={task.id} task={task} meId={meId} /> : null}
           {!shared && isOwner && link === null ? <p class="help">This computer's team link is not available here, so the task cannot be run from this page.</p> : null}
         </section>
         <CheckpointsCard task={task} latest={checkpoint} meId={meId} canEdit={canEdit} maintainer={maintainer} shared={shared} busy={busy} act={act} onFetch={setFetching} reload={load} />

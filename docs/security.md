@@ -41,10 +41,9 @@ overrides. On macOS/Linux, an absent or unusable PATH falls back to `/usr/bin:/b
 so repository-owned tools cannot be selected through the current directory.
 
 Local shared-project accounts grant scoped viewer, reviewer, contributor and
-maintainer access through two closed API surfaces, the shared review routes and
-the team board. They do not delegate execution or the owner's phone capability.
-Sessions expire and revoke immediately; raw transcripts, private context and
-host paths are omitted. See [shared projects](shared-projects.md).
+maintainer access through closed shared review and team-board API surfaces. Roles alone do not delegate execution or the owner's phone capability. Separately, the owner can grant per-project host execution to individual contributors through the [host queue](team-collaboration.md#let-teammates-run-tasks-on-the-host). Its dedicated routes accept only task identity and revision, use owner-selected CLIs and limits, and enforce queue ownership and live grants. This is trusted host execution, not an OS sandbox; agents and repository checks retain the host's available authority. Generic owner shell APIs remain unavailable. A separate, default-off [terminal grant](team-collaboration.md#give-trusted-teammates-an-interactive-terminal) permits individual contributors to open their own interactive shell as the host OS user. Project grants determine the starting folder, not a filesystem boundary. Shell users can reach host files, credentials and other processes; only grant this to trusted people. The app enforces session ownership, bounded input/output, live revocation and a 30-minute keyboard idle timeout. Closing a session does not undo changes or reliably stop detached processes.
+Browser sessions expire and revoke immediately. Shared-review projections omit raw transcripts, private context and
+host paths; explicitly granted terminals return raw output to their creator and can reveal those details. See [shared projects](shared-projects.md).
 
 [Team collaboration](team-collaboration.md) adds a per-machine runner credential
 bound to a shared account. It is shown once, stored only as a hash on the team

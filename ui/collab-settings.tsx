@@ -1,3 +1,5 @@
+import { TeamTerminalSettings } from "./team-terminals.js";
+import { HostExecutionSettings, HostQueue } from "./host-execution.js";
 import { TeamServerWizard } from "./team-server-wizard.js";
 import { TeamConnectionPicker, selectTeamConnection } from "./team-connections.js";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -25,6 +27,7 @@ export function TeamSettings() {
     {host.kind === "local" ? <ThisComputerCard link={link} /> : <section class="settings-card"><h3>This computer</h3><p class="help">A team link belongs to the computer whose agents run the work. Connect from the code-flow on your own computer; this workspace runs on {host.kind === "ssh" ? host.name : "a remote server"}.</p><p class="help">Use Set up team server to install a separate team server on a connected SSH machine. The wizard configures its projects, HTTPS and teammate accounts.</p>{host.kind === "ssh" ? <a class="btn" href="/#/settings/team">Back to this computer</a> : null}</section>}
     {host.kind === "local" ? <RepositoriesCard link={link} b={b} /> : null}
     <TeamServerCard link={link} b={b} />
+    {b?.me.userId === "owner" && link && !link.linked ? <><HostExecutionSettings board={b} /><HostQueue board={b} /><TeamTerminalSettings board={b} /></> : null}
     <RunnersCard b={b} />
   </>;
 }
@@ -106,7 +109,7 @@ function TeamServerCard({ link, b }: { link: TeamLinkInfo | null; b: Board | nul
   const address = teamServerAddress(remote);
   return <section class="settings-card"><h3>Team server</h3>
     {!link ? <p class="help">Loading…</p> : hub ? <>
-      <p class="help">This computer is a team server: teammates reach its board over HTTPS with shared accounts, and their own computers run the work.</p>
+      <p class="help">This computer is a team server: teammates reach its board over HTTPS with shared accounts, and work runs on their own computers or through the host permissions below.</p>
       <dl class="team-kv">
         <dt>Address</dt><dd>{address ? <><code>{address}</code> <button type="button" class="btn small" onClick={() => void copy(address, "Address copied")}>Copy</button><span class="help"> Teammates enter this address under Settings → Team → Connect this computer. Never share the phone link from Settings → Remote access: its path is a secret.</span></>
           : remote?.tailscaleUrl || remote?.lanUrls?.length ? <span class="help">Remote access is on without HTTPS. <a href="#/settings/remote-access">Set up secure remote access in Settings → Remote access</a>: teammates sign in and connect their computers over https:// only.</span>

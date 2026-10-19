@@ -243,6 +243,9 @@ export class Shells {
     return true;
   }
 
+  /** Buffered keystrokes, for bounded remote terminal input. */
+  pendingInputBytes(id: string): number { return this.shells.get(id)?.child.stdin?.writableLength ?? 0; }
+
   /** An interactive shell's window changed size: the programs in it get SIGWINCH. */
   resize(id: string, cols: number, rows: number): boolean {
     const s = this.shells.get(id);
