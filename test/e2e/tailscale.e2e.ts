@@ -39,7 +39,7 @@ async function start(allowLocal = true) {
   child = spawn(process.execPath, ["--import", "tsx", "--import", "./test/tailscale-network-fixture.mjs", "src/server.ts"], { cwd: root, env: {
     ...process.env, PORT: String(port), CODEFLOW_REMOTE_PORT: String(remotePort), CODEFLOW_HOME: home,
     CODEFLOW_TOKEN: "tailscale-e2e", CODEFLOW_LAN_ALLOW_LOCAL: allowLocal ? "1" : "0", CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL: "0",
-    CODEFLOW_TLS_CERT: tls ? cert : "", CODEFLOW_TLS_KEY: tls ? key : "", FAKE_TAILSCALE_STATUS: statusFile, FAKE_TAILSCALE_BIND_LOG: bindLog,
+    CODEFLOW_TLS_CERT: tls ? cert : "", CODEFLOW_TLS_KEY: tls ? key : "", FAKE_TAILSCALE_STATUS: statusFile, FAKE_TAILSCALE_CERT: cert, FAKE_TAILSCALE_KEY: key, FAKE_TAILSCALE_BIND_LOG: bindLog,
     PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`,
   }, stdio: "pipe" });
   let output = "";
@@ -74,7 +74,8 @@ async function refreshUI() {
 }
 
 before(async () => {
-  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=codeflow.tail-test.ts.net"], { stdio: "ignore" });
+  const { certificateFixture } = await import("../remote-tls-fixture.js");
+  await certificateFixture(directory, "codeflow.tail-test.ts.net");
   await setStatus({ BackendState: "Stopped" });
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
   await start();
@@ -264,4 +265,72 @@ test("bind failure hides links and production settings refuse connections from t
   const info = await api("/api/remote?refresh=1");
   assert.ok(info.tailscaleUrl);
   await assert.rejects(fetch(`http://127.0.0.1:${remotePort}${info.phonePath}`), "local agent processes cannot use remote pairing");
+});
+
+
+test("secure access setup imports and renews certificates in Settings without a server restart", { timeout: 60_000 }, async () => {
+  await stop(); tls = false; await start();
+  await setStatus(connected()); await api("/api/remote?refresh=1");
+  await api("/api/remote", { enabled: true, lan: true, transport: "tailscale", control: false });
+  await owner.reload();
+  const section = owner.getByRole("region", { name: "Remote access", exact: true });
+  await section.getByRole("button", { name: "Set up secure remote access", exact: true }).click();
+  await section.getByLabel("Certificate setup").selectOption("import");
+  await section.getByLabel("Remote hostname or IP").fill("wrong.example");
+  await section.getByLabel("Certificate file (PEM)", { exact: true }).setInputFiles(cert);
+  await section.getByLabel("Private key file (PEM)", { exact: true }).setInputFiles(key);
+  await section.getByRole("button", { name: "Save and apply HTTPS", exact: true }).click();
+  await section.getByRole("alert").filter({ hasText: "does not cover" }).waitFor();
+  await section.getByLabel("Remote hostname or IP").fill("codeflow.tail-test.ts.net");
+  await section.getByRole("button", { name: "Save and apply HTTPS", exact: true }).click();
+  await section.getByText("Secure remote access is set up", { exact: true }).waitFor();
+  assert.equal((await api()).control, false);
+  await section.getByRole("checkbox", { name: "Full control from remote devices", exact: true }).click();
+  await owner.waitForResponse((r) => r.url().endsWith("/api/remote") && r.request().method() === "POST");
+  const info = await api();
+  assert.equal(info.control, true); assert.equal(info.tls.source, "import");
+  const tab = await phone(); await tab.goto(info.tailscaleUrl);
+  assert.equal((await responseFrom(tab, "/api/runs")).status, 200);
+  const denied = await responseFrom(tab, "/api/remote/tls", { mode: "tailscale" });
+  assert.equal(denied.status, 403);
+  await section.getByRole("button", { name: "Renew or replace certificate", exact: true }).click();
+  await section.getByLabel("Certificate setup").selectOption("tailscale");
+  await section.getByRole("button", { name: "Get Tailscale certificate", exact: true }).click();
+  await section.getByRole("button", { name: "Renew or replace certificate", exact: true }).waitFor();
+  const renewed = await api();
+  assert.equal(renewed.tls.source, "tailscale");
+  assert.equal(renewed.control, false);
+  assert.notEqual(renewed.phonePath, info.phonePath);
+  await owner.setViewportSize({ width: 390, height: 844 });
+  await section.getByRole("button", { name: "Renew or replace certificate", exact: true }).click();
+  assert.ok(await owner.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "secure setup fits a phone viewport");
+  await owner.setViewportSize({ width: 1280, height: 1000 });
+  await section.screenshot({ path: join(root, "output/playwright/secure-remote-setup.png") });
+  await tab.close();
+});
+
+
+test("automatic certificate renewal preserves full control and paired sessions across restart", { timeout: 60_000 }, async () => {
+  await api("/api/remote", { enabled: true, lan: true, transport: "tailscale", control: true });
+  const before = await api();
+  const tab = await phone(); await tab.goto(before.tailscaleUrl);
+  assert.equal((await responseFrom(tab, "/api/runs")).status, 200);
+  await stop();
+  // Issuance now returns a fresh 90-day certificate; the saved two-day certificate is due.
+  const { certificateFixture } = await import("../remote-tls-fixture.js");
+  await certificateFixture(directory, "codeflow.tail-test.ts.net", 90);
+  await rm(join(home, "remote-tls-renewal.json"), { force: true });
+  await start();
+  let after = await api();
+  for (let i = 0; i < 100 && !after.tls.renewal?.lastSuccess; i++) {
+    await new Promise(resolve => setTimeout(resolve, 100)); after = await api();
+  }
+  assert.ok(after.tls.renewal.lastSuccess);
+  assert.ok(after.tls.expiresAt > before.tls.expiresAt);
+  assert.equal(after.control, true);
+  assert.equal(after.phonePath, before.phonePath);
+  assert.equal((await responseFrom(tab, "/api/runs")).status, 200, "paired cookie remains valid");
+  await owner.reload();
+  await owner.getByText("Automatic renewal is on", { exact: true }).waitFor();
+  await tab.close();
 });

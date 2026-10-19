@@ -1,4 +1,4 @@
-import { api, ApiError, post } from "./lib.js";
+import { apiPath, api, ApiError, post } from "./lib.js";
 
 /**
  * The event stream for everything this window watches (see src/stream.ts): the run list, the runs
@@ -124,7 +124,7 @@ function connect() {
   connection({ ...transport, state: failures ? "reconnecting" : "connecting" });
   const initial = [...wire].map(([id, wired]) => request(id, wired));
   onServer = new Set(initial.map((s) => s.id));
-  const es = new EventSource(`/api/stream?subs=${encodeURIComponent(JSON.stringify(initial))}`);
+  const es = new EventSource(apiPath(`/api/stream?subs=${encodeURIComponent(JSON.stringify(initial))}`));
   source = es;
   es.onmessage = (msg) => {
     if (source !== es) return;

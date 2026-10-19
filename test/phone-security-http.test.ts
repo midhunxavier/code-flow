@@ -160,3 +160,43 @@ test("forking an untrusted run preserves lockdown and does not recopy ignored cr
     await assert.rejects(readFile(join(fork.worktrees[0]!.path, ".env")), { code: "ENOENT" });
   } finally { await stop(instance); }
 });
+
+test("Settings installs HTTPS live, persists it and refuses invalid replacements or remote certificate administration", async () => {
+  const { certificateFixture } = await import("./remote-tls-fixture.js");
+  const fixtureDirectory = await mkdtemp(join(directory, "import-"));
+  const pair = await certificateFixture(fixtureDirectory);
+  let instance = await start(false);
+  try {
+    const original = (await local(instance, "/api/remote", { enabled: true, lan: true, control: false })).body;
+    const bad = await local(instance, "/api/remote/tls", { mode: "import", hostname: "wrong.example", cert: pair.cert, key: pair.key });
+    assert.equal(bad.status, 400);
+    assert.equal((await local(instance, "/api/remote")).body.secure, false);
+    const applied = await local(instance, "/api/remote/tls", { mode: "import", hostname: "localhost", cert: pair.cert, key: pair.key });
+    assert.equal(applied.status, 200, JSON.stringify(applied.body));
+    assert.equal(applied.body.secure, true);
+    assert.equal(applied.body.control, false);
+    assert.notEqual(applied.body.phonePath, original.phonePath);
+    assert.match(applied.body.lanUrls[0], /^https:\/\/localhost:/);
+    assert.equal(applied.body.tls.hostname, "localhost");
+    assert.ok(!JSON.stringify(applied.body).includes("PRIVATE KEY"));
+    const enabled = (await local(instance, "/api/remote", { control: true })).body;
+    const paired = await phone(instance, enabled.phonePath);
+    assert.match(paired.cookie!, /; Secure/);
+    const cookie = paired.cookie!.split(";")[0]!;
+    assert.equal((await phone(instance, "/api/remote/tls", cookie)).status, 403);
+    assert.equal(JSON.parse((await phone(instance, "/api/remote", cookie)).body).tls.editable, false);
+    const home = instance.home;
+    await stop(instance); instance = await start(false, home);
+    assert.equal((await local(instance, "/api/remote")).body.secure, true, "saved HTTPS loads without environment variables");
+    const invalid = await local(instance, "/api/remote/tls", { mode: "import", hostname: "localhost", cert: pair.cert, key: "invalid PRIVATE_SENTINEL" });
+    assert.equal(invalid.status, 400); assert.ok(!JSON.stringify(invalid.body).includes("SENTINEL"));
+    assert.equal((await local(instance, "/api/remote")).body.control, true, "invalid replacement leaves the active certificate and controls intact");
+    await stop(instance);
+    await writeFile(join(home, "remote-tls.json"), "corrupt");
+    instance = await start(false, home);
+    const broken = (await local(instance, "/api/remote")).body;
+    assert.equal(broken.secure, false); assert.deepEqual(broken.lanUrls, []);
+    assert.match(broken.tls.error, /invalid or expired/);
+    assert.equal((await local(instance, "/api/remote", { control: true })).status, 400);
+  } finally { await stop(instance); }
+});

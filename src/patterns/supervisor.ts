@@ -63,10 +63,10 @@ export const supervisorPattern: Pattern = {
 
   async run(ctx) {
     const supervisor = ctx.agent("supervisor");
-    const workers = ctx.agents("workers");
+    const workers = ctx.participants("workers");
     if (workers.length === 0) throw new Error("Assign at least one worker");
     const maxSubtasks = ctx.option("maxSubtasks", 3);
-    const roster = workers.map((w) => `"${w}" (${getAdapter(w).displayName})`).join(", ");
+    const roster = workers.map((w) => `"${w.identity ?? w.agent}" (${getAdapter(w.agent).displayName}${w.settings.model ? ` / ${w.settings.model}` : ""})`).join(", ");
 
     const integration = await ctx.worktree("integration");
     let decomposed = await ctx.decide<Split>({
@@ -138,17 +138,17 @@ export const supervisorPattern: Pattern = {
     const assigned = subtasks.map((sub, i) => ({
       sub,
       id: slug(sub.id || `part-${i + 1}`, i),
-      agent: (isAgentId(sub.agent) && workers.includes(sub.agent) ? sub.agent : workers[i % workers.length]) as AgentId,
+      ...(workers.find(w => w.identity === sub.agent) ?? workers.filter(w => w.agent === sub.agent)[i % Math.max(1, workers.filter(w => w.agent === sub.agent).length)] ?? workers[i % workers.length])!,
     }));
     ctx.log(`Subtasks: ${assigned.map((a) => `${a.id} → ${a.agent}`).join(", ")}`);
 
     // A worker's failed turn is a missing part; anything else failing stops the other workers too.
-    const results = await ctx.parallel(assigned, async ({ sub, id, agent }) => {
+    const results = await ctx.parallel(assigned, async ({ sub, id, agent, settings }) => {
       const wt = await ctx.worktree(`sub-${id}`);
       const result = await ctx.ask({
         title: `Subtask: ${sub.title}`,
         role: "workers",
-        agent,
+        agent, settings,
         mode: "write",
         cwd: wt,
         allowFailure: true,

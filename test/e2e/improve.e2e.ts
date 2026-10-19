@@ -258,7 +258,7 @@ test("Improve respects SSH and Docker selection and its mode menu remains access
     await page.route("**/api/remote-workers", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify([{ id: "ssh", name: "Fixture worker", repoMappings: ["project"], protocol: 1 }]) }));
     await page.route("**/api/remote-workers/ssh/probe", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ capabilities: { providers: [{ id: "claude", available: true }], repoMappings: ["project"] } }) }));
     await page.goto(`${base}/?token=${token}`); await page.getByRole("textbox", { name: "Task", exact: true }).fill("A mobile task");
-    await page.locator(".advanced-controls > summary").click(); await page.getByLabel("Agent execution", { exact: true }).selectOption("ssh");
+    await page.locator(".composer-options > summary").click(); await page.locator(".advanced-controls > summary").click(); await page.getByLabel("Agent execution", { exact: true }).selectOption("ssh");
     assert.equal(await page.getByRole("button", { name: "Improve", exact: true }).isDisabled(), true);
     await page.getByText("Improve uses a local provider. Choose This computer to rewrite this task.", { exact: true }).waitFor();
     await page.getByLabel("Agent execution", { exact: true }).selectOption("");

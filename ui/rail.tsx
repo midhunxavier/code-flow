@@ -1,8 +1,10 @@
-import { useState } from "preact/hooks";
-import { Bell } from "./app.js";
+import { ComputerProjects, useComputerProjects } from "./connected-projects.js";
+import { useEffect, useState } from "preact/hooks";
 import { inbox } from "./automations.js";
 import { Icon } from "./icons.js";
-import { ago, baseName, fmtCost, fmtTokens, STATUS_TEXT } from "./lib.js";
+import { Menu, MenuItem } from "./panel-bits.js";
+import { DeleteRunDialog, DeleteRunsDialog } from "./run-actions.js";
+import { ago, baseName, fmtCost, fmtTokens, post, showToast, STATUS_TEXT } from "./lib.js";
 import {
   NONE,
   agents,
@@ -28,6 +30,8 @@ import {
   projects,
   projectsOpen,
   railOpen,
+  railCollapsed,
+  setRailCollapsed,
   railView,
   repo,
   route,
@@ -83,8 +87,17 @@ interface Group {
  * every project with its runs. Nothing in it depends on a project you picked somewhere else.
  */
 export function Rail() {
+  const computerProjects = useComputerProjects();
+  const computers = computerProjects.directory;
+  const currentComputer = computers && computers.computers.length > 1 ? computers.computers.find((computer) => computer.id === computers.currentComputerId) : undefined;
   const [showFilters, setShowFilters] = useState(false);
   const [showMore, setShowMore] = useState(false);
+  const [deleting, setDeleting] = useState<RunSummary | null>(null);
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState<RunSummary[] | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState("");
   const [long, setLong] = useState<Set<string>>(new Set());
   const view = railView.value;
   const f = runFilter.value;
@@ -94,12 +107,33 @@ export function Rail() {
   /** The project whose page is open. */
   const page = r.view === "project" ? r.id : undefined;
   const all = [...runs.value.values()].sort((a, b) => b.createdAt - a.createdAt);
-  // While you search or filter, archived runs that match show too: nothing is out of reach.
-  const list = all.filter((r) => matchesFilter(r) && (!r.archived || view.archived || filtering));
+  const list = all.filter((r) => matchesFilter(r) && (!r.archived || view.archived));
   const archivedCount = all.filter((r) => r.archived).length;
+  const eligible = list.filter(run => run.status !== "running");
+  const eligibleKey = eligible.map(run => run.id).join(",");
+  const selectedRuns = eligible.filter(run => selected.has(run.id));
+  useEffect(() => {
+    const ids = new Set(eligibleKey.split(","));
+    setSelected(previous => new Set([...previous].filter(id => ids.has(id))));
+  }, [eligibleKey]);
+  const deselect = (id: string) => setSelected(previous => { const next = new Set(previous); next.delete(id); return next; });
+  const toggleSelected = (id: string) => setSelected(previous => { const next = new Set(previous); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const archiveSelected = async (archived: boolean) => {
+    setBulkBusy(true); setBulkError("");
+    const failures: string[] = [];
+    let count = 0;
+    for (const run of selectedRuns) {
+      try { await post(`/api/runs/${run.id}/archive`, { archived, cleanup: false }); deselect(run.id); count++; }
+      catch (error) { failures.push(`${run.task.split("\n")[0]}: ${(error as Error).message}`); }
+    }
+    if (count) showToast(`${count} ${count === 1 ? "run" : "runs"} ${archived ? "archived" : "unarchived"}`);
+    setBulkError(failures.join("\n")); setBulkBusy(false);
+  };
   const waiting = list.filter(needsYou);
   const pending = inbox().length;
   const unread = inboxUnread.value;
+  const collapsed = railCollapsed.value;
+  const agentProblems = agents.value.filter((agent) => !agent.available || health.value?.find((entry) => entry.id === agent.id)?.signedIn === false).length;
 
   const go = (to: typeof route.value) => {
     route.value = to;
@@ -125,13 +159,16 @@ export function Rail() {
       r.usage?.costUsd ? fmtCost(r.usage.costUsd) : "",
     ].filter(Boolean);
     return (
+      <div class={`rail-run-row ${selecting ? "selecting" : ""}`} role="group" aria-label={r.task.split("\n")[0] || "Untitled run"} key={r.id}>
+      {selecting ? <input type="checkbox" class="rail-run-check" aria-label={`Select ${r.task.split("\n")[0] || "Untitled run"}`} checked={selected.has(r.id)} disabled={bulkBusy || !!bulkDeleting || r.status === "running"} onChange={() => toggleSelected(r.id)} /> : null}
       <button
         key={r.id}
         type="button"
         class={`run-item ${current === r.id ? "active" : ""} ${needsYou(r) ? "unseen" : ""} ${r.archived ? "archived" : ""}`}
         title={`${r.task.split("\n")[0]}\n${details.join(" · ")}`}
         aria-current={current === r.id ? "page" : undefined}
-        onClick={() => go({ view: "run", id: r.id })}
+        disabled={selecting && (bulkBusy || !!bulkDeleting || r.status === "running")}
+        onClick={() => selecting ? toggleSelected(r.id) : go({ view: "run", id: r.id })}
       >
         <span class={`dot ${runState(r)}`} aria-hidden="true" />
         <span class="t">
@@ -154,6 +191,16 @@ export function Rail() {
           {r.archived ? " · archived" : ""}
         </span>
       </button>
+      {!selecting ? <Menu above class="chat-choice rail-run-menu" label="Run actions" icon="more">
+        {close => <>
+          <MenuItem disabled={r.status === "running"} onClick={() => {
+            close();
+            post(`/api/runs/${r.id}/archive`, { archived: !r.archived, cleanup: false }).then(() => showToast(r.archived ? "Run unarchived" : "Run archived"), error => showToast(error.message));
+          }}>{r.archived ? "Unarchive" : "Archive"}</MenuItem>
+          <MenuItem disabled={r.status === "running"} onClick={() => { close(); setDeleting(r); }}>Delete…</MenuItem>
+        </>}
+      </Menu> : null}
+      </div>
     );
   };
 
@@ -285,16 +332,18 @@ export function Rail() {
               <Icon name="plus" />
             </button>
           </div>
-          {busy.map(projectGroup)}
-          {quiet.length ? (
-            <>
-              <button type="button" class="rail-more quiet" aria-expanded={showMore} onClick={() => setShowMore(!showMore)}>
-                <Icon name="chevron" class="caret" />
-                {quiet.length} more project{quiet.length === 1 ? "" : "s"}
-              </button>
-              {showMore ? quiet.map(projectGroup) : null}
-            </>
-          ) : null}
+          <ComputerProjects directory={computers} error={computerProjects.error} query={f.q}>
+            {currentComputer ? groups.filter((g) => g.runs.length || !filtering && g.project).sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key)).map(projectGroup) : busy.map(projectGroup)}
+            {!currentComputer && quiet.length ? (
+              <>
+                <button type="button" class="rail-more quiet" aria-expanded={showMore} onClick={() => setShowMore(!showMore)}>
+                  <Icon name="chevron" class="caret" />
+                  {quiet.length} more project{quiet.length === 1 ? "" : "s"}
+                </button>
+                {showMore ? quiet.map(projectGroup) : null}
+              </>
+            ) : null}
+          </ComputerProjects>
         </section>
       </>
     );
@@ -308,13 +357,15 @@ export function Rail() {
             code<span>-flow</span>
           </span>
         </a>
+        <button type="button" class="icon-btn rail-toggle" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!collapsed} aria-controls="run-navigation" onClick={() => setRailCollapsed(!collapsed)}><Icon name="sidebar" /></button>
         <button type="button" class="icon-btn rail-close" aria-label="Close menu" onClick={() => (railOpen.value = false)}>
           <Icon name="close" />
         </button>
       </div>
-      <button class="btn primary new-run" title="New run (n)" onClick={() => go({ view: "composer" })}>
-        <Icon name="plus" /> New run
+      <button class="btn primary new-run" aria-label="New run" title="New run (n)" onClick={() => go({ view: "composer" })}>
+        <Icon name="plus" /> <span>New run</span>
       </button>
+      {collapsed ? <button type="button" class="icon-btn rail-search-button" aria-label="Search runs" title="Search runs (/)" onClick={() => { setRailCollapsed(false); requestAnimationFrame(() => document.getElementById("run-search")?.focus()); }}><Icon name="search" /></button> : null}
       <div class="rail-search">
         <Icon name="search" />
         <input
@@ -335,20 +386,24 @@ export function Rail() {
             }
           }}
         />
-        <button
-          type="button"
-          class={`icon-btn ${filtering && !f.q ? "on" : ""}`}
-          aria-expanded={showFilters}
-          aria-controls="rail-filters"
-          aria-label="View and filter"
-          title="Group, filter and show archived runs"
-          onClick={() => setShowFilters(!showFilters)}
-        >
-          <Icon name="sliders" />
-        </button>
       </div>
+      {!collapsed && (all.length > 0 || selecting) ? <div class="rail-selection">
+        <div class="rail-selection-head"><button type="button" class="btn small ghost" disabled={bulkBusy || !!bulkDeleting} aria-pressed={selecting} onClick={() => { setSelecting(!selecting); setSelected(new Set()); setBulkError(""); }}>{selecting ? "Done selecting" : "Select runs"}</button>{selecting ? <span role="status">{selectedRuns.length} selected</span> : null}</div>
+        {selecting ? <>
+          <div class="rail-bulk-actions">
+            <button type="button" class="btn small" disabled={bulkBusy || !!bulkDeleting || !eligible.length} onClick={() => setSelected(selectedRuns.length === eligible.length ? new Set() : new Set(eligible.map(run => run.id)))}>{selectedRuns.length && selectedRuns.length === eligible.length ? "Clear selection" : "Select loaded"}</button>
+            <button type="button" class="btn small" disabled={bulkBusy || !selectedRuns.length} onClick={() => void archiveSelected(true)}>Archive</button>
+            {selectedRuns.some(run => run.archived) ? <button type="button" class="btn small" disabled={bulkBusy} onClick={() => void archiveSelected(false)}>Unarchive</button> : null}
+            <button type="button" class="btn small danger" disabled={bulkBusy || !selectedRuns.length} onClick={() => setBulkDeleting(selectedRuns)}>Delete…</button>
+          </div>
+          <span class="help">{bulkBusy ? "Updating runs…" : "Only stopped runs on this computer. Select loaded includes matching runs in folded projects."}</span>
+          {bulkError ? <div class="err" role="alert">{bulkError}</div> : null}
+        </> : null}
+      </div> : null}
+      {archivedCount || view.archived ? <button type="button" class="rail-archive-toggle" aria-label={view.archived ? "Hide archived runs" : "Show archived runs"} aria-pressed={view.archived} onClick={() => setRailView({ archived: !view.archived })}><Icon name="archive" />{view.archived ? "Hide archived runs" : "Show archived runs"}<span>{archivedCount}</span></button> : null}
       {showFilters ? (
         <div class="rail-filters" id="rail-filters">
+          <div class="rf-row"><span class="rf-label">View and filter runs</span><button type="button" class="icon-btn" aria-label="Close filters" onClick={() => { setShowFilters(false); document.getElementById("run-search")?.focus(); }}><Icon name="close" /></button></div>
           <div class="rf-row">
             <span class="rf-label">Group by</span>
             <div class="segmented small" role="group" aria-label="Group by">
@@ -398,9 +453,9 @@ export function Rail() {
           </button>
         </div>
       ) : null}
-      <div class="rail-list">
-        {body}
-        {empty ? <div class="rail-empty">{filtering ? "No runs match" : "No runs yet — start one on the right"}</div> : null}
+      <div class="rail-list" id="run-navigation">
+        {view.group === "status" ? <ComputerProjects directory={computers} error={computerProjects.error} query={f.q}>{body}</ComputerProjects> : body}
+        {empty ? <div class="rail-empty">{filtering ? "No runs match" : currentComputer ? "No runs in this workspace yet" : "No runs yet — start one on the right"}</div> : null}
       </div>
       <div class="rail-history" role="region" aria-label="Run history pages">
         <span class="help" role="status">{historyLoading.value ? "Searching history…" : historyTotal.value === null ? "Loading history…" : f.q.trim() ? `${list.length} loaded matches · ${historyTotal.value} in history` : runs.value.size > historyTotal.value ? `${runs.value.size} loaded · ${historyTotal.value} at last refresh` : `${runs.value.size} of ${historyTotal.value} runs loaded`}</span>
@@ -409,49 +464,29 @@ export function Rail() {
         {historyError.value ? <div class="help" role="alert">{historyError.value}<button class="btn small" onClick={() => void refreshRuns()}>Retry history</button></div> : null}
         {filtering && !f.q.trim() && historyNextCursor.value ? <span class="help">Filters apply to loaded pages. Load older runs to include more history.</span> : null}
       </div>
-      <button class="nav-item team-entry" aria-current={r.view === "team" || r.view === "team-task" ? "page" : undefined} title={`Team board${unread ? ` · ${unread} unread in your team inbox` : ""}`} onClick={() => go({ view: "team" })}><Icon name="people" /><span class="t">Team</span>{unread ? <span class="count" aria-hidden="true">{unread}</span> : null}{unread ? <span class="sr-only"> · {unread} unread in your team inbox</span> : null}</button>
-      <button class="nav-item settings-entry" aria-current={r.view === "settings" ? "page" : undefined} title={`Settings (⌘, / Ctrl+,)${pending ? ` · ${pending} runs need attention in Automations` : ""}`} onClick={() => go({ view: "settings" })}><Icon name="sliders" /><span class="t">Settings</span>{pending ? <span class="count" aria-hidden="true">{pending}</span> : null}<span class="kbd">⌘,</span></button>
       <div class="rail-foot">
-        <AgentDots />
-        <span class="spacer" />
-        <button
-          type="button"
-          class="btn ghost foot-btn"
-          aria-pressed={view.archived}
-          title={view.archived ? "Hide archived runs" : "Show archived runs in the list"}
-          onClick={() => setRailView({ archived: !view.archived })}
-        >
-          <Icon name="archive" /> <span class="n">{archivedCount}</span>
-          <span class="sr-only"> archived</span>
-        </button>
-        <Bell />
-        <button type="button" class="btn ghost foot-btn" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" onClick={() => (shortcutsOpen.value = true)}>
-          <Icon name="keyboard" />
-        </button>
+        <Menu class="rail-menu" label="Application menu" icon="more" trigger={<>
+          <span class="rail-menu-avatar"><Icon name="layers" /></span>
+          <span class="rail-menu-label"><strong>Code Flow</strong></span>
+          {unread + pending ? <span class="rail-menu-count" aria-label={`${unread + pending} items need attention`}>{unread + pending > 99 ? "99+" : unread + pending}</span> : null}
+          <Icon name="more" />
+        </>}>
+          {(close) => <>
+            <MenuItem on={r.view === "team" || r.view === "team-task"} onClick={() => { close(); go({ view: "team" }); }}><Icon name="people" /><span>Team</span>{unread ? <span class="rail-menu-meta" aria-label={`${unread} unread`}>{unread}</span> : null}</MenuItem>
+            <MenuItem on={r.view === "settings"} onClick={() => { close(); go({ view: "settings" }); }}><Icon name="sliders" /><span>Settings</span><kbd class="rail-menu-meta">⌘,</kbd></MenuItem>
+            <MenuItem sub={`${agents.value.length} providers${agentProblems ? ` · ${agentProblems} need setup` : ""}`} onClick={() => { close(); railOpen.value = false; healthOpen.value = true; }}><Icon name="sparkle" /><span>Agents & usage</span></MenuItem>
+            <MenuItem onClick={() => { close(); go({ view: "settings", section: "automations" }); }}><Icon name="clock" /><span>Automations</span>{pending ? <span class="rail-menu-meta" aria-label={`${pending} runs need attention`}>{pending}</span> : null}</MenuItem>
+            <MenuItem onClick={() => { close(); go({ view: "settings", section: "notifications" }); }}><Icon name="bell" /><span>Notifications</span></MenuItem>
+            <div class="rail-menu-divider" role="separator" />
+            <MenuItem on={showFilters} onClick={() => { close(); setRailCollapsed(false); setShowFilters(!showFilters); if (!showFilters) requestAnimationFrame(() => document.querySelector<HTMLButtonElement>("#rail-filters button")?.focus()); }}><Icon name="sliders" /><span>View and filter runs</span></MenuItem>
+            <MenuItem on={view.archived} onClick={() => { close(); setRailView({ archived: !view.archived }); }}><Icon name="archive" /><span>{view.archived ? "Hide archived runs" : "Show archived runs"}</span><span class="rail-menu-meta">{archivedCount}</span></MenuItem>
+            <MenuItem onClick={() => { close(); railOpen.value = false; shortcutsOpen.value = true; }}><Icon name="keyboard" /><span>Keyboard shortcuts</span><kbd class="rail-menu-meta">?</kbd></MenuItem>
+            <a class="pop-item" role="menuitem" href="https://github.com/midhunxavier/code-flow/blob/main/docs/README.md" target="_blank" rel="noreferrer" onClick={close}><span class="pi-main"><Icon name="help" /><span>Help & documentation</span><Icon name="external" class="rail-menu-meta" /></span></a>
+          </>}
+        </Menu>
       </div>
+      {deleting ? <DeleteRunDialog run={deleting} onClose={() => setDeleting(null)} /> : null}
+      {bulkDeleting ? <DeleteRunsDialog runs={bulkDeleting} onDeleted={deselect} onClose={() => setBulkDeleting(null)} /> : null}
     </nav>
-  );
-}
-
-/** The agents' health as dots: each one's color, dimmed when it's missing, warned when it's signed out. */
-function AgentDots() {
-  const problems: string[] = [];
-  const dots = agents.value.map((a) => {
-    const h = health.value?.find((x) => x.id === a.id);
-    const problem = !a.available || h?.signedIn === false;
-    if (problem) problems.push(`${a.displayName}: ${!a.available ? "not installed" : "signed out"}`);
-    return <span key={a.id} class={`agent ${a.id} ${a.available ? "" : "off"} ${problem ? "problem" : ""}`} />;
-  });
-  return (
-    <button
-      type="button"
-      class="agent-status"
-      title={`Health: install, sign-in and quota for each CLI\n${agents.value.map((a) => a.displayName).join(", ")}`}
-      onClick={() => (healthOpen.value = true)}
-    >
-      {dots}
-      <span class={`as-label ${problems.length ? "bad" : ""}`}>{problems.length ? `${problems.length} ⚠` : "Agents"}</span>
-      {problems.length ? <span class="sr-only">{problems.join("; ")}</span> : null}
-    </button>
   );
 }

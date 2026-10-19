@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, readFileSync, unlinkSync, type Stats } from "node:fs";
-import { appendFile, link, mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, link, mkdir, open, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
@@ -266,9 +266,24 @@ export async function visitJsonLines<T>(file: string, visit: (entry: T) => void)
 
 export async function listRunIds(): Promise<string[]> {
   if (!existsSync(RUNS_DIR)) return [];
-  return (await readdir(RUNS_DIR))
-    .filter((f) => f.endsWith(".jsonl") && !f.endsWith(".journal.jsonl"))
+  const files = await readdir(RUNS_DIR);
+  const deleted = new Set(files.filter(f => f.endsWith(".deleted")).map(f => f.slice(0, -8)));
+  return files
+    .filter((f) => f.endsWith(".jsonl") && !f.endsWith(".journal.jsonl") && !deleted.has(f.slice(0, -6)))
     .map((f) => f.slice(0, -".jsonl".length));
+}
+
+/** Serialized with pending writes. The durable marker prevents partial cleanup from restoring history. */
+export function deleteRunHistory(id: string): Promise<void> {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(id)) throw new Error("Invalid run ID");
+  const work = writeQueue.then(async () => {
+    await writeFile(join(RUNS_DIR, `${id}.deleted`), "", { mode: 0o600, flush: true });
+    for (const suffix of [".jsonl", ".journal.jsonl", ".checkpoint.json", ".cold-index.json", ".cold-detail.json"]) {
+      await rm(join(RUNS_DIR, id + suffix), { force: true }).catch((error: Error) => logWarn(`Couldn't remove deleted run file ${id}${suffix}: ${error.message}`));
+    }
+  });
+  writeQueue = work.catch(() => undefined);
+  return work;
 }
 
 export async function loadJournal(runId: string, opts: { strict?: boolean } = {}): Promise<Map<string, unknown>> {

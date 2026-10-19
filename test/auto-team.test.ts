@@ -406,3 +406,17 @@ test("Auto team stops asking the coordinator once a revision changes nothing", a
   assert.ok(revisions.length >= 1 && revisions.length <= 2, `coordinator revisions: ${revisions.length}`);
   assert.ok(run.team!.metrics.coordinatorInvocations < run.team!.coordinationLimit + 1, "a no-op revision must not exhaust the coordination budget");
 });
+
+
+test("Auto team dispatches distinct selected models from one provider without leaking primary effort", async () => {
+  const { run } = await finish("AUTO-SAME-PROVIDER AUTO-MODEL-POOL Implement the sample", {
+    roleSettings: { pool: { claude: { model: "opus", effort: "high", variants: [{ model: "sonnet" }] } } },
+  });
+  assert.equal(run.status, "done", run.error);
+  const members = run.team!.members.filter(member => member.role === "worker");
+  assert.deepEqual(members.map(member => [member.provider, member.model, member.effort]), [["claude", "opus", "high"], ["claude", "sonnet", ""]]);
+  const steps = run.steps.filter(step => step.taskId && step.kind === "agent");
+  assert.deepEqual(steps.map(step => step.settings), [{ model: "opus", effort: "high" }, { model: "sonnet", effort: "" }]);
+  assert.notEqual(steps[0]!.sessionId, steps[1]!.sessionId);
+  assert.deepEqual(run.team!.inventory!.providers.find(p => p.id === "claude")!.settingsByRole!.worker!.variants, [{ model: "sonnet" }]);
+});

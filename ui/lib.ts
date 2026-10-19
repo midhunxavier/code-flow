@@ -13,7 +13,14 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
+/** The app stays on one origin; only requests and saved drafts are scoped to a computer. */
+export const workspaceId = (window as Window & { __CODEFLOW_WORKSPACE?: string }).__CODEFLOW_WORKSPACE;
+export const workspaceUrl = (id = "local", hash = "#/") => `${id === "local" ? "/" : `/computer/${encodeURIComponent(id)}/`}${hash}`;
+export const apiPath = (path: string) => workspaceId && path.startsWith("/api/") ? `/computer/${workspaceId}${path}` : path;
+export const localApi = <T = any>(path: string, opts: RequestInit = {}) => request<T>(path, opts);
+export const api = <T = any>(path: string, opts: RequestInit = {}) => request<T>(path === "/api/auth/logout" ? path : apiPath(path), opts);
+
+async function request<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   let res: Response;
   try {
     res = await fetch(path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
@@ -44,8 +51,8 @@ export function signInAgain() {
 
 export const post = <T = any>(path: string, body: unknown = {}) => api<T>(path, { method: "POST", body: JSON.stringify(body) });
 
-const workspaceKey = (key: string) => {
-  const id = (window as Window & { __CODEFLOW_WORKSPACE?: string }).__CODEFLOW_WORKSPACE;
+export const workspaceKey = (key: string) => {
+  const id = workspaceId;
   return id ? `ssh:${id}:${key}` : key;
 };
 export const store = {

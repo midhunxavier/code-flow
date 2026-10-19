@@ -139,7 +139,7 @@ export interface ModelCatalog {
   allowCustom: boolean;
 }
 
-export type AgentSettings = Partial<Record<AgentId, { model?: string; effort?: string }>>;
+export type AgentSettings = Partial<Record<AgentId, { model?: string; effort?: string; variants?: { model: string; effort?: string }[] }>>;
 
 export interface AgentAdapter {
   id: AgentId;

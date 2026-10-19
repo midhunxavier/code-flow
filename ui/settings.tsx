@@ -19,6 +19,8 @@ import { SharedAccountsPanel } from "./shared.js";
 import { ConventionsPanel } from "./conventions.js";
 import { FilePolicyPanel } from "./filesystem-policy.js";
 import { ExtensionsPanel } from "./extensions.js";
+import { ProjectRunSettings } from "./project-run-settings.js";
+import { DependencyDiscovery } from "./dependency-health.js";
 import { AcpConnectionsPanel } from "./acp-connections.js";
 import { WorkbenchRetentionPanel } from "./retention.js";
 import { InsightsView } from "./insights.js";
@@ -66,7 +68,7 @@ export function SettingsView({ section = "general", group }: { section?: Setting
             {section === "agents" ? <AgentSettings /> : null}
             {section === "runs" ? <RunSettings /> : null}
             {section === "ssh" ? <SshConnections /> : null}
-            {section === "remote-access" ? host.kind === "local" ? <RemoteAccess /> : <SettingsCard title="Manage access on your computer"><p>Remote device access is configured in your local workspace.</p>{host.kind === "ssh" ? <a class="btn" href={`${host.returnUrl}#/settings/remote-access`}>Back to this computer</a> : null}</SettingsCard> : null}
+            {section === "remote-access" ? host.kind === "local" ? <RemoteAccess /> : <SettingsCard title="Manage access on your computer"><p>Remote device access is configured in your local workspace.</p>{host.kind === "ssh" ? <a class="btn" href="/#/settings/remote-access">Back to this computer</a> : null}</SettingsCard> : null}
             {section === "team" ? <TeamSettings /> : null}
             {section === "notifications" ? <><SettingsCard title="Desktop notifications"><SettingsRow title="Run updates" description="Notify when a run finishes or needs your attention, while you’re away from it."><button class="settings-switch" role="switch" aria-label="Desktop notifications" aria-checked={canNotify()} onClick={() => void setDesktopNotifications(!canNotify())}><span /></button></SettingsRow><p class="help">{"Notification" in window ? notificationPermission.value === "denied" ? "Notifications are blocked. Allow them in your browser’s site permissions to enable this setting." : "This preference is saved in this browser for the current workspace." : "This browser doesn’t support desktop notifications."}</p></SettingsCard><NotificationsView /></> : null}
             {section === "integrations" ? <><IntegrationsView onImport={(imported) => { externalSource.value = imported; source.value = null; setTask(`Address ${imported.provider} ${imported.kind} ${imported.key}: ${imported.title}`); route.value = { view: "composer" }; }} /><CodeHostsPanel projects={projects.value} /><RemoteWorkersView /></> : null}
@@ -109,6 +111,7 @@ function AgentSettings() {
   const [busy, setBusy] = useState(false);
   return <>
     <AcpConnectionsPanel />
+    <details class="settings"><summary>Check this computer</summary><div class="settings-body"><DependencyDiscovery /></div></details>
     <p class="help">Saved model choices apply to new runs in this workspace. Project defaults and individual role overrides can take precedence. Sign in through each agent’s CLI on the machine where it runs.</p>
     <div class="settings-actions"><button class="btn" disabled={busy} onClick={async () => { setBusy(true); try { await loadAgents(); await Promise.all([loadModels(), loadHealth()]); } finally { setBusy(false); } }}>{busy ? "Checking…" : "Refresh providers"}</button><button class="btn" onClick={() => { healthOpen.value = true; }}>Health & usage</button></div>
     {agents.value.map((agent) => {
@@ -150,7 +153,7 @@ function ProjectSettings() {
   const project = projects.value.find((p) => p.id === id) ?? projects.value.find((p) => p.repos.includes(repo.value)) ?? projects.value[0];
   return <>
     <SettingsCard title="Projects"><SettingsRow title="Repositories & teams" description="Create projects, change their repositories and manage saved teams."><button class="btn small" onClick={() => { projectsOpen.value = true; }}>Manage projects</button></SettingsRow></SettingsCard>
-    {project ? <><label class="lbl" for="settings-project">Project</label><select id="settings-project" class="field" value={project.id} onChange={(e) => setId(e.currentTarget.value)}>{projects.value.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select><ConventionsPanel key={`conventions:${project.id}`} projectId={project.id} repos={project.repos} /><FilePolicyPanel key={`policy:${project.id}`} projectId={project.id} projectName={project.name} /></> : <p class="help">Create a project to configure its conventions and filesystem access.</p>}
+    {project ? <><label class="lbl" for="settings-project">Project</label><select id="settings-project" class="field" value={project.id} onChange={(e) => setId(e.currentTarget.value)}>{projects.value.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select><ProjectRunSettings key={project.id} projectId={project.id} repositories={project.repos} /><ConventionsPanel key={`conventions:${project.id}`} projectId={project.id} repos={project.repos} /><FilePolicyPanel key={`policy:${project.id}`} projectId={project.id} projectName={project.name} /></> : <><p class="help">Create a project to configure its conventions and filesystem access.</p><ProjectRunSettings repositories={repo.value ? [repo.value] : []} /></>}
     <SharedAccountsPanel projects={projects.value} />
   </>;
 }

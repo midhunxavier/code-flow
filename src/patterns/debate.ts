@@ -51,21 +51,21 @@ export const debatePattern: Pattern = {
   ],
 
   async run(ctx) {
-    const debaters = ctx.agents("debaters");
+    const debaters = ctx.participants("debaters");
     if (debaters.length < 2) throw new Error("A debate needs at least two debaters");
     const rounds = ctx.option("rounds", 1);
     const synthesizer = ctx.agent("synthesizer");
-    if (debaters.includes(synthesizer)) ctx.log(`${synthesizer} both debates and synthesizes; a synthesizer from another vendor is fairer`, "warn");
+    if (debaters.some(d => d.agent === synthesizer)) ctx.log(`${synthesizer} both debates and synthesizes; a synthesizer from another vendor is fairer`, "warn");
     const designWt = await ctx.worktree("design");
     // Proposals go by letter, never by vendor: debater i's is Proposal A, B, … in every round.
-    const label = (i: number) => `Proposal ${LETTERS[i]!}`;
+    const label = (i: number) => `Proposal ${LETTERS[i] ?? String(i + 1)}`;
 
     // Round 0: independent proposals, in parallel (one failing stops the others).
-    let positions: StepOutcome[] = await ctx.parallel(debaters, (agent, i) =>
+    let positions: StepOutcome[] = await ctx.parallel(debaters, ({ agent, settings, identity }, i) =>
       ctx.ask({
         title: `Proposal — ${getAdapter(agent).displayName}`,
         role: "debaters",
-        agent,
+        agent, settings, identity,
         mode: "read",
         cwd: designWt,
         prompt:
@@ -88,7 +88,7 @@ export const debatePattern: Pattern = {
         return ctx.ask({
           title: `Critique round ${round} — ${getAdapter(own.agent).displayName}`,
           role: "debaters",
-          agent: own.agent,
+          agent: own.agent, settings: debaters[i]!.settings, identity: debaters[i]!.identity,
           mode: "read",
           cwd: designWt,
           resume: own,

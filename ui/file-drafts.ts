@@ -1,5 +1,6 @@
+import { workspaceKey } from "./lib.js";
 interface FileDraft { folder: string; path: string; text: string; hash: string; draft: string; at: number; mergeConflict?: boolean }
-const KEY = "codeflow-file-drafts-v1";
+const KEY = workspaceKey("codeflow-file-drafts-v1");
 const sensitive = (path: string) => /(^|\/)(?:\.env(?:\..*)?|.*\.(?:pem|key))$/.test(path);
 function read(): FileDraft[] {
   try {

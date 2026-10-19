@@ -477,6 +477,43 @@ test("loop: removed assertions block a pass when the check's test count can't be
 });
 
 // ---------------------------------------------------------------- smaller guarantees
+test("delete run rejects active work, removes history durably and keeps Git worktrees", async () => {
+  const manager = new RunManager(findPattern);
+  const run = await start(manager, "solo", { agent: ["claude"] });
+  await assert.rejects(manager.deleteRun(run.id), /Finish or stop/);
+  await idle(manager, run);
+  await manager.shutdown();
+  const log = readFileSync(join(RUNS_DIR, `${run.id}.jsonl`));
+  const events: import("../src/engine.js").RunSummary[] = [];
+  manager.subscribeAll(value => events.push(value));
+  await manager.deleteRun(run.id);
+  assert.equal(manager.get(run.id), undefined);
+  assert.ok(!manager.list().some(value => value.id === run.id));
+  assert.equal(events.at(-1)?.deleted, true);
+  for (const suffix of [".jsonl", ".journal.jsonl", ".checkpoint.json", ".cold-index.json", ".cold-detail.json"]) assert.equal(existsSync(join(RUNS_DIR, run.id + suffix)), false);
+  assert.ok(existsSync(run.worktrees[0]!.path));
+  assert.ok(sh(run.repo, "rev-parse", run.worktrees[0]!.branch));
+  // Even a stale projection/source surviving partial cleanup cannot resurrect the run.
+  writeFileSync(join(RUNS_DIR, `${run.id}.jsonl`), log);
+  const restarted = new RunManager(findPattern); await restarted.load();
+  assert.equal(restarted.get(run.id), undefined);
+  await restarted.shutdown();
+});
+
+test("delete archived cold run removes its persisted projections", async () => {
+  const { run, manager } = await runPattern("solo", { agent: ["claude"] });
+  await flushWrites();
+  await manager.archive(run.id, { cleanup: false });
+  await manager.shutdown();
+  const restarted = new RunManager(findPattern); await restarted.load();
+  assert.ok(restarted.get(run.id)?.archived);
+  await restarted.deleteRun(run.id);
+  assert.ok(!restarted.list().some(value => value.id === run.id));
+  assert.equal(existsSync(join(RUNS_DIR, `${run.id}.cold-index.json`)), false);
+  assert.equal(existsSync(join(RUNS_DIR, `${run.id}.cold-detail.json`)), false);
+  await restarted.shutdown();
+});
+
 test("run ids are unique and unguessable; archive, merge and push wait while a resume is starting", async () => {
   process.env.FAKE_FAIL_VENDOR = "codex";
   const { run, manager } = await runPattern("pipeline", pipeline).finally(() => delete process.env.FAKE_FAIL_VENDOR);

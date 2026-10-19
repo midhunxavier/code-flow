@@ -16,7 +16,7 @@ export function TeamSettings() {
   usePoll(() => { void loadBoard(); void loadTeamLink(); }, 15_000, [teamTick.value]);
   const link = teamLink.value, b = board.value;
   return <>
-    {host.kind === "local" ? <ThisComputerCard link={link} /> : <section class="settings-card"><h3>This computer</h3><p class="help">A team link belongs to the computer whose agents run the work. Connect from the code-flow on your own computer; this workspace runs on {host.kind === "ssh" ? host.name : "a remote server"}.</p>{host.kind === "ssh" ? <a class="btn" href={`${host.returnUrl}#/settings/team`}>Back to this computer</a> : null}</section>}
+    {host.kind === "local" ? <ThisComputerCard link={link} /> : <section class="settings-card"><h3>This computer</h3><p class="help">A team link belongs to the computer whose agents run the work. Connect from the code-flow on your own computer; this workspace runs on {host.kind === "ssh" ? host.name : "a remote server"}.</p>{host.kind === "ssh" ? <a class="btn" href="/#/settings/team">Back to this computer</a> : null}</section>}
     {host.kind === "local" ? <RepositoriesCard link={link} b={b} /> : null}
     <TeamServerCard link={link} b={b} />
     <RunnersCard b={b} />
@@ -101,7 +101,7 @@ function TeamServerCard({ link, b }: { link: TeamLinkInfo | null; b: Board | nul
       <p class="help">This computer is a team server: teammates reach its board over Tailscale with shared accounts, and their own computers run the work.</p>
       <dl class="team-kv">
         <dt>Address</dt><dd>{address ? <><code>{address}</code> <button type="button" class="btn small" onClick={() => void copy(address, "Address copied")}>Copy</button><span class="help"> Teammates enter this address under Settings → Team → Connect this computer. Never share the phone link from Settings → Remote access: its path is a secret.</span></>
-          : remote?.tailscaleUrl ? <span class="help">Remote access is on without HTTPS. <a href="#/settings/remote-access">Configure CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY in Settings → Remote access</a>: teammates sign in and connect their computers over https:// only.</span>
+          : remote?.tailscaleUrl ? <span class="help">Remote access is on without HTTPS. <a href="#/settings/remote-access">Set up secure remote access in Settings → Remote access</a>: teammates sign in and connect their computers over https:// only.</span>
           : <span class="help"><a href="#/settings/remote-access">Turn on remote access over Tailscale in Settings → Remote access</a> so teammates can reach this computer.</span>}</dd>
         <dt>Accounts</dt><dd><a class="btn small" href="#/settings/projects">Accounts &amp; roles</a><span class="help"> Give teammates the contributor role to own and run tasks, maintainer to manage project repository keys. Only the hub owner manages other accounts’ runners.</span></dd>
       </dl>

@@ -63,6 +63,15 @@ export function validateAgentSettings(input: unknown): AgentSettings {
     if (model && !(id.startsWith("acp:") ? model.length <= 256 && !/[\x00-\x1f\x7f]/.test(model) : MODEL_RE.test(model))) throw new Error(`Invalid model name for ${getAdapter(id).displayName}: "${model}"`);
     if (effort && !(id.startsWith("acp:") ? effort.length <= 64 && !/[\x00-\x1f\x7f]/.test(effort) : EFFORT_RE.test(effort))) throw new Error(`Invalid effort for ${getAdapter(id).displayName}: "${effort}"`);
     if (model || effort) settings[id] = { ...(model && { model }), ...(effort && { effort }) };
+    if (raw[id]?.variants !== undefined) {
+      if (!Array.isArray(raw[id].variants) || raw[id].variants.length > 128) throw new Error("Choose at most 128 additional models per provider");
+      const variants = raw[id].variants.map((value: any) => {
+        if (!value || typeof value.model !== "string" || !value.model.trim() || value.variants !== undefined) throw new Error("Each additional agent needs a model");
+        const valid = validateAgentSettings({ [id]: { model: value.model, effort: value.effort } })[id]!;
+        return { model: valid.model!, ...(valid.effort ? { effort: valid.effort } : {}) };
+      });
+      settings[id] = { ...settings[id], variants };
+    }
   }
   return settings;
 }

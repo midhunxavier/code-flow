@@ -1,3 +1,7 @@
+import { join } from "node:path";
+import { CertificateRenewal } from "./certificate-renewal.js";
+import { loadRemoteCertificate, saveRemoteCertificate, validateRemoteCertificate, certificateHostname, type CertificateInfo, type RemoteCertificate } from "./remote-tls.js";
+import { requestTailscaleCertificate } from "./tailscale.js";
 import { SshProjects } from "./ssh-projects/manager.js";
 import { readFileSync } from "node:fs";
 import { ProjectFilePolicies, FilePolicyError, assertPolicyExecution, configureFilePolicyResolver, filterPolicyDiff, policyIsRestrictive } from "./filesystem-policy.js";
@@ -215,11 +219,11 @@ function changeSavedRemote(patch: Parameters<typeof changeRemote>[1]): Promise<R
   const change = changingRemote.catch(() => undefined).then(async () => {
     const before = remote;
     const next = changeRemote(before, patch);
-    if (next.control && !phoneTls && !insecurePhoneDevelopment && patch.control === true) {
-      throw new HttpError(400, "Full phone control requires HTTPS. Configure CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY, then restart Codeflow.");
+    if (next.control && (!phoneTls || remoteTlsIssue()) && !insecurePhoneDevelopment && patch.control === true) {
+      throw new HttpError(400, "Full phone control requires HTTPS. Choose Set up secure remote access in Settings → Remote access.");
     }
     // Tailscale encrypts transit, but HTTP cookies can leak to other ports on the same host.
-    if (!phoneTls && !insecurePhoneDevelopment) next.control = false;
+    if ((!phoneTls || remoteTlsIssue()) && !insecurePhoneDevelopment) next.control = false;
     await saveRemote(next);
     remote = next;
     return before;
@@ -230,13 +234,21 @@ function changeSavedRemote(patch: Parameters<typeof changeRemote>[1]): Promise<R
 const REMOTE_PORT = envNumber("CODEFLOW_REMOTE_PORT", PORT + 1, { min: 1, max: 65_535 });
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
 const HOST = "127.0.0.1";
-const sshProjects = process.env.CODEFLOW_SSH_HOST ? undefined : new SshProjects({ returnUrl: `http://localhost:${PORT}/` });
+const sshProjects = process.env.CODEFLOW_SSH_HOST ? undefined : new SshProjects({ localProjects: () => projects.list(), canBrowse: () => !fileAccess.hasRestrictions() });
 const tlsConfigured = !!process.env.CODEFLOW_TLS_CERT && !!process.env.CODEFLOW_TLS_KEY;
 if (!!process.env.CODEFLOW_TLS_CERT !== !!process.env.CODEFLOW_TLS_KEY) throw new Error("Configure both CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY");
-const phoneTls = tlsConfigured ? { cert: readFileSync(process.env.CODEFLOW_TLS_CERT!), key: readFileSync(process.env.CODEFLOW_TLS_KEY!) } : undefined;
+let phoneTls: { cert: string | Buffer; key: string | Buffer } | undefined = tlsConfigured ? { cert: readFileSync(process.env.CODEFLOW_TLS_CERT!), key: readFileSync(process.env.CODEFLOW_TLS_KEY!) } : undefined;
 const insecurePhoneDevelopment = process.env.CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL === "1";
-const phoneProtocol = phoneTls ? "https" : "http";
+let phoneProtocol = phoneTls ? "https" : "http";
 const phoneSessions = new PhoneSessions();
+let savedCertificate: CertificateInfo | undefined;
+let tlsLoadError: string | undefined;
+let configuringTls = false;
+const certificateRenewal = new CertificateRenewal(join(CODEFLOW_HOME, "remote-tls-renewal.json"));
+function remoteTlsIssue(): string | undefined {
+  return tlsLoadError || (savedCertificate && savedCertificate.expiresAt <= Date.now() ? "HTTPS certificate expired. Renew or import a certificate in Remote access settings." : undefined);
+}
+
 
 const allowedHosts = new Set([`${HOST}:${PORT}`, `localhost:${PORT}`]);
 /** Local apps in the side panel's Browser, each on a port of its own (src/preview.ts). */
@@ -361,7 +373,7 @@ function signedIn(req: IncomingMessage): boolean {
  */
 const PHONE_COOKIE = `codeflow_phone_${REMOTE_PORT}`;
 const PHONE_COOKIE_DAYS = 30;
-const phoneControl = (s: RemoteSettings = remote) => s.enabled && s.lan && s.control && (!!phoneTls || insecurePhoneDevelopment);
+const phoneControl = (s: RemoteSettings = remote) => s.enabled && s.lan && s.control && !remoteTlsIssue() && (!!phoneTls || insecurePhoneDevelopment);
 
 function phoneCookie(token: string): string {
   return `${PHONE_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/${phoneTls ? "; Secure" : ""}; Max-Age=${PHONE_COOKIE_DAYS * 86_400}`;
@@ -913,7 +925,7 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
   return false;
 }
 
-function remoteInfo() {
+function remoteInfo(via: Via = "local") {
   // What the QR code opens: with full control the sign-in link, otherwise the read-only view.
   const phonePath = `/r/${phoneControl() ? remote.controlToken : remote.token}`;
   const ready = remote.enabled && remote.lan && lanServer?.listening && lanHost === networkHost() && !lanError;
@@ -925,14 +937,15 @@ function remoteInfo() {
     tailscale: tailscaleStatus,
     tailscaleUrl: ready && remote.transport === "tailscale" ? `${phoneProtocol}://${tailscaleHost}:${REMOTE_PORT}${phonePath}` : undefined,
     control: phoneControl(),
-    secure: !!phoneTls,
+    secure: !!phoneTls && !remoteTlsIssue(),
+    tls: { editable: via === "local" && !tlsConfigured && !process.env.CODEFLOW_SSH_HOST, source: tlsConfigured ? "environment" : savedCertificate?.source, hostname: savedCertificate?.hostname, expiresAt: savedCertificate?.expiresAt, error: remoteTlsIssue(), renewal: tlsConfigured ? undefined : certificateRenewal.status(savedCertificate) },
     insecureDevelopment: insecurePhoneDevelopment,
     pairingUntil: remote.pairingUntil ?? 0,
     path: `/r/${remote.token}`,
     phonePath,
     local: `http://localhost:${PORT}/r/${remote.token}`,
-    lanUrls: ready && remote.transport !== "tailscale" ? lanAddresses().map((ip) => `${phoneProtocol}://${ip}:${REMOTE_PORT}${phonePath}`) : [],
-    lanError: remote.enabled && remote.lan ? lanError : undefined,
+    lanUrls: ready && remote.transport !== "tailscale" ? (savedCertificate ? [savedCertificate.hostname] : lanAddresses()).map((ip) => `${phoneProtocol}://${ip.includes(":") ? `[${ip}]` : ip}:${REMOTE_PORT}${phonePath}`) : [],
+    lanError: remote.enabled && remote.lan ? remoteTlsIssue() || (savedCertificate && remote.transport === "tailscale" && tailscaleStatus.state === "connected" && savedCertificate.hostname !== tailscaleStatus.dnsName ? "The HTTPS certificate belongs to a different Tailscale name. Set up secure access again for this computer." : lanError) : undefined,
   };
 }
 
@@ -951,6 +964,7 @@ function remoteInfo() {
  */
 let lanServer: ReturnType<typeof createServer> | undefined;
 let lanHost: string | undefined;
+let lanTls: typeof phoneTls;
 let remoteStopping = false;
 let lanError: string | undefined;
 const LAN_ALLOW_LOCAL = process.env.CODEFLOW_LAN_ALLOW_LOCAL === "1";
@@ -971,7 +985,8 @@ async function refreshTailscale(force = false): Promise<void> {
 }
 
 function networkHost(): string | undefined {
-  if (process.env.CODEFLOW_SSH_HOST || remoteStopping || !remote.enabled || !remote.lan) return undefined;
+  if (process.env.CODEFLOW_SSH_HOST || remoteStopping || remoteTlsIssue() || !remote.enabled || !remote.lan) return undefined;
+  if (savedCertificate && remote.transport === "tailscale" && savedCertificate.hostname !== tailscaleStatus.dnsName) return undefined;
   if (remote.transport === "tailscale") return tailscaleStatus.state === "connected" ? tailscaleStatus.ip : undefined;
   return "0.0.0.0";
 }
@@ -980,7 +995,7 @@ function networkHost(): string | undefined {
 function syncLanServer(signOut = false): Promise<void> {
   const change = syncingLan.catch(() => undefined).then(async () => {
     let host = networkHost();
-    if (lanServer && host !== lanHost) {
+    if (lanServer && (host !== lanHost || lanTls !== phoneTls)) {
       const previous = lanServer;
       lanServer = undefined;
       lanHost = undefined;
@@ -998,10 +1013,11 @@ function syncLanServer(signOut = false): Promise<void> {
     }
     lanError = undefined;
     const transport = remote.transport ?? "lan";
+    const servingTls = phoneTls;
     const receive = listener("lan");
     const handleNetwork = (req: IncomingMessage, res: ServerResponse) => {
       // Settings may change before the socket closes. Old bindings never inherit a new mode.
-      if (host !== networkHost() || transport !== (remote.transport ?? "lan")) {
+      if (host !== networkHost() || servingTls !== phoneTls || transport !== (remote.transport ?? "lan")) {
         return send(res, 403, { error: "Remote access changed. Reconnect using the current link." });
       }
       receive(req, res);
@@ -1013,6 +1029,7 @@ function syncLanServer(signOut = false): Promise<void> {
     });
     lanServer = server;
     lanHost = host;
+    lanTls = servingTls;
     await new Promise<void>((resolve) => {
       server.once("listening", resolve);
       server.on("error", (err: NodeJS.ErrnoException) => {
@@ -1031,6 +1048,35 @@ function syncLanServer(signOut = false): Promise<void> {
   });
   syncingLan = change;
   return change;
+}
+
+/** Only renew the already configured identity; imported and environment certificates stay owner-managed. */
+async function renewRemoteCertificate(): Promise<void> {
+  if (tlsConfigured || process.env.CODEFLOW_SSH_HOST || remoteStopping || configuringTls || !remote.enabled || !remote.lan || remote.transport !== "tailscale") return;
+  const status = certificateRenewal.status(savedCertificate);
+  if (!status || status.running || status.nextAttempt > Date.now()) return;
+  configuringTls = true;
+  try {
+    const change = changingRemote.catch(() => undefined).then(async () => {
+      await certificateRenewal.tick(savedCertificate, async () => {
+        const previous = savedCertificate;
+        if (!previous) throw new Error("Certificate missing");
+        await refreshTailscale(true);
+        if (remoteStopping || tailscaleStatus.state !== "connected" || tailscaleStatus.dnsName !== previous.hostname) throw new Error("Tailscale identity unavailable");
+        const certificate = await requestTailscaleCertificate(previous.hostname);
+        const details = validateRemoteCertificate(certificate);
+        if (remoteStopping || details.hostname !== previous.hostname || details.expiresAt <= previous.expiresAt) throw new Error("Certificate was not extended");
+        await saveRemoteCertificate(certificate);
+        phoneTls = { cert: certificate.cert, key: certificate.key };
+        phoneProtocol = "https"; savedCertificate = details; tlsLoadError = undefined;
+        // Reopen HTTPS with the renewed key. Pairing tokens, cookies and full control stay valid.
+        await syncLanServer();
+        return details;
+      });
+    });
+    changingRemote = change;
+    await change;
+  } finally { configuringTls = false; }
 }
 
 /**
@@ -1081,7 +1127,9 @@ function lastEventSeq(req: IncomingMessage, expectedEpoch = EPOCH): number | und
  */
 const runFeed = { seq: 0, recent: [] as { seq: number; run: RunSummary }[], clients: new Set<(entry: { seq: number; run: RunSummary }) => void>() };
 const RUN_FEED_KEEP = 500;
+let runHistoryRevision = 0;
 manager.subscribeAll((run) => {
+  if (run.deleted) runHistoryRevision++; // A reconnect replaces stale paged history even after the deletion leaves the replay ring.
   const entry = { seq: ++runFeed.seq, run };
   runFeed.recent.push(entry);
   if (runFeed.recent.length > RUN_FEED_KEEP) runFeed.recent.shift();
@@ -1090,7 +1138,7 @@ manager.subscribeAll((run) => {
 
 function streamAllRuns(req: IncomingMessage, res: ServerResponse, limit?: number) {
   const page = limit === undefined ? undefined : fileAccess.page({ limit });
-  const epoch = `${EPOCH}-fs${filesystemFeedRevision}`;
+  const epoch = `${EPOCH}-fs${filesystemFeedRevision}-history${runHistoryRevision}`;
   const stream = openStream(res, epoch);
   const after = lastEventSeq(req, epoch);
   const oldest = runFeed.recent[0]?.seq ?? runFeed.seq + 1;
@@ -1148,7 +1196,7 @@ const topics: Record<string, TopicSource> = {
    * stream; a reconnect gets the snapshots it missed.
    */
   runs(_name, after, deliver) {
-    const epoch = `${EPOCH}-fs${filesystemFeedRevision}`;
+    const epoch = `${EPOCH}-fs${filesystemFeedRevision}-history${runHistoryRevision}`;
     const from = cursorSeq(after, epoch);
     const oldest = runFeed.recent[0]?.seq ?? runFeed.seq + 1;
     if (from !== undefined && from >= oldest - 1 && from <= runFeed.seq) {
@@ -1179,7 +1227,7 @@ const topics: Record<string, TopicSource> = {
     if (!manager.get(id)) throw new TopicError(404, "This run doesn't exist. It may have been started by another code-flow, or its files were removed.");
     if (fileAccess.restrictedRun(manager.get(id)!)) throw new TopicError(403, "This run is unavailable under its filesystem policy");
     const generation = filesystemFeedRevision;
-    const allowed = () => generation === filesystemFeedRevision && !fileAccess.restrictedRun(manager.get(id)!);
+    const allowed = () => { const current = manager.get(id); return generation === filesystemFeedRevision && !!current && !fileAccess.restrictedRun(current); };
     const epoch = `run-${id}`;
     const requested = cursorSeq(after, epoch);
     let last = 0;
@@ -1260,7 +1308,7 @@ function openHubStream(res: ServerResponse, url: URL) {
  * reconnect (with Last-Event-ID) gets only what it missed.
  */
 async function streamTopic(req: IncomingMessage, res: ServerResponse, kind: "runs" | "run" | "shell", name = "") {
-  const epoch = kind === "run" ? `run-${name}` : `${EPOCH}-fs${filesystemFeedRevision}`;
+  const epoch = kind === "run" ? `run-${name}` : `${EPOCH}-fs${filesystemFeedRevision}-history${runHistoryRevision}`;
   const after = lastEventSeq(req, epoch);
   const stream = openStream(res, epoch);
   let closed = false;
@@ -1334,6 +1382,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (owner || shared || claim) auth.claimable = false;
     return sendAppPage(req, res, { ...NO_FRAMES, ...(claim ? { "set-cookie": sessionCookie() } : {}) });
   }
+  if (parts[0] === "computer") {
+    if (via !== "local" || !owner || !sshProjects) throw new HttpError(403, "Use the local owner app to open remote projects");
+    const id = parts[1] ?? "";
+    if (!/^[a-f0-9]{16}$/.test(id)) throw new HttpError(404, "Computer not found");
+    const context = await attempt(() => sshProjects.context(id));
+    if (parts.length === 2 && req.method === "GET") {
+      const prefix = `/computer/${id}`;
+      if (!url.pathname.endsWith("/")) { res.writeHead(302, { location: prefix + "/" }); res.end(); return; }
+      const html = (await readFile(indexHtml, "utf8")).replace(/<script\b/, `<script>window.__CODEFLOW_WORKSPACE=${JSON.stringify(id)};</script><script`);
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...NO_FRAMES }); res.end(html); return;
+    }
+    const path = url.pathname.slice(`/computer/${id}`.length) + url.search;
+    if (path === "/api/ssh-context" && req.method === "GET") return send(res, 200, context);
+    if (parts[2] !== "api") throw new HttpError(404, "Unknown remote operation");
+    ownerHubStreams.add(res);
+    res.once("close", () => ownerHubStreams.delete(res));
+    return attempt(() => sshProjects.forward(id, req, res, path, `http://${req.headers.host}`));
+  }
   if (parts[0] !== "api") throw new HttpError(404, "Not found");
   if (runnerBearer) return handleRunnerRequest(req, res, url, parts, bearer);
   if (shared) {
@@ -1392,6 +1458,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     throw new HttpError(404, "Unknown SSH runtime operation");
   }
+  if (parts[1] === "workspace-projects") {
+    if (!sshProjects || via !== "local") throw new HttpError(403, "Connected projects require the local app");
+    if (parts.length === 2 && req.method === "GET") return send(res, 200, { currentComputerId: "local", computers: await attempt(() => sshProjects.projectDirectory()) });
+    throw new HttpError(404, "Unknown connected project operation");
+  }
   if (parts[1] === "ssh-hosts") {
     if (!sshProjects || via !== "local") throw new HttpError(403, "Manage SSH connections from the local app");
     if (fileAccess.hasRestrictions()) throw new HttpError(409, "Filesystem restrictions pause SSH connection management");
@@ -1399,7 +1470,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (parts.length === 2 && req.method === "POST") return send(res, 201, await attempt(async () => sshProjects.add(await readJson(req, 8192))));
     if (parts.length === 3 && req.method === "DELETE") { await attempt(() => sshProjects.remove(parts[2]!)); return send(res, 200, { ok: true }); }
     if (parts.length === 4 && req.method === "POST") {
-      if (parts[3] === "connect") return send(res, 200, await attempt(() => sshProjects.connect(parts[2]!, `http://${req.headers.host}/`)));
+      if (parts[3] === "connect") return send(res, 200, await attempt(() => sshProjects.connect(parts[2]!)));
       if (parts[3] === "disconnect") { await attempt(() => sshProjects.disconnect(parts[2]!)); return send(res, 200, { ok: true }); }
       if (parts[3] === "stop") { await attempt(() => sshProjects.stop(parts[2]!)); return send(res, 200, { ok: true }); }
     }
@@ -1726,6 +1797,39 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (req.method === "GET" && parts[1] === "templates") return send(res, 200, templates);
   if (parts[1] === "remote") {
     if (process.env.CODEFLOW_SSH_HOST && req.method !== "GET") throw new HttpError(403, "Use SSH to reach this backend; phone listeners are unavailable on SSH hosts");
+    if (parts[2] === "tls" && parts.length === 3) {
+      if (via !== "local") throw new HttpError(403, "Configure HTTPS from Codeflow on this computer");
+      if (req.method !== "POST") throw new HttpError(405, "Method not allowed");
+      if (tlsConfigured) throw new HttpError(409, "HTTPS is managed by environment variables. Remove those overrides and restart before managing certificates in Settings.");
+      const body = await readJson(req, 192 * 1024);
+      if (body.mode !== "tailscale" && body.mode !== "import") throw new HttpError(400, "Choose Tailscale or import certificate files");
+      if (configuringTls) throw new HttpError(409, "Secure access setup is already in progress");
+      configuringTls = true;
+      try {
+        const change = changingRemote.catch(() => undefined).then(async () => {
+          let certificate: RemoteCertificate;
+          if (body.mode === "tailscale") {
+            await refreshTailscale(true);
+            if (remote.transport !== "tailscale" || tailscaleStatus.state !== "connected" || !tailscaleStatus.dnsName) throw new HttpError(400, "Choose Tailscale and connect this computer before setting up its certificate");
+            certificate = await attempt(() => requestTailscaleCertificate(tailscaleStatus.dnsName!));
+          } else certificate = { source: "import", hostname: await attempt(async () => certificateHostname(body.hostname)), cert: body.cert, key: body.key };
+          const details = await attempt(async () => validateRemoteCertificate(certificate));
+          if (remote.transport === "tailscale" && tailscaleStatus.dnsName && details.hostname !== tailscaleStatus.dnsName) throw new HttpError(400, "Use a certificate for this computer's Tailscale DNS name");
+          // Revoke access durably first: an interrupted certificate write must never preserve old full-control sessions.
+          const next = changeRemote(remote, { rotate: true, control: false });
+          await saveRemote(next);
+          remote = next;
+          await saveRemoteCertificate(certificate);
+          phoneTls = { cert: certificate.cert, key: certificate.key };
+          phoneProtocol = "https"; savedCertificate = details; tlsLoadError = undefined;
+          await syncLanServer(true);
+        });
+        changingRemote = change;
+        await change;
+        return send(res, 200, remoteInfo(via));
+      } finally { configuringTls = false; }
+    }
+    if (parts[2] && parts[2] !== "devices") throw new HttpError(404, "Unknown remote access operation");
     if (parts[2] === "devices") {
       if (req.method === "GET") return send(res, 200, phoneSessions.list(remote.controlToken));
       if (req.method === "DELETE" && parts[3]) return send(res, 200, { revoked: await phoneSessions.revoke(parts[3], remote.controlToken) });
@@ -1753,7 +1857,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (via === "local") await syncLanServer();
       else res.once("close", () => void syncLanServer());
     } else throw new HttpError(405, "Method not allowed");
-    return send(res, 200, remoteInfo());
+    return send(res, 200, remoteInfo(via));
   }
   if (parts[1] === "automations") {
     if (parts[2] === "schedule-preview" && req.method === "POST") {
@@ -2040,6 +2144,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const body = await readJson(req);
       return send(res, 200, await attempt(async () => manager.setPriority(run.id, body.priority)));
     }
+    if (req.method === "POST" && parts[3] === "provider-chat" && parts.length === 4) {
+      const body = await readJson(req, 64 * 1024);
+      const { roles } = await validateRoles(findPattern("solo")!, { agent: [body.agent] }, run.repo, run.loop.remoteWorker, run.trust);
+      const next = await attempt(() => manager.startProviderChat(run.id, { agent: roles.agent![0]!, settings: body.settings, message: body.message }));
+      return send(res, 201, { id: next.id });
+    }
     if (req.method === "POST" && parts[3] === "fork") {
       const body = await readJson(req);
       const checkpoint = typeof body.commit === "string" ? body.commit : undefined;
@@ -2065,6 +2175,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       manager.setSeen(run.id, true);
       return send(res, 200, { seen: true });
     }
+    if (req.method === "DELETE" && parts.length === 3) {
+      await attempt(() => manager.deleteRun(run.id));
+      return send(res, 200, { deleted: true });
+    }
     if (req.method === "POST" && parts[3] === "archive") {
       const body = await readJson(req);
       if (body.archived === false) {
@@ -2088,6 +2202,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
           side,
           worktree: String(body.worktree ?? ""),
           agent: body.agent,
+          settings: body.settings,
+          trust: body.trust,
+          tools: body.tools,
           message: typeof body.message === "string" ? body.message : undefined,
           mergeFrom: typeof body.mergeFrom === "string" ? body.mergeFrom : undefined,
           budget: body.budget === undefined ? undefined : { maxSteps: body.budget?.maxSteps, maxInvocations: body.budget?.maxInvocations, maxMinutes: body.budget?.maxMinutes },
@@ -2225,9 +2342,16 @@ await coordinatedApi.service.load();
 await coordinatedApi.recover().catch((error) => logError("A coordinated launch requires manual recovery", error));
 await recoverDeferredRuns(deferredRuns, manager).catch((error) => logError("A deferred launch requires manual recovery", error));
 remote = await loadRemote();
+if (!tlsConfigured) {
+  try {
+    const certificate = await loadRemoteCertificate(undefined, true);
+    if (certificate) { savedCertificate = validateRemoteCertificate(certificate, Date.now(), true); phoneTls = { cert: certificate.cert, key: certificate.key }; phoneProtocol = "https"; }
+  } catch (error) { tlsLoadError = (error as Error).message; logWarn(tlsLoadError); }
+}
+await certificateRenewal.load().catch((error) => logWarn((error as Error).message));
 await phoneSessions.load().catch((error) => logError("Phone pairing disabled: session storage cannot be read", error));
 if (notificationsReady) {
-  manager.subscribeAll((run) => { void notifications.observe(run).catch((error) => logError("Notification event could not be retained", error)); });
+  manager.subscribeAll((run) => { if (!run.deleted) void notifications.observe(run).catch((error) => logError("Notification event could not be retained", error)); });
   approvals.subscribe(() => {
     for (const request of approvals.list()) {
       const run = request.status === "pending" ? manager.get(request.runId) : undefined;
@@ -2245,13 +2369,16 @@ teamPruneTimer.unref();
 if (!process.env.CODEFLOW_SSH_HOST) void (async () => {
   if (remote.transport === "tailscale") await refreshTailscale();
   await syncLanServer();
-})();
+  await renewRemoteCertificate();
+})().catch((error) => logError("Remote access startup failed", error));
 const tailscaleTimer = setInterval(() => {
-  if (!process.env.CODEFLOW_SSH_HOST && remote.enabled && remote.lan && remote.transport === "tailscale") {
-    void refreshTailscale().then(() => syncLanServer()).catch((err) => logError("Tailscale access refresh failed", err));
+  if (!process.env.CODEFLOW_SSH_HOST && remote.enabled && remote.lan) {
+    void (remote.transport === "tailscale" ? refreshTailscale() : Promise.resolve()).then(() => syncLanServer()).catch((err) => logError("Tailscale access refresh failed", err));
   }
 }, 10_000);
 tailscaleTimer.unref();
+const certificateRenewalTimer = setInterval(() => { void renewRemoteCertificate().catch((error) => logError("Certificate renewal failed", error)); }, 60_000);
+certificateRenewalTimer.unref();
 
 function listener(via: Via) {
   return (req: IncomingMessage, res: ServerResponse) => {
@@ -2382,6 +2509,7 @@ async function stop(reason: string, code = 0) {
     server.close();
     remoteStopping = true;
     clearInterval(tailscaleTimer);
+    clearInterval(certificateRenewalTimer);
     clearInterval(teamPruneTimer);
     lanServer?.close();
     lanServer?.closeAllConnections();

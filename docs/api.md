@@ -34,6 +34,7 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 | `POST /workspace/apply-hunks` | `repo`, `runId`, `source`, `path`, `expectedHead`, `hunks` | Apply 1–200 distinct preview IDs to a clean, unchanged run checkout. Arbitrary client patches are never accepted; files stay unstaged. |
 | `POST /runs/:id/pause` | `paused` | Hold new dispatch at operation boundaries; active work finishes. |
 | `POST /runs/:id/priority` | `priority` from -10 to 10 | Update dispatch priority, including waiting work. Equal priorities favor less-busy projects. |
+| `POST /runs/:id/provider-chat` | `agent`, optional `settings: {model, effort}`, `message` | Start a single-agent child with another provider, a portable conversation transcript, saved context files and a new worktree from the source result commit. Requires an idle source and clean worktree; retains project, computer and permission restrictions. Provider sessions and side-chat transcripts are excluded. |
 | `POST /runs/:id/fork` | exact `commit`, optional `task` | Begin a child run from an owned checkpoint, retaining source trust restrictions. |
 | `POST /runs/:id/revise-goal` | `message`, optional `budget` | Create a new Auto-team run with a user-authored goal revision and prior work references; returns 201 with its `id`. |
 | `POST /runs/:id/rerun-tasks` | `expectedHead`, `taskIds`, optional selected-task `instructions`, explicit `budget` | Execute accepted selected tasks and every dependency descendant in a child at the pinned integration commit. Retained work is labeled baseline input; final checks/review are independent. Returns 201 `{id}`. |
@@ -43,12 +44,15 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 | `POST /runs/:id/human-rework` | `branch`, `expectedHead`, `minutes`, optional `note` | Append a user-entered correction-time record (1–1,440 minutes, note ≤2,000 characters, at most 100 records/run). Returns 201 with updated coverage. |
 | `POST /runs/:id/validate-merge` | `branch`, `into`, optional `allowUntrusted` | Verify the combined result with the current target in a disposable checkout. Returns pinned `source`, `target`, merge `tree`, `report` or `conflicts`. Requires a configured check/profile. |
 | `POST /runs/:id/merge` | `branch`, `into`, optional `archiveAfter`, `requireValidation` | Merge an owned result into the selected local branch. `requireValidation: true` requires passing verification for unchanged source/target and the exact merged tree. |
+| `POST /runs/:id/archive` | `archived`, optional `cleanup`, `deleteBranches` | Archive or unarchive a finished run. Use `cleanup: false` to hide it while keeping worktrees and branches. |
+| `DELETE /runs/:id` | — | Permanently remove a finished run's conversation/history and private run memory. Active runs are rejected. Git branches, worktrees and repository files remain. Run-list streams publish a summary with `deleted: true`; clients remove that ID. |
 | `GET /runs/:id/export` | optional `transcript=1` query | Export sanitized run metadata, checks, and requested transcript. |
 | `GET /approvals` | optional `run` query | Inspect bounded per-action permission requests. |
 | `POST /approvals/:id` | `decision=approve\|decline` | Answer one still-active request once; expired or cancelled requests return 409. |
 | `GET /notes/history` | `key` query | Read bounded saved note revisions. |
 | `GET /notes/search` | `q` query | Search current saved notes. |
 | `POST /notes/restore` | `key`, `revision`, `expectedRevision` | Restore a prior note as a new revision. |
+| `POST /remote/tls` | `{mode: "tailscale"}` or `{mode: "import", hostname, cert, key}` with PEM strings | Local owner only. Validate and save HTTPS configuration, rotate pairing, disable full control and reload the network listener without restarting runs. Tailscale mode uses the connected computer's DNS name. Environment-managed TLS cannot be replaced here. Returns remote status and public certificate metadata, never PEM material. |
 | `GET /remote/devices` | none | List paired device metadata, never session credentials. |
 | `DELETE /remote/devices/:id` | none | Revoke one device immediately. |
 | `GET /diagnostics` | optional `repo` query | Export versions, queue/write health and sanitized recent logs. |
@@ -422,16 +426,21 @@ backends and phone/shared sessions cannot manage additional SSH connections.
 
 | Endpoint | Input | Result |
 | --- | --- | --- |
+| `GET /workspace-projects` | none | Local and connected remote project IDs and names, grouped by computer; never repository paths or credentials. |
 | `GET /ssh-hosts` | none | Saved host IDs, names, aliases and connection state, plus concrete aliases discovered from SSH config. |
 | `POST /ssh-hosts` | `sshHost`, optional `name` | Save an alias or `user@hostname`; port/key/jump configuration stays in OpenSSH. |
-| `POST /ssh-hosts/:id/connect` | none | Install or reuse the remote backend and return a one-minute, single-use workspace URL. |
-| `POST /ssh-hosts/:id/disconnect` | none | Close local gateways and channels, leaving remote work running. |
+| `POST /ssh-hosts/:id/connect` | none | Install or reuse the remote backend and return a stable, same-origin `/computer/:id/` workspace path. |
+| `POST /ssh-hosts/:id/disconnect` | none | Close SSH channels and preview forwards, leaving remote work running. |
 | `POST /ssh-hosts/:id/stop` | none | Stop an idle remote backend, then disconnect. Refuses active execution, terminals and development services. |
 | `DELETE /ssh-hosts/:id` | none | Disconnect and remove the saved definition; remote data remains. |
-| `GET /ssh-context` | none | Local or SSH workspace context; a gateway includes its display name and return URL. |
+| `GET /ssh-context` | none | Local workspace context. At `/computer/:id/api/ssh-context`, returns the saved computer ID, name and connection state. |
 
-The returned workspace uses its own authenticated origin. Its existing `/api`
-endpoints and event streams address the remote backend, so project paths, Git,
+The returned workspace uses the same local app origin and owner session. Its
+`/computer/:id/api/` endpoints and event streams address the remote backend, so project paths, Git,
 files, checks, agent tools and terminals all refer to that server. Mutations are
 never replayed automatically. See [SSH projects](ssh-projects.md) for setup,
 reconnection, remote previews, supported hosts and authentication boundaries.
+
+Managed Tailscale certificates renew automatically while Tailscale remote access is enabled. `GET /remote` includes `tls.renewal` with `automatic`, `running`, `nextAttempt`, optional `lastSuccess` and a safe `error`. Renewal preserves paired sessions and control settings. Imported/environment certificates are excluded.
+
+For multi-agent roles in Race, Debate, Review council, Supervisor and Loop workflows, a role setting can include additional models from the same provider: `roleSettings.reviewers.claude = { model: "first", variants: [{ model: "second", effort: "low" }] }`. Each entry runs separately with its own settings and session. Pipeline and other single-agent roles still use one model. Auto team pools also accept variants in `roleSettings.pool`: these are allowed model/effort choices for workers and reviewers. The coordinator selects among them within the member limit; it does not launch every selected model. Coordinator settings stay fixed. Additional models use the same validation as primary models (maximum 128 additional models per provider).

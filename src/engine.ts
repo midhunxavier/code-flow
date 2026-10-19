@@ -1,3 +1,4 @@
+import { chatHandoffContext } from "./chat-handoff.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
@@ -81,7 +82,7 @@ import {
   type Snapshot,
   type Worktree,
 } from "./git.js";
-import { appendLine, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines, rewriteLines, RUNS_DIR } from "./store.js";
+import { appendLine, deleteRunHistory, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines, rewriteLines, RUNS_DIR } from "./store.js";
 import { compactRunLog, decodeRunLog, RunLogWriter } from "./run-log.js";
 import { branchDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
@@ -471,7 +472,7 @@ export interface Run {
   artifacts: Artifact[];
 }
 
-export type RunSummary = Omit<Run, "steps"> & { cold?: true; detailAvailable?: true };
+export type RunSummary = Omit<Run, "steps"> & { cold?: true; detailAvailable?: true; deleted?: true };
 
 /** How many tests the run's check ran at a commit. */
 export interface TestCount {
@@ -524,6 +525,9 @@ export interface FollowUp {
   watch?: string;
   /** Permissions for this turn when they differ from the run's (unattended follow-ups get less). */
   trust?: Trust;
+  /** Explicit choices for this message, independent of other queued turns. */
+  settings?: { model?: string; effort?: string };
+  tools?: boolean;
   /** Test changes code-flow found in this follow-up's commit. */
   integrity?: IntegrityIssue[];
   status: "pending" | "done" | "failed";
@@ -719,6 +723,8 @@ export interface AskParams {
   identity?: string;
   /** Permissions for this turn instead of the run's. */
   trust?: Trust;
+  /** Per-turn approval choice; unattended and locked-down executions still cannot prompt. */
+  tools?: boolean;
   /** Constrain the answer to this JSON Schema. Prefer `ctx.decide()`, which also validates. */
   schema?: object;
   /** Called with the step's id once it starts (not when it's replayed from the journal). */
@@ -1402,6 +1408,18 @@ export class TeamContext {
 
   agents(role: string): AgentId[] {
     return this.run.roles[role] ?? [];
+  }
+
+  /** Separate invocations of a provider use distinct model settings and replay identities. */
+  participants(role: string) {
+    return this.agents(role).flatMap((agent) => {
+      const configured = this.run.roleSettings[role]?.[agent];
+      const base = { ...this.run.agentSettings[agent], ...configured };
+      const choices = [{ model: base.model, effort: base.effort }, ...(configured?.variants ?? []).map(variant => ({ model: variant.model, effort: variant.effort ?? "" }))];
+      const seen = new Set<string>();
+      return choices.filter(choice => { const key = JSON.stringify([choice.model ?? "", choice.effort ?? ""]); if (seen.has(key)) return false; seen.add(key); return true; })
+        .map((settings, index) => ({ agent, settings, identity: configured?.variants?.length ? `${role}:${agent}:${index}` : undefined }));
+    });
   }
 
   agent(role: string): AgentId {
@@ -2215,7 +2233,10 @@ export class TeamContext {
     }
     if (params.resume?.memberId && params.resume.memberId !== params.memberId) throw new Error("Cannot resume another member's private session");
     if (params.memberId && params.resume?.worktree && params.resume.worktree !== params.cwd.name) throw new Error("A member changing workspaces must start a fresh session with its checkpoint");
-    if (params.settings) params = { ...params, settings: validateAgentSettings({ [params.agent]: params.settings })[params.agent] };
+    if (params.settings) {
+      const validated = validateAgentSettings({ [params.agent]: params.settings })[params.agent] ?? {};
+      params = { ...params, settings: { ...validated, ...(params.settings.model === "" ? { model: "" } : {}), ...(params.settings.effort === "" ? { effort: "" } : {}) } };
+    }
     // A turn that may fail (a race contestant, a worker) and failed because its CLI was signed out
     // or stalled says nothing about the task: recorded, every resume would replay that failure, and
     // the race would go on judging one candidate fewer. It's taken again instead. (A usage limit
@@ -2519,13 +2540,13 @@ export class TeamContext {
           cwd: params.cwd.path,
           mode: params.mode,
           resumeSessionId: resume,
-          model: params.settings?.model || this.run.roleSettings?.[params.role]?.[params.agent]?.model || this.run.agentSettings[params.agent]?.model,
-          effort: params.settings?.effort || this.run.roleSettings?.[params.role]?.[params.agent]?.effort || this.run.agentSettings[params.agent]?.effort,
+          model: params.settings?.model !== undefined ? params.settings.model || undefined : this.run.roleSettings?.[params.role]?.[params.agent]?.model || this.run.agentSettings[params.agent]?.model,
+          effort: params.settings?.effort !== undefined ? params.settings.effort || undefined : this.run.roleSettings?.[params.role]?.[params.agent]?.effort || this.run.agentSettings[params.agent]?.effort,
           jsonSchema: params.schema,
           questionProtocol: params.memberId ? "structured" : undefined,
           teamTools: grant?.connection,
           agentContainer: this.run.loop.agentContainer,
-          interactiveApprovals: !remote && this.run.approvals.tools === true && !this.run.trigger && !this.run.lockdown,
+          interactiveApprovals: !remote && !this.run.loop.agentContainer && (params.tools ?? this.run.approvals.tools) === true && !this.run.trigger && !this.run.lockdown,
           onApproval: params.agent.startsWith("plugin:") ? undefined : async (request: import("./adapters/types.js").AgentApprovalRequest, signal: AbortSignal) => {
             this.pauseClock();
             try { return await approvals.request(this.run.id, step.id, request, signal); }
@@ -2789,6 +2810,7 @@ export class RunManager {
   private readonly mergeValidating = new Map<string, AbortController>();
   private readonly mergeValidationWork = new Map<string, Promise<MergeValidation>>();
   private readonly runs = new Map<string, Run>();
+  private readonly deletedRuns = new Set<string>();
   /** Preserve callers' live Run handles on promotion without retaining cold full state. */
   private readonly runIdentities = new Map<string, WeakRef<Run>>();
   private readonly coldRuns = new RunColdStore();
@@ -3027,6 +3049,7 @@ export class RunManager {
   }
 
   get(id: string): Run | undefined {
+    if (this.deletedRuns.has(id)) return undefined;
     const hot = this.runs.get(id); if (hot) return hot;
     if (!this.coldRuns.has(id)) return undefined;
     let cold: Run | undefined; try { cold = this.coldRuns.get(id); } catch { /* Rebuild from the authoritative log. */ }
@@ -3164,6 +3187,22 @@ export class RunManager {
     this.emitRun(run);
   }
 
+  /** Delete conversation history only. Repository files, worktrees and branches remain owned by Git. */
+  async deleteRun(id: string) {
+    const run = this.require(id);
+    if (this.busyRun(run) || this.active.has(id) || this.coldMutations.has(id)) throw new RunConflictError("Finish or stop the run before deleting it");
+    this.deletedRuns.add(id);
+    try {
+      await this.coldWrites.get(id);
+      await deleteRunHistory(id);
+    } catch (error) { this.deletedRuns.delete(id); throw error; }
+    this.bus.emit("workspace-stop", id);
+    this.devServers.stopMatching(`${id}/`);
+    this.runs.delete(id); this.coldRuns.drop(id); this.history.delete(id); this.runIdentities.delete(id); this.logWriter.forget(id);
+    this.bus.emit("*", { ...strip(run), deleted: true });
+    await memoryStore.purgeRun(id).catch((error: Error) => logWarn(`Couldn't retire deleted run memory for ${id}: ${error.message}`));
+  }
+
   /** Move a run to another project; its repo joins that project if it isn't in it yet. */
   async setProject(id: string, projectId: string) {
     const run = this.require(id);
@@ -3295,6 +3334,8 @@ export class RunManager {
       push?: string;
       watch?: string;
       trust?: Trust;
+      settings?: { model?: string; effort?: string };
+      tools?: boolean;
       budget?: Partial<Pick<LoopSettings, "maxSteps" | "maxInvocations" | "maxMinutes">>;
       side?: SideTurn;
       /** Files to send with it (base64): written into the worktree, never committed. */
@@ -3306,6 +3347,7 @@ export class RunManager {
     try {
       await this.assertExecutionAllowed(run.repo, run, "follow-up dispatch");
       const kind = input.kind ?? "comments";
+      if (kind === "reply" && run.pattern === "solo" && input.agent !== run.roles.agent?.[0]) throw new Error("This single-agent chat keeps its original provider. Start a new run to use another provider.");
       if (kind === "side" && !input.side) throw new Error("A side chat's turn needs its chat");
       // A side chat's turn can wait for the team, and anything can wait for follow-ups once the team is
       // done (a reply sent while a side chat works): the running execution takes it after its own work.
@@ -3316,6 +3358,13 @@ export class RunManager {
       if (kind !== "resolve-conflicts" && !input.message?.trim()) throw new Error(kind === "reply" ? "Write a reply" : kind === "side" ? "Write a message" : "Write at least one comment");
       if (kind === "resolve-conflicts" && !input.mergeFrom) throw new Error("Say which branch to merge");
       if (kind === "resolve-conflicts" && !(await validRef(run.repo, input.mergeFrom!))) throw new Error(`"${input.mergeFrom}" isn't a branch in this repository`);
+      if (input.trust !== undefined && !["safe", "standard", "trusted", "full"].includes(input.trust)) throw new Error("Invalid permissions");
+      if (input.tools !== undefined && typeof input.tools !== "boolean") throw new Error("Invalid approval preference");
+      if (run.lockdown && input.trust !== undefined && input.trust !== "safe") throw new Error("Locked-down runs require Safe permissions");
+      if (run.trigger && input.trust === "full") throw new Error("Automated runs cannot use Full access");
+      if (input.tools && (run.lockdown || run.trigger || run.loop.remoteWorker || run.loop.agentContainer)) throw new Error("Tool approval prompts require a local interactive run");
+      if (input.settings !== undefined && (!input.settings || typeof input.settings !== "object" || Array.isArray(input.settings))) throw new Error("Invalid model settings");
+      const settings = input.settings === undefined ? undefined : validateAgentSettings({ [input.agent]: input.settings })[input.agent] ?? {};
       // An invalid budget is refused before any file is staged.
       const budget = followUpBudget(input.budget, run.loop);
       // Staged with the run's context, not in the worktree: it may have been removed (archived,
@@ -3338,6 +3387,8 @@ export class RunManager {
         push: input.push,
         watch: input.watch,
         trust: input.trust,
+        settings,
+        tools: input.tools,
         status: "pending",
         at: Date.now(),
       });
@@ -3351,6 +3402,48 @@ export class RunManager {
       }
       return await this.resume(id);
     } finally { release(); }
+  }
+
+  private readonly providerHandoffs = new Map<string, { signature: string; promise: Promise<Run> }>();
+
+  /** A new provider gets a portable history and an independent worktree, never another provider's session. */
+  async startProviderChat(id: string, input: { agent: AgentId; settings?: { model?: string; effort?: string }; message?: string }): Promise<Run> {
+    const run = this.require(id);
+    if (run.pattern !== "solo") throw new Error("Provider handoff is available for single-agent chats");
+    if (input.agent === run.roles.agent?.[0]) throw new Error("Choose another provider for the new chat");
+    getAdapter(input.agent);
+    if (run.approvals.tools && input.agent !== "codex" && !input.agent.startsWith("acp:")) throw new Error("This chat requires interactive approvals, which the selected provider does not support. Choose a provider with approval support.");
+    if (input.message !== undefined && (typeof input.message !== "string" || input.message.length > 20_000)) throw new Error("Keep the new request within 20,000 characters");
+    const settings = validateAgentSettings({ [input.agent]: input.settings ?? {} });
+    const signature = JSON.stringify({ agent: input.agent, settings, message: input.message });
+    const pending = this.providerHandoffs.get(id);
+    if (pending) { if (pending.signature !== signature) throw new Error("Another chat handoff is already starting"); return pending.promise; }
+    if (this.shuttingDown || this.busyRun(run) || this.active.has(id)) throw new Error("Wait for this chat and its side chats to finish before handing off");
+    this.assertNoWorkspaceLease(run.repo);
+    this.starting.add(id); this.stoppedWhileStarting.delete(id);
+    const release = this.holdColdMutation(run);
+    const promise = (async () => {
+      await this.assertExecutionAllowed(run.repo, run, "chat handoff");
+      const pattern = this.findPattern("solo")!;
+      const tree = run.worktrees.find((tree) => tree.name === "solo");
+      if (!tree) throw new Error("This chat has no result branch to continue from");
+      const checkpoint = await resolveCommit(run.repo, `refs/heads/${tree.branch}`);
+      if (existsSync(tree.path)) {
+        const status = await git(["status", "--porcelain", "--untracked-files=normal"], tree.path);
+        if (status.code || status.stdout.trim()) throw new Error("Commit or discard uncommitted worktree changes before starting the new chat");
+      }
+      const context = await chatHandoffContext(run, checkpoint);
+      if (this.shuttingDown || this.stoppedWhileStarting.has(id) || run.status === "running" || this.active.has(id) || await resolveCommit(run.repo, `refs/heads/${tree.branch}`) !== checkpoint) throw new Error("This chat changed while preparing the handoff. Try again when it is idle.");
+      const request = input.message?.trim() || "Read the carried-over context, briefly acknowledge where the work stands, and wait for my next request.";
+      return this.start({ pattern, repo: run.repo, project: run.project, parentRunId: run.id, baseRef: checkpoint,
+        task: `${request}\n\nRead the attached chat-handoff-${run.id}.md before responding. It contains the prior conversation, user constraints, decisions, and saved context references. This is a new chat; do not repeat completed work unless requested.`,
+        roles: { agent: [input.agent] }, options: {}, context, agentSettings: settings,
+        loop: { ...run.loop }, trust: run.trust, allowUntrusted: run.lockdownOnHost,
+        approvals: { tools: !!run.approvals.tools },
+      });
+    })();
+    this.providerHandoffs.set(id, { signature, promise });
+    try { return await promise; } finally { this.providerHandoffs.delete(id); this.starting.delete(id); this.stoppedWhileStarting.delete(id); release(); }
   }
 
   private readonly goalRevisions = new Map<string, { signature: string; promise: Promise<Run> }>();
@@ -4525,12 +4618,14 @@ export class RunManager {
   }
 
   emitRun(run: Run) {
+    if (this.deletedRuns.has(run.id)) return;
     this.coldRuns.drop(run.id); run = this.adoptRun(run);
     this.emit(run, { type: "run", run: strip(run) });
     this.scheduleCold(run);
   }
 
   emit(run: Run, body: RunEventBody) {
+    if (this.deletedRuns.has(run.id)) return;
     const event = { seq: ++this.seq, ts: Date.now(), runId: run.id, ...body } as RunEvent;
     this.history.get(run.id)?.push(event);
     this.bus.emit(run.id, event);
@@ -4659,6 +4754,8 @@ async function runFollowUpInWorktree(ctx: TeamContext, run: Run, f: FollowUp, wt
     cwd: wt,
     allowFailure: true,
     trust: f.trust,
+    settings: f.settings ? { model: f.settings.model ?? "", effort: f.settings.effort ?? "" } : undefined,
+    tools: f.tools,
     onStart: (stepId) => {
       f.stepId = stepId;
       ctx.publish();
@@ -4811,6 +4908,8 @@ async function sideTurn(ctx: TeamContext, run: Run, f: FollowUp, side: SideTurn)
     cwd: wt,
     allowFailure: true,
     trust: f.trust,
+    settings: f.settings ? { model: f.settings.model ?? "", effort: f.settings.effort ?? "" } : undefined,
+    tools: f.tools,
     onStart: (stepId) => {
       f.stepId = stepId;
       ctx.publish();

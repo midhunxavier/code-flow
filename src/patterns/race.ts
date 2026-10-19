@@ -41,21 +41,21 @@ export const racePattern: Pattern = {
   options: [],
 
   async run(ctx) {
-    const contestants = ctx.agents("contestants");
+    const contestants = ctx.participants("contestants");
     if (contestants.length < 2) throw new Error("A race needs at least two contestants");
-    const judges = ctx.agents("judge");
+    const judges = ctx.participants("judge");
     if (!judges.length) throw new Error("Pick at least one judge");
 
     // A contestant's failed turn is part of the race; anything else failing (its worktree, a
     // commit) stops the other contestants too.
-    const entries = await ctx.parallel(contestants, async (agent, i) => {
-      const label = LETTERS[i]!;
+    const entries = await ctx.parallel(contestants, async ({ agent, settings, identity }, i) => {
+      const label = LETTERS[i] ?? String(i + 1);
       // Worktree and branch names are neutral so the judge sees no vendor names.
       const wt = await ctx.worktree(`candidate-${label.toLowerCase()}`);
       const result = await ctx.ask({
         title: `Candidate ${label}`,
         role: "contestants",
-        agent,
+        agent, settings, identity,
         mode: "write",
         cwd: wt,
         allowFailure: true,
@@ -94,18 +94,18 @@ export const racePattern: Pattern = {
     let winner = viable[0]!;
     let reasons: string[] = [];
     if (viable.length > 1) {
-      const competing = judges.filter((j) => contestants.includes(j));
+      const competing = judges.filter((j) => contestants.some(c => c.agent === j.agent)).map(j => j.agent);
       if (competing.length) ctx.log(`${competing.join(", ")} both competes and judges; a judge from another vendor is fairer`, "warn");
       const judgeWt = await ctx.worktree("judge");
       // Blind judging: no author summaries (they can name the vendor), and the presentation
       // order is shuffled — deterministically per run, so a resumed run replays the same way.
       const order = seededShuffle(viable, ctx.run.id);
       const labels = viable.map((e) => e.label);
-      const votes = await ctx.parallel(judges, (judge, i) =>
+      const votes = await ctx.parallel(judges, ({ agent: judge, settings, identity }, i) =>
         ctx.decide<JudgeVerdict>({
           title: judges.length > 1 ? `Judge ${i + 1}` : "Judge candidates",
           role: "judge",
-          agent: judge,
+          agent: judge, settings, identity,
           mode: "read",
           cwd: judgeWt,
           schema: JUDGE_SCHEMA,

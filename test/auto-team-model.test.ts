@@ -123,3 +123,25 @@ test("workflow revisions validate the resulting bounded contracts before changin
   assert.match(revisionProblem(r, s, policy)!, /8000/);
   assert.deepEqual(s.contracts, []);
 });
+
+
+test("selected Auto team model pools constrain workers, reviewers and revisions without changing the coordinator", () => {
+  const selected = structuredClone(policy); selected.pool = ["claude"];
+  const provider = selected.inventory.providers[0]!;
+  provider.models = [{ id: "free-one", efforts: ["low", "high"] }, { id: "free-two", efforts: ["low", "high"] }, { id: "paid" }];
+  const pool = { model: "free-one", effort: "high", variants: [{ model: "free-two", effort: "low" }] };
+  provider.settingsByRole = { coordinator: { model: "leader" }, worker: pool, reviewer: pool };
+  const p = plan();
+  p.members[0]!.model = "leader";
+  p.members[1]!.model = "free-one"; p.members[1]!.effort = "high";
+  p.members[2]!.provider = "claude"; p.members[2]!.model = "free-two"; p.members[2]!.effort = "low";
+  assert.equal(planProblem(p, selected), undefined, "independent members can use distinct allowed models from one provider");
+  p.members[2]!.effort = "high"; assert.match(planProblem(p, selected)!, /effort settings/);
+  p.members[2]!.effort = "low"; p.members[2]!.model = "paid"; assert.match(planProblem(p, selected)!, /model settings/);
+  p.members[2]!.model = "free-two"; p.members[0]!.model = "free-one"; assert.match(planProblem(p, selected)!, /model settings/);
+  p.members[0]!.model = "leader";
+  const s = { ...state(), ...p }; s.tasks[0]!.status = "failed";
+  const r = revision(); r.addMembers = [{ ...p.members[1]!, id: "second", model: "free-two", effort: "low" }];
+  assert.equal(revisionProblem(r, s, selected), undefined);
+  r.addMembers[0]!.model = "paid"; assert.match(revisionProblem(r, s, selected)!, /model settings/);
+});

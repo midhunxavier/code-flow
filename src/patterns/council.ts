@@ -34,7 +34,7 @@ export const councilPattern: Pattern = {
   options: [],
 
   async run(ctx) {
-    const reviewers = ctx.agents("reviewers");
+    const reviewers = ctx.participants("reviewers");
     if (!reviewers.length) throw new Error("Pick at least one reviewer");
     const wt = await ctx.worktree("review");
 
@@ -62,15 +62,15 @@ export const councilPattern: Pattern = {
     }
 
     // A reviewer that doesn't finish is left out; the others carry on.
-    const reviews = await ctx.parallel(reviewers, async (agent, i) => {
-      const label = LETTERS[i]!;
+    const reviews = await ctx.parallel(reviewers, async ({ agent, settings, identity }, i) => {
+      const label = LETTERS[i] ?? String(i + 1);
       const outcome = await ctx
         .decide<ReviewVerdict>({
           title: `Review ${label}`,
           schema: REVIEW_SCHEMA,
           what: "review",
           role: "reviewers",
-          agent,
+          agent, settings, identity,
           mode: "read",
           cwd: wt,
           prompt:

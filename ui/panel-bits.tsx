@@ -1,5 +1,5 @@
 import type { ComponentChildren } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Icon, type IconName } from "./icons.js";
 import { baseName } from "./lib.js";
 import { rememberSide, sideMemo, sideScope, type SideScope } from "./state.js";
@@ -113,7 +113,7 @@ export function Strip({ items, active, onPick, onClose, label, children }: { ite
  * A menu under an icon button; a pick, Escape or a click elsewhere closes it. Opened, its first
  * item has focus and ↓ ↑ (Home, End) move between items; a pick or Escape goes back to the button.
  */
-export function Menu({ label, icon, title, children }: { label: string; icon: IconName; title?: string; children: (close: () => void) => ComponentChildren }) {
+export function Menu({ label, icon, title, trigger, above = false, align = "start", class: cls = "", children }: { label: string; icon: IconName; title?: string; trigger?: ComponentChildren; above?: boolean; align?: "start" | "end"; class?: string; children: (close: () => void) => ComponentChildren }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -124,6 +124,25 @@ export function Menu({ label, icon, title, children }: { label: string; icon: Ic
     setOpen(false);
     button.current?.focus();
   };
+  useLayoutEffect(() => {
+    if (!open || !above) return;
+    const position = () => {
+      if (!button.current || !menu.current) return;
+      const anchor = button.current.getBoundingClientRect();
+      const boundary = button.current.closest(".chatbox, dialog")?.getBoundingClientRect();
+      const left = Math.max(12, boundary ? boundary.left + 8 : 12);
+      const right = Math.min(window.innerWidth - 12, boundary ? boundary.right - 8 : window.innerWidth - 12);
+      menu.current.style.maxWidth = `${Math.max(0, right - left)}px`;
+      const box = menu.current.getBoundingClientRect();
+      const preferredLeft = align === "end" ? anchor.right - box.width : anchor.left;
+      menu.current.style.left = `${Math.max(left, Math.min(preferredLeft, right - box.width))}px`;
+      menu.current.style.top = `${Math.max(12, anchor.top - box.height - 8)}px`;
+    };
+    position();
+    window.addEventListener("resize", position);
+    document.addEventListener("scroll", position, true);
+    return () => { window.removeEventListener("resize", position); document.removeEventListener("scroll", position, true); };
+  }, [open, above, align]);
   useEffect(() => {
     if (!open) return;
     items()[0]?.focus();
@@ -143,6 +162,7 @@ export function Menu({ label, icon, title, children }: { label: string; icon: Ic
     };
   }, [open]);
   const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Tab") { close(); return; }
     const list = items();
     if (!list.length) return;
     const at = list.indexOf(document.activeElement as HTMLElement);
@@ -152,9 +172,9 @@ export function Menu({ label, icon, title, children }: { label: string; icon: Ic
     list[next]!.focus();
   };
   return (
-    <div class="pop-wrap" ref={ref}>
+    <div class={`pop-wrap ${cls}`} ref={ref}>
       <button type="button" ref={button} class={`icon-btn ${open ? "on" : ""}`} aria-label={label} aria-haspopup="menu" aria-expanded={open} title={title ?? label} onClick={() => setOpen(!open)}>
-        <Icon name={icon} />
+        {trigger ?? <Icon name={icon} />}
       </button>
       {open ? (
         <div class="pop-menu" role="menu" aria-label={label} ref={menu} onKeyDown={onKey}>

@@ -6,7 +6,7 @@ import { SshProjects } from "../src/ssh-projects/manager.js";
 import { sshAliases } from "../src/ssh-projects/config.js";
 import { parseRuntime } from "../src/ssh-projects/gateway.js";
 import { SshTransport, validSshHost } from "../src/ssh-projects/transport.js";
-import { buildHost, fixture, pause } from "./ssh-project-fixture.js";
+import { buildHost, fixture, pause, projectBridge } from "./ssh-project-fixture.js";
 import { createServer, request } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 
@@ -24,7 +24,7 @@ test("SSH configuration discovers concrete aliases and includes; rejects command
 
 test("SSH connection options validate, persist, and keep aliases with different ports distinct", async () => {
   const f = await fixture();
-  const options = { home: f.localHome, returnUrl: "http://localhost:4317/" };
+  const options = { home: f.localHome };
   const service = new SshProjects(options);
   try {
     const host = await service.add({ sshHost: "dev@vm", port: 2222, identityFile: "~/.ssh/my key", name: "VM" });
@@ -47,9 +47,15 @@ test("SSH connection options validate, persist, and keep aliases with different 
 
 test("full remote backend browses, edits, runs checks and agents, streams terminals, previews and reconnects", { timeout: 180_000 }, async () => {
   buildHost(); const f = await fixture();
-  const service = new SshProjects({ home: f.localHome, returnUrl: "http://localhost:4317/", sshBinary: f.ssh });
-  let origin = "", cookie = "";
-  const open = async (id: string) => { const link = await service.connect(id); const response = await fetch(link.url, { redirect: "manual" }); assert.equal(response.status, 200); cookie = response.headers.get("set-cookie")!.split(";")[0]!; origin = new URL(link.url).origin; assert.equal((await fetch(link.url, { redirect: "manual" })).status, 401, "pairing ticket is single use"); };
+  let browsingAllowed = true;
+  const service = new SshProjects({ home: f.localHome, sshBinary: f.ssh, localProjects: () => [{ id: "local-project", name: "Local project", repos: ["/private/local/path"] }], canBrowse: () => browsingAllowed });
+  const bridge = await projectBridge(service);
+  let origin = ""; const cookie = "codeflow_owner=local-only";
+  const open = async (id: string) => {
+    const link = await service.connect(id);
+    assert.equal(link.url, `/computer/${id}/`);
+    origin = bridge.origin + link.url.slice(0, -1);
+  };
   const call = async (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") => { const response = await fetch(origin + path, { method, headers: { cookie, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }); const value = await response.json(); assert.ok(response.ok, `${path}: ${JSON.stringify(value)}`); return value; };
   let app: ReturnType<typeof createServer> | undefined;
   try {
@@ -60,11 +66,30 @@ test("full remote backend browses, edits, runs checks and agents, streams termin
     await open(host.id);
     const remote = JSON.parse(await readFile(join(f.remoteHome, ".codeflow/ssh-host/runtime.json"), "utf8"));
     assert.equal((await fetch(`http://127.0.0.1:${remote.port}/api/fs`)).status, 401, "remote backend cannot be claimed by a local browser");
-    assert.equal((await fetch(origin + "/api/fs")).status, 401);
-    assert.equal((await fetch(origin + "/api/fs", { headers: { cookie, origin: "https://evil.example" } })).status, 403);
-    assert.equal(await new Promise<number>((resolve, reject) => { request(origin + "/api/fs", { headers: { cookie, host: "evil.example" } }, (res) => { res.resume(); resolve(res.statusCode!); }).on("error", reject).end(); }), 403);
+    const response = await fetch(origin + "/api/fs");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.match(response.headers.get("content-security-policy")!, /^sandbox allow-downloads;/);
+    assert.equal(response.headers.get("set-cookie"), null);
     assert.equal((await call("/api/fs")).home, f.remoteHome);
-    assert.equal((await call("/api/ssh-context")).name, "Remote fixture");
+    assert.equal((await service.context(host.id)).name, "Remote fixture");
+    const directory = await service.projectDirectory();
+    assert.deepEqual(directory.map((item: any) => item.id), ["local", host.id]);
+    assert.deepEqual(directory[0]!.projects, [{ id: "local-project", name: "Local project" }]);
+    assert.ok(!JSON.stringify(directory).includes("/private/local/path"));
+    const secondHost = await service.add({ sshHost: "fixture-two", name: "Second computer", port: 2222, identityFile: "~/.ssh/key with spaces" });
+    await service.connect(secondHost.id);
+    assert.deepEqual((await service.projectDirectory()).map((item) => item.id), ["local", host.id, secondHost.id]);
+    await service.disconnect(host.id); await open(host.id);
+    assert.deepEqual((await service.projectDirectory()).map((item) => item.id), ["local", host.id, secondHost.id], "reconnecting preserves saved computer order");
+    await service.disconnect(secondHost.id);
+    assert.deepEqual((await service.projectDirectory()).map((item) => item.id), ["local", host.id]);
+
+    browsingAllowed = false;
+    await assert.rejects(service.projectDirectory(), /restrictions/);
+    await assert.rejects(service.context(host.id), /restrictions/);
+    browsingAllowed = true;
+    await assert.rejects(service.context("missing"), /not found/);
+
     const network = await call("/api/remote?refresh=1");
     assert.deepEqual(network.lanUrls, [], "saved remote-access settings cannot start a listener from an SSH backend");
     assert.equal(network.lanError, undefined);
@@ -74,11 +99,6 @@ test("full remote backend browses, edits, runs checks and agents, streams termin
       socket.once("error", () => resolve(false));
     });
     assert.equal(listening, false, "neither startup nor refreshing remote access opens the network port");
-    const pageResponse = await fetch(origin + "/", { headers: { cookie } });
-    const html = await pageResponse.text();
-    assert.equal(pageResponse.status, 200, html.slice(0, 1000));
-    assert.ok(html.includes(`window.__CODEFLOW_WORKSPACE="${host.id}"`));
-    assert.ok(!html.includes(remote.token), "backend token is never exposed to the browser");
     const file = await call(`/api/workspace/file?repo=${encodeURIComponent(f.repo)}&path=remote.txt`);
     await call("/api/workspace/file", { repo: f.repo, path: "remote.txt", text: "EDITED_REMOTELY\n", expectedHash: file.hash });
     assert.equal(await readFile(join(f.repo, "remote.txt"), "utf8"), "EDITED_REMOTELY\n");
@@ -99,7 +119,7 @@ test("full remote backend browses, edits, runs checks and agents, streams termin
     app = createServer((req, res) => { assert.ok(!req.headers.cookie?.includes("codeflow_")); res.setHeader("content-type", "text/html"); res.end("<!doctype html><title>Remote app</title><p>REMOTE_PREVIEW_OK</p>"); });
     await new Promise<void>((resolve) => app!.listen(0, "127.0.0.1", resolve));
     const preview = await call("/api/preview", { url: `http://localhost:${(app.address() as AddressInfo).port}` });
-    const page = await fetch(preview.url, { headers: { cookie, referer: origin + "/" } }); assert.equal(page.status, 200); const pageText = await page.text(); assert.match(pageText, /REMOTE_PREVIEW_OK/); assert.equal(pageText.match(/<script src="\/__codeflow\/overlay.js"/g)?.length, 1);
+    const page = await fetch(preview.url, { headers: { cookie, referer: bridge.origin + "/" } }); assert.equal(page.status, 200); const pageText = await page.text(); assert.match(pageText, /REMOTE_PREVIEW_OK/); assert.equal(pageText.match(/<script src="\/__codeflow\/overlay.js"/g)?.length, 1);
     app.on("upgrade", (_req, socket) => { socket.end("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\nREMOTE_HOT_RELOAD"); });
     const upgraded = await new Promise<string>((resolve, reject) => {
       const req = request(preview.url, { headers: { connection: "Upgrade", upgrade: "websocket", origin: preview.origin } });
@@ -130,5 +150,6 @@ test("full remote backend browses, edits, runs checks and agents, streams termin
     assert.ok(await fetch(preview.url).then((response) => response.status >= 400, () => true), "a remote policy change revokes already-open preview forwards");
     await call(`/api/projects/${project.id}/filesystem-policy`, { revision: policy.revision + 1, read: { allow: ["."], deny: [] }, write: { allow: ["."], deny: [] } }, "PUT");
     await service.stop(host.id);
-  } finally { await service.close(); if (app) await new Promise<void>((resolve) => app!.close(() => resolve())); await f.cleanup(); }
+    assert.deepEqual((await service.projectDirectory()).map((item) => item.id), ["local"], "disconnected hosts disappear even when their directory was cached");
+  } finally { await service.close(); await bridge.close(); if (app) await new Promise<void>((resolve) => app!.close(() => resolve())); await f.cleanup(); }
 });

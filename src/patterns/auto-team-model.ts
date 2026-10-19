@@ -80,9 +80,15 @@ export function planProblem(plan: TeamPlan, policy: TeamPolicy): string | undefi
     if (!nonempty(m.name) || m.name.length > 120 || !nonempty(m.reason) || m.reason.length > 2_000) return "every member needs a bounded name and composition reason";
     const settings = provider.settingsByRole?.[m.role] ?? provider;
     const model = provider.models?.find((model) => model.id === m.model);
-    if (settings.model ? m.model !== settings.model : m.model && !model) return `${m.id} must preserve supplied model settings or choose a supplied supported model (empty means default)`;
+    const variants = m.role !== "coordinator" && "variants" in settings ? settings.variants : undefined;
+    // A selected pool is an allowlist of model/effort pairs, not permission to use every catalog model.
+    const choices = variants?.length ? [settings, ...variants] : [settings];
+    const matching = choices.filter(choice => variants?.length
+      ? m.model === (choice.model ?? "")
+      : choice.model ? m.model === choice.model : !m.model || !!model);
+    if (!matching.length) return `${m.id} must preserve supplied model settings or choose a supplied supported model (empty means default)`;
     const efforts = model?.efforts ?? provider.efforts ?? [];
-    if (settings.effort ? m.effort !== settings.effort : m.effort && !efforts.includes(m.effort)) return `${m.id} must preserve supplied effort settings or choose a supplied supported effort (empty means default)`;
+    if (!matching.some(choice => choice.effort ? m.effort === choice.effort : !m.effort || efforts.includes(m.effort))) return `${m.id} must preserve supplied effort settings or choose a supplied supported effort (empty means default)`;
   }
   for (const t of plan.tasks) {
     const owner = plan.members.find((m) => m.id === t.owner);

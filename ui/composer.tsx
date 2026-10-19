@@ -1,10 +1,14 @@
+import { ModelSelect } from "./model-select.js";
+import { freeModelsFirst, isFreeModel } from "./model-order.js";
+import type { ComponentChildren } from "preact";
+import { ChatControls, PermissionMenu } from "./chat-controls.js";
 import type { VerificationProfile } from "../src/verification.js";
 import { effect } from "@preact/signals";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
-import { api, ApiError, baseName, enc, fmtSize, FLOWS, post, readBase64, SHORT, store, useLatest } from "./lib.js";
+import { api, ApiError, baseName, enc, fmtSize, post, readBase64, SHORT, store, useLatest } from "./lib.js";
 import { useDialog } from "./app.js";
-import { AcceptanceEditor, ComposerLibraryEditor, ContextInspector, EffectiveSettings, FirstRunGuide, RepositoryReadiness } from "./onboarding.js";
+import { AcceptanceEditor, ContextInspector, EffectiveSettings, ProviderSetupPrompt, SaveTaskTemplateDialog, UseTaskTemplateDialog } from "./onboarding.js";
 import { RemoteWorkerSelect, type WorkerChoice } from "./remote-workers.js";
 import type { WorkerCapabilities } from "../src/remote-workers/protocol.js";
 import { DeferredRunsPanel } from "./deferred-runs.js";
@@ -49,12 +53,10 @@ import {
   rolesFor,
   route,
   setAgentSetting,
-  setCheck,
-  setLimits,
+  loadCheck,
   setOption,
   setPattern,
   setRoles,
-  setSetup,
   setTask,
   setupCmd,
   source,
@@ -68,13 +70,13 @@ import {
   takeDrafts,
   type RoleValue,
 } from "./state.js";
-import { ProjectButton, ProjectNote } from "./projects.js";
-import { ProjectMemory } from "./memory.js";
+import { ProjectButton } from "./projects.js";
+import { readProjectDefaults, projectDefaultsVersion } from "./project-defaults.js";
 import { TeamRolloutNotice } from "./team-evaluation.js";
 import { SourceChip, Templates } from "./github.js";
 import { SaveAutomationDialog } from "./automations.js";
 import { Icon } from "./icons.js";
-import { MenuTitle } from "./panel-bits.js";
+import { Menu, MenuItem, MenuTitle } from "./panel-bits.js";
 import type { AgentId, AgentInfo, ContextItem, ModelCatalog, PatternInfo, TreeEntry } from "./types.js";
 
 const DRAG_TYPE = "application/x-codeflow-path";
@@ -97,7 +99,38 @@ export function Composer() {
   const [toolApprovals, setToolApprovals] = useState(store.get("interactiveApprovals") === "1");
   const improve = useImprove(remoteWorker ? "Improve uses a local provider. Choose This computer to rewrite this task." : containerEnabled ? "Improve uses a local provider. Turn off Docker isolation to rewrite this task." : "");
   const p = pattern.value;
-  useEffect(() => { ++profileRequest.current; setVerificationProfile(null); setVerificationPreset(""); setProfileLoading(false); }, [repo.value]);
+  const single = p?.id === "solo";
+  const lastTeamWorkflow = useRef(store.get("teamWorkflow") || "pipeline");
+  useEffect(() => {
+    if (p && p.id !== "solo") { lastTeamWorkflow.current = p.id; store.set("teamWorkflow", p.id); }
+  }, [p?.id]);
+  const toggleTeam = () => {
+    if (!single) { lastTeamWorkflow.current = p!.id; setPattern("solo"); return; }
+    const previous = patterns.value.find((entry) => entry.id === lastTeamWorkflow.current && entry.id !== "solo");
+    const next = previous ?? patterns.value.find((entry) => entry.id === "pipeline") ?? patterns.value.find((entry) => entry.id !== "solo");
+    if (next) setPattern(next.id);
+  };
+  const [moreOptions, setMoreOptions] = useState(false);
+  const selectVerification = async (selected: string) => {
+    const request = ++profileRequest.current;
+    const current = repo.value;
+    setProfileError(false); setError(""); setVerificationPreset(selected); setVerificationProfile(null); setProfileLoading(!!selected);
+    if (!selected) return;
+    try {
+      const profile = await api<VerificationProfile>(`/api/verification/profile?repo=${enc(current)}&preset=${selected}`);
+      if (repo.value === current && request === profileRequest.current) setVerificationProfile(profile);
+    } catch (error) {
+      if (request === profileRequest.current) { setError((error as Error).message); setProfileError(true); }
+    } finally { if (request === profileRequest.current) setProfileLoading(false); }
+  };
+  const [profileError, setProfileError] = useState(false);
+  useEffect(() => {
+    const defaults = readProjectDefaults(repo.value);
+    setContainerEnabled(defaults.container.enabled); setContainerImage(defaults.container.image); setContainerVolume(defaults.container.authVolume);
+    setProfileError(false); void selectVerification(defaults.verification);
+    return () => { ++profileRequest.current; };
+  }, [repo.value, projectDefaultsVersion.value]);
+
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
   // Pins sent from the side panel's Browser: their text joins the task, their snapshots its attachments.
@@ -108,9 +141,15 @@ export function Composer() {
     attachments.value = [...attachments.value, ...drafts.flatMap((d) => d.images)];
   }, [chatDrafts.value]);
   const roles = rolesFor(p);
-  const problem = (remoteWorker ? remoteError || (!remoteAgents ? "Checking remote worker…" : startProblem(p, roles, true, remoteAgents)) : startProblem(p, roles)) || (profileLoading ? "Loading verification profile…" : "");
+  const soloAgent = roles.agent?.[0];
+  const soloSettings = soloAgent && soloAgent !== "auto" ? { ...agentSettings.value[soloAgent], ...roleModels.value[p!.id]?.agent?.[soloAgent] } : {};
+  const problem = (remoteWorker ? remoteError || (!remoteAgents ? "Checking remote worker…" : startProblem(p, roles, true, remoteAgents)) : startProblem(p, roles)) || (profileLoading ? "Loading verification profile…" : profileError ? "Verification profile unavailable. Choose another profile in Run options." : "");
 
   const [saving, setSaving] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
+  const [savingTemplate, setSavingTemplate] = useState(false);
+  const [usingTemplate, setUsingTemplate] = useState(false);
+  const [libraryScope, setLibraryScope] = useState("project");
   const runBody = (p: PatternInfo) => ({
     repo: repo.value,
     project: target.value.project?.id,
@@ -126,7 +165,7 @@ export function Composer() {
       paths: [...contextPaths.value.values()].map((c) => ({ path: c.path })),
       attachments: attachments.value.map((a) => ({ name: a.name, data: a.data })),
     },
-    agentSettings: agentSettings.value,
+    agentSettings: single && soloAgent && soloAgent !== "auto" ? { ...agentSettings.value, [soloAgent]: soloSettings } : agentSettings.value,
     approvals: { plan: !!CHECKPOINTS[p.id] && planApprovalFor(p.id), tools: remoteWorker ? false : toolApprovals },
     trust: trust.value,
     roleSettings: roleModels.value[p.id] ?? {},
@@ -166,6 +205,8 @@ export function Composer() {
   const resetComposer = () => {
     store.set("baseRef", baseRef.value);
     setTask("");
+    void loadCheck();
+    limits.value = store.json("limits", { maxMinutes: 60, maxSteps: 40 });
     setAcceptanceCriteria([]);
     branchPrefix.value = "";
     source.value = null;
@@ -175,15 +216,15 @@ export function Composer() {
   };
 
   return (
-    <div class="composer">
+    <div class={`composer ${single ? "composer-single" : ""}`}>
       <div class="eyebrow">New run</div>
-      <h1>What should the team build?</h1>
-      <p class="lede">Describe the task, add the files that matter, and pick how your agents work together.</p>
+      <h1>{single ? "What would you like to work on?" : "What should the team build?"}</h1>
+      <p class="lede">{single ? "Choose a provider, describe your task, and start the conversation." : "Describe the task, add the files that matter, and pick how your agents work together."}</p>
       <div class="where" role="group" aria-label="Where the run works">
         <ProjectButton composer />
         <RepoButton />
       </div>
-      <FirstRunGuide />
+      <ProviderSetupPrompt />
       {!repoInfo.value ? (
         <div class={`banner ${repoError.value ? "bad" : ""}`}>
           <p>
@@ -212,21 +253,45 @@ export function Composer() {
           )}
         </div>
       ) : null}
-      <ProjectNote />
+
       {externalSource.value ? <div class="banner"><p>External context: {externalSource.value.provider} {externalSource.value.kind} {externalSource.value.key} · {externalSource.value.title}</p><p class="help">This source remains untrusted. The run uses Safe permissions and isolated checks.</p><button class="btn small" onClick={() => { externalSource.value = null; }}>Remove source</button></div> : null}
       {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
-      {p?.id === "auto-team" && target.value.project && repo.value ? <ProjectMemory key={`${target.value.project.id}:${repo.value}`} projectId={target.value.project.id} repo={repo.value} /> : null}
       {repoInfo.value ? <Templates /> : null}
-      <TaskBox onStart={start} improve={improve} />
-      <AcceptanceEditor />
+      <TaskBox onStart={start} improve={improve} controls={<>
+        <button type="button" class={`btn ghost team-toggle ${single ? "" : "on"}`} aria-label="Team mode" aria-pressed={!single} title={single ? "Use a team workflow" : "Switch to a single agent"} onClick={toggleTeam}><Icon name="people" /> Team</button>
+        {single ? <>
+        {soloAgent && soloAgent !== "auto" ? <ChatControls
+          agent={soloAgent} providers={remoteAgents}
+          onAgent={(id) => setRoles(p!.id, "agent", [id])}
+          settings={soloSettings}
+          onSettings={(value) => setRoleModel(p!.id, "agent", soloAgent, value)}
+          permissions={{ trust: externalSource.value ? "safe" : trust.value, tools: !remoteWorker && !containerEnabled && !externalSource.value && toolApprovals }}
+          onPermissions={(value) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }}
+          restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled}
+        /> : <Menu above label="Provider" icon="layers" class="chat-choice" trigger={<><span>{soloAgent === "auto" ? "Auto provider" : "Choose provider"}</span><Icon name="chevron" /></>}>
+          {(close) => <>{(remoteAgents ?? agents.value).map((entry) => <MenuItem key={entry.id} disabled={!entry.available} onClick={() => { setRoles(p!.id, "agent", [entry.id]); close(); }}>{entry.displayName}</MenuItem>)}</>}
+        </Menu>}
+        </> : <label class="task-workflow"><span>Workflow</span><select class="field" id="workflow-select" aria-label="Workflow" value={p?.id ?? ""} onChange={(event) => setPattern(event.currentTarget.value)}>
+          {patterns.value.filter((entry) => entry.id !== "solo").map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+        </select></label>}
+        {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); requestAnimationFrame(() => { const section = document.querySelector<HTMLDetailsElement>(".advanced-controls"); if (section) { section.open = true; section.querySelector<HTMLElement>("summary")?.focus(); } }); }}>Team setup</button><PermissionMenu permissions={{ trust: externalSource.value ? "safe" : trust.value, tools: !remoteWorker && !containerEnabled && !externalSource.value && toolApprovals }} onPermissions={(value) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some((id) => id === "codex" || id.startsWith("acp:"))} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} /></> : null}
+        <button class="btn primary task-start" disabled={!!problem || starting} onClick={start} title={problem || "Start run (⌘↵)"}>{starting ? "Starting…" : "Start run"}<Icon name="send" /></button>
+        <Menu above label="Run actions" icon="more" class="chat-choice">{(close) => <>
+          <MenuItem disabled={!p} onClick={() => { close(); setUsingTemplate(true); }}><Icon name="files" />Use template…</MenuItem>
+          <MenuItem disabled={!p || !task.value.trim()} onClick={() => { close(); setSavingTemplate(true); }}><Icon name="files" />Save as template…</MenuItem>
+          <MenuItem disabled={!!problem} onClick={() => { close(); setScheduling(true); }}><Icon name="clock" />Start later…</MenuItem>
+          <MenuItem disabled={!!problem} onClick={() => { close(); setComparing(true); }}><Icon name="compare" />Compare setups…</MenuItem>
+          <MenuItem disabled={!!problem} onClick={() => { close(); setSaving(true); }}><Icon name="clock" />Save as automation…</MenuItem>
+        </>}</Menu>
+      </>} />
+      {<div class="single-run-summary"><span>{checkCmd.value.trim() ? `Checks: ${checkCmd.value.trim()}` : "No automated check configured"}</span>{problem ? <span>{problem}</span> : null}{trust.value === "full" ? <span class="warn">Full access · no provider sandbox</span> : null}<a href="#/settings/projects">Project Settings</a></div>}
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
+      <details class="composer-options compact" open={moreOptions} onToggle={(event) => setMoreOptions(event.currentTarget.open)}>
+        <summary>Run options <span>Team, context, checks and limits for this task</span></summary>
+      <AcceptanceEditor />
 
       <div class="section">
-        <label class="lbl" for="workflow-select">Workflow</label>
-        <select class="field" id="workflow-select" aria-label="Workflow" value={p?.id ?? ""} onChange={(e) => setPattern(e.currentTarget.value)}>
-          {patterns.value.map((x) => <option key={x.id} value={x.id}>{x.name}{x.id === "pipeline" ? " · recommended for most changes" : ""}</option>)}
-        </select>
-        {p ? <p class="pattern-why">{teamSentence(p, roles)}</p> : null}
+        {p && !single ? <p class="pattern-why">{teamSentence(p, roles)}</p> : null}
         {trust.value === "full" ? <p class="full-warn" role="alert"><b>Full access: no sandbox.</b> Agents can run commands and change files outside their worktree with your credentials. Review permissions in Advanced team controls.</p> : null}
         {p && CHECKPOINTS[p.id] && (p.id !== "debate" || roles.builder?.length) ? (
           <label class="checkpoint">
@@ -236,53 +301,34 @@ export function Composer() {
         ) : null}
         <div class={`donewhen ${p?.requiresCheck && !checkCmd.value.trim() ? "required" : ""}`}>
           <label class="lbl" for="checkCmd">Done when this passes</label>
-          <div class="dw-row"><span class="dw-prompt">$</span><input class="field" id="checkCmd" placeholder="e.g. npm test" spellcheck={false} autocomplete="off" value={checkCmd.value} onInput={(e) => setCheck(e.currentTarget.value)} /></div>
-          <div class="help">{configChecking.value ? "Loading repository configuration… " : checkHint.value ? `${checkHint.value} ` : ""}code-flow runs this itself after changes. A run without a passing automated check is unchecked.</div>
+          <div class="dw-row"><span class="dw-prompt">$</span><input class="field" id="checkCmd" placeholder="e.g. npm test" spellcheck={false} autocomplete="off" value={checkCmd.value} onInput={(e) => { checkCmd.value = e.currentTarget.value; checkHint.value = "Override for this run."; }} /></div>
+          <div class="help">Override the project check for this run. A run without a passing automated check is unchecked.</div>
         </div>
       </div>
 
       {/* The optional controls read as one accordion: a card whose rows open in place. */}
       <div class="composer-more">
       <details class="settings advanced-controls" open={store.get("composerAdvanced") === "1"} onToggle={(e) => store.set("composerAdvanced", e.currentTarget.open ? "1" : "0")}>
-        <summary><span class="st">Advanced team controls</span><span class="ss">Roles, models, permissions and limits</span></summary>
+        <summary><span class="st">{single ? "Advanced run settings" : "Advanced team controls"}</span><span class="ss">Roles, models, permissions and limits</span></summary>
         <div class="settings-body">
-        <div class="patterns">
-          {patterns.value.map((x) => (
-            <button key={x.id} type="button" class={`pattern ${x.id === p?.id ? "selected" : ""}`} aria-pressed={x.id === p?.id} onClick={() => setPattern(x.id)}>
-              <span class="pn">{x.name}</span>
-              <span class="pf">{FLOWS[x.id] ?? x.summary}</span>
-            </button>
-          ))}
-        </div>
-        {p ? <p class="pattern-why">{p.description}</p> : null}
         <RemoteWorkerSelect value={remoteWorker} onChange={(value) => { improve.stop(); setRemoteWorker(value); }} disabled={starting} />
         {remoteWorker ? <p class="help">Provider availability comes from this worker. Checks and setup run on the application server. Copied workspace files and native interactive approvals are unavailable; use explicitly staged references.</p> : null}
-        {p ? <Team p={p} roles={roles} providers={remoteAgents} remote={!!remoteWorker} /> : null}
-        <div class="section"><label class="lbl" for="verification-profile">Verification gates</label><select class="field" id="verification-profile" value={verificationPreset} disabled={!repo.value} onChange={async (event) => { const selected = event.currentTarget.value; const request = ++profileRequest.current; setVerificationPreset(selected); if (!selected) { setVerificationProfile(null); setProfileLoading(false); return; } const current = repo.value; setProfileLoading(true); try { const profile = await api<VerificationProfile>(`/api/verification/profile?repo=${enc(current)}&preset=${selected}`); if (repo.value === current && request === profileRequest.current) setVerificationProfile(profile); } catch (error) { if (repo.value === current && request === profileRequest.current) { setError((error as Error).message); setVerificationPreset(""); setVerificationProfile(null); } } finally { if (request === profileRequest.current) setProfileLoading(false); } }}><option value="">Single configured check</option><option value="lightweight">Lightweight profile</option><option value="standard">Standard profile</option><option value="thorough">Thorough profile</option></select>{verificationProfile ? <p class="help">Required gates: {verificationProfile.checks.map((gate) => gate.command).join(" · ") || "No runnable gates detected"}. Each gate appears in the run's evidence.</p> : null}</div>
+        {p && !single ? <Team p={p} roles={roles} providers={remoteAgents} remote={!!remoteWorker} /> : null}
+        <div class="section"><label class="lbl" for="verification-profile">Verification gates</label><select class="field" id="verification-profile" value={verificationPreset} disabled={!repo.value} onChange={(event) => void selectVerification(event.currentTarget.value)}><option value="">Single configured check</option><option value="lightweight">Lightweight profile</option><option value="standard">Standard profile</option><option value="thorough">Thorough profile</option></select>{verificationProfile ? <p class="help">Required gates: {verificationProfile.checks.map((gate) => gate.command).join(" · ") || "No runnable gates detected"}. Each gate appears in the run's evidence.</p> : null}</div>
       {p ? <Settings p={p} roles={roles} /> : null}
         </div>
       </details>
-      <RepositoryReadiness />
-      {p ? <ComposerLibraryEditor p={p} onToolApprovalsChange={setToolApprovals} /> : null}
       {p ? <EffectiveSettings p={p} verificationProfile={verificationProfile} container={{ enabled: containerEnabled, image: containerImage, authVolume: containerVolume }} /> : null}
       <ContextInspector />
-      {p && repo.value && task.value.trim() ? <details class="settings deferred-start"><summary><span class="st">Start later</span><span class="ss">At a set time or when provider capacity frees up</span></summary><div class="settings-body"><DeferredRunsPanel runRequest={runBody(p)} project={target.value.project?.id} repo={repo.value} /></div></details> : null}
+
       <details class="settings agent-isolation"><summary><span class="st">Agent isolation</span><span class="ss">{containerEnabled && !remoteWorker ? `Prebuilt Docker image${containerImage.trim() ? ` · ${containerImage.trim()}` : ""}` : "Off · agents use this computer's CLIs"}</span></summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} disabled={!!remoteWorker} onChange={(event) => { improve.stop(); setContainerEnabled(event.currentTarget.checked); }} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label class="iso-field">Image<input class="field mono" placeholder="Your prepared image:tag" spellcheck={false} value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label class="iso-field">Authentication volume<input class="field mono" spellcheck={false} placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is enabled for inference. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
-      <label class="checkpoint"><input type="checkbox" checked={!remoteWorker && toolApprovals} disabled={!!remoteWorker} onChange={(event) => { setToolApprovals(event.currentTarget.checked); store.set("interactiveApprovals", event.currentTarget.checked ? "1" : "0"); }} /><span><b>Ask me for tool permissions</b> · Supported Codex and ACP requests appear in an approval inbox. Unattended and locked-down runs always decline them.</span></label>
+
       </div>
-      <div class="start-row">
-        <button class="btn primary" disabled={!!problem || starting} onClick={start}>
-          {starting ? "Starting…" : "Start run"} <span class="kbd">⌘↵</span>
-        </button>
-        <button class="btn secondary-run-action" disabled={!!problem} title="Run this task with several patterns or teams at once and see them side by side" onClick={() => setComparing(true)}>
-          <Icon name="compare" /> Compare setups…
-        </button>
-        <button class="btn secondary-run-action" disabled={!!problem} title="Run this task with this team on a schedule or from a webhook" onClick={() => setSaving(true)}>
-          <Icon name="clock" /> Save as automation…
-        </button>
-        <span class="why">{problem}</span>
-      </div>
+      </details>
       {error ? <div class="msg err">{error}</div> : null}
+      {usingTemplate ? <UseTaskTemplateDialog initialScope={libraryScope} onClose={() => setUsingTemplate(false)} onUsed={(scope) => { setLibraryScope(scope); setUsingTemplate(false); }} /> : null}
+      {savingTemplate && p ? <SaveTaskTemplateDialog p={p} initialScope={libraryScope} onClose={() => setSavingTemplate(false)} onSaved={(scope) => { setLibraryScope(scope); setSavingTemplate(false); }} /> : null}
+      {scheduling && p ? <ScheduleRunDialog body={runBody(p)} onClose={() => setScheduling(false)} /> : null}
       {saving && p ? <SaveAutomationDialog body={runBody(p)} onClose={() => setSaving(false)} /> : null}
       {comparing && p ? (
         <CompareDialog
@@ -300,6 +346,11 @@ export function Composer() {
   );
 }
 
+function ScheduleRunDialog({ body, onClose }: { body: Record<string, any>; onClose: () => void }) {
+  const ref = useDialog(true, onClose);
+  return <dialog ref={ref} class="picker" aria-labelledby="schedule-run-title"><div class="picker-inner"><div class="picker-head"><h3 id="schedule-run-title">Start later</h3></div><div class="dialog-body"><DeferredRunsPanel runRequest={body} project={body.project} repo={body.repo} /></div><div class="picker-foot"><button class="btn" onClick={onClose}>Close</button></div></div></dialog>;
+}
+
 /** The repository (and its current branch) the run works in. */
 function RepoButton() {
   const info = repoInfo.value;
@@ -307,7 +358,6 @@ function RepoButton() {
     <button type="button" class={`repo-btn ${info ? "" : "empty"} ${repoError.value ? "bad" : ""}`} title={info ? info.repo : "Choose repository"} onClick={() => (pickerOpen.value = true)}>
       <Icon name="folder" />
       <span class="name">{info ? baseName(info.repo) : repoChecking.value ? "Checking…" : repoError.value || "Choose repository…"}</span>
-      {info ? <span class="branch">{info.current || "detached"}</span> : null}
       <Icon name="chevron" class="caret" />
     </button>
   );
@@ -424,8 +474,8 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
   if (!p) return "Pick how the agents work together";
   if (Object.values(roles).flat().some((id) => id.startsWith("acp:")) && trust.value !== "full") return "ACP agents require Full access. Change Agent permissions in Settings → Run defaults.";
   for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return `Pick an agent for ${role.label}`;
-  if (p.id === "race" && (roles.contestants?.length ?? 0) < 2) return "A race needs at least two contestants";
-  if (p.id === "debate" && (roles.debaters?.length ?? 0) < 2) return "A debate needs at least two debaters";
+  if (p.id === "race" && participantCount(p.id, "contestants", roles.contestants ?? []) < 2) return "A race needs at least two contestants";
+  if (p.id === "debate" && participantCount(p.id, "debaters", roles.debaters ?? []) < 2) return "A debate needs at least two debaters";
   if (p.id === "auto-team" && !(roles.pool?.length)) return "Keep at least one provider in the pool";
   if (p.id === "auto-team" && limits.value.maxSteps < 4) return "An Auto team needs at least 4 steps: planning, work, review and recovery";
   if (p.requiresCheck && !checkCmd.value.trim()) return `${p.name} needs a “Done when” command, e.g. npm test`;
@@ -572,7 +622,21 @@ function ImproveMenu({ improve, disabled }: { improve: ReturnType<typeof useImpr
   </div>;
 }
 
-function TaskBox({ onStart, improve }: { onStart: () => void; improve: ReturnType<typeof useImprove> }) {
+function WorktreeBranchPicker() {
+  const info = repoInfo.value;
+  const pr = source.value?.kind === "pr" ? source.value : null;
+  if (!info) return null;
+  const value = pr ? "__pr" : baseRef.value;
+  return <div class="task-branch"><label for="baseRef">Start from branch</label><select id="baseRef" class="field" value={value} disabled={!!pr} title={pr ? `The worktree starts from PR #${pr.number}: ${pr.headRefName}` : "Create the new worktree from this Git branch"} onChange={(event) => { baseRef.value = event.currentTarget.value; }}>
+    {pr ? <option value="__pr">PR #{pr.number} · {pr.headRefName}</option> : <>
+      <option value="">{info.current ? `Current branch · ${info.current}` : "Current HEAD"}</option>
+      {baseRef.value && !info.branches.some((branch) => branch.name === baseRef.value) ? <option value={baseRef.value}>{baseRef.value}</option> : null}
+      {([['local', 'Local branches'], ['remote', 'Remote branches'], ['run', 'Previous run branches']] as const).map(([kind, label]) => <optgroup key={kind} label={label}>{info.branches.filter((branch) => branch.kind === kind).map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>)}</optgroup>)}
+    </>}
+  </select><span class="help">New worktree</span></div>;
+}
+
+function TaskBox({ onStart, improve, controls }: { onStart: () => void; improve: ReturnType<typeof useImprove>; controls?: ComponentChildren }) {
   const [over, setOver] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -637,6 +701,7 @@ function TaskBox({ onStart, improve }: { onStart: () => void; improve: ReturnTyp
         void addAttachments(files, folders);
       }}
     >
+      <WorktreeBranchPicker />
       <textarea
         ref={area}
         aria-label="Task"
@@ -693,6 +758,7 @@ function TaskBox({ onStart, improve }: { onStart: () => void; improve: ReturnTyp
           <ImproveMenu improve={improve} disabled={!!improve.busy || !canImprove} />
         </div>
       </div>
+      {controls ? <div class="task-controls">{controls}</div> : null}
       <div class="overlay">Drop to add as context</div>
       <input
         ref={fileInput}
@@ -781,22 +847,36 @@ async function addAttachments(files: File[], folders: string[] = []) {
 }
 
 // ---------------------------------------------------------------- team
+function participantCount(pattern: string, role: string, selected: RoleValue[]) {
+  return selected.reduce((total, agent) => total + 1 + (agent === "auto" ? 0 : roleModels.value[pattern]?.[role]?.[agent]?.variants?.length ?? 0), 0);
+}
+
 function Team({ p, roles, providers, remote }: { p: PatternInfo; roles: Record<string, RoleValue[]>; providers?: AgentInfo[]; remote?: boolean }) {
   return (
     <div class="team">
       {p.roles.map((role) => {
         const selected = roles[role.id] ?? [];
+        const multipleModels = role.multiple;
+        const freeProviders = remote ? [] : (providers ?? agents.value).filter(a => a.available).flatMap(a => {
+          const catalog = catalogs.value[a.id];
+          const free = catalog && !("error" in catalog) ? catalog.models.filter(isFreeModel) : [];
+          return free.length ? [{ agent: a.id, models: free }] : [];
+        });
         return (
           <div class="role" key={role.id}>
-            <div>
-              <div class="rl">
-                {role.label}
-                {role.multiple ? <span class="rd"> · pick several</span> : null}
+            <div class="role-heading">
+              <div class="role-description">
+                <div class="rl">{role.label}<span class="role-count">{participantCount(p.id, role.id, selected)} {p.id === "auto-team" && role.id === "pool" ? "choices" : "selected"}</span></div>
+                <div class="rd">{role.description}</div>
               </div>
-              <div class="rd">{role.description}</div>
+              {freeProviders.length ? <button type="button" class="btn small role-free-action" onClick={() => {
+                const entries = multipleModels ? freeProviders : [freeProviders.find(entry => selected.includes(entry.agent)) ?? freeProviders[0]!];
+                for (const entry of entries) setRoleModel(p.id, role.id, entry.agent, { model: entry.models[0]!.id, effort: "", variants: multipleModels ? entry.models.slice(1).map(m => ({ model: m.id })) : [] });
+                setRoles(p.id, role.id, entries.map(entry => entry.agent));
+              }}>{multipleModels ? "Select all free" : "Use free model"}</button> : null}
             </div>
             <div class="role-pick">
-              <div class="pills">
+              <div class="pills" role="group" aria-label={`${role.label} providers`}>
                 {(providers ?? agents.value).map((a) => {
                   const on = selected.includes(a.id);
                   return (
@@ -809,7 +889,7 @@ function Team({ p, roles, providers, remote }: { p: PatternInfo; roles: Record<s
                       title={a.available ? `${role.multiple ? "Toggle" : "Choose"} ${a.displayName}` : `${a.displayName} isn't installed`}
                       onClick={() => setRoles(p.id, role.id, role.multiple ? (on ? selected.filter((x) => x !== a.id) : [...selected, a.id]) : [a.id])}
                     >
-                      <span class={`agent ${a.id}`}>{a.displayName}</span>
+                      <span class="provider-check" aria-hidden="true">{on ? "✓" : "+"}</span><span>{a.displayName}</span>
                     </button>
                   );
                 })}
@@ -831,6 +911,7 @@ function Team({ p, roles, providers, remote }: { p: PatternInfo; roles: Record<s
                   </button>
                 ) : null}
               </div>
+              {multipleModels && participantCount(p.id, role.id, selected) > selected.length ? <span class="help">{participantCount(p.id, role.id, selected)} {p.id === "auto-team" ? "model choices · coordinator selects within the member limit" : "agents · each model runs separately"}</span> : null}
               {selected.some((id) => id !== "auto") ? (
                 <RoleModels p={p} roleId={role.id} roleLabel={role.label.toLowerCase()} agents={selected.filter((id): id is AgentId => id !== "auto")} remote={remote} />
               ) : null}
@@ -861,7 +942,7 @@ export const TRUST = {
 export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>, checkpoints = true): string {
   const one = (r: string) => (roles[r]?.[0] ? SHORT[roles[r]![0]!] : "—");
   const many = (r: string) => {
-    const n = (roles[r] ?? []).map((id) => SHORT[id]);
+    const n = (roles[r] ?? []).map((id) => { const count = id === "auto" ? 1 : 1 + (roleModels.value[p.id]?.[r]?.[id]?.variants?.length ?? 0); return `${SHORT[id]}${count > 1 ? ` × ${count}` : ""}`; });
     return n.length ? (n.length === 1 ? n[0]! : `${n.slice(0, -1).join(", ")} and ${n.at(-1)}`) : "—";
   };
   const opts = optionsFor(p);
@@ -911,62 +992,59 @@ function configSummary(config: Record<string, any>): string {
  */
 function RoleModels({ p, roleId, roleLabel, agents: ids, remote }: { p: PatternInfo; roleId: string; roleLabel: string; agents: AgentId[]; remote?: boolean }) {
   const current = roleModels.value[p.id]?.[roleId] ?? {};
-  return (
-    <div class="role-models">
-      {ids.map((id) => {
-        if (remote) return <span key={id} class="mpick"><AgentTag id={id} /><input class="field" aria-label={`${SHORT[id]} model for the ${roleLabel}`} placeholder="Worker CLI default model" value={current[id]?.model ?? ""} onChange={(event) => setRoleModel(p.id, roleId, id, { model: event.currentTarget.value })} /><input class="field" aria-label={`${SHORT[id]} effort for the ${roleLabel}`} placeholder="Worker CLI default effort" value={current[id]?.effort ?? ""} onChange={(event) => setRoleModel(p.id, roleId, id, { effort: event.currentTarget.value })} /></span>;
-        const cat = catalogs.value[id];
-        if (!cat) return null; // still loading
-        if ("error" in cat) {
-          return (
-            <span key={id} class="mpick off">
-              <AgentTag id={id} /> <span class="help">CLI defaults</span>
-            </span>
-          );
-        }
-        const c = cat as ModelCatalog;
-        const s = current[id] ?? {};
-        const base = agentSettings.value[id] ?? {};
-        const labelOf = (mid?: string) => c.models.find((m) => m.id === mid)?.label ?? mid;
-        const baseModel = base.model || c.defaultModel;
-        const model = c.models.find((m) => m.id === (s.model || base.model));
-        const efforts = model?.efforts?.length ? model.efforts : c.efforts;
-        const baseEffort = base.effort || model?.defaultEffort || c.defaultEffort;
-        return (
-          <span key={id} class="mpick">
-            <AgentTag id={id} />
-            <select
-              aria-label={`${SHORT[id]} model for the ${roleLabel}`}
-              value={s.model ?? ""}
-              onChange={(e) => {
-                const next = e.currentTarget.value;
-                const nextModel = c.models.find((m) => m.id === (next || base.model));
-                const allowed = nextModel?.efforts?.length ? nextModel.efforts : c.efforts;
-                setRoleModel(p.id, roleId, id, { model: next, effort: s.effort && allowed.includes(s.effort) ? s.effort : "" });
-              }}
-            >
-              <option value="">{baseModel ? `Default · ${labelOf(baseModel)}` : "Default model"}</option>
-              {c.models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-              {s.model && !c.models.some((m) => m.id === s.model) ? <option value={s.model}>{s.model}</option> : null}
-            </select>
-            <span class="sep" aria-hidden="true" />
-            <select aria-label={`${SHORT[id]} effort for the ${roleLabel}`} value={s.effort ?? ""} onChange={(e) => setRoleModel(p.id, roleId, id, { effort: e.currentTarget.value })}>
-              <option value="">{baseEffort ? `Default · ${baseEffort}` : "Default effort"}</option>
-              {efforts.map((x) => (
-                <option key={x} value={x}>
-                  {x}
-                </option>
-              ))}
-            </select>
-          </span>
-        );
+  return <div class="role-models">{ids.map(id => {
+    const s = current[id] ?? {};
+    const cat = catalogs.value[id];
+    if (remote) return <div key={id} class="provider-models">
+      <div class="provider-model-heading"><AgentTag id={id} /></div>
+      <div class="team-model-row">
+        <label>Model<input class="field" aria-label={`${SHORT[id]} model for the ${roleLabel}`} placeholder="Worker CLI default model" value={s.model ?? ""} onChange={event => setRoleModel(p.id, roleId, id, { model: event.currentTarget.value })} /></label>
+        <label>Effort<input class="field" aria-label={`${SHORT[id]} effort for the ${roleLabel}`} placeholder="Default effort" value={s.effort ?? ""} onChange={event => setRoleModel(p.id, roleId, id, { effort: event.currentTarget.value })} /></label>
+      </div>
+    </div>;
+    if (!cat || "error" in cat) return <div key={id} class="provider-models"><div class="provider-model-heading"><AgentTag id={id} /><span class="help">{cat ? "Using CLI defaults · model list unavailable" : "Loading models…"}</span></div></div>;
+    const c = cat as ModelCatalog;
+    const base = agentSettings.value[id] ?? {};
+    const baseModel = base.model || c.defaultModel;
+    const multiple = p.roles.find(role => role.id === roleId)?.multiple;
+    const rows = [{ model: s.model ?? "", effort: s.effort ?? "" }, ...(multiple ? s.variants ?? [] : [])];
+    const available = freeModelsFirst(c.models).filter(model => model.id !== (s.model || baseModel) && !s.variants?.some(v => v.model === model.id));
+    return <div key={id} class="provider-models">
+      <div class="provider-model-heading">
+        <div class="provider-model-name"><AgentTag id={id} />{rows.length > 1 ? <span class="role-count">{rows.length} models</span> : null}</div>
+        {multiple ? <ModelSelect class="add-model" label={`Add ${SHORT[id]} model for the ${roleLabel}`} value="" placeholder="+ Add model" options={available} disabled={!available.length || rows.length >= 129} onChange={model => setRoleModel(p.id, roleId, id, { variants: [...(s.variants ?? []), { model }] })} /> : null}
+      </div>
+      {rows.map((row, index) => {
+        const primary = index === 0;
+        const model = c.models.find(m => m.id === (row.model || baseModel));
+        const efforts = model?.efforts ?? c.efforts;
+        const defaultEffort = primary ? base.effort || model?.defaultEffort || c.defaultEffort : model?.defaultEffort || c.defaultEffort;
+        const label = (kind: string) => primary ? `${SHORT[id]} ${kind} for the ${roleLabel}` : `${SHORT[id]} additional ${kind} ${index} for the ${roleLabel}`;
+        const choices = freeModelsFirst(c.models).filter(m => primary || m.id === row.model || m.id !== (s.model || baseModel) && !s.variants?.some(v => v.model === m.id));
+        return <div class={`team-model-row ${primary ? "primary" : "additional"}`} key={index}>
+          <div class="model-field"><span>Model{rows.length > 1 ? ` ${index + 1}` : ""}</span>
+            <ModelSelect label={label("model")} value={row.model} options={[
+              ...(primary ? [{ id: "", label: baseModel ? `Default · ${c.models.find(m => m.id === baseModel)?.label ?? baseModel}` : "Default model" }] : []),
+              ...choices,
+              ...(row.model && !c.models.some(m => m.id === row.model) ? [{ id: row.model, label: row.model }] : []),
+            ]} onChange={next => {
+              if (primary) {
+                const nextModel = c.models.find(m => m.id === (next || baseModel));
+                const allowed = nextModel?.efforts ?? c.efforts;
+                setRoleModel(p.id, roleId, id, { model: next, effort: row.effort && allowed.includes(row.effort) ? row.effort : "", variants: s.variants?.filter(v => v.model !== (next || baseModel)) });
+              } else setRoleModel(p.id, roleId, id, { variants: s.variants!.map((v, i) => i === index - 1 ? { model: next } : v) });
+            }} />
+          </div>
+          <label>Effort<select class="field" aria-label={label("effort")} value={row.effort ?? ""} onChange={event => {
+            const effort = event.currentTarget.value;
+            if (primary) setRoleModel(p.id, roleId, id, { effort });
+            else setRoleModel(p.id, roleId, id, { variants: s.variants!.map((v, i) => i === index - 1 ? { ...v, effort } : v) });
+          }}><option value="">{defaultEffort ? `Default · ${defaultEffort}` : "Default effort"}</option>{efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}</select></label>
+          {!primary ? <button type="button" class="icon-btn remove-model" title="Remove model" aria-label={`Remove ${SHORT[id]} model ${row.model}`} onClick={() => setRoleModel(p.id, roleId, id, { variants: s.variants!.filter((_, i) => i !== index - 1) })}><Icon name="close" /></button> : <span class="model-remove-space" aria-hidden="true" />}
+        </div>;
       })}
-    </div>
-  );
+    </div>;
+  })}</div>;
 }
 
 // ---------------------------------------------------------------- settings
@@ -982,10 +1060,11 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
   const fromPr = source.value?.kind === "pr" ? source.value : null;
   const baseLabel = fromPr ? `PR #${fromPr.number}'s branch` : baseRef.value || (info?.current ? `HEAD (${info.current})` : "HEAD");
   const opts = optionsFor(p);
+  const setLimits = (patch: Partial<typeof limits.value>) => { limits.value = { ...limits.value, ...patch }; };
   return (
     <details class="settings">
       <summary>
-        <span class="st">Settings</span>
+        <span class="st">Branches and limits</span>
         <span class="ss">
           from {baseLabel} · {models.length ? models.join(", ") : "default models"} · stops after {limits.value.maxMinutes} min or {limits.value.maxSteps} steps
           {trust.value === "full" ? <span class="full-access"> · ⚠ full access</span> : null}
@@ -993,32 +1072,6 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
       </summary>
       <div class="settings-body">
         <div class="settings-grid">
-          <div>
-            <label class="lbl" for="baseRef">
-              Start from branch
-            </label>
-            <select class="field" id="baseRef" value={baseRef.value} disabled={!!fromPr} title={fromPr ? `Runs from a PR start from the PR's branch (${fromPr.headRefName})` : undefined} onChange={(e) => (baseRef.value = e.currentTarget.value)}>
-              <option value="">{info?.current ? `Current HEAD (${info.current})` : "Current HEAD"}</option>
-              {(
-                [
-                  ["local", "Branches"],
-                  ["run", "Results of earlier runs"],
-                  ["remote", "Remote branches"],
-                ] as const
-              ).map(([kind, label]) => {
-                const items = info?.branches.filter((b) => b.kind === kind) ?? [];
-                return items.length ? (
-                  <optgroup key={kind} label={label}>
-                    {items.map((b) => (
-                      <option key={b.name} value={b.name}>
-                        {b.name} · {b.updated}
-                      </option>
-                    ))}
-                  </optgroup>
-                ) : null;
-              })}
-            </select>
-          </div>
           <div>
             <label class="lbl" for="branchPrefix">
               Result branch name
@@ -1058,52 +1111,9 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
             </div>
             <div><label class="lbl" for="maxTokens">Reported token ceiling</label><input class="field" id="maxTokens" type="number" min={1} placeholder="Optional" value={limits.value.maxTokens ?? ""} onInput={(event) => setLimits({ maxTokens: Number(event.currentTarget.value) || undefined })} /></div>
             <div><label class="lbl" for="maxCostUsd">Reported API-equivalent ceiling ($)</label><input class="field" id="maxCostUsd" type="number" min={0.001} step={0.01} placeholder="Optional" value={limits.value.maxCostUsd ?? ""} onInput={(event) => setLimits({ maxCostUsd: Number(event.currentTarget.value) || undefined })} /></div>
-            <div>
-              <label class="lbl" for="setupCmd">
-                Setup each worktree
-              </label>
-              <input class="field mono" id="setupCmd" placeholder="optional, e.g. npm ci" spellcheck={false} autocomplete="off" value={setupCmd.value} onInput={(e) => setSetup(e.currentTarget.value)} />
-            </div>
+
           </div>
-          <div class="help">Ceilings use reported usage; they cannot count missing provider data and are checked between operations. API-equivalent cost is not your subscription bill. Work done before a limit is kept on its branch. Setup runs once in every new worktree before the agents start.</div>
-        </div>
-        <div>
-          <span class="lbl">What agents may do while building</span>
-          <div class="segmented" role="radiogroup" aria-label="Agent permissions">
-            {(Object.keys(TRUST) as (keyof typeof TRUST)[]).map((value) => (
-              <button
-                key={value}
-                type="button"
-                role="radio"
-                aria-checked={trust.value === value}
-                class={`${trust.value === value ? "on" : ""} ${value === "full" ? "full" : ""}`}
-                title={TRUST[value].help}
-                onClick={() => setTrust(value)}
-              >
-                {TRUST[value].label}
-              </button>
-            ))}
-          </div>
-          {trust.value === "full" ? (
-            <div class="full-warn" role="alert">
-              <b>⚠ Full access: no sandbox.</b> {TRUST.full.help} Automations and sweeps run with Trusted instead, and fixes for watched pull requests with Standard.
-            </div>
-          ) : (
-            <div class="help">
-              {TRUST[trust.value].help} Antigravity always runs with its sandbox (writes stay in the worktree). code-flow never merges or pushes on its own.
-            </div>
-          )}
-        </div>
-        <div>
-          <span class="lbl">Models &amp; effort</span>
-          {Object.keys(catalogs.value).length ? (
-            [...agents.value]
-              .filter((a) => a.available)
-              .sort((a, b) => Number(used.has(b.id)) - Number(used.has(a.id)))
-              .map((a) => <ModelRow key={a.id} agent={a} used={used.has(a.id)} />)
-          ) : (
-            <div class="help">Loading models…</div>
-          )}
+          <div class="help">Ceilings use reported usage; they cannot count missing provider data and are checked between operations. API-equivalent cost is not your subscription bill. Work done before a limit is kept on its branch.</div>
         </div>
         {info ? <div class="help">Each run works in git worktrees under {info.worktreeRoot}/ — your checkout is never touched.</div> : null}
       </div>
@@ -1133,27 +1143,17 @@ export function ModelRow({ agent, used }: { agent: AgentInfo; used: boolean }) {
   return (
     <div class={`model-row ${used ? "" : "unused"}`} title={used ? "" : "Not used by this team"}>
       <AgentTag id={agent.id} />
-      <select
-        class="field"
-        aria-label={`${agent.displayName} model`}
-        value={custom ? "__custom" : s.model ?? ""}
-        onChange={(e) => {
-          const v = e.currentTarget.value;
-          setCustom(v === "__custom");
-          const next = v === "__custom" ? "" : v;
-          const nextModel = catalog.models.find((m) => m.id === next);
-          const allowed = nextModel?.efforts?.length ? nextModel.efforts : catalog.efforts;
-          setAgentSetting(agent.id, { model: next, effort: s.effort && allowed.includes(s.effort) ? s.effort : "" });
-        }}
-      >
-        <option value="">{catalog.defaultModel ? `Default (${catalog.defaultModel})` : "Default model"}</option>
-        {catalog.models.map((m) => (
-          <option key={m.id} value={m.id}>
-            {m.label}
-          </option>
-        ))}
-        {catalog.allowCustom ? <option value="__custom">Other…</option> : null}
-      </select>
+      <ModelSelect label={`${agent.displayName} model`} value={custom ? "__custom" : s.model ?? ""} options={[
+        { id: "", label: catalog.defaultModel ? `Default (${catalog.defaultModel})` : "Default model" },
+        ...freeModelsFirst(catalog.models),
+        ...(catalog.allowCustom ? [{ id: "__custom", label: "Other…" }] : []),
+      ]} onChange={value => {
+        setCustom(value === "__custom");
+        const next = value === "__custom" ? "" : value;
+        const nextModel = catalog.models.find(m => m.id === next);
+        const allowed = nextModel?.efforts?.length ? nextModel.efforts : catalog.efforts;
+        setAgentSetting(agent.id, { model: next, effort: s.effort && allowed.includes(s.effort) ? s.effort : "" });
+      }} />
       <select class="field" aria-label={`${agent.displayName} effort`} value={s.effort ?? ""} onChange={(e) => setAgentSetting(agent.id, { effort: e.currentTarget.value })}>
         <option value="">{fallbackEffort ? `Default (${fallbackEffort})` : "Default effort"}</option>
         {efforts.map((x) => (

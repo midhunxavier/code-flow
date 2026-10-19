@@ -39,7 +39,7 @@ export function TeamBoardView({ project, shared = false, navigate }: { project?:
   return <div class="team-page">
     {boardError.value ? <p class="msg err" role="alert">{boardError.value}</p> : null}
     <div class="page-head">
-      <div class="page-head-text"><h1>Team</h1><p>{chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"}: who owns what, what is running where, and what waits for a review or a hand-over.` : "Tasks across your shared projects: who owns what, what is running where, and what waits for a review or a hand-over."}</p></div>
+      <div class="page-head-text"><h1>Team</h1><p>{chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>
       <div class="page-head-actions">{canCreate ? <button type="button" class="btn primary" aria-expanded={creating} onClick={() => setCreating(!creating)}><Icon name="plus" /> New task</button> : null}</div>
     </div>
     {!shared && link && !link.linked && !b.tasks.length ? <div class="settings-callout team-callout"><Icon name="people" /><div><strong>Not connected to a team server</strong><p>Connect this computer in Settings → Team to work on a shared board, or create tasks here to use this computer as the team server.</p><a href="#/settings/team">Open Settings → Team <span aria-hidden="true">→</span></a></div></div> : null}

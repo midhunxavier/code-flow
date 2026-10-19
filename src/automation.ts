@@ -655,6 +655,7 @@ export class Automations {
   }
 
   private runChanged(run: RunSummary) {
+    if (run.deleted) return;
     const t = run.trigger && run.status !== "running" ? this.get(run.trigger.id) : undefined;
     if (t?.queued?.length && t.lastRunId === run.id) void this.drain(t);
   }

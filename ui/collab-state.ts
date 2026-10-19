@@ -1,7 +1,7 @@
 import { signal } from "@preact/signals";
 import type { SharedRole } from "../src/shared-accounts.js";
 import type { Attempt, AttemptState, Board, Checkpoint, InboxItem, InboxKind, RunnerPublic, Task, TaskStatus, Who } from "../src/collab/model.js";
-import { api, ago as agoText, enc, latestOnly } from "./lib.js";
+import { apiPath, api, ago as agoText, enc, latestOnly } from "./lib.js";
 import { roleAtLeast } from "./shared-roles.js";
 import { subscribe } from "./stream.js";
 
@@ -95,7 +95,7 @@ export function openTeamEvents(onState?: (state: "connected" | "reconnecting") =
   let source: EventSource | undefined, retry: ReturnType<typeof setTimeout> | undefined, closed = false;
   const open = () => {
     if (closed) return;
-    const current = source = new EventSource("/api/team/events");
+    const current = source = new EventSource(apiPath("/api/team/events"));
     current.onopen = () => onState?.("connected");
     current.onerror = () => { onState?.("reconnecting"); if (current.readyState === EventSource.CLOSED && !closed) { clearTimeout(retry); retry = setTimeout(open, TEAM_EVENTS_RETRY_MS); } };
     current.onmessage = (event) => { let data: TeamEvent = null; try { data = JSON.parse(event.data) as TeamEvent; } catch { /* a frame that is not JSON still means something moved */ } applyTeamEvent(data && typeof data === "object" ? data : null); };
