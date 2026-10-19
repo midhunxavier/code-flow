@@ -149,7 +149,7 @@ test("the app page: never in a frame, compressed when the browser takes it, and 
   assert.deepEqual([br.headers["content-encoding"], gz.headers["content-encoding"], plain.headers["content-encoding"]], ["br", "gzip", undefined]);
   assert.ok(gunzipSync(gz.body).equals(html) && plain.body.equals(html), "the same page in each coding");
   assert.match(html.toString("utf8"), /^<!doctype html>/i);
-  assert.ok(br.body.length < html.length / 2, `compressed: ${br.body.length} of ${html.length} bytes`);
+  assert.ok(br.body.length < html.length, `compressed: ${br.body.length} of ${html.length} bytes`);
   for (const [r, what] of [[br, "br"], [gz, "gzip"], [plain, "identity"]] as const) {
     assert.equal(r.status, 200, what);
     assert.equal(r.headers["cache-control"], "private, no-cache", what);

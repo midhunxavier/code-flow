@@ -7,6 +7,7 @@ Object.defineProperty(globalThis, "window", { configurable: true, value: { inner
 Object.defineProperty(globalThis, "location", { configurable: true, value: { hostname: "localhost", hash: "", origin: "http://localhost" } });
 Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value) } });
 const state = await import("../ui/state.js");
+const { api, sharedGet, post } = await import("../ui/lib.js");
 const requests: Array<{ url: URL; respond: (body: unknown, status?: number) => void; done: boolean }> = [];
 globalThis.fetch = ((input: string) => new Promise<Response>((resolve) => {
   const entry = { url: new URL(input, "http://localhost"), done: false, respond: (body: unknown, status = 200) => { entry.done = true; resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })); } };
@@ -103,4 +104,17 @@ test("request generation rejects an obsolete response when the user returns to t
   await response("/api/repo-config", "/a", { found: true, config: { setup: "new", check: "new-test" } });
   await current;
   assert.equal(state.checkCmd.value, "new-test");
+});
+
+test("only opted-in inventory reads share a request and mutations invalidate sharing", async () => {
+  const first = sharedGet("/api/projects"), same = sharedGet("/api/projects");
+  assert.equal(first, same); assert.equal(requests.length, 1);
+  const mutation = post("/api/projects", { name: "Updated" });
+  const fresh = sharedGet("/api/projects");
+  assert.notEqual(first, fresh); assert.equal(requests.length, 3);
+  requests[1]!.respond({ ok: true }); requests[2]!.respond([{ name: "Updated" }]); requests[0]!.respond([{ name: "Old" }]);
+  await Promise.all([first, same, mutation, fresh]);
+  const a = api("/api/repo-config?repo=/a"), b = api("/api/repo-config?repo=/a");
+  assert.notEqual(a, b); assert.equal(requests.length, 5);
+  requests[3]!.respond({}); requests[4]!.respond({}); await Promise.all([a, b]);
 });

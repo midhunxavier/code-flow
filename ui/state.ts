@@ -1,5 +1,5 @@
 import { computed, signal } from "@preact/signals";
-import { api, ApiError, post, showToast, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
+import { api, sharedGet, ApiError, post, showToast, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
 import { onStreamState, subscribe } from "./stream.js";
 import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
@@ -23,7 +23,7 @@ import type {
 // ---------------------------------------------------------------- app-wide
 export const agents = signal<AgentInfo[]>([]);
 export async function loadAgents() {
-  const inventory = await api<AgentInfo[]>("/api/agents");
+  const inventory = await sharedGet<AgentInfo[]>("/api/agents");
   for (const agent of inventory) SHORT[agent.id] = agent.displayName;
   agents.value = inventory;
 }
@@ -207,7 +207,7 @@ export function editProject(id: string) {
 
 export async function loadProjects() {
   try {
-    projects.value = await api<Project[]>("/api/projects");
+    projects.value = await sharedGet<Project[]>("/api/projects");
     projectsLoaded.value = true;
   } catch {
     return; // keep what we have
@@ -604,7 +604,7 @@ export const health = signal<Health[] | null>(null);
 export const gitHealth = signal<GitHealth | null>(null);
 export const healthOpen = signal(false);
 export async function loadHealth() {
-  const [agents, git] = await Promise.allSettled([api<Health[]>("/api/doctor"), api<GitHealth>("/api/doctor/git")]);
+  const [agents, git] = await Promise.allSettled([sharedGet<Health[]>("/api/doctor"), sharedGet<GitHealth>("/api/doctor/git")]);
   health.value = agents.status === "fulfilled" ? agents.value : null;
   gitHealth.value = git.status === "fulfilled" ? git.value : null;
 }
@@ -745,7 +745,7 @@ export async function loadCheck() {
 
 export async function loadModels() {
   try {
-    catalogs.value = await api("/api/models");
+    catalogs.value = await sharedGet("/api/models");
   } catch {
     catalogs.value = {};
   }

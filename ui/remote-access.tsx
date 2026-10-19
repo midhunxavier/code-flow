@@ -1,3 +1,4 @@
+import { pollVisible } from "./polling.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { TailscaleStatus } from "../src/tailscale.js";
 import { QrCode } from "./bits.js";
@@ -42,9 +43,8 @@ export function RemoteAccess() {
     } finally { reading.current = false; setChecking(false); }
   };
   useEffect(() => {
-    void refresh();
-    const timer = setInterval(() => { setNow(Date.now()); void refresh(); }, 10_000);
-    return () => { clearInterval(timer); ++generation.current; };
+    const stopPolling = pollVisible(() => { setNow(Date.now()); return refresh(); }, 10_000);
+    return () => { stopPolling(); ++generation.current; };
   }, []);
   const set = async (patch: object, path = "/api/remote") => {
     if (saving.current) return false;

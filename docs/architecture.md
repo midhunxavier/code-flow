@@ -11,12 +11,17 @@ ui/bits.tsx              small shared pieces: agent tags, the Markdown renderer,
 ui/collab-*.tsx          the Team page: the board and its inbox (collab-board), a task with its attempt, checkpoints, reviews and discussion (collab-task), Settings → Team (collab-settings); collab-state.ts holds their signals and API helpers
 ui/styles.css, ui/fonts  the stylesheet (the paper theme, light and dark) and its font (Inter; licence included)
 ui/theme.ts              light or dark: follows the system until you pick one with the top bar's theme button
-scripts/build-ui.mjs     bundles the UI, fonts and images into one self-contained public/index.html (npm start builds it)
+scripts/build-ui.mjs     builds hashed ESM chunks and CSS, then atomically publishes public/index.html (npm start builds it)
 scripts/check-node.mjs   stops npm start and npm run dev on a Node older than 20, saying why
 scripts/pty.py           the Terminal's pseudo-terminal (Python 3 standard library, no native npm module): runs your login shell in a pty, relays its bytes, takes resizes and reports the shell's pid, its terminal and the foreground on fd 3; when it ends, it hangs up everything in the shell's session
 src/server.ts            HTTP API + SSE on 127.0.0.1 (Host/Origin checked, session cookie or Bearer token)
 src/stream.ts            one event stream per browser window (/api/stream), carrying every topic it watches: runs, run:<id>, shell:<id>
-src/store.ts             run logs and the replay journal on disk, the one-server lock
+src/store.ts             run logs and replay journal, per-run batched write queues, the one-server lock
+src/work-queue.ts        bounded concurrent work with ordering within each run
+src/transcript.ts        bounded reverse byte-offset transcript pages
+src/sse-writer.ts        byte-bounded backpressure-aware stream output
+src/run-history.ts       indexed summaries/search and stable cursor pagination
+src/performance.ts       bounded local runtime diagnostics
 src/run-log.ts           what a window is sent to show a run (its latest snapshots); run snapshots on disk as patches, and compacting old logs
 src/teams.ts             provider-independent team members, tasks, messages and context projections
 src/memory.ts            private/team/project memory, revisions, provenance and atomic snapshots
@@ -147,3 +152,5 @@ The GitHub tests cover untrusted issues (lockdown, fenced text, Docker or your c
 A live tool command and its receipt are fsynced together before acknowledgement. The scheduler records which command batch it consumes at each boundary, so replay cannot inject a future reply into an earlier task. Completion batches likewise record observed order before serial integration. One server owns the journal; no dispatch lease or outbox is needed. See the [implementation plan](dynamic-teams-implementation-plan.md) for the invariants.
 
 The scoped loopback bridge is separate from the user API and its bearer token. Official adapters receive a temporary stdio MCP configuration for supported turns. Memory tools inherit the active member, project, task and source provenance from the engine. Native spawning controls, sandbox support and nested usage limitations are exposed through the capability inventory. Supervisor shares decomposition/integration primitives while retaining its public ID and historical replay identities.
+
+See [Performance and resource boundaries](performance.md) for the paged UI stream, lazy assets, worker reuse, storage ordering, diagnostics and load benchmark.

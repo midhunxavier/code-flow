@@ -1,3 +1,5 @@
+import { pollVisible } from "./polling.js";
+import { shellReady } from "./performance.js";
 import "./theme.js"; // first: the theme follows your pick (or the system) before anything renders
 import { watchNotificationPermission } from "./preferences.js";
 import { loadExecutionHost, executionHost, readConnectionIntent } from "./ssh-projects.js";
@@ -64,7 +66,7 @@ async function boot() {
   agents.value = agentList;
   for (const agent of agentList) SHORT[agent.id as keyof typeof SHORT] = agent.displayName;
   patterns.value = patternList;
-  await loadTeamRollout();
+  void loadTeamRollout();
   const connectionIntent = readConnectionIntent();
   route.value = routeFromHash();
   effect(() => {
@@ -80,6 +82,7 @@ async function boot() {
   window.addEventListener("popstate", () => (route.value = routeFromHash()));
   window.addEventListener("hashchange", () => (route.value = routeFromHash()));
   render(<App />, root);
+  shellReady();
   listenForHandOffs();
   void loadModels();
   void loadHealth();
@@ -93,7 +96,7 @@ async function boot() {
   await Promise.all([refreshRuns(), loadProjects()]);
   watchAllRuns(notifyFinished);
   // A safety net if the event stream drops; projects change when a run starts in a new repo.
-  setInterval(() => void Promise.all([refreshRuns(), loadProjects()]), 30_000);
+  pollVisible(() => Promise.all([refreshRuns(), loadProjects()]), 30_000);
 }
 
 void boot();

@@ -3,13 +3,15 @@ import { parentPort, workerData } from 'node:worker_threads';
 import ts from 'typescript';
 import { dirname, relative } from 'node:path';
 
-const { root, sources, request } = workerData;
-const files = new Map(sources.map((file) => [file.absolute, file]));
+const { root } = workerData;
+const files = new Map();
+let revision = 0;
 const options = { allowJs: true, checkJs: false, noLib: true, target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, jsx: ts.JsxEmit.Preserve };
 const host = {
   getCompilationSettings: () => options,
   getScriptFileNames: () => [...files.keys()],
-  getScriptVersion: () => '1',
+  getScriptVersion: (name) => String(files.get(name)?.version ?? 0),
+  getProjectVersion: () => String(revision),
   getScriptSnapshot: (name) => files.has(name) ? ts.ScriptSnapshot.fromString(files.get(name).text) : undefined,
   getCurrentDirectory: () => root,
   getDefaultLibFileName: () => '/__codeflow_no_external_lib__.d.ts',
@@ -29,7 +31,11 @@ function location(fileName, span, extras = {}) {
   const text = file.text.slice(starts[line], Math.min(starts[line] + 500, starts[line + 1] ?? file.text.length)).replace(/[\r\n]+$/, '');
   return { path: relative(root, fileName).replaceAll('\\', '/'), line: line + 1, column: character + 1, text, ...extras };
 }
+parentPort.on('message', ({ sources, removed, request }) => {
 try {
+  revision++;
+  for (const name of removed) files.delete(name);
+  for (const file of sources) files.set(file.absolute, { ...file, version: revision });
   let hits = [], total = 0;
   if (request.kind === 'symbols') {
     const items = service.getNavigateToItems(request.query, 201, undefined, true);
@@ -53,4 +59,5 @@ try {
   }
   parentPort.postMessage({ hits, truncated: total > 200, engine: `TypeScript language service ${ts.version}`, note: 'Symbols and references cover bounded saved JavaScript/TypeScript sources. External libraries, project plugins, generated output and credential selections are not loaded.' });
 } catch (error) { parentPort.postMessage({ error: error.message }); }
-finally { service.dispose(); }
+});
+parentPort.on("close", () => service.dispose());

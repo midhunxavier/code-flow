@@ -1,3 +1,5 @@
+import { PersistenceTracker } from "./persistence-status.js";
+import { RunIndex, runSearchText, historyOffset } from "./run-history.js";
 import { chatHandoffContext } from "./chat-handoff.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter } from "node:events";
@@ -82,7 +84,7 @@ import {
   type Snapshot,
   type Worktree,
 } from "./git.js";
-import { appendLine, deleteRunHistory, flushWrites, journalEntry, listDeletedRunIds, listRunIds, loadJournal, readJsonLines, rewriteLines, RUNS_DIR } from "./store.js";
+import { appendLine, deleteRunHistory, flushWrites, journalEntry, listDeletedRunIds, listRunIds, loadJournal, readJsonLines, rewriteLines, waitForRunWrites, RUNS_DIR } from "./store.js";
 import { compactRunLog, decodeRunLog, RunLogWriter } from "./run-log.js";
 import { branchDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
@@ -2828,6 +2830,11 @@ export class RunManager {
   private readonly mergeValidating = new Map<string, AbortController>();
   private readonly mergeValidationWork = new Map<string, Promise<MergeValidation>>();
   private readonly runs = new Map<string, Run>();
+  private readonly runIndex = new RunIndex();
+  readonly persistence = new PersistenceTracker();
+  relatedRuns(repo: string) { return this.runIndex.related(repo); }
+  get historyRevision() { return this.runIndex.revision; }
+  get runningCount() { return this.runIndex.values().filter((run) => run.status === "running").length; }
   private readonly deletedRuns = new Set<string>();
   /** Preserve callers' live Run handles on promotion without retaining cold full state. */
   private readonly runIdentities = new Map<string, WeakRef<Run>>();
@@ -2835,8 +2842,6 @@ export class RunManager {
   private readonly coldWrites = new Map<string, Promise<void>>();
   /** Async mutations retain their adopted live object while an older cold write settles. */
   private readonly coldMutations = new Map<string, number>();
-  /** Event history of running runs (finished runs are read back from disk when needed). */
-  private readonly history = new Map<string, RunEvent[]>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly active = new Map<string, Promise<void>>();
   /** Runs between "resume requested" and "running": a second request must not start them twice. */
@@ -2921,7 +2926,7 @@ export class RunManager {
     // Recover each record incrementally and release its log before opening another batch.
     await mapLimit(ids, 4, async (id) => {
       const cold = await this.coldRuns.load(id);
-      if (cold) { this.seq = Math.max(this.seq, cold.seq); return; }
+      if (cold) { this.seq = Math.max(this.seq, cold.seq); this.runIndex.set(cold.summary, cold.search); return; }
       const projection = await recoverRun(id).catch((error: Error) => { logWarn(`Couldn't recover the log of run ${id}`, { error: error.message }); throw error; });
       this.seq = Math.max(this.seq, projection.seq);
       if (projection.fullSnapshots >= COMPACT_SNAPSHOTS && !projection.patches) compact.push(id);
@@ -2930,6 +2935,7 @@ export class RunManager {
       if (this.runs.has(id) || this.coldRuns.has(id)) return;
 
       this.runs.set(id, run);
+      this.runIndex.set(strip(run));
       this.runIdentities.set(id, new WeakRef(run));
       const wasRunning = run.status === "running";
       if (wasRunning) {
@@ -3013,21 +3019,14 @@ export class RunManager {
     return this.allSummaries().sort(compareRuns);
   }
 
-  private allSummaries(): RunSummary[] {
-    for (const id of [...this.coldRuns.ids()]) if (!this.coldRuns.valid(id)) this.get(id);
-    return [...this.runs.values()].map(strip).concat(this.coldRuns.summaries());
-  }
-  private searchText(metadata: RunSummary): string {
-    const run = metadata.cold ? this.get(metadata.id)! : metadata;
-    return [run.task, run.id, run.repo, run.pattern, run.branchPrefix, run.source ? `#${run.source.number} ${run.source.title}` : "", run.externalSource?.title ?? "", run.trigger?.name ?? "", run.group?.label ?? ""].join("\n").toLowerCase();
-  }
+  private allSummaries(): RunSummary[] { return this.runIndex.values().map((run) => structuredClone(run)); }
   private async coolRun(run: Run): Promise<void> {
     if (!coldEligible(run) || this.busyRun(run) || this.active.has(run.id) || this.coldMutations.has(run.id) || this.runs.get(run.id) !== run) return;
-    await flushWrites();
+    await flushWrites(run.id);
     if (!coldEligible(run) || this.busyRun(run) || this.active.has(run.id) || this.coldMutations.has(run.id) || this.runs.get(run.id) !== run) return;
     const before = JSON.stringify(run);
     if (await this.coldRuns.save(run, this.seq)) {
-      if (this.runs.get(run.id) === run && coldEligible(run) && !this.busyRun(run) && !this.active.has(run.id) && !this.coldMutations.has(run.id) && JSON.stringify(run) === before) { this.runs.delete(run.id); this.history.delete(run.id); this.logWriter.forget(run.id); }
+      if (this.runs.get(run.id) === run && coldEligible(run) && !this.busyRun(run) && !this.active.has(run.id) && !this.coldMutations.has(run.id) && JSON.stringify(run) === before) { this.runIndex.set(this.coldRuns.index(run.id)!, runSearchText(run)); this.runs.delete(run.id); this.logWriter.forget(run.id); }
       else this.coldRuns.drop(run.id);
     }
   }
@@ -3053,10 +3052,10 @@ export class RunManager {
   attentionPage(input: { limit?: number; cursor?: string; predicate?: (run: RunSummary) => boolean } = {}) {
     const limit = input.limit ?? 100; if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Attention page size must be between 1 and 100");
     const cursor = input.cursor ? decodeRunCursor(input.cursor) : undefined;
-    const candidates = this.allSummaries().filter((run) => !input.predicate || input.predicate(run)).sort(compareRuns), running = candidates.filter((run) => run.status === "running");
+    const candidates = this.runIndex.values().filter((run) => !input.predicate || input.predicate(run)), running = candidates.filter((run) => run.status === "running");
     const attention = candidates.filter((run) => run.status !== "running" && !run.archived && (!run.seen || run.status === "interrupted" || !!run.awaiting || !!run.team?.awaitingRequestId || run.triage?.state === "pending"));
     const remaining = attention.filter((run) => !cursor || afterRunCursor(run, cursor)), selected = remaining.slice(0, limit), truncated = remaining.length > limit;
-    return { runs: [...running, ...selected], total: running.length + attention.length, running: running.length, truncated, nextCursor: truncated ? encodeRunCursor(selected.at(-1)!) : undefined };
+    return { runs: structuredClone([...running, ...selected]), total: running.length + attention.length, running: running.length, truncated, nextCursor: truncated ? encodeRunCursor(selected.at(-1)!) : undefined };
   }
 
   page(input: { limit?: number; before?: number; cursor?: string; query?: string; project?: string; predicate?: (run: RunSummary) => boolean } = {}) {
@@ -3065,10 +3064,9 @@ export class RunManager {
     const cursor = input.cursor === undefined ? undefined : decodeRunCursor(input.cursor);
     const limit = input.limit ?? 50;
     const words = input.query?.trim().toLowerCase().split(/\s+/).filter(Boolean) ?? [];
-    const matches = this.allSummaries().filter((run) => { if (input.predicate && !input.predicate(run) || input.project && run.project !== input.project) return false; if (!words.length) return true; const text = this.searchText(run); return words.every((word) => text.includes(word)); }).sort(compareRuns);
-    const remaining = matches.filter((run) => (!cursor || afterRunCursor(run, cursor)) && (input.before === undefined || run.createdAt < input.before));
-    const selected = remaining.slice(0, limit);
-    return { runs: selected, total: matches.length, nextCursor: remaining.length > limit ? encodeRunCursor(selected.at(-1)!) : undefined, nextBefore: remaining.length > limit ? selected.at(-1)?.createdAt : undefined };
+    const matches = input.predicate || input.project || words.length ? this.runIndex.values().filter((run) => { if (input.predicate && !input.predicate(run) || input.project && run.project !== input.project) return false; return this.runIndex.matches(run.id, words); }) : this.runIndex.values();
+    const offset = historyOffset(matches, cursor, input.before), selected = matches.slice(offset, offset + limit), more = offset + limit < matches.length;
+    return { runs: structuredClone(selected), total: matches.length, nextCursor: more ? encodeRunCursor(selected.at(-1)!) : undefined, nextBefore: more ? selected.at(-1)?.createdAt : undefined };
   }
 
   get(id: string): Run | undefined {
@@ -3081,16 +3079,30 @@ export class RunManager {
     this.coldRuns.drop(id); this.seq = Math.max(this.seq, recovered.seq); return this.adoptRun(recovered.run);
   }
 
+  /** Async read path for HTTP and stream hydration; mutations retain synchronous compatibility. */
+  async getAsync(id: string): Promise<Run | undefined> {
+    if (this.deletedRuns.has(id)) return undefined;
+    const hot = this.runs.get(id); if (hot) return hot;
+    if (!this.coldRuns.has(id)) return undefined;
+    const cold = await this.coldRuns.getAsync(id).catch(() => undefined);
+    if (this.deletedRuns.has(id)) return undefined;
+    if (this.runs.has(id)) return this.runs.get(id);
+    if (cold) return cold;
+    const recovered = await recoverRun(id);
+    if (this.deletedRuns.has(id)) return undefined;
+    if (this.runs.has(id)) return this.runs.get(id);
+    if (!recovered.run) throw new Error("Cold run has no recoverable authoritative snapshot");
+    this.coldRuns.drop(id); this.seq = Math.max(this.seq, recovered.seq); return this.adoptRun(recovered.run);
+  }
+
   /** The run worktree (or scratch checkout) `path` is or is in, for code-flow's git there (see runWorktreeAt). */
   worktreeAt(path: string): Promise<Checkout | undefined> {
     return runWorktreeAt(this.allSummaries(), path);
   }
 
-  /** Full event history of a run (from memory, or from its log for runs loaded from disk). */
+  /** Full event history for legacy clients and exports, loaded only on explicit request. */
   async events(id: string): Promise<RunEvent[]> {
-    const cached = this.history.get(id);
-    if (cached) return cached;
-    await flushWrites();
+    await waitForRunWrites(id);
     return decodeRunLog(await readJsonLines(`${id}.jsonl`));
   }
 
@@ -3223,7 +3235,7 @@ export class RunManager {
     } catch (error) { this.deletedRuns.delete(id); throw error; }
     this.bus.emit("workspace-stop", id);
     this.devServers.stopMatching(`${id}/`);
-    this.runs.delete(id); this.coldRuns.drop(id); this.history.delete(id); this.runIdentities.delete(id); this.logWriter.forget(id);
+    this.persistence.delete(id); this.runIndex.delete(id); this.runs.delete(id); this.coldRuns.drop(id); this.runIdentities.delete(id); this.logWriter.forget(id);
     this.bus.emit("*", { ...strip(run), deleted: true });
   }
 
@@ -4139,10 +4151,10 @@ export class RunManager {
 
   private readRun(id: string): Run { const run = this.get(id); if (!run) throw new Error("Run not found"); return run; }
 
-  private adoptRun(value: Run): Run {
+  private adoptRun(value: Run, index = true): Run {
     const original = this.runIdentities.get(value.id)?.deref();
     if (original && original !== value) { for (const key of Object.keys(original)) if (!(key in value)) delete (original as unknown as Record<string, unknown>)[key]; Object.assign(original, value); value = original; }
-    this.runIdentities.set(value.id, new WeakRef(value)); this.runs.set(value.id, value); return value;
+    this.runIdentities.set(value.id, new WeakRef(value)); this.runs.set(value.id, value); if (index) this.runIndex.set(strip(value)); return value;
   }
 
   /**
@@ -4366,7 +4378,6 @@ export class RunManager {
       throw new TeamRerunError("Run creation was cancelled before execution started", 409);
     }
     this.runs.set(run.id, run);
-    this.history.set(run.id, []);
     this.emitRun(run);
     for (const note of input.routing ?? []) this.emit(run, { type: "log", level: "info", text: note });
     if (placed?.created) this.emit(run, { type: "log", level: "info", text: `No project held ${basename(repo)} yet, so it has one of its own now: “${placed.project.name}”` });
@@ -4427,15 +4438,13 @@ export class RunManager {
 
   private async resumeClaimed(run: Run, pattern: Pattern): Promise<Run> {
     const id = run.id;
-    const loaded = !this.history.has(id);
-    if (loaded) this.history.set(id, await this.events(id));
+    await waitForRunWrites(id);
     const recoveryStarted = performance.now();
     const journal = await loadJournal(id, { strict: run.pattern === "auto-team" });
     if (run.pattern === "auto-team") run.recovery = { bytes: await stat(join(RUNS_DIR, `${id}.journal.jsonl`)).then((info) => info.size, () => 0), records: journal.size, durationMs: performance.now() - recoveryStarted, kind: "journal-load" };
     // Stop pressed while the log and journal were read: Stop already said yes, so the run doesn't
     // start, and stays as it was (nothing below awaits before the run is started).
     if (this.stoppedWhileStarting.has(id)) {
-      if (loaded) this.history.delete(id);
       return run;
     }
     if (run.pattern === "auto-team") {
@@ -4540,8 +4549,6 @@ export class RunManager {
         this.controllers.delete(run.id);
         this.active.delete(run.id);
         this.emitRun(run);
-        // Finished runs don't keep their event history in memory; it's read back from disk.
-        this.history.delete(run.id);
       });
     this.active.set(run.id, done);
   }
@@ -4659,19 +4666,21 @@ export class RunManager {
 
   emitRun(run: Run) {
     if (this.deletedRuns.has(run.id)) return;
-    this.coldRuns.drop(run.id); run = this.adoptRun(run);
-    this.emit(run, { type: "run", run: strip(run) });
+    this.coldRuns.drop(run.id); run = this.adoptRun(run, false);
+    const summary = strip(run); this.runIndex.set(summary);
+    this.emit(run, { type: "run", run: summary });
     this.scheduleCold(run);
   }
 
   emit(run: Run, body: RunEventBody) {
     if (this.deletedRuns.has(run.id)) return;
     const event = { seq: ++this.seq, ts: Date.now(), runId: run.id, ...body } as RunEvent;
-    this.history.get(run.id)?.push(event);
     this.bus.emit(run.id, event);
     if (event.type === "run") this.bus.emit("*", event.run);
     // A finished run's last snapshot is synced: after a power cut it must not reload as running.
-    appendLine(`${run.id}.jsonl`, this.logWriter.encode(event), { sync: event.type === "run" && event.run.status !== "running", checkpoint: event.type === "run" && event.run.status !== "running" ? { seq: event.seq, run } : undefined, onFailed: () => this.logWriter.forget(run.id) });
+    const durable = event.type === "run" && event.run.status !== "running";
+    const saved = appendLine(`${run.id}.jsonl`, this.logWriter.encode(event), { sync: durable, strict: durable, checkpoint: durable ? { seq: event.seq, run } : undefined, onFailed: () => { this.logWriter.forget(run.id); this.persistence.failure(run.id, event.seq, "Run data could not be saved. Check disk space and permissions before closing the app."); } });
+    if (durable) this.persistence.track(run.id, event.seq, saved);
 
   }
 }

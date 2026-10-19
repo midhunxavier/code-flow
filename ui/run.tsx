@@ -46,7 +46,7 @@ import { ProjectMemory } from "./memory.js";
 import { GithubReviewThreadsPanel } from "./github-review-threads.js";
 import { RemoteStepReceipt } from "./remote-workers.js";
 import type { MergeValidation } from "../src/merge-validation.js";
-import { useRunStream, type RunData } from "./run-feed.js";
+import { loadStepTranscript, transcriptVersion, useRunStream, type RunData } from "./run-feed.js";
 import { followupMinimumCalls, teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
 import type { AgentEvent, AgentId, Artifact, Attachment, CheckedReview, FindingCheck, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunSummary, Step } from "./types.js";
 
@@ -71,7 +71,7 @@ export function RunView({ id }: { id: string }) {
   const [recovering, setRecovering] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState("");
-  const { run, problem, data } = useRunStream(id, (step) => {
+  const { run, problem, data, persistence } = useRunStream(id, (step) => {
     // A side chat's turn isn't in the timeline: following it would close the step you're watching.
     if (follow.current && step.status === "running" && !sideWork(step)) setSelected(step.id);
   });
@@ -173,6 +173,7 @@ export function RunView({ id }: { id: string }) {
   return (
     <div class="runview">
       <div class="run-scroll">
+        {persistence?.state === "saving" ? <p class="help" role="status">Saving run…</p> : persistence?.state === "error" ? <p class="msg err" role="alert">Run changes have not been saved: {persistence.error}</p> : null}
         {run.projectTeam && <p class="help">Standing team {run.projectTeam.phase} · <a href={`#/project/${run.project}`}>Review the opportunity, approve this result, or request a bounded team revision</a></p>}
         <header class="run-head">
           <div class="run-title">
@@ -1832,9 +1833,12 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
 const PAGE = 200;
 
 function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: RunData; version: number }) {
+  transcriptVersion(run.id);
   const body = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [shown, setShown] = useState(PAGE);
+  const page = step ? data.pages?.get(step.id) : undefined;
+  useEffect(() => { if (step && data.pages && !data.pages.get(step.id)?.loaded) void loadStepTranscript(run.id, step.id); }, [run.id, step?.id, data.pages]);
   useEffect(() => setShown(PAGE), [step?.id]);
   useEffect(() => {
     if (stick.current && body.current) body.current.scrollTop = body.current.scrollHeight;
@@ -1847,6 +1851,7 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
     <div class="transcript" role="group" aria-label={`Transcript of ${step.title}`}>
       {step.remote ? <RemoteStepReceipt key={`${run.id}/${step.id}`} runId={run.id} step={step} /> : null}
       <div class="tr-head">
+        {page ? <span class="row"><button class="btn small" disabled={page.loading || !page.before} onClick={() => { setShown(PAGE); void loadStepTranscript(run.id, step!.id, page.before); }}>Earlier events</button><button class="btn small" disabled={page.loading} onClick={() => { setShown(PAGE); void loadStepTranscript(run.id, step!.id); }}>Latest events</button>{page.loading ? <span role="status">Loading transcript…</span> : null}{page.historical ? <span>Viewing earlier events</span> : null}{page.error ? <span role="alert">{page.error}</span> : null}</span> : null}
         {model ? <span>{model}</span> : null}
         <span>{(step.kind ?? "agent") === "agent" ? (step.mode === "write" ? "can edit files" : "read-only") : "run by code-flow"}</span>
         <span>worktree {step.worktree}</span>
@@ -1866,9 +1871,11 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
           <button
             type="button"
             class="btn small show-earlier"
+            disabled={shown >= 1000}
+            title={shown >= 1000 ? "Use Earlier events to read more history in bounded pages" : undefined}
             onClick={() => {
               stick.current = false;
-              setShown(shown + PAGE * 5);
+              setShown(Math.min(1000, shown + PAGE * 5));
             }}
           >
             Show earlier ({hidden.toLocaleString()} hidden)
@@ -1976,13 +1983,13 @@ function addItem(built: Built, e: AgentEvent, streamsDeltas: boolean) {
   switch (e.kind) {
     case "text":
       // ACP and agy stream small deltas; the other CLIs send whole blocks.
-      if (streamsDeltas && last?.kind === "text") {
+      if (streamsDeltas && last?.kind === "text" && last.text.length + e.text.length <= 32 * 1024) {
         last.text += e.text;
         last.v++;
       } else items.push({ kind: "text", text: e.text, v: 0 });
       break;
     case "thinking":
-      if (streamsDeltas && last?.kind === "thinking") {
+      if (streamsDeltas && last?.kind === "thinking" && last.text.length + e.text.length <= 32 * 1024) {
         last.text += e.text;
         last.v++;
       } else items.push({ kind: "thinking", text: e.text, v: 0 });
@@ -2001,7 +2008,11 @@ function addItem(built: Built, e: AgentEvent, streamsDeltas: boolean) {
       break;
     }
     case "tool_result": {
-      const tool = tools.get(e.callId);
+      let tool = tools.get(e.callId);
+      if (!tool) {
+        tool = { kind: "tool", name: "Tool result (call in an earlier page)", input: "", v: 0 };
+        tools.set(e.callId, tool); items.push(tool);
+      }
       if (tool) {
         tool.output = e.output;
         tool.isError = e.isError;

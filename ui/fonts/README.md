@@ -1,7 +1,7 @@
 # Fonts
 
 The UI's typeface, latin subsets as WOFF. `scripts/build-ui.mjs` inlines them into
-`public/index.html`, so code-flow never fetches fonts from the network. Page headings use Georgia
+the hashed stylesheet in `public/assets`, so code-flow needs no external font service. Page headings use Georgia
 and code uses the system monospace, so neither needs a file here.
 
 - `inter-latin-400.woff`, `inter-latin-500.woff`, `inter-latin-600.woff` — Inter 4.0 (Regular,

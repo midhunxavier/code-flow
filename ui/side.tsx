@@ -1,6 +1,7 @@
+import { lazyView } from "./lazy-view.js";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { BrowserTab } from "./browser.js";
-import { ChangesTab } from "./changes.js";
+const BrowserTab = lazyView(() => import("./browser.js").then((module) => module.BrowserTab));
+const ChangesTab = lazyView(() => import("./changes.js").then((module) => module.ChangesTab));
 import { addContext, FileTree } from "./composer.js";
 import { Icon, type IconName } from "./icons.js";
 import { ago, api, baseName, enc, fmtSize, onPhone, post, showToast, store, useLatest } from "./lib.js";
@@ -29,7 +30,7 @@ import {
   sideTab,
   type SideTab,
 } from "./state.js";
-import { TerminalTab } from "./terminal.js";
+const TerminalTab = lazyView(() => import("./terminal.js").then((module) => module.TerminalTab));
 import type { DevServer, FileContent } from "./types.js";
 
 /**

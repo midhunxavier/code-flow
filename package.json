@@ -22,7 +22,8 @@
     "maintenance": "tsx scripts/maintenance.ts",
     "test:containers": "CODEFLOW_TEST_DOCKER=1 tsx --test --test-concurrency=1 test/agent-container-docker.test.ts test/filtered-tasks-docker.test.ts",
     "build:host": "node scripts/build-ui.mjs && node scripts/build-host.mjs",
-    "evaluate:project-teams": "tsx scripts/evaluate-project-teams.ts"
+    "evaluate:project-teams": "tsx scripts/evaluate-project-teams.ts",
+    "benchmark:performance": "tsx scripts/benchmark-performance.ts"
   },
   "engines": {
     "node": ">=20"

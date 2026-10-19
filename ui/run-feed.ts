@@ -1,3 +1,7 @@
+import type { PersistenceStatus } from "../src/persistence-status.js";
+import { api, enc } from "./lib.js";
+import { TranscriptCache } from "./transcript-cache.js";
+import type { TranscriptPage } from "../src/transcript.js";
 import { batch, signal, type Signal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import type { Built } from "./run.js";
@@ -5,7 +9,10 @@ import { reconcileStreamSnapshot, type StreamSnapshot } from "./run-stream.js";
 import { subscribe } from "./stream.js";
 import type { AgentEvent, RunEvent, RunSummary, Step } from "./types.js";
 
+export interface StepPage { before?: string; loading: boolean; loaded: boolean; historical: boolean; error?: string; request: number }
 export interface RunData {
+  cache: TranscriptCache;
+  pages: Map<string, StepPage>;
   steps: Map<string, Step>;
   events: Map<string, AgentEvent[]>;
   /** Transcript items per step, built incrementally as events arrive (see itemsFor). */
@@ -19,7 +26,7 @@ export interface RunData {
   epoch: string;
 }
 
-export const emptyData = (): RunData => ({ steps: new Map(), events: new Map(), built: new Map(), logs: [], seen: new Set(), runSeq: 0, stepSeq: new Map(), epoch: "" });
+export const emptyData = (): RunData => ({ cache: new TranscriptCache(), pages: new Map(), steps: new Map(), events: new Map(), built: new Map(), logs: [], seen: new Set(), runSeq: 0, stepSeq: new Map(), epoch: "" });
 
 /**
  * One run's events, shared by everything that shows the run (the run view, and the side panel's
@@ -34,6 +41,7 @@ interface RunFeed {
   run: Signal<RunSummary | null>;
   /** Why the run can't be shown (it doesn't exist, or the server said no). */
   problem: Signal<string>;
+  persistence: Signal<PersistenceStatus | null>;
   /** Changes once per frame while events arrive, so views re-render. */
   version: Signal<number>;
   users: number;
@@ -51,11 +59,15 @@ const feeds = new Map<string, RunFeed>();
 /** Runs kept once nothing shows them, the most recently shown first. */
 const KEEP_IDLE = 6;
 
+/** Read inside a transcript so page-only updates invalidate its render too. */
+export function transcriptVersion(id: string) { return feedFor(id).version.value; }
+
 function feedFor(id: string): RunFeed {
   let feed = feeds.get(id);
   if (!feed) {
-    feed = { id, data: { current: emptyData() }, run: signal(null), problem: signal(""), version: signal(0), users: 0, stepListeners: new Set(), scheduled: false, lastSeq: 0, idleSince: Date.now() };
+    feed = { id, data: { current: emptyData() }, run: signal(null), problem: signal(""), persistence: signal(null), version: signal(0), users: 0, stepListeners: new Set(), scheduled: false, lastSeq: 0, idleSince: Date.now() };
     feeds.set(id, feed);
+    pruneIdle(feed);
   }
   return feed;
 }
@@ -63,7 +75,7 @@ function feedFor(id: string): RunFeed {
 function use(feed: RunFeed) {
   if (feed.users++) return;
   feed.stop = subscribe(
-    `run:${feed.id}`,
+    `run-page:${feed.id}`,
     (ev) => receive(feed, ev),
     () => (feed.data.current.epoch && feed.lastSeq ? `${feed.data.current.epoch}:${feed.lastSeq}` : undefined),
   );
@@ -74,18 +86,27 @@ function release(feed: RunFeed) {
   feed.stop?.();
   feed.stop = undefined;
   feed.idleSince = Date.now();
-  const idle = [...feeds.values()].filter((f) => !f.users).sort((a, b) => b.idleSince - a.idleSince);
-  for (const f of idle.slice(KEEP_IDLE)) feeds.delete(f.id);
+  pruneIdle();
+}
+function pruneIdle(keep?: RunFeed) {
+  const idle = [...feeds.values()].filter((feed) => !feed.users && feed !== keep).sort((a, b) => b.idleSince - a.idleSince);
+  let bytes = 0;
+  for (const [index, feed] of idle.entries()) {
+    bytes += feed.data.current.cache.bytes * 2 + JSON.stringify(feed.run.value).length * 2;
+    if (index >= KEEP_IDLE || bytes > 32 * 1024 * 1024) feeds.delete(feed.id);
+  }
 }
 
-type Message = RunEvent | { type: "hello"; epoch: string; resumed?: boolean; snapshot?: StreamSnapshot } | { type: "error"; status: number; message: string };
+type Message = RunEvent | { type: "hello"; epoch: string; resumed?: boolean; snapshot?: StreamSnapshot; transcript?: TranscriptPage; persistence?: PersistenceStatus } | { type: "persistence"; status: PersistenceStatus } | { type: "error"; status: number; message: string };
 
 function receive(feed: RunFeed, ev: Message) {
+  if (ev.type === "persistence") { feed.persistence.value = ev.status; return; }
   if (ev.type === "error") {
     feed.problem.value = ev.status === 404 ? ev.message : `Couldn't load this run: ${ev.message}`;
     return;
   }
   if (ev.type === "hello") {
+    feed.persistence.value = ev.persistence ?? null;
     // Not resumed means the history follows from the start: start over rather than mix two of them.
     if (ev.epoch !== feed.data.current.epoch || !ev.resumed) {
       feed.data.current = { ...emptyData(), epoch: ev.epoch };
@@ -100,11 +121,16 @@ function receive(feed: RunFeed, ev: Message) {
       for (const step of ev.snapshot.steps) for (const listener of feed.stepListeners) listener(step);
       schedule(feed);
     }
+    if (ev.transcript) {
+      for (const event of ev.transcript.events) receive(feed, event);
+      feed.lastSeq = Math.max(feed.lastSeq, ev.transcript.latestSeq);
+    }
     return;
   }
   const d = feed.data.current;
   if (d.seen.has(ev.seq)) return;
   d.seen.add(ev.seq);
+  if (d.seen.size > 20_000) { const oldest = [...d.seen].slice(0, 5000); for (const seq of oldest) d.seen.delete(seq); }
   feed.lastSeq = Math.max(feed.lastSeq, ev.seq);
   if (ev.type === "run") {
     if (ev.seq < d.runSeq) return;
@@ -117,12 +143,47 @@ function receive(feed: RunFeed, ev: Message) {
     d.steps.set(ev.step.id, ev.step);
     for (const listener of feed.stepListeners) listener(ev.step);
   } else if (ev.type === "agent") {
+    if (d.pages.get(ev.stepId)?.historical) return;
     if (!d.events.has(ev.stepId)) d.events.set(ev.stepId, []);
     d.events.get(ev.stepId)!.push(ev.event);
   } else if (ev.type === "log") {
     d.logs.push(ev);
   }
+  if (ev.type === "agent" || ev.type === "log") trim(feed, d.cache.add(ev));
   schedule(feed);
+}
+
+function trim(feed: RunFeed, removed: RunEvent[]) {
+  const data = feed.data.current;
+  for (const event of removed) {
+    if (event.type === "agent") {
+      const events = data.events.get(event.stepId); const at = events?.indexOf(event.event) ?? -1;
+      if (at >= 0) events!.splice(at, 1);
+      data.built.delete(event.stepId);
+      const page = data.pages.get(event.stepId); if (page) page.loaded = false;
+    } else if (event.type === "log") { const at = data.logs.indexOf(event); if (at >= 0) data.logs.splice(at, 1); }
+  }
+}
+
+/** Each step has a bounded window. Earlier and Latest replace it rather than grow the DOM. */
+export async function loadStepTranscript(id: string, step: string, before?: string) {
+  const feed = feedFor(id), data = feed.data.current;
+  const old = data.pages.get(step);
+  if (old?.loading) return;
+  const state: StepPage = { before: old?.before, loading: true, loaded: old?.loaded ?? false, historical: !!before, request: (old?.request ?? 0) + 1 };
+  data.pages.set(step, state); schedule(feed);
+  try {
+    const page = await api<TranscriptPage>(`/api/runs/${enc(id)}/transcript?step=${enc(step)}${before ? `&before=${enc(before)}` : ""}`);
+    if (feed.data.current.pages !== data.pages || data.pages.get(step) !== state) return;
+    const live = before ? [] : [...data.cache.records.values()].map((entry) => entry.event).filter((event) => event.type === "agent" && event.stepId === step && event.seq > page.latestSeq);
+    data.cache.deleteStep(step); data.events.set(step, []); data.built.delete(step);
+    for (const event of [...page.events, ...live]) {
+      if (event.type !== "agent" || event.stepId !== step) continue;
+      data.events.get(step)!.push(event.event); trim(feed, data.cache.add(event));
+    }
+    Object.assign(state, { before: page.before, loaded: true });
+  } catch (error) { state.error = (error as Error).message; state.historical = old?.historical ?? false; }
+  finally { state.loading = false; schedule(feed); }
 }
 
 /**
@@ -167,5 +228,5 @@ export function useRunStream(id: string, onStep?: (step: Step) => void, active =
     use(feed);
     return () => release(feed);
   }, [feed, active]);
-  return { run: feed.run.value, problem: feed.problem.value, data: feed.data, version: feed.version.value };
+  return { run: feed.run.value, persistence: feed.persistence.value, problem: feed.problem.value, data: feed.data, version: feed.version.value };
 }
