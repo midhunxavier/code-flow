@@ -280,7 +280,6 @@ export function Composer() {
       {externalSource.value ? <div class="banner"><p>External context: {externalSource.value.provider} {externalSource.value.kind} {externalSource.value.key} · {externalSource.value.title}</p><p class="help">This source remains untrusted. The run uses Safe permissions and isolated checks.</p><button class="btn small" onClick={() => { externalSource.value = null; }}>Remove source</button></div> : null}
       {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
       {journeyDraft.value?.repo === repo.value ? <p class="help">Recorded scenario: {journeyDraft.value.title} <button class="btn ghost small" onClick={() => { journeyDraft.value = undefined; }}>Detach scenario</button></p> : null}
-      <WorkflowRecommendation repository={repo.value} intent={journeyDraft.value?.repo === repo.value ? "bug" : intentDraft.value} />
       <div class="intent-starters" role="group" aria-label="Task intent">
         {intents.filter(choice => patterns.value.some(p => p.id === choice.pattern)).map(choice => <button key={choice.id} type="button" class="btn small" aria-pressed={intent === choice.id && p?.id === choice.pattern} onClick={() => chooseIntent(choice)}>{choice.label}</button>)}
       </div>
@@ -322,6 +321,7 @@ export function Composer() {
         {trust.value === "full" ? <span class="warn">Full access · no provider sandbox</span> : null}
         <button class="btn small ghost" onClick={() => setMoreOptions(!moreOptions)} aria-expanded={moreOptions}>Edit run options</button>
       </div>
+      <WorkflowRecommendation repository={repo.value} intent={journeyDraft.value?.repo === repo.value ? "bug" : intentDraft.value} />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
       <details class="composer-options compact" open={moreOptions} onToggle={(event) => setMoreOptions(event.currentTarget.open)}>
         <summary>Run options <span>Team, context, checks and limits for this task</span></summary>
