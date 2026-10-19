@@ -93,7 +93,7 @@ export function ScheduleEditor({ automation: a, save }: { automation: Pick<Autom
 }
 
 // ---------------------------------------------------------------- page
-export function AutomationsView() {
+export function AutomationsView({ mode = "all" }: { mode?: "all" | "inbox" | "automations" }) {
   useEffect(() => {
     void loadAutomations();
     const timer = setInterval(loadAutomations, 15_000);
@@ -117,19 +117,19 @@ export function AutomationsView() {
   const here = activeProject.value ? ` in ${activeProject.value.name}` : scoped ? " without a project" : "";
   return (
     <div class="automations">
-      <ProjectTeamsInbox projectId={currentProject.value !== ALL && currentProject.value !== NONE ? currentProject.value : undefined} />
+      {mode !== "automations" ? <ProjectTeamsInbox projectId={currentProject.value !== ALL && currentProject.value !== NONE ? currentProject.value : undefined} /> : null}
       <div class="page-head">
         <div class="ph-text page-head-text">
           <h3>Project scope</h3>
           <p class="lede">
-            Runs that start on a schedule or from a webhook. Their results wait in the inbox for you: approve, ask for changes, or reject. Nothing is ever merged automatically.
+            {mode === "inbox" ? "Questions, blocked work, failed checks and results waiting for your review." : "Schedule work and manage triggers. Results wait in your Inbox; nothing is merged automatically."}
           </p>
         </div>
         <ProjectButton />
       </div>
 
       {/* Each section is a card: its title, then its items as rows. */}
-      <section class="section auto-card" aria-labelledby="inbox-title">
+      {mode !== "automations" ? <section class="section auto-card" aria-labelledby="inbox-title">
         <h2 class="section-title" id="inbox-title">
           Review inbox {pending.length ? <span class="count">{pending.length}</span> : null}
         </h2>
@@ -137,9 +137,9 @@ export function AutomationsView() {
         <p class="help inbox-note">Higher run priorities come first, then questions, blocked work, failures and results. Older items come first within each priority. Open a run to answer approvals, resume work or review its evidence.</p>
         <div class="wb-row inbox-filters"><label>Group by<select class="field" aria-label="Group review inbox" value={grouping} onChange={(event) => setGrouping(event.currentTarget.value)}><option value="project">Project</option><option value="repo">Repository</option><option value="reason">Attention needed</option><option value="none">No grouping</option></select></label><label>Show<select class="field" aria-label="Filter review inbox" value={filter} onChange={(event) => setFilter(event.currentTarget.value)}><option value="">All attention items</option>{Object.entries(REVIEW_REASON_LABELS).map(([id, label]) => <option value={id}>{label}</option>)}</select></label><label>Search<input class="field" aria-label="Search review inbox" value={query} onInput={(event) => setQuery(event.currentTarget.value)} placeholder="Task, repository or run ID" /></label></div>
         {filtered.length ? groups.map((group) => <section key={group.id} class="inbox-group" aria-label={`Review group ${group.label}`}><h3>{group.label} <span class="count">{group.runs.length}</span></h3>{group.runs.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} />)}</section>) : <p class="help empty">{pending.length ? "No attention items match these filters." : `Nothing to review${here}. Runs that changed nothing are archived on their own.`}</p>}
-      </section>
+      </section> : null}
 
-      <section class="section auto-card" aria-labelledby="automations-title">
+      {mode !== "inbox" ? <section class="section auto-card" aria-labelledby="automations-title">
         <h2 class="section-title" id="automations-title">
           Your automations {list.length ? <span class="n">{list.length}</span> : null}
         </h2>
@@ -151,7 +151,7 @@ export function AutomationsView() {
             None{here} yet. Set up a run in the composer — task, team, check — and choose <b>Save as automation…</b> next to Start run.
           </p>
         )}
-      </section>
+      </section> : null}
 
       <p class="help">To access this workspace from another device, open <a href="#/settings/remote-access">Remote access settings</a>.</p>
     </div>
@@ -191,7 +191,7 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
           {run.source?.title && !run.task.includes(run.source.title) ? ` — ${run.source.title}` : null}
         </a>
         <span class="help">
-          <Icon name={run.trigger?.via === "sweep" ? "layers" : run.trigger?.via === "webhook" ? "globe" : "clock"} class="inline-icon" /> {run.trigger?.name} · {STATUS_TEXT[run.status] ?? run.status}
+          {run.trigger ? <><Icon name={run.trigger.via === "sweep" ? "layers" : run.trigger.via === "webhook" ? "globe" : "clock"} class="inline-icon" /> {run.trigger.name} · </> : null}{STATUS_TEXT[run.status] ?? run.status}
           {run.verdict ? ` · check ${run.verdict}` : run.checkCantRun ? " · check couldn't run" : ""} · {baseName(run.repo)}
           {project ? <> · <Icon name="project" class="inline-icon" /> {project.name}</> : null} · {ago(run.createdAt)}
         </span>
@@ -202,7 +202,7 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
       {teamAwaitingAnswer(run) ? <div class="at-notice"><b>The team needs your answer</b><p>{run.team?.messages.find((message) => message.id === run.team!.awaitingRequestId)?.body}</p><a class="btn small primary" href={`#/run/${run.id}`}>Answer team question</a></div> : run.team?.status === "blocked" ? <div class="at-notice"><p>{run.team.gaps.join(" ")}</p><a class="btn small" href={`#/run/${run.id}`}>Continue team work</a></div> : null}
       {run.review ? <div class="help">Review: {run.review.verdict === "approve" ? "approve" : `${run.review.findings.length} findings`}</div> : null}
       {changed.map((a) => (
-        <pre key={a.branch} class="stat">
+        <pre key={a.branch} class="stat" tabIndex={0} aria-label={`Changed files on ${a.branch}`}>
           {a.label} · {a.branch}
           {"\n"}
           {a.stat}
@@ -450,7 +450,7 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
       // Show the project it went in (from "No project", its repo's), as starting a run does.
       const p = automationProject(saved.run);
       if (currentProject.value !== ALL && p && p.id !== currentProject.value) selectProject(p.id, { defaults: false, repo: false });
-      route.value = { view: "settings", section: "automations" };
+      route.value = { view: "automations" };
     } catch (err) {
       setError((err as Error).message);
     } finally {

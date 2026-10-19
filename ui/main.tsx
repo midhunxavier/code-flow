@@ -72,7 +72,7 @@ async function boot() {
     // pushing one would make Back return to `/`, which pushes it again, so Back could never leave.
     if (location.hash !== hash && !(hash === "#/" && !location.hash)) {
       // Replace legacy addresses so Back cannot get stuck on an alias.
-      if (/^#\/?(?:automations|workspace|insights)(?:\/|$)/.test(location.hash)) history.replaceState(null, "", hash);
+      if (hashFor(routeFromHash(location.hash)) === hash) history.replaceState(null, "", hash);
       else history.pushState(null, "", hash);
     }
   });

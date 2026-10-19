@@ -561,3 +561,17 @@ test("an owner token shaped like a runner credential still signs in on this mach
     const other = await fetch(`${instance.base}/api/health`, { headers: bearer }); assert.equal(other.status, 401, "another instance's owner token is still refused");
   } finally { instance.child.kill("SIGTERM"); }
 });
+
+test("Improve settings pin the provider without fallback, honor the default mode and validate options", async () => {
+  const instance = await startServer({ FAKE_CLAUDE_FAIL: "auth" });
+  const settings = { agent: "claude", defaultMode: "quick", providers: {} };
+  const failed = await api(instance, "/api/improve-prompt", { text: "Clarify login", repo, settings });
+  assert.equal(failed.status, 502); assert.match(failed.body.error, /Claude Code isn't signed in/);
+  const pinned = await api(instance, "/api/improve-prompt", { text: "Clarify login", repo, settings });
+  assert.equal(pinned.status, 400); assert.match(pinned.body.error, /Claude Code isn't signed in/);
+  const auto = await api(instance, "/api/improve-prompt", { text: "Clarify login", repo, settings: { ...settings, agent: "auto", defaultMode: "repo", providers: { codex: { repo: { model: "custom-model", effort: "high" } }, claude: { repo: { model: "unused-model", effort: "invalid-unused-effort" } } } } });
+  assert.equal(auto.status, 200, JSON.stringify(auto.body)); assert.equal(auto.body.agent, "codex"); assert.match(auto.body.summary, /repo, codex/);
+  for (const invalid of [{ ...settings, agent: "unknown" }, { ...settings, defaultMode: "unknown" }, { ...settings, providers: { claude: { quick: { model: 42 } } } }]) {
+    const response = await api(instance, "/api/improve-prompt", { text: "Clarify login", repo, settings: invalid }); assert.equal(response.status, 400, JSON.stringify(response.body));
+  }
+});

@@ -21,6 +21,7 @@ import { FilePolicyPanel } from "./filesystem-policy.js";
 import { ExtensionsPanel } from "./extensions.js";
 import { ProjectRunSettings } from "./project-run-settings.js";
 import { DependencyDiscovery } from "./dependency-health.js";
+import { PromptImprovementSettings } from "./prompt-improvement.js";
 import { AcpConnectionsPanel } from "./acp-connections.js";
 import { WorkbenchRetentionPanel } from "./retention.js";
 import { InsightsView } from "./insights.js";
@@ -50,14 +51,14 @@ export function SettingsView({ section = "general", group }: { section?: Setting
   const matches = searchSettings(query);
   const host = executionHost.value;
   const pending = inbox().length;
-  const go = (section: SettingsSection) => { setQuery(""); route.value = { view: "settings", section }; };
+  const go = (section: SettingsSection) => { setQuery(""); route.value = section === "workspace" || section === "automations" || section === "insights" ? { view: section } : { view: "settings", section }; };
   return <div class={`settings-page ${section === "workspace" || section === "insights" ? "settings-tools" : ""}`}>
     <header class="settings-header"><div><div class="eyebrow">Your workspace, your way</div><h1>Settings</h1></div><span class="settings-scope"><Icon name={host.kind === "local" ? "panel" : "terminal"} />{host.kind === "ssh" ? host.name : host.kind === "host" ? "Remote server" : "This computer"}</span></header>
     <div class="settings-layout">
       <aside class="settings-sidebar">
         <div class="settings-search"><Icon name="search" /><input class="field" type="search" aria-label="Search settings" placeholder="Search settings…" value={query} onInput={(e) => setQuery(e.currentTarget.value)} /></div>
         <nav ref={navigation} aria-label="Settings categories">
-          {["Preferences", "Connections", "Tools & activity", "Management"].map((group) => <div key={group} class="settings-nav-group"><div class="settings-nav-label">{group}</div>{SETTINGS_SECTIONS.filter((entry) => entry.group === group).map((entry) => <a key={entry.id} class={`settings-nav-item ${section === entry.id && !query.trim() ? "active" : ""}`} href={`#/settings/${entry.id}`} title={entry.id === "automations" && pending ? `${pending} runs need attention` : undefined} aria-current={section === entry.id && !query.trim() ? "page" : undefined} onClick={() => setQuery("")}><Icon name={entry.icon} />{entry.label}{entry.id === "automations" && pending ? <span class="count" aria-hidden="true">{pending}</span> : null}</a>)}</div>)}
+          {["Preferences", "Connections", "Management"].map((group) => <div key={group} class="settings-nav-group"><div class="settings-nav-label">{group}</div>{SETTINGS_SECTIONS.filter((entry) => entry.group === group && !["workspace", "automations", "insights"].includes(entry.id)).map((entry) => <a key={entry.id} class={`settings-nav-item ${section === entry.id && !query.trim() ? "active" : ""}`} href={`#/settings/${entry.id}`} title={entry.id === "automations" && pending ? `${pending} runs need attention` : undefined} aria-current={section === entry.id && !query.trim() ? "page" : undefined} onClick={() => setQuery("")}><Icon name={entry.icon} />{entry.label}{entry.id === "automations" && pending ? <span class="count" aria-hidden="true">{pending}</span> : null}</a>)}</div>)}
         </nav>
         <p class="settings-nav-note">A little more you.<br />A little less setup.</p>
       </aside>
@@ -111,6 +112,7 @@ function GeneralSettings() {
 function AgentSettings() {
   const [busy, setBusy] = useState(false);
   return <>
+    <PromptImprovementSettings />
     <AcpConnectionsPanel />
     <details class="settings"><summary>Check this computer</summary><div class="settings-body"><DependencyDiscovery /></div></details>
     <p class="help">Saved model choices apply to new runs in this workspace. Project defaults and individual role overrides can take precedence. Sign in through each agent’s CLI on the machine where it runs.</p>

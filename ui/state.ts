@@ -336,9 +336,9 @@ export const projectKeyOf = (run: RunSummary) => projectScope(projectFor(run), r
 /** What the panel would show if it weren't pinned. */
 const followed = computed<SideScope>(() => {
   const r = route.value;
-  if (r.view === "project") {
+  if (r.view === "project" || r.view === "workspace" && r.project) {
     // A project's page: its repository you're working in, else the one its latest run used.
-    const p = projects.value.find((x) => x.id === r.id);
+    const p = projects.value.find((x) => x.id === (r.view === "project" ? r.id : r.project));
     if (p) return projectScope(p, p.repos.includes(repo.value) ? repo.value : p.repos.length ? lastRepo(p) : "");
   }
   if (r.view === "run" || r.view === "review") {

@@ -56,6 +56,7 @@ export function ProjectView({ id }: { id: string }) {
           <p>{p.repos.length ? `Runs in ${p.repos.map(baseName).join(", ")}: what needs you, what's running and how recent runs went.` : "What needs you, what's running and how recent runs went."}</p>
         </div>
         <div class="page-head-actions">
+          <a class="btn" href={`#/project/${encodeURIComponent(id)}/workspace`}><Icon name="files" />Repository tools</a>
           <button type="button" class="btn" onClick={() => editProject(id)} title="Rename, repositories, delete">
             Edit
           </button>
@@ -142,7 +143,7 @@ export function ProjectView({ id }: { id: string }) {
             {autos.length ? (
               <div class="pp-list">
                 {autos.map((a) => (
-                  <button key={a.id} type="button" class={`pp-row ${a.enabled ? "" : "off"}`} onClick={() => (route.value = { view: "settings", section: "automations" })}>
+                  <button key={a.id} type="button" class={`pp-row ${a.enabled ? "" : "off"}`} onClick={() => (route.value = { view: "automations" })}>
                     <Icon name="clock" />
                     <span class="t">{a.name}</span>
                     <span class="m">{a.enabled ? a.scheduleText || (a.webhook ? "Webhook" : "") : "Paused"}</span>
@@ -154,7 +155,7 @@ export function ProjectView({ id }: { id: string }) {
             )}
             {pending ? (
               <div class="pp-card-foot">
-                <button type="button" class="btn small" onClick={() => (route.value = { view: "settings", section: "automations" })}>
+                <button type="button" class="btn small" onClick={() => (route.value = { view: "automations" })}>
                   {plural(pending, "result")} in the inbox
                 </button>
               </div>

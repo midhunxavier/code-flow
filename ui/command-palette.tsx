@@ -18,7 +18,11 @@ export function CommandPalette() {
   const actions: Command[] = [
     { id: "new", label: "New run", detail: "Actions", icon: "plus", run: () => (route.value = { view: "composer" }) },
     { id: "settings", label: "Settings", detail: "Preferences, agents and remote connections", icon: "sliders", run: () => (route.value = { view: "settings" }) },
-    ...SETTINGS_SECTIONS.map((section): Command => ({ id: `settings:${section.id}`, label: section.label, detail: `Settings · ${section.keywords}`, icon: section.icon, run: () => (route.value = { view: "settings", section: section.id }) })),
+    ...SETTINGS_SECTIONS.filter(section => !["workspace", "automations", "insights"].includes(section.id)).map((section): Command => ({ id: `settings:${section.id}`, label: section.label, detail: `Settings · ${section.keywords}`, icon: section.icon, run: () => (route.value = { view: "settings", section: section.id }) })),
+    { id: "inbox", label: "Inbox", detail: "Questions, failures and results needing review", icon: "bell", run: () => (route.value = { view: "inbox" }) },
+    { id: "automations", label: "Automations", detail: "Schedules and deferred runs", icon: "clock", run: () => (route.value = { view: "automations" }) },
+    { id: "workspace", label: "Repository workspace", detail: "Code, checks and repository tools", icon: "files", run: () => (route.value = { view: "workspace" }) },
+    { id: "insights", label: "Insights", detail: "Run results and usage", icon: "chart", run: () => (route.value = { view: "insights" }) },
     { id: "team", label: "Team board", detail: "Tasks, hand-overs and your team inbox", icon: "people", run: () => (route.value = { view: "team" }) },
     { id: "repo", label: "Choose repository", detail: "Actions", icon: "folder", run: () => (pickerOpen.value = true) },
     { id: "projects", label: "Manage projects", detail: "Actions", icon: "project", run: () => (projectsOpen.value = true) },

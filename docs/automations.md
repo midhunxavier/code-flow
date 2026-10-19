@@ -2,13 +2,13 @@
 
 Set up a run in the composer (task, team, check, settings), then choose **Save as automation…** next to *Start run*. It runs unattended.
 
-Open **Settings → Automations** or press **a** to manage schedules, webhooks, deferred runs and the review inbox. Older `#/automations` links open this same Settings category.
+Open **Automations** from the sidebar or press **a** to manage schedules, webhooks and deferred runs. **Inbox** is a separate sidebar destination for questions, blocked work, failures and results. Older `#/settings/automations` links open the standalone Automations page.
 
 ## Projects
 
 An automation's runs start in the [project](runs.md#projects) you were in when you saved it (from *All projects*, in its repository's project). If that project is deleted later, they start in the repository's project. Turning it off and on, or making a new webhook secret, keeps its project.
 
-**Settings → Automations** follows the project you're in (the project button next to its title picks it). It lists that project's automations and the results waiting for you there. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The count on **Settings** in the sidebar and **Automations** within Settings always counts every project's results, so nothing waiting for you is out of sight.
+**Automations** follows the project you're in (the project button next to its title picks it). It lists that project's automations. Inbox lists the results waiting for you. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The **Inbox** count in the sidebar counts attention items across projects, so nothing waiting for you is out of sight.
 
 ## When it runs
 
