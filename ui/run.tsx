@@ -136,6 +136,7 @@ export function RunView({ id }: { id: string }) {
   return (
     <div class="runview">
       <div class="run-scroll">
+        {run.projectTeam && <p class="help">Standing team {run.projectTeam.phase} · <a href={`#/project/${run.project}`}>Review the opportunity, approve this result, or request a bounded team revision</a></p>}
         <header class="run-head">
           <div class="run-title">
             {/* OntoLab's page head: a status line above the heading, the actions beside it */}

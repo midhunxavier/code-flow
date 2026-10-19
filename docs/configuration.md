@@ -155,3 +155,7 @@ Child processes exclude the application API token, scoped team capabilities, int
 The authenticated run API accepts `loop.maxInvocations` as an additional per-allocation ceiling on actual CLI launches, including retries. Auto already caps launches with its step budget. Follow-up requests can specify `budget: { maxSteps, maxInvocations, maxMinutes }`; the UI exposes this fresh allocation and retains lifetime usage.
 
 Project memory is in `memory.json`; evaluation reports and the explicit rollout decision live under the evaluation store in `CODEFLOW_HOME`. Both use durable replacement writes. See [Auto team](auto-team.md) for scope, trust, revision and deletion semantics.
+
+## Standing project teams
+
+Set `CODEFLOW_PROJECT_TEAMS_ENABLED=true` to opt into standing teams on project pages. `CODEFLOW_AUTO_TEAM_ENABLED` must also permit Auto team execution. Each team is separately activated by its owner. Schedules, budgets, missions, recovery and provider limits are described in [Standing project teams](project-teams.md).

@@ -48,6 +48,8 @@ test("persisted restrictions defer plugin initialization, CLI probes and prompt 
       assert.equal(response.status, 409, `${prefix} ${mode} ${"repo" in target ? target.project : "omitted repo"}: ${await response.text()}`);
       assert.equal(existsSync(providerMarker), false, "prompt improvement is refused before provider availability or a turn, even for an unrestricted or omitted repo");
     }
+    assert.equal((await fetch(`${base}/api/project-teams`, { headers })).status, 403);
+    assert.equal((await fetch(`${base}/api/project-teams/any/cycle`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ operationId: "blocked" }) })).status, 409);
     assert.equal((await fetch(`${base}/r/${phoneToken}`)).status, 403); assert.equal((await fetch(`${base}/api/runs/restricted-result`, { headers })).status, 403);
     const hubAbort = new AbortController(), hubTimer = setTimeout(() => hubAbort.abort(), 10_000);
     try {

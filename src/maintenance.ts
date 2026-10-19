@@ -1,3 +1,4 @@
+import { disableRestoredProjectTeam } from "./project-team-model.js";
 import { constants } from "node:fs";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, scrypt } from "node:crypto";
 import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, link, unlink, writeFile } from "node:fs/promises";
@@ -144,6 +145,7 @@ export async function restoreEncryptedBackup(input: { input: string; destination
       const target = join(staging, file.path);
       await mkdir(dirname(target), { recursive: true, mode: 0o700 });
       let data = Buffer.from(file.data, "base64");
+      if (/^project-teams\/pt-[a-f0-9]{24}\.json$/.test(file.path)) data = Buffer.from(JSON.stringify(disableRestoredProjectTeam(JSON.parse(data.toString("utf8")))));
       if (file.path === "triggers.json") {
         const triggers: unknown = JSON.parse(data.toString("utf8"));
         if (!Array.isArray(triggers) || triggers.some((trigger) => !trigger || typeof trigger !== "object" || Array.isArray(trigger))) throw new Error("Cannot restore invalid automation settings.");

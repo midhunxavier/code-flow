@@ -178,3 +178,16 @@ test("credential redaction happens before the task title length limit", async ()
   assert.equal(title, "a".repeat(195) + "[REDA");
   assert.doesNotMatch(title, /priva/);
 });
+
+test("standing team notifications are scoped, durable and quiet for no-ops and child runs", async () => {
+  const requests: any[] = [];
+  const { value, file } = await service((async (_url, options) => { requests.push(JSON.parse(String(options!.body))); return new Response("ok"); }) as typeof fetch);
+  await enable(value);
+  const team = { id: "pt-test", name: "Product team", projectId: "project-one", cycles: [{ id: "cycle-1", status: "completed", summary: "Ready" }], opportunities: [{ cycleId: "cycle-1", status: "ready" }] } as unknown as import("../src/project-team-model.js").ProjectTeam;
+  await value.observeProjectTeam(team); await value.drain();
+  assert.equal(requests.length, 1); assert.equal(requests[0].teamId, team.id); assert.equal(requests[0].cycleId, "cycle-1"); assert.equal(requests[0].runId, "");
+  const restored = new Notifications({ file, environment, fetch: (async () => { throw new Error("Duplicate sent"); }) as typeof fetch }); services.push(restored); await restored.load(configuration);
+  await restored.observeProjectTeam(team); assert.equal(restored.deliveries().length, 1);
+  await value.observe(run({ projectTeam: { teamId: team.id } as RunSummary["projectTeam"] }));
+  team.cycles[0]!.status = "no-op"; await value.observeProjectTeam(team); await value.drain(); assert.equal(requests.length, 1);
+});

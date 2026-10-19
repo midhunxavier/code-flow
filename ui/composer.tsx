@@ -1111,9 +1111,10 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
   );
 }
 
-export function ModelRow({ agent, used }: { agent: AgentInfo; used: boolean }) {
+export function ModelRow({ agent, used, settings, onChange }: { agent: AgentInfo; used: boolean; settings?: { model?: string; effort?: string }; onChange?: (patch: { model?: string; effort?: string }) => void }) {
   const cat = catalogs.value[agent.id];
-  const s = agentSettings.value[agent.id] ?? {};
+  const s = settings ?? agentSettings.value[agent.id] ?? {};
+  const changeSetting = (patch: { model?: string; effort?: string }) => onChange ? onChange(patch) : setAgentSetting(agent.id, patch);
   // Hooks before any early return; null = "derive from the saved model".
   const [customChoice, setCustom] = useState<boolean | null>(null);
   if (!cat || "error" in cat) {
@@ -1143,7 +1144,7 @@ export function ModelRow({ agent, used }: { agent: AgentInfo; used: boolean }) {
           const next = v === "__custom" ? "" : v;
           const nextModel = catalog.models.find((m) => m.id === next);
           const allowed = nextModel?.efforts?.length ? nextModel.efforts : catalog.efforts;
-          setAgentSetting(agent.id, { model: next, effort: s.effort && allowed.includes(s.effort) ? s.effort : "" });
+          changeSetting({ model: next, effort: s.effort && allowed.includes(s.effort) ? s.effort : "" });
         }}
       >
         <option value="">{catalog.defaultModel ? `Default (${catalog.defaultModel})` : "Default model"}</option>
@@ -1154,7 +1155,7 @@ export function ModelRow({ agent, used }: { agent: AgentInfo; used: boolean }) {
         ))}
         {catalog.allowCustom ? <option value="__custom">Other…</option> : null}
       </select>
-      <select class="field" aria-label={`${agent.displayName} effort`} value={s.effort ?? ""} onChange={(e) => setAgentSetting(agent.id, { effort: e.currentTarget.value })}>
+      <select class="field" aria-label={`${agent.displayName} effort`} value={s.effort ?? ""} onChange={(e) => changeSetting({ effort: e.currentTarget.value })}>
         <option value="">{fallbackEffort ? `Default (${fallbackEffort})` : "Default effort"}</option>
         {efforts.map((x) => (
           <option key={x} value={x}>
@@ -1163,7 +1164,7 @@ export function ModelRow({ agent, used }: { agent: AgentInfo; used: boolean }) {
         ))}
       </select>
       {custom ? (
-        <input class="field custom" type="text" placeholder="model id or alias" aria-label={`${agent.displayName} custom model`} value={s.model ?? ""} onInput={(e) => setAgentSetting(agent.id, { model: e.currentTarget.value.trim() })} />
+        <input class="field custom" type="text" placeholder="model id or alias" aria-label={`${agent.displayName} custom model`} value={s.model ?? ""} onInput={(e) => changeSetting({ model: e.currentTarget.value.trim() })} />
       ) : null}
     </div>
   );

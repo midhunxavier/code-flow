@@ -1,0 +1,285 @@
+import { test, after } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+const home = mkdtempSync(join(tmpdir(), "codeflow-standing-"));
+process.env.CODEFLOW_HOME = home;
+process.env.CODEFLOW_PROJECT_TEAMS_ENABLED = "true";
+process.env.PATH = `${fileURLToPath(new URL("./fake-bin", import.meta.url))}:${process.env.PATH}`;
+const { RunManager } = await import("../src/engine.js");
+const { findPattern } = await import("../src/patterns/index.js");
+const { Projects } = await import("../src/projects.js");
+const { Automations } = await import("../src/automation.js");
+const { ProjectTeams } = await import("../src/project-teams.js");
+const { ProjectTeamStore } = await import("../src/project-team-store.js");
+const { validateMission, validateReport, allowance, digest, disableRestoredProjectTeam } = await import("../src/project-team-model.js");
+const { assertProjectTeamChanges } = await import("../src/project-team-policy.js");
+const { flushWrites } = await import("../src/store.js");
+type Team = import("../src/project-team-model.js").ProjectTeam;
+const services: InstanceType<typeof ProjectTeams>[] = [], repos: string[] = [];
+const managers: InstanceType<typeof RunManager>[] = [];
+after(async () => { await Promise.all(services.map((s) => s.stop())); await Promise.all(managers.map((m) => m.shutdown())); await flushWrites(); for (const repo of repos) rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+const mission = (extra = {}) => ({ mission: "Improve the documented input contract", users: "Developers", baseBranch: "main", mode: "build-within-scope", check: "node --test", coordinator: "claude", pool: ["claude", "codex"], schedule: { at: "09:00", days: [1], timezone: "Europe/Stockholm" }, ...extra });
+let counter = 0;
+async function fixture(extra = {}, overrides: Partial<import("../src/project-teams.js").ProjectTeamsOptions> = {}) {
+  const dir = join(home, `case-${++counter}`); mkdirSync(dir);
+  const repo = mkdtempSync(join(tmpdir(), "codeflow-standing-repo-")); repos.push(repo);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo }).toString().trim();
+  git("init", "-q", "-b", "main"); writeFileSync(join(repo, "README.md"), "Empty input is valid.\n");
+  writeFileSync(join(repo, "sample.test.mjs"), 'import {test} from "node:test"; import assert from "node:assert/strict"; test("baseline",()=>assert.equal(1,1));\n');
+  mkdirSync(join(repo, ".codeflow")); writeFileSync(join(repo, ".codeflow/config.json"), JSON.stringify({ prove: false }));
+  git("add", "."); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "initial");
+  const projects = new Projects(join(dir, "projects.json")); await projects.load(); const project = await projects.create({ name: "Product", repos: [repo] });
+  const manager = new RunManager(findPattern, projects);
+  managers.push(manager);
+  const automations = new Automations(manager, async () => { throw new Error("Managed target bypassed the team service"); }, undefined, join(dir, "triggers.json")); await automations.load();
+  const build = async (b: Record<string, any>) => ({ ...b, pattern: findPattern(b.pattern)! }) as import("../src/engine.js").StartRunInput;
+  const store = new ProjectTeamStore(join(dir, "teams"));
+  const service = new ProjectTeams({ manager, projects, automations, build, store, ...overrides }); services.push(service); await service.load(); service.start();
+  const draft = await service.create({ operationId: "create", name: "Product team", projectId: project.id, repo, mission: mission(extra) });
+  const team = await service.update(draft.id, { operationId: "activate", revision: draft.revision, status: "active" });
+  return { dir, repo, git, projects, project, manager, automations, store, service, team };
+}
+async function settled(f: Awaited<ReturnType<typeof fixture>>) {
+  const deadline = Date.now() + 45000;
+  while (Date.now() < deadline) {
+    await f.service.reconcile();
+    const t = f.store.get(f.team.id), c = t.cycles.at(-1);
+    if (c && ["completed", "no-op", "blocked", "failed", "cancelled"].includes(c.status)) return t;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(JSON.stringify({ team: f.store.get(f.team.id), runs: f.manager.list().map((r) => ({ status: r.status, error: r.error, team: r.team })) }));
+}
+
+test("mission validation rejects ACP, unvalidated plugins, unsafe paths and unverified automatic builds", () => {
+  assert.throws(() => validateMission(mission({ coordinator: "acp:one" })), /ACP/);
+  assert.throws(() => validateMission(mission({ pool: ["plugin:test"] })), /validated/);
+  assert.throws(() => validateMission(mission({ paths: ["../outside"] })), /paths/);
+  assert.throws(() => validateMission(mission({ check: "" })), /verification/);
+  assert.throws(() => validateMission(mission({ baseBranch: "HEAD" })), /branch/);
+  assert.throws(() => validateMission(mission({ schedule: { at: "09:00" } })), /zone/);
+  assert.throws(() => validateReport({ version: 1, summary: "Empty", candidates: [], injected: true }), /fields/);
+});
+
+test("complete cycle uses existing Auto teams, preserves read-only discovery, verifies and approves exact HEAD", async () => {
+  const f = await fixture(); const base = f.git("rev-parse", "main");
+  const admitted = await f.service.cycle(f.team.id, "first");
+  assert.equal(admitted.cycles[0]!.launches.length, 1);
+  const t = await settled(f); assert.equal(t.cycles[0]!.status, "completed", JSON.stringify({ cycle: t.cycles[0], runs: f.manager.list().map((r) => ({ error: r.error, status: r.status, team: r.team })) }));
+  assert.equal(t.cycles[0]!.launches.length, 2); assert.equal(t.opportunities.length, 1);
+  const o = t.opportunities[0]!; assert.equal(o.status, "ready", o.reason);
+  const discovery = f.manager.get(t.cycles[0]!.launches[0]!.runId!)!;
+  assert.equal(discovery.projectDiscovery?.approved, true); assert.equal(discovery.projectDiscovery?.head, base);
+  assert.ok(discovery.steps.filter((s) => s.kind === "agent").every((s) => s.mode === "read"));
+  assert.equal(f.git("rev-parse", "main"), base, "A cycle must not merge itself");
+  const child = f.manager.get(o.result!.runId)!;
+  await assert.rejects(f.manager.resume(child.id), /project team/);
+  await assert.rejects(f.manager.merge(child.id, { branch: o.result!.branch, into: "main" }), /Approve/);
+  const accepted = await f.service.decide(t.id, o.id, { operationId: "approve", revision: t.revision, opportunityRevision: o.revision, action: "approve" });
+  assert.equal(accepted.opportunities[0]!.status, "accepted"); assert.equal(f.git("rev-parse", "main"), base);
+  const replay = await f.service.cycle(t.id, "first"); assert.equal(replay.cycles.length, 1);
+  const merged = await f.manager.merge(child.id, { branch: o.result!.branch, into: "main" }); assert.equal(merged.ok, true);
+  await f.service.reconcile(); assert.equal(f.store.get(t.id).opportunities[0]!.status, "shipped");
+});
+
+test("empty discovery is a durable no-op and unchanged inputs do not spend another budget", async () => {
+  const f = await fixture({ mission: "PT-EMPTY inspect the repository" }); await f.service.cycle(f.team.id, "empty");
+  const t = await settled(f); assert.equal(t.cycles[0]!.status, "no-op", t.cycles[0]!.reason); assert.equal(t.opportunities.length, 0);
+  const next = await f.service.cycle(t.id, "unchanged"); assert.equal(next.cycles.at(-1)!.status, "no-op"); assert.equal(next.cycles.at(-1)!.launches.length, 0);
+});
+
+test("invented evidence and high risk reports remain proposals without implementation", async () => {
+  for (const marker of ["PT-INVENTED", "PT-HIGH-RISK"]) {
+    const f = await fixture({ mission: `${marker} Improve documentation` }); await f.service.cycle(f.team.id, "inspect"); const t = await settled(f);
+    assert.equal(t.cycles[0]!.status, "completed", t.cycles[0]!.reason); assert.equal(t.cycles[0]!.launches.length, 1);
+    assert.equal(t.opportunities[0]!.status, "proposed"); assert.ok(t.cycles[0]!.selection!.reasons[0]!.reason !== "Eligible within the mission and scope");
+  }
+});
+
+test("claim-before-dispatch fails closed, restart does not replay unknown launches or refund their budget", async () => {
+  const f = await fixture({}, { persist: async () => { throw new Error("simulated disk failure before dispatch"); } });
+  const t = await f.service.cycle(f.team.id, "crash"); assert.equal(t.cycles[0]!.status, "unknown");
+  assert.equal(f.manager.get(f.manager.list()[0]!.id)!.steps.length, 0); assert.equal(allowance(t).calls, 40);
+  await f.service.stop();
+  const manager = new RunManager(findPattern, f.projects);
+  const recovered = new ProjectTeams({ manager, projects: f.projects, automations: f.automations, store: new ProjectTeamStore(f.store.directory), build: async () => { throw new Error("No replay permitted"); } }); services.push(recovered); await recovered.load(); recovered.start(); await recovered.reconcile();
+  const after = recovered.store.get(t.id); assert.equal(after.cycles[0]!.status, "unknown"); assert.equal(allowance(after).calls, 40); assert.equal(manager.list().length, 0);
+});
+
+test("operation IDs, revisions, one repository ownership and weekly reservations are enforced", async () => {
+  const f = await fixture({ budget: { weeklyCalls: 4 } });
+  const blocked = await f.service.cycle(f.team.id, "budget"); assert.equal(blocked.cycles[0]!.status, "blocked"); assert.equal(blocked.cycles[0]!.launches.length, 0);
+  await assert.rejects(f.service.update(f.team.id, { operationId: "stale", revision: 1, status: "paused" }), /Reload/);
+  await assert.rejects(f.service.create({ operationId: "different", projectId: f.project.id, repo: f.repo, name: "Duplicate", mission: mission() }), /already has/);
+  await assert.rejects(f.service.update(f.team.id, { operationId: "activate", revision: blocked.revision, status: "paused" }), /reused/);
+  assert.equal((await f.automations.dryRun(`t-${f.team.id}`)).ready, false);
+  await assert.rejects(f.automations.update(`t-${f.team.id}`, { enabled: false }), /standing project team/);
+});
+
+test("scope catches committed renames, binary/untracked changes and line growth", async () => {
+  const f = await fixture(); const baseRef = f.git("rev-parse", "HEAD");
+  const run = { baseRef, loop: {}, projectTeam: { phase: "implementation", scope: { paths: ["README.md"], excludedPaths: [], maxFiles: 1, maxLines: 2 }, verificationHash: digest(null) } as unknown as import("../src/project-team-model.js").ProjectTeamRun };
+  writeFileSync(join(f.repo, "outside.txt"), "x"); await assert.rejects(assertProjectTeamChanges(f.repo, run), /outside/); rmSync(join(f.repo, "outside.txt"));
+  writeFileSync(join(f.repo, "README.md"), "a\nb\nc\nd\n"); await assert.rejects(assertProjectTeamChanges(f.repo, run), /line limit/);
+  f.git("checkout", "--", "README.md"); f.git("mv", "README.md", "other.md"); f.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rename");
+  await assert.rejects(assertProjectTeamChanges(f.repo, run), /outside/);
+});
+
+test("store rejects corrupt records without overwriting and restored teams remain paused", async () => {
+  const f = await fixture(); const restored = disableRestoredProjectTeam(f.team); assert.equal(restored.status, "paused"); assert.match(restored.error!, /Restored/);
+  const file = join(f.store.directory, `${f.team.id}.json`); writeFileSync(file, '{broken');
+  const damaged = new ProjectTeamStore(f.store.directory); await damaged.load(); assert.equal(damaged.faults.size, 1); assert.throws(() => damaged.get(f.team.id), /unavailable/); assert.equal(readFileSync(file, "utf8"), '{broken');
+});
+
+test("scheduled occurrence is stable across repeated fires and ordinary triggers remain ordinary", async () => {
+  const f = await fixture({ mission: "PT-EMPTY inspect" }); const trigger = f.automations.get(`t-${f.team.id}`)!;
+  const first = await f.automations.fire(trigger.id, { via: "schedule", occurrence: "schedule:12345" }); assert.ok(first.run);
+  await settled(f); await f.automations.fire(trigger.id, { via: "schedule", occurrence: "schedule:12345" });
+  assert.equal(f.store.get(f.team.id).cycles.length, 1);
+  assert.equal(f.store.get(f.team.id).cycles[0]!.operationId, "schedule:12345");
+});
+
+test("stale verified HEAD invalidates approval and owner revision uses a new bounded whole team", async () => {
+  const f = await fixture(); await f.service.cycle(f.team.id, "first"); let t = await settled(f); let o = t.opportunities[0]!;
+  const originalRun = o.result!.runId;
+  const note = "Add a clearer example for the documented case. ".repeat(30), acceptance = [...o.acceptance];
+  t = await f.service.decide(t.id, o.id, { operationId: "revise", revision: t.revision, opportunityRevision: o.revision, action: "revise", note });
+  t = await settled(f); o = t.opportunities[0]!; assert.equal(o.status, "ready", t.cycles.at(-1)!.reason); assert.notEqual(o.result!.runId, originalRun);
+  assert.equal(JSON.parse(t.cycles.at(-1)!.context).ownerRevision, note.trim());
+  assert.deepEqual(o.acceptance, acceptance, "Revision feedback must preserve every original acceptance criterion");
+  const changed = f.manager.get(o.result!.runId)!; const worktree = changed.worktrees.find((w) => w.branch === o.result!.branch)!;
+  writeFileSync(join(worktree.path, "later.txt"), "changed after review\n"); execFileSync("git", ["add", "."], { cwd: worktree.path }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "unreviewed"], { cwd: worktree.path });
+  await assert.rejects(f.service.decide(t.id, o.id, { operationId: "approve-stale", revision: t.revision, opportunityRevision: o.revision, action: "approve" }), /changed/);
+  await f.service.reconcile(); assert.equal(f.store.get(t.id).opportunities[0]!.status, "blocked");
+});
+
+test("discovery uses the newest twenty eligible local runs", async () => {
+  const f = await fixture({ budget: { weeklyCalls: 4 } });
+  const runs = Array.from({ length: 25 }, (_, index) => ({ id: `recent-${index}`, repo: f.team.repo, project: f.project.id, status: "done", task: `Local task ${index}` }));
+  f.manager.list = () => runs as import("../src/engine.js").RunSummary[];
+  const t = await f.service.cycle(f.team.id, "context");
+  assert.deepEqual(JSON.parse(t.cycles[0]!.context).recentRuns.map((r: { id: string }) => r.id), runs.slice(0, 20).map((r) => r.id));
+});
+
+test("archived teams retain immutable history after decisions and project removal", async () => {
+  const f = await fixture({ mode: "propose" }); await f.service.cycle(f.team.id, "first");
+  let t = await settled(f); const o = t.opportunities[0]!;
+  t = await f.service.update(t.id, { operationId: "archive", revision: t.revision, status: "archived" });
+  await assert.rejects(f.service.decide(t.id, o.id, { operationId: "reject-archived", revision: t.revision, opportunityRevision: o.revision, action: "reject" }), /Archived/);
+  await assert.rejects(f.service.stopCycle(t.id, { operationId: "stop-archived", revision: t.revision }), /Archived/);
+  await f.projects.remove(f.project.id); await f.service.reconcile();
+  assert.deepEqual(f.store.get(t.id), t);
+  assert.equal(f.automations.get(`t-${t.id}`)!.enabled, false);
+});
+
+test("failed checks cannot become ready and repeat scheduled failures require changed input", async () => {
+  const f = await fixture({ check: "node -e 'process.exit(1)'" }); await f.service.cycle(f.team.id, "first"); const t = await settled(f);
+  assert.equal(t.opportunities[0]!.status, "blocked"); assert.equal(t.cycles[0]!.status, "blocked");
+  const retry = await f.service.cycle(t.id, "schedule:next"); assert.equal(retry.cycles.at(-1)!.status, "skipped"); assert.equal(retry.cycles.at(-1)!.launches.length, 0);
+});
+
+test("pause prevents the implementation stage and removed project membership cancels ownership", async () => {
+  const f = await fixture(); const launched = await f.service.cycle(f.team.id, "first");
+  await f.service.update(f.team.id, { operationId: "pause", revision: launched.revision, status: "paused" });
+  const t = await settled(f); assert.equal(t.cycles[0]!.launches.length, 1); assert.equal(t.opportunities[0]!.status, "proposed");
+  await f.projects.remove(f.project.id); await f.service.reconcile(); assert.match(f.store.get(t.id).error!, /project/);
+  await assert.rejects(f.service.cycle(t.id, "after-removal"), /project/);
+});
+
+test("deferred and rejected work retain feedback; deferred expiry permits rediscovery", async () => {
+  const f = await fixture({ mode: "propose" }); await f.service.cycle(f.team.id, "first"); let t = await settled(f), o = t.opportunities[0]!;
+  t = await f.service.decide(t.id, o.id, { operationId: "later", revision: t.revision, opportunityRevision: o.revision, action: "defer", note: "Wait for the next documentation release", deferUntil: Date.now() + 10000 });
+  await f.service.cycle(t.id, "deferred"); t = await settled(f); assert.equal(t.opportunities.length, 1); assert.equal(t.opportunities[0]!.status, "deferred");
+  await f.store.change(t.id, undefined, undefined, (t) => { t.opportunities[0]!.deferUntil = Date.now() - 1; });
+  await f.service.cycle(t.id, "expired"); t = await settled(f); assert.equal(t.opportunities.length, 2); assert.equal(t.opportunities[0]!.status, "expired"); o = t.opportunities[1]!;
+  t = await f.service.decide(t.id, o.id, { operationId: "reject", revision: t.revision, opportunityRevision: o.revision, action: "reject", note: "Not useful to our users" });
+  await f.service.cycle(t.id, "after-rejection"); t = await settled(f); assert.equal(t.opportunities.length, 2); assert.match(t.cycles.at(-1)!.context, /Not useful to our users/);
+});
+
+test("corrupted usage and duplicate repository ownership fail closed on load", async () => {
+  const f = await fixture({ mission: "PT-EMPTY inspect" }); await f.service.cycle(f.team.id, "first"); const t = await settled(f);
+  const corrupt = structuredClone(t); corrupt.cycles[0]!.launches[0]!.usedCalls = -100;
+  writeFileSync(join(f.store.directory, `${t.id}.json`), JSON.stringify(corrupt));
+  const check = new ProjectTeamStore(f.store.directory); await check.load(); assert.match(check.faults.get(t.id)!, /reservation|usage/);
+  writeFileSync(join(f.store.directory, `${t.id}.json`), JSON.stringify(t)); const duplicate = { ...t, id: `pt-${"a".repeat(24)}` };
+  writeFileSync(join(f.store.directory, `${duplicate.id}.json`), JSON.stringify(duplicate)); await check.load(); assert.equal(check.faults.size, 2); assert.equal(check.list().length, 0);
+});
+
+test("restart imports an exact persisted completed child without relaunching", async () => {
+  const f = await fixture({ mission: "PT-EMPTY inspect" }); const t = await f.service.cycle(f.team.id, "first"); const launch = t.cycles[0]!.launches[0]!;
+  const run = f.manager.get(launch.runId!)!;
+  while (!run.endedAt) await new Promise((r) => setTimeout(r, 50));
+  await f.service.stop(); await flushWrites();
+  // Crash after the child completed but before its result was projected into the aggregate.
+  await f.store.change(t.id, undefined, undefined, (team) => { const c = team.cycles[0]!; c.status = "discovering"; c.endedAt = undefined; c.report = undefined; c.selection = undefined; c.launches[0]!.state = "running"; c.launches[0]!.usedCalls = undefined; });
+  const nextManager = new RunManager(findPattern, f.projects); managers.push(nextManager); await nextManager.load();
+  const next = new ProjectTeams({ manager: nextManager, projects: f.projects, automations: f.automations, store: new ProjectTeamStore(f.store.directory), build: async () => { throw new Error("Completed claim must not be replayed"); } }); services.push(next); await next.load(); next.start(); await next.reconcile();
+  const recovered = next.store.get(t.id); assert.equal(recovered.cycles.length, 1); assert.equal(recovered.cycles[0]!.status, "no-op"); assert.equal(recovered.cycles[0]!.launches.length, 1);
+});
+
+test("publishing a managed result pushes the approved SHA without squash-base rewriting", async () => {
+  const f = await fixture(); await f.service.cycle(f.team.id, "first"); let t = await settled(f); const o = t.opportunities[0]!;
+  const remote = join(f.dir, "origin.git"); execFileSync("git", ["init", "--bare", "-q", "-b", "main", remote]); f.git("remote", "add", "origin", remote); f.git("push", "-q", "origin", "main");
+  const state = join(f.dir, "github.json"); writeFileSync(state, JSON.stringify({ issues: {}, prs: {} })); process.env.FAKE_GH_STATE = state;
+  try {
+    t = await f.service.decide(t.id, o.id, { operationId: "approve", revision: t.revision, opportunityRevision: o.revision, action: "approve" });
+    const url = await f.manager.pullRequest(o.result!.runId, { branch: o.result!.branch, into: "main" }); assert.match(url, /pull/);
+    const published = execFileSync("git", ["--git-dir", remote, "rev-parse", `refs/heads/${o.result!.branch}`], { encoding: "utf8" }).trim(); assert.equal(published, o.result!.head);
+    const stateAfter = JSON.parse(readFileSync(state, "utf8")); assert.doesNotMatch(Object.values(stateAfter.prs).map((p: any) => p.body).join("\n"), /project_evidence|Historical evidence/);
+    await f.service.reconcile(); assert.equal(f.store.get(t.id).opportunities[0]!.status, "accepted", "A PR is not shipped");
+    t = await f.service.update(t.id, { operationId: "archive-published", revision: f.store.get(t.id).revision, status: "archived" });
+    await assert.rejects(f.manager.pullRequest(o.result!.runId, { branch: o.result!.branch, into: "main" }), /Archived/);
+    await f.service.reconcile(); assert.deepEqual(f.store.get(t.id), t);
+  } finally { delete process.env.FAKE_GH_STATE; }
+});
+
+test("managed PR merges require a current approval after publication", async (t) => {
+  for (const change of ["reject", "mission", "archive", "none"] as const) await t.test(change, async () => {
+    const f = await fixture(); await f.service.cycle(f.team.id, "first"); let team = await settled(f); const o = team.opportunities[0]!;
+    const remote = join(f.dir, "origin.git"); execFileSync("git", ["init", "--bare", "-q", "-b", "main", remote]); f.git("remote", "add", "origin", remote); f.git("push", "-q", "origin", "main");
+    const state = join(f.dir, "github.json"); writeFileSync(state, JSON.stringify({ issues: {}, prs: {} })); process.env.FAKE_GH_STATE = state;
+    try {
+      team = await f.service.decide(team.id, o.id, { operationId: "approve", revision: team.revision, opportunityRevision: o.revision, action: "approve" });
+      const url = await f.manager.pullRequest(o.result!.runId, { branch: o.result!.branch, into: "main" });
+      const number = url.split("/").pop()!;
+      if (change === "reject") team = await f.service.decide(team.id, o.id, { operationId: "reject", revision: team.revision, opportunityRevision: team.opportunities[0]!.revision, action: "reject", note: "Do not ship this" });
+      if (change === "mission") team = await f.service.update(team.id, { operationId: "change-mission", revision: team.revision, mission: mission({ mission: "Prioritize another problem" }) });
+      if (change === "archive") team = await f.service.update(team.id, { operationId: "archive", revision: team.revision, status: "archived" });
+      const input = { branch: o.result!.branch, method: "squash" as const };
+      if (change === "none") {
+        assert.equal((await f.manager.mergePr(o.result!.runId, input)).merged, true);
+        assert.equal(JSON.parse(readFileSync(state, "utf8")).prs[number].state, "MERGED");
+        await f.service.reconcile(); assert.equal(f.store.get(team.id).opportunities[0]!.status, "shipped");
+      } else {
+        await assert.rejects(f.manager.mergePr(o.result!.runId, input), change === "archive" ? /Archived/ : /Approve this exact result/);
+        assert.equal(JSON.parse(readFileSync(state, "utf8")).prs[number].state, "OPEN", "revoked approval must leave the remote PR open");
+        assert.equal(f.manager.get(o.result!.runId)!.merges.length, 0);
+      }
+    } finally { delete process.env.FAKE_GH_STATE; }
+  });
+});
+
+test("an interrupted or cancelled child does not refund unprovable invocation usage", async () => {
+  const f = await fixture(); const t = await f.service.cycle(f.team.id, "cancelled-child"), launch = t.cycles[0]!.launches[0]!;
+  f.manager.cancel(launch.runId!); const result = await settled(f);
+  assert.equal(result.cycles[0]!.status, "blocked"); assert.equal(result.cycles[0]!.launches[0]!.usedCalls, launch.calls);
+  assert.equal(allowance(result).calls, result.mission.budget.weeklyCalls - launch.calls);
+});
+
+test("stopping implementation releases the opportunity for a new owner decision without refunding its claim", async () => {
+  const f = await fixture(); await f.service.cycle(f.team.id, "first");
+  const deadline = Date.now() + 20000;
+  while (f.store.get(f.team.id).cycles[0]!.launches[1]?.state !== "running" && Date.now() < deadline) { await f.service.reconcile(); await new Promise((r) => setTimeout(r, 50)); }
+  // Admission writes the claim before its run receipt. Finish that queued write before using its revision.
+  await f.service.reconcile();
+  let t = f.store.get(f.team.id); assert.equal(t.cycles[0]!.status, "building");
+  t = await f.service.stopCycle(t.id, { operationId: "stop", revision: t.revision });
+  assert.equal(t.cycles[0]!.status, "cancelled"); assert.equal(t.opportunities[0]!.status, "blocked");
+  const o = t.opportunities[0]!;
+  t = await f.service.decide(t.id, o.id, { operationId: "reject-stopped", revision: t.revision, opportunityRevision: o.revision, action: "reject", note: "Stop pursuing this" });
+  assert.equal(t.opportunities[0]!.status, "rejected"); assert.equal(t.cycles[0]!.launches[1]!.state, "running", "Unknown usage remains reserved");
+  const run = f.manager.get(t.cycles[0]!.launches[1]!.runId!)!; while (!run.endedAt) await new Promise((r) => setTimeout(r, 50));
+});

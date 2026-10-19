@@ -1,3 +1,4 @@
+import type { ProjectTeam } from "./project-team-model.js";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -11,12 +12,14 @@ export type NotificationEvent = "done" | "failure" | "needs-attention";
 export interface NotificationSettings { enabled: boolean; events: NotificationEvent[]; projects: "all" | string[] }
 interface TargetConfig { id: string; name: string; protocol: "webhook" | "slack"; urlEnv: string; secretEnv?: string }
 interface SavedSettings extends NotificationSettings { destinationHash?: string; dropped?: number; lastError?: string }
-interface NotificationPayload { version: 1; id: string; event: NotificationEvent; runId: string; project?: string; pattern: string; status: string; result: string; title: string; test?: boolean }
+interface NotificationPayload { version: 1; id: string; event: NotificationEvent; runId: string; teamId?: string; cycleId?: string; project?: string; pattern: string; status: string; result: string; title: string; test?: boolean }
 export interface NotificationDelivery {
   id: string;
   target: string;
   event: NotificationEvent;
   runId: string;
+  teamId?: string;
+  cycleId?: string;
   project?: string;
   state: "pending" | "sending" | "delivered" | "failed" | "cancelled";
   attempts: number;
@@ -43,7 +46,7 @@ const text = (value: unknown, max: number) => typeof value === "string" ? value.
 
 /** Only actionable changes produce candidates; polling timestamps do not change their identity. */
 export function notificationEvents(run: RunSummary): { event: NotificationEvent; key: string }[] {
-  if (run.archived) return [];
+  if (run.archived || run.projectTeam) return [];
   const candidates: { event: NotificationEvent; key: string }[] = [];
   if (run.endedAt && ["done", "failed", "stopped", "interrupted"].includes(run.status)) {
     const failed = run.status !== "done" || run.verdict === "failing" || run.verification?.state === "needs-changes" || run.verification?.state === "blocked";
@@ -117,7 +120,7 @@ export class Notifications {
         }
         for (const value of parsed.deliveries.slice(-MAX_DELIVERIES)) {
           if (!value || !/^notification-[a-f0-9]{24}$/.test(value.id) || !configs.some((c) => c.id === value.target) || !EVENTS.includes(value.event) || !["pending", "sending", "delivered", "failed", "cancelled"].includes(value.state) || !Number.isFinite(value.createdAt) || !Number.isFinite(value.updatedAt) || !Number.isInteger(value.attempts) || value.attempts < 0 || value.attempts > MAX_ATTEMPTS || !value.payload || value.payload.version !== 1 || value.payload.id !== value.id || value.payload.runId !== value.runId || value.payload.event !== value.event || value.payload.project !== value.project) throw new Error("Invalid delivery");
-          const delivery: SavedDelivery = { id: value.id, target: value.target, event: value.event, runId: text(value.runId, 100), project: text(value.project, 100) || undefined, state: value.state,
+          const delivery: SavedDelivery = { id: value.id, target: value.target, event: value.event, runId: text(value.runId, 100), teamId: text(value.payload.teamId, 100) || undefined, cycleId: text(value.payload.cycleId, 100) || undefined, project: text(value.project, 100) || undefined, state: value.state,
             attempts: value.attempts, totalAttempts: Number.isSafeInteger(value.totalAttempts) && value.totalAttempts >= value.attempts ? value.totalAttempts : value.attempts, retryCount: Number.isSafeInteger(value.retryCount) && value.retryCount > 0 ? value.retryCount : 0, createdAt: value.createdAt, updatedAt: value.updatedAt, nextAttemptAt: Number.isFinite(value.nextAttemptAt) ? value.nextAttemptAt : undefined,
             httpStatus: Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599 ? value.httpStatus : undefined, reason: text(value.reason, 300) || undefined,
             manual: value.manual === true || undefined, payload: this.payload(value.payload), destinationHash: text(value.destinationHash, 64) };
@@ -157,12 +160,26 @@ export class Notifications {
   async observe(run: RunSummary, extraAttentionKey?: string): Promise<{ queued: number; dropped: number }> {
     if (!this.loaded || this.stopped) return { queued: 0, dropped: 0 };
     const candidates = notificationEvents(run);
-    if (extraAttentionKey && !run.archived) candidates.push({ event: "needs-attention", key: `${run.id}:external-attention:${digest(extraAttentionKey.slice(0, 200))}` });
+    if (extraAttentionKey && !run.archived && !run.projectTeam) candidates.push({ event: "needs-attention", key: `${run.id}:external-attention:${digest(extraAttentionKey.slice(0, 200))}` });
+    return this.enqueue(candidates, { runId: run.id, project: run.project, pattern: run.pattern, status: run.status, result: run.verification?.state ?? (run.verdict === "passed" ? "verified" : run.verdict === "failing" ? "needs-changes" : run.checkCantRun ? "blocked" : "unchecked"), title: run.task?.split("\n")[0] ?? "Run update" });
+  }
+  async observeProjectTeam(team: ProjectTeam) {
+    for (const cycle of team.cycles) {
+      const opportunities = team.opportunities.filter((o) => o.cycleId === cycle.id || o.id === cycle.opportunityId);
+      const actionable = opportunities.some((o) => ["proposed", "ready"].includes(o.status));
+      const failed = ["blocked", "failed", "unknown"].includes(cycle.status);
+      if (!failed && !(cycle.status === "completed" && actionable)) continue;
+      const event: NotificationEvent = failed ? "failure" : "needs-attention";
+      await this.enqueue([{ event, key: `${team.id}:${cycle.id}:${cycle.status}` }], { runId: "", teamId: team.id, cycleId: cycle.id, project: team.projectId, pattern: "project-team", status: cycle.status, result: failed ? "blocked" : "ready-for-review", title: `${team.name}: ${cycle.reason ?? cycle.summary ?? "An improvement is ready for review"}` });
+    }
+  }
+  private async enqueue(candidates: { event: NotificationEvent; key: string }[], subject: Omit<NotificationPayload, "version" | "id" | "event">): Promise<{ queued: number; dropped: number }> {
+    if (!this.loaded || this.stopped) return { queued: 0, dropped: 0 };
     // Disabled destinations and duplicate snapshots perform no writes and start no requests.
     if (!candidates.length || !this.configs.some((c) => {
       const settings = this.state.settings[c.id] ?? defaults();
       const destination = this.destination(c);
-      return destination && settings.destinationHash === destination.hash && settings.enabled && candidates.some((candidate) => this.allowed({ event: candidate.event, project: run.project }, settings) && !this.state.seen.includes(digest([c.id, candidate.event, candidate.key])));
+      return destination && settings.destinationHash === destination.hash && settings.enabled && candidates.some((candidate) => this.allowed({ event: candidate.event, project: subject.project }, settings) && !this.state.seen.includes(digest([c.id, candidate.event, candidate.key])));
     })) return { queued: 0, dropped: 0 };
     let queued = 0, dropped = 0;
     await this.mutate(() => {
@@ -171,10 +188,10 @@ export class Notifications {
         if (!destination || !settings.enabled || settings.destinationHash !== destination.hash) continue;
         for (const candidate of candidates) {
           const identity = digest([c.id, candidate.event, candidate.key]);
-          if (!this.allowed({ event: candidate.event, project: run.project }, settings) || this.state.seen.includes(identity)) continue;
+          if (!this.allowed({ event: candidate.event, project: subject.project }, settings) || this.state.seen.includes(identity)) continue;
           this.state.seen = [...this.state.seen, identity].slice(-MAX_SEEN);
-          if (!this.room()) { dropped++; settings.dropped = (settings.dropped ?? 0) + 1; settings.lastError = `Notification queue is full; event for run ${run.id} was dropped`; continue; }
-          const payload = this.payload({ version: 1, id: `notification-${randomBytes(12).toString("hex")}`, event: candidate.event, runId: run.id, project: run.project, pattern: run.pattern, status: run.status, result: run.verification?.state ?? (run.verdict === "passed" ? "verified" : run.verdict === "failing" ? "needs-changes" : run.checkCantRun ? "blocked" : "unchecked"), title: run.task?.split("\n")[0] ?? "Run update" });
+          if (!this.room()) { dropped++; settings.dropped = (settings.dropped ?? 0) + 1; settings.lastError = `Notification queue is full; event for run ${subject.runId} was dropped`; continue; }
+          const payload = this.payload({ ...subject, version: 1, id: `notification-${randomBytes(12).toString("hex")}`, event: candidate.event });
           this.state.deliveries.push(this.job(c, destination.hash, payload)); queued++;
         }
       }
@@ -239,7 +256,7 @@ export class Notifications {
       try {
         const headers: Record<string, string> = { "content-type": "application/json", "idempotency-key": job.id };
         if (c.secretEnv) headers.authorization = `Bearer ${this.environment[c.secretEnv]}`;
-        const message = `code-flow: ${job.event}\n${job.payload.title}\nRun ${job.runId} · ${job.payload.status} · ${job.payload.result}`;
+        const message = `code-flow: ${job.event}\n${job.payload.title}\n${job.payload.teamId ? `Team ${job.payload.teamId}` : `Run ${job.runId}`} · ${job.payload.status} · ${job.payload.result}`;
         const slackText = message.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
         const body = c.protocol === "slack" ? { text: slackText, blocks: [{ type: "section", text: { type: "plain_text", text: message, emoji: false } }], unfurl_links: false, unfurl_media: false } : job.payload;
         const response = await this.fetcher(destination.url, { method: "POST", headers, body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(10_000) });
@@ -268,13 +285,13 @@ export class Notifications {
     if (!value || value.length > 4_096 || c.secretEnv && !this.environment[c.secretEnv]) return undefined;
     try { const url = new URL(value); if (url.protocol !== "https:" || url.username || url.password || url.hash) return undefined; return { url, hash: digest([c.protocol, url.href]) }; } catch { return undefined; }
   }
-  private payload(value: NotificationPayload): NotificationPayload { return this.redact({ version: 1, id: text(value.id, 100), event: value.event, runId: text(value.runId, 100), project: value.project ? text(value.project, 100) : undefined, pattern: text(value.pattern, 100), status: text(value.status, 100), result: text(value.result, 100), title: text(this.redact(value.title), 200), ...(value.test ? { test: true } : {}) }); }
+  private payload(value: NotificationPayload): NotificationPayload { return this.redact({ version: 1, id: text(value.id, 100), event: value.event, runId: text(value.runId, 100), teamId: value.teamId ? text(value.teamId, 100) : undefined, cycleId: value.cycleId ? text(value.cycleId, 100) : undefined, project: value.project ? text(value.project, 100) : undefined, pattern: text(value.pattern, 100), status: text(value.status, 100), result: text(value.result, 100), title: text(this.redact(value.title), 200), ...(value.test ? { test: true } : {}) }); }
   private redact<T>(value: T): T {
     const secrets = this.configs.flatMap((c) => [this.environment[c.urlEnv], c.secretEnv ? this.environment[c.secretEnv] : undefined]).filter((secret): secret is string => !!secret && secret.length >= 8);
     const visit = (item: unknown): unknown => typeof item === "string" ? redactText(item, secrets) : Array.isArray(item) ? item.map(visit) : item && typeof item === "object" ? Object.fromEntries(Object.entries(item).map(([key, entry]) => [key, visit(entry)])) : item;
     return visit(redactExport(value)) as T;
   }
-  private job(c: TargetConfig, destinationHash: string, payload: NotificationPayload): SavedDelivery { const at = this.now(); return { id: payload.id, target: c.id, event: payload.event, runId: payload.runId, project: payload.project, state: "pending", attempts: 0, totalAttempts: 0, retryCount: 0, createdAt: at, updatedAt: at, nextAttemptAt: at, destinationHash, payload }; }
+  private job(c: TargetConfig, destinationHash: string, payload: NotificationPayload): SavedDelivery { const at = this.now(); return { id: payload.id, target: c.id, event: payload.event, runId: payload.runId, teamId: payload.teamId, cycleId: payload.cycleId, project: payload.project, state: "pending", attempts: 0, totalAttempts: 0, retryCount: 0, createdAt: at, updatedAt: at, nextAttemptAt: at, destinationHash, payload }; }
   private room(): boolean {
     if (this.state.deliveries.length < MAX_DELIVERIES) return true;
     const index = this.state.deliveries.findIndex((job) => !["pending", "sending"].includes(job.state));

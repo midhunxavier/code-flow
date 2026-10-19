@@ -32,6 +32,7 @@ test("Kilo and Cline presets connect through ACP, preserve edited invocations, a
     ["Cline", "cline", "--acp", "cline auth", "cline"],
   ] as const) {
     await page.goto(`${base}/#/settings/general`);
+    await page.getByRole("heading", { name: "General", exact: true }).waitFor();
     await page.getByLabel("Search settings").fill(name);
     await page.getByRole("region", { name: "Settings search results" }).getByRole("button", { name: /Agents & models/ }).click();
     const panel = page.getByRole("region", { name: "ACP connections", exact: true });

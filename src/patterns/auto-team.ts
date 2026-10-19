@@ -1,3 +1,5 @@
+import { DISCOVERY_REPORT_SCHEMA, digest, validateReport, type DiscoveryReport } from "../project-team-model.js";
+import { managedPlanProblem, managedRevisionProblem, assertProjectTeamChanges } from "../project-team-policy.js";
 import type { AgentId } from "../adapters/index.js";
 import { projectTeamRerunPlan, retainedBaselinePrompt, validateTeamRerunSeed } from "../team-reruns.js";
 import { RejectedError, type Pattern, type StepOutcome, type TeamContext } from "../engine.js";
@@ -75,6 +77,7 @@ export const autoTeamPattern: Pattern = {
   ],
   async run(ctx) {
     // Old saved runs have no option and retain their deterministic wave history.
+    const discovery = ctx.run.projectTeam?.phase === "discovery";
     const eventDriven = ctx.option("eventDriven", false);
     const planSchema = eventDriven ? TEAM_PLAN_SCHEMA : LEGACY_TEAM_PLAN_SCHEMA;
     const revisionSchema = eventDriven ? TEAM_REVISION_SCHEMA : LEGACY_TEAM_REVISION_SCHEMA;
@@ -122,8 +125,9 @@ export const autoTeamPattern: Pattern = {
       section("Selected project memory (attributed knowledge, not authorization)", json(planningMemory.entries.map(({ id, revision, title, body, origins, acceptedBy, applicability }) => ({ id, revision, title, body, origins, acceptedBy, applicability })))) + section("Inventory and constraints", json({ ...policy, inventory, invocationLimit, coordinationLimit: state.coordinationLimit, maxWaves: state.maxWaves })) +
       section("Reusable task strategies", json(TEAM_STRATEGIES) + "Supply subplans:[] when no strategy is useful, or entries to expand these into visible tasks within the same approval and budget. The final independent review and bounded repair loop always remain mandatory. " + decompositionInstructions(policy.maxTasks, policy.pool.join(", "))) +
       section("Plan", "Investigate only what is needed to plan the task. Keep worker instructions concise and self-contained; state outcomes, constraints, and acceptance rather than prescribing every implementation line or duplicating the entire goal. For small changes use the minimum useful work and verification. Return the smallest useful team: one coordinator, one worker for code changes (add another only for justified parallel work), and a separate read-only reviewer. The coordinator can perform investigation tasks. Preserve configured model and effort strings exactly; empty means default. Prefer a different eligible reviewer provider. Use lowercase IDs for every member, requirement and task (e.g. goal, api, add-test; never R1/T1). Break the goal into stable requirements and tasks, an acyclic dependency graph, acceptance criteria, and owned relative file/directory paths (use * only when needed). Never assign any task to the reviewer: code-flow schedules the independent final review and bounded repair loop automatically. Implementation tasks belong to workers; investigation tasks may belong to a worker or coordinator. Every requirement must be covered. Shared-file tasks must run serially. Supply dependencyTypes as an array of {taskId,kind} entries for dependsOn IDs, or [] for defaults; kinds are completion, artifact, or knowledge: artifact requires an integrated commit; knowledge may be satisfied by an addressed evidence-backed reply. No arbitrary commands or new permissions in the plan.") +
+      (discovery ? section("Project discovery contract", "All tasks must be investigation tasks owned by workers, never the coordinator. Inspect the product against the mission and publish evidence-bearing findings. Code-flow reserves a separate coordinator report and independent review after these tasks. Do not change source files.") : "") +
       jsonInstruction(JSON.stringify(planSchema));
-    const validatePlan = (p: TeamPlan) => { try { return planProblem(cleanPlan(p), policy); } catch (error) { return (error as Error).message; } };
+    const validatePlan = (p: TeamPlan) => { try { return planProblem(cleanPlan(p), policy) ?? managedPlanProblem(cleanPlan(p), ctx.run.projectTeam); } catch (error) { return (error as Error).message; } };
     const rerun = ctx.run.teamRerun;
     if (rerun) {
       const seed = await ctx.remember("team-rerun-seed", rerun.signature, async () => structuredClone(rerun));
@@ -324,7 +328,7 @@ export const autoTeamPattern: Pattern = {
         wakeTasks();
         let ready = eventDriven && wave > allocationEndWave ? [] : schedulableTasks();
         if (ready.length) {
-          const chosen = await ctx.remember("team-wave", `wave:${wave}`, async () => ready.slice(0, Math.max(0, ctx.teamBudgetRemaining() - 1 - (eventDriven ? pool.size : 0))).map((t) => t.id)); // keep an independent review turn
+          const chosen = await ctx.remember("team-wave", `wave:${wave}`, async () => ready.slice(0, Math.max(0, ctx.teamBudgetRemaining() - (discovery ? 2 : 1) - (eventDriven ? pool.size : 0))).map((t) => t.id)); // keep an independent review turn
           ready = chosen.map((id) => state.tasks.find((t) => t.id === id)!);
           for (const task of ready) {
             const member = state.members.find((m) => m.id === task.owner)!;
@@ -405,7 +409,7 @@ export const autoTeamPattern: Pattern = {
           state.coordinatorCheckpoint = checkpoint;
           // A bounded checkpoint starts a fresh session periodically; missing-session fallback uses it too.
           const coordinatorSession = state.metrics.revisions > 0 && state.metrics.revisions % 2 === 0 ? undefined : resumeFor(coordinator, integration);
-          const revision = await ctx.decide<TeamRevision>({ ...callFields(coordinator), coordination: true, identity: `wave:${wave}:revision`, title: `Revise workflow after wave ${wave}`, mode: "read", cwd: integration, resume: coordinatorSession, schema: revisionSchema, what: "workflow revision", validate: (v: TeamRevision) => { try { return revisionProblem(cleanRevision(v), state, { ...policy, inventory: observed }); } catch (error) { return (error as Error).message; } },
+          const revision = await ctx.decide<TeamRevision>({ ...callFields(coordinator), coordination: true, identity: `wave:${wave}:revision`, title: `Revise workflow after wave ${wave}`, mode: "read", cwd: integration, resume: coordinatorSession, schema: revisionSchema, what: "workflow revision", validate: (v: TeamRevision) => { try { return revisionProblem(cleanRevision(v), state, { ...policy, inventory: observed }) ?? managedRevisionProblem(cleanRevision(v), ctx.run.projectTeam); } catch (error) { return (error as Error).message; } },
             prompt: "AUTO_TEAM_REVISION\n" + memberPrompt(coordinator, "read") + section("User goal", ctx.task) + section("Current accepted plan and outcomes", json({ ...checkpoint, maxRepairs: state.maxRepairs, members: state.members.map(({ checkpoint: _checkpoint, sessionId: _session, worktree: _worktree, ...member }) => member), tasks: state.tasks.map((task) => ({ id: task.id, owner: task.owner, status: task.status, attempts: task.attempts, acceptance: task.acceptance, handover: task.handover?.slice(0, 2_000), error: task.error })) })) + section("Published finding proposals", json([...projectFindings.entries()])) + section("Addressed team proposals", json(state.messages.filter((m) => ["message", "finding", "contract"].includes(m.kind) && m.recipient === coordinator.id).slice(-16))) +
               section("Current provider inventory", json(observed)) + "Resolve the blockers using a bounded patch. Add tasks or workers within the approved limits, reassign unfinished work, retire idle workers after handing off all unfinished work, retry failed tasks, append contracts, or answer a non-user question from cited evidence. The coordinator and reviewer cannot be replaced. Preserve all requirements and acceptance criteria; do not replace user decisions or claim work done. Return empty collections when no safe revision is possible." + jsonInstruction(JSON.stringify(revisionSchema)) });
           rememberSession(coordinator, integration, revision.outcome);
@@ -437,14 +441,20 @@ export const autoTeamPattern: Pattern = {
         }
         if (eventDriven && !pool.size && !schedulableTasks().length && !state.messages.some((m) => m.kind === "question" && m.recipient === "user" && m.status === "open" && state.tasks.some((t) => t.id === m.taskId && (t.attempts ?? 0) - (t.allocationStartAttempt ?? 0) < state.maxWaves)) && !revise && (!state.messages.some((m) => m.kind === "question" && m.recipient !== "user" && m.status === "open") || responders.length > 0)) break;
         if (!pool.size && !schedulableTasks().length && !state.messages.some((m) => m.kind === "question" && m.status === "open")) break;
-        if (await ctx.remember("team-admit", `wave:${wave}:budget-stop`, async () => !pool.size && ctx.teamBudgetRemaining() <= 1)) break;
+        if (await ctx.remember("team-admit", `wave:${wave}:budget-stop`, async () => !pool.size && ctx.teamBudgetRemaining() <= (discovery ? 2 : 1))) break;
       }
 
       state.gaps = state.tasks.filter((t) => t.evidenceStale || t.status !== "submitted" && t.status !== "completed").map((t) => `${t.id}: ${t.error ?? (t.status === "needs_info" ? "waiting for information" : "required work not completed")}`);
       state.gaps.push(...state.messages.filter((m) => m.kind === "question" && m.blocking && m.status === "open").map((m) => `${m.taskId}: unresolved required question ${m.id} to ${m.recipient}`));
       const implementation = state.tasks.some((t) => t.kind === "implementation");
       state.status = "verifying"; publish();
-      let check = await ctx.check(integration, "Auto team final check");
+      await assertProjectTeamChanges(integration.path, ctx.run);
+      let report: DiscoveryReport | undefined;
+      if (discovery && !state.gaps.length) {
+        const result = await ctx.decide<DiscoveryReport>({ ...callFields(coordinator), identity: `project-report:${allocation}`, title: "Project team opportunities", mode: "read", cwd: integration, schema: DISCOVERY_REPORT_SCHEMA, what: "project opportunities", validate: (v) => { try { validateReport(v); } catch (e) { return (e as Error).message; } }, prompt: "PROJECT_TEAM_REPORT\n" + memberPrompt(coordinator, "read") + section("Mission and selection constraints", ctx.task) + section("Shared findings", json([...projectFindings.entries()])) + section("Task artifacts", json(state.tasks.map((t) => ({ id: t.id, artifacts: t.artifacts, acceptance: t.acceptance })))) + "Return up to three worthwhile opportunities, or an empty candidates array if nothing warrants work. Cite exact, nonempty quotes from tracked source files at this commit. Distinguish code observations from hypotheses; do not invent measured benefits. Use stable problem keys independent of the commit, plain repository-relative paths, risk low/medium/high, and integer estimates alignment/impact/confidence 0–3 and effort 1–3. Authentication, billing, migrations and broad rewrites have high risk. The report is a proposal, never permission. " + jsonInstruction(JSON.stringify(DISCOVERY_REPORT_SCHEMA)) });
+        report = validateReport(result.value);
+      }
+      let check = discovery ? null : await ctx.check(integration, "Auto team final check");
       const needsNewProof = async () => !rerun || (await changedFiles(integration.path, rerun.baseCommit)).length > 0;
       let proof = check?.ok && await needsNewProof() ? await ctx.prove(integration) : null;
       let findings: import("../engine.js").ReviewFinding[] = [];
@@ -459,11 +469,16 @@ export const autoTeamPattern: Pattern = {
         reviewed = await ctx.decide<ReviewVerdict>({ ...callFields(reviewer), identity: `allocation:${allocation}:review:${round}`, title: `Auto team independent review (${round})`, mode: "read", cwd: integration, resume: reviewed?.outcome, schema: REVIEW_SCHEMA, what: "independent review", prompt:
           memberPrompt(reviewer, "read") + section("User goal (authoritative)", ctx.task) + section("Requirements and acceptance", json({ requirements: state.requirements, tasks: state.tasks.map((t) => ({ id: t.id, acceptance: t.acceptance, status: t.status, artifacts: t.artifacts, ...(rerun ? { retainedBaseline: t.retainedBaseline, noNewDiff: t.noNewDiff, ...(rerun.selectedTaskIds.includes(t.id) ? { userAuthorizedInstructions: t.instructions } : {}) } : {}) })) })) +
           (rerun ? section("Selective rerun baseline and measured unchanged tasks", retainedBaselinePrompt(rerun) + json({ rerunTasks: rerun.rerunTaskIds, noNewDiff: state.tasks.filter((task) => task.noNewDiff).map((task) => task.id) }) + "Review every original requirement against this exact child commit. Retained evidence was not executed again. An unchanged implementation may be accepted only when the actual current check passes and you independently confirm its acceptance criteria; do not invent new artifact or fail-to-pass evidence.") : "") +
+          (report ? section("Exact discovery report to review", json({ digest: digest(report), report }) + "Review the report against the mission and verify its quoted source evidence, risk, duplication, acceptance and claimed benefit. Missing or invented evidence blocks acceptance. This is an investigation: leave repro fields empty and request changes for any material report defect.") : "") +
           section("Unresolved gaps", state.gaps.join("\n") || "None reported") + section("Shared contracts", json(state.contracts)) + section("Published finding proposals to verify", json([...projectFindings.entries()])) + section("Combined diff", fence(await ctx.diff(integration), "diff")) + checkEvidence(ctx, check, 3_000) + proofEvidence(proof) +
           (issues.length ? section("Test integrity concerns", describeIssues(issues)) : "") + builderReply(reviewReply) +
           "Judge the result against the user's goal. Missing required work blocks approval even if tests pass. An investigation needs evidence that satisfies acceptance. You have not authored this work; inspect it independently." + reproRule(ctx) + jsonInstruction(REVIEW_SHAPE) });
         await ctx.drainTeamCommands(state, `allocation:${allocation}:review:${round}:after-decision`);
-        findings = await checkReview(ctx, integration, { label: `Auto team review ${round}`, reviewer: reviewer.provider, round, review: reviewed.value });
+        if (discovery) {
+          findings = reviewed.value.issues.map((issue) => ({ severity: issue.severity === "low" ? "low" : "medium", file: issue.file, problem: issue.problem, fix: issue.fix, check: { status: "unconfirmed", detail: "Discovery evidence reviewed without an executable reproduction" }, blocking: issue.severity !== "low" }));
+          if (reviewed.value.verdict !== "approve") state.gaps.push("Discovery report requires changes");
+          ctx.setFindings(integration, { reviewer: reviewer.provider, round, verdict: reviewed.value.verdict, findings, at: Date.now() });
+        } else findings = await checkReview(ctx, integration, { label: `Auto team review ${round}`, reviewer: reviewer.provider, round, review: reviewed.value });
         reviewHead = await ctx.head(integration);
         const needsFix = !approves(findings) || !!check && !check.ok || proof?.status === "unproven";
         const repair = await ctx.remember("team-admit", `allocation:${allocation}:repair:${round}`, async () => implementation && needsFix && repairs < state.maxRepairs && ctx.teamBudgetRemaining() >= 2 && !state.gaps.length);
@@ -482,6 +497,7 @@ export const autoTeamPattern: Pattern = {
         check = await ctx.check(integration, `Auto team check after repair ${repairs}`);
         proof = check?.ok && await needsNewProof() ? await ctx.prove(integration) : null;
       }
+      await assertProjectTeamChanges(integration.path, ctx.run);
       const finalHead = await ctx.head(integration);
       const independentlyReviewed = !!reviewed && reviewHead === finalHead;
       // Gaps are what blocks the team. A repository without a runnable check has nothing more
@@ -498,11 +514,12 @@ export const autoTeamPattern: Pattern = {
       const verified = complete && checkState !== "unknown";
       state.verification = { revision: state.revision, head: finalHead, check: checkState, reviewed: independentlyReviewed, approved: complete, ...(proof ? { proof: proof.status } : {}) };
       if (complete) for (const t of state.tasks) t.status = "completed";
-      if (verified) for (const [taskId, refs] of teamFindingRefs) for (const ref of refs) await ctx.remember("team-accept-finding", `${ref.id}:${ref.revision}`, async () => {
+      if (report && reviewed) ctx.run.projectDiscovery = await ctx.remember("project-discovery-receipt", digest(report), async () => ({ report: report!, digest: digest(report), head: finalHead, reviewerStep: reviewed!.outcome.stepId, approved: verified, sourceDigest: ctx.run.projectTeam!.sourceDigest }));
+      if (verified && !discovery) for (const [taskId, refs] of teamFindingRefs) for (const ref of refs) await ctx.remember("team-accept-finding", `${ref.id}:${ref.revision}`, async () => {
         await memoryStore.accept(ref.id, ref.revision, memoryAuthority(coordinator.id, true), undefined, `${ctx.run.id}:${taskId}:${finalHead}:${ref.id}:${ref.revision}:accept`);
         return { taskId, id: ref.id };
       });
-      if (verified) for (const [taskId, findings] of projectFindings) await ctx.remember("team-project-memory", `${taskId}:${finalHead}`, async () => {
+      if (verified && !discovery) for (const [taskId, findings] of projectFindings) await ctx.remember("team-project-memory", `${taskId}:${finalHead}`, async () => {
         await ctx.proposeProjectMemory(findings, taskId, finalHead, state.tasks.find((t) => t.id === taskId)!.owner);
         return true;
       });

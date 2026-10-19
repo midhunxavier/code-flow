@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "mode": "fake",
+  "applicationRevision": "f4f8af6c2975bea2f218c9755bc4e0a8a83ff696",
+  "applicationDirty": true,
+  "at": "2026-10-19T06:22:03.525Z",
+  "fixtures": 2,
+  "cycles": 10,
+  "completed": 2,
+  "noOp": 8,
+  "childLaunches": 4,
+  "settledCalls": 14,
+  "readyDrafts": 2,
+  "interpretation": "Synthetic mechanics evidence only. No model quality, owner acceptance or real-provider reliability claim."
+}

@@ -48,6 +48,8 @@ The **Settings** page centralizes appearance, agent models, run defaults, notifi
 
 **Settings → Workspace** adds verification profiles and requirement mappings, code editing with three-way conflicts, selective checkpoint files/hunks, service launch profiles, coordinated repository changes and filtered tasks. Configuration, diagnostics, integrations and notifications live in Settings. The composer includes simple/advanced modes, named presets, task templates, readiness checks and settings provenance. Auto-team plans can be edited before approval; dispatch can be paused or prioritized. See the [implementation checklist and boundaries](docs/application-improvements.md), [API/client](docs/api.md), [verification](docs/verification.md), and [backup/maintenance](docs/maintenance.md).
 
+[Standing project teams](docs/project-teams.md) can investigate a repository on a schedule, propose improvements, and prepare one verified draft per cycle. Enable the preview with `CODEFLOW_PROJECT_TEAMS_ENABLED=true`, then connect a team from a project page. You approve the exact result before using the existing publishing controls.
+
 Additional workflows include [selective task reruns](docs/task-reruns.md), [deferred starts](docs/deferred-runs.md), [context budgets](docs/context-inspection.md), [versioned conventions](docs/project-conventions.md), [reviewed commit reversions](docs/checkpoint-review.md), and a [local VS Code extension](integrations/vscode/README.md). The [review inbox](docs/review-inbox.md) groups questions, blocked work, failures and results across projects.
 
 Use [shared project accounts](docs/shared-projects.md) for scoped human review,

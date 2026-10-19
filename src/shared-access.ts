@@ -33,7 +33,9 @@ export function sharedRoutePolicy(method: string, parts: readonly string[]): Sha
 }
 export function sharedProjectRole(identity: SharedPrincipal, projectId: string | undefined): SharedRole | undefined { return projectId && Object.hasOwn(identity.roles, projectId) ? identity.roles[projectId] : undefined; }
 /** A removed/ambiguous repository never silently inherits permission through another assigned project. */
-export function sharedCanReadRun(identity: SharedPrincipal, run: Pick<Run, "project" | "repo">, projects: readonly Project[]): boolean {
+export function sharedCanReadRun(identity: SharedPrincipal, run: Pick<Run, "project" | "repo" | "projectTeam">, projects: readonly Project[]): boolean {
+  // Standing-team tasks contain owner mission and decision context; their review surface is owner-only.
+  if (run.projectTeam) return false;
   const candidates = run.project ? projects.filter((project) => project.id === run.project) : projects.filter((project) => project.repos.includes(run.repo));
   return candidates.length === 1 && candidates[0]!.repos.includes(run.repo) && !!sharedProjectRole(identity, candidates[0]!.id);
 }
