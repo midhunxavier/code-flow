@@ -40,6 +40,13 @@ test("imports reject unknown workflows, invalid permissions, excessive limits an
   assert.throws(() => parseComposerLibrary({ ...library(), schemaVersion: 2 }, patterns), /version 1/);
 });
 
+test("ACP providers survive preset validation with their model and role settings", () => {
+  const saved = validatePresetConfig({ ...config, roles: { ...config.roles, builder: ["acp:opencode"] }, agentSettings: { "acp:opencode": { model: "provider/model" } }, roleSettings: { builder: { "acp:opencode": { model: "provider/model" } } } }, patterns);
+  assert.deepEqual(saved.roles.builder, ["acp:opencode"]);
+  assert.equal(saved.agentSettings["acp:opencode"]?.model, "provider/model");
+  assert.throws(() => validatePresetConfig({ ...config, roles: { ...config.roles, builder: ["acp:../invalid"] } }, patterns));
+});
+
 test("parameterized templates require each input and substitute literal values in task and acceptance", () => {
   const template = library().templates[0]!;
   assert.deepEqual(templateParameters(template), ["component", "package"]);

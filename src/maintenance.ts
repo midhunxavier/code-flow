@@ -18,7 +18,7 @@ const MAX_MANIFEST_BYTES = Math.ceil(MAX_BYTES * 1.4);
 const MAX_FILES = 20000;
 const MAX_LOG_BYTES = 64 * 1024 * 1024;
 // team-link.json holds this computer's runner credential: restored elsewhere it would make a second machine with the same runner identity, so it stays out like the other credential files (team/ and team-link/attempts/ hold no credentials and stay in).
-const sessionPath = /(^|\/)(ssh-host|remote-worker-private|extension-cache|shared-accounts\.json(?:[.-].*)?|remote\.json(?:[.-].*)?|phone-devices\.json(?:[.-].*)?|team-link\.json(?:[.-].*)?|processes\.json|sessions?\.json|(?:team[-_])?(?:credentials?|capabilit(?:y|ies))(?:\.[^/]*)?|connection\.json|[^/]*\.(?:pem|key)|\.env(?:\.[^/]*)?)(\/|$)/i;
+const sessionPath = /(^|\/)(ssh-host|remote-worker-private|extension-cache|acp-connections\.json(?:[.-].*)?|shared-accounts\.json(?:[.-].*)?|remote\.json(?:[.-].*)?|phone-devices\.json(?:[.-].*)?|team-link\.json(?:[.-].*)?|processes\.json|sessions?\.json|(?:team[-_])?(?:credentials?|capabilit(?:y|ies))(?:\.[^/]*)?|connection\.json|[^/]*\.(?:pem|key)|\.env(?:\.[^/]*)?)(\/|$)/i;
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const validId = (value: string) => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(value);
 interface BackupEntry { path: string; bytes: number; sha256: string; data: string }

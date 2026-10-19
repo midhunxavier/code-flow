@@ -7,7 +7,7 @@
  */
 
 export type BuiltinAgentId = "claude" | "codex" | "agy";
-export type AgentId = BuiltinAgentId | `plugin:${string}`;
+export type AgentId = BuiltinAgentId | `plugin:${string}` | `acp:${string}`;
 
 /**
  * read  — may inspect files and run read-only commands, must not modify the tree.
@@ -42,7 +42,7 @@ export interface RunOptions {
   timeoutMs?: number;
   /** Stop the CLI (error kind "stalled") when it prints nothing for this long. */
   idleTimeoutMs?: number;
-  /** Constrain the final answer to this JSON Schema (all three CLIs support it). */
+  /** Requested final JSON shape. ACP uses prompt instructions; the engine validates the result. */
   jsonSchema?: object;
   /** Auto members ask through their structured outcome, with answers on a later turn. */
   questionProtocol?: "structured";
@@ -73,6 +73,7 @@ export type AgentEvent =
   | { kind: "session"; sessionId: string }
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
+  /** A repeated callId updates the existing tool's name/input as the CLI fills in details. */
   | { kind: "tool_call"; callId: string; name: string; input: string }
   | { kind: "tool_result"; callId: string; output: string; isError: boolean }
   /** Tokens a turn used; cached input is counted separately (it's much cheaper). costUsd: Claude's API-equivalent figure. */

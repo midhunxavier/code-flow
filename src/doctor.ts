@@ -137,6 +137,12 @@ export async function checkGit(): Promise<GitHealth> {
 async function check(id: AgentId, quota: HealthEntry["quota"]): Promise<HealthEntry> {
   const adapter = getAdapter(id);
   const entry: HealthEntry = { id, name: adapter.displayName, installed: false, signedIn: null, quota };
+  if (id.startsWith("acp:")) {
+    entry.installed = await adapter.available().catch(() => false);
+    entry.warnings = ["ACP connection: use Check connection in Settings. Authentication and inference are verified only when the agent runs. Full access is required."];
+    if (!entry.installed) entry.fix = "Install this CLI or edit its executable path in Settings → Agents & models.";
+    return entry;
+  }
   if (id.startsWith("plugin:")) {
     entry.installed = await adapter.available().catch(() => false);
     entry.warnings = ["Owner-configured provider plugin; authentication, sandbox and live provider compatibility are not verified by built-in CLI probes."];

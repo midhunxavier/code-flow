@@ -19,11 +19,12 @@ import { SharedAccountsPanel } from "./shared.js";
 import { ConventionsPanel } from "./conventions.js";
 import { FilePolicyPanel } from "./filesystem-policy.js";
 import { ExtensionsPanel } from "./extensions.js";
+import { AcpConnectionsPanel } from "./acp-connections.js";
 import { WorkbenchRetentionPanel } from "./retention.js";
 import { InsightsView } from "./insights.js";
 import { downloadArtifact, WorkbenchView } from "./workbench.js";
 import {
-  agents, health, healthOpen, loadHealth, loadModels, limits, setLimits, trust, setTrust,
+  agents, health, healthOpen, loadHealth, loadModels, loadAgents, limits, setLimits, trust, setTrust,
   patterns, patternId, setPattern, CHECKPOINTS, planApprovalFor, setApprovePlan,
   railView, setRailView, shortcutsOpen, projectsOpen, projects, repo, route,
   externalSource, source, setTask, type Trust,
@@ -107,8 +108,9 @@ function GeneralSettings() {
 function AgentSettings() {
   const [busy, setBusy] = useState(false);
   return <>
+    <AcpConnectionsPanel />
     <p class="help">Saved model choices apply to new runs in this workspace. Project defaults and individual role overrides can take precedence. Sign in through each agent’s CLI on the machine where it runs.</p>
-    <div class="settings-actions"><button class="btn" disabled={busy} onClick={async () => { setBusy(true); try { await Promise.all([loadModels(), loadHealth()]); } finally { setBusy(false); } }}>{busy ? "Checking…" : "Refresh providers"}</button><button class="btn" onClick={() => { healthOpen.value = true; }}>Health & usage</button></div>
+    <div class="settings-actions"><button class="btn" disabled={busy} onClick={async () => { setBusy(true); try { await loadAgents(); await Promise.all([loadModels(), loadHealth()]); } finally { setBusy(false); } }}>{busy ? "Checking…" : "Refresh providers"}</button><button class="btn" onClick={() => { healthOpen.value = true; }}>Health & usage</button></div>
     {agents.value.map((agent) => {
       const status = health.value?.find((item) => item.id === agent.id);
       return <SettingsCard key={agent.id} title={agent.displayName}><div class="settings-provider-status"><span class={`badge ${status?.installed && status.signedIn !== false ? "ok" : ""}`}>{status ? !status.installed ? "Not installed" : status.signedIn === false ? "Signed out" : status.signedIn ? "Signed in" : "Installed · login unknown" : "Checking health…"}</span><span class="help">{status?.version}</span></div>{agent.available ? <ModelRow agent={agent} used /> : <p class="help">Install this CLI on the current machine to configure its models.</p>}{status?.fix ? <p class="msg warn">{status.fix}</p> : null}</SettingsCard>;

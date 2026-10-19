@@ -2632,6 +2632,9 @@
 .settings-callout p { color: var(--muted); font-size: 12px; margin: 5px 0 10px; }
 .settings-callout a { font-size: 12px; font-weight: 600; text-decoration: none; }
 .settings-actions, .settings-provider-status { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 12px 0 20px; }
+.acp-connection-form { display: grid; gap: 14px; margin-top: 20px; }
+.acp-connection-form h4, .acp-connection-form > .help, .acp-connection-form > .settings-actions { margin: 0; }
+.acp-connection-form label { display: grid; gap: 6px; margin: 0; font-size: 12px; }
 .settings-result { display: flex; width: 100%; align-items: center; gap: 14px; padding: 18px; border: 1px solid var(--border); border-radius: 12px; margin: 12px 0; text-align: left; background: var(--raised); }
 .settings-result:hover { border-color: var(--accent-edge); }
 .settings-result > span:first-of-type { flex: 1; }

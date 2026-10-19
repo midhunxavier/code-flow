@@ -28,7 +28,7 @@ before(async () => {
     stdin: {
       contents: [
         `export { changeCommentDrafts, commentDrafts } from "./review.tsx";`,
-        `export { ChatThread, teamSteps } from "./run.tsx";`,
+        `export { ChatThread, teamSteps, itemsFor } from "./run.tsx";`,
         `export { sideChatIn } from "./side-chat.tsx";`,
         `export { effect } from "@preact/signals";`,
       ].join("\n"),
@@ -142,6 +142,25 @@ const chatRun = (followUps: unknown[]) => ({
   lastCheck: { ok: true, command: "npm test", worktree: "agent-1", at: 1600 },
 });
 const runData = (steps: any[]) => ({ steps: new Map(steps.map((s) => [s.id, s])), events: new Map(), built: new Map(), logs: [], seen: new Set(), runSeq: 0, stepSeq: new Map(), epoch: "" });
+
+test("ACP transcript joins streamed chunks and updates tool cards without duplicating them", () => {
+  const current = step("acp", { agent: "acp:opencode" }), data = runData([current]);
+  const events = [
+    { kind: "thinking", text: "Read " }, { kind: "thinking", text: "the file" },
+    { kind: "text", text: "Hello " }, { kind: "text", text: "world" },
+    { kind: "tool_call", callId: "read", name: "read", input: "{}" },
+  ];
+  data.events.set(current.id, events);
+  const items = m.itemsFor(data, current);
+  assert.equal(items.length, 3); assert.equal(items[0].text, "Read the file"); assert.equal(items[1].text, "Hello world");
+  events.push({ kind: "tool_call", callId: "read", name: "Read README.md", input: '{"path":"README.md"}' });
+  data.events.set(current.id, [...events, { kind: "tool_result", callId: "read", output: "contents", isError: false }, { kind: "text", text: "Done" }]);
+  const updated = m.itemsFor(data, current);
+  assert.equal(updated.length, 4); assert.equal(updated[2], items[2]);
+  assert.equal(updated[2].name, "Read README.md"); assert.equal(updated[2].input, '{"path":"README.md"}');
+  assert.equal(updated[2].output, "contents"); assert.equal(updated[3].text, "Done");
+  assert.equal(m.itemsFor(data, current).length, 4, "rerender does not repeat streamed events");
+});
 
 test("teamSteps leaves out side chats' turns, also before the run says whose they are, and the checks after them", () => {
   const run = chatRun([sideTurn("f1", "change", { stepId: "s2" })]);

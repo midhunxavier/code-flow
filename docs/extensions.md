@@ -1,5 +1,7 @@
 # Versioned provider and workflow extensions
 
+For OpenCode or another CLI that speaks Agent Client Protocol, use [ACP connections in Settings](acp-agents.md). No JavaScript extension bundle is needed for a compatible stdio agent.
+
 The owner can register additional provider adapters and workflow patterns with an explicit server environment configuration. There is no repository discovery, remote download, HTTP plugin installation or shared-user administration. Settings → Extensions reports loaded/rejected bundles and negotiated API versions. Restart to apply configuration changes.
 
 An extension is trusted JavaScript server code, with the server owner's filesystem, network and process permissions. Review its source and bundle dependencies before enabling it. Hash pinning detects changed bundle bytes; it does not make malicious code safe or sandbox its behavior. Use self-contained `.mjs` bundles; relative imports resolve from the private captured-bundle cache, not the original module directory. Provider authors must honor abort signals, timeouts, trust modes and the normalized event/result contracts. Built-in compatibility probes, container isolation and SSH workers do not certify or execute additional plugin providers.

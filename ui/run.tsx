@@ -1881,11 +1881,11 @@ function toolArg(input: string): string {
   let value = input;
   try {
     const args = JSON.parse(input) as Record<string, unknown>;
-    const key = ["command", "cmd", "file_path", "path", "pattern", "url", "query", "description"].find((k) => typeof args[k] === "string" && args[k]);
+    const key = ["command", "cmd", "file_path", "filePath", "path", "pattern", "url", "query", "description"].find((k) => typeof args[k] === "string" && args[k]);
     if (key) {
       value = args[key] as string;
       // Paths inside a worktree read best from the repo root.
-      if (key === "file_path" || key === "path") value = value.replace(/^.*\/\.worktrees\/[^/]+\/[^/]+\//, "");
+      if (key === "file_path" || key === "filePath" || key === "path") value = value.replace(/^.*\/\.worktrees\/[^/]+\/[^/]+\//, "");
     }
   } catch {
     // not JSON: show it as it is
@@ -1906,14 +1906,14 @@ export interface Built {
 }
 
 /** The step's transcript, extended with only the events that arrived since the last render. */
-function itemsFor(data: RunData, step: Step): Item[] {
+export function itemsFor(data: RunData, step: Step): Item[] {
   const events = data.events.get(step.id) ?? [];
   let built = data.built.get(step.id);
   if (!built) {
     built = { items: [], tools: new Map(), count: 0 };
     data.built.set(step.id, built);
   }
-  for (; built.count < events.length; built.count++) addItem(built, events[built.count]!, step.agent === "agy");
+  for (; built.count < events.length; built.count++) addItem(built, events[built.count]!, step.agent === "agy" || step.agent?.startsWith("acp:") === true);
   return built.items;
 }
 
@@ -1922,16 +1922,26 @@ function addItem(built: Built, e: AgentEvent, streamsDeltas: boolean) {
   const last = items.at(-1);
   switch (e.kind) {
     case "text":
-      // agy streams small deltas; the other CLIs send whole blocks.
+      // ACP and agy stream small deltas; the other CLIs send whole blocks.
       if (streamsDeltas && last?.kind === "text") {
         last.text += e.text;
         last.v++;
       } else items.push({ kind: "text", text: e.text, v: 0 });
       break;
     case "thinking":
-      items.push({ kind: "thinking", text: e.text, v: 0 });
+      if (streamsDeltas && last?.kind === "thinking") {
+        last.text += e.text;
+        last.v++;
+      } else items.push({ kind: "thinking", text: e.text, v: 0 });
       break;
     case "tool_call": {
+      const existing = tools.get(e.callId);
+      if (existing) {
+        existing.name = e.name;
+        existing.input = e.input;
+        existing.v++;
+        break;
+      }
       const tool = { kind: "tool" as const, name: e.name, input: e.input, v: 0 };
       tools.set(e.callId, tool);
       items.push(tool);
