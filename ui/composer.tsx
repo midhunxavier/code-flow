@@ -1,3 +1,5 @@
+import { intentDraft, WorkflowRecommendation } from "./experience.js";
+import { journeyDraft } from "./journeys.js";
 import { improveSettings } from "./improve-settings.js";
 import { IMPROVE_NAMES } from "../src/improve-settings.js";
 import { ModelSelect } from "./model-select.js";
@@ -114,7 +116,8 @@ export function Composer() {
     if (next) setPattern(next.id);
   };
   const [moreOptions, setMoreOptions] = useState(false);
-  const [intent, setIntent] = useState<string | null>(null);
+  const intent = intentDraft.value;
+  const setIntent = (id: string | null) => { intentDraft.value = id === null ? undefined : id as import("../src/experience.js").TaskIntent; };
   const intents = [
     { id: "bug", label: "Fix a bug", pattern: "pipeline", why: "Plan a fix, implement it, then review it against the reported behavior.", prompt: "Fix the following bug:\n\nExpected behavior:\nActual behavior:\nSteps to reproduce:" },
     { id: "feature", label: "Build a feature", pattern: "pipeline", why: "Plan → Build → Review gives a feature an implementation and an independent review.", prompt: "Build the following feature:\n\nWho it helps:\nExpected behavior:\nAcceptance criteria:" },
@@ -167,6 +170,8 @@ export function Composer() {
   const [usingTemplate, setUsingTemplate] = useState(false);
   const [libraryScope, setLibraryScope] = useState("project");
   const runBody = (p: PatternInfo) => ({
+    intent: journeyDraft.value?.repo === repo.value ? "bug" : intentDraft.value,
+    journeyId: journeyDraft.value?.repo === repo.value ? journeyDraft.value.id : undefined,
     repo: repo.value,
     project: target.value.project?.id,
     task: taskWithCriteria(task.value, acceptanceCriteria.value),
@@ -229,6 +234,8 @@ export function Composer() {
     externalSource.value = null;
     contextPaths.value = new Map();
     attachments.value = [];
+    journeyDraft.value = undefined;
+    intentDraft.value = undefined;
   };
 
   return (
@@ -272,6 +279,7 @@ export function Composer() {
 
       {externalSource.value ? <div class="banner"><p>External context: {externalSource.value.provider} {externalSource.value.kind} {externalSource.value.key} · {externalSource.value.title}</p><p class="help">This source remains untrusted. The run uses Safe permissions and isolated checks.</p><button class="btn small" onClick={() => { externalSource.value = null; }}>Remove source</button></div> : null}
       {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
+      {journeyDraft.value?.repo === repo.value ? <p class="help">Recorded scenario: {journeyDraft.value.title} <button class="btn ghost small" onClick={() => { journeyDraft.value = undefined; }}>Detach scenario</button></p> : null}
       <div class="intent-starters" role="group" aria-label="Task intent">
         {intents.filter(choice => patterns.value.some(p => p.id === choice.pattern)).map(choice => <button key={choice.id} type="button" class="btn small" aria-pressed={intent === choice.id && p?.id === choice.pattern} onClick={() => chooseIntent(choice)}>{choice.label}</button>)}
       </div>
@@ -313,6 +321,7 @@ export function Composer() {
         {trust.value === "full" ? <span class="warn">Full access · no provider sandbox</span> : null}
         <button class="btn small ghost" onClick={() => setMoreOptions(!moreOptions)} aria-expanded={moreOptions}>Edit run options</button>
       </div>
+      <WorkflowRecommendation repository={repo.value} intent={journeyDraft.value?.repo === repo.value ? "bug" : intentDraft.value} />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
       <details class="composer-options compact" open={moreOptions} onToggle={(event) => setMoreOptions(event.currentTarget.open)}>
         <summary>Run options <span>Team, context, checks and limits for this task</span></summary>

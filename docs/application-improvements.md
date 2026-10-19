@@ -202,3 +202,81 @@ and the policy browser flow. Actual malicious cwd/relative-bin executables were
 refused for inherited and overridden PATHs; explicit absolute fixture binaries
 remain usable. The exact-route regression passed again after adding malformed
 suffix/method checks across both API prefixes.
+
+## Result-first product experiences
+
+The composer retains its outcome starters and now records an explicit task type
+on new runs. Expand **Workflow advice from this repository** to inspect check
+success, acceptance feedback, correction samples and supporting runs, then apply
+a workflow deliberately. Suggestions require three completed samples per
+workflow, retain failures in their denominator and do not infer task types from
+older prose. They describe history, not task difficulty or a predicted winner.
+
+Running work has a compact progress card with dispatch pause and run priority.
+Auto teams also have a **Who's doing what** map: select a task to inspect its
+owner, paths, dependency blockers and open questions. A task priority applies at
+the next dispatch and cannot override dependencies, occupied members/paths,
+review reservations or budgets. Existing journaled dispatches remain pinned on
+resume. Standing-team task priorities remain controlled by their mission.
+
+Finished results lead with **Try this result**, evidence, and commit-specific
+**Accept result / Needs more work** feedback. The preview waits for its allocated
+port before opening. Feedback neither publishes nor substitutes for standing-team
+approval. Project pages and Insights show historical acceptance, median elapsed
+time to a verified result, recorded correction time and merged runs. Unrated
+runs and missing correction records are explicit; missing corrections are not
+zero-minute samples. Acceptance refers to the latest recorded decision, which
+can belong to an earlier commit. The result screen flags that difference.
+
+**Show me what changed** captures the running app beside an optional original
+URL at the same viewport. Snapshots use fresh browser profiles and can be
+downloaded; they are visual observations rather than automated proof. For a
+recorded scenario, the result instead also offers a replay and a step-by-step
+screenshot walkthrough beside the original replay.
+
+**Try two alternatives** launches two ordinary runs from the same exact result
+commit with separate instructions and budgets. Each result has its own preview,
+check state and continuation link. No branch is chosen, merged or published
+automatically. If a comparison launch fails partway through, inspect recent runs
+before requesting another; successful children remain visible in their group.
+
+### Record a bug and prepare its regression test
+
+1. Open a local HTTP app in **Browser** and choose **Record a bug**.
+2. Reproduce the flow. Clicks, text input, single-select changes and
+   Enter/Tab/Escape are supported. The recording follows same-origin document
+   navigation. Shadow DOM, nested frames, file uploads, gestures and authenticated
+   fixtures require adapting the exported test.
+3. Stop recording, inspect/remove interactions, name the scenario and specify
+   an expected element selector and visible text. Save the immutable scenario.
+4. **Replay original scenario** checks that assertion in fresh Chrome and saves
+   a screenshot walkthrough. Password/credential fields are excluded; review
+   other recorded form values before saving. Replays can mutate the app's data.
+5. **Prepare verified fix** attaches a generated Playwright regression test to a
+   new pipeline draft. The agent is instructed to demonstrate failure before the
+   fix and success afterward, adapting it to the repository's test setup. Review
+   the draft and its check configuration before starting.
+6. On the result, start its preview and **Replay scenario on this result** to
+   compare observations. A replay never changes the run's independent check or
+   proof verdict. Only the specified visible-text assertion is tested. The
+   recorded branch head is informational: dev servers can serve an older build
+   or uncommitted files, so a browser replay does not certify a Git tree.
+
+Recordings are owner-only, stored privately under `CODEFLOW_HOME/journeys`,
+included by ordinary backups, and available from each project's **Recorded
+scenarios** library after restart. Export the generated test or delete an unused
+scenario and its evidence there. Limits: 100 scenarios per host, 30 interactions
+per scenario, 1,920px recording width, four retained replay receipts per scenario,
+2.5 million base64 screenshot characters per receipt, 16 MiB per evidence file,
+one replay at a time, and the existing 45-second snapshot execution deadline.
+Uncaptured frames are omitted, never synthesized. Replay checks local app URLs,
+refuses code-flow's own listener ports and keeps document navigation on the
+selected origin. The existing snapshot network caveats also apply. Filesystem
+restrictions pause these operations; shared reviewers cannot access recordings.
+
+Project pages now lead standing teams with a **Project briefing** showing up to
+three actionable opportunities. Ready drafts come first, followed by reported
+impact and recency. Cards expose users, benefit, risk, source quotes and the
+pinned source commit. **Dismiss opportunity** records a rejection through the
+existing team decision service, so subsequent discovery respects it. Schedules
+and standing teams remain explicitly activated by the owner.

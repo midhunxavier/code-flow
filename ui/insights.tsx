@@ -1,3 +1,4 @@
+import { OutcomeMetrics } from "./experience.js";
 import { useEffect, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
 import { api, baseName, duration, fmtCost, fmtSize, fmtTokens, pct, post, showToast, STATUS_TEXT } from "./lib.js";
@@ -85,6 +86,7 @@ export function InsightsView({ group }: { group?: string }) {
           </div>
         </div>
       </div>
+      <OutcomeMetrics project={scope === "project" ? currentProject.value : undefined} repository={scope === "repo" ? repo.value : undefined} />
       {error ? <div class="msg err">{error}</div> : null}
       {!stats ? <div class="help">Loading…</div> : null}
       {stats && !stats.runs ? (

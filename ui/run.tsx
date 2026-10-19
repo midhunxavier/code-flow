@@ -1,3 +1,5 @@
+import { intentDraft, LiveProgress, ResultStudio } from "./experience.js";
+import { journeyDraft } from "./journeys.js";
 import { nextRunAction, executionLabel } from "./run-experience.js";
 import { RunEvidence, VerificationEvidence } from "./run-evidence.js";
 import { DeleteRunDialog } from "./run-actions.js";
@@ -222,6 +224,8 @@ export function RunView({ id }: { id: string }) {
             </div>
           </section> : null}
           {actionError ? <p class="msg err" role="alert">{actionError}</p> : null}
+          {!finished ? <LiveProgress run={run} steps={steps} /> : <ResultStudio run={run} />}
+          {finished && !chat ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
           <RunMeta run={run} />
           {run.source?.kind === "pr" && !Object.values(run.prs ?? {}).includes(run.source.url) ? <GithubReviewThreadsPanel runId={run.id} /> : null}
           {run.lockdown ? (
@@ -311,7 +315,7 @@ export function RunView({ id }: { id: string }) {
             </details>
           )}
 
-          {finished && !chat ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
+
           {chat ? null : <FollowUpThread run={run} data={data.current} />}
           {finished && chat ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} chat /> : null}
           <ActivityLog logs={data.current.logs} count={data.current.logs.length} />
@@ -2069,6 +2073,8 @@ function ActivityLog({ logs }: { logs: RunData["logs"]; count: number }) {
 
 // ---------------------------------------------------------------- edit & run again
 export function editAndRerun(run: RunSummary) {
+  intentDraft.value = run.intent;
+  journeyDraft.value = undefined;
   setPattern(run.pattern);
   for (const [role, ids] of Object.entries(run.roles)) setRoles(run.pattern, role, ids);
   const p = patterns.value.find((x) => x.id === run.pattern);
