@@ -123,6 +123,8 @@ not requirements for these bounded paths.
 
 ## Before/after and native comparison
 
+See the [measured results](performance-results.md) and committed raw samples.
+
 `npm run benchmark:compare -- --baseline <commit> --trials 7` builds the baseline
 from a Git archive, the current TypeScript app, and a temporary copy with the
 experimental Rust transcript reader. It uses identical synthetic fixtures and real

@@ -143,7 +143,12 @@ function receive(feed: RunFeed, ev: Message) {
     d.steps.set(ev.step.id, ev.step);
     for (const listener of feed.stepListeners) listener(ev.step);
   } else if (ev.type === "agent") {
-    if (d.pages.get(ev.stepId)?.historical) return;
+    const page = d.pages.get(ev.stepId);
+    if (page?.historical) {
+      // Keep events racing a Latest request without mixing them into the older view.
+      if (page.loading) trim(feed, d.cache.add(ev));
+      return;
+    }
     if (!d.events.has(ev.stepId)) d.events.set(ev.stepId, []);
     d.events.get(ev.stepId)!.push(ev.event);
   } else if (ev.type === "log") {
@@ -170,7 +175,7 @@ export async function loadStepTranscript(id: string, step: string, before?: stri
   const feed = feedFor(id), data = feed.data.current;
   const old = data.pages.get(step);
   if (old?.loading) return;
-  const state: StepPage = { before: old?.before, loading: true, loaded: old?.loaded ?? false, historical: !!before, request: (old?.request ?? 0) + 1 };
+  const state: StepPage = { before: old?.before, loading: true, loaded: old?.loaded ?? false, historical: old?.historical ?? false, request: (old?.request ?? 0) + 1 };
   data.pages.set(step, state); schedule(feed);
   try {
     const page = await api<TranscriptPage>(`/api/runs/${enc(id)}/transcript?step=${enc(step)}${before ? `&before=${enc(before)}` : ""}`);
@@ -181,7 +186,7 @@ export async function loadStepTranscript(id: string, step: string, before?: stri
       if (event.type !== "agent" || event.stepId !== step) continue;
       data.events.get(step)!.push(event.event); trim(feed, data.cache.add(event));
     }
-    Object.assign(state, { before: page.before, loaded: true });
+    Object.assign(state, { before: page.before, loaded: true, historical: !!before });
   } catch (error) { state.error = (error as Error).message; state.historical = old?.historical ?? false; }
   finally { state.loading = false; schedule(feed); }
 }
