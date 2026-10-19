@@ -4,7 +4,7 @@ import { QrCode } from "./bits.js";
 import { api, copy, post } from "./lib.js";
 import { PhoneDevices } from "./phone-devices.js";
 
-interface RemoteInfo {
+export interface RemoteInfo {
   enabled: boolean;
   lan: boolean;
   transport: "lan" | "tailscale";
@@ -121,7 +121,7 @@ export function RemoteAccess() {
 }
 
 
-function SecureRemoteSetup({ info, busy, save }: { info: RemoteInfo; busy: boolean; save: (body: object) => Promise<boolean> }) {
+export function SecureRemoteSetup({ info, busy, save }: { info: RemoteInfo; busy: boolean; save: (body: object) => Promise<boolean> }) {
   const [open, setOpen] = useState(false);
   const [method, setMethod] = useState("tailscale");
   const [hostname, setHostname] = useState(info.tls?.hostname ?? info.tailscale.dnsName ?? "");

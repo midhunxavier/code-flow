@@ -289,3 +289,29 @@ test("stopping implementation releases the opportunity for a new owner decision 
   assert.equal(t.opportunities[0]!.status, "rejected"); assert.equal(t.cycles[0]!.launches[1]!.state, "running", "Unknown usage remains reserved");
   const run = f.manager.get(t.cycles[0]!.launches[1]!.runId!)!; while (!run.endedAt) await new Promise((r) => setTimeout(r, 50));
 });
+
+
+test("Standing teams settings persist, reject stale writes and gate dispatch without changing team activation", async () => {
+  const f = await fixture({ mode: "propose" });
+  assert.equal(f.service.configuration().source, "default");
+  await f.service.setEnabled({ enabled: false, revision: 0 });
+  assert.equal(f.service.enabled(), false);
+  assert.equal(f.store.get(f.team.id).status, "active", "the host switch preserves individual team activation");
+  await assert.rejects(f.service.cycle(f.team.id, "disabled-cycle"), /Enable Standing teams/);
+  await assert.rejects(f.service.setEnabled({ enabled: true, revision: 0 }), /settings changed/);
+  const restored = new ProjectTeamStore(f.store.directory); await restored.load();
+  assert.deepEqual(restored.configuration(true), { enabled: false, revision: 1, source: "saved" }, "saved choice overrides the environment default");
+  await f.service.setEnabled({ enabled: true, revision: 1 });
+  assert.equal(f.service.enabled(), true);
+  await f.service.cycle(f.team.id, "active-cycle");
+  await assert.rejects(f.service.setEnabled({ enabled: false, revision: 2 }), /Stop active or unresolved/);
+  const current = f.store.get(f.team.id);
+  await f.service.stopCycle(f.team.id, { operationId: "stop-before-disable", revision: current.revision });
+  await f.service.setEnabled({ enabled: false, revision: 2 });
+  assert.equal(f.service.enabled(), false);
+  writeFileSync(join(f.store.directory, "settings.json"), '{"enabled":"corrupt"}');
+  const broken = new ProjectTeamStore(f.store.directory); await broken.load();
+  assert.equal(broken.configuration(true).enabled, false);
+  assert.equal(broken.configuration(true).source, "unavailable");
+  await assert.rejects(broken.setEnabled(true, 0), /Repair/);
+});

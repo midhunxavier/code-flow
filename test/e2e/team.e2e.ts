@@ -85,7 +85,7 @@ test("Settings → Team defines a repository key and maps it; the board form cre
   await page.getByRole("button", { name: "Connect this computer", exact: true }).waitFor(); // not linked: the connect form, named as the docs and the server's hints name it, with this computer's name prefilled
   const machine = page.getByLabel("Machine name"); await page.waitForFunction((input) => (input as HTMLInputElement).value !== "", await machine.elementHandle()); assert.notEqual(await machine.inputValue(), "");
   await page.getByText("No repository keys yet.", { exact: false }).waitFor();
-  await page.getByRole("link", { name: /Turn on remote access over Tailscale/ }).waitFor(); // no remote access: no address to hand out (and never the phone link's secret path)
+  await page.getByRole("link", { name: /Turn on secure remote access/ }).waitFor(); // no remote access: no address to hand out (and never the phone link's secret path)
   const keys = page.getByRole("group", { name: /^Repository keys · Fixture app/ }); await keys.waitFor();
   await keys.getByRole("button", { name: "Add repository", exact: true }).click();
   await keys.getByLabel("Key", { exact: true }).fill("app"); await keys.getByLabel("Label", { exact: true }).fill("Fixture app"); await keys.getByLabel("Default branch", { exact: true }).fill("main");
@@ -224,7 +224,8 @@ test("a save that lost to a teammate keeps every draft: the title and blocker ed
   // While `holding`, the page cannot reload the task (the stream tells it about the teammate's save within a second), so its save is stale for sure; the held reloads go through afterwards and the drafts must survive them.
   const held: Route[] = []; let holding = false;
   const isTask = (url: string, method: string, request: { url(): string; method(): string }) => new URL(request.url()).pathname === url && request.method() === method;
-  await page.route(`**/api/team/tasks/${taskId}`, (route) => { if (holding && route.request().method() === "GET") held.push(route); else void route.continue(); });
+  const taskRoute = (url: URL) => url.pathname === `/api/team/tasks/${taskId}`;
+  await page.route(taskRoute, (route) => { if (holding && route.request().method() === "GET") held.push(route); else void route.continue(); });
   /** Submits through `submit` and waits for the server's 409 to reach the page. */
   const refused = async (submit: () => Promise<unknown>) => { const response = page.waitForResponse((response) => isTask(`/api/team/tasks/${taskId}`, "PUT", response.request()) && response.status() === 409); await submit(); await response; await page.getByRole("status").filter({ hasText: "Task changed; reloading" }).waitFor(); await sleep(200); };
   /** Lets the held reloads through and waits until the page has the task they carry. */
@@ -266,7 +267,7 @@ test("a save that lost to a teammate keeps every draft: the title and blocker ed
     await release(); assert.deepEqual((await task()).dependsOn, []);
     assert.deepEqual(await depends.evaluate((select: HTMLSelectElement) => [...select.selectedOptions].map((option) => option.value)), [], "the clicked option snaps back after the 409");
     await depends.selectOption(second.id); await page.locator(".team-kv").filter({ hasText: "Depends on" }).getByText("Translate the greeting").waitFor(); assert.deepEqual((await task()).dependsOn, [second.id]);
-  } finally { holding = false; for (const route of held.splice(0)) await route.continue().catch(() => undefined); await page.unroute(`**/api/team/tasks/${taskId}`); }
+  } finally { holding = false; for (const route of held.splice(0)) await route.continue().catch(() => undefined); await page.unroute(taskRoute); }
   assert.deepEqual(errors, []);
 });
 
@@ -344,4 +345,52 @@ test("a shared dashboard left open asks the server for nothing: no board, task o
     assert.deepEqual(polls, [], "the Results tab never asks for the inbox on a timer");
   } finally { await tab.close().catch(() => undefined); }
   assert.deepEqual(errors, []);
+});
+
+test("the hosting wizard configures the local board even from another team and honestly reports incomplete access", async () => {
+  await page.goto(`${base}/?team=c-1111111111111111#/settings/team`);
+  await page.getByRole("button", { name: "Set up team server", exact: true }).click();
+  const wizard = page.getByRole("region", { name: "Team server setup", exact: true });
+  await wizard.getByLabel("Your name on the team", { exact: true }).fill("Wizard host");
+  await wizard.getByLabel("Project", { exact: true }).selectOption("");
+  await wizard.getByLabel("Project name", { exact: true }).fill("Wizard project");
+  await wizard.getByLabel("Local repository folder (optional)", { exact: true }).fill("");
+  await wizard.getByRole("button", { name: "Save and continue", exact: true }).click();
+  await wizard.getByRole("heading", { name: "Step 2 of 5: Repositories", exact: true }).waitFor();
+  await wizard.getByLabel("Repository key", { exact: true }).fill("service");
+  await wizard.getByLabel("Repository label", { exact: true }).fill("Service");
+  await wizard.getByRole("button", { name: "Save repositories and continue", exact: true }).click();
+  await wizard.getByRole("heading", { name: "Step 3 of 5: Secure access", exact: true }).waitFor();
+  await wizard.getByLabel("Connection method", { exact: true }).selectOption("lan");
+  assert.equal(await wizard.getByRole("button", { name: "Enable team access on network", exact: true }).isEnabled(), true);
+  assert.ok((await wizard.innerText()).includes("You manage DNS and network access"));
+  assert.equal(await wizard.getByRole("button", { name: "Continue to teammates", exact: true }).count(), 0);
+  await wizard.getByRole("button", { name: "Set up access later", exact: true }).click();
+  await wizard.getByRole("heading", { name: "Step 4 of 5: Teammates", exact: true }).waitFor();
+  await wizard.getByLabel("Username", { exact: true }).fill("wizard-person");
+  await wizard.getByLabel("Display name", { exact: true }).fill("Wizard teammate");
+  const secret = "wizard initial password 12345";
+  await wizard.getByLabel("Initial password", { exact: true }).fill(secret);
+  await wizard.getByRole("button", { name: "Add teammate", exact: true }).click();
+  await wizard.getByText("Teammate saved. Share their initial password privately.", { exact: true }).waitFor();
+  assert.equal(await wizard.getByLabel("Initial password", { exact: true }).inputValue(), "");
+  await wizard.getByRole("button", { name: "Review setup", exact: true }).click();
+  await wizard.getByRole("heading", { name: "Your setup is saved, with steps still to finish", exact: true }).waitFor();
+  assert.equal(await wizard.getByRole("button", { name: "Copy connection instructions", exact: true }).count(), 0);
+  assert.ok(!(await wizard.innerText()).includes(secret));
+  const localBoard = await api<{ me: { displayName: string }; projects: { id: string; name: string; repositories: { key: string }[] }[] }>("/api/team/board?teamConnection=local");
+  const added = localBoard.projects.find((entry) => entry.name === "Wizard project")!;
+  assert.ok(added); assert.deepEqual(added.repositories.map((entry) => entry.key), ["service"]); assert.equal(localBoard.me.displayName, "Wizard host");
+  const accounts = await api<{ users: { username: string; roles: Record<string, string> }[] }>("/api/accounts");
+  assert.equal(accounts.users.find((entry) => entry.username === "wizard-person")?.roles[added.id], "contributor");
+  await page.setViewportSize({ width: 390, height: 844 }); assert.ok(await fits(page), "wizard fits a phone viewport"); await audit(page, "team setup wizard, phone");
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  mkdirSync(join(root, "output/playwright"), { recursive: true }); await page.screenshot({ path: join(root, "output/playwright/team-server-wizard.png") });
+  await wizard.getByRole("button", { name: "Close setup", exact: true }).click();
+  await page.getByRole("button", { name: "Set up team server", exact: true }).click();
+  await wizard.getByLabel("Project", { exact: true }).selectOption(added.id);
+  await wizard.getByRole("button", { name: "Save and continue", exact: true }).click();
+  await wizard.getByRole("heading", { name: "Step 2 of 5: Repositories", exact: true }).waitFor();
+  assert.equal(await wizard.getByLabel("Repository key", { exact: true }).inputValue(), "service", "reopening reuses saved repository setup");
+  assert.deepEqual(violations, []); assert.deepEqual(errors, []);
 });

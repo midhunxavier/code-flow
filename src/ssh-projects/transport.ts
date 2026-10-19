@@ -33,9 +33,9 @@ export class SshTransport {
     this.children.add(child); child.once("close", () => this.children.delete(child));
     return child;
   }
-  async bootstrap(code: string, payload: string): Promise<string> {
+  async bootstrap(code: string, payload: string, teamServer = false): Promise<string> {
     // Only fixed application code is executed; the host is a validated separate argv value.
-    const command = `exec sh -c ${quote(`exec "\${SHELL:-/bin/sh}" -lc ${quote(`exec node --input-type=module -e ${quote(code)}`)}`)}`;
+    const command = `exec sh -c ${quote(`exec "\${SHELL:-/bin/sh}" -lc ${quote(`exec node --input-type=module -e ${quote(code)}${teamServer ? " -- --team-server" : ""}`)}`)}`;
     const child = this.start([], command);
     return new Promise((resolve, reject) => {
       let stdout = "", stderr = "", settled = false;

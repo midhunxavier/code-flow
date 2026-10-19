@@ -71,7 +71,7 @@ export function validateStartBody(raw: Record<string, unknown>, host: Pick<TeamL
 }
 
 /** `GET /api/team-link`: the link plus, best effort, what the hub knows about this runner (online, revoked). */
-async function linkInfo(host: TeamLinkApiHost): Promise<TeamLinkInfo> {
+export async function linkInfo(host: TeamLinkApiHost): Promise<TeamLinkInfo> {
   const state = host.link.state(), info: TeamLinkInfo = { ...state };
   if (!state.linked && host.hubName && !info.hubName) info.hubName = host.hubName;
   if (state.linked) { try { const me = await host.runner.hub.me(); const runner = me.runners.find((entry) => entry.id === state.runnerId); if (runner) info.runner = runner; else info.error ??= "The team server no longer lists this computer's runner; reconnect in Settings → Team"; } catch (error) { info.error ??= error instanceof Error ? error.message : String(error); } }

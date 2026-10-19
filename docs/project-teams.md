@@ -4,11 +4,13 @@ A standing team connects an owner mission to one repository. Existing Automation
 
 ## Start a team
 
-1. Start the host with `CODEFLOW_PROJECT_TEAMS_ENABLED=true`. Auto team must also be enabled (`CODEFLOW_AUTO_TEAM_ENABLED` defaults to enabled).
+1. Open a project and click **Enable Standing teams** in its Standing teams section. The choice applies immediately to every project on this host and is saved across restarts; no startup flag is required. Auto team must also be permitted by the host (`CODEFLOW_AUTO_TEAM_ENABLED` defaults to enabled).
 2. Open a project that explicitly contains the repository. Select **Connect a team**.
 3. Enter its mission, intended users, priorities, exclusions and named local base branch. Select a coordinator and worker/reviewer providers. Claude, Codex and Antigravity are eligible when installed; ACP and extension providers are currently excluded from unattended standing teams.
 4. Choose **Build within scope** and supply a required check command, or choose proposals only. Set allowed paths, categories and change limits. Models and reasoning use the existing provider catalog.
 5. Review the schedule and budgets, save the draft, then **Activate**. Use **Preview next cycle** before **Run cycle now**.
+
+**Disable Standing teams** prevents new cycles on this host. Stop active or unresolved cycles first. Individual teams keep their activation state; enabling the feature again resumes schedules for teams already active. `CODEFLOW_PROJECT_TEAMS_ENABLED` remains an optional initial default until a UI choice is saved in `CODEFLOW_HOME/project-teams/settings.json`. Separate local and SSH hosts keep their own settings.
 
 The default schedule is Monday at 09:00 in the browser's time zone. Daily, selected weekdays and intervals use the existing Automations schedule editor and DST behavior. Code Flow must be running for its local scheduler to work. Cycles pin the current local branch commit; they do not fetch remote changes.
 

@@ -9,7 +9,7 @@ import { SharedDashboard, SharedLogin } from "./shared.js";
 import type { SharedPrincipal } from "../src/shared-accounts.js";
 import { configureStreamSharing, type StreamSharing } from "./stream.js";
 import logo from "./brand/vibesboard-mark.png";
-import { api, localApi, workspaceId, showToast, store, SHORT } from "./lib.js";
+import { api, localApi, workspaceId, initializeTeamConnection, showToast, store, SHORT } from "./lib.js";
 import { agents, hashFor, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, pickerOpen, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
 // The tab icon: the vibesboard mark, like the top bar.
@@ -52,6 +52,7 @@ async function boot() {
     if (identity.kind === "anonymous") { render(<SharedLogin />, root); return; }
     if (identity.kind === "shared") { render(<SharedDashboard identity={identity} />, root); return; }
     await loadExecutionHost();
+    await initializeTeamConnection();
     const streamIdentity = executionHost.value.kind === "ssh" ? await api<{ streamSharing?: StreamSharing }>("/api/auth/self") : identity;
     configureStreamSharing(streamIdentity.streamSharing);
     [agentList, patternList] = await Promise.all([api("/api/agents"), api("/api/patterns")]);

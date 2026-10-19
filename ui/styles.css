@@ -3092,3 +3092,17 @@
 .pt-opportunities { display: grid; gap: 12px; margin: 16px 0; }
 .pt-opportunity { border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
 .pt-opportunity pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Guided setup for this computer's team server. */
+.team-setup-steps { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 0; margin: 20px 0; list-style: none; }
+.team-setup-steps li { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 12px; }
+.team-setup-steps li[aria-current="step"] { color: var(--text); font-weight: 700; }
+.team-setup-steps span { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 50%; }
+.team-setup-steps li[aria-current="step"] span { background: var(--text); color: var(--raised); }
+.team-server-wizard h4 { margin: 16px 0; }
+.team-setup-fields { display: grid; gap: 14px; min-width: 0; border: 0; padding: 0; margin: 16px 0; }
+.team-setup-fields label { display: grid; gap: 6px; font-size: 12px; color: var(--text-2); }
+.team-setup-fields > .btn { justify-self: start; }
+.team-setup-repo { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+.team-server-wizard code { overflow-wrap: anywhere; }
+@media (max-width: 600px) { .team-setup-repo { grid-template-columns: minmax(0, 1fr); } }
