@@ -1,4 +1,4 @@
-// Opt-in acceptance test: starts real OpenCode and uses its configured account/model.
+// Opt-in acceptance test: starts a real ACP CLI using its configured account/model.
 // No mocks, installations, or changes to the user's code-flow settings.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -7,14 +7,25 @@ import { once } from "node:events";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { acpPresets, acpPresetConnection } from "../src/adapters/acp-presets.ts";
+import { commandExists } from "../src/adapters/process.ts";
+import { approveLiveAcpRequest } from "./acp-live-approval.ts";
 
+const args = process.argv.slice(2);
+const usage = "Usage: npm run test:acp:live -- [--agent opencode|kilo|cline]\nUses the CLI's saved authentication and consumes real model usage.\nOverride its executable with CODEFLOW_LIVE_OPENCODE, CODEFLOW_LIVE_KILO or CODEFLOW_LIVE_CLINE; optionally set CODEFLOW_LIVE_MODEL.";
+if (args.length === 1 && args[0] === "--help") { console.log(usage); process.exit(0); }
+if (args.length && (args.length !== 2 || args[0] !== "--agent")) throw new Error(usage);
+const preset = acpPresets.find((item) => item.key === (args[1] ?? "opencode"));
+if (!preset) throw new Error(usage);
+const connection = acpPresetConnection(preset);
+connection.command = process.env[`CODEFLOW_LIVE_${preset.key.toUpperCase()}`] ?? connection.command;
+if (!await commandExists(connection.command)) throw new Error(`${preset.name} executable not found: ${connection.command}. Install with ${preset.install}, then sign in with ${preset.login}.`);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const directory = mkdtempSync(join(tmpdir(), "codeflow-acp-live-"));
 const repo = join(directory, "repo"), home = join(directory, "home");
 const token = randomBytes(24).toString("hex"), headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
-const connection = { id: "acp:opencode", name: "OpenCode", command: process.env.CODEFLOW_LIVE_OPENCODE ?? "opencode", args: ["acp"], enabled: true };
 const model = process.env.CODEFLOW_LIVE_MODEL;
 const delay = (ms) => new Promise((accept) => setTimeout(accept, ms));
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -85,10 +96,7 @@ async function completed(agentTurns) {
     if (status !== previous) { console.log(status); previous = status; }
     for (const request of await api(`/api/approvals?run=${runId}`)) {
       if (request.status !== "pending") continue;
-      const tree = run.worktrees.find((tree) => resolve(tree.path) === resolve(request.cwd ?? ""));
-      const safeFile = tree && request.kind === "file-change" && request.paths?.length > 0 && request.paths.every((path) => ["slugify.mjs", "session-proof.txt"].some((name) => resolve(tree.path, name) === resolve(tree.path, path)));
-      const safeCheck = tree && request.kind === "command" && request.command?.trim() === "node --test";
-      assert.ok(safeFile || safeCheck, `Unexpected approval requires inspection: ${JSON.stringify(request)}`);
+      assert.ok(approveLiveAcpRequest(request, run.worktrees, connection.id), `Unexpected approval requires inspection: ${JSON.stringify(request)}`);
       await api(`/api/approvals/${request.id}`, { decision: "approve" }); approved.push(request.id);
     }
     if (run.status !== "running" && run.steps.filter((step) => step.agent === connection.id).length >= agentTurns) {
@@ -100,11 +108,11 @@ async function completed(agentTurns) {
     }
     await delay(500);
   }
-  throw new Error("Real OpenCode run did not finish within four minutes");
+  throw new Error(`Real ${connection.name} run did not finish within four minutes`);
 }
 
 try {
-  console.log(`Live OpenCode acceptance evidence: ${directory}`);
+  console.log(`Live ${connection.name} acceptance evidence: ${directory}`);
   mkdirSync(repo); mkdirSync(home);
   git(repo, "init", "-q", "-b", "main");
   git(repo, "config", "user.name", "Code Flow Live Test"); git(repo, "config", "user.email", "live-test@example.invalid");
@@ -146,14 +154,14 @@ try {
   await api(`/api/runs/${runId}/followups`, { kind: "reply", worktree: tree.name, agent: connection.id,
     message: "Write session-proof.txt containing only the verification phrase I asked you to remember in our previous turn, followed by a newline. Do not change any other files. Run node --test, then briefly confirm." });
   const second = await completed(2), steps = second.steps.filter((step) => step.agent === connection.id);
-  assert.equal(steps[1].sessionId, firstStep.sessionId, "Follow-up reused the real OpenCode session");
+  assert.equal(steps[1].sessionId, firstStep.sessionId, `Follow-up reused the real ${connection.name} session`);
   assert.equal(readFileSync(join(tree.path, "session-proof.txt"), "utf8"), `${phrase}\n`, "Restored session remembered prior conversation");
   assert.equal(readFileSync(join(tree.path, "slugify.test.mjs"), "utf8"), tests);
   assert.equal(git(tree.path, "rev-list", "--count", "main..HEAD"), "2");
   assert.equal(git(tree.path, "status", "--porcelain"), "");
   execFileSync(process.execPath, ["--test"], { cwd: tree.path, stdio: "pipe" });
   assert.equal(git(repo, "rev-list", "--count", "HEAD"), "1", "Original branch is unchanged");
-  const receipt = { passed: true, startedAt, finishedAt: new Date().toISOString(), agent: probe.agent, version: probe.version, model: model ?? probe.catalog.defaultModel, runId,
+  const receipt = { passed: true, startedAt, finishedAt: new Date().toISOString(), connection, agent: probe.agent, version: probe.version, model: model ?? probe.catalog.defaultModel, runId,
     sessionId: firstStep.sessionId, turns: 2, commits: git(tree.path, "log", "--format=%h %s", "main..HEAD").split("\n"),
     checks: second.steps.filter((step) => step.kind === "check").map((step) => ({ title: step.title, status: step.status })),
     liveEventCount: liveEvents.length, approvals: approved.length, worktree: tree.path };

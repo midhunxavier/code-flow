@@ -8,7 +8,7 @@ import type { AgentEvent, RunOptions } from "../src/adapters/types.js";
 import type { AcpConnection } from "../src/adapters/acp-types.js";
 const home = mkdtempSync(join(tmpdir(), "cf-acp-tests-"));
 process.env.CODEFLOW_HOME = home;
-const { probeAcp, runAcp } = await import("../src/adapters/acp.js");
+const { acpCatalog, probeAcp, runAcp } = await import("../src/adapters/acp.js");
 const fixture = fileURLToPath(new URL("./fake-acp.mjs", import.meta.url));
 let sequence = 0;
 function connection(scenario = "happy") {
@@ -45,6 +45,27 @@ test("legacy ACP model selection works and unsupported settings fail before prom
   assert.equal(legacy.result.ok, true); assert.ok(legacy.messages().some((message) => message.method === "session/set_model"));
   const unsupported = await turn("happy", { model: "made-up" });
   assert.equal(unsupported.result.errorKind, "cli_incompatible"); assert.ok(!unsupported.messages().some((message) => message.method === "session/prompt"));
+});
+test("Cline config discovers models instead of providers and keeps approval policy unchanged across new and resumed turns", async () => {
+  const cli = connection("cline"), probe = await probeAcp(cli.value);
+  assert.deepEqual(probe.catalog.models.map((model) => model.id), ["fixture/model-a", "fixture/model-b"]);
+  assert.equal(probe.catalog.defaultModel, "fixture/model-a");
+  assert.deepEqual(probe.catalog.efforts, []);
+  for (const resumeSessionId of [undefined, "session-fixture"]) {
+    let asked = false;
+    const { result, events, messages } = await turn("cline", { model: "fixture/model-b", resumeSessionId, interactiveApprovals: true, onApproval: async (request) => {
+      asked = true; assert.equal(request.kind, "file-change"); assert.match(request.command!, /example.txt/); return "approve";
+    } });
+    assert.equal(result.ok, true, result.error); assert.equal(asked, true);
+    assert.deepEqual(messages().filter((message) => message.method === "session/set_config_option").map((message) => message.params), [{ sessionId: "session-fixture", configId: "model", value: "fixture/model-b" }]);
+    assert.equal(messages().find((message) => message.id === "permission-1").result.outcome.optionId, "allow_once");
+    assert.ok(events.some((event) => event.kind === "tool_result" && event.output === "Wrote example.txt"));
+    assert.ok(!result.finalText.includes("Old history"));
+  }
+  const denied = await turn("cline");
+  assert.equal(denied.messages().find((message) => message.id === "permission-1").result.outcome.optionId, "reject_once");
+  const legacy = acpCatalog({ configOptions: [{ id: "provider", category: "model", type: "select", options: [{ value: "cline", name: "Cline" }] }], models: { currentModelId: "model-a", availableModels: [{ modelId: "model-a", name: "A" }] } });
+  assert.deepEqual(legacy.models, [{ id: "model-a", label: "A" }]);
 });
 test("late ACP tool details update the same call and completion is emitted once", async () => {
   const { result, events } = await turn("partial-tools");

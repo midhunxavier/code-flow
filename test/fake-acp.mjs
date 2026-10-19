@@ -8,6 +8,15 @@ const configOptions = [
   { id: "models", category: "model", type: "select", currentValue: "fixture/model-a", options: [{ group: "fixture", name: "Fixture", options: [{ value: "fixture/model-a", name: "Model A" }, { value: "fixture/model-b", name: "Model B" }] }] },
   { id: "reasoning", category: "thought_level", type: "select", currentValue: "low", options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] },
 ];
+// Cline's native ACP implementation puts provider before model in the same
+// category, and also exposes mode/auto-approval controls we must leave alone.
+const clineConfig = [
+  { id: "provider", category: "model", type: "select", currentValue: "cline", options: [{ value: "cline", name: "Cline" }, { value: "anthropic", name: "Anthropic" }] },
+  { id: "model", category: "model", type: "select", currentValue: "fixture/model-a", options: [{ value: "fixture/model-a", name: "Model A" }, { value: "fixture/model-b", name: "Model B" }] },
+  { id: "mode", category: "mode", type: "select", currentValue: "act", options: [{ value: "act", name: "Act" }, { value: "plan", name: "Plan" }] },
+  { id: "auto_approve", category: "other", type: "select", currentValue: "false", options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }] },
+];
+const sessionConfig = scenario === "cline" ? clineConfig : configOptions;
 let promptId;
 const finish = () => result(promptId, { stopReason: scenario === "refusal" ? "refusal" : "end_turn" });
 createInterface({ input: process.stdin }).on("line", (line) => {
@@ -24,8 +33,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       if (scenario === "missing-session") { send({ id, error: { code: -32002, message: "Session not found" } }); return; }
       update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Old history, never repeat this" } });
     }
-    result(id, scenario === "legacy" ? { sessionId: "session-fixture", models: { currentModelId: "fixture/model-a", availableModels: [{ modelId: "fixture/model-a", name: "Model A" }] } } : { sessionId: "session-fixture", configOptions });
-  } else if (["session/set_config_option", "session/set_model"].includes(method)) result(id, { configOptions });
+    result(id, scenario === "legacy" ? { sessionId: "session-fixture", models: { currentModelId: "fixture/model-a", availableModels: [{ modelId: "fixture/model-a", name: "Model A" }] } } : { sessionId: "session-fixture", configOptions: sessionConfig });
+  } else if (["session/set_config_option", "session/set_model"].includes(method)) result(id, { configOptions: sessionConfig });
   else if (method === "session/prompt") {
     promptId = id;
     if (scenario === "crash") { process.exit(3); }
@@ -39,6 +48,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     update({ sessionUpdate: "tool_call_update", toolCallId: "read-1", status: "completed", content: [{ type: "content", content: { type: "text", text: "file contents" } }] });
     update({ sessionUpdate: "tool_call_update", toolCallId: "read-1", status: "completed" });
     update({ sessionUpdate: "usage_update", used: 10000, size: 100000, cost: { amount: 1, currency: "USD" } });
+    if (scenario === "cline") {
+      const toolCall = { toolCallId: "edit-cline", kind: "edit", title: "editor: example.txt", status: "pending", rawInput: { path: "example.txt", new_text: "hello" } };
+      update({ sessionUpdate: "tool_call_update", ...toolCall });
+      send({ id: "permission-1", method: "session/request_permission", params: { sessionId: "session-fixture", toolCall, options: [
+        { optionId: "allow_once", kind: "allow_once", name: "Allow once" },
+        { optionId: "allow_always", kind: "allow_always", name: "Allow always" },
+        { optionId: "reject_once", kind: "reject_once", name: "Reject" },
+      ] } });
+      return;
+    }
     if (scenario.startsWith("permission")) {
       const details = { toolCallId: "edit-1", kind: "edit", title: "Edit file", locations: [{ path: "/tmp/example.txt" }] };
       if (scenario === "permission-partial") update({ sessionUpdate: "tool_call", ...details });
@@ -51,7 +70,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     if (scenario === "write") writeFileSync("acp-result.txt", "ACP fixture change\n");
     finish();
   } else if (method === "session/cancel") { if (promptId) result(promptId, { stopReason: "cancelled" }); }
-  else if (id === "permission-1") { update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.stringify(message.result) } }); finish(); }
+  else if (id === "permission-1") {
+    if (scenario === "cline") update({ sessionUpdate: "tool_call_update", toolCallId: "edit-cline", status: "completed", rawOutput: "Wrote example.txt" });
+    update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.stringify(message.result) } }); finish();
+  }
   else if (id === "host-1") finish();
   else send({ id, error: { code: -32601, message: "Method not supported" } });
 });

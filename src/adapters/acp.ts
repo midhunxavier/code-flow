@@ -168,7 +168,11 @@ class AcpClient {
 }
 
 function configOption(session: any, category: string) {
-  return Array.isArray(session?.configOptions) ? session.configOptions.find((option: any) => option?.type === "select" && option.category === category && string(option.id)) : undefined;
+  const options = Array.isArray(session?.configOptions) ? session.configOptions.filter((option: any) => option?.type === "select" && option.category === category && string(option.id)) : [];
+  // Cline advertises both provider and model selectors with category "model",
+  // with provider first. Prefer the explicit model selector so model discovery
+  // and selection never change the authentication provider instead.
+  return options.find((option: any) => option.id === category) ?? options.find((option: any) => category !== "model" || option.id !== "provider");
 }
 function choices(option: any): { id: string; label: string }[] {
   const flat = Array.isArray(option?.options) ? option.options.flatMap((item: any) => Array.isArray(item?.options) ? item.options : [item]) : [];
