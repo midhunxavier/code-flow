@@ -221,9 +221,15 @@ test("pair through Tailscale, mutate and stream, revoke a device and rotate link
 
 test("disconnect, reconnect and address changes never fall back to Wi-Fi; restart retains settings", { timeout: 60_000 }, async () => {
   const before = await api();
+  // A browser may preconnect TCP without completing TLS. Listener replacement must
+  // close these sockets too; closeAllConnections() only covers HTTP connections.
+  const unfinished = connect(remotePort, "127.0.0.1");
+  await new Promise<void>((resolve, reject) => { unfinished.once("connect", resolve); unfinished.once("error", reject); });
+  const disconnected = new Promise<void>(resolve => unfinished.once("close", () => resolve()));
   await setStatus({ ...connected(), BackendState: "Stopped" });
   const stopped = await api("/api/remote?refresh=1");
   assert.equal(stopped.tailscaleUrl, undefined); assert.deepEqual(stopped.lanUrls, []);
+  await disconnected;
   await assertNoListener();
   await setStatus({ ...connected("100.101.102.104"), Self: { Online: true } });
   const changed = await api("/api/remote?refresh=1");
@@ -285,8 +291,10 @@ test("secure access setup imports and renews certificates in Settings without a 
   await section.getByRole("button", { name: "Save and apply HTTPS", exact: true }).click();
   await section.getByText("Secure remote access is set up", { exact: true }).waitFor();
   assert.equal((await api()).control, false);
-  await section.getByRole("checkbox", { name: "Full control from remote devices", exact: true }).click();
-  await owner.waitForResponse((r) => r.url().endsWith("/api/remote") && r.request().method() === "POST");
+  await Promise.all([
+    owner.waitForResponse((r) => r.url().endsWith("/api/remote") && r.request().method() === "POST"),
+    section.getByRole("checkbox", { name: "Full control from remote devices", exact: true }).click(),
+  ]);
   const info = await api();
   assert.equal(info.control, true); assert.equal(info.tls.source, "import");
   const tab = await phone(); await tab.goto(info.tailscaleUrl);

@@ -1202,7 +1202,16 @@ test("template picker edits and deletes within its library without changing the 
     assert.equal(await dialog.getByLabel("component", { exact: true }).count(), 0, "edited placeholders replace the previous inputs");
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     assert.equal(await fresh.getByLabel("Task", { exact: true }).inputValue(), "Keep my draft");
-    await fresh.reload(); await open();
+    let releaseProjects!: () => void;
+    const projectsGate = new Promise<void>(resolve => { releaseProjects = resolve; });
+    await fresh.route("**/api/projects", async route => { await projectsGate; await route.continue(); });
+    try {
+      await fresh.reload();
+      await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
+      assert.equal(await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).isDisabled(), true, "the picker waits for project libraries before choosing its scope");
+    } finally { releaseProjects(); }
+    await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click();
+    await fresh.unroute("**/api/projects");
     await dialog.getByLabel("Template", { exact: true }).selectOption({ label: "Updated review" });
     const saved = await fresh.evaluate((id) => JSON.parse(localStorage.getItem(`composerLibrary:${id}`)!).templates[0], project.id);
     assert.deepEqual(saved, { id: "template-one", name: "Updated review", pattern: "pipeline", task: "Inspect {{module}} carefully", criteria: ["Test {{module}}", "Keep compatibility"] });

@@ -16,6 +16,7 @@ import { contextBudget } from "./context-budget.js";
 import { taskWithCriteria } from "./composer-tools.js";
 import {
   agents,
+  projectsLoaded,
   acceptanceCriteria,
   setAcceptanceCriteria,
   configChecking,
@@ -277,8 +278,8 @@ export function Composer() {
         {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); requestAnimationFrame(() => { const section = document.querySelector<HTMLDetailsElement>(".advanced-controls"); if (section) { section.open = true; section.querySelector<HTMLElement>("summary")?.focus(); } }); }}>Team setup</button><PermissionMenu permissions={{ trust: externalSource.value ? "safe" : trust.value, tools: !remoteWorker && !containerEnabled && !externalSource.value && toolApprovals }} onPermissions={(value) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some((id) => id === "codex" || id.startsWith("acp:"))} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} /></> : null}
         <button class="btn primary task-start" disabled={!!problem || starting} onClick={start} title={problem || "Start run (⌘↵)"}>{starting ? "Starting…" : "Start run"}<Icon name="send" /></button>
         <Menu above label="Run actions" icon="more" class="chat-choice">{(close) => <>
-          <MenuItem disabled={!p} onClick={() => { close(); setUsingTemplate(true); }}><Icon name="files" />Use template…</MenuItem>
-          <MenuItem disabled={!p || !task.value.trim()} onClick={() => { close(); setSavingTemplate(true); }}><Icon name="files" />Save as template…</MenuItem>
+          <MenuItem disabled={!p || !projectsLoaded.value} onClick={() => { close(); setUsingTemplate(true); }}><Icon name="files" />Use template…</MenuItem>
+          <MenuItem disabled={!p || !projectsLoaded.value || !task.value.trim()} onClick={() => { close(); setSavingTemplate(true); }}><Icon name="files" />Save as template…</MenuItem>
           <MenuItem disabled={!!problem} onClick={() => { close(); setScheduling(true); }}><Icon name="clock" />Start later…</MenuItem>
           <MenuItem disabled={!!problem} onClick={() => { close(); setComparing(true); }}><Icon name="compare" />Compare setups…</MenuItem>
           <MenuItem disabled={!!problem} onClick={() => { close(); setSaving(true); }}><Icon name="clock" />Save as automation…</MenuItem>

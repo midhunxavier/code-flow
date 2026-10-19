@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { Socket } from "node:net";
 import { CertificateRenewal } from "./certificate-renewal.js";
 import { loadRemoteCertificate, saveRemoteCertificate, validateRemoteCertificate, certificateHostname, type CertificateInfo, type RemoteCertificate } from "./remote-tls.js";
 import { requestTailscaleCertificate } from "./tailscale.js";
@@ -966,6 +967,9 @@ function remoteInfo(via: Via = "local") {
  * tests that play the phone on the same machine.
  */
 let lanServer: ReturnType<typeof createServer> | undefined;
+// Include raw TCP/TLS handshakes, which HTTP closeAllConnections() does not track.
+const lanSockets = new Set<Socket>();
+function closeLanConnections() { for (const socket of lanSockets) socket.destroy(); }
 let lanHost: string | undefined;
 let lanTls: typeof phoneTls;
 let remoteStopping = false;
@@ -1005,13 +1009,14 @@ function syncLanServer(signOut = false): Promise<void> {
       await new Promise<void>((resolve) => {
         previous.close(() => resolve());
         previous.closeAllConnections();
+        closeLanConnections();
       });
       // Another settings change may have been saved while the old listener closed.
       host = networkHost();
     }
     if (!host) { lanError = undefined; return; }
     if (lanServer) {
-      if (signOut) lanServer.closeAllConnections();
+      if (signOut) { lanServer.closeAllConnections(); closeLanConnections(); }
       return;
     }
     lanError = undefined;
@@ -1027,6 +1032,7 @@ function syncLanServer(signOut = false): Promise<void> {
     };
     const server = phoneTls ? createSecureServer({ ...phoneTls, maxHeaderSize: MAX_HEADER_SIZE }, handleNetwork) : createServer({ maxHeaderSize: MAX_HEADER_SIZE }, handleNetwork);
     server.on("connection", (socket) => {
+      lanSockets.add(socket); socket.once("close", () => lanSockets.delete(socket));
       const source = (socket.remoteAddress ?? "").replace(/^::ffff:/i, "");
       if (!LAN_ALLOW_LOCAL && (isOwnAddress(source) || source === host || (transport === "tailscale" && !isTailscaleIPv4(source)))) socket.destroy();
     });
@@ -2525,6 +2531,7 @@ async function stop(reason: string, code = 0) {
     clearInterval(teamPruneTimer);
     lanServer?.close();
     lanServer?.closeAllConnections();
+    closeLanConnections();
     watcher.stop();
     approvals.close();
     launchProfiles.stopAll();
