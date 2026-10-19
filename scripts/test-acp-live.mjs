@@ -33,6 +33,7 @@ const port = await new Promise((accept) => { const listener = createServer().lis
 const base = `http://127.0.0.1:${port}`;
 let server, runId, streamAbort, streamTask;
 const liveEvents = [], approved = [];
+const toolInstructions = "Use native file-reading and file-editing tools. The only allowed shell command is exactly node --test, run from the current working directory without a cd prefix. Do not use shell commands for inspection or editing.";
 const startedAt = new Date().toISOString();
 async function api(path, body, method = body === undefined ? "GET" : "POST") {
   const response = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(45_000) });
@@ -133,7 +134,7 @@ try {
   const created = await api("/api/runs", {
     pattern: "solo", repo, roles: { agent: [connection.id] }, trust: "full", approvals: { tools: true },
     agentSettings: { [connection.id]: { model: model ?? probe.catalog.defaultModel } },
-    task: `Implement slugify(value) in slugify.mjs: lowercase ASCII text, replace each run of non-alphanumeric characters with a hyphen, trim leading/trailing hyphens. Change only slugify.mjs; do not change tests. Run node --test. Remember the verification phrase ${phrase} in this conversation for a later reply; don't put it in files or your answer yet.`,
+    task: `Implement slugify(value) in slugify.mjs: lowercase ASCII text, replace each run of non-alphanumeric characters with a hyphen, trim leading/trailing hyphens. Change only slugify.mjs; do not change tests. Run node --test. ${toolInstructions} Remember the verification phrase ${phrase} in this conversation for a later reply; don't put it in files or your answer yet.`,
     loop: { setup: "", check: "node --test", copy: [] }, options: {},
   });
   runId = created.id; watchRun();
@@ -152,7 +153,7 @@ try {
   assert.deepEqual((await api("/api/acp-connections")).connections, [connection]);
   watchRun();
   await api(`/api/runs/${runId}/followups`, { kind: "reply", worktree: tree.name, agent: connection.id,
-    message: "Write session-proof.txt containing only the verification phrase I asked you to remember in our previous turn, followed by a newline. Do not change any other files. Run node --test, then briefly confirm." });
+    message: `Write session-proof.txt containing only the verification phrase I asked you to remember in our previous turn, followed by a newline. Do not change any other files. Run node --test, then briefly confirm. ${toolInstructions}` });
   const second = await completed(2), steps = second.steps.filter((step) => step.agent === connection.id);
   assert.equal(steps[1].sessionId, firstStep.sessionId, `Follow-up reused the real ${connection.name} session`);
   assert.equal(readFileSync(join(tree.path, "session-proof.txt"), "utf8"), `${phrase}\n`, "Restored session remembered prior conversation");
