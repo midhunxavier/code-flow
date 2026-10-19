@@ -20,7 +20,8 @@ const { assertProjectTeamChanges } = await import("../src/project-team-policy.js
 const { flushWrites } = await import("../src/store.js");
 type Team = import("../src/project-team-model.js").ProjectTeam;
 const services: InstanceType<typeof ProjectTeams>[] = [], repos: string[] = [];
-after(async () => { await Promise.all(services.map((s) => s.stop())); await flushWrites(); for (const repo of repos) rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+const managers: InstanceType<typeof RunManager>[] = [];
+after(async () => { await Promise.all(services.map((s) => s.stop())); await Promise.all(managers.map((m) => m.shutdown())); await flushWrites(); for (const repo of repos) rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
 const mission = (extra = {}) => ({ mission: "Improve the documented input contract", users: "Developers", baseBranch: "main", mode: "build-within-scope", check: "node --test", coordinator: "claude", pool: ["claude", "codex"], schedule: { at: "09:00", days: [1], timezone: "Europe/Stockholm" }, ...extra });
 let counter = 0;
 async function fixture(extra = {}, overrides: Partial<import("../src/project-teams.js").ProjectTeamsOptions> = {}) {
@@ -33,6 +34,7 @@ async function fixture(extra = {}, overrides: Partial<import("../src/project-tea
   git("add", "."); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "initial");
   const projects = new Projects(join(dir, "projects.json")); await projects.load(); const project = await projects.create({ name: "Product", repos: [repo] });
   const manager = new RunManager(findPattern, projects);
+  managers.push(manager);
   const automations = new Automations(manager, async () => { throw new Error("Managed target bypassed the team service"); }, undefined, join(dir, "triggers.json")); await automations.load();
   const build = async (b: Record<string, any>) => ({ ...b, pattern: findPattern(b.pattern)! }) as import("../src/engine.js").StartRunInput;
   const store = new ProjectTeamStore(join(dir, "teams"));
@@ -213,7 +215,7 @@ test("restart imports an exact persisted completed child without relaunching", a
   await f.service.stop(); await flushWrites();
   // Crash after the child completed but before its result was projected into the aggregate.
   await f.store.change(t.id, undefined, undefined, (team) => { const c = team.cycles[0]!; c.status = "discovering"; c.endedAt = undefined; c.report = undefined; c.selection = undefined; c.launches[0]!.state = "running"; c.launches[0]!.usedCalls = undefined; });
-  const nextManager = new RunManager(findPattern, f.projects); await nextManager.load();
+  const nextManager = new RunManager(findPattern, f.projects); managers.push(nextManager); await nextManager.load();
   const next = new ProjectTeams({ manager: nextManager, projects: f.projects, automations: f.automations, store: new ProjectTeamStore(f.store.directory), build: async () => { throw new Error("Completed claim must not be replayed"); } }); services.push(next); await next.load(); next.start(); await next.reconcile();
   const recovered = next.store.get(t.id); assert.equal(recovered.cycles.length, 1); assert.equal(recovered.cycles[0]!.status, "no-op"); assert.equal(recovered.cycles[0]!.launches.length, 1);
 });
@@ -270,7 +272,9 @@ test("an interrupted or cancelled child does not refund unprovable invocation us
 test("stopping implementation releases the opportunity for a new owner decision without refunding its claim", async () => {
   const f = await fixture(); await f.service.cycle(f.team.id, "first");
   const deadline = Date.now() + 20000;
-  while (f.store.get(f.team.id).cycles[0]!.launches.length < 2 && Date.now() < deadline) { await f.service.reconcile(); await new Promise((r) => setTimeout(r, 50)); }
+  while (f.store.get(f.team.id).cycles[0]!.launches[1]?.state !== "running" && Date.now() < deadline) { await f.service.reconcile(); await new Promise((r) => setTimeout(r, 50)); }
+  // Admission writes the claim before its run receipt. Finish that queued write before using its revision.
+  await f.service.reconcile();
   let t = f.store.get(f.team.id); assert.equal(t.cycles[0]!.status, "building");
   t = await f.service.stopCycle(t.id, { operationId: "stop", revision: t.revision });
   assert.equal(t.cycles[0]!.status, "cancelled"); assert.equal(t.opportunities[0]!.status, "blocked");
