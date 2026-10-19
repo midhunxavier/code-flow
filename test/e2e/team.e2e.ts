@@ -364,6 +364,16 @@ test("Draft with agent prepares editable fields without creating a task; Build w
   await form.getByLabel("Base branch").fill("main");
   await draft.getByRole("button", { name: "Generate draft", exact: true }).click();
   await draft.getByRole("button", { name: "Use draft in form", exact: true }).waitFor({ timeout: 40000 });
+  const draftId = (await draft.getByRole("link", { name: "Open drafting run", exact: true }).getAttribute("href"))!.split("/").at(-1)!;
+  const privateRun = await api<{ project: string; pattern: string }>(`/api/runs/${draftId}`);
+  assert.equal(privateRun.project, projectId); assert.equal(privateRun.pattern, "team-task-draft");
+  const sharedDraft = await shared.evaluate(async (id) => {
+    const list = await fetch("/api/runs").then((response) => response.json());
+    const statuses = await Promise.all(["", "/export", "/events"].map((suffix) => fetch(`/api/runs/${id}${suffix}`).then((response) => response.status)));
+    return { visible: list.runs.some((run: { id: string }) => run.id === id), statuses };
+  }, draftId);
+  assert.equal(sharedDraft.visible, false, "a shared project member cannot see an unreviewed draft in history");
+  assert.deepEqual(sharedDraft.statuses, [404, 404, 404], "draft detail, export and events remain owner-only");
   assert.equal((await api<{ tasks: unknown[] }>("/api/team/board")).tasks.length, before);
   assert.equal(await form.getByLabel("Title", { exact: true }).inputValue(), "");
   await audit(page, "task draft preview");
