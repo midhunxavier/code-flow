@@ -20,7 +20,7 @@ Use a current CLI version with native ACP support. The Kilo preset uses the curr
 4. Choose **Save connection**. It appears immediately in provider and model selection; no server restart is needed.
 5. Select the agent for a run and choose **Full access** in Settings → Run defaults or the composer's permissions controls.
 
-Cline asks for approval before edits and commands by default. Enable **Ask me for tool permissions** in the run's permissions controls and approve requests in the approval inbox. Without it, requests are declined. The preset does not enable Cline's auto-approval flag. Cline starts new ACP sessions in Act mode; read-only code-flow turns still apply the boundaries below. Provider selection stays in the CLI's authentication setup; code-flow's model picker changes the model within that provider.
+Cline asks for approval before tools, including reads, edits and commands, by default. Enable **Ask me for tool permissions** in the run's permissions controls and approve requests in the approval inbox. Without it, requests are declined. The preset does not enable Cline's auto-approval flag. Cline starts new ACP sessions in Act mode; read-only code-flow turns still apply the boundaries below. Provider selection stays in the CLI's authentication setup; code-flow's model picker changes the model within that provider.
 
 The CLI keeps its own authentication. code-flow does not read or copy its credential files. A connection check can perform the CLI's normal startup work, including loading the user's configured plugins. Use executable invocations you trust.
 
@@ -70,8 +70,15 @@ npm run test:acp:live -- --agent cline
 
 This is outside the default test suite and consumes normal model usage. Set `CODEFLOW_LIVE_OPENCODE`, `CODEFLOW_LIVE_KILO` or `CODEFLOW_LIVE_CLINE` to an absolute executable path if needed; `CODEFLOW_LIVE_MODEL` optionally selects an advertised model ID. Otherwise the test uses the CLI's discovered default. Missing executables fail before creating a test repository or starting code-flow. Use `--help` for options.
 
-The script creates a temporary repository and a separate code-flow home, saves the connection through the Settings API, and starts a real coding task. It verifies failing baseline tests become passing without test edits, streamed text and tool events, and a clean commit. It then restarts code-flow and sends a follow-up that must reuse the same CLI session and remember a phrase from the first turn. Both code-flow's check and an independent test run must pass. Only reads of the task files and tests, edits to the two task files, and the exact `node --test` command can be approved automatically; unrecognized permission requests stop the test for inspection. Temporary run logs, commits, and a `receipt.json` remain at the printed evidence path; the server stops automatically. The original project and code-flow settings are unchanged.
+The script creates a temporary repository and a separate code-flow home, saves the connection through the Settings API, and starts a real coding task. It verifies failing baseline tests become passing without test edits, streamed text and tool events, and a clean commit. It then restarts code-flow and sends a follow-up that must reuse the same CLI session and remember a phrase from the first turn. Both code-flow's check and an independent test run must pass. Only reads of the task files and tests, searches for fixture names, edits to the two task files, and the exact `node --test` command can be approved automatically; unrecognized permission requests stop the test for inspection. Temporary run logs, commits, and a `receipt.json` remain at the printed evidence path; the server stops automatically. The original project and code-flow settings are unchanged.
 
 This two-turn test passed locally on October 19, 2026 with OpenCode 1.18.30 and `opencode/big-pickle`, including session loading after restart and two committed changes. This establishes compatibility for the observed installation, not every ACP agent or OpenCode release.
 
-Kilo and Cline presets are covered by process fixtures and browser Settings tests. Real inference with these two CLIs has not yet been validated; their executables were unavailable in the development environment.
+Both Kilo and Cline passed the same two-turn acceptance test on October 19, 2026 using their installed CLIs and normal account authentication:
+
+| CLI | Model | Duration | One-time approvals | Result |
+| --- | --- | --- | --- | --- |
+| Kilo 7.8.12 | `kilo/kilo-auto/free` | 52.0 s | 2 | Passed both turns and session restoration |
+| Cline 3.0.73 | `anthropic/claude-sonnet-5.5` | 24.8 s | 5 | Passed both turns and session restoration |
+
+The [sanitized acceptance receipts](evaluations/acp-live-2026-10-19.json) record run IDs, commits, streamed event counts and checked assertions. Each run changed a baseline with three failing tests into four passing tests without modifying those tests, then produced a second clean commit after restoring the same session. The Cline run exposed and verified a fix for file-edit approvals: its native editor supplies `rawInput.path` without ACP `locations`, which the adapter now carries into the approval inbox. These observations establish compatibility for the listed versions and models; model availability and task success can vary.

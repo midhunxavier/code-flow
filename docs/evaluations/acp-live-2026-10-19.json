@@ -1,0 +1,118 @@
+{
+  "date": "2026-10-19",
+  "platform": "macOS arm64",
+  "node": "22.14.0",
+  "runner": "npm run test:acp:live -- --agent <name>",
+  "results": [
+    {
+      "name": "Kilo",
+      "sourceRevision": "0cc6e5a7efb295e6efe4618c830db95e1397b98f",
+      "version": "7.8.12",
+      "model": "kilo/kilo-auto/free",
+      "invocation": [
+        "kilo",
+        "acp"
+      ],
+      "passed": true,
+      "startedAt": "2026-10-19T06:17:26.847Z",
+      "finishedAt": "2026-10-19T06:18:18.879Z",
+      "elapsedSeconds": 52.032,
+      "runId": "2610190617-22c8a050",
+      "turns": 2,
+      "commits": [
+        "5af3c09 acp:kilo: follow-up to your reply (f1)",
+        "a4b1198 acp:kilo: Implement slugify(value) in slugify.mjs: lowercase ASCII tex"
+      ],
+      "checks": [
+        {
+          "title": "Check",
+          "status": "done"
+        },
+        {
+          "title": "Proof: tests without the change",
+          "status": "done"
+        },
+        {
+          "title": "Check after follow-up f1",
+          "status": "done"
+        },
+        {
+          "title": "Proof: tests without the change",
+          "status": "done"
+        }
+      ],
+      "liveEventCount": 366,
+      "approvals": 2,
+      "baseline": {
+        "tests": 4,
+        "passed": 1,
+        "failed": 3
+      },
+      "assertions": [
+        "Connection saved and probed through the Settings API",
+        "Live assistant text and tool events received over SSE",
+        "Original tests unchanged and code-flow checks passed",
+        "Two clean commits in an isolated worktree",
+        "Server restarted between turns and saved connection reloaded",
+        "Same CLI session restored and exact phrase recalled with trailing newline",
+        "Independent node --test passed after follow-up",
+        "Original repository branch unchanged"
+      ]
+    },
+    {
+      "name": "Cline",
+      "sourceRevision": "0cc6e5a7efb295e6efe4618c830db95e1397b98f",
+      "version": "3.0.73",
+      "model": "anthropic/claude-sonnet-5.5",
+      "invocation": [
+        "cline",
+        "--acp"
+      ],
+      "passed": true,
+      "startedAt": "2026-10-19T06:16:00.386Z",
+      "finishedAt": "2026-10-19T06:16:25.210Z",
+      "elapsedSeconds": 24.824,
+      "runId": "2610190616-7ab7b240",
+      "turns": 2,
+      "commits": [
+        "ee0a10d acp:cline: follow-up to your reply (f1)",
+        "87eb3a2 acp:cline: Implement slugify(value) in slugify.mjs: lowercase ASCII tex"
+      ],
+      "checks": [
+        {
+          "title": "Check",
+          "status": "done"
+        },
+        {
+          "title": "Proof: tests without the change",
+          "status": "done"
+        },
+        {
+          "title": "Check after follow-up f1",
+          "status": "done"
+        },
+        {
+          "title": "Proof: tests without the change",
+          "status": "done"
+        }
+      ],
+      "liveEventCount": 182,
+      "approvals": 5,
+      "baseline": {
+        "tests": 4,
+        "passed": 1,
+        "failed": 3
+      },
+      "assertions": [
+        "Connection saved and probed through the Settings API",
+        "Live assistant text and tool events received over SSE",
+        "Original tests unchanged and code-flow checks passed",
+        "Two clean commits in an isolated worktree",
+        "Server restarted between turns and saved connection reloaded",
+        "Same CLI session restored and exact phrase recalled with trailing newline",
+        "Independent node --test passed after follow-up",
+        "Original repository branch unchanged"
+      ]
+    }
+  ]
+}
