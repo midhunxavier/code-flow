@@ -45,7 +45,8 @@ async function* reverseLines(file: FileHandle, end: number): AsyncGenerator<{ te
   if (pendingBytes) yield { text: Buffer.concat(pending.reverse(), pendingBytes).toString("utf8"), offset: 0 };
 }
 
-export async function transcriptPage(id: string, input: { before?: string; after?: number; step?: string; signal?: AbortSignal; limit?: number } = {}): Promise<TranscriptPage> {
+/** Reader injection supports measuring native I/O without changing validation or page semantics. */
+export async function transcriptPage(id: string, input: { before?: string; after?: number; step?: string; signal?: AbortSignal; limit?: number } = {}, reader: typeof reverseLines = reverseLines): Promise<TranscriptPage> {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(id)) throw new TranscriptCursorError("Invalid run ID");
   const limit = input.limit ?? TRANSCRIPT_LIMITS.events;
   if (!Number.isInteger(limit) || limit < 1 || limit > TRANSCRIPT_LIMITS.events) throw new TranscriptCursorError("Invalid transcript page size");
@@ -62,7 +63,7 @@ export async function transcriptPage(id: string, input: { before?: string; after
       if (end) { const byte = Buffer.alloc(1); await file.read(byte, 0, 1, end - 1); if (byte[0] !== 10) throw new TranscriptCursorError("Invalid transcript boundary"); }
     }
     const events: RunEvent[] = []; let bytes = 0, offset = end, latestSeq = 0, resumed = input.after === 0;
-    for await (const line of reverseLines(file, end)) {
+    for await (const line of reader(file, end)) {
       input.signal?.throwIfAborted();
       // Damaged/foreign lines count against the same scan budget as valid records.
       const skip = () => { offset = line.offset; return end - offset >= TRANSCRIPT_LIMITS.scanBytes; };

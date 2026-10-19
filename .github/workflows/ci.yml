@@ -84,3 +84,18 @@ jobs:
         with:
           name: code-flow-vscode
           path: output/vscode/*.vsix
+
+  rust-experiment:
+    name: Rust transcript parity (experiment only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: cargo fmt --check --manifest-path experiments/rust-transcript/Cargo.toml
+      - run: cargo clippy --locked --manifest-path experiments/rust-transcript/Cargo.toml -- -D warnings
+      - run: npm run test:rust

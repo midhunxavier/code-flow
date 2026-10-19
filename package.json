@@ -23,7 +23,9 @@
     "test:containers": "CODEFLOW_TEST_DOCKER=1 tsx --test --test-concurrency=1 test/agent-container-docker.test.ts test/filtered-tasks-docker.test.ts",
     "build:host": "node scripts/build-ui.mjs && node scripts/build-host.mjs",
     "evaluate:project-teams": "tsx scripts/evaluate-project-teams.ts",
-    "benchmark:performance": "tsx scripts/benchmark-performance.ts"
+    "benchmark:performance": "tsx scripts/benchmark-performance.ts",
+    "benchmark:compare": "tsx scripts/benchmark-compare.ts",
+    "test:rust": "cargo build --release --locked --manifest-path experiments/rust-transcript/Cargo.toml && CODEFLOW_TEST_RUST=1 tsx --test test/rust-transcript.test.ts"
   },
   "engines": {
     "node": ">=20"
