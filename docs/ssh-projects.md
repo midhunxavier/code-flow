@@ -1,6 +1,6 @@
 # SSH projects
 
-Open an existing repository on a Linux or macOS server and use the complete code-flow workspace there. File browsing and editing, Git, agent sessions, approvals, terminals, worktrees, setup, builds, verification, and development servers all run on that server. Each connection opens its own workspace with an **SSH · server name** indicator. Local projects remain available through **Back to this computer**.
+Open an existing repository on a Linux or macOS server and use the complete code-flow workspace there. File browsing and editing, Git, agent sessions, approvals, terminals, worktrees, setup, builds, verification, and development servers all run on that server. Local and connected remote projects appear together in the sidebar. Click a project to work on its computer; the top bar shows the computer name. Everything stays on the main app address, with remote projects under `/computer/<saved-host-id>/`.
 
 ## Connect
 
@@ -17,18 +17,18 @@ Open an existing repository on a Linux or macOS server and use the complete code
 
 3. Run `ssh devbox` in a terminal once to verify its host key and authentication. Check that `node --version` and `git --version` work in the remote login shell. Unlock passphrase-protected keys in your local SSH agent. Password prompts are not supported in the app.
 4. Start code-flow with `npm start`. The normal `npm run build` builds both the UI and portable remote backend. For an existing development server, run `npm run build:host` after code changes.
-5. Open **Settings → SSH connections** (or click **This computer** in the top bar). Select an alias or enter `user@hostname` and name it. Optionally enter an **SSH port** and an **Identity file** path on your computer, such as `~/.ssh/id_ed25519`. Leave them blank to inherit your SSH config. Choose **Save connection** to keep the definition for later or **Connect and open** to start the remote workspace.
+5. Open **Settings → SSH connections** (or **This computer → Manage connections…** in the top bar). Select an alias or enter `user@hostname` and name it. Optionally enter an **SSH port** and an **Identity file** path on your computer, such as `~/.ssh/id_ed25519`. Leave them blank to inherit your SSH config. Choose **Save connection** to keep the definition for later or **Connect and open** to start the remote workspace.
 6. The folder picker now browses the server. Choose a Git repository and use the app normally. Agent availability and login status refer to the server.
 
 Connecting installs the application backend, without npm installation or administrator privileges, into `~/.codeflow/ssh-host/releases/<version>` on the server. Its projects, runs, settings and logs live in `~/.codeflow/ssh-host/state`. Local provider credentials, repositories, SSH agents and environment variables are not copied. Credentials and tools must be set up independently on the server.
 
 ## Reconnect and stop
 
-The remote backend is detached from SSH. Closing the page, disconnecting, removing a saved connection, or stopping the local app leaves remote work running. Reopen the saved connection to restore projects and runs. Within an open remote workspace, **SSH connections → Reconnect** recreates the transport; it does not resubmit actions. After a connection loss during a mutation, inspect the run or files before repeating the action.
+The remote backend is detached from SSH. Closing the page, disconnecting, removing a saved connection, or stopping the local app leaves remote work running. Reopen the saved connection to restore projects and runs. Reloading a remote project restores its connection automatically. You can also reopen it from **Settings → SSH connections**. Reconnecting does not resubmit actions. After a connection loss during a mutation, inspect the run or files before repeating the action.
 
 Saved connections, including optional ports and key paths, survive local app restarts. Key contents are never stored by code-flow. If opening a newly saved connection fails, it stays in the list so you can retry with **Open** after resolving SSH authentication. Remove and re-add a connection to change its definition. The backend and work survive SSH interruptions, but not a server reboot or an administrator terminating the process. On backend restart, existing code-flow recovery marks interrupted work for explicit resumption. A backend that still has a live PID but fails its authenticated health check is not automatically replaced.
 
-**Disconnect** closes only the local gateway and SSH channels. **Stop backend** stops an idle backend and is refused while runs, terminals or development services are active. Finish work and close these first. Scheduled work also stops with the backend. On the next connection, the current application build is installed. A running backend is reused during client upgrades so active work is not interrupted; stop it when idle to update it.
+**Disconnect** closes only the SSH channels and preview forwards. **Stop backend** stops an idle backend and is refused while runs, terminals or development services are active. Finish work and close these first. Scheduled work also stops with the backend. On the next connection, the current application build is installed. A running backend is reused during client upgrades so active work is not interrupted; stop it when idle to update it.
 
 ## Remote development previews
 
@@ -36,9 +36,9 @@ In the side panel's Browser, enter the development server's `http://localhost:<p
 
 ## Connection boundaries
 
-The app uses OpenSSH and your existing config, including ProxyJump. It enforces known host keys, noninteractive authentication, no agent or X11 forwarding, no configured port forwarding, and no local SSH commands. SSH command arguments never include project paths or prompts. Both the remote backend and local gateways bind only to loopback. Backend authentication cannot be claimed by the first browser, and its private token stays between the local gateway and the remote backend.
+The app uses OpenSSH and your existing config, including ProxyJump. It enforces known host keys, noninteractive authentication, no agent or X11 forwarding, no configured port forwarding, and no local SSH commands. SSH command arguments never include project paths or prompts. Both the local app and remote backend bind only to loopback. Backend authentication cannot be claimed by the first browser, and its private token stays between the local gateway and the remote backend.
 
-The local app issues a single-use link valid for one minute to open a gateway, then uses an HttpOnly session cookie. Each server gets a separate browser origin. Local cookies, bearer tokens and forwarding headers are removed before requests cross SSH; remote response cookies cannot overwrite local sessions. Remote previews retain the existing preview isolation and the remote filesystem-policy gate.
+All projects use the local app’s owner session and trusted UI. Requests under `/computer/<saved-host-id>/api/` are routed over that computer’s SSH connection; they never fall back to the local backend. Drafts, event streams and popped-out panels are scoped to their computer. Remote API responses are sandboxed and cannot execute scripts on the app origin. Local cookies, bearer tokens and forwarding headers are removed before requests cross SSH; remote response cookies cannot overwrite local sessions. Remote previews retain the existing preview isolation and the remote filesystem-policy gate.
 
 Only the local app owner can manage SSH connections. Shared-account and phone sessions cannot create SSH connections. Up to eight connections can be open and 32 definitions saved. Connections use the remote OS account's authority, so only connect to accounts and servers you trust.
 

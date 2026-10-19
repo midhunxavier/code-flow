@@ -2,6 +2,9 @@ import { execFile } from "node:child_process";
 import { isIPv4 } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { certificateHostname, validateRemoteCertificate, type RemoteCertificate } from "./remote-tls.js";
 import { childEnv } from "./env.js";
 
 export interface TailscaleStatus {
@@ -67,4 +70,28 @@ export async function detectTailscale(candidates = commands()): Promise<Tailscal
     }
   }
   return { state: "not-installed", message: "Install Tailscale on this computer and your remote device, sign in to the same tailnet, then refresh." };
+}
+
+/** Owner setup or renewal of the configured identity. No login, elevation, Serve, Funnel or tailnet changes. */
+export async function requestTailscaleCertificate(hostname: string, candidates = commands()): Promise<RemoteCertificate> {
+  const host = certificateHostname(hostname);
+  if (!host.endsWith(".ts.net")) throw new Error("Connect Tailscale with a valid tailnet DNS name first");
+  const directory = await mkdtemp(join(tmpdir(), "codeflow-tls-"));
+  try {
+    for (const command of candidates) {
+      try {
+        await run(command, ["cert", `--cert-file=${join(directory, "cert.pem")}`, `--key-file=${join(directory, "key.pem")}`, "--min-validity=720h", host], {
+          env: childEnv({ TAILSCALE_BE_CLI: "1" }), timeout: 60_000, maxBuffer: 64 * 1024, windowsHide: true,
+        });
+        const value: RemoteCertificate = { hostname: host, source: "tailscale", cert: await readFile(join(directory, "cert.pem"), "utf8"), key: await readFile(join(directory, "key.pem"), "utf8") };
+        validateRemoteCertificate(value);
+        return value;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        // CLI output can contain paths and key material. Return actionable guidance without echoing it.
+        throw new Error("Tailscale could not issue the certificate. Enable HTTPS certificates in your tailnet DNS settings, check that this user can run tailscale cert, and use a current Tailscale version. Then retry or import certificate files.");
+      }
+    }
+    throw new Error("Tailscale CLI was not found. Install Tailscale or import certificate files.");
+  } finally { await rm(directory, { recursive: true, force: true }); }
 }

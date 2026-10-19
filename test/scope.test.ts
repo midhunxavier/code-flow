@@ -88,7 +88,7 @@ const run = (id: string, extra: Record<string, unknown> = {}) => ({
 function otherWindow(origin = ORIGIN) {
   return {
     closed: false,
-    location: { origin },
+    location: { origin, pathname: "/" },
     sent: [] as { msg: any; target: string }[],
     focused: 0,
     postMessage(msg: unknown, target: string) {
@@ -250,6 +250,12 @@ test("with no main window to hand to, a popped-out panel opens one and hands ove
   assert.equal(opens.length, 2);
   assert.match(m.toast.value.text, /allow pop-ups/);
   assert.deepEqual(m.route.value, popped("run:r1"));
+  const anotherComputer = otherWindow();
+  anotherComputer.location.pathname = "/computer/0123456789abcdef/";
+  Object.assign(globalThis, { opener: anotherComputer });
+  m.navigate({ view: "run", id: "r2" });
+  assert.equal(anotherComputer.sent.length, 0, "a panel never hands drafts to another computer on the same origin");
+  assert.equal(opens.length, 3);
   Object.assign(globalThis, { opener: null });
 });
 

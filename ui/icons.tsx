@@ -3,6 +3,7 @@ const circle = (x: number, y: number, r: number) => `M${x - r} ${y}a${r} ${r} 0 
 
 const PATHS = {
   menu: "M4 7h16M4 12h16M4 17h16",
+  help: `${circle(12, 12, 9)}M9.5 9a2.5 2.5 0 1 1 4 2c-1 .6-1.5 1-1.5 2M12 17h.01`,
   plus: "M12 5v14M5 12h14",
   search: `${circle(11, 11, 7)}M20 20l-4-4`,
   filter: "M4 6h16M7 12h10M10 18h4",
@@ -25,6 +26,7 @@ const PATHS = {
   globe: `${circle(12, 12, 9)}M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18`,
   note: "M5 4h10l4 4v12H5zM15 4v4h4M8 11h8M8 15h6",
   panel: "M4 5h16v14H4zM15 5v14",
+  sidebar: "M4 5h16v14H4zM9 5v14",
   pin: "M9 3h6M10 3v6l-4 5h12l-4-5V3M12 14v7",
   diff: "M12 4v8M8 8h8M8 18h8",
   split: "M4 5h16v14H4zM4 12h16",

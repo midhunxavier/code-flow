@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { HostControl, newProjectDraft } from "./ssh-projects.js";
 import { useDialog } from "./app.js";
 import { Icon } from "./icons.js";
 import { api, baseName, post, showToast } from "./lib.js";
@@ -126,11 +127,12 @@ export function ProjectsDialog() {
 }
 
 function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDone: () => void; onCreated: () => void }) {
-  const [name, setName] = useState(project?.name ?? "");
+  const [draft] = useState(() => { const value = newProjectDraft.value; newProjectDraft.value = null; return value; });
+  const [name, setName] = useState(project?.name ?? draft?.name ?? "");
   // The form replaces the list inside an open dialog, so autofocus alone wouldn't reach it.
   const nameField = useRef<HTMLInputElement>(null);
   useEffect(() => nameField.current?.focus(), []);
-  const [repos, setRepos] = useState<string[]>(project?.repos ?? (repo.value ? [repo.value] : []));
+  const [repos, setRepos] = useState<string[]>(project?.repos ?? (draft ? [] : repo.value ? [repo.value] : []));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const inProject = project ? [...runs.value.values()].filter((r) => projectFor(r)?.id === project.id) : [];
@@ -185,6 +187,7 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
         <div class="help">{project ? `${plural(inProject.length, "run")} in this project.` : "Name it and add the repositories its runs work in."}</div>
       </div>
       <div class="dialog-body">
+        {!project ? <div class="project-computer"><span class="lbl">Computer</span><HostControl projectName={name} /><p class="help">Choose where this project lives, then add repositories from that computer.</p></div> : null}
         <div>
           <label class="lbl" for="project-name">
             Name

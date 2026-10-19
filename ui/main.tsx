@@ -1,6 +1,6 @@
 import "./theme.js"; // first: the theme follows your pick (or the system) before anything renders
 import { watchNotificationPermission } from "./preferences.js";
-import { loadExecutionHost, executionHost } from "./ssh-projects.js";
+import { loadExecutionHost, executionHost, readConnectionIntent } from "./ssh-projects.js";
 import { effect } from "@preact/signals";
 import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
@@ -9,7 +9,7 @@ import { SharedDashboard, SharedLogin } from "./shared.js";
 import type { SharedPrincipal } from "../src/shared-accounts.js";
 import { configureStreamSharing, type StreamSharing } from "./stream.js";
 import logo from "./brand/vibesboard-mark.png";
-import { api, showToast, store, SHORT } from "./lib.js";
+import { api, localApi, workspaceId, showToast, store, SHORT } from "./lib.js";
 import { agents, hashFor, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, pickerOpen, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
 // The tab icon: the vibesboard mark, like the top bar.
@@ -40,6 +40,7 @@ function BootError({ message, seconds, onRetry }: { message: string; seconds: nu
       <button class="btn primary" disabled={left <= 0} onClick={() => setLeft(0)}>
         Retry now
       </button>
+      {workspaceId ? <a class="btn" href="/#/settings/ssh">Manage connections</a> : null}
     </div>
   );
 }
@@ -47,11 +48,12 @@ function BootError({ message, seconds, onRetry }: { message: string; seconds: nu
 async function boot() {
   let agentList, patternList;
   try {
-    const identity = await api<{ kind: "owner"; streamSharing?: StreamSharing } | { kind: "anonymous" } | SharedPrincipal>("/api/auth/self");
+    const identity = await localApi<{ kind: "owner"; streamSharing?: StreamSharing } | { kind: "anonymous" } | SharedPrincipal>("/api/auth/self");
     if (identity.kind === "anonymous") { render(<SharedLogin />, root); return; }
     if (identity.kind === "shared") { render(<SharedDashboard identity={identity} />, root); return; }
-    configureStreamSharing(identity.streamSharing);
     await loadExecutionHost();
+    const streamIdentity = executionHost.value.kind === "ssh" ? await api<{ streamSharing?: StreamSharing }>("/api/auth/self") : identity;
+    configureStreamSharing(streamIdentity.streamSharing);
     [agentList, patternList] = await Promise.all([api("/api/agents"), api("/api/patterns")]);
   } catch (err) {
     const seconds = RETRY_SECONDS[Math.min(attempts, RETRY_SECONDS.length - 1)]!;
@@ -62,6 +64,7 @@ async function boot() {
   for (const agent of agentList) SHORT[agent.id as keyof typeof SHORT] = agent.displayName;
   patterns.value = patternList;
   await loadTeamRollout();
+  const connectionIntent = readConnectionIntent();
   route.value = routeFromHash();
   effect(() => {
     const hash = hashFor(route.value);
@@ -85,7 +88,7 @@ async function boot() {
   );
   const saved = store.get("repo");
   if (saved) void setRepo(saved, false);
-  else if (executionHost.value.kind === "ssh" && route.value.view === "composer") pickerOpen.value = true;
+  else if (!connectionIntent && executionHost.value.kind === "ssh" && route.value.view === "composer") pickerOpen.value = true;
   await Promise.all([refreshRuns(), loadProjects()]);
   watchAllRuns(notifyFinished);
   // A safety net if the event stream drops; projects change when a run starts in a new repo.

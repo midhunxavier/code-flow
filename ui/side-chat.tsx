@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { AgentTag, Markdown } from "./bits.js";
 import { Icon } from "./icons.js";
+import { ChatControls, type ChatPermissions, type ChatSettings } from "./chat-controls.js";
 import { baseName, post, SHORT, showToast, store, STATUS_TEXT } from "./lib.js";
 import { Menu, MenuItem, MenuTitle, resultWorktree, Strip, type StripItem } from "./panel-bits.js";
-import { AgentPicker, ChatThread, ConversationBar, DraftImages, FollowUpBadges, teamSteps, TurnBody, useRunStream } from "./run.js";
+import { ChatThread, ConversationBar, DraftImages, FollowUpBadges, teamSteps, TurnBody, useRunStream } from "./run.js";
 import {
   afterStart,
   agents,
@@ -17,6 +18,8 @@ import {
   runs,
   runState,
   setSideChat,
+  setAgentSetting,
+  setTrust,
   sideChat,
   sideDraft,
   sideMemo,
@@ -297,6 +300,9 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"ask" | "change">(chat?.mode ?? "ask");
   const [agent, setAgent] = useState<AgentId>(chat?.agent ?? savedAgent);
+  const [settings, setSettings] = useState<Record<string, ChatSettings>>({});
+  const [permissions, setPermissions] = useState<ChatPermissions>({ trust: chat?.turns.at(-1)?.trust ?? run.trust, tools: chat?.turns.at(-1)?.tools ?? !!run.approvals.tools });
+  const selectedSettings = settings[agent] ?? chat?.turns.filter((turn) => turn.agent === agent).at(-1)?.settings ?? run.agentSettings[agent] ?? {};
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [images, setImages] = useState<Attachment[]>([]);
@@ -318,7 +324,7 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
     const id = chat?.chat ?? `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const title = chat?.title ?? (text.trim().split("\n")[0]!.slice(0, 60) || "Side chat");
     try {
-      await post(`/api/runs/${run.id}/followups`, { kind: "side", worktree: wt.name, agent, message: text.trim(), side: { chat: id, mode, title }, attachments: images.map(({ name, data }) => ({ name, data })) });
+      await post(`/api/runs/${run.id}/followups`, { kind: "side", worktree: wt.name, agent, settings: selectedSettings, trust: permissions.trust, tools: permissions.tools, message: text.trim(), side: { chat: id, mode, title }, attachments: images.map(({ name, data }) => ({ name, data })) });
       setText("");
       setImages([]);
       // The run's own panel memory: the panel may be on another run or project by now.
@@ -349,25 +355,15 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
               }
             }}
           />
-          <div class="chatbox-bar">
-            <div class="segmented small" role="group" aria-label="Ask or change">
-              <button type="button" class={mode === "ask" ? "on" : ""} aria-pressed={mode === "ask"} title="Reads the run's worktree and changes nothing" onClick={() => setMode("ask")}>
-                Ask
-              </button>
-              <button type="button" class={mode === "change" ? "on" : ""} aria-pressed={mode === "change"} title={`Edits ${wt?.name ?? "the worktree"}: committed on the run's branch, then the check runs`} onClick={() => setMode("change")}>
-                Change
-              </button>
-            </div>
-            <label class="to">
-              <span class="to-lbl">Agent</span>
-              <AgentPicker
-                value={agent}
-                onChange={(id) => {
-                  setAgent(id);
-                  store.set("sideAgent", id);
-                }}
-              />
-            </label>
+          <div class="chatbox-bar chatbox-configurable">
+            <Menu above label="Chat mode" icon="chat" class="chat-choice" trigger={<><span>{mode === "ask" ? "Ask" : "Change"}</span><Icon name="chevron" /></>}>
+              {(close) => <>
+                <MenuTitle>Chat mode</MenuTitle>
+                <MenuItem on={mode === "ask"} sub="Read the worktree without changing files" onClick={() => { setMode("ask"); close(); }}>Ask</MenuItem>
+                <MenuItem on={mode === "change"} sub="Edit the worktree, commit changes and run the check" onClick={() => { setMode("change"); close(); }}>Change</MenuItem>
+              </>}
+            </Menu>
+            <ChatControls agent={agent} onAgent={(id) => { setAgent(id); store.set("sideAgent", id); }} settings={selectedSettings} onSettings={(value) => setSettings({ ...settings, [agent]: value })} permissions={permissions} onPermissions={setPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} />
             <span class="chatbox-hint" />
             <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={busy || !text.trim() || !wt} onClick={send}>
               <Icon name="send" />
@@ -479,6 +475,7 @@ function NewChat({ scope }: { scope: SideScope }) {
   const solo = patterns.value.find((p) => p.chat);
   const name = SHORT[agent] ?? agent;
   const where = scope.repo ? baseName(scope.repo) : "the repository";
+  const [tools, setTools] = useState(store.get("interactiveApprovals") === "1");
   const send = async () => {
     if (!text.trim() || busy || !solo) return;
     if (!scope.repo) return setError("Choose a repository first.");
@@ -496,6 +493,7 @@ function NewChat({ scope }: { scope: SideScope }) {
         baseRef: base || undefined,
         agentSettings: agentSettings.value,
         trust: trust.value,
+        approvals: { tools },
         loop: { maxMinutes: limits.value.maxMinutes, maxSteps: limits.value.maxSteps },
         parentRunId: run?.id,
       });
@@ -543,17 +541,8 @@ function NewChat({ scope }: { scope: SideScope }) {
                 }
               }}
             />
-            <div class="chatbox-bar">
-              <label class="to">
-                <span class="to-lbl">Agent</span>
-                <AgentPicker
-                  value={agent}
-                  onChange={(id) => {
-                    setAgent(id);
-                    store.set("sideAgent", id);
-                  }}
-                />
-              </label>
+            <div class="chatbox-bar chatbox-configurable">
+              <ChatControls agent={agent} onAgent={(id) => { setAgent(id); store.set("sideAgent", id); }} settings={agentSettings.value[agent] ?? {}} onSettings={(value) => setAgentSetting(agent, value)} permissions={{ trust: trust.value, tools }} onPermissions={(value) => { setTrust(value.trust); setTools(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }} />
               {fromRun.length ? (
                 <label class="to" title="Start from this run's result branch, so the agent sees that work">
                   <span class="to-lbl">From</span>

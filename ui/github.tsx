@@ -144,9 +144,6 @@ export function Templates() {
             {t.name}
           </button>
         ))}
-        <button type="button" class="chip-tpl ghost" title="Start from any open issue or pull request" onClick={() => (ghPicker.value = { kind: "issue" })}>
-          GitHub…
-        </button>
       </div>
       {sweeps.length ? (
         <div class="templates">

@@ -176,6 +176,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
 test("approve the plan from the UI: ask for changes, then approve", async () => {
   await page.goto(BASE);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+  await page.locator(".composer-options > summary").click();
   await page.getByText("Let me approve the plan").click();
   await page.getByLabel("Task", { exact: true }).fill("E2E: checkpoint");
   await page.getByRole("button", { name: /^Start run/ }).click();
@@ -193,6 +194,7 @@ test("approve the plan from the UI: ask for changes, then approve", async () => 
 test("a message sent while Codex is working reaches its running turn", async () => {
   await page.goto(BASE);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+  if (!(await page.locator(".composer-options").getAttribute("open"))) await page.locator(".composer-options > summary").click();
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from the last test
   // The fake Codex keeps this turn open until a message is steered into it.
   await page.getByLabel("Task", { exact: true }).fill("E2E: steer WAIT-FOR-STEER");
@@ -253,7 +255,7 @@ test("automations: a webhook starts a run, it waits in the inbox, you approve it
   await page.goto(`${BASE}/#/settings/automations`);
   const item = page.locator(".inbox-item", { hasText: "E2E: automated chore" });
   await item.waitFor({ timeout: 30_000 });
-  assert.match(await page.locator(".settings-entry .count").innerText(), /^\d+$/, "the inbox count shows in the sidebar");
+  assert.match(await page.locator(".rail-menu-count").innerText(), /^\d+$/, "the inbox count shows in the sidebar");
   await item.getByRole("button", { name: "✓ Approve" }).click();
   await item.waitFor({ state: "detached" });
   assert.equal((await api(`/api/runs/${run}`)).triage.state, "approved");
@@ -417,10 +419,11 @@ test("insights and run search", async () => {
 test("supervisor: the reviewer defaults to a different vendor than the supervisor", async () => {
   await page.goto(BASE);
   await page.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
+  if (!(await page.locator(".composer-options").getAttribute("open"))) await page.locator(".composer-options > summary").click();
   if (!(await page.locator(".advanced-controls").getAttribute("open"))) await page.locator(".advanced-controls > summary").click();
   const role = (label: string) => page.locator(".role").filter({ has: page.locator(".rl", { hasText: new RegExp(`^${label}`) }) });
   const pressed = async (label: string) =>
-    (await role(label).locator(".pill[aria-pressed=true]").allInnerTexts()).map((t) => t.trim());
+    (await role(label).locator(".pill[aria-pressed=true]").allInnerTexts()).map((t) => t.replace(/^✓\s*/, "").trim());
   assert.deepEqual(await pressed("Reviewer"), ["Codex"], "the pattern's default when it isn't the supervisor");
   await role("Supervisor").getByRole("button", { name: "Codex", exact: true }).click();
   assert.deepEqual(await pressed("Supervisor"), ["Codex"]);
@@ -449,6 +452,7 @@ test("projects: the first run made one; the sidebar lists runs under their proje
   await page.locator(".where .project-btn", { hasText: "E2E side" }).waitFor(); // new runs start in it
 
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+  if (!(await page.locator(".composer-options").getAttribute("open"))) await page.locator(".composer-options > summary").click();
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from earlier tests: the run mustn't wait for approval
   await page.getByLabel("Task", { exact: true }).fill("E2E: in the side project");
   await page.getByRole("button", { name: /^Start run/ }).click();
@@ -491,7 +495,12 @@ test("side panel: chat with one agent, read a file, run a command, keep a note",
 
   // Chat: a question to Claude starts a Single-agent run; its answer shows in the panel.
   await side.getByRole("tab", { name: "Chat" }).click();
-  await side.locator(".to select").first().selectOption("claude");
+  await side.getByRole("button", { name: "Provider", exact: true }).click();
+  await side.getByRole("menuitem", { name: /^Claude Code/ }).click();
+  await side.getByRole("button", { name: "Model", exact: true }).click();
+  await side.getByRole("option", { name: /^Sonnet/ }).click();
+  await side.getByRole("button", { name: "Effort", exact: true }).click();
+  await side.getByRole("menuitem", { name: "high", exact: true }).click();
   await side.getByLabel("Message").fill("E2E: what does check.mjs do?");
   await side.getByLabel("Message").press("Enter");
   await side.getByText("Implemented changes as claude.").waitFor({ timeout: 30_000 });
@@ -530,6 +539,7 @@ test("side panel: chat with one agent, read a file, run a command, keep a note",
   const chat = (await fetch(`${BASE}/api/runs`, { headers: bearer }).then((r) => r.json())).find((r: { task: string }) => r.task === "E2E: what does check.mjs do?");
   const own = projects.find((p) => p.repos.includes(realpathSync(repo)))!;
   assert.equal(chat.project, own.id);
+  assert.deepEqual(chat.agentSettings.claude, { model: "sonnet", effort: "high" }, "chat starts with the model and effort selected beside the message");
   assert.notEqual(own.defaults?.pattern, chat.pattern, "a chat isn't the composer's choice of team");
 });
 
@@ -590,7 +600,8 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
   assert.match(await chats.first().innerText(), /E2E: what did this run change\?/);
 
   // Change: committed on the run's branch; the run's thread gets a line about it.
-  await side.getByRole("button", { name: "Change", exact: true }).click();
+  await side.getByRole("button", { name: "Chat mode", exact: true }).click();
+  await side.getByRole("menuitem", { name: /^Change/ }).click();
   await side.getByLabel("Message").fill("E2E: add a note");
   await side.getByLabel("Message").press("Enter");
   await page.locator(".runview .side-note").waitFor({ timeout: 30_000 });
@@ -758,7 +769,7 @@ test("projects: the Automations page and its inbox follow the project you're in;
   assert.deepEqual(await page.locator(".auto-row b").allInnerTexts(), ["E2E side hook"], "only this project's automations");
   await page.locator(".automations .rail-hint", { hasText: `${pending - 1} in other projects need${pending === 2 ? "s" : ""} you` }).waitFor();
   await page.locator(".automations .rail-hint", { hasText: `${total - 1} more in other projects` }).waitFor();
-  assert.equal(await page.locator(".settings-entry .count").innerText(), String(pending), "the sidebar still counts every project's results");
+  assert.equal(await page.locator(".rail-menu-count").innerText(), String(pending), "the sidebar still counts every project's results");
 
   // The read-only phone view lists each project's runs under its name.
   const remote = await api("/api/remote", { enabled: true });
@@ -822,6 +833,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
       await route.fulfill({ response });
     });
     try {
+      await fresh.locator(".composer-options > summary").click();
       await fresh.locator(".advanced-controls > summary").click();
       const profile = fresh.getByLabel("Verification gates", { exact: true });
       const lightResponse = fresh.waitForResponse((response) => new URL(response.url()).pathname === "/api/verification/profile" && new URL(response.url()).searchParams.get("preset") === "lightweight");
@@ -841,29 +853,45 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     } finally { releaseLight(); await fresh.unroute(/\/api\/verification\/profile\?/); }
     await fresh.locator(".acceptance-editor > summary").click();
     await fresh.getByLabel("One requirement per line").fill("{{component}} has automated tests.\nExisting behavior is preserved.");
-    await fresh.locator(".composer-library > summary").click();
+    const openLibrary = async () => {
+      await fresh.evaluate(() => { location.hash = "/settings/projects"; });
+      await fresh.getByRole("region", { name: "Project run defaults" }).waitFor();
+      if (await fresh.getByLabel("Library scope").count()) await fresh.getByLabel("Library scope").selectOption("personal");
+      await fresh.locator(".composer-library > summary").click();
+    };
+    await openLibrary();
     await fresh.getByLabel("Team name", { exact: true }).fill("E2E saved team");
     await fresh.getByRole("button", { name: "Save current team", exact: true }).click();
     await fresh.getByLabel("Revision to apply").waitFor();
-    await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
+    await fresh.evaluate(() => { location.hash = "/"; });
+    await fresh.getByRole("button", { name: "Team mode", exact: true }).click();
+    await openLibrary();
+    await fresh.getByLabel("Team preset", { exact: true }).selectOption({ label: "E2E saved team · r1" });
     await fresh.getByRole("button", { name: "Save new revision", exact: true }).click();
     await fresh.getByLabel("Revision to apply").selectOption("1");
     await fresh.getByRole("button", { name: "Apply team", exact: true }).click();
-    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "pipeline", "a previous team revision restores the original workflow");
-
     await fresh.getByLabel("Template name", { exact: true }).fill("E2E parameterized task");
     await fresh.getByRole("button", { name: "Save current task as template", exact: true }).click();
+    await fresh.evaluate(() => { location.hash = "/"; });
+    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "pipeline", "a previous team revision restores the original workflow");
     await fresh.getByLabel("Task", { exact: true }).fill("temporary draft");
-    await fresh.getByRole("button", { name: "Apply template", exact: true }).click();
+    await fresh.locator(".composer-options > summary").click();
+    await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
+    await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click();
+    const templateDialog = fresh.getByRole("dialog", { name: "Use template", exact: true });
+    await templateDialog.getByLabel("Library", { exact: true }).selectOption("personal");
+    await templateDialog.getByLabel("Template", { exact: true }).selectOption({ label: "E2E parameterized task" });
     await fresh.getByLabel("component", { exact: true }).fill("login form");
     await fresh.getByLabel("package", { exact: true }).fill("frontend");
     await fresh.getByRole("button", { name: "Use template", exact: true }).click();
     assert.equal(await fresh.getByLabel("Task", { exact: true }).inputValue(), "E2E: improve login form in frontend");
+    await fresh.locator(".acceptance-editor > summary").click();
     assert.match(await fresh.getByLabel("One requirement per line").inputValue(), /^login form has automated tests/);
-
+    await fresh.evaluate(() => { location.hash = "/settings/projects"; });
     await fresh.locator(".readiness > summary").click();
     await fresh.getByRole("button", { name: "Inspect readiness", exact: true }).click();
     await fresh.locator(".readiness-results").getByText("Repository and base", { exact: true }).waitFor({ timeout: 30_000 });
+    await fresh.evaluate(() => { location.hash = "/"; });
     await fresh.getByLabel("Task", { exact: true }).press("Meta+Enter");
     await fresh.waitForURL(/#\/run\//);
     const id = decodeURIComponent(fresh.url().split("#/run/")[1]!);
@@ -879,4 +907,588 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     assert.ok(start && start.y >= 0 && start.y + start.height <= 844, "primary action is visible on a phone without scrolling");
     if (process.env.CODEFLOW_UI_SCREENSHOTS) await fresh.screenshot({ path: join(root, "output/playwright/composer-mobile.png") });
   } finally { await context.close(); }
+});
+
+test("chat menus apply model, effort and permissions to the next reply and survive reload", async () => {
+  const api = (path: string, body?: unknown) => fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((response) => response.json());
+  const created = await api("/api/runs", { repo, task: "Chat options fixture", pattern: "solo", roles: { agent: ["codex"] }, options: {}, trust: "standard" });
+  const completed = async () => {
+    for (let n = 0; n < 150; n++) {
+      const run = await api(`/api/runs/${created.id}`);
+      if (run.status !== "running") { assert.equal(run.status, "done", run.error); return run; }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error("chat did not finish");
+  };
+  await completed();
+  const catalog = (await api("/api/models")).codex;
+  const model = catalog.models.find((entry: { efforts?: string[] }) => entry.efforts?.includes("high"));
+  assert.ok(model);
+  await page.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
+  const main = page.getByRole("main");
+  await main.locator(".chat-provider-fixed", { hasText: "Codex" }).waitFor();
+  assert.equal(await main.getByRole("button", { name: "Provider", exact: true }).count(), 0, "a started single-agent chat cannot change provider");
+  await main.getByRole("button", { name: "Model", exact: true }).click();
+  await main.getByRole("option", { name: model.label, exact: true }).click();
+  await main.getByRole("button", { name: "Effort", exact: true }).click();
+  await main.getByRole("menuitem", { name: "high", exact: true }).click();
+  await main.getByRole("button", { name: "Permissions", exact: true }).click();
+  await main.getByRole("menuitem", { name: /^Ask for approval/ }).click();
+  await main.getByRole("textbox", { name: "Reply", exact: true }).fill("Use the chosen settings");
+  await main.getByRole("button", { name: "Send", exact: true }).click();
+  await main.getByText("Use the chosen settings", { exact: true }).waitFor();
+  let run = await completed();
+  assert.deepEqual(run.followUps.at(-1).settings, { model: model.id, effort: "high" });
+  assert.equal(run.followUps.at(-1).tools, true);
+  assert.equal(run.followUps.at(-1).trust, "standard");
+  await page.reload();
+  await main.getByRole("button", { name: "Permissions", exact: true }).waitFor();
+  assert.match(await main.getByRole("button", { name: "Permissions", exact: true }).innerText(), /Ask for approval/);
+  assert.match(await main.getByRole("button", { name: "Effort", exact: true }).innerText(), /high/);
+  await main.getByRole("button", { name: "Model", exact: true }).click();
+  await main.getByRole("option", { name: /^Default model/ }).click();
+  await main.getByRole("button", { name: "Effort", exact: true }).click();
+  await main.getByRole("menuitem", { name: /^Default effort/ }).click();
+  await main.getByRole("button", { name: "Permissions", exact: true }).click();
+  await main.getByRole("menuitem", { name: /^Full access/ }).click();
+  await main.getByRole("textbox", { name: "Reply", exact: true }).fill("Use defaults for this reply");
+  await main.getByRole("button", { name: "Send", exact: true }).click();
+  await main.getByText("Use defaults for this reply", { exact: true }).waitFor();
+  run = await completed();
+  assert.deepEqual(run.followUps.at(-1).settings, {});
+  assert.equal(run.followUps.at(-1).tools, false);
+  assert.equal(run.followUps.at(-1).trust, "full");
+});
+
+
+test("chat menu starts another provider with carried-over context", async () => {
+  const api = async (path: string, body?: unknown) => {
+    const response = await fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) });
+    const value = await response.json(); assert.ok(response.ok, JSON.stringify(value)); return value;
+  };
+  const source = await api("/api/runs", { repo, task: "Portable context fixture", pattern: "solo", roles: { agent: ["codex"] }, options: {}, trust: "standard" });
+  for (let n = 0; n < 150; n++) {
+    const run = await api(`/api/runs/${source.id}`);
+    if (run.status !== "running") { assert.equal(run.status, "done", run.error); break; }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await page.goto(`${BASE}/?token=${TOKEN}#/run/${source.id}`);
+  const main = page.getByRole("main");
+  await main.getByRole("button", { name: "Chat actions", exact: true }).click();
+  const actions = main.getByRole("menu", { name: "Chat actions", exact: true });
+  const menuBox = await actions.boundingBox();
+  const chatBox = await main.locator(".chatbox").boundingBox();
+  assert.ok(menuBox && chatBox && menuBox.x >= chatBox.x && menuBox.x + menuBox.width <= chatBox.x + chatBox.width, "the menu stays inside the chat column instead of overlapping the side panel");
+  assert.equal(await actions.locator(".pi-main").evaluate((element) => getComputedStyle(element).whiteSpace), "normal", "the complete action label can wrap");
+  await main.getByRole("menuitem", { name: /^Start new chat with another provider/ }).click();
+  const dialog = page.getByRole("dialog", { name: "New chat with another provider" });
+  await dialog.getByRole("button", { name: "Provider", exact: true }).click();
+  assert.equal(await dialog.getByRole("menuitem", { name: "Codex", exact: true }).count(), 0);
+  await dialog.getByRole("menuitem", { name: /Claude Code/ }).click();
+  await dialog.getByPlaceholder("What should the new chat do?").fill("Review the previous answer");
+  const response = page.waitForResponse((response) => response.url().endsWith(`/api/runs/${source.id}/provider-chat`) && response.request().method() === "POST");
+  await dialog.getByRole("button", { name: "Start new chat", exact: true }).click();
+  const result = await response;
+  assert.equal(result.status(), 201, await result.text());
+  const childId = (await result.json()).id;
+  await page.waitForURL(`**/#/run/${childId}`);
+  const child = await api(`/api/runs/${childId}`);
+  assert.deepEqual(child.roles.agent, ["claude"]);
+  assert.equal(child.parentRunId, source.id);
+  assert.equal(child.repo, realpathSync(repo));
+  assert.match(child.task, /^Review the previous answer/);
+  assert.ok(child.context.attachments.some((file: { name: string }) => file.name === `chat-handoff-${source.id}.md`));
+  assert.deepEqual((await api(`/api/runs/${source.id}`)).roles.agent, ["codex"]);
+});
+
+
+test("single-agent setup is inline and completed replies show running checks clearly", async () => {
+  const fresh = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  try {
+    await fresh.addInitScript((repo) => {
+      localStorage.setItem("repo", repo); localStorage.setItem("pattern", "solo");
+      localStorage.setItem("roleSel", JSON.stringify({ solo: { agent: ["claude"] } }));
+      localStorage.setItem("roleModels", JSON.stringify({ solo: { agent: { claude: { model: "opus", effort: "low" } } } }));
+    }, repo);
+    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    const box = fresh.locator(".taskbox");
+    await box.getByRole("button", { name: "Model", exact: true }).waitFor();
+    assert.equal(await fresh.locator(".composer-options").getAttribute("open"), null);
+    assert.match(await box.getByRole("button", { name: "Model", exact: true }).innerText(), /opus/i);
+    await box.getByRole("button", { name: "Model", exact: true }).click();
+    await box.getByRole("option", { name: /^Haiku/ }).click();
+    await box.getByRole("button", { name: "Effort", exact: true }).click();
+    await box.getByRole("menuitem", { name: "high", exact: true }).click();
+    assert.equal(await fresh.evaluate(() => JSON.parse(localStorage.getItem("agentSettings") || "{}").claude?.model), undefined, "run model choices do not change the provider default in Settings");
+    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).count(), 0);
+    await box.getByRole("button", { name: "Team mode", exact: true }).click();
+    await box.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
+    assert.equal(await box.locator(".chat-controls").count(), 0);
+    await fresh.getByRole("button", { name: "Team mode", exact: true }).click();
+    assert.match(await box.getByRole("button", { name: "Model", exact: true }).innerText(), /Haiku/);
+    await box.getByRole("button", { name: "Team mode", exact: true }).click();
+    assert.equal(await box.getByLabel("Workflow", { exact: true }).inputValue(), "supervisor", "team toggle remembers the last workflow");
+    await box.getByRole("button", { name: "Team mode", exact: true }).click();
+    await fresh.locator(".composer-options > summary").click();
+    await fresh.getByLabel("Done when this passes", { exact: true }).fill('node -e "setTimeout(() => {}, 4000)"');
+    await fresh.locator(".composer-options > summary").click();
+    await fresh.getByRole("textbox", { name: "Task", exact: true }).fill("Inline single-agent fixture");
+    await box.getByRole("button", { name: "Start run", exact: true }).click();
+    await fresh.locator(".chat-check").waitFor();
+    await fresh.getByRole("button", { name: "Stop checks", exact: true }).waitFor();
+    assert.match(await fresh.locator(".chat-check").innerText(), /The agent has finished/);
+    assert.match(await fresh.locator(".chat-check code").innerText(), /setTimeout/);
+    await fresh.getByRole("button", { name: "Edit & run again", exact: true }).waitFor({ timeout: 30000 });
+    assert.equal(await fresh.getByRole("button", { name: "Stop run", exact: true }).count(), 0);
+    const id = fresh.url().split("/run/")[1];
+    const run = await fetch(`${BASE}/api/runs/${id}`, { headers: bearer }).then((response) => response.json());
+    assert.deepEqual(run.roles.agent, ["claude"]);
+    assert.deepEqual(run.agentSettings.claude, { model: "haiku", effort: "high" });
+    assert.deepEqual(run.roleSettings.agent.claude, { model: "haiku", effort: "high" });
+  } finally { await fresh.close(); }
+});
+
+test("project defaults stay repository-scoped and a run creates its worktree from the selected branch", async () => {
+  const fresh = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const project = await fetch(`${BASE}/api/projects`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Composer defaults", repos: [repo] }) }).then((response) => response.json());
+  assert.ok(project.id);
+  try {
+    await fresh.addInitScript(({ repository, projectId }) => { localStorage.setItem("repo", repository); localStorage.setItem("pattern", "solo"); localStorage.setItem("sideOpen", "0"); localStorage.setItem("project", projectId); }, { repository: repo, projectId: project.id });
+    await fresh.goto(`${BASE}/?token=${TOKEN}#/settings/projects`);
+    await fresh.getByLabel("Project", { exact: true }).selectOption(project.id);
+    await fresh.waitForFunction(() => !(document.querySelector('[aria-label="Default check command"]') as HTMLInputElement)?.disabled);
+    await fresh.getByLabel("Default check command", { exact: true }).fill("node -e \"process.exit(0)\"");
+    await fresh.getByLabel("Worktree setup command", { exact: true }).fill("node -e \"process.exit(0)\"");
+    await fresh.getByLabel("Default verification profile", { exact: true }).selectOption("standard");
+    await fresh.getByRole("checkbox", { name: "Use Docker isolation by default" }).check();
+    await fresh.getByLabel("Default container image", { exact: true }).fill("fixture-image:latest");
+    await fresh.getByRole("button", { name: "Save project defaults", exact: true }).click();
+    await fresh.getByRole("status").getByText("Project defaults saved.").waitFor();
+    await fresh.reload();
+    await fresh.getByLabel("Project", { exact: true }).selectOption(project.id);
+    assert.equal(await fresh.getByLabel("Default verification profile").inputValue(), "standard");
+    assert.equal(await fresh.getByLabel("Default container image").inputValue(), "fixture-image:latest");
+    await fresh.evaluate(() => { location.hash = "/"; });
+    await fresh.getByRole("button", { name: "Team mode", exact: true }).waitFor();
+    assert.equal(await fresh.locator(".composer-options").getAttribute("open"), null);
+    assert.equal(await fresh.locator(".readiness, .composer-library, #setupCmd").count(), 0, "project setup and library management are absent from the run view");
+    await fresh.locator(".taskbox").getByLabel("Start from branch", { exact: true }).selectOption("origin/feature");
+    await fresh.locator(".composer-options > summary").click();
+    await fresh.locator(".advanced-controls > summary").click();
+    assert.equal(await fresh.getByLabel("Verification gates", { exact: true }).inputValue(), "standard");
+    await fresh.getByLabel("Verification gates", { exact: true }).selectOption("");
+    await fresh.locator(".agent-isolation > summary").click();
+    assert.equal(await fresh.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image" }).isChecked(), true);
+    await fresh.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image" }).uncheck();
+    await fresh.getByLabel("Done when this passes", { exact: true }).fill("node -e \"process.exit(0); /* run override */\"");
+    assert.equal(await fresh.evaluate((path) => localStorage.getItem(`check:${path}`), realpathSync(repo)), "node -e \"process.exit(0)\"", "run overrides do not overwrite the project default");
+    await fresh.getByLabel("Task", { exact: true }).fill("Verify selected branch and project defaults");
+    await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
+    await fresh.getByRole("menuitem", { name: "Start later…", exact: true }).click();
+    await fresh.getByRole("dialog", { name: "Start later", exact: true }).waitFor();
+    await fresh.getByRole("dialog", { name: "Start later", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
+    await fresh.getByRole("button", { name: "Start run", exact: true }).click();
+    await fresh.waitForURL(/#\/run\//);
+    const id = fresh.url().split("/run/")[1];
+    const run = await fetch(`${BASE}/api/runs/${id}`, { headers: bearer }).then((response) => response.json());
+    const branchCommit = execFileSync("git", ["rev-parse", "origin/feature"], { cwd: repo, encoding: "utf8" }).trim();
+    assert.equal(run.baseRef, branchCommit);
+    assert.equal(run.baseLabel, "origin/feature");
+    assert.match(run.loop.check, /run override/);
+    assert.equal(run.loop.setup, "node -e \"process.exit(0)\"");
+    assert.equal(run.loop.agentContainer, undefined);
+    assert.ok(!run.loop.verification);
+    await fresh.getByRole("button", { name: "Edit & run again", exact: true }).waitFor({ timeout: 30000 });
+  } finally { await fresh.close(); }
+});
+
+test("chatbox saves templates to the chosen library and makes them immediately reusable", async () => {
+  const fresh = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const project = await fetch(`${BASE}/api/projects`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Quick templates", repos: [repo] }) }).then((response) => response.json());
+  try {
+    await fresh.addInitScript(({ repository, id }) => { localStorage.setItem("repo", repository); localStorage.setItem("project", id); localStorage.setItem("pattern", "solo"); localStorage.setItem("sideOpen", "0"); }, { repository: repo, id: project.id });
+    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    const menu = fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true });
+    await menu.click();
+    assert.equal(await fresh.getByRole("menuitem", { name: "Save as template…", exact: true }).isDisabled(), true);
+    await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click();
+    const useDialog = fresh.getByRole("dialog", { name: "Use template", exact: true });
+    await useDialog.getByRole("status").getByText(/No templates in this library/).waitFor();
+    assert.equal(await useDialog.getByRole("button", { name: "Use template", exact: true }).isDisabled(), true);
+    await useDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await fresh.getByLabel("Task", { exact: true }).fill("Review {{component}} for regressions.");
+    await fresh.locator(".composer-options > summary").click();
+    await fresh.locator(".acceptance-editor > summary").click();
+    await fresh.getByLabel("One requirement per line").fill("Cover {{component}} with tests.");
+    const saveTemplate = async (scope: string, name: string) => {
+      await menu.click(); await fresh.getByRole("menuitem", { name: "Save as template…", exact: true }).click();
+      const dialog = fresh.getByRole("dialog", { name: "Save as template", exact: true });
+      assert.equal(await dialog.getByRole("button", { name: "Save template", exact: true }).isDisabled(), true);
+      await dialog.getByLabel("Template name", { exact: true }).fill(name);
+      await dialog.getByLabel("Save to", { exact: true }).selectOption(scope);
+      await dialog.getByLabel("Template name", { exact: true }).press("Enter");
+      await dialog.waitFor({ state: "hidden" });
+      assert.ok(!fresh.url().includes("settings"), "saving keeps the composer open");
+      await menu.click(); await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click();
+      assert.equal(await useDialog.getByLabel("Library", { exact: true }).inputValue(), scope);
+      await useDialog.getByLabel("Template", { exact: true }).getByRole("option", { name, exact: true }).waitFor({ state: "attached" });
+      await useDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    };
+    await saveTemplate("project", "Project review");
+    await saveTemplate("personal", "Personal review");
+    const libraries = await fresh.evaluate((id) => [JSON.parse(localStorage.getItem(`composerLibrary:${id}`)!), JSON.parse(localStorage.getItem("composerLibrary")!)], project.id);
+    assert.deepEqual(libraries.map((library) => library.templates.map((template: any) => template.name)), [["Project review"], ["Personal review"]]);
+    assert.equal(libraries[0].templates[0].pattern, "solo");
+    assert.deepEqual(libraries[0].templates[0].criteria, ["Cover {{component}} with tests."]);
+    await fresh.getByLabel("Task", { exact: true }).fill("Temporary draft");
+    await fresh.locator(".composer-options > summary").click();
+    await menu.click(); await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click();
+    await useDialog.getByLabel("Template", { exact: true }).selectOption({ label: "Personal review" });
+    await useDialog.getByLabel("component", { exact: true }).fill("discard");
+    await useDialog.getByLabel("Library", { exact: true }).selectOption("project");
+    assert.equal(await useDialog.getByLabel("Template", { exact: true }).inputValue(), "");
+    await useDialog.getByLabel("Template", { exact: true }).selectOption({ label: "Project review" });
+    assert.equal(await useDialog.getByLabel("component", { exact: true }).inputValue(), "");
+    await useDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await fresh.getByLabel("Task", { exact: true }).inputValue(), "Temporary draft", "cancel preserves the current task");
+    await fresh.setViewportSize({ width: 390, height: 844 });
+    await menu.click(); await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click();
+    await useDialog.getByLabel("Template", { exact: true }).selectOption({ label: "Personal review" });
+    assert.equal(await useDialog.getByRole("button", { name: "Use template", exact: true }).isDisabled(), true);
+    await useDialog.getByLabel("component", { exact: true }).fill("login");
+    assert.equal(await useDialog.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, "template picker fits a phone viewport");
+    await useDialog.getByRole("button", { name: "Use template", exact: true }).click();
+    assert.equal(await fresh.locator(".composer-options").getAttribute("open"), null, "templates can be used without opening run options");
+    assert.equal(await fresh.getByLabel("Task", { exact: true }).inputValue(), "Review login for regressions.");
+    assert.equal(await fresh.getByLabel("One requirement per line").inputValue(), "Cover login with tests.");
+    await fresh.reload();
+    await fresh.locator(".composer-options > summary").click();
+    assert.equal(await fresh.getByLabel("Run template library").count(), 0);
+    assert.equal(await fresh.getByLabel("Use saved team or template").count(), 0);
+    await menu.click(); await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click();
+    await useDialog.getByLabel("Template", { exact: true }).getByRole("option", { name: "Project review", exact: true }).waitFor({ state: "attached" });
+    await useDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await fresh.getByText("Settings and more", { exact: true }).count(), 0);
+  } finally { await fresh.close(); }
+});
+
+test("template picker edits and deletes within its library without changing the current draft", async () => {
+  const fresh = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const project = await fetch(`${BASE}/api/projects`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Manage templates", repos: [repo] }) }).then((response) => response.json());
+  try {
+    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    await fresh.evaluate(({ repository, id }) => {
+      localStorage.setItem("repo", repository); localStorage.setItem("project", id); localStorage.setItem("pattern", "solo"); localStorage.setItem("sideOpen", "0");
+      const library = { schemaVersion: 1, presets: [], templates: [{ id: "template-one", name: "Review", pattern: "solo", task: "Review {{component}}", criteria: ["Test {{component}}"] }] };
+      localStorage.setItem(`composerLibrary:${id}`, JSON.stringify(library)); localStorage.setItem("composerLibrary", JSON.stringify(library));
+    }, { repository: repo, id: project.id });
+    await fresh.reload();
+    await fresh.getByLabel("Task", { exact: true }).fill("Keep my draft");
+    const open = async () => { await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click(); await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click(); };
+    const dialog = fresh.getByRole("dialog", { name: "Use template", exact: true });
+    await open(); await dialog.getByLabel("Template", { exact: true }).selectOption("template-one");
+    await dialog.getByRole("button", { name: "Edit template", exact: true }).click();
+    await dialog.getByLabel("Template name", { exact: true }).fill("Discarded edit");
+    await dialog.getByRole("button", { name: "Cancel editing", exact: true }).click();
+    assert.equal(await dialog.getByLabel("Template", { exact: true }).locator("option:checked").innerText(), "Review");
+    await dialog.getByRole("button", { name: "Edit template", exact: true }).click();
+    await dialog.getByLabel("Template name", { exact: true }).fill("Updated review");
+    await dialog.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+    await dialog.getByLabel("Template task", { exact: true }).fill("Inspect {{module}} carefully");
+    await dialog.getByLabel("Acceptance criteria", { exact: true }).fill("Test {{module}}\nKeep compatibility");
+    assert.equal(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
+    await dialog.getByRole("button", { name: "Save changes", exact: true }).click();
+    await dialog.getByLabel("module", { exact: true }).waitFor();
+    assert.equal(await dialog.getByLabel("component", { exact: true }).count(), 0, "edited placeholders replace the previous inputs");
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await fresh.getByLabel("Task", { exact: true }).inputValue(), "Keep my draft");
+    let releaseProjects!: () => void;
+    const projectsGate = new Promise<void>(resolve => { releaseProjects = resolve; });
+    await fresh.route("**/api/projects", async route => { await projectsGate; await route.continue(); });
+    try {
+      await fresh.reload();
+      await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
+      assert.equal(await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).isDisabled(), true, "the picker waits for project libraries before choosing its scope");
+    } finally { releaseProjects(); }
+    await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click();
+    await fresh.unroute("**/api/projects");
+    await dialog.getByLabel("Template", { exact: true }).selectOption({ label: "Updated review" });
+    const saved = await fresh.evaluate((id) => JSON.parse(localStorage.getItem(`composerLibrary:${id}`)!).templates[0], project.id);
+    assert.deepEqual(saved, { id: "template-one", name: "Updated review", pattern: "pipeline", task: "Inspect {{module}} carefully", criteria: ["Test {{module}}", "Keep compatibility"] });
+    await dialog.getByRole("button", { name: "Delete template…", exact: true }).click();
+    await dialog.getByRole("button", { name: "Keep template", exact: true }).click();
+    assert.equal(await dialog.getByLabel("Template", { exact: true }).inputValue(), "template-one");
+    await dialog.getByRole("button", { name: "Delete template…", exact: true }).click();
+    await dialog.getByRole("button", { name: "Delete template", exact: true }).click();
+    await dialog.getByRole("status").getByText(/No templates in this library/).waitFor();
+    await dialog.getByLabel("Library", { exact: true }).selectOption("personal");
+    await dialog.getByLabel("Template", { exact: true }).selectOption({ label: "Review" });
+    await dialog.getByLabel("component", { exact: true }).fill("login");
+    await dialog.getByRole("button", { name: "Use template", exact: true }).click();
+    assert.equal(await fresh.getByLabel("Task", { exact: true }).inputValue(), "Review login", "the personal template with the same ID is unchanged");
+    assert.deepEqual(await fresh.evaluate((id) => JSON.parse(localStorage.getItem(`composerLibrary:${id}`)!).templates, project.id), []);
+  } finally { await fresh.close(); }
+});
+
+
+test("sidebar archives, hides and deletes runs with confirmation across tabs", async () => {
+  const task = "Sidebar history management fixture";
+  const created = await fetch(`${BASE}/api/runs`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ repo, task, pattern: "solo", roles: { agent: ["claude"] }, options: {} }) }).then(r => r.json());
+  assert.ok(created.id);
+  for (let i = 0; i < 150; i++) {
+    const run = await fetch(`${BASE}/api/runs/${created.id}`, { headers: bearer }).then(r => r.json());
+    if (run.status !== "running") break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const fresh = await browser.newPage({ viewport: { width: 1267, height: 1042 } });
+  const other = await browser.newPage();
+  try {
+    await fresh.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
+    await other.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
+    const rail = fresh.getByRole("navigation", { name: "Runs", exact: true });
+    const row = rail.locator(".rail-run-row").filter({ has: fresh.locator(".run-item", { hasText: task }) }).first();
+    await row.hover();
+    await row.getByRole("button", { name: "Run actions", exact: true }).click();
+    await row.getByRole("menuitem", { name: "Archive", exact: true }).click();
+    await row.waitFor({ state: "detached" });
+    const search = rail.getByRole("searchbox");
+    await search.fill(task);
+    assert.equal(await row.count(), 0, "search respects hidden archives");
+    await rail.getByRole("button", { name: "Show archived runs", exact: true }).click();
+    await row.waitFor();
+    await row.hover();
+    await row.getByRole("button", { name: "Run actions", exact: true }).click();
+    await row.getByRole("menuitem", { name: "Unarchive", exact: true }).click();
+    await fresh.getByRole("main").getByRole("button", { name: "Archive…", exact: true }).waitFor();
+    await row.hover();
+    await row.getByRole("button", { name: "Run actions", exact: true }).click();
+    await row.getByRole("menuitem", { name: "Delete…", exact: true }).click();
+    const dialog = fresh.getByRole("dialog", { name: "Delete this run?", exact: true });
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal((await fetch(`${BASE}/api/runs/${created.id}`, { headers: bearer })).status, 200);
+    await fresh.getByRole("main").getByRole("button", { name: "Delete…", exact: true }).click();
+    const runUrl = `${BASE}/api/runs/${created.id}`;
+    await fresh.route(runUrl, async route => {
+      if (route.request().method() === "DELETE") await route.fulfill({ status: 404, json: { error: "Not found" } });
+      else await route.continue();
+    });
+    await dialog.getByRole("button", { name: "Delete run", exact: true }).click();
+    await dialog.getByRole("alert").filter({ hasText: "hasn't loaded the delete update" }).waitFor();
+    assert.equal(await row.count(), 1, "a missing DELETE route does not hide an existing run");
+    await fresh.unroute(runUrl);
+    await dialog.getByRole("button", { name: "Delete run", exact: true }).click();
+    await row.waitFor({ state: "detached" });
+    await other.waitForURL(url => !url.hash.includes(created.id));
+    assert.equal((await fetch(`${BASE}/api/runs/${created.id}`, { headers: bearer })).status, 404);
+    await fresh.reload();
+    assert.equal(await rail.locator(".run-item", { hasText: task }).count(), 0);
+  } finally { await fresh.close(); await other.close(); }
+});
+
+test("bulk run selection archives and deletes with partial failure recovery", async () => {
+  const ids: string[] = [];
+  for (const task of ["Bulk history fixture one", "Bulk history fixture two"]) {
+    const created = await fetch(`${BASE}/api/runs`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ repo, task, pattern: "solo", roles: { agent: ["claude"] }, options: {} }) }).then(r => r.json());
+    assert.ok(created.id); ids.push(created.id);
+  }
+  for (const id of ids) for (let i = 0; i < 150; i++) {
+    const run = await fetch(`${BASE}/api/runs/${id}`, { headers: bearer }).then(r => r.json());
+    if (run.status !== "running") break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const fresh = await browser.newPage({ viewport: { width: 1267, height: 1042 } });
+  try {
+    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    const rail = fresh.getByRole("navigation", { name: "Runs", exact: true });
+    await rail.getByRole("searchbox").fill("Bulk history fixture");
+    await rail.locator(".rail-run-row").filter({ hasText: "Bulk history fixture two" }).waitFor();
+    await rail.getByRole("button", { name: "Select runs", exact: true }).click();
+    await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
+    await rail.getByRole("status").filter({ hasText: /^2 selected$/ }).waitFor();
+    await rail.getByRole("button", { name: "Archive", exact: true }).click();
+    await rail.getByRole("status").filter({ hasText: /^0 selected$/ }).waitFor();
+    assert.equal(await rail.locator(".rail-run-row").count(), 0);
+    await rail.getByRole("button", { name: "Show archived runs", exact: true }).click();
+    await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
+    await rail.getByRole("button", { name: "Delete…", exact: true }).click();
+    const dialog = fresh.getByRole("dialog", { name: "Delete 2 runs?", exact: true });
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal((await fetch(`${BASE}/api/runs/${ids[0]}`, { headers: bearer })).status, 200);
+    await rail.getByRole("button", { name: "Delete…", exact: true }).click();
+    const failedUrl = `${BASE}/api/runs/${ids[1]}`;
+    await fresh.route(failedUrl, async route => {
+      if (route.request().method() === "DELETE") await route.fulfill({ status: 409, json: { error: "Run is busy" } });
+      else await route.continue();
+    });
+    await dialog.getByRole("button", { name: "Delete 2 runs", exact: true }).click();
+    const retry = fresh.getByRole("dialog", { name: "Delete 1 run?", exact: true });
+    await retry.getByRole("alert").filter({ hasText: "Run is busy" }).waitFor();
+    assert.equal((await fetch(`${BASE}/api/runs/${ids[0]}`, { headers: bearer })).status, 404);
+    assert.equal((await fetch(failedUrl, { headers: bearer })).status, 200);
+    await rail.getByRole("status").filter({ hasText: /^1 selected$/ }).waitFor();
+    await fresh.unroute(failedUrl);
+    await retry.getByRole("button", { name: "Delete 1 run", exact: true }).click();
+    await retry.waitFor({ state: "detached" });
+    assert.equal((await fetch(failedUrl, { headers: bearer })).status, 404);
+    await rail.getByRole("status").filter({ hasText: /^0 selected$/ }).waitFor();
+  } finally { await fresh.close(); }
+});
+
+test("searchable model picker filters names and IDs, supports keyboard, resets and fits mobile", async () => {
+  const fresh = await browser.newPage({ viewport: { width: 1039, height: 1042 }, colorScheme: "dark" });
+  try {
+    await fresh.addInitScript(repository => {
+      localStorage.setItem("repo", repository); localStorage.setItem("pattern", "solo"); localStorage.setItem("sideOpen", "0"); localStorage.setItem("theme", "dark");
+      localStorage.setItem("roleSel", JSON.stringify({ solo: { agent: ["claude"] } }));
+    }, repo);
+    await fresh.route("**/api/models", async route => {
+      const response = await route.fetch(); const catalogs = await response.json();
+      catalogs.claude.models = [
+        { id: "vendor/special-free", label: "Special (free)" },
+        ...Array.from({ length: 80 }, (_, i) => ({ id: `vendor/model-${i}`, label: `Model ${i}` })),
+      ];
+      await route.fulfill({ response, json: catalogs });
+    });
+    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    const trigger = fresh.locator(".taskbox").getByRole("button", { name: "Model", exact: true });
+    await trigger.click();
+    const search = fresh.getByRole("combobox", { name: "Search Model", exact: true });
+    const options = fresh.getByRole("listbox", { name: "Model", exact: true }).getByRole("option");
+    const freeOnly = fresh.getByRole("button", { name: "Free only", exact: true });
+    await options.locator(".model-free-badge").first().waitFor();
+    assert.equal(await options.locator(".model-free-badge").count(), 1, "free badge appears with the filter off; paid and default options have none");
+    await search.press("Shift+Tab");
+    assert.equal(await freeOnly.evaluate(element => element === document.activeElement), true, "free filter is keyboard reachable");
+    await freeOnly.press("Space");
+    assert.equal(await freeOnly.getAttribute("aria-pressed"), "true");
+    assert.deepEqual(await options.locator(".model-option-name").allTextContents(), ["Special (free)"]);
+    assert.match(await trigger.textContent() ?? "", /Default model/, "filtering does not change the selected model");
+    await search.fill("model-79");
+    assert.equal(await options.count(), 0);
+    await fresh.getByRole("status").filter({ hasText: "No free models found" }).waitFor();
+    await search.fill("special");
+    await search.press("Escape");
+    await trigger.click();
+    assert.equal(await freeOnly.getAttribute("aria-pressed"), "true", "picker remembers the filter when reopened");
+    await freeOnly.click();
+    assert.ok(await options.count() > 80, "disabling the filter restores all models and default");
+    await search.fill("VENDOR special");
+    assert.equal(await options.count(), 1);
+    assert.match(await options.first().textContent() ?? "", /Special/);
+    await search.fill("no-such-model");
+    await fresh.getByRole("status").filter({ hasText: "No models found" }).waitFor();
+    await search.press("Enter");
+    assert.equal(await trigger.getAttribute("aria-expanded"), "true");
+    await search.fill("model-79");
+    await search.press("Enter");
+    assert.match(await trigger.textContent() ?? "", /Model 79/);
+    assert.equal(await trigger.evaluate(element => element === document.activeElement), true);
+    await trigger.click();
+    assert.equal(await search.inputValue(), "");
+    await search.fill("model-7");
+    await search.press("ArrowDown");
+    await search.press("Enter");
+    assert.match(await trigger.textContent() ?? "", /Model 70/);
+    await trigger.click();
+    await search.fill("special");
+    await search.press("Escape");
+    assert.match(await trigger.textContent() ?? "", /Model 70/);
+    await fresh.getByRole("button", { name: "Collapse sidebar", exact: true }).click();
+    await fresh.setViewportSize({ width: 390, height: 844 });
+    await trigger.click();
+    await freeOnly.click();
+    await search.fill("special");
+    const bounds = await fresh.locator(".model-select-popup").boundingBox();
+    assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390 && bounds.y >= 0 && bounds.y + bounds.height <= 844);
+    await fresh.screenshot({ path: join(root, "output/free-model-filter-mobile.png"), animations: "disabled" });
+    await fresh.getByRole("textbox", { name: "Task", exact: true }).click();
+    assert.equal(await trigger.getAttribute("aria-expanded"), "false");
+  } finally { await fresh.close(); }
+});
+
+test("free model ordering, multiple provider models and dark team selectors", async () => {
+  const fresh = await browser.newPage({ viewport: { width: 1039, height: 1042 }, colorScheme: "dark" });
+  try {
+    await fresh.addInitScript((repository) => {
+      localStorage.setItem("repo", repository); localStorage.setItem("pattern", "council"); localStorage.setItem("sideOpen", "0"); localStorage.setItem("theme", "dark");
+      localStorage.setItem("roleSel", JSON.stringify({ council: { reviewers: ["claude"], chair: ["codex"] } }));
+    }, repo);
+    await fresh.route("**/api/models", async route => {
+      const response = await route.fetch(); const catalogs = await response.json();
+      catalogs.claude.models = [{ id: "paid", label: "Paid model" }, { id: "first-free", label: "First (free)" }, { id: "second-free", label: "Second (free)" }];
+      await route.fulfill({ response, json: catalogs });
+    });
+    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    await fresh.locator(".composer-options > summary").click();
+    await fresh.locator(".advanced-controls > summary").click();
+    const role = fresh.locator(".role").filter({ has: fresh.locator(".rl", { hasText: /^Reviewers/ }) });
+    const model = role.getByLabel("Claude Code model for the reviewers", { exact: true });
+    await model.click();
+    assert.deepEqual(await fresh.getByRole("listbox").locator(".model-option-name").allTextContents(), ["Default model", "First (free)", "Second (free)", "Paid model"]);
+    await fresh.getByRole("combobox", { name: /^Search / }).press("Escape");
+    await role.getByRole("button", { name: "Select all free", exact: true }).click();
+    assert.equal((await model.textContent())?.trim(), "First (free)");
+    assert.equal((await role.getByLabel("Claude Code additional model 1 for the reviewers", { exact: true }).textContent())?.trim(), "Second (free)");
+    await role.getByText("2 agents · each model runs separately", { exact: true }).waitFor();
+    const colors = await model.evaluate(element => { const css = getComputedStyle(element); return [css.color, css.backgroundColor]; });
+    assert.notEqual(colors[0], colors[1]); assert.notEqual(colors[1], "rgba(0, 0, 0, 0)");
+    const modelBox = await model.boundingBox();
+    const effortBox = await role.getByLabel("Claude Code effort for the reviewers", { exact: true }).boundingBox();
+    assert.ok(modelBox && effortBox && Math.abs(modelBox.y - effortBox.y) < 2, "desktop model and effort controls share a row");
+    await fresh.screenshot({ path: join(root, "output/team-free-models-dark.png") });
+    await fresh.getByRole("button", { name: "Use the light theme", exact: true }).click();
+    await fresh.screenshot({ path: join(root, "output/team-models-light.png") });
+    await fresh.getByRole("button", { name: "Collapse sidebar", exact: true }).click();
+    await fresh.setViewportSize({ width: 390, height: 844 });
+    await role.scrollIntoViewIfNeeded();
+    await fresh.screenshot({ path: join(root, "output/team-models-mobile.png"), animations: "disabled" });
+    assert.ok(await fresh.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await role.getByRole("button", { name: "Remove Claude Code model second-free", exact: true }).click();
+    await role.getByLabel("Add Claude Code model for the reviewers", { exact: true }).click();
+    await fresh.getByRole("combobox", { name: /^Search / }).fill("PAID");
+    await fresh.getByRole("option", { name: "Paid model", exact: true }).click();
+    assert.equal((await role.getByLabel("Claude Code additional model 1 for the reviewers", { exact: true }).textContent())?.trim(), "Paid model");
+    const saved = await fresh.evaluate(() => JSON.parse(localStorage.getItem("roleModels")!).council.reviewers.claude);
+    assert.deepEqual(saved.variants, [{ model: "paid" }]);
+  } finally { await fresh.close(); }
+});
+
+test("Auto team selects all free models into a persistent bounded model pool", async () => {
+  const fresh = await browser.newPage({ viewport: { width: 1039, height: 1042 }, colorScheme: "dark" });
+  try {
+    await fresh.addInitScript((repository) => {
+      localStorage.setItem("repo", repository); localStorage.setItem("pattern", "auto-team"); localStorage.setItem("sideOpen", "0"); localStorage.setItem("theme", "dark");
+      localStorage.setItem("roleSel", JSON.stringify({ "auto-team": { pool: ["claude"], coordinator: ["codex"] } }));
+    }, repo);
+    await fresh.route("**/api/models", async route => {
+      const response = await route.fetch(); const catalogs = await response.json();
+      catalogs.claude.models = [{ id: "paid", label: "Paid model" }, { id: "first-free", label: "First (free)" }, { id: "second-free", label: "Second (free)" }];
+      await route.fulfill({ response, json: catalogs });
+    });
+    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    await fresh.locator(".composer-options > summary").click();
+    await fresh.locator(".advanced-controls > summary").click();
+    const role = fresh.locator(".role").filter({ has: fresh.locator(".rl", { hasText: /^Available providers/ }) });
+    const model = role.getByLabel("Claude Code model for the available providers", { exact: true });
+    await model.click();
+    assert.deepEqual(await fresh.getByRole("listbox").locator(".model-option-name").allTextContents(), ["Default model", "First (free)", "Second (free)", "Paid model"]);
+    await fresh.getByRole("combobox", { name: /^Search / }).press("Escape");
+    await role.getByRole("button", { name: "Select all free", exact: true }).click();
+    assert.equal((await model.textContent())?.trim(), "First (free)");
+    assert.equal((await role.getByLabel("Claude Code additional model 1 for the available providers", { exact: true }).textContent())?.trim(), "Second (free)");
+    await role.getByText("2 model choices · coordinator selects within the member limit", { exact: true }).waitFor();
+    assert.equal(await fresh.locator(".role").filter({ has: fresh.locator(".rl", { hasText: /^Coordinator/ }) }).getByRole("button", { name: "Codex", exact: true }).getAttribute("aria-pressed"), "true", "pool choices preserve the coordinator");
+    const colors = await model.evaluate(element => { const css = getComputedStyle(element); return [css.color, css.backgroundColor]; });
+    assert.notEqual(colors[0], colors[1]); assert.notEqual(colors[1], "rgba(0, 0, 0, 0)");
+    await fresh.screenshot({ path: join(root, "output/auto-team-model-pool-test.png") });
+    await fresh.setViewportSize({ width: 390, height: 844 });
+    assert.ok(await fresh.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await role.getByRole("button", { name: "Remove Claude Code model second-free", exact: true }).click();
+    await role.getByLabel("Add Claude Code model for the available providers", { exact: true }).click();
+    await fresh.getByRole("combobox", { name: /^Search / }).fill("PAID");
+    await fresh.getByRole("option", { name: "Paid model", exact: true }).click();
+    assert.equal((await role.getByLabel("Claude Code additional model 1 for the available providers", { exact: true }).textContent())?.trim(), "Paid model");
+    const saved = await fresh.evaluate(() => JSON.parse(localStorage.getItem("roleModels")!)["auto-team"].pool.claude);
+    assert.deepEqual(saved.variants, [{ model: "paid" }]);
+  } finally { await fresh.close(); }
 });

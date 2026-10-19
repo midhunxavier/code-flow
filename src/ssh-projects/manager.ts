@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import { sshAliases } from "./config.js";
 import { SshGateway, parseRuntime } from "./gateway.js";
 import { SshTransport, validSshHost, validSshOptions, type SshOptions } from "./transport.js";
 
+export interface ComputerProjects { id: string; name: string; projects: { id: string; name: string }[]; error?: string }
 interface Host extends SshOptions { id: string; name: string; sshHost: string }
 interface Session { transport: SshTransport; gateway: SshGateway }
 export class SshProjects {
@@ -18,7 +20,7 @@ export class SshProjects {
   private pending = new Map<string, Promise<Session>>();
   private closed = false;
   private file: string;
-  constructor(private readonly options: { home?: string; returnUrl: string; sshBinary?: string; packagePath?: string; configPath?: string }) { this.file = join(options.home ?? CODEFLOW_HOME, "ssh-hosts.json"); }
+  constructor(private readonly options: { home?: string; sshBinary?: string; packagePath?: string; configPath?: string; localProjects?: () => { id: string; name: string }[]; canBrowse?: () => boolean }) { this.file = join(options.home ?? CODEFLOW_HOME, "ssh-hosts.json"); }
   private load() {
     return this.loaded ??= readFile(this.file, "utf8").then((text) => {
       const raw = JSON.parse(text);
@@ -53,7 +55,7 @@ export class SshProjects {
     try { const runtime = parseRuntime(await transport.bootstrap(code, payload)); return { transport, runtime }; }
     catch (error) { await transport.close(); throw error; }
   }
-  async connect(id: string, returnUrl = this.options.returnUrl) {
+  async connect(id: string) {
     await this.load();
     if (this.closed) throw new HttpError(503, "The local app is shutting down");
     const host = this.hosts.find((item) => item.id === id); if (!host) throw new HttpError(404, "SSH connection not found");
@@ -67,11 +69,11 @@ export class SshProjects {
           const initial = await this.setup(host);
           const state: Session = { transport: initial.transport, gateway: undefined! };
           let reconnecting: Promise<typeof initial> | undefined;
-          const gateway = new SshGateway(host.id, host.name, returnUrl, initial.transport, initial.runtime, () => reconnecting ??= (async () => {
+          const gateway = new SshGateway(initial.transport, initial.runtime, () => reconnecting ??= (async () => {
             const next = await this.setup(host); const previous = state.transport; state.transport = next.transport; await previous.close(); return next;
           })().finally(() => { reconnecting = undefined; }));
           state.gateway = gateway;
-          try { await gateway.listen(); if (this.closed) throw new Error("The local app is shutting down"); this.sessions.set(id, state); return state; }
+          try { if (this.closed) throw new Error("The local app is shutting down"); this.sessions.set(id, state); this.directoryCache = undefined; return state; }
           catch (error) { await gateway.close(); await state.transport.close(); throw error; }
         })();
         this.pending.set(id, pending);
@@ -79,11 +81,49 @@ export class SshProjects {
       }
       session = await pending;
     }
-    return { url: session.gateway.link() };
+    return { url: `/computer/${id}/` };
+  }
+  private directoryPending?: Promise<ComputerProjects[]>;
+  private directoryCache?: { until: number; value: ComputerProjects[] };
+  private assertBrowse() {
+    if (this.options.canBrowse && !this.options.canBrowse()) throw new HttpError(409, "Filesystem restrictions pause connected projects");
+  }
+  async projectDirectory(): Promise<ComputerProjects[]> {
+    this.assertBrowse();
+    await this.load();
+    let remotes = this.directoryCache && this.directoryCache.until > Date.now() ? this.directoryCache.value : undefined;
+    if (!remotes) {
+      this.directoryPending ??= Promise.all([...this.sessions].map(async ([id, session]): Promise<ComputerProjects> => {
+        const host = this.hosts.find((host) => host.id === id)!;
+        try {
+          const rows = await session.gateway.json("/api/projects", "GET", undefined, 5000);
+          if (!Array.isArray(rows) || rows.some((p) => !p || typeof p.id !== "string" || typeof p.name !== "string")) throw new Error("Invalid project list");
+          return { id, name: host.name, projects: rows.map(({ id, name }) => ({ id, name })) };
+        } catch { return { id, name: host.name, projects: [], error: "Connection unavailable" }; }
+      })).finally(() => { this.directoryPending = undefined; });
+      remotes = await this.directoryPending;
+      this.directoryCache = { until: Date.now() + 5000, value: remotes };
+    }
+    this.assertBrowse();
+    // Re-check live sessions after the async reads: removed hosts must not reappear.
+    return [{ id: "local", name: "This computer", projects: (this.options.localProjects?.() ?? []).map(({ id, name }) => ({ id, name })) }, ...remotes.filter((host) => this.sessions.has(host.id)).sort((a, b) => this.hosts.findIndex((host) => host.id === a.id) - this.hosts.findIndex((host) => host.id === b.id))];
+  }
+  async context(id: string) {
+    this.assertBrowse(); await this.load();
+    const host = this.hosts.find((host) => host.id === id);
+    if (!host) throw new HttpError(404, "Computer not found");
+    const session = this.sessions.get(id);
+    return { kind: "ssh" as const, id, name: host.name, connected: !!session, error: session?.gateway.error };
+  }
+  async forward(id: string, req: IncomingMessage, res: ServerResponse, path: string, origin: string) {
+    this.assertBrowse();
+    const session = this.sessions.get(id);
+    if (!session) throw new HttpError(409, "This computer is disconnected. Reconnect it in Settings.");
+    return session.gateway.forward(req, res, path, origin);
   }
   async disconnect(id: string) {
     const session = this.sessions.get(id) ?? await this.pending.get(id)?.catch(() => undefined);
-    this.sessions.delete(id);
+    this.sessions.delete(id); this.directoryCache = undefined;
     if (session) { await session.gateway.close(); await session.transport.close(); }
   }
   async remove(id: string) { await this.disconnect(id); await this.change(() => { this.hosts = this.hosts.filter((host) => host.id !== id); }); }

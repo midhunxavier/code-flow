@@ -76,6 +76,12 @@ test("complete cycle uses existing Auto teams, preserves read-only discovery, ve
   assert.ok(discovery.steps.filter((s) => s.kind === "agent").every((s) => s.mode === "read"));
   assert.equal(f.git("rev-parse", "main"), base, "A cycle must not merge itself");
   const child = f.manager.get(o.result!.runId)!;
+  await assert.rejects(f.manager.deleteRun(discovery.id), /Standing project teams retain run history/);
+  await assert.rejects(f.manager.deleteRun(child.id), /Standing project teams retain run history/);
+  await f.manager.archive(child.id, { cleanup: false });
+  assert.equal(f.manager.get(child.id)?.archived, true);
+  await assert.rejects(f.manager.deleteRun(child.id), /Archive this run instead/);
+  assert.equal(f.store.get(f.team.id).opportunities[0]?.status, "ready", "archiving preserves the result awaiting approval");
   await assert.rejects(f.manager.resume(child.id), /project team/);
   await assert.rejects(f.manager.merge(child.id, { branch: o.result!.branch, into: "main" }), /Approve/);
   const accepted = await f.service.decide(t.id, o.id, { operationId: "approve", revision: t.revision, opportunityRevision: o.revision, action: "approve" });

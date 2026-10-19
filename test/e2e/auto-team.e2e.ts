@@ -59,6 +59,7 @@ after(async () => { await browser?.close(); server?.kill("SIGTERM"); });
 test("Auto team approval, addressed question, distinct members, and verified coverage work in the UI", { timeout: 120_000 }, async () => {
   await page.goto(base);
   await page.getByLabel("Workflow", { exact: true }).selectOption("auto-team");
+  await page.locator(".composer-options > summary").click();
   const approval = page.getByRole("checkbox", { name: /Let me approve the team and plan/ });
   assert.equal(await approval.isChecked(), true, "Auto plans start with approval enabled");
   await page.getByLabel("Task", { exact: true }).fill("AUTO-USER-QUESTION AUTO-SAME-PROVIDER implement the sample");
@@ -186,8 +187,10 @@ test("Auto team approval, addressed question, distinct members, and verified cov
 
   await page.goto(base);
   await page.getByLabel("Workflow", { exact: true }).selectOption("auto-team");
+  await page.locator(".composer-options > summary").click();
   await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).uncheck();
   await page.reload();
+  await page.locator(".composer-options > summary").click();
   assert.equal(await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).isChecked(), false, "explicit approval preference persists");
 });
 

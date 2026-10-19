@@ -4,7 +4,7 @@ import type { Attempt, Checkpoint, Comment, Instruction, Task, TaskStatus } from
 import { useDialog } from "./app.js";
 import { TRUST } from "./composer.js";
 import { Icon } from "./icons.js";
-import { ApiError, enc, fmtSize, post, showToast, useLatest, usePoll } from "./lib.js";
+import { apiPath, ApiError, enc, fmtSize, post, showToast, useLatest, usePoll } from "./lib.js";
 import { roleAtLeast } from "./shared-roles.js";
 import { agents, agentSettings, available, patterns, repo, trust, type Trust } from "./state.js";
 import type { AgentId, RoleSpec } from "./types.js";
@@ -224,7 +224,7 @@ function CheckpointsCard({ task, latest, meId, canEdit, maintainer, shared, busy
       {checkpoint.changedFiles.length ? <details><summary>{checkpoint.changedFiles.length} changed file{checkpoint.changedFiles.length === 1 ? "" : "s"}</summary><ul class="team-list mono">{checkpoint.changedFiles.map((path) => <li key={path}>{path}</li>)}</ul></details> : null}
       <div class="team-actions">
         {!shared && canEdit && checkpoint.bundle === "available" ? <button type="button" class="btn small" disabled={!!busy} onClick={() => onFetch(checkpoint)}>Fetch to this computer…</button> : null}
-        {canEdit && checkpoint.bundle === "available" ? <a class="btn small" href={`/api/team/checkpoints/${enc(checkpoint.id)}/bundle`} download={`checkpoint-${checkpoint.id.slice(0, 8)}.bundle`}>Download bundle</a> : null}
+        {canEdit && checkpoint.bundle === "available" ? <a class="btn small" href={apiPath(`/api/team/checkpoints/${enc(checkpoint.id)}/bundle`)} download={`checkpoint-${checkpoint.id.slice(0, 8)}.bundle`}>Download bundle</a> : null}
         {maintainer && checkpoint.bundle !== "deleted" ? <button type="button" class="btn small danger" disabled={!!busy} onClick={() => { if (confirm("Delete this checkpoint's bundle? Teammates can no longer download or continue from it.")) void act("Deleting…", async () => { await del(`/api/team/checkpoints/${enc(checkpoint.id)}`); }, () => void reload()); }}>Delete</button> : null}
       </div>
     </article>)}

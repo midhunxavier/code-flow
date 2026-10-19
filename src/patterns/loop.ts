@@ -45,7 +45,7 @@ export const loopPattern: Pattern = {
   ],
 
   async run(ctx) {
-    const workers = ctx.agents("workers");
+    const workers = ctx.participants("workers");
     if (!workers.length) throw new Error("Pick at least one worker");
     const maxRounds = ctx.option("maxRounds", 6);
     const stuckAfter = ctx.option("stuckAfter", 2);
@@ -68,7 +68,7 @@ export const loopPattern: Pattern = {
      */
     const distance = (r: CheckResult) => (r.ok ? 0 : r.failed === undefined ? undefined : r.failed + 0.5);
 
-    const sessions = new Map<AgentId, StepOutcome>();
+    const sessions = new Map<string, StepOutcome>();
     const history: string[] = [];
     let current = 0;
     let stuck = 0;
@@ -97,8 +97,8 @@ export const loopPattern: Pattern = {
 
     for (let round = 1; round <= maxRounds; round++) {
       rounds = round;
-      const agent = workers[current]!;
-      const session = sessions.get(agent);
+      const { agent, settings, identity } = workers[current]!;
+      const session = sessions.get(identity ?? agent);
       const fixIt = nudge || checkSection(last) + section("Next", "Find the root cause and fix it in the code — don't weaken or skip tests. Then summarize what you changed.");
       const prompt = session
         ? undone
@@ -114,8 +114,8 @@ export const loopPattern: Pattern = {
       nudge = "";
       undone = "";
 
-      const turn = await ctx.ask({ title: `Round ${round}`, role: "workers", agent, mode: "write", cwd: wt, resume: session, prompt });
-      sessions.set(agent, turn);
+      const turn = await ctx.ask({ title: `Round ${round}`, role: "workers", agent, settings, identity, mode: "write", cwd: wt, resume: session, prompt });
+      sessions.set(identity ?? agent, turn);
       const sha = await ctx.commit(wt, `${agent}: round ${round}`);
       if (sha) head = sha;
       let result = (await ctx.check(wt, `Check after round ${round}`))!;
@@ -192,11 +192,11 @@ export const loopPattern: Pattern = {
       stuck = progress ? 0 : stuck + 1;
       if (stuck >= stuckAfter && workers.length > 1) {
         const next = (current + 1) % workers.length;
-        ctx.log(`${name(agent)} made no progress for ${stuck} rounds; handing over to ${name(workers[next]!)}`, "warn");
+        ctx.log(`${name(agent)} made no progress for ${stuck} rounds; handing over to ${name(workers[next]!.agent)}`, "warn");
         handover =
           `${name(agent)} worked on this before you without getting the check to pass. Its commits are on this branch ` +
           `(\`git log\` shows them); keep what's useful, and take a fresh look rather than repeating its approach.\n${history.join("\n")}`;
-        sessions.delete(workers[next]!); // start fresh: anything it saw earlier is stale now
+        sessions.delete(workers[next]!.identity ?? workers[next]!.agent); // start fresh: anything it saw earlier is stale now
         current = next;
         stuck = 0;
         handoffs++;
@@ -208,7 +208,7 @@ export const loopPattern: Pattern = {
     // the check can't run), so it neither passes nor feeds who gets picked next.
     const passed = last.ok && !unresolved.length;
     if (passed || !last.ok) ctx.setVerdict(passed ? "passed" : "failing");
-    ctx.setFacts({ solvedBy: passed ? solvedBy ?? workers[current] : undefined, handoffs, proof: ctx.proofOf(wt)?.status });
+    ctx.setFacts({ solvedBy: passed ? solvedBy ?? workers[current]?.agent : undefined, handoffs, proof: ctx.proofOf(wt)?.status });
     const s = rounds === 1 ? "" : "s";
     return [
       passed

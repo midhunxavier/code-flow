@@ -96,6 +96,7 @@ export async function handleSharedApi(req: IncomingMessage, res: ServerResponse,
     const notification = (run: RunSummary) => ({ id: run.id, project: projectId(run), status: run.status, createdAt: run.createdAt, endedAt: run.endedAt });
     const reset = () => { const list = authorized(); visible = new Set(list.map((run) => run.id)); emit({ type: "hello", epoch: randomUUID(), runs: list.slice(0, 100).map(notification), total: list.length }); };
     add(host.manager.subscribeAll((run) => {
+      if (run.deleted) { if (visible.delete(run.id)) reset(); return; }
       try { if (canRead(run)) { visible.add(run.id); emit({ type: "run", run: notification(run) }); } else if (visible.delete(run.id)) reset(); }
       catch { close(); }
     }));

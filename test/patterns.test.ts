@@ -33,7 +33,7 @@ async function runPattern(
   roles: Record<string, any>,
   task = "Do the thing",
   options = {},
-  extra: { baseRef?: string; branchPrefix?: string } = {},
+  extra: { baseRef?: string; branchPrefix?: string; roleSettings?: import("../src/engine.js").Run["roleSettings"] } = {},
 ): Promise<Run> {
   const manager = (lastManager = new RunManager());
   const run = await manager.start({ pattern: findPattern(id)!, task, repo, roles, options, ...extra });
@@ -264,4 +264,24 @@ test("listBranches groups local, run and current branches", async () => {
 test("runs never touch the user's own checkout", () => {
   assert.equal(readFileSync(join(repo, "shared.txt"), "utf8"), "original\n");
   assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: repo }).toString(), "");
+});
+
+
+test("one provider can run distinct models in a council, race and continued debate", async () => {
+  const choices = { claude: { model: "first", effort: "high", variants: [{ model: "second", effort: "low" }] } };
+  for (const [pattern, role, roles] of [
+    ["council", "reviewers", { reviewers: ["claude"], chair: ["codex"] }],
+    ["race", "contestants", { contestants: ["claude"], judge: ["codex"] }],
+    ["debate", "debaters", { debaters: ["claude"], synthesizer: ["codex"], builder: [] }],
+  ] as const) {
+    const run = await runPattern(pattern, roles, "Do the thing", { rounds: 1 }, { roleSettings: { [role]: choices } });
+    assert.equal(run.status, "done", run.error);
+    const steps = run.steps.filter(step => step.role === role);
+    assert.ok(steps.some(step => step.settings?.model === "first" && step.settings.effort === "high"));
+    assert.ok(steps.some(step => step.settings?.model === "second" && step.settings.effort === "low"));
+    if (pattern === "debate") {
+      assert.equal(steps.length, 4);
+      assert.equal(steps.filter(step => step.settings?.model === "second").length, 2);
+    }
+  }
 });

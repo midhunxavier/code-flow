@@ -48,3 +48,19 @@ if (args.includes('-W')) {
   return { directory, remoteHome, localHome, bin, repo, ssh, audit, git, login, networkPort, cleanup };
 }
 export function buildHost() { execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root }); execFileSync(process.execPath, ["scripts/build-host.mjs"], { cwd: root }); }
+
+/** Test HTTP adapter for SSH transport; the real app's owner checks are covered in E2E. */
+export async function projectBridge(service: import("../src/ssh-projects/manager.js").SshProjects) {
+  const { createServer } = await import("node:http");
+  let origin = "";
+  const server = createServer((req, res) => {
+    const match = req.url?.match(/^\/computer\/([a-f0-9]{16})(\/api\/.*)$/);
+    if (!match) { res.writeHead(404).end(); return; }
+    void service.forward(match[1]!, req, res, match[2]!, origin).catch((error) => {
+      res.writeHead(error.status ?? 500, { "content-type": "application/json" }).end(JSON.stringify({ error: error.message }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return { origin, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+}

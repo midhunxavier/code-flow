@@ -40,6 +40,8 @@ import {
   loadHealth,
   pickerOpen,
   railOpen,
+  railCollapsed,
+  setRailCollapsed,
   recentRepos,
   repo,
   route,
@@ -118,7 +120,7 @@ function MainApp() {
     <>
       <a class="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to main content</a>
       <ApprovalInbox />
-      <div class={`app ${sideOpen.value ? "with-side" : ""}`} style={`--side-w:${sideWidth.value}px`}>
+      <div class={`app ${sideOpen.value ? "with-side" : ""} ${railCollapsed.value ? "rail-collapsed" : ""}`} style={`--side-w:${sideWidth.value}px`}>
         <Rail />
         {railOpen.value ? <div class="rail-scrim" aria-hidden="true" onClick={() => (railOpen.value = false)} /> : null}
         <div class="main-col">
@@ -395,6 +397,7 @@ function onShortcut(e: KeyboardEvent) {
   switch (e.key) {
     case "/": {
       e.preventDefault();
+      setRailCollapsed(false);
       railOpen.value = true;
       const search = () => document.getElementById("run-search") as HTMLInputElement | null;
       search()?.focus();

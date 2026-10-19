@@ -38,6 +38,8 @@ The project page contains the full opportunity cards, cycle history, selection r
 
 Changing the mission makes previously ready/accepted results require new verification. Moving a result branch after review invalidates readiness. Generic run resumes, selective reruns, writer follow-ups, automatic PR-fix watchers and triage revision shortcuts are blocked for managed runs; use the standing team's revision controls.
 
+Standing team runs can be archived individually or in a sidebar selection. They cannot be deleted: cycle recovery, budgets and exact-result approvals retain their run history. Ordinary runs still support individual and bulk deletion. The mission editor's searchable model picker includes the same free-model filter and badges as the composer; its selections update only that team's mission.
+
 Existing notification destinations receive actionable cycle outcomes using their saved event/project scope. Child completions and no-op cycles do not produce duplicate alerts. Destinations remain opt-in.
 
 ## Recovery and storage

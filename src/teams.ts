@@ -150,7 +150,7 @@ export interface TeamInventory {
     quotaKnown: boolean;
     model?: string;
     effort?: string;
-    settingsByRole?: Partial<Record<TeamMember["role"], { model?: string; effort?: string }>>;
+    settingsByRole?: Partial<Record<TeamMember["role"], { model?: string; effort?: string; variants?: { model: string; effort?: string }[] }>>;
     /** Catalog choices are usable only where the user's settings do not pin a value. */
     models?: { id: string; efforts?: string[] }[];
     efforts?: string[];

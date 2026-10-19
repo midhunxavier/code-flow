@@ -1,5 +1,5 @@
 import { computed, signal } from "@preact/signals";
-import { api, ApiError, post, showToast, store, SHORT } from "./lib.js";
+import { api, ApiError, post, showToast, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
 import { onStreamState, subscribe } from "./stream.js";
 import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
@@ -47,6 +47,11 @@ export function routeFromHash(hash = location.hash): Route {
   return parseRouteHash(hash);
 }
 export const railOpen = signal(false);
+export const railCollapsed = signal(store.get("railCollapsed") === "1");
+export function setRailCollapsed(value: boolean) {
+  railCollapsed.value = value;
+  store.set("railCollapsed", value ? "1" : "0");
+}
 export const pickerOpen = signal(false);
 
 // ---------------------------------------------------------------- side panel
@@ -438,7 +443,7 @@ export function rememberSide(patch: Omit<Partial<SideMemory>, "at">, key = sideS
 }
 // Another window (a popped-out panel) changed the memory: take it, so neither writes over the other.
 window.addEventListener("storage", (e) => {
-  if (e.key === "sideMemory" && e.newValue) {
+  if (e.key === workspaceKey("sideMemory") && e.newValue) {
     try {
       sideMemory.value = JSON.parse(e.newValue);
     } catch {
@@ -454,8 +459,8 @@ export function restoreSideTab() {
 }
 
 // ---------------------------------------------------------------- a popped-out panel and the main window
-const HANDOFF = "codeflow:open";
-const READY = "codeflow:ready";
+const HANDOFF = workspaceId ? `codeflow:open:${workspaceId}` : "codeflow:open";
+const READY = workspaceId ? `codeflow:ready:${workspaceId}` : "codeflow:ready";
 /**
  * What a popped-out panel hands to the main window: a page to show, drafts for its message boxes,
  * and a run's side chat to show in its panel.
@@ -485,7 +490,7 @@ export function navigate(to: Route, drafts: ChatDraft[] = []) {
 function mainWindow(): Window | null {
   for (const w of [opened, window.opener as Window | null]) {
     try {
-      if (w && !w.closed && w.location.origin === location.origin) return w;
+      if (w && !w.closed && w.location.origin === location.origin && w.location.pathname === location.pathname) return w;
     } catch {
       // another site's window: its location can't be read
     }
@@ -564,7 +569,7 @@ export function setTrust(value: Trust) {
 }
 /** Per-role model/effort overrides, per pattern: { pattern: { role: { agent: { model, effort } } } }. */
 export const roleModels = signal<Record<string, Record<string, AgentSettings>>>(store.json("roleModels", {}));
-export function setRoleModel(patternId: string, roleId: string, agent: AgentId, patch: { model?: string; effort?: string }) {
+export function setRoleModel(patternId: string, roleId: string, agent: AgentId, patch: { model?: string; effort?: string; variants?: { model: string; effort?: string }[] }) {
   const forPattern = roleModels.value[patternId] ?? {};
   const forRole = forPattern[roleId] ?? {};
   roleModels.value = { ...roleModels.value, [patternId]: { ...forPattern, [roleId]: { ...forRole, [agent]: { ...(forRole[agent] ?? {}), ...patch } } } };
@@ -756,7 +761,17 @@ export const needsYou = (r: RunSummary) => !r.archived && (!r.projectTeam || !!r
 export const runState = (r: { status: string; verdict?: string; checkCantRun?: unknown }) =>
   r.status === "done" && r.verdict === "failing" ? "failing" : r.status === "done" && r.checkCantRun ? "unchecked" : r.status;
 
+const deletedRunIds = new Set<string>();
+export function forgetRun(id: string) {
+  const fresh = !deletedRunIds.has(id);
+  deletedRunIds.add(id);
+  const next = new Map(runs.value); next.delete(id); runs.value = next;
+  if (fresh && historyTotal.value !== null) historyTotal.value = Math.max(0, historyTotal.value - 1);
+  if ((route.value.view === "run" || route.value.view === "review") && route.value.id === id) route.value = { view: "composer" };
+}
 export function upsertRun(run: RunSummary) {
+  if (run.deleted) { forgetRun(run.id); return; }
+  if (deletedRunIds.has(run.id)) return;
   const next = new Map(runs.value);
   next.set(run.id, run);
   runs.value = next;
@@ -811,7 +826,7 @@ function noticeChange(before: RunSummary | undefined, run: RunSummary) {
 function applyRunList(list: RunSummary[], fresher: (id: string) => boolean, preserve = false) {
   const before = runs.value;
   const next = preserve ? new Map(before) : new Map<string, RunSummary>();
-  for (const run of list) next.set(run.id, fresher(run.id) && before.has(run.id) ? before.get(run.id)! : run);
+  for (const run of list) if (!deletedRunIds.has(run.id)) next.set(run.id, fresher(run.id) && before.has(run.id) ? before.get(run.id)! : run);
   for (const [id, run] of before) if (!next.has(id) && fresher(id)) next.set(id, run);
   runs.value = next;
   runsLoaded.value = true;
@@ -981,6 +996,7 @@ export function watchAllRuns(notify: (run: RunSummary) => void) {
       feed.seq = Math.max(feed.seq, seq);
       const before = runs.value.get(run.id);
       upsertRun(run);
+      if (run.deleted) return;
       // A project made elsewhere (an automation's first run in a repo, another tab): fetch it once.
       if (run.project && !projects.value.some((p) => p.id === run.project) && !fetchedFor.has(run.project)) {
         fetchedFor.add(run.project);

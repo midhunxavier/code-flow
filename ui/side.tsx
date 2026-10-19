@@ -118,7 +118,7 @@ function ScopeHeader({ popped }: { popped: boolean }) {
   /** This tab in a window of its own, fixed to what the panel shows now; the panel here closes. */
   const popOut = () => {
     const url = `${location.origin}${location.pathname}#/side/${sideTab.value}/${encodeURIComponent(s.key)}`;
-    if (window.open(url, `codeflow-side-${s.key}`, "popup,width=560,height=860")) closeSide();
+    if (window.open(url, `codeflow-side-${location.pathname}-${s.key}`, "popup,width=560,height=860")) closeSide();
     else showToast("The browser blocked the window: allow pop-ups for code-flow", 5000);
   };
   const thing = s.run ? "run" : "project";

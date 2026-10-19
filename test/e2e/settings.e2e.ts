@@ -50,9 +50,11 @@ test("Kilo and Cline presets connect through ACP, preserve edited invocations, a
     await panel.getByText(`${name}: connected`, { exact: true }).waitFor();
     await panel.getByText(/2 models/).waitFor();
     await panel.getByRole("button", { name: "Save connection", exact: true }).click();
-    await page.getByLabel(`${name} model`, { exact: true }).selectOption("fixture/model-b");
+    await page.getByLabel(`${name} model`, { exact: true }).click();
+    await page.getByRole("combobox", { name: /^Search / }).fill("fixture/model-b");
+    await page.getByRole("listbox").getByRole("option").click();
     await page.reload();
-    assert.equal(await page.getByLabel(`${name} model`, { exact: true }).inputValue(), "fixture/model-b");
+    assert.match(await page.getByLabel(`${name} model`, { exact: true }).textContent() ?? "", /Model B/i);
     await panel.getByRole("button", { name: `Connect ${name}`, exact: true }).click();
     assert.equal(await panel.getByLabel("ACP connection ID").getAttribute("readonly"), "");
     assert.equal(await panel.getByLabel("ACP executable").inputValue(), process.execPath);
@@ -88,9 +90,11 @@ test("ACP settings connect, discover models, persist, edit, disable and remove a
   await panel.getByText("Fixture ACP: connected", { exact: true }).waitFor();
   await panel.getByText(/2 models/).waitFor();
   await panel.getByRole("button", { name: "Save connection", exact: true }).click();
-  await page.getByLabel("Fixture ACP model", { exact: true }).selectOption("fixture/model-b");
+  await page.getByLabel("Fixture ACP model", { exact: true }).click();
+  await page.getByRole("combobox", { name: /^Search / }).fill("fixture/model-b");
+  await page.getByRole("listbox").getByRole("option").click();
   await page.reload();
-  assert.equal(await page.getByLabel("Fixture ACP model", { exact: true }).inputValue(), "fixture/model-b");
+  assert.match(await page.getByLabel("Fixture ACP model", { exact: true }).textContent() ?? "", /Model B/i);
   await panel.getByRole("button", { name: "Edit Fixture ACP", exact: true }).click();
   assert.equal(await panel.getByLabel("ACP connection ID").getAttribute("readonly"), "");
   await panel.getByLabel("ACP connection name").fill("Renamed ACP");
@@ -119,7 +123,8 @@ test("ACP settings connect, discover models, persist, edit, disable and remove a
 
 test("settings navigation, search, appearance, and run defaults persist and drive the composer", async () => {
   await page.goto(`${base}/`);
-  await page.getByRole("button", { name: /^Settings/ }).click();
+  await page.getByRole("button", { name: "Application menu", exact: true }).click();
+  await page.getByRole("menuitem", { name: /^Settings/ }).click();
   await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
   await page.getByRole("button", { name: "Dark", exact: true }).click();
   await page.reload();
@@ -152,16 +157,17 @@ test("settings navigation, search, appearance, and run defaults persist and driv
   await page.getByLabel("Minutes per run").blur();
   assert.equal(await page.getByLabel("Minutes per run").inputValue(), "37");
   await page.getByRole("button", { name: "New run", exact: true }).click();
+  await page.locator(".composer-options > summary").click();
   await page.locator("details.advanced-controls > summary").click();
-  await page.locator("details.settings > summary").filter({ has: page.locator(".st", { hasText: /^Settings$/ }) }).click();
+  await page.locator("details.settings > summary").filter({ has: page.locator(".st", { hasText: /^Branches and limits$/ }) }).click();
   assert.equal(await page.locator("#maxMinutes").inputValue(), "37");
   assert.equal(await page.locator("#maxSteps").inputValue(), "18");
-  assert.equal(await page.getByRole("radio", { name: "Safe", exact: true }).getAttribute("aria-checked"), "true");
+  assert.match(await page.locator(".taskbox").getByRole("button", { name: "Permissions", exact: true }).innerText(), /Safe/);
   await page.keyboard.press("Control+,");
   await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
 });
 
-test("desktop notification controls stay synchronized with the sidebar and survive reload", async () => {
+test("desktop notification preferences are reachable from the app menu and survive reload", async () => {
   await page.context().grantPermissions(["notifications"]);
   await page.goto(`${base}/`);
   await page.reload();
@@ -169,11 +175,12 @@ test("desktop notification controls stay synchronized with the sidebar and survi
   await page.keyboard.press("Control+,");
   await category("Notifications");
   const toggle = page.getByRole("switch", { name: "Desktop notifications", exact: true });
-  const bell = page.getByRole("button", { name: "Notifications", exact: true });
   assert.equal(await toggle.getAttribute("aria-checked"), "true");
   await toggle.click();
-  assert.equal(await bell.getAttribute("aria-pressed"), "false");
-  await bell.click();
+  await page.getByRole("button", { name: "Application menu", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Notifications", exact: true }).click();
+  assert.equal(await toggle.getAttribute("aria-checked"), "false");
+  await toggle.click();
   assert.equal(await toggle.getAttribute("aria-checked"), "true");
   await page.reload();
   assert.equal(await toggle.getAttribute("aria-checked"), "true");
@@ -203,6 +210,13 @@ test("saved SSH connections survive reload, reject invalid ports, and retain a c
   await page.getByRole("button", { name: "Open Retry VM", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "host key verification failed" }).waitFor();
   assert.equal(await page.locator(".ssh-connections article").count(), 2);
+  await page.getByRole("button", { name: "SSH connections", exact: true }).click();
+  await page.getByRole("menuitem", { name: /^Development VM/ }).click();
+  const switcher = page.getByRole("menu", { name: "SSH connections", exact: true });
+  await switcher.getByRole("alert").filter({ hasText: "host key verification failed" }).waitFor();
+  assert.ok(page.url().endsWith("#/settings/ssh"), "failed switching leaves the current workspace open");
+  assert.equal(await switcher.getByLabel("SSH host", { exact: true }).count(), 0);
+  await page.keyboard.press("Escape");
   await page.unroute("**/api/ssh-hosts/*/connect");
   await page.locator(".ssh-connections article").filter({ hasText: "Retry VM" }).getByRole("button", { name: "Remove", exact: true }).click();
   await page.getByRole("button", { name: "Open Retry VM", exact: true }).waitFor({ state: "hidden" });
