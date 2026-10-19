@@ -182,7 +182,7 @@ test("/api/events: a hello with the server's epoch and every run, ids on every e
   const first = await readEvents(`${a.base}/api/events`, bearer, (e) => e.length >= 1);
   const hello = first[0]!.data;
   assert.equal(hello.type, "hello");
-  assert.match(hello.epoch, /^[0-9a-f]{12}-fs\d+$/, "feed identity includes the server instance and filesystem-policy generation");
+  assert.match(hello.epoch, /^[0-9a-f]{12}-fs\d+-history\d+$/, "feed identity includes server, filesystem-policy and deletion generations");
   assert.ok(Array.isArray(hello.runs), "a first connection gets the whole list");
   assert.equal(first[0]!.id, `${hello.epoch}:${hello.seq}`);
 
@@ -211,6 +211,13 @@ test("/api/events: a hello with the server's epoch and every run, ids on every e
   const restarted = await readEvents(`${a.base}/api/events`, { ...bearer, "last-event-id": "0123456789ab:3" }, (e) => e.length >= 1);
   assert.ok(Array.isArray(restarted[0]!.data.runs));
   assert.ok(restarted[0]!.data.runs.some((r: { id: string }) => r.id === runId));
+  await finishedRun(a, runId);
+  const deleted = await fetch(`${a.base}/api/runs/${runId}`, { method: "DELETE", headers: bearer });
+  assert.equal(deleted.status, 200, await deleted.text());
+  const afterDelete = await readEvents(`${a.base}/api/events`, { ...bearer, "last-event-id": from.id! }, e => e.length >= 1);
+  assert.notEqual(afterDelete[0]!.data.resumed, true, "deletion replaces stale client history on reconnect");
+  assert.notEqual(afterDelete[0]!.data.epoch, hello.epoch);
+  assert.ok(!afterDelete[0]!.data.runs.some((r: { id: string }) => r.id === runId));
 });
 
 test("a run's stream: its history in order with ids, before any live event, and a reconnect replays only newer events", async () => {

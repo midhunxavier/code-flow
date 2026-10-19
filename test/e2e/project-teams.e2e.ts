@@ -70,6 +70,7 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   await page.getByRole("option").filter({ hasText: "Standing model (free)" }).click();
   await page.getByLabel("Claude Code effort", { exact: true }).selectOption("high");
   await page.getByRole("button", { name: "Save draft team" }).click();
+  await page.getByRole("button", { name: "Activate", exact: true }).waitFor();
   const draft = (await api(`/api/project-teams?project=${id}`)).body.teams[0];
   assert.deepEqual(draft.mission.agentSettings.claude, { model: "standing-free", effort: "high" });
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("agentSettings")!).claude.model), "composer-default", "mission model selection does not change composer defaults");

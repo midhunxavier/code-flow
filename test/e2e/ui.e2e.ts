@@ -423,7 +423,7 @@ test("supervisor: the reviewer defaults to a different vendor than the superviso
   if (!(await page.locator(".advanced-controls").getAttribute("open"))) await page.locator(".advanced-controls > summary").click();
   const role = (label: string) => page.locator(".role").filter({ has: page.locator(".rl", { hasText: new RegExp(`^${label}`) }) });
   const pressed = async (label: string) =>
-    (await role(label).locator(".pill[aria-pressed=true]").allInnerTexts()).map((t) => t.trim());
+    (await role(label).locator(".pill[aria-pressed=true]").allInnerTexts()).map((t) => t.replace(/^✓\s*/, "").trim());
   assert.deepEqual(await pressed("Reviewer"), ["Codex"], "the pattern's default when it isn't the supervisor");
   await role("Supervisor").getByRole("button", { name: "Codex", exact: true }).click();
   assert.deepEqual(await pressed("Supervisor"), ["Codex"]);
@@ -1083,7 +1083,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     await fresh.getByLabel("Done when this passes", { exact: true }).fill("node -e \"process.exit(0); /* run override */\"");
     assert.equal(await fresh.evaluate((path) => localStorage.getItem(`check:${path}`), realpathSync(repo)), "node -e \"process.exit(0)\"", "run overrides do not overwrite the project default");
     await fresh.getByLabel("Task", { exact: true }).fill("Verify selected branch and project defaults");
-    await fresh.getByRole("button", { name: "Run actions", exact: true }).click();
+    await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
     await fresh.getByRole("menuitem", { name: "Start later…", exact: true }).click();
     await fresh.getByRole("dialog", { name: "Start later", exact: true }).waitFor();
     await fresh.getByRole("dialog", { name: "Start later", exact: true }).getByRole("button", { name: "Close", exact: true }).click();

@@ -59,6 +59,7 @@ async function openPage(ignoreAbort = false): Promise<Page> {
     }
   }, { repo: repos[0]!, ignoreAbort });
   await page.goto(`${base}/?token=${token}`);
+  await page.locator(".composer-options > summary").click();
   await page.locator(".repo-btn:not(.project-btn) .name", { hasText: "alpha" }).waitFor();
   await page.waitForFunction(() => !document.querySelector("#checkCmd")?.parentElement?.parentElement?.textContent?.includes("Loading repository configuration"));
   return page;

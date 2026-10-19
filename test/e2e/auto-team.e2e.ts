@@ -190,6 +190,7 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   await page.locator(".composer-options > summary").click();
   await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).uncheck();
   await page.reload();
+  await page.locator(".composer-options > summary").click();
   assert.equal(await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).isChecked(), false, "explicit approval preference persists");
 });
 
