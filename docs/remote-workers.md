@@ -6,7 +6,7 @@ This is an operator provisioned service: it does not discover hosts, install rem
 
 ## Provision a worker
 
-Use Node 20 or newer, Git and the official CLI for each selected provider. Sign in on the worker itself. A dedicated OS account and disk/process limits are recommended for executable repository content. The worker account needs write access to its own state directory and provisioned repository mappings. A mapping can be a clone or a bare Git repository with an existing commit; it is not an arbitrary path supplied by a run.
+Use Node 22.13 or newer, Git and the official CLI for each selected provider. Sign in on the worker itself. A dedicated OS account and disk/process limits are recommended for executable repository content. The worker account needs write access to its own state directory and provisioned repository mappings. A mapping can be a clone or a bare Git repository with an existing commit; it is not an arbitrary path supplied by a run.
 
 Build the standalone entry point in this checkout:
 

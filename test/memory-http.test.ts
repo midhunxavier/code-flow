@@ -100,6 +100,20 @@ test("memory routes cannot cross project membership or overwrite scope/provenanc
   assert.ok(!(await api(path)).body.some((entry: any) => entry.id === created.body.id));
 });
 
+test("knowledge graph route checks authentication and repository membership and updates after deletion", async () => {
+  const path = `/api/projects/${projectId}/memory`;
+  const entry = await api(path + "/commands", { op: "create", repo, title: "Graph evidence", body: "Exercise this contract", paths: ["graph-contract.ts"] });
+  assert.equal(entry.status, 201);
+  assert.equal((await fetch(base + path + "/graph")).status, 401);
+  assert.equal((await api(path + "/graph?repo=/outside")).status, 400);
+  const graph = await api(path + "/graph");
+  assert.equal(graph.status, 200);
+  assert.ok(graph.body.entities.some((entity: any) => entity.key === "graph-contract.ts"));
+  assert.ok(graph.body.relationships.some((edge: any) => edge.evidence.id === entry.body.id && edge.evidence.revision === 1));
+  await api(path + "/commands", { op: "delete", id: entry.body.id, expectedRevision: 1 });
+  assert.ok(!(await api(path + "/graph")).body.entities.some((entity: any) => entity.key === "graph-contract.ts"));
+});
+
 test("memory feedback remains user scoped, revision bound, and cannot forge run attribution", async () => {
   const path = `/api/projects/${projectId}/memory/commands`;
   const created = await api(path, { op: "create", repo, title: "Retrieval rule", body: "Prefer explicit interfaces" });

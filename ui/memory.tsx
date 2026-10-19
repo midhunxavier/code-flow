@@ -4,6 +4,7 @@ import { api, ApiError, post, showToast } from "./lib.js";
 import type { MemoryEntry } from "../src/memory.js";
 import { memoryDraft, mergeMemoryDraft, resolveMemoryMerge, type MemoryDraft, type MemoryDraftField } from "./memory-merge.js";
 import { MemoryAnalysisPanel, MemoryDeleteImpact } from "./memory-analysis.js";
+import { MemoryGraph } from "./memory-graph.js";
 
 /** Knowledge remains inspectable and editable at the scope where later runs read it. */
 export function ProjectMemory({ projectId, repo, refreshKey = "" }: { projectId: string; repo: string; refreshKey?: string }) {
@@ -42,6 +43,7 @@ export function ProjectMemory({ projectId, repo, refreshKey = "" }: { projectId:
     {creating ? <MemoryEditor endpoint={endpoint} repo={repo} onSaved={async () => { setCreating(false); await load(); }} onCancel={() => setCreating(false)} /> : null}
     {entries && !visible.length ? <p class="help">No project knowledge saved for this repository yet.</p> : null}
     {entries ? <MemoryAnalysisPanel endpoint={endpoint} repo={repo} entries={entries} refreshKey={refreshKey} onPublished={load} /> : null}
+    {entries ? <MemoryGraph endpoint={endpoint} repo={repo} entries={entries} /> : null}
     <div class="memory-list">{visible.map((entry) => <MemoryCard key={entry.id} entry={entry} endpoint={endpoint} onChanged={load} />)}</div>
   </details>;
 }

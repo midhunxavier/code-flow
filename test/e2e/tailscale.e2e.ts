@@ -51,6 +51,10 @@ async function start(allowLocal = true) {
   }
 }
 async function stop() {
+  // The owner stream reloads when a restarted server rotates its session. Detach
+  // it before stopping so that reload cannot race the test's next navigation.
+  // Phone tabs stay open to exercise paired-session persistence across restarts.
+  if (owner && !owner.isClosed()) await owner.goto("about:blank");
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   const stopped = new Promise<void>((resolve) => child.once("exit", () => resolve()));
   child.kill("SIGTERM");
@@ -159,7 +163,7 @@ test("pair through Tailscale, mutate and stream, revoke a device and rotate link
   assert.equal(await section.getByRole("checkbox", { name: "Full control from remote devices", exact: true }).isDisabled(), true);
   const rejected = await fetch(`${base}/api/remote`, { method: "POST", headers, body: JSON.stringify({ control: true }) });
   assert.equal(rejected.status, 400, "Tailscale alone cannot protect cookies from other HTTP services on the same host");
-  await stop(); tls = true; await start(); await owner.reload();
+  await stop(); tls = true; await start(); await owner.goto(`${base}/?team=local#/settings/remote-access`);
   const saved = owner.waitForResponse((r) => r.url().endsWith("/api/remote") && r.request().method() === "POST");
   await section.getByRole("checkbox", { name: "Full control from remote devices", exact: true }).click();
   await saved;
@@ -247,7 +251,7 @@ test("disconnect, reconnect and address changes never fall back to Wi-Fi; restar
   assert.equal((await responseFrom(paired, "/api/runs")).status, 200, "paired devices survive restarts");
   const unpaired = await phone();
   assert.equal((await unpaired.goto(restarted.tailscaleUrl))!.status(), 403, "expired links cannot pair new devices");
-  await owner.reload();
+  await owner.goto(`${base}/?team=local#/settings/remote-access`);
   await owner.getByText("Pairing link expired. Choose New link to pair another device.").waitFor();
   assert.equal(await owner.getByRole("region", { name: "Remote access", exact: true }).locator("svg.qr").count(), 0);
   const wifi = await api("/api/remote", { transport: "lan" });
@@ -278,7 +282,7 @@ test("secure access setup imports and renews certificates in Settings without a 
   await stop(); tls = false; await start();
   await setStatus(connected()); await api("/api/remote?refresh=1");
   await api("/api/remote", { enabled: true, lan: true, transport: "tailscale", control: false });
-  await owner.reload();
+  await owner.goto(`${base}/?team=local#/settings/remote-access`);
   const section = owner.getByRole("region", { name: "Remote access", exact: true });
   await section.getByRole("button", { name: "Set up secure remote access", exact: true }).click();
   await section.getByLabel("Certificate setup").selectOption("import");
@@ -338,7 +342,7 @@ test("automatic certificate renewal preserves full control and paired sessions a
   assert.equal(after.control, true);
   assert.equal(after.phonePath, before.phonePath);
   assert.equal((await responseFrom(tab, "/api/runs")).status, 200, "paired cookie remains valid");
-  await owner.reload();
+  await owner.goto(`${base}/?team=local#/settings/remote-access`);
   await owner.getByText("Automatic renewal is on", { exact: true }).waitFor();
   await tab.close();
 });

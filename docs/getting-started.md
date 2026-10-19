@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Node 20+ (`npm start` and `npm run dev` stop with a clear message on an older Node).
+- Node 22.13+ (`npm start` and `npm run dev` stop with a clear message on an older Node).
 - git 2.38 or newer: **Merge** relies on `git merge-tree --write-tree`, which 2.38 added. Check yours with `git --version`.
 - At least one of `claude`, `codex` and `agy` installed and signed in. Run each CLI once interactively first. The dots at the bottom of the sidebar show which agents code-flow found.
 

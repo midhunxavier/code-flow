@@ -19,7 +19,8 @@ src/stream.ts            one event stream per browser window (/api/stream), carr
 src/store.ts             run logs and the replay journal on disk, the one-server lock
 src/run-log.ts           what a window is sent to show a run (its latest snapshots); run snapshots on disk as patches, and compacting old logs
 src/teams.ts             provider-independent team members, tasks, messages and context projections
-src/memory.ts            private/team/project memory, revisions, provenance and atomic snapshots
+src/memory.ts            private/team/project memory, revisions, provenance and scoped retrieval
+src/memory-sqlite.ts     SQLite transactions, JSON migration, indexed keywords and evidence-linked graph
 src/team-memory.ts       run/project scope and Git applicability for memory retrieval and proposals
 src/team-mailbox.ts      validated atomic collaboration commands, requests and waits
 src/team-scheduler.ts    recorded completion batches with concurrent worker lifetimes
@@ -96,7 +97,7 @@ npm test           # unit + workflow tests against fake CLIs
 npm run test:e2e   # the real UI in Chrome (headless) against a server with fake agents
 ```
 
-CI (`.github/workflows/ci.yml`) runs the typecheck and `npm test` on every push and pull request: Ubuntu with Node 20 and 22, macOS with Node 22. The required browser job exercises critical workflows and accessibility. A separate job tests the packaged VS Code extension in the actual editor host. [Provider compatibility](provider-compatibility.md) continuously probes official version/help contracts without account or inference requests.
+CI (`.github/workflows/ci.yml`) runs the typecheck and `npm test` on every push and pull request: Ubuntu with Node 22.13 and 24, macOS with Node 22. The required browser job exercises critical workflows and accessibility. A separate job tests the packaged VS Code extension in the actual editor host. [Provider compatibility](provider-compatibility.md) continuously probes official version/help contracts without account or inference requests.
 
 The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota.
 
