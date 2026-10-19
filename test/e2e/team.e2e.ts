@@ -120,7 +120,7 @@ test("Settings → Team defines a repository key and maps it; the board form cre
 test("the task page takes a comment, a decision and a blocker, and comes back to Planned", async () => {
   await page.getByRole("heading", { level: 1, name: new RegExp(`^${TITLE}`) }).waitFor();
   await page.getByText("No attempt yet.", { exact: false }).waitFor();
-  await page.getByRole("button", { name: "Start on this computer", exact: true }).waitFor(); // the owner owns the task and this computer can run it
+  await page.getByRole("button", { name: "Build with agents", exact: true }).waitFor(); // the owner owns the task and this computer can run it
   await page.getByLabel("Comment", { exact: true }).fill(OWNER_COMMENT);
   await page.getByRole("button", { name: "Post comment", exact: true }).click();
   await page.locator(".team-comment-text").filter({ hasText: OWNER_COMMENT }).waitFor();
@@ -181,7 +181,7 @@ test("a shared contributor signs in, finds the task under Team and comments, wit
   await card.click();
   await shared.waitForURL(new RegExp(`#/team/task/${taskId}$`));
   await shared.locator(".team-comment-text").filter({ hasText: OWNER_COMMENT }).waitFor();
-  for (const name of ["Start on this computer", "Stop", "Hand over…", "Accept and download", "Resume", "Take this task", "Delete task"]) assert.equal(await shared.getByRole("button", { name, exact: true }).count(), 0, `a shared contributor sees no "${name}" control`);
+  for (const name of ["Build with agents", "Stop", "Hand over…", "Accept and download", "Resume", "Take this task", "Delete task"]) assert.equal(await shared.getByRole("button", { name, exact: true }).count(), 0, `a shared contributor sees no "${name}" control`);
   assert.equal(await shared.getByRole("link", { name: "Open run", exact: true }).count(), 0);
   assert.equal(await shared.getByText("Run this task from your own code-flow", { exact: false }).count(), 0, "the hint to run it yourself is for the task's owner");
   await shared.getByLabel("Comment", { exact: true }).fill(CONTRIBUTOR_COMMENT);
@@ -282,7 +282,7 @@ test("an attempt that stopped at its budget stays on the page with its run link 
   assert.equal(await execution.getByText("No attempt yet.", { exact: false }).count(), 0, "an ended attempt is still an attempt");
   const openRun = page.getByRole("link", { name: "Open run", exact: true }); await openRun.waitFor(); assert.equal(await openRun.getAttribute("href"), `#/run/${started.runId}`);
   const resume = page.getByRole("button", { name: "Resume", exact: true }); await resume.waitFor();
-  await page.getByRole("button", { name: "Start on this computer", exact: true }).waitFor(); // a new attempt stays an explicit choice
+  await page.getByRole("button", { name: "Build with agents", exact: true }).waitFor(); // a new attempt stays an explicit choice
   // The run page knows its task.
   await openRun.click(); await page.waitForURL(new RegExp(`#/run/${started.runId}$`)); const back = page.getByRole("link", { name: "Team task", exact: true }); await back.waitFor(); assert.equal(await back.getAttribute("href"), `#/team/task/${taskId}`);
   await back.click(); await page.waitForURL(new RegExp(`#/team/task/${taskId}$`)); await resume.waitFor();
@@ -303,14 +303,14 @@ test("an unknown execution blocks Start until the owner confirms it stopped and 
   await page.goto(`${base}/#/team/task/${recoveryTask.id}`);
   await page.getByRole("button", { name: "Recover attempt…", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Recover attempt", exact: true }); await dialog.waitFor();
-  assert.equal(await page.getByRole("button", { name: "Start on this computer", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Build with agents", exact: true }).count(), 0);
   const release = dialog.getByRole("button", { name: "Release task", exact: true }); assert.equal(await release.isDisabled(), true);
   await dialog.getByRole("textbox", { name: "How did you confirm execution stopped?" }).fill("Stopped the agent on the laptop and verified no process is running.");
   assert.equal(await release.isDisabled(), true, "a reason alone is not confirmation");
   await dialog.getByRole("checkbox", { name: "I confirmed the original agent has stopped." }).check();
   await audit(page, "recover unknown attempt"); assert.deepEqual(violations, []);
   await release.click(); await dialog.waitFor({ state: "hidden" });
-  await page.getByRole("button", { name: "Start on this computer", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Build with agents", exact: true }).waitFor();
   const recovered = await api<TaskView>(`/api/team/tasks/${recoveryTask.id}`);
   assert.equal(recovered.attempts[0]!.state, "superseded"); assert.equal(recovered.audit.at(-1)!.action, "attempt-recovered");
   assert.deepEqual(errors, []);
@@ -344,4 +344,60 @@ test("a shared dashboard left open asks the server for nothing: no board, task o
     assert.deepEqual(polls, [], "the Results tab never asks for the inbox on a timer");
   } finally { await tab.close().catch(() => undefined); }
   assert.deepEqual(errors, []);
+});
+
+test("Draft with agent prepares editable fields without creating a task; Build with agents uses the existing attempt flow", async () => {
+  const before = (await api<{ tasks: unknown[] }>("/api/team/board")).tasks.length;
+  await page.goto(`${base}/#/team`);
+  await page.getByRole("button", { name: "Draft with agent", exact: true }).click();
+  const form = page.getByRole("form", { name: "New task", exact: true });
+  const draft = form.getByRole("region", { name: "Draft with agent", exact: true });
+  await draft.getByLabel("Idea", { exact: true }).fill("Make the README greeting clearer for teammates.");
+  assert.equal(await draft.getByLabel("Repository folder").inputValue(), repo);
+  await draft.getByLabel("Drafting agent").selectOption("claude");
+  await audit(page, "task drafting form");
+  // A launch error preserves the user's idea and permits correction without creating a task.
+  await form.getByLabel("Base branch").fill("missing-draft-branch");
+  await draft.getByRole("button", { name: "Generate draft", exact: true }).click();
+  await draft.getByRole("alert").filter({ hasText: /not found/ }).waitFor();
+  assert.equal(await draft.getByLabel("Idea", { exact: true }).inputValue(), "Make the README greeting clearer for teammates.");
+  await form.getByLabel("Base branch").fill("main");
+  await draft.getByRole("button", { name: "Generate draft", exact: true }).click();
+  await draft.getByRole("button", { name: "Use draft in form", exact: true }).waitFor({ timeout: 40000 });
+  assert.equal((await api<{ tasks: unknown[] }>("/api/team/board")).tasks.length, before);
+  assert.equal(await form.getByLabel("Title", { exact: true }).inputValue(), "");
+  await audit(page, "task draft preview");
+  await draft.getByRole("button", { name: "Use draft in form", exact: true }).click();
+  assert.equal(await form.getByLabel("Title", { exact: true }).inputValue(), "Improve the team greeting");
+  assert.match(await form.getByLabel("Goal", { exact: true }).inputValue(), /Proposed implementation plan/);
+  await form.getByLabel("Title", { exact: true }).fill("Reviewed agent draft");
+  await form.getByRole("button", { name: "Create task", exact: true }).click();
+  await page.getByRole("button", { name: "Build with agents", exact: true }).waitFor();
+  const id = /#\/team\/task\/([^/]+)$/.exec(page.url())![1]!;
+  const saved = await api<TaskView>(`/api/team/tasks/${id}`);
+  assert.equal(saved.title, "Reviewed agent draft"); assert.equal(saved.owner?.userId, "owner"); assert.equal(saved.attempts.length, 0);
+  await page.getByRole("button", { name: "Build with agents", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Build with agents", exact: true });
+  await dialog.getByLabel("Workflow", { exact: true }).selectOption("auto-team");
+  const pool = dialog.getByRole("group", { name: "Available providers", exact: true });
+  assert.ok(await pool.getByRole("checkbox").count() >= 2);
+  assert.ok(await pool.locator("input:checked").count() >= 2, "Auto team preserves multiple selected providers");
+  await audit(page, "build with auto team");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await fits(page), true); await audit(page, "build with agents phone");
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await dialog.getByLabel("Workflow", { exact: true }).selectOption("solo");
+  await dialog.getByLabel("Agent", { exact: true }).selectOption("claude");
+  await dialog.getByLabel("Agent permissions").selectOption("safe");
+  await dialog.getByLabel("Check command").fill("true");
+  await dialog.getByLabel("Time budget (minutes)").fill("3");
+  await dialog.getByLabel("Agent call budget").fill("4");
+  const request = page.waitForRequest((request) => request.url().endsWith(`/api/team-link/tasks/${id}/start`) && request.method() === "POST");
+  await dialog.getByRole("button", { name: "Build with agents", exact: true }).click();
+  const body = (await request).postDataJSON();
+  assert.deepEqual(body.roles, { agent: ["claude"] }); assert.deepEqual(body.loop, { check: "true", maxMinutes: 3, maxSteps: 4 });
+  await dialog.waitFor({ state: "hidden" });
+  await page.getByRole("link", { name: "Open run", exact: true }).waitFor();
+  const built = await api<TaskView>(`/api/team/tasks/${id}`); assert.equal(built.attempts.length, 1);
+  assert.deepEqual(violations, []); assert.deepEqual(errors, []);
 });

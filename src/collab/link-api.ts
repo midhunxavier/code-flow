@@ -9,7 +9,7 @@ import type { Trust } from "../repo-config.js";
 import type { TeamLink, TeamLinkState } from "./link.js";
 import { CHECKPOINT_ID, CollabError, validatePathId } from "./model.js";
 import type { RunnerPublic } from "./model.js";
-import type { CollabRunner, LocalAttemptRecord, StartAttemptInput } from "./runner.js";
+import type { CollabRunner, DraftTaskInput, LocalAttemptRecord, StartAttemptInput } from "./runner.js";
 import { ownerActor } from "./store.js";
 import type { CollabStore } from "./store.js";
 
@@ -70,6 +70,21 @@ export function validateStartBody(raw: Record<string, unknown>, host: Pick<TeamL
   return input;
 }
 
+export function validateDraftBody(raw: Record<string, unknown>, installed: readonly AgentId[]): DraftTaskInput {
+  assertKeys(raw, ["projectId", "repository", "idea", "agent", "repo", "baseRef", "agentSettings"], "draft");
+  const text = (key: string, max: number, required = true) => {
+    const value = raw[key];
+    if (!required && absent(value)) return undefined;
+    if (typeof value !== "string" || !value.trim() || value.length > max || value.includes("\0")) throw new CollabError(`Send ${key} as text of 1–${max} characters`);
+    return value.trim();
+  };
+  if (!isAgentId(raw.agent) || !installed.includes(raw.agent)) throw new CollabError("Choose an installed drafting agent on this computer");
+  return { projectId: text("projectId", 100)!, repository: text("repository", 64)!, idea: text("idea", 16384)!, agent: raw.agent,
+    repo: repoPath(raw.repo, false), baseRef: text("baseRef", 100, false),
+    ...(!absent(raw.agentSettings) ? { agentSettings: settings(raw.agentSettings, "agentSettings") } : {}),
+  };
+}
+
 /** `GET /api/team-link`: the link plus, best effort, what the hub knows about this runner (online, revoked). */
 async function linkInfo(host: TeamLinkApiHost): Promise<TeamLinkInfo> {
   const state = host.link.state(), info: TeamLinkInfo = { ...state };
@@ -91,6 +106,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, _url: URL, pa
     await host.onLinkChanged?.(state); host.runner.reconcile().catch((error) => logError("Local attempts could not be reconciled after connecting to the team server", error));
     return send(res, 201, await linkInfo(host));
   }
+  if (head === "draft" && parts.length === 3 && method === "POST") return send(res, 201, await host.runner.draftTask(validateDraftBody(await body(req, START_BODY_LIMIT), host.agents())));
   // On demand what the recovery timer does every minute: a board that shows this computer's attempt as busy with nothing running behind it is settled without waiting for a restart or a reconnect.
   if (head === "reconcile" && parts.length === 3 && method === "POST") return send(res, 200, await host.runner.reconcile());
   if (head === "mappings" && parts.length === 3 && method === "PUT") { const raw = await body(req); assertKeys(raw, ["projectId", "repository", "path"], "mapping"); const mappings = await host.link.setMapping(raw.projectId, raw.repository, raw.path); return send(res, 200, { mappings }); }

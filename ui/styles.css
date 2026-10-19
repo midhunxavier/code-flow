@@ -2864,6 +2864,18 @@
 .team-review-form fieldset, .team-checks, .team-roles, .team-keys { display: grid; gap: 6px; margin: 0; padding: 10px 14px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .team-review-form legend, .team-checks legend, .team-roles legend, .team-keys legend { padding: 0 6px; margin-left: -6px; font-size: 12px; font-weight: 500; color: var(--text-2); }
 .team-roles label { display: grid; gap: 4px; font-size: 12px; font-weight: 500; color: var(--text-2); }
+.team-roles label.check { display: flex; align-items: center; gap: 8px; }
+.team-draft-assistant { display: grid; gap: 12px; margin-top: 16px; box-shadow: none; }
+.team-draft-assistant > h3, .team-draft-assistant > p { margin: 0; }
+.team-draft-assistant > label { display: grid; gap: 6px; font-size: 12px; color: var(--text-2); }
+.team-draft-assistant > .btn { justify-self: start; }
+.team-draft-preview { border-top: 1px solid var(--border); padding-top: 12px; overflow-wrap: anywhere; }
+.team-draft-preview h4 { margin: 0 0 8px; }
+.team-new > .team-fields + .team-fields { margin-top: 12px; }
+dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
+.team-build-dialog .picker-inner { max-height: calc(min(780px, 100dvh - 32px) - 2px); }
+.team-build-dialog .dialog-body > label:not([for]) { display: grid; gap: 6px; font-size: 12px; color: var(--text-2); }
+.team-build-dialog .dialog-body > label.check { display: flex; }
 .team-history { font-size: 12.5px; color: var(--text-2); }
 .team-history ol { margin: 0; padding-left: 18px; display: grid; gap: 6px; line-height: 1.45; }
 .team-history .th-when { color: var(--muted); font-variant-numeric: tabular-nums; }
