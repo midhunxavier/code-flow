@@ -36,7 +36,7 @@ export interface DraftTaskInput { projectId: string; repository: string; idea: s
 /** What the runner needs from RunManager; a Pick so tests and other hosts can hand it a stand-in. */
 export type RunnerManager = Pick<RunManager, "start" | "get" | "subscribe" | "cancel" | "resume" | "addNote" | "reviewCoverage" | "list">;
 /** `retryIntervalMs` is the recovery timer's period (0 disables it; tests drive retryPending() themselves). */
-export interface CollabRunnerOptions { manager: RunnerManager; hub: () => HubClient; findPattern: (id: string) => Pattern | undefined; dir?: string; resolveRepo?: (projectId: string, repoKey: string) => string | undefined; projectFor?: (repo: string) => string | undefined; now?: () => number; retryIntervalMs?: number }
+export interface CollabRunnerOptions { manager: RunnerManager; hub: () => HubClient; findPattern: (id: string) => Pattern | undefined; dir?: string; resolveRepo?: (projectId: string, repoKey: string) => string | undefined; projectFor?: (repo: string) => string | undefined; now?: () => number; retryIntervalMs?: number; beforeStart?: () => Promise<void> }
 export interface ReconcileResult { attached: number; finished: number; removed: number; unknown: number; retried: number }
 interface Active { attemptId: string; runId: string; unsubscribe: () => void; heartbeat?: NodeJS.Timeout; publishTimer?: NodeJS.Timeout; dirty: boolean; ended: boolean; head?: string; changedFiles?: string[]; refreshing?: Promise<void> }
 type OutcomeRun = Pick<Run, "status" | "stopReason" | "error"> & Partial<Pick<Run, "repo" | "worktrees">>;
@@ -326,7 +326,7 @@ export class CollabRunner {
     try {
       await this.save(record);
       // A definite refusal (4xx) means the hub never saw the claim; a network failure is ambiguous, so the "claiming" record stays for the recovery pass to settle against the hub.
-      let claimed: Task; try { claimed = await hub.claimAttempt(task.id, { attemptId: record.attemptId, runnerId: hub.runnerId, runnerName: hub.runnerName, baseCommit: base, ...(checkpoint ? { fromCheckpointId: checkpoint.id } : {}), revision: task.revision }); } catch (error) { if (error instanceof CollabError && error.status < 500) await this.remove(record.attemptId); throw error; }
+      let claimed: Task; try { await this.options.beforeStart?.(); claimed = await hub.claimAttempt(task.id, { attemptId: record.attemptId, runnerId: hub.runnerId, runnerName: hub.runnerName, baseCommit: base, ...(checkpoint ? { fromCheckpointId: checkpoint.id } : {}), revision: task.revision }); } catch (error) { if (error instanceof CollabError && error.status < 500) await this.remove(record.attemptId); throw error; }
       record.state = "claimed"; await this.save(record);
       const projectName = await hub.board(task.projectId).then((board) => board.projects.find((project) => project.id === task.projectId)?.name).catch(() => undefined);
       // A hand-over's note is written for whoever continues: when this attempt continues from the checkpoint that was handed over, the note joins the checkpoint's own (a reused checkpoint carries none of it otherwise).
@@ -334,7 +334,7 @@ export class CollabRunner {
       const context = checkpoint && handoverNote && handoverNote !== checkpoint.note.trim() ? { ...checkpoint, note: clean([checkpoint.note.trim(), `Hand-over note from ${clean(handover!.from.displayName, MAX.displayName, true) || "a teammate"}: ${handoverNote}`].filter(Boolean).join("\n\n"), MAX.note) } : checkpoint;
       const prompt = taskPrompt(claimed, { projectName, checkpoint: context });
       let run: Run;
-      try { run = await this.manager.start({ pattern, task: prompt, repo, baseRef: base, roles: input.roles, options: {}, agentSettings: input.agentSettings, roleSettings: input.roleSettings, trust: input.trust, loop: input.loop, project: this.options.projectFor?.(repo) }); }
+      try { await this.options.beforeStart?.(); run = await this.manager.start({ pattern, task: prompt, repo, baseRef: base, roles: input.roles, options: {}, agentSettings: input.agentSettings, roleSettings: input.roleSettings, trust: input.trust, loop: input.loop, project: this.options.projectFor?.(repo), beforeDispatch: async (pending) => { await this.options.beforeStart?.(); record.runId = pending.id; await this.save(record); } }); }
       catch (error) {
         // Journaled as a pending finish before it is sent: a hub that cannot be reached right now learns of the failure from the recovery pass, instead of showing the attempt claimed (and the task busy) until its 24 h prune.
         const reason = sharedText(`The run could not start on this computer: ${message(error)}`, MAX.reason, false, localPaths({ repo }));

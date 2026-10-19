@@ -54,7 +54,8 @@ Additional workflows include [selective task reruns](docs/task-reruns.md), [defe
 
 Use [shared project accounts](docs/shared-projects.md) for scoped human review,
 [team collaboration](docs/team-collaboration.md) for a shared task board whose
-work runs on each teammate's own computer,
+work runs on each teammate's own computer or, with explicit project grants, queues on the host using its installed CLIs. A separate opt-in grant lets trusted teammates open interactive host terminals from their browsers.
+Use
 [SSH projects](docs/ssh-projects.md) for a complete remote workspace,
 [SSH workers](docs/remote-workers.md) for provisioned remote execution and
 [coordinated changes](docs/coordinated-changes.md) for repository dependency

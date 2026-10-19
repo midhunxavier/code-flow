@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,7 +43,7 @@ before(async () => {
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
   // The fake agents first on PATH and every CODEFLOW_/FAKE_ variable of the parent shell dropped, so a developer's environment cannot change what the server does.
   const env: NodeJS.ProcessEnv = {}; for (const [key, value] of Object.entries(process.env)) if (!/^(?:CODEFLOW_|FAKE_)/.test(key)) env[key] = value;
-  Object.assign(env, { PATH: `${join(root, "test/fake-bin")}:${process.env.PATH ?? ""}`, PORT: String(port), CODEFLOW_REMOTE_PORT: String(remotePort), CODEFLOW_HOME: home, CODEFLOW_TOKEN: token });
+  Object.assign(env, { HOME: home, SHELL: "/bin/sh", ENV: "/dev/null", HISTFILE: "/dev/null", ZDOTDIR: home, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH ?? ""}`, PORT: String(port), CODEFLOW_REMOTE_PORT: String(remotePort), CODEFLOW_HOME: home, CODEFLOW_TOKEN: token });
   server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   for (const stream of [server.stdout, server.stderr]) stream?.on("data", (chunk) => { log = (log + chunk.toString()).slice(-16000); });
   let healthy = false; for (let n = 0; n < 300 && server.exitCode === null; n++) { healthy = await fetch(`${base}/api/health`, { headers: ownerHeaders }).then((response) => response.ok, () => false); if (healthy) break; await sleep(100); } assert.ok(healthy, `the server did not answer /api/health:\n${log}`);
@@ -409,5 +409,81 @@ test("Draft with agent prepares editable fields without creating a task; Build w
   await dialog.waitFor({ state: "hidden" });
   await page.getByRole("link", { name: "Open run", exact: true }).waitFor();
   const built = await api<TaskView>(`/api/team/tasks/${id}`); assert.equal(built.attempts.length, 1);
+  assert.deepEqual(violations, []); assert.deepEqual(errors, []);
+});
+
+test("host execution: owner grants a project, teammate queues work and downloads the result without terminal access", async () => {
+  const accounts = await api<{ users: { id: string; username: string }[] }>("/api/accounts");
+  const casey = accounts.users.find((user) => user.username === "casey")!;
+  await api("/api/team-link/mappings", { method: "PUT", body: JSON.stringify({ projectId, repository: "app", path: repo }) });
+  await page.goto(`${base}/#/settings/team`);
+  const settings = page.locator("section.settings-card").filter({ has: page.getByRole("heading", { name: "Run teammates’ tasks on this computer", exact: true }) });
+  await settings.getByRole("group", { name: "Fixture app", exact: true }).waitFor();
+  const project = settings.getByRole("group", { name: "Fixture app", exact: true });
+  await project.getByLabel("Allow host execution for this project").check();
+  await project.getByLabel("Host CLI", { exact: true }).selectOption("claude");
+  await project.getByLabel("Agent permissions", { exact: true }).selectOption("safe");
+  await project.getByLabel("Casey Contributor", { exact: true }).check();
+  await project.getByRole("button", { name: "Save host permissions", exact: true }).click();
+  for (let i = 0; i < 50; i++) { const view = await api<{ policies: { enabled: boolean; userIds: string[] }[] }>("/api/host-execution"); if (view.policies.some((p) => p.enabled && p.userIds.includes(casey.id))) break; assert.ok(i < 49, await settings.innerText()); await sleep(100); }
+  await audit(page, "host execution owner settings");
+  const hosted = await api<TaskView>("/api/team/tasks", { method: "POST", body: JSON.stringify({ projectId, repository: "app", title: "Host greeting task", goal: "Add a greeting", owner: casey.id }) });
+  await shared.goto(`${base}/#/team/task/${hosted.id}`);
+  await shared.getByRole("button", { name: "Run on host computer", exact: true }).click();
+  await shared.getByText("Host task: finished", { exact: false }).waitFor({ timeout: 60_000 });
+  await shared.getByRole("link", { name: "Download bundle", exact: true }).waitFor();
+  const bundleHref = await shared.getByRole("link", { name: "Download bundle", exact: true }).getAttribute("href");
+  const bundle = await sharedContext.request.get(base + bundleHref); assert.equal(bundle.status(), 200); assert.match((await bundle.body()).subarray(0, 30).toString(), /git bundle/);
+  const finishedTask = await api<TaskView>(`/api/team/tasks/${hosted.id}`);
+  assert.equal(finishedTask.attempts.length, 1); assert.equal(finishedTask.attempts[0]!.state, "finished");
+  const checks = await shared.evaluate(async () => {
+    const denied: number[] = [];
+    for (const path of ["/api/shell", "/api/runs"]) denied.push((await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status);
+    const settings = await fetch("/api/host-execution/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: "{}" });
+    const queue = await fetch("/api/host-execution").then((r) => r.text());
+    return { terminal: denied[0], genericRun: denied[1], settings: settings.status, queue };
+  });
+  assert.equal(checks.terminal, 403); assert.equal(checks.genericRun, 403); assert.equal(checks.settings, 403); assert.ok(!checks.queue.includes(repo)); assert.ok(!checks.queue.includes("userIds"));
+  await audit(shared, "host execution completed shared task");
+  await shared.setViewportSize({ width: 390, height: 844 }); assert.equal(await fits(shared), true); await audit(shared, "host execution shared task mobile");
+  mkdirSync(join(root, "output/playwright"), { recursive: true });
+  await shared.screenshot({ path: join(root, "output/playwright/host-execution-shared-mobile.png"), fullPage: true });
+  await page.screenshot({ path: join(root, "output/playwright/host-execution-settings.png"), fullPage: true });
+  assert.deepEqual(violations, []); assert.deepEqual(errors, []);
+});
+
+test("teammate terminals: separate grant, real PTY typing, reconnect, resize and live revocation", async () => {
+  const denied = await sharedContext.request.post(`${base}/api/team-terminals`, { headers: { origin: base }, data: { projectId, repository: "app", cols: 100, rows: 24 } }); assert.equal(denied.status(), 403, "agent execution alone does not grant a terminal");
+  await page.goto(`${base}/#/settings/team`);
+  const settings = page.locator("section.settings-card").filter({ has: page.getByRole("heading", { name: "Teammate terminals", exact: true }) });
+  const project = settings.getByRole("group", { name: "Terminal access · Fixture app", exact: true });
+  await project.getByLabel("Allow unrestricted host terminals for this project").check(); await project.getByLabel("Casey Contributor", { exact: true }).check();
+  await project.getByRole("button", { name: "Save terminal permissions", exact: true }).click();
+  for (let i = 0; i < 50; i++) { const v = await api<{ grants: { enabled: boolean; userIds: string[] }[] }>("/api/team-terminals"); if (v.grants.some((g) => g.enabled && g.userIds.length)) break; assert.ok(i < 49); await sleep(100); }
+  await shared.setViewportSize({ width: 1280, height: 1000 }); await shared.goto(`${base}/#/team`);
+  await shared.getByRole("button", { name: "Open terminal", exact: true }).click();
+  const terminal = shared.locator(".team-terminal-screen"); await terminal.locator(".term-head .th-name").filter({ hasText: /repo/ }).waitFor();
+  const input = terminal.locator(".xterm-helper-textarea");
+  await input.focus(); await shared.keyboard.type("printf 'TEAM_TERMINAL_OK' > terminal-result.txt", { delay: 5 }); await shared.keyboard.press("Enter");
+  for (let i = 0; i < 100 && !existsSync(join(repo, "terminal-result.txt")); i++) await sleep(100);
+  assert.equal(readFileSync(join(repo, "terminal-result.txt"), "utf8"), "TEAM_TERMINAL_OK");
+  const view = await api<{ sessions: { id: string }[] }>("/api/team-terminals"), id = view.sessions[0]!.id; assert.equal(view.sessions.length, 1);
+  // The private registry cannot be reached through the owner's generic shell routes either.
+  assert.equal((await fetch(`${base}/api/shell/${id}/input`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ data: "ignored" }) })).status, 404);
+  await shared.reload(); await shared.locator(".team-terminal-screen .term-head .th-name").filter({ hasText: /repo/ }).waitFor();
+  assert.deepEqual((await api<{ sessions: { id: string }[] }>("/api/team-terminals")).sessions.map((s) => s.id), [id]);
+  await shared.locator(".xterm-helper-textarea").focus(); await shared.keyboard.type("sleep 30"); await shared.keyboard.press("Enter"); await sleep(300); await shared.keyboard.press("Control+c");
+  await shared.keyboard.type("printf 'AFTER_INTERRUPT' >> terminal-result.txt"); await shared.keyboard.press("Enter");
+  for (let i = 0; i < 100 && !readFileSync(join(repo, "terminal-result.txt"), "utf8").includes("AFTER_INTERRUPT"); i++) await sleep(100);
+  assert.equal(readFileSync(join(repo, "terminal-result.txt"), "utf8"), "TEAM_TERMINAL_OKAFTER_INTERRUPT");
+  await audit(shared, "shared interactive terminal desktop");
+  mkdirSync(join(root, "output/playwright"), { recursive: true }); await shared.screenshot({ path: join(root, "output/playwright/team-terminal-desktop.png"), fullPage: true });
+  await shared.setViewportSize({ width: 390, height: 844 }); await sleep(300); assert.equal(await fits(shared), true); await audit(shared, "shared interactive terminal mobile");
+  await shared.screenshot({ path: join(root, "output/playwright/team-terminal-mobile.png"), fullPage: true });
+  await project.getByLabel("Casey Contributor", { exact: true }).uncheck(); await project.getByRole("button", { name: "Save terminal permissions", exact: true }).click();
+  await shared.locator(".team-terminal-screen").waitFor({ state: "hidden" }); assert.equal((await api<{ sessions: unknown[] }>("/api/team-terminals")).sessions.length, 0);
+  assert.equal((await sharedContext.request.post(`${base}/api/team-terminals/${id}/input`, { headers: { origin: base }, data: { data: "echo denied\r" } })).status(), 404);
+  await settings.getByText("No open teammate terminals.", { exact: true }).waitFor(); await settings.getByText("Recent terminal activity", { exact: true }).click();
+  await settings.getByText(/Access revoked or repository changed/).waitFor(); await audit(page, "terminal permissions and activity");
   assert.deepEqual(violations, []); assert.deepEqual(errors, []);
 });

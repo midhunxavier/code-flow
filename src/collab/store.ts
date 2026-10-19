@@ -339,6 +339,8 @@ export class CollabStore {
   }
   /** Each distinct event once, in order; listeners that throw cannot undo a durable change. */
   private announce(draft: Draft): void { const seen = new Set<string>(); for (const event of draft.events) { const key = JSON.stringify(event); if (!seen.has(key)) { seen.add(key); this.emit(event); } } }
+  /** Wake project-filtered team views after a durable host queue or policy change. */
+  hostExecutionChanged(projectId?: string, taskId?: string): void { if (projectId) this.emit({ kind: "task", projectId, taskId }); else for (const project of this.options.projects()) this.emit({ kind: "task", projectId: project.id }); }
   private emit(event: Omit<ChangeEvent, "seq">): void { const full: ChangeEvent = { ...event, seq: ++this.seq }; this.ring.push(full); if (this.ring.length > RING) this.ring.splice(0, this.ring.length - RING); for (const listener of this.listeners) { try { listener(full); } catch { /* a failed stream callback cannot undo a durable change */ } } }
 
   // ---- Tasks

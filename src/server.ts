@@ -1,3 +1,5 @@
+import { TeamTerminals, handleTeamTerminals } from "./collab/terminals.js";
+import { HostExecution, handleHostExecution } from "./collab/host-execution.js";
 import { join } from "node:path";
 import type { Socket } from "node:net";
 import { CertificateRenewal } from "./certificate-renewal.js";
@@ -184,6 +186,11 @@ const collab = new CollabStore({ members: teamMembers, projects: () => projects.
 const teamLink = new TeamLink();
 const hubs = { local: new LocalHub(collab), remote: new RemoteHub(teamLink) };
 const collabRunner = new CollabRunner({ manager, hub: () => teamLink.linked ? hubs.remote : hubs.local, findPattern, resolveRepo: (projectId, key) => teamLink.resolveRepo(projectId, key), projectFor: (repo) => projects.forRepo(repo)?.id });
+const hostExecution = new HostExecution({ store: collab, manager, findPattern, members: teamMembers,
+  projectRepos: (id) => projects.get(id)?.repos, resolveRepo: (project, key) => teamLink.resolveRepo(project, key),
+  availableAgents: async () => (await agentAvailability()).filter((agent) => agent.available).map((agent) => agent.id),
+  enabled: () => !teamLink.linked && !fileAccess.hasRestrictions(),
+});
 const resolveQueuedProviders: Parameters<typeof createDeferredRuns>[1]["resolveProviders"] = (request) => trackPolicyPreparation(async () => {
     const pattern = findPattern(request.pattern);
     if (!pattern) throw new Error("This pattern no longer exists; cancel and review the saved request");
@@ -203,6 +210,13 @@ const notifications = new Notifications();
 const notificationsReady = await notifications.load().then(() => true, (error) => { logError("Notifications disabled: configuration or delivery state cannot be read", error); return false; });
 /** The side panel's terminals and notes. */
 const shells = new Shells();
+const teamTerminals = new TeamTerminals({
+  users: () => sharedAccounts.available ? sharedAccounts.snapshot().users : [],
+  projectRepos: (id) => projects.get(id)?.repos, resolveRepo: (project, key) => teamLink.resolveRepo(project, key),
+  enabled: () => !teamLink.linked && !fileAccess.hasRestrictions(),
+  changed: (projectId) => collab.hostExecutionChanged(projectId), activity: () => manager.noteActivity(),
+});
+sharedAccounts.onChange(() => { void teamTerminals.reap().catch((error) => logError("Team terminal revocation failed", error)); });
 const notes = new Notes();
 const watcher = new PrWatcher(manager);
 const automations = new Automations(manager, (body, extra) => trackPolicyPreparation(() => startFromBody(body, extra)), (repo, kind) => trackPolicyPreparation(async () => { assertPolicyExecution(await fileAccess.execution(repo), "Automation source discovery"); return listSweep(repo, kind, manager.list()); }));
@@ -1430,6 +1444,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (runnerBearer) return handleRunnerRequest(req, res, url, parts, bearer);
   if (shared) {
     await attempt(() => fileAccess.sharedGate(req));
+    if (parts[1] === "team-terminals") return handleTeamTerminals(req, res, parts, teamTerminals, () => {
+      const current = sharedAccounts.authenticate(shared.token, { touch: false });
+      if (!current) throw new HttpError(401, "Your session ended; sign in again");
+      return memberActor(memberOf(current), "browser");
+    }, () => sharedMutation(req));
+    if (parts[1] === "host-execution") return handleHostExecution(req, res, parts, hostExecution, memberActor(memberOf(shared.identity), "browser"), () => sharedMutation(req));
     // The team board is the shared principals' second API: as closed as handleSharedApi (its own route table), and the session is re-checked on every stream frame.
     if (parts[1] === "team") return handleTeamApi(req, res, url, parts, { store: collab, actor: memberActor(memberOf(shared.identity), "browser"), principal: "browser", reauthorize: () => { const current = sharedAccounts.authenticate(shared.token, { touch: false }); if (!current) throw new HttpError(401, "Your session ended; sign in again"); return memberActor(memberOf(current), "browser"); }, mutation: sharedMutation });
     if (req.method !== "GET") sharedMutation(req);
@@ -1448,7 +1468,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       return send(res, 200, await attempt(() => fileAccess.update(project.id, body, async (commit, next) => {
         if (!filteredTasksReady || filteredTasks.active()) throw new FilePolicyError("Finish or explicitly cancel and reconcile filtered tasks before changing policy; unavailable task storage must be repaired first", 409);
         if (policyIsRestrictive(next) && extensions.list().length) throw new FilePolicyError("Disable configured extensions and restart before applying a restriction. Previously imported trusted JavaScript can retain background host authority, including a bundle rejected after initialization.", 409);
-        if (shells.list().length || manager.devServers.list().some((service) => service.status === "running")) throw new FilePolicyError("Close terminals and stop development services before changing filesystem policy", 409);
+        if (shells.list().length || teamTerminals.active() || manager.devServers.list().some((service) => service.status === "running")) throw new FilePolicyError("Close terminals and stop development services before changing filesystem policy", 409);
         try { await manager.withIdleExecution(async () => { await pausePolicyBackground(); previews.closeAll(); sshPreviews.closeAll(); await commit(); }); }
         finally { if (!fileAccess.hasRestrictions()) startPolicyBackground(); }
       })));
@@ -1476,7 +1496,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       return send(res, 200, await sshPreviews.show(String(body.url)));
     }
     if (parts[2] === "stop" && parts.length === 3 && req.method === "POST") {
-      if (manager.list().some((run) => run.status === "running") || manager.busy.agents.running || manager.busy.checks.running || shells.list().some((shell) => shell.status === "running") || manager.devServers.list().some((service) => service.status === "running")) throw new HttpError(409, "Finish running work and close terminals and development servers before stopping the backend");
+      if (manager.list().some((run) => run.status === "running") || manager.busy.agents.running || manager.busy.checks.running || shells.list().some((shell) => shell.status === "running") || teamTerminals.active() || manager.devServers.list().some((service) => service.status === "running")) throw new HttpError(409, "Finish running work and close terminals and development servers before stopping the backend");
       await attempt(() => manager.withIdleExecution(async () => {
         await pausePolicyBackground();
         send(res, 200, { ok: true }); void stop("SSH backend stopped from the app");
@@ -1544,6 +1564,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (parts[1] === "coordinated-changes") return coordinatedApi.handle(req, res, parts);
   // The team board: served here in hub mode, forwarded to the team server under this computer's runner credential in linked mode. The link itself (connect, mappings, start/stop/hand over on this computer) is always local and the owner's own.
   if (parts[1] === "team") return teamLink.linked ? teamLink.proxy(req, res, parts, url) : handleTeamApi(req, res, url, parts, { store: collab, actor: ownerActor(collab.ownerName), principal: "owner", mutation: () => {} });
+  if (parts[1] === "team-terminals") return handleTeamTerminals(req, res, parts, teamTerminals, () => ownerActor(collab.ownerName), () => sharedMutation(req));
+  if (parts[1] === "host-execution") return handleHostExecution(req, res, parts, hostExecution, ownerActor(collab.ownerName), () => sharedMutation(req));
   if (parts[1] === "team-link") {
     if (via !== "local") throw new HttpError(404, "Not found");
     const installed = req.method === "POST" && !fileAccess.hasRestrictions() ? (await agentAvailability()).filter((agent) => agent.available).map((agent) => agent.id) : [];
@@ -2391,6 +2413,8 @@ if (notificationsReady) {
 if (!fileAccess.hasRestrictions()) startPolicyBackground();
 else await pausePolicyBackground();
 syncTeamLink();
+await teamTerminals.load().then(() => teamTerminals.start()).catch((error) => logError("Team terminals disabled: repair their access storage", error));
+await hostExecution.load().then(() => hostExecution.start()).catch((error) => logError("Host execution disabled: repair its queue storage", error));
 void collabRunner.reconcile().catch((error) => logError("Local team attempts could not be reconciled at startup; they are retried when the link reconnects", error));
 /** Team board housekeeping: revoked runners and read inbox items older than 30 days go, attempts silent for a day become unknown. */
 const teamPruneTimer = setInterval(() => { if (collab.available) void collab.prune().catch((error) => logError("Team board housekeeping failed", error)); }, 60 * 60_000);
@@ -2553,9 +2577,11 @@ async function stop(reason: string, code = 0) {
   } catch {
     // still starting up: nothing is listening yet
   }
+  await teamTerminals.close().catch((err) => logError("Team terminal shutdown failed", err));
   await sshProjects?.close();
   // Heartbeats and the link's event stream stop here; runs keep going, and reconcile() picks their attempts up again after the restart. A hub that stopped answering must not hold the shutdown.
   await Promise.race([collabRunner.close(), new Promise((resolve) => setTimeout(resolve, 5000).unref())]).catch((err) => logError("Team runner shutdown failed", err));
+  await hostExecution.close().catch((err) => logError("Host execution shutdown failed", err));
   teamLink.close();
   await collab.close().catch((err) => logError("Team board shutdown failed", err));
   await projectTeams.stop().catch((err) => logError("Project team shutdown failed", err));

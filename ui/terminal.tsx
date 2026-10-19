@@ -202,9 +202,9 @@ export function TerminalTab() {
 // ---------------------------------------------------------------- one terminal
 /** `shown`: the Terminal tab is in view. Only then is the shell's output watched; shown again, it's drawn afresh. */
 type ViewProps = { id: string; places: ReturnType<typeof placesFor>; split: boolean; focused: boolean; shown: boolean; onFocus: () => void; onReplace: (cwd: string) => void };
-type Hello = { type: "hello"; shell: ShellInfo; history: ShellEvent[] };
+export type TerminalHello = { type: "hello"; shell: ShellInfo; history: ShellEvent[] };
 /** A terminal that can't be watched: it's gone (code-flow restarted, or it was closed). */
-type Gone = { type: "error"; status: number; message: string };
+export type TerminalGone = { type: "error"; status: number; message: string };
 
 /** Typed into a terminal's own screen, dimmed: a note from code-flow, not the shell's output. */
 const note = (text: string) => `\r\n\x1b[2m[${text}]\x1b[0m\r\n`;
@@ -216,12 +216,17 @@ const GONE = "This terminal is gone (code-flow restarted?). Restart opens a new 
  * request and in order; it fits its pane and tells the shell its size. It reattaches after a
  * reload with what the terminal showed so far; Stop and Restart open a new one in the same folder.
  */
-function TermView({ id, places, split, focused, shown, onFocus, onReplace }: ViewProps) {
+export interface TerminalTransport {
+  input: (body: { data?: string; binary?: string }) => Promise<unknown>;
+  resize: (body: { cols: number; rows: number }) => Promise<unknown>;
+  watch: (receive: (event: ShellEvent | TerminalHello | TerminalGone) => void) => () => void;
+}
+export function TermView({ id, places, split, focused, shown, onFocus, onReplace, transport }: ViewProps & { transport?: TerminalTransport }) {
   const [shell, setShell] = useState<ShellInfo | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal>();
   /** What to do with a message from the shell: set up with the terminal it draws in. */
-  const receive = useRef<(ev: ShellEvent | Hello | Gone) => void>(() => {});
+  const receive = useRef<(ev: ShellEvent | TerminalHello | TerminalGone) => void>(() => {});
   const focusRef = useRef(onFocus);
   focusRef.current = onFocus;
   const focusedRef = useRef(focused);
@@ -258,7 +263,7 @@ function TermView({ id, places, split, focused, shown, onFocus, onReplace }: Vie
       const { kind, text } = queued.shift()!;
       sending = true;
       try {
-        await post(`/api/shell/${enc(id)}/input`, { [kind]: text });
+        await (transport ? transport.input({ [kind]: text }) : post(`/api/shell/${enc(id)}/input`, { [kind]: text }));
       } catch (err) {
         if (!exited && !closed) showToast((err as Error).message, 4000);
       } finally {
@@ -295,7 +300,7 @@ function TermView({ id, places, split, focused, shown, onFocus, onReplace }: Vie
       const next = `${t.cols}x${t.rows}`;
       if (next === size || exited || closed) return;
       size = next;
-      post(`/api/shell/${enc(id)}/resize`, { cols: t.cols, rows: t.rows }).catch(() => {});
+      (transport ? transport.resize({ cols: t.cols, rows: t.rows }) : post(`/api/shell/${enc(id)}/resize`, { cols: t.cols, rows: t.rows })).catch(() => {});
     };
     t.onResize(() => {
       clearTimeout(sizeTimer);
@@ -326,7 +331,7 @@ function TermView({ id, places, split, focused, shown, onFocus, onReplace }: Vie
         if (exited) return;
         exited = true;
         t.options.disableStdin = true;
-        t.write(note(GONE));
+        t.write(note(ev.message || GONE));
         return;
       }
       if (ev.type === "hello") {
@@ -366,7 +371,7 @@ function TermView({ id, places, split, focused, shown, onFocus, onReplace }: Vie
       t.dispose();
     };
   }, [id]);
-  useEffect(() => (shown ? subscribe(`shell:${id}`, (ev) => receive.current(ev)) : undefined), [id, shown]);
+  useEffect(() => (shown ? transport ? transport.watch((ev) => receive.current(ev)) : subscribe(`shell:${id}`, (ev) => receive.current(ev)) : undefined), [id, shown]);
 
   return (
     <div class={`term-pane ${focused && split ? "focused" : ""}`} onMouseDown={onFocus}>
@@ -447,7 +452,7 @@ function ShellView({ id, places, split, focused, shown, onFocus, onReplace }: Vi
 
   useEffect(() => {
     if (!shown) return;
-    return subscribe(`shell:${id}`, (ev: ShellEvent | Hello | Gone) => {
+    return subscribe(`shell:${id}`, (ev: ShellEvent | TerminalHello | TerminalGone) => {
       // The shell is gone (code-flow restarted).
       if (ev.type === "error") return setError(GONE);
       if (ev.type === "hello") {

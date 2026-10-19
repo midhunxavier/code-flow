@@ -70,7 +70,7 @@ class LoginLimiter {
     while (this.buckets.size > 2048) this.buckets.delete(this.buckets.keys().next().value!);
   }
 }
-/** Local accounts delegate result review and team-board work only. These identities never authorize execution on this host; contributors run team tasks on their own computers. */
+/** Local accounts delegate result review and team-board work only. Project roles alone never authorize host execution; the separate host queue requires explicit owner grants. */
 export class SharedAccounts {
   private state: State = { version: 1, revision: 0, users: [], sessions: [] };
   private loaded = false; private loading?: Promise<void>; private readable = true; private writes: Promise<unknown> = Promise.resolve();

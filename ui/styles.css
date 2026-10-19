@@ -3161,3 +3161,7 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 .improve-model-row .field { width: 100%; min-width: 0; }
 .improve-agent { font-size: .9em; opacity: .8; }
 @media (max-width: 560px) { .improve-model-row { grid-template-columns: minmax(0, 1fr); } }
+
+/* A teammate owns a single visible PTY pane; additional sessions remain in its picker. */
+.team-terminal-screen { height: 420px; min-width: 0; margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.team-terminal-screen > .term-pane { height: 100%; min-width: 0; }
