@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test --test-concurrency=4 test/*.test.ts",
     "test:e2e": "tsx --test --test-concurrency=2 test/e2e/*.e2e.ts",
-    "test:acp:live": "node scripts/test-acp-live.mjs",
+    "test:acp:live": "node --import tsx scripts/test-acp-live.mjs",
     "test:vscode": "node scripts/test-vscode.mjs",
     "package:vscode": "python3 scripts/package-vscode.py",
     "evaluate:teams": "tsx scripts/evaluate-teams.ts",

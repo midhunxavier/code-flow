@@ -94,7 +94,7 @@ class AcpClient {
           ...(typeof update.kind === "string" ? { kind: update.kind } : {}),
           ...(typeof update.title === "string" ? { title: truncate(update.title, 1000) } : {}),
           ...(Array.isArray(update.locations) ? { locations: update.locations.slice(0, 50).filter((item: any) => string(item?.path)).map((item: any) => ({ path: item.path })) } : {}),
-          ...(update.rawInput !== undefined ? { rawInput: { description: truncate(stringify(update.rawInput)), ...(typeof update.rawInput?.command === "string" ? { command: truncate(update.rawInput.command) } : {}) } } : {}),
+          ...(update.rawInput !== undefined ? { rawInput: { description: truncate(stringify(update.rawInput)), ...(typeof update.rawInput?.command === "string" ? { command: truncate(update.rawInput.command) } : {}), ...(string(update.rawInput?.path) ? { path: update.rawInput.path } : {}) } } : {}),
         });
       }
       this.onUpdate(update);
@@ -120,6 +120,10 @@ class AcpClient {
       if (canAsk && once("allow_once") && this.opts.interactiveApprovals && this.opts.onApproval && !controller.signal.aborted) {
         waiting = true; this.approvalCount++; this.proc.pauseIdle(true);
         const paths = Array.isArray(tool.locations) ? tool.locations.slice(0, 50).map((location: any) => location?.path).filter(string) : [];
+        // Cline's editor supplies rawInput.path without ACP locations. Preserve
+        // that display hint so the approval registry can present the file edit.
+        // It still requires an explicit allow-once decision, including in Full access.
+        if (!paths.length && tool.kind === "edit" && string(tool.rawInput?.path)) paths.push(tool.rawInput.path);
         const request = { id: `acp:${String(message.id)}`, kind: (["edit", "delete", "move"].includes(tool.kind) ? "file-change" : "command") as "file-change" | "command", paths, cwd: this.opts.cwd,
           command: typeof tool.rawInput?.command === "string" ? truncate(tool.rawInput.command) : truncate(stringify(tool.rawInput ?? tool.title ?? tool.kind)), reason: truncate(String(tool.title ?? "ACP tool request")) };
         const decision = await Promise.race([
@@ -168,7 +172,11 @@ class AcpClient {
 }
 
 function configOption(session: any, category: string) {
-  return Array.isArray(session?.configOptions) ? session.configOptions.find((option: any) => option?.type === "select" && option.category === category && string(option.id)) : undefined;
+  const options = Array.isArray(session?.configOptions) ? session.configOptions.filter((option: any) => option?.type === "select" && option.category === category && string(option.id)) : [];
+  // Cline advertises both provider and model selectors with category "model",
+  // with provider first. Prefer the explicit model selector so model discovery
+  // and selection never change the authentication provider instead.
+  return options.find((option: any) => option.id === category) ?? options.find((option: any) => category !== "model" || option.id !== "provider");
 }
 function choices(option: any): { id: string; label: string }[] {
   const flat = Array.isArray(option?.options) ? option.options.flatMap((item: any) => Array.isArray(item?.options) ? item.options : [item]) : [];

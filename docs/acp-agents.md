@@ -1,14 +1,26 @@
 # ACP coding agents
 
-Settings → Agents & models → **Connect OpenCode** adds OpenCode through the shared Agent Client Protocol (ACP) v1 adapter. **Add compatible CLI** connects other agents implementing the same stdio protocol.
+Settings → Agents & models provides **Connect OpenCode**, **Connect Kilo** and **Connect Cline** presets through the shared Agent Client Protocol (ACP) v1 adapter. **Add compatible CLI** connects other agents implementing the same stdio protocol.
 
-## Connect OpenCode
+## Connect a supported CLI
 
-1. Install OpenCode on the machine running code-flow and run `opencode auth login` there.
-2. Open Settings → Agents & models and choose **Connect OpenCode**. The preset uses executable `opencode` and argument `acp`. If code-flow cannot find it, enter its absolute executable path.
+Install and sign in on the machine running code-flow:
+
+| CLI | Install | Sign in | Preset invocation |
+| --- | --- | --- | --- |
+| [OpenCode](https://opencode.ai/docs/acp/) | `npm install -g opencode-ai` | `opencode auth login` | `opencode acp` |
+| [Kilo](https://kilo.ai/docs/code-with-ai/platforms/cli-reference) | `npm install -g @kilocode/cli` | `kilo auth login` | `kilo acp` |
+| [Cline](https://docs.cline.bot/usage/acp) | `npm install -g cline` | `cline auth` | `cline --acp` |
+
+Use a current CLI version with native ACP support. The Kilo preset uses the current `kilo` executable; Cline uses the official CLI's `--acp` flag.
+
+1. Install and sign in with the commands above. Complete provider/model setup in the CLI.
+2. Open Settings → Agents & models and choose the CLI's **Connect** button. If code-flow cannot find it, enter its absolute executable path. Reopening a saved preset edits its existing settings, preserving custom paths and arguments.
 3. Choose **Check connection**. This initializes ACP and creates a session in a temporary directory without sending a prompt. The result shows protocol compatibility, available models and advertised session loading. It does not verify inference, account quota or access to every advertised model.
 4. Choose **Save connection**. It appears immediately in provider and model selection; no server restart is needed.
 5. Select the agent for a run and choose **Full access** in Settings → Run defaults or the composer's permissions controls.
+
+Cline asks for approval before tools, including reads, edits and commands, by default. Enable **Ask me for tool permissions** in the run's permissions controls and approve requests in the approval inbox. Without it, requests are declined. The preset does not enable Cline's auto-approval flag. Cline starts new ACP sessions in Act mode; read-only code-flow turns still apply the boundaries below. Provider selection stays in the CLI's authentication setup; code-flow's model picker changes the model within that provider.
 
 The CLI keeps its own authentication. code-flow does not read or copy its credential files. A connection check can perform the CLI's normal startup work, including loading the user's configured plugins. Use executable invocations you trust.
 
@@ -42,14 +54,31 @@ Owner-only endpoints:
 
 Custom filesystem restrictions block connection mutation/probing and agent execution. Shared-project accounts cannot manage or probe connections.
 
-Protocol references: [ACP v1](https://agentclientprotocol.com/protocol/v1/initialization), [session configuration](https://agentclientprotocol.com/protocol/v1/session-config-options), [OpenCode ACP](https://opencode.ai/docs/acp/).
+Protocol references: [ACP v1](https://agentclientprotocol.com/protocol/v1/initialization), [session configuration](https://agentclientprotocol.com/protocol/v1/session-config-options). Cline's [native ACP implementation](https://github.com/cline/cline/blob/main/apps/cli/src/acp/acpAgent.ts) advertises both provider and model selectors in the model category; the adapter selects the model control explicitly.
 
 Validation includes process fixtures for streaming, session replay, model selection, permissions, cancellation, failures and timeouts; an engine run that changes a worktree and passes its check; and browser tests covering the Settings lifecycle.
 
-## Real OpenCode acceptance test
+## Real CLI acceptance test
 
-Run `npm run test:acp:live` explicitly to test the installed OpenCode CLI using its configured authentication and a real model. This is outside the default test suite and consumes normal model usage. Set `CODEFLOW_LIVE_OPENCODE` to an absolute executable path if needed; `CODEFLOW_LIVE_MODEL` optionally selects an advertised model ID. Otherwise the test uses OpenCode's discovered default.
+Run the acceptance script explicitly with an installed, authenticated CLI:
 
-The script creates a temporary repository and a separate code-flow home, saves the connection through the Settings API, and starts a real coding task. It verifies failing baseline tests become passing without test edits, streamed text and tool events, and a clean commit. It then restarts code-flow and sends a follow-up that must reuse the same OpenCode session and remember a phrase from the first turn. Both code-flow's check and an independent test run must pass. Temporary run logs, commits, and a `receipt.json` remain at the printed evidence path; the server stops automatically. The original project and code-flow settings are unchanged.
+```sh
+npm run test:acp:live                         # OpenCode (default)
+npm run test:acp:live -- --agent kilo
+npm run test:acp:live -- --agent cline
+```
+
+This is outside the default test suite and consumes normal model usage. Set `CODEFLOW_LIVE_OPENCODE`, `CODEFLOW_LIVE_KILO` or `CODEFLOW_LIVE_CLINE` to an absolute executable path if needed; `CODEFLOW_LIVE_MODEL` optionally selects an advertised model ID. Otherwise the test uses the CLI's discovered default. Missing executables fail before creating a test repository or starting code-flow. Use `--help` for options.
+
+The script creates a temporary repository and a separate code-flow home, saves the connection through the Settings API, and starts a real coding task. It verifies failing baseline tests become passing without test edits, streamed text and tool events, and a clean commit. It then restarts code-flow and sends a follow-up that must reuse the same CLI session and remember a phrase from the first turn. Both code-flow's check and an independent test run must pass. Only reads of the task files and tests, searches for fixture names, edits to the two task files, and the exact `node --test` command can be approved automatically; unrecognized permission requests stop the test for inspection. Temporary run logs, commits, and a `receipt.json` remain at the printed evidence path; the server stops automatically. The original project and code-flow settings are unchanged.
 
 This two-turn test passed locally on October 19, 2026 with OpenCode 1.18.30 and `opencode/big-pickle`, including session loading after restart and two committed changes. This establishes compatibility for the observed installation, not every ACP agent or OpenCode release.
+
+Both Kilo and Cline passed the same two-turn acceptance test on October 19, 2026 using their installed CLIs and normal account authentication:
+
+| CLI | Model | Duration | One-time approvals | Result |
+| --- | --- | --- | --- | --- |
+| Kilo 7.8.12 | `kilo/kilo-auto/free` | 52.0 s | 2 | Passed both turns and session restoration |
+| Cline 3.0.73 | `anthropic/claude-sonnet-5.5` | 24.8 s | 5 | Passed both turns and session restoration |
+
+The [sanitized acceptance receipts](evaluations/acp-live-2026-10-19.json) record run IDs, commits, streamed event counts and checked assertions. Each run changed a baseline with three failing tests into four passing tests without modifying those tests, then produced a second clean commit after restoring the same session. The Cline run exposed and verified a fix for file-edit approvals: its native editor supplies `rawInput.path` without ACP `locations`, which the adapter now carries into the approval inbox. These observations establish compatibility for the listed versions and models; model availability and task success can vary.

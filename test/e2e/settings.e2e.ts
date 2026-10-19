@@ -26,6 +26,51 @@ before(async () => {
 after(async () => { await browser?.close(); server?.kill("SIGTERM"); await new Promise<void>((resolve) => { if (server?.exitCode !== null) return resolve(); server?.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }); rmSync(directory, { recursive: true, force: true }); });
 const category = (name: string) => page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name, exact: true }).click();
 
+test("Kilo and Cline presets connect through ACP, preserve edited invocations, and appear in model settings", async () => {
+  for (const [name, command, args, login, scenario] of [
+    ["Kilo", "kilo", "acp", "kilo auth login", "happy"],
+    ["Cline", "cline", "--acp", "cline auth", "cline"],
+  ] as const) {
+    await page.goto(`${base}/#/settings/general`);
+    await page.getByLabel("Search settings").fill(name);
+    await page.getByRole("region", { name: "Settings search results" }).getByRole("button", { name: /Agents & models/ }).click();
+    const panel = page.getByRole("region", { name: "ACP connections", exact: true });
+    await panel.getByRole("button", { name: `Connect ${name}`, exact: true }).click();
+    assert.equal(await panel.getByLabel("ACP connection ID").inputValue(), command);
+    assert.equal(await panel.getByLabel("ACP executable").inputValue(), command);
+    assert.equal(await panel.getByLabel("ACP arguments").inputValue(), args);
+    await panel.getByText(login, { exact: true }).waitFor();
+    if (name === "Cline") await panel.getByText(/Cline asks before edits and commands/).waitFor();
+    // Keep preset identity but use the deterministic process fixture in browser CI.
+    await panel.getByLabel("ACP executable").fill(process.execPath);
+    const fixtureArgs = `${join(root, "test/fake-acp.mjs")}\n${scenario}`;
+    await panel.getByLabel("ACP arguments").fill(fixtureArgs);
+    await panel.getByRole("button", { name: "Check connection", exact: true }).click();
+    await panel.getByText(`${name}: connected`, { exact: true }).waitFor();
+    await panel.getByText(/2 models/).waitFor();
+    await panel.getByRole("button", { name: "Save connection", exact: true }).click();
+    await page.getByLabel(`${name} model`, { exact: true }).selectOption("fixture/model-b");
+    await page.reload();
+    assert.equal(await page.getByLabel(`${name} model`, { exact: true }).inputValue(), "fixture/model-b");
+    await panel.getByRole("button", { name: `Connect ${name}`, exact: true }).click();
+    assert.equal(await panel.getByLabel("ACP connection ID").getAttribute("readonly"), "");
+    assert.equal(await panel.getByLabel("ACP executable").inputValue(), process.execPath);
+    assert.equal(await panel.getByLabel("ACP arguments").inputValue(), fixtureArgs);
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await panel.getByRole("button", { name: "Save connection", exact: true }).click();
+    assert.equal(await panel.getByRole("button", { name: `Edit ${name}`, exact: true }).count(), 1);
+    await panel.getByRole("button", { name: `Disable ${name}`, exact: true }).click();
+    await page.getByLabel(`${name} model`, { exact: true }).waitFor({ state: "detached" });
+    await panel.getByRole("button", { name: `Enable ${name}`, exact: true }).click();
+    await page.getByLabel(`${name} model`, { exact: true }).waitFor();
+    await panel.getByRole("button", { name: `Remove ${name}`, exact: true }).click();
+    await panel.getByRole("button", { name: `Edit ${name}`, exact: true }).waitFor({ state: "detached" });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+  }
+  assert.deepEqual(errors, []);
+});
+
 test("ACP settings connect, discover models, persist, edit, disable and remove a compatible CLI", async () => {
   await page.goto(`${base}/#/settings/agents`);
   const panel = page.getByRole("region", { name: "ACP connections", exact: true });

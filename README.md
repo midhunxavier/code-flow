@@ -44,7 +44,7 @@ Open **http://localhost:4317**, choose a repository, describe the task, pick a t
 
 The **Settings** page centralizes appearance, agent models, run defaults, notifications, automations, SSH VM connections, remote access, repository tools, Insights and workspace administration. Open it from the sidebar or with **⌘, / Ctrl+,**.
 
-**Settings → Agents & models** also connects [OpenCode and other ACP-compatible CLIs](docs/acp-agents.md), with connection checks, discovered models and saved executable settings. These agents currently require Full access on the application host.
+**Settings → Agents & models** also connects [OpenCode, Kilo, Cline and other ACP-compatible CLIs](docs/acp-agents.md), with connection checks, discovered models and saved executable settings. These agents currently require Full access on the application host.
 
 **Settings → Workspace** adds verification profiles and requirement mappings, code editing with three-way conflicts, selective checkpoint files/hunks, service launch profiles, coordinated repository changes and filtered tasks. Configuration, diagnostics, integrations and notifications live in Settings. The composer includes simple/advanced modes, named presets, task templates, readiness checks and settings provenance. Auto-team plans can be edited before approval; dispatch can be paused or prioritized. See the [implementation checklist and boundaries](docs/application-improvements.md), [API/client](docs/api.md), [verification](docs/verification.md), and [backup/maintenance](docs/maintenance.md).
 
