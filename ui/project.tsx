@@ -1,3 +1,5 @@
+import { OutcomeMetrics } from "./experience.js";
+import { ScenarioLibrary } from "./journeys.js";
 import { ProjectTeamsPanel } from "./project-teams.js";
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
@@ -92,6 +94,8 @@ export function ProjectView({ id }: { id: string }) {
         <Card label="API-equivalent" value={cost ? fmtCost(cost) : "–"} hint="Claude's cost, as a measure of size" />
       </div>
 
+      <OutcomeMetrics project={id} />
+      {p.repos.map(repository => <ScenarioLibrary key={repository} repository={repository} />)}
       <ProjectTeamsPanel projectId={id} repos={p.repos} />
 
       <div class="pp-layout">

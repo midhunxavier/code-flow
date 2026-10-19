@@ -1,5 +1,8 @@
 import { TeamTerminals, handleTeamTerminals } from "./collab/terminals.js";
 import { HostExecution, handleHostExecution } from "./collab/host-execution.js";
+import { JourneyStore } from "./journey-store.js";
+import { journeyApi } from "./journey-api.js";
+import { taskIntent, outcomeMetrics, workflowRecommendations } from "./experience.js";
 import { join } from "node:path";
 import type { Socket } from "node:net";
 import { CertificateRenewal } from "./certificate-renewal.js";
@@ -269,6 +272,8 @@ function remoteTlsIssue(): string | undefined {
 
 const allowedHosts = new Set([`${HOST}:${PORT}`, `localhost:${PORT}`]);
 /** Local apps in the side panel's Browser, each on a port of its own (src/preview.ts). */
+const journeys = new JourneyStore(join(CODEFLOW_HOME, "journeys"));
+const handleJourneys = journeyApi(journeys, manager, [PORT, REMOTE_PORT]);
 const previews = new Previews(
   () => [`http://localhost:${PORT}`, `http://${HOST}:${PORT}`],
   () => [PORT, REMOTE_PORT],
@@ -820,6 +825,8 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   await attempt(async () => assertPolicyExecution(await fileAccess.execution(repo), "Run preparation"));
   if (body.externalSource !== undefined || (body.externalSourceId !== undefined && typeof body.externalSourceId !== "string")) throw new HttpError(400, "Import the external source through its configured integration first");
   if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
+  if (body.intent !== undefined && !taskIntent(body.intent)) throw new HttpError(400, "Choose a supported task type");
+  if (body.journeyId !== undefined) { const journey = await attempt(() => journeys.get(String(body.journeyId))); if (journey.repo !== await repoRoot(repo)) throw new HttpError(400, "The scenario belongs to another repository"); }
   const loop = validateLoop(body.loop);
   const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), loop.remoteWorker, body.trust);
   let externalSource = typeof body.externalSourceId === "string" ? await attempt(async () => integrations.resolveSource(body.externalSourceId)) : undefined;
@@ -839,6 +846,8 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   return {
     pattern,
     task,
+    intent: taskIntent(body.intent),
+    journeyId: typeof body.journeyId === "string" ? body.journeyId : undefined,
     repo,
     project: typeof body.project === "string" && body.project ? body.project : undefined,
     baseRef: body.baseRef ? String(body.baseRef) : undefined,
@@ -1701,6 +1710,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     // interactiveTerminal: false when there's no python3 for the Terminal's pseudo-terminal (src/shell.ts).
     return send(res, 200, { busy: manager.busy, activity: manager.inspectRepositoryActivity(), writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length, interactiveTerminal: !fileAccess.hasRestrictions() && await shells.interactive(), streams: hub.stats });
   }
+  if (req.method === "GET" && parts[1] === "experience" && parts.length === 2) {
+    const list = runsIn(url.searchParams.get("project")).filter(run => !url.searchParams.get("repo") || run.repo === url.searchParams.get("repo"));
+    return send(res, 200, { metrics: outcomeMetrics(list), recommendations: workflowRecommendations(list, url.searchParams.get("repo") ?? "", taskIntent(url.searchParams.get("intent"))) });
+  }
   if (req.method === "GET" && parts[1] === "stats") {
     const since = Number(url.searchParams.get("since")) || undefined;
     const repo = url.searchParams.get("repo") ? await requestedRepo(url) : undefined;
@@ -2034,6 +2047,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   // Every app started with "Run app", for the side panel's Browser.
   if (req.method === "GET" && parts[1] === "serve") return send(res, 200, manager.devServers.list());
   // The side panel's Terminal: shells that stay open, fed over POST, streamed over SSE.
+  if (await handleJourneys(req, res, url, parts)) return;
   if (parts[1] === "preview" && req.method === "POST") {
     const body = await readJson(req);
     // On the host name this page was opened with (checkOrigin allows only code-flow's own), so the app is same-site with it.
@@ -2174,6 +2188,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (req.method === "GET") return send(res, 200, await attempt(() => manager.reviewCoverage(run.id, url.searchParams.get("branch") ?? "")));
       if (req.method === "POST") { const body = await readJson(req); return send(res, 200, await attempt(() => manager.recordFileReview(run.id, body))); }
     }
+    if (parts[3] === "outcome" && parts.length === 4 && req.method === "POST") { const body = await readJson(req); return send(res, 200, await attempt(() => manager.recordOutcome(run.id, body))); }
     if (parts[3] === "human-rework" && req.method === "POST") { const body = await readJson(req); return send(res, 201, await attempt(() => manager.recordHumanRework(run.id, body))); }
     if (parts[3] === "launch-profiles") {
       const body = req.method === "POST" ? await readJson(req) : {};
@@ -2213,6 +2228,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const body = await readJson(req);
       return send(res, 200, await attempt(async () => manager.setPaused(run.id, body.paused !== false)));
     }
+    if (req.method === "POST" && parts[3] === "task-priority" && parts.length === 4) { const body = await readJson(req); return send(res, 200, await attempt(async () => manager.setTaskPriority(run.id, body))); }
     if (req.method === "POST" && parts[3] === "priority") {
       const body = await readJson(req);
       return send(res, 200, await attempt(async () => manager.setPriority(run.id, body.priority)));
@@ -2296,6 +2312,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         const target = body.target === "editor" || body.target === "finder" ? body.target : "terminal";
         return send(res, 200, { openedWith: await attempt(() => openFolder(wt.path, target)) });
       }
+      if (parts[5] === "serve" && parts[6] === "ready" && parts.length === 7 && req.method === "GET") return send(res, 200, { ready: await manager.devServers.ready(key), status: manager.devServers.get(key)?.status ?? "missing" });
       if (parts[5] === "serve") {
         if (req.method === "GET") return send(res, 200, manager.devServers.get(key) ?? null);
         if (req.method === "DELETE") return send(res, 200, { stopped: manager.devServers.stop(key) });
@@ -2512,7 +2529,7 @@ async function startComparison(body: Record<string, any>) {
       const label = String(v.label ?? "").trim().slice(0, 40) || `Setup ${i + 1}`;
       return {
         label,
-        input: await buildStartInput({ ...base, pattern: v.pattern ?? base.pattern, roles: v.roles ?? base.roles, options: v.options ?? base.options, roleSettings: v.roleSettings ?? base.roleSettings }),
+        input: await buildStartInput({ ...base, task: v.task ?? base.task, pattern: v.pattern ?? base.pattern, roles: v.roles ?? base.roles, options: v.options ?? base.options, roleSettings: v.roleSettings ?? base.roleSettings }),
       };
     }),
   );

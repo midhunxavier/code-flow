@@ -444,3 +444,28 @@ reconnection, remote previews, supported hosts and authentication boundaries.
 Managed Tailscale certificates renew automatically while Tailscale remote access is enabled. `GET /remote` includes `tls.renewal` with `automatic`, `running`, `nextAttempt`, optional `lastSuccess` and a safe `error`. Renewal preserves paired sessions and control settings. Imported/environment certificates are excluded.
 
 For multi-agent roles in Race, Debate, Review council, Supervisor and Loop workflows, a role setting can include additional models from the same provider: `roleSettings.reviewers.claude = { model: "first", variants: [{ model: "second", effort: "low" }] }`. Each entry runs separately with its own settings and session. Pipeline and other single-agent roles still use one model. Auto team pools also accept variants in `roleSettings.pool`: these are allowed model/effort choices for workers and reviewers. The coordinator selects among them within the member limit; it does not launch every selected model. Coordinator settings stay fixed. Additional models use the same validation as primary models (maximum 128 additional models per provider).
+
+### Result experiences and browser scenarios
+
+These operations are owner-only and use the existing origin, authentication,
+filesystem-policy and host boundaries. New run requests can include `intent`
+(`bug`, `feature`, `review`, `explore`) and an existing same-repository `journeyId`.
+Comparison variants can include separate `task` instructions while sharing the
+base run configuration. Comparison launches can partially succeed; inspect the
+returned/visible group before retrying an interrupted request.
+
+| Operation | Request | Behavior |
+| --- | --- | --- |
+| `GET /experience` | optional `repo`, `project`, `intent` query | Outcome metrics and repository/workflow sample counts, Wilson intervals and supporting run IDs. |
+| `POST /runs/:id/outcome` | `branch`, `expectedHead`, `decision=accepted\|needs-work` | Record feedback on an idle, exact result commit; stale heads return 409. Does not publish or approve managed shipping. |
+| `POST /runs/:id/task-priority` | `taskId`, `revision`, `priority` (-10 to 10) | Prioritize undispatched tasks on the current Auto-team plan without relaxing scheduling constraints. |
+| `GET /runs/:id/worktrees/:name/serve/ready` | none | Report process state and whether its local app port accepts a connection. |
+| `GET /journeys` | absolute `repo` query | List saved immutable browser scenarios in this repository. |
+| `POST /journeys` | `repo`, `title`, local `url`, `width`, `actions`, `expected: {selector, text}` | Validate and save a scenario; returns 201 with its ID and data. Actions use `kind=click\|fill\|select\|press`, `selector`, and optional `value`. |
+| `GET /journeys/:id` | none | Return scenario, generated Playwright spec, and up to four replay receipts. |
+| `POST /journeys/:id/replay` | optional local `url`, `runId`, `branch` | Replay in fresh Chrome, save screenshots and assertion status, return 201. Run-associated replays require that result's registered running app. Preserves the scenario's path/query/hash on the selected origin. |
+| `DELETE /journeys/:id` | none | Delete the scenario and retained screenshots. Existing runs keep their original attached test context. |
+
+A replay receipt's `passed` status means only that the expected visible text
+appeared after the recorded interactions. It is separate from Git verification;
+see [result experiences](application-improvements.md#result-first-product-experiences).

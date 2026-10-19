@@ -330,6 +330,10 @@ export interface Artifact {
 }
 
 export interface Run {
+  taskPriorities?: Record<string, number>;
+  intent?: import("./experience.js").TaskIntent;
+  journeyId?: string;
+  outcome?: { decision: "accepted" | "needs-work"; branch: string; head: string; at: number };
   projectTeam?: ProjectTeamRun;
   projectDiscovery?: DiscoveryReceipt;
   extensions?: ExtensionBinding[];
@@ -2770,6 +2774,8 @@ function knowledgePrompt(run: Run): string {
 // ---------------------------------------------------------------------------
 
 export interface StartRunInput {
+  intent?: import("./experience.js").TaskIntent;
+  journeyId?: string;
   projectTeam?: ProjectTeamRun;
   /** Internal durable admission barrier; never accepted from HTTP bodies. */
   beforeDispatch?: (run: Run) => Promise<void>;
@@ -3112,6 +3118,18 @@ export class RunManager {
     this.emitRun(run);
     this.bus.emit(`pause:${id}`);
     return { paused, pending: paused && run.steps.some((step) => step.status === "running") };
+  }
+
+  setTaskPriority(id: string, input: { taskId: string; priority: number; revision: number }) {
+    const run = this.require(id);
+    if (run.projectTeam) throw new Error("Use the standing team's mission controls for managed runs");
+    const task = run.team?.tasks.find(task => task.id === input.taskId);
+    if (!task || run.team!.revision !== input.revision) throw new Error("The team plan changed. Refresh before prioritizing a task");
+    if (!Number.isInteger(input.priority) || input.priority < -10 || input.priority > 10) throw new Error("Priority must be an integer from -10 to 10");
+    if (run.status !== "running" || !["pending", "needs_info", "failed"].includes(task.status ?? "pending")) throw new Error("Only undispatched work can be prioritized");
+    Object.defineProperty(run.taskPriorities ??= Object.create(null), task.id, { value: input.priority, writable: true, configurable: true, enumerable: true });
+    this.emitRun(run);
+    return { taskId: task.id, priority: input.priority };
   }
 
   setPriority(id: string, priority: number) {
@@ -3564,6 +3582,18 @@ export class RunManager {
     if (run.verification?.head === current.head && run.verification.branch === input.branch) run.verification.review = reviewCoverage(current.files, [...files]);
     this.emitRun(run);
     return this.reviewCoverage(id, input.branch);
+  }
+
+  async recordOutcome(id: string, input: { branch: string; expectedHead: string; decision: "accepted" | "needs-work" }) {
+    const run = this.require(id);
+    if (this.busyRun(run)) throw new Error("Wait for the run to finish before assessing its result");
+    if (!["accepted", "needs-work"].includes(input.decision)) throw new Error("Choose accepted or needs-work");
+    const current = await this.reviewCoverage(id, input.branch);
+    if (input.expectedHead !== current.head || await resolveCommit(run.repo, `refs/heads/${input.branch}`) !== current.head) throw new RunConflictError("The branch changed. Refresh before recording your decision");
+    if (this.busyRun(run)) throw new RunConflictError("The run resumed. Wait for it to finish before assessing its result");
+    run.outcome = { decision: input.decision, branch: input.branch, head: current.head, at: Date.now() };
+    this.emitRun(run);
+    return run.outcome;
   }
 
   async recordHumanRework(id: string, input: { branch: string; expectedHead: string; minutes: number; note?: string }) {
@@ -4311,6 +4341,8 @@ export class RunManager {
       projectTeam: input.projectTeam ? structuredClone(input.projectTeam) : undefined,
       pattern: input.pattern.id,
       task: input.task,
+      intent: input.intent,
+      journeyId: input.journeyId,
       deferred: input.deferred ? structuredClone(input.deferred) : undefined,
       coordination: input.coordination ? { jobId: input.coordination.jobId, nodeId: input.coordination.nodeId, claimId: input.coordination.claimId, attempt: input.coordination.attempt } : undefined,
       repo,

@@ -1,3 +1,4 @@
+import { JourneyRecorder, recording, recordAction } from "./journeys.js";
 import { signal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
@@ -315,6 +316,7 @@ export function BrowserTab() {
           onSnapshot={toggleSnapshot}
         />
       ) : null}
+      {active?.url ? <JourneyRecorder key={key} pageKey={key} url={here || active.url} repository={s.repo} width={device === "phone" ? 390 : device === "tablet" ? 768 : 1280} ready={canAnnotate} toggle={active => { setMode("off"); overlays.get(key)?.({ type: "recording", active }); }} /> : null}
       <div class={`browse ${second ? "compare" : ""}`} ref={area}>
         {!active || !active.url ? (
           <div class="browse-empty">
@@ -462,9 +464,15 @@ function PageFrame({ pageKey, url, device, mode, onModeOff, hidden = false }: { 
         if (m.type === "ready") {
           // A new document: nothing is being captured in it yet, and what was pinned went with the old one.
           setPage(pageKey, (p) => ({ ...p, capturing: 0, pins: p.pins.map((x) => ({ ...x, gone: true })) }));
+          send({ type: "recording", active: recording.value?.page === pageKey && recording.value.active });
           send({ type: "mode", mode });
           send({ type: "pins", pins: livePins(pageState(pageKey).pins) });
         }
+      } else if (m.type === "record-action") {
+        recordAction(pageKey, m.action);
+        if (!recording.value?.active) send({ type: "recording", active: false });
+      } else if (m.type === "recording-warning" && recording.value?.page === pageKey) {
+        recording.value = { ...recording.value, warning: String(m.text).slice(0, 200) };
       } else if (m.type === "console") {
         setPage(pageKey, (p) => ({ ...p, console: [...p.console.slice(-299), { level: m.level, text: m.text, at: m.at }] }));
       } else if (m.type === "pin-start") {

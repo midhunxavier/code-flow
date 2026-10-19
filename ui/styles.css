@@ -3184,3 +3184,38 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 /* A teammate owns a single visible PTY pane; additional sessions remain in its picker. */
 .team-terminal-screen { height: 420px; min-width: 0; margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .team-terminal-screen > .term-pane { height: 100%; min-width: 0; }
+/* Result-first workspace experiences */
+.experience-kicker { font-size: .72rem; letter-spacing: .12em; font-weight: 600; color: var(--muted); margin-bottom: .4rem; }
+.result-studio, .live-progress, .outcome-metrics, .workflow-recommendation, .live-team-map, .project-briefing { border: 1px solid var(--border-strong); border-radius: 12px; padding: 20px; margin: 16px 0; min-width: 0; }
+.result-studio h3, .live-progress h3, .project-briefing h2 { margin-top: 0; }
+.experience-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
+.experience-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 16px 0; }
+.experience-columns > *, .experience-metrics > * { min-width: 0; }
+.experience-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.experience-metrics dt { font-size: .8rem; color: var(--muted); }
+.experience-metrics dd { font-size: 1.15rem; margin: 8px 0 0; }
+.workflow-recommendation article { padding: 12px 0; border-top: 1px solid var(--border-strong); }
+.evidence-run-link { display: block; overflow-wrap: anywhere; margin: 6px 0; }
+.alternatives, .scenario-evidence { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-strong); }
+.alternative-preview iframe { display: block; width: 100%; height: 360px; border: 1px solid var(--border-strong); border-radius: 8px; margin: 12px 0; background: white; }
+.alternative-preview h4 { margin-top: 0; }
+.journey-recorder { flex: 0 1 auto; padding: 0 12px; border-bottom: 1px solid var(--border-strong); max-height: 55%; overflow: auto; }
+.journey-editor { padding-bottom: 12px; }
+.journey-editor label, .result-studio label, .alternative-preview label { display: block; font-size: .85rem; margin: 10px 0; }
+.journey-editor .field, .result-studio .field, .alternative-preview .field { width: 100%; margin-top: 5px; }
+.journey-actions { padding-left: 22px; max-height: 180px; overflow: auto; }
+.journey-actions li { overflow-wrap: anywhere; padding: 4px 0; }
+.walkthrough img { display: block; width: 100%; border: 1px solid var(--border-strong); border-radius: 8px; }
+.walkthrough input[type=range] { width: 100%; }
+.scenario-library { padding: 16px; margin: 16px 0; }
+.scenario-library article { padding: 12px 0; border-top: 1px solid var(--border-strong); }
+.team-map-grid, .briefing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.team-map-node { display: flex; flex-direction: column; gap: 8px; text-align: left; padding: 14px; border: 1px solid var(--border-strong); border-radius: 10px; background: transparent; color: inherit; min-width: 0; overflow-wrap: anywhere; cursor: pointer; }
+.team-map-node[aria-pressed=true] { border: 2px solid currentColor; padding: 13px; }
+.team-map-node.running { box-shadow: inset 3px 0 #2a9b72; }
+.team-map-node span, .team-map-node small { font-size: .8rem; }
+.team-map-detail { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border-strong); }
+.briefing-grid article { border: 1px solid var(--border-strong); border-radius: 10px; padding: 16px; min-width: 0; }
+.briefing-grid pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.result-studio p, .live-progress p, .team-map-detail p { overflow-wrap: anywhere; }
+@media (max-width: 760px) { .experience-columns, .team-map-grid, .briefing-grid { grid-template-columns: 1fr; } .experience-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .result-studio, .live-progress, .live-team-map, .project-briefing { padding: 14px; } }

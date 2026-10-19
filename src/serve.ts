@@ -1,5 +1,5 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { createServer } from "node:net";
+import { createServer, createConnection } from "node:net";
 import { platform } from "node:os";
 import { killGroup, trackGroup, untrackGroup } from "./adapters/process.js";
 import { childEnv } from "./env.js";
@@ -36,6 +36,17 @@ export class DevServers {
   /** Every server, without their logs: what the side panel's Browser can open. */
   list(): Omit<DevServer, "logs">[] {
     return [...this.servers.values()].map(({ child: _child, logs: _logs, ...rest }) => ({ ...rest }));
+  }
+
+  async ready(key: string): Promise<boolean> {
+    const server = this.servers.get(key);
+    if (!server || server.status !== "running") return false;
+    return new Promise<boolean>(resolve => {
+      const socket = createConnection({ host: "localhost", port: server.port, autoSelectFamily: true });
+      let settled = false;
+      const finish = (ready: boolean) => { if (settled) return; settled = true; socket.destroy(); resolve(ready); };
+      socket.setTimeout(500, () => finish(false)); socket.once("connect", () => finish(true)); socket.once("error", () => finish(false));
+    });
   }
 
   async start(key: string, cwd: string, command: string, preferredPort?: number, generatedEnv: NodeJS.ProcessEnv = {}, signal?: AbortSignal): Promise<DevServer> {

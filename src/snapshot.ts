@@ -1,3 +1,5 @@
+import type { Journey, JourneyReplay } from "./journeys.js";
+import { replayJourney } from "./journey-replay.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { lookup } from "node:dns/promises";
 import { statSync } from "node:fs";
@@ -28,6 +30,7 @@ import { childEnv } from "./env.js";
  */
 
 export interface Snapshot {
+  replay?: Pick<JourneyReplay, "status" | "error" | "failedAt" | "frames">;
   /** PNG, base64. */
   image: string;
   width: number;
@@ -38,6 +41,7 @@ export interface Snapshot {
 }
 
 export interface SnapshotRequest {
+  journey?: Journey;
   url: string;
   /** Viewport width in CSS pixels. */
   width: number;
@@ -54,6 +58,7 @@ export class SnapshotError extends Error {
 }
 
 export interface SnapshotPolicy {
+  documentOrigin?: string;
   /**
    * A local app the Browser tab shows through its preview: an http://localhost:<port> address
    * (127.0.0.1, [::1]) that isn't code-flow's own. A snapshot may start at one, and that page may
@@ -219,7 +224,7 @@ export async function takeSnapshot(request: SnapshotRequest, policy: SnapshotPol
   if (refused) throw new SnapshotError(`${refused.host} is ${what(refused)}, and snapshots don't open those. ${LOCAL_APPS}`, 403);
   const chrome = findChrome();
   if (!chrome) throw new SnapshotError("Snapshots need Google Chrome, Chromium, Edge or Brave on this computer: install one, or set CODEFLOW_CHROME to its path", 501);
-  const next = queue.then(() => capture(chrome, url, width, height, !!request.full, policy));
+  const next = queue.then(() => capture(chrome, url, width, height, !!request.full, policy, request.journey));
   queue = next.catch(() => undefined);
   return next;
 }
@@ -253,7 +258,7 @@ function launch(chrome: string, profile: string, width: number, height: number):
   );
 }
 
-async function capture(chrome: string, url: string, width: number, height: number, full: boolean, policy: SnapshotPolicy): Promise<Snapshot> {
+async function capture(chrome: string, url: string, width: number, height: number, full: boolean, policy: SnapshotPolicy, journey?: Journey): Promise<Snapshot> {
   const profile = await mkdtemp(join(tmpdir(), "codeflow-snapshot-"));
   const cantStart = async (code?: string) => {
     await rm(profile, { recursive: true, force: true }).catch(() => undefined);
@@ -288,7 +293,7 @@ async function capture(chrome: string, url: string, width: number, height: numbe
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new SnapshotError(`The page took longer than ${TOTAL_TIMEOUT_MS / 1000}s to snapshot`, 504)), TOTAL_TIMEOUT_MS);
   });
-  const driven = drive(cdp, url, width, height, full, policy).catch(async (err: unknown) => {
+  const driven = drive(cdp, url, width, height, full, policy, journey).catch(async (err: unknown) => {
     if (err instanceof SnapshotError) throw err;
     // The pipe closing can beat Chrome's exit to it: give the exit a moment to say why (it wins the race below).
     await within(exited, 500);
@@ -332,7 +337,7 @@ async function within(promise: Promise<unknown>, ms: number) {
   clearTimeout(timer);
 }
 
-async function drive(cdp: DevTools, url: string, width: number, height: number, full: boolean, policy: SnapshotPolicy): Promise<Snapshot> {
+async function drive(cdp: DevTools, url: string, width: number, height: number, full: boolean, policy: SnapshotPolicy, journey?: Journey): Promise<Snapshot> {
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
   // The page's renderer can die (out of memory, say) while Chrome itself stays up: nothing it was
@@ -361,7 +366,7 @@ async function drive(cdp: DevTools, url: string, width: number, height: number, 
     try {
       const target = new URL(paused.request.url);
       refused = target.protocol === "http:" || target.protocol === "https:" ? await refusal(target, fromLocalApp ? policy.localApp : undefined, resolve) : undefined;
-      fail = !!refused;
+      fail = !!refused || !!policy.documentOrigin && paused.resourceType === "Document" && target.origin !== policy.documentOrigin;
     } catch {
       fail = true; // a name that can't be looked up can't be checked
     }
@@ -389,6 +394,7 @@ async function drive(cdp: DevTools, url: string, width: number, height: number, 
   // A page that never finishes loading (a stream, a stuck request) is still shown as it is by then.
   await step(loaded);
   await step(delay(SETTLE_MS));
+  const replay = journey ? await replayJourney(page, journey) : undefined;
   const { result } = await page("Runtime.evaluate", { expression: "JSON.stringify({ url: location.href, title: document.title })", returnByValue: true });
   const info = JSON.parse(String(result?.value ?? "{}")) as { url?: string; title?: string };
   let shot: { data: string };
@@ -406,7 +412,7 @@ async function drive(cdp: DevTools, url: string, width: number, height: number, 
   }
   // The size the picture really is (Chrome rounds a clip to whole pixels), since boxes are drawn in its pixels.
   const size = pngSize(shot.data);
-  return { image: shot.data, width: size?.width ?? width, height: size?.height ?? height, url: info.url || url, title: info.title ?? "" };
+  return { replay, image: shot.data, width: size?.width ?? width, height: size?.height ?? height, url: info.url || url, title: info.title ?? "" };
 }
 
 /** A PNG's width and height, from its header. */

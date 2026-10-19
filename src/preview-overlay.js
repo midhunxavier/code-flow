@@ -143,6 +143,18 @@
     }
     return parts.join(" > ") || el.tagName.toLowerCase();
   };
+  let recording = false;
+  const sensitive = el => /password|hidden|file/.test(el.type || "") || /password|secret|token|credential|cc-|one-time-code/i.test(`${el.id} ${el.name} ${el.autocomplete}`);
+  const record = (kind, el, value) => {
+    if (!recording || mode !== "off" || !(el instanceof Element) || ours(el)) return;
+    if (sensitive(el)) { post({ type: "recording-warning", text: "A sensitive field was excluded. Authenticated flows may require a test fixture." }); return; }
+    post({ type: "record-action", action: { kind, selector: selectorOf(el), ...(value !== undefined ? { value: String(value).slice(0, 2000) } : {}) } });
+  };
+  addEventListener("click", event => record("click", event.target.closest?.("button,a,input,select,[role=button]") || event.target), true);
+  addEventListener("input", event => { if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) { if (!["checkbox", "radio", "range", "color"].includes(event.target.type)) record("fill", event.target, event.target.value); } }, true);
+  addEventListener("change", event => { if (event.target instanceof HTMLSelectElement) record("select", event.target, event.target.value); }, true);
+  addEventListener("keydown", event => { if (["Enter", "Tab", "Escape"].includes(event.key)) record("press", event.target, event.key); }, true);
+
   const STYLES = ["color", "background-color", "font-family", "font-size", "font-weight", "line-height", "padding", "margin", "border", "border-radius", "display", "gap", "width", "height", "opacity"];
   const stylesOf = (el) => {
     const cs = getComputedStyle(el);
@@ -362,7 +374,8 @@
       parent = e.origin;
       post({ type: "ready", url: location.href, title: document.title });
       for (const msg of early.splice(0)) post(msg);
-    } else if (m.type === "mode") setMode(m.mode);
+    } else if (m.type === "recording") recording = m.active === true;
+    else if (m.type === "mode") setMode(m.mode);
     else if (m.type === "pins") drawPins(m.pins || []);
     else if (m.type === "adjust") adjust(m.id, m.styles || {});
     else if (m.type === "reset") reset(m.id);
