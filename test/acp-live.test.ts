@@ -23,3 +23,16 @@ test("live ACP acceptance approves only task files and the exact check, includin
   ]) assert.equal(approveLiveAcpRequest(request, trees, "acp:cline"), false, JSON.stringify(request));
   assert.equal(approveLiveAcpRequest(edit, trees, "acp:kilo"), false, "Cline input handling is specific to its native tools");
 });
+
+test("native Cline may read only the acceptance task files, including tests it cannot edit", () => {
+  const cwd = resolve("test-worktree"), trees = [{ path: cwd }];
+  const read: AgentApprovalRequest = { id: "1", kind: "command", cwd, reason: "read_files: task files" };
+  const request = (files: unknown[]) => ({ ...read, command: JSON.stringify({ files }) });
+  assert.equal(approveLiveAcpRequest(request([{ path: resolve(cwd, "slugify.mjs") }, { path: "slugify.test.mjs", start_line: 1, end_line: 20 }]), trees, "acp:cline"), true);
+  assert.equal(approveLiveAcpRequest(request([{ path: "session-proof.txt" }]), trees, "acp:cline"), true);
+  for (const files of [[], [null], [{ path: "../slugify.mjs" }], [{ path: "/etc/passwd" }], [{ path: "slugify.mjs" }, { path: "unrelated.txt" }], [{ path: "slugify.mjs", command: "other" }]]) {
+    assert.equal(approveLiveAcpRequest(request(files), trees, "acp:cline"), false);
+  }
+  assert.equal(approveLiveAcpRequest(request([{ path: "slugify.mjs" }]), trees, "acp:kilo"), false);
+  assert.equal(approveLiveAcpRequest({ ...request([{ path: "slugify.test.mjs" }]), kind: "file-change" }, trees, "acp:cline"), false);
+});
