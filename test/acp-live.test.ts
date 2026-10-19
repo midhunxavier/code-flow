@@ -36,3 +36,13 @@ test("native Cline may read only the acceptance task files, including tests it c
   assert.equal(approveLiveAcpRequest(request([{ path: "slugify.mjs" }]), trees, "acp:kilo"), false);
   assert.equal(approveLiveAcpRequest({ ...request([{ path: "slugify.test.mjs" }]), kind: "file-change" }, trees, "acp:cline"), false);
 });
+
+test("native Cline search approval is limited to fixture names in the worktree", () => {
+  const cwd = resolve("test-worktree"), trees = [{ path: cwd }];
+  const search: AgentApprovalRequest = { id: "1", kind: "command", cwd, reason: "search_codebase: slugify" };
+  for (const [input, allowed] of [
+    [{ queries: ["slugify"] }, true], [{ queries: ["slugify.test.mjs", "session-proof.txt"] }, true],
+    [{ queries: [] }, false], [{ queries: ["secret"] }, false], [{ queries: [{ pattern: "slugify" }] }, false],
+    [{ queries: ["slugify"], path: ".." }, false],
+  ] as const) assert.equal(approveLiveAcpRequest({ ...search, command: JSON.stringify(input) }, trees, "acp:cline"), allowed);
+});

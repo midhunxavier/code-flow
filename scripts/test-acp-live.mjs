@@ -134,7 +134,7 @@ try {
   const created = await api("/api/runs", {
     pattern: "solo", repo, roles: { agent: [connection.id] }, trust: "full", approvals: { tools: true },
     agentSettings: { [connection.id]: { model: model ?? probe.catalog.defaultModel } },
-    task: `Implement slugify(value) in slugify.mjs: lowercase ASCII text, replace each run of non-alphanumeric characters with a hyphen, trim leading/trailing hyphens. Change only slugify.mjs; do not change tests. Run node --test. ${toolInstructions} Remember the verification phrase ${phrase} in this conversation for a later reply; don't put it in files or your answer yet.`,
+    task: `Implement slugify(value) in slugify.mjs: lowercase ASCII text, replace each run of non-alphanumeric characters with a hyphen, trim leading/trailing hyphens. Change only slugify.mjs; the existing tests are in slugify.test.mjs and must not be changed. Run node --test. ${toolInstructions} Remember the verification phrase ${phrase} in this conversation for a later reply; don't put it in files or your answer yet.`,
     loop: { setup: "", check: "node --test", copy: [] }, options: {},
   });
   runId = created.id; watchRun();

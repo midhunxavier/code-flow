@@ -13,6 +13,10 @@ export function approveLiveAcpRequest(request: AgentApprovalRequest, worktrees: 
     let input;
     try { input = JSON.parse(request.command ?? ""); } catch { /* Plain commands use the normal check below. */ }
     if (input && typeof input === "object" && !Array.isArray(input)) {
+      if (request.kind === "command" && request.reason?.startsWith("search_codebase:") && Object.keys(input).length === 1 && Array.isArray(input.queries)) {
+        return input.queries.length > 0 && input.queries.length <= 3
+          && input.queries.every((query: unknown) => typeof query === "string" && ["slugify", "slugify.mjs", "slugify.test.mjs", "session-proof.txt"].includes(query));
+      }
       if (request.kind === "command" && request.reason?.startsWith("read_files:") && Object.keys(input).length === 1 && Array.isArray(input.files)) {
         return input.files.length > 0 && input.files.every((file: any) => file && typeof file.path === "string"
           && Object.keys(file).every((key) => ["path", "start_line", "end_line"].includes(key))
