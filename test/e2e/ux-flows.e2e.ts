@@ -76,7 +76,7 @@ test("finished work leads to review, commit-scoped coverage and publishing in on
   assert.equal(result.status, "done", result.error);
   await page.goto(base + `/#/project/${result.project}`);
   await page.getByRole("button", { name: /results? in the inbox/ }).click();
-  await page.waitForURL("**/#/inbox");
+  await page.waitForURL(url => url.hash === "#/inbox");
   await page.locator(".inbox-item", { hasText: result.task }).locator("a.t").click();
   const next = page.getByRole("region", { name: "Next action" });
   await next.getByRole("heading", { name: "Ready for your review" }).waitFor();
