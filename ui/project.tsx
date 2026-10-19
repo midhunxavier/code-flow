@@ -155,7 +155,7 @@ export function ProjectView({ id }: { id: string }) {
             )}
             {pending ? (
               <div class="pp-card-foot">
-                <button type="button" class="btn small" onClick={() => (route.value = { view: "automations" })}>
+                <button type="button" class="btn small" onClick={() => (route.value = { view: "inbox" })}>
                   {plural(pending, "result")} in the inbox
                 </button>
               </div>

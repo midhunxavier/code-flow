@@ -74,7 +74,9 @@ test("finished work leads to review, commit-scoped coverage and publishing in on
   const started = await api<{ id: string }>("/api/runs", { repo, pattern: "solo", task: "Improve the login error message", roles: { agent: ["claude"] }, loop: { check: "true", prove: false, maxSteps: 4, maxMinutes: 1 } });
   result = await until(() => api(`/api/runs/${started.id}`), value => value.status !== "running");
   assert.equal(result.status, "done", result.error);
-  await page.goto(base + "/#/inbox");
+  await page.goto(base + `/#/project/${result.project}`);
+  await page.getByRole("button", { name: /results? in the inbox/ }).click();
+  await page.waitForURL("**/#/inbox");
   await page.locator(".inbox-item", { hasText: result.task }).locator("a.t").click();
   const next = page.getByRole("region", { name: "Next action" });
   await next.getByRole("heading", { name: "Ready for your review" }).waitFor();
