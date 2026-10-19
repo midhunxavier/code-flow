@@ -2840,6 +2840,7 @@ export class RunManager {
   private readonly runIdentities = new Map<string, WeakRef<Run>>();
   private readonly coldRuns = new RunColdStore();
   private readonly coldWrites = new Map<string, Promise<void>>();
+  private logCompaction: Promise<void> = Promise.resolve();
   /** Async mutations retain their adopted live object while an older cold write settles. */
   private readonly coldMutations = new Map<string, number>();
   private readonly controllers = new Map<string, AbortController>();
@@ -2966,7 +2967,7 @@ export class RunManager {
       await this.coolRun(run);
     });
     void this.tidyWorktrees().catch((err: Error) => logWarn("Couldn't tidy worktrees at startup", { error: err.message }));
-    if (compact.length) void this.compactLogs(compact);
+    if (compact.length) this.logCompaction = this.logCompaction.then(() => this.compactLogs(compact)).catch((error: Error) => logWarn("Couldn't finish background log compaction", { error: error.message }));
   }
 
   /**
@@ -2979,6 +2980,13 @@ export class RunManager {
     let after = 0;
     for (const id of ids) {
       if (this.shuttingDown) break;
+      // Invalidate the cached cold summary before the source identity can change.
+      // Only this archive is hydrated; concurrent mutations retain the live handle.
+      const wasCold = this.coldRuns.has(id);
+      if (wasCold) {
+        const run = this.get(id);
+        if (run) { this.coldRuns.drop(id); this.adoptRun(run); }
+      }
       const rewritten = await rewriteLines(`${id}.jsonl`, (lines) => {
         if (lines.some((l) => (l as { type?: string } | null)?.type === "run-patch")) return undefined;
         const events = decodeRunLog(lines);
@@ -2989,11 +2997,9 @@ export class RunManager {
         after += is;
         return compacted;
       }).catch((err: Error) => { logWarn(`Couldn't compact the log of run ${id}; it's left as it was`, { error: err.message }); return false; });
-      // Rewriting changes the authoritative source identity. Refresh one cold projection at a
-      // time so the next history listing cannot promote every compacted archived run at once.
-      // A concurrent listing may already have promoted the stale projection while the rewrite
-      // completed. Refresh that live record too; coolRun still excludes active/mutating runs.
-      if (rewritten || this.coldRuns.has(id) && !this.coldRuns.valid(id)) {
+      // Publish a projection for the new identity, or restore it if rewriting was skipped.
+      // A concurrent mutation keeps its live object; coolRun excludes active/mutating runs.
+      if (rewritten || wasCold || this.coldRuns.has(id) && !this.coldRuns.valid(id)) {
         const run = this.get(id); if (run) await this.coolRun(run);
       }
     }
@@ -4660,6 +4666,7 @@ export class RunManager {
       void this.persistQuota();
     }
     await this.quotaWrites;
+    await this.logCompaction;
     await flushWrites();
     await Promise.allSettled(this.coldWrites.values());
   }

@@ -96,6 +96,9 @@ production app and adds no Rust installation requirement for users.
 - No real user history, provider requests or external service latency.
 - The measured code includes the live-page race fix and the integration with the
   SQLite memory update from main. Earlier pilot results are superseded by this run.
+- A subsequent CI-driven fix invalidates cached cold summaries before legacy log
+  compaction and waits for compaction during shutdown. Separate deterministic tests
+  cover that archived-startup path; the non-archived benchmark fixtures do not use it.
 
 ```sh
 npm run benchmark:compare -- --baseline 44a006830a0ef2326b22a01f468981b6e48fd940 --trials 7

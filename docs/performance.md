@@ -19,7 +19,9 @@ read every cold detail file or synchronously validate every archived source. Ope
 a detail or using it for an operation still validates the source and rebuilds stale
 projections. HTTP detail hydration uses asynchronous I/O; synchronous compatibility
 remains for existing internal mutation callers. Indexes grow with run count, and
-live/resumable runs still retain their execution metadata.
+live/resumable runs still retain their execution metadata. Legacy log compaction
+hydrates one archive and invalidates its cold summary before replacing its source;
+shutdown waits for the projection refresh to finish.
 
 New UI subscriptions use `run-page:<id>`. The initial frame contains the latest run
 and step snapshots, a recent transcript page, and persistence status. A reconnect

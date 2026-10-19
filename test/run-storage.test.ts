@@ -82,10 +82,41 @@ test("streaming startup and stale cold hydration decode upstream patches without
   writeFileSync(join(RUNS_DIR, `${run.id}.cold-detail.json`), "damaged"); const recovered = manager.get(run.id)!; assert.equal(recovered.task, "Latest patched task"); assert.equal(recovered.conventions, "Pinned recovered conventions");
   const gap = new RunProjection(); gap.apply(lines[0]!); gap.apply({ seq: 103, ts: 3, runId: run.id, type: "run-patch", base: 102, set: { task: "Must not apply without its base" } }); assert.equal(gap.finish()!.task, run.task, "a missing patch base retains only the last known authoritative snapshot");
 });
-test("legacy archived log compaction refreshes its cold source identity instead of retaining full metadata hot", async () => {
+test("legacy archived log compaction refreshes its cold source identity instead of retaining full metadata hot", async (t) => {
   const base = await baseline(), run: Run = { ...structuredClone(base), id: "legacy-compacted-cold", archived: true, seen: true, steps: [], conventions: "Preserved conventions\n".repeat(20_000) }, file = join(RUNS_DIR, `${run.id}.jsonl`);
   writeFileSync(file, Array.from({ length: 5 }, (_, index) => JSON.stringify({ seq: 200 + index, ts: index, runId: run.id, type: "run", run: strip({ ...run, task: `Legacy archived task ${index}` }) })).join("\n") + "\n"); const before = statSync(file).size;
-  const manager = createManager(); await manager.load(); const deadline = Date.now() + 10_000;
+  const manager = createManager(), get = manager.get.bind(manager), coldAtFirstReadAfterRewrite: (boolean | undefined)[] = [];
+  t.mock.method(manager, "get", (id: string) => {
+    if (id === run.id && statSync(file).size < before && !coldAtFirstReadAfterRewrite.length) coldAtFirstReadAfterRewrite.push(manager.list().find((item) => item.id === id)?.cold);
+    return get(id);
+  });
+  await manager.load(); const deadline = Date.now() + 10_000;
   while (statSync(file).size >= before || manager.list().find((item) => item.id === run.id)?.cold !== true) { if (Date.now() > deadline) throw new Error("Archived compaction did not settle into cold storage"); await new Promise((resolve) => setTimeout(resolve, 25)); }
+  assert.deepEqual(coldAtFirstReadAfterRewrite, [undefined], "the history index leaves cold state before the source is rewritten");
   assert.ok(statSync(file).size < before * 0.6); assert.equal(manager.get(run.id)!.task, "Legacy archived task 4"); assert.equal(manager.get(run.id)!.conventions, run.conventions); assert.equal(manager.list().find((item) => item.id === run.id)!.cold, true);
+});
+
+
+test("shutdown waits for an in-progress archived compaction to publish its refreshed projection", async (t) => {
+  const base = await baseline(), run: Run = { ...structuredClone(base), id: "shutdown-compacted-cold", archived: true, seen: true, steps: [], conventions: "Durable archived context\n".repeat(5000) };
+  const file = join(RUNS_DIR, `${run.id}.jsonl`);
+  writeFileSync(file, Array.from({ length: 5 }, (_, index) => JSON.stringify({ seq: 300 + index, ts: index, runId: run.id, type: "run", run: strip(run) })).join("\n") + "\n");
+  const manager = createManager();
+  const internal = manager as unknown as { coolRun(run: Run): Promise<void> };
+  const cool = internal.coolRun.bind(manager); let calls = 0, release!: () => void, entered!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; }), refreshing = new Promise<void>((resolve) => { entered = resolve; });
+  t.mock.method(internal, "coolRun", async (value: Run) => {
+    if (value.id === run.id && ++calls === 2) { entered(); await blocked; }
+    return cool(value);
+  });
+  let closing: Promise<void> | undefined;
+  try {
+    await manager.load(); await refreshing;
+    let closed = false; closing = manager.shutdown().then(() => { closed = true; });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(closed, false, "shutdown must retain the source until its projection refresh settles");
+    release(); await closing;
+    assert.equal(manager.list().find((item) => item.id === run.id)?.cold, true);
+    assert.equal(manager.get(run.id)!.conventions, run.conventions);
+  } finally { release(); await closing; }
 });
