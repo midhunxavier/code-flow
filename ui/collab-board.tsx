@@ -1,3 +1,4 @@
+import { TeamConnectionPicker } from "./team-connections.js";
 import { useEffect, useState } from "preact/hooks";
 import type { Board, BoardProject, InboxItem, Task, TaskStatus, TaskSummary } from "../src/collab/model.js";
 import { TaskDraftAssistant } from "./task-draft.js";
@@ -21,7 +22,7 @@ export function TeamBoardView({ project, shared = false, navigate }: { project?:
   usePoll(() => setNow(Date.now()), 15_000, [], shared);
   const b = board.value;
   const chosen = project && b?.projects.some((entry) => entry.id === project) ? project : undefined;
-  if (!b) return <div class="team-page" aria-busy={!boardLoaded.value}>{boardError.value ? <p class="msg err" role="alert">{boardError.value} <button class="btn small" onClick={() => void loadBoard()}>Retry</button></p> : <p class="help" role="status">Loading the team board…</p>}</div>;
+  if (!b) return <div class="team-page" aria-busy={!boardLoaded.value}>{!shared ? <TeamConnectionPicker /> : null}{boardError.value ? <p class="msg err" role="alert">{boardError.value} <button class="btn small" onClick={() => void loadBoard()}>Retry</button></p> : <p class="help" role="status">Loading the team board…</p>}</div>;
   const me = b.me.userId;
   const involvesMe = (task: TaskSummary) => task.owner?.userId === me || task.reviewer?.userId === me || task.collaborators.some((who) => who.userId === me) || (task.handoff?.state === "offered" && task.handoff.to.userId === me);
   const tasks = b.tasks.filter((task) => (!chosen || task.projectId === chosen) && (!mine || involvesMe(task)) && (!status || task.status === status));
@@ -38,6 +39,7 @@ export function TeamBoardView({ project, shared = false, navigate }: { project?:
   };
   const link = teamLink.value;
   return <div class="team-page">
+    {!shared ? <TeamConnectionPicker /> : null}
     {boardError.value ? <p class="msg err" role="alert">{boardError.value}</p> : null}
     <div class="page-head">
       <div class="page-head-text"><h1>Team</h1><p>{chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>

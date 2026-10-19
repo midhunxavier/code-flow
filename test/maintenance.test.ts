@@ -32,6 +32,7 @@ test("encrypted backups round-trip application data while excluding live session
   const runnerCredential = `tr-${"a".repeat(43)}`;
   await writeFile(join(home, "team-link.json"), JSON.stringify({ version: 1, url: "https://hub.example.ts.net", runnerId: "r-0123456789abcdef", token: runnerCredential, user: { userId: "u-1", username: "alice", displayName: "Alice" }, machineName: "alice-laptop", mappings: { "p-1": { api: "/repos/api" } } }));
   await writeFile(join(home, "team-link.json.corrupt-2026-10-19T00-00-00-000Z"), `{"token":"${runnerCredential}"`);
+  await mkdir(join(home, "team-connections")); await writeFile(join(home, "team-connections", "c-1111111111111111.json"), JSON.stringify({ token: runnerCredential }));
   await mkdir(join(home, "team")); await writeFile(join(home, "team", "board.json"), '{"version":1,"projects":{}}');
   await mkdir(join(home, "team-link", "attempts"), { recursive: true }); await writeFile(join(home, "team-link", "attempts", "0123456789abcdef0123456789abcdef.json"), '{"attemptId":"0123456789abcdef0123456789abcdef","runId":"run-1"}');
   await writeFile(join(home, "acp-connections.json"), '{"connections":[{"command":"must-not-restore-executable"}]}');
@@ -47,6 +48,7 @@ test("encrypted backups round-trip application data while excluding live session
   assert.ok(backup.omitted.includes("team-link.json (session or credential material)"), "the runner credential never enters a backup");
   assert.ok(backup.omitted.includes("team-link.json.corrupt-2026-10-19T00-00-00-000Z (session or credential material)"), "a set-aside copy of the link carries the credential too");
   assert.ok(!backup.omitted.some((path) => path.startsWith("team/") || path.startsWith("team-link/")), "the board and the local attempt records hold no credentials and stay in");
+  assert.ok(backup.omitted.some((path) => path.includes("team-connections")));
   assert.ok(backup.omitted.some((path) => path.includes("remote-worker-private")));
   assert.ok(backup.omitted.some((path) => path.includes("ssh-host")));
   assert.ok(backup.omitted.some((path) => path.includes("extension-cache")));
@@ -148,13 +150,14 @@ test("authenticated malicious backups cannot escape the destination or restore o
   await writeFile(archive, archiveManifest({ version: 1, createdAt: 1, omitted: [], files: [file] }));
   await assert.rejects(restoreEncryptedBackup({ input: archive, destination: join(root, "unsafe"), password: PASSWORD }), /unsafe/);
   assert.equal(await lstat(join(root, "escape")).then(() => true, () => false), false);
-  await writeFile(archive, archiveManifest({ version: 1, createdAt: 1, omitted: [], files: [{ ...file, path: "remote.json" }, { ...file, path: "phone-devices.json" }, { ...file, path: "shared-accounts.json.old" }, { ...file, path: "team-link.json" }, { ...file, path: "team-link.json.corrupt-2026-10-19T00-00-00-000Z" }, { ...file, path: "remote-worker-private/request.json" }, { ...file, path: "extension-cache/pinned.mjs" }, { ...file, path: "acp-connections.json" }, { ...file, path: "notes.json" }] }));
+  await writeFile(archive, archiveManifest({ version: 1, createdAt: 1, omitted: [], files: [{ ...file, path: "remote.json" }, { ...file, path: "phone-devices.json" }, { ...file, path: "shared-accounts.json.old" }, { ...file, path: "team-link.json" }, { ...file, path: "team-connections/c-1111111111111111.json" }, { ...file, path: "team-link.json.corrupt-2026-10-19T00-00-00-000Z" }, { ...file, path: "remote-worker-private/request.json" }, { ...file, path: "extension-cache/pinned.mjs" }, { ...file, path: "acp-connections.json" }, { ...file, path: "notes.json" }] }));
   const destination = join(root, "clean");
   const restored = await restoreEncryptedBackup({ input: archive, destination, password: PASSWORD });
   assert.equal(restored.files, 1);
   assert.equal(await lstat(join(destination, "phone-devices.json")).then(() => true, () => false), false);
   assert.equal(await lstat(join(destination, "shared-accounts.json.old")).then(() => true, () => false), false);
   assert.equal(await lstat(join(destination, "team-link.json")).then(() => true, () => false), false);
+  assert.equal(await lstat(join(destination, "team-connections")).then(() => true, () => false), false);
   assert.equal(await lstat(join(destination, "team-link.json.corrupt-2026-10-19T00-00-00-000Z")).then(() => true, () => false), false);
   assert.ok(restored.omitted.includes("team-link.json (session or credential material excluded from restore)"), "an older archive's runner credential is reported, not restored");
   assert.equal(await lstat(join(destination, "remote-worker-private")).then(() => true, () => false), false);

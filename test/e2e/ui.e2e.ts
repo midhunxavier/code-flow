@@ -996,7 +996,7 @@ test("chat menu starts another provider with carried-over context", async () => 
   const result = await response;
   assert.equal(result.status(), 201, await result.text());
   const childId = (await result.json()).id;
-  await page.waitForURL(`**/#/run/${childId}`);
+  await page.waitForURL(url => url.hash === `#/run/${childId}`);
   const child = await api(`/api/runs/${childId}`);
   assert.deepEqual(child.roles.agent, ["claude"]);
   assert.equal(child.parentRunId, source.id);

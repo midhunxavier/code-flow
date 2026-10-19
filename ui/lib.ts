@@ -16,7 +16,23 @@ export class ApiError extends Error {
 /** The app stays on one origin; only requests and saved drafts are scoped to a computer. */
 export const workspaceId = (window as Window & { __CODEFLOW_WORKSPACE?: string }).__CODEFLOW_WORKSPACE;
 export const workspaceUrl = (id = "local", hash = "#/") => `${id === "local" ? "/" : `/computer/${encodeURIComponent(id)}/`}${hash}`;
-export const apiPath = (path: string) => workspaceId && path.startsWith("/api/") ? `/computer/${workspaceId}${path}` : path;
+/** A tab's team stays fixed until navigation, including downloads and requests already in flight. */
+export let selectedTeamConnection = new URLSearchParams(location.search).get("team") ?? "";
+export const apiPath = (path: string) => {
+  if (selectedTeamConnection && /^\/api\/team(?:-link)?(?:\/|\?|$)/.test(path)) path += `${path.includes("?") ? "&" : "?"}teamConnection=${encodeURIComponent(selectedTeamConnection)}`;
+  return workspaceId && path.startsWith("/api/") ? `/computer/${workspaceId}${path}` : path;
+};
+/** Resolve the legacy default once, before any team requests or subscriptions, then pin it for this tab. */
+export async function initializeTeamConnection() {
+  if (selectedTeamConnection) return;
+  try {
+    const inventory = await api<{ connections: { id: string; linked: boolean }[] }>("/api/team-link/connections");
+    const remotes = inventory.connections.filter((entry) => entry.linked);
+    selectedTeamConnection = remotes.length === 1 ? remotes[0]!.id : "local";
+    const url = new URL(location.href); url.searchParams.set("team", selectedTeamConnection);
+    history.replaceState(history.state, "", url.href);
+  } catch { /* Older hosts may not expose multiple connections. Their existing team UI remains usable. */ }
+}
 export const localApi = <T = any>(path: string, opts: RequestInit = {}) => request<T>(path, opts);
 export const api = <T = any>(path: string, opts: RequestInit = {}) => request<T>(path === "/api/auth/logout" ? path : apiPath(path), opts);
 

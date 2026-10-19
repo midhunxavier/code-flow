@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CODEFLOW_HOME } from "../config.js";
-import { HttpError } from "../http.js";
+import { HttpError, readJson } from "../http.js";
 import { sshAliases } from "./config.js";
 import { SshGateway, parseRuntime } from "./gateway.js";
 import { SshTransport, validSshHost, validSshOptions, type SshOptions } from "./transport.js";
@@ -19,6 +19,8 @@ export class SshProjects {
   private sessions = new Map<string, Session>();
   private pending = new Map<string, Promise<Session>>();
   private closed = false;
+  private teamSessions = new Map<string, Session>();
+  private teamPending = new Map<string, Promise<{ remotePort: number; currentVersion: boolean }>>();
   private file: string;
   constructor(private readonly options: { home?: string; sshBinary?: string; packagePath?: string; configPath?: string; localProjects?: () => { id: string; name: string }[]; canBrowse?: () => boolean }) { this.file = join(options.home ?? CODEFLOW_HOME, "ssh-hosts.json"); }
   private load() {
@@ -48,11 +50,11 @@ export class SshProjects {
     const host: Host = { id: randomBytes(8).toString("hex"), name, sshHost: body.sshHost, ...(body.port === undefined ? {} : { port: body.port as number }), ...(body.identityFile === undefined ? {} : { identityFile: body.identityFile as string }) };
     await this.change(() => { if (this.hosts.length >= 32) throw new HttpError(409, "Remove an unused SSH connection first (32 maximum)"); if (this.hosts.some((item) => item.sshHost === host.sshHost && item.port === host.port && item.identityFile === host.identityFile)) throw new HttpError(409, "This SSH host is already saved"); this.hosts.push(host); }); return host;
   }
-  private async setup(host: Host) {
+  private async setup(host: Host, remotePort?: number) {
     const [code, payload] = await Promise.all([readFile(new URL("./bootstrap.mjs", import.meta.url), "utf8"), readFile(this.options.packagePath ?? fileURLToPath(new URL("../../dist/remote-host.json", import.meta.url)), "utf8").catch(() => { throw new Error("Build the SSH host package with npm run build:host, then connect again."); })]);
     if (payload.length > 32 * 1024 * 1024) throw new Error("Remote host package exceeds 32 MiB");
     const transport = new SshTransport(host.sshHost, this.options.sshBinary, host); await transport.init();
-    try { const runtime = parseRuntime(await transport.bootstrap(code, payload)); return { transport, runtime }; }
+    try { const runtime = parseRuntime(await transport.bootstrap(code, remotePort === undefined ? payload : JSON.stringify({ ...JSON.parse(payload), remotePort, serviceBootstrap: code }), remotePort !== undefined)); return { transport, runtime, currentVersion: runtime.version === JSON.parse(payload).version }; }
     catch (error) { await transport.close(); throw error; }
   }
   async connect(id: string) {
@@ -82,6 +84,74 @@ export class SshProjects {
       session = await pending;
     }
     return { url: `/computer/${id}/` };
+  }
+  /** Install an independent host. The workspace stays private and keeps running. */
+  async setupTeamServer(id: string, body: { remotePort?: unknown }) {
+    this.assertBrowse(); await this.load();
+    if (this.closed) throw new HttpError(503, "The local app is shutting down");
+    const host = this.hosts.find((item) => item.id === id);
+    if (!host) throw new HttpError(404, "SSH connection not found");
+    const workspace = this.sessions.get(id);
+    if (!workspace || workspace.gateway.error) throw new HttpError(409, "Connect to this server in SSH connections first");
+    const remotePort = body.remotePort ?? 4318;
+    if (!Number.isInteger(remotePort) || Number(remotePort) < 1 || Number(remotePort) > 65535) throw new HttpError(400, "Choose a team port from 1 to 65535");
+    let pending = this.teamPending.get(id);
+    if (!pending) {
+      pending = (async () => {
+        const initial = await this.setup(host, Number(remotePort));
+        const state: Session = { transport: initial.transport, gateway: undefined! };
+        state.gateway = new SshGateway(initial.transport, initial.runtime, async () => {
+          const next = await this.setup(host, initial.runtime.remotePort ?? Number(remotePort));
+          const previous = state.transport; state.transport = next.transport; await previous.close(); return next;
+        }, "/api/team-host-runtime");
+        try {
+          this.assertBrowse();
+          if (this.closed || !this.sessions.has(id)) throw new HttpError(409, "SSH disconnected during setup. Reconnect and resume; the team server stays installed.");
+          const previous = this.teamSessions.get(id);
+          this.teamSessions.set(id, state);
+          if (previous) { await previous.gateway.close(); await previous.transport.close(); }
+          return { remotePort: initial.runtime.remotePort ?? Number(remotePort), currentVersion: initial.currentVersion };
+        } catch (error) { await state.gateway.close(); await state.transport.close(); throw error; }
+      })();
+      this.teamPending.set(id, pending);
+      void pending.finally(() => this.teamPending.delete(id)).catch(() => undefined);
+    }
+    return pending;
+  }
+  async teamAutostart(id: string, action: string = "status") {
+    this.assertBrowse();
+    if (!["status", "enable", "disable"].includes(action)) throw new HttpError(400, "Choose status, enable or disable for automatic startup");
+    if (this.teamPending.has(id)) throw new HttpError(409, "Wait for team server setup to finish");
+    const session = this.teamSessions.get(id);
+    if (!session || !this.sessions.has(id)) throw new HttpError(409, "Open team server setup on this SSH connection first");
+    const code = await readFile(new URL("./team-autostart.mjs", import.meta.url), "utf8");
+    const text = await session.transport.bootstrap(code + "\nawait main();", JSON.stringify({ action }));
+    const result = JSON.parse(text.split(/\r?\n/).find((line) => line.startsWith("CODEFLOW_AUTOSTART "))?.slice(19) ?? "null");
+    if (!result || typeof result.enabled !== "boolean" || typeof result.supported !== "boolean" || typeof result.message !== "string") throw new HttpError(502, "The server returned an invalid automatic startup status");
+    return result;
+  }
+  async forwardTeamServer(id: string, req: IncomingMessage, res: ServerResponse, path: string, origin: string) {
+    this.assertBrowse();
+    // This is an owner-only setup surface, not a general remote command proxy.
+    const url = new URL(path, origin), method = req.method ?? "GET";
+    const allowed = method === "GET" && /^\/api\/(projects|accounts|remote|team\/board)$/.test(url.pathname)
+      || method === "POST" && /^\/api\/(projects|accounts|remote(?:\/tls)?)$/.test(url.pathname)
+      || method === "PUT" && /^\/api\/(accounts\/[^/]+|team\/profile|team\/projects\/[^/]+\/repositories)$/.test(url.pathname);
+    if (!allowed) throw new HttpError(404, "Unknown team server setup operation");
+    if (url.pathname.startsWith("/api/team/")) url.searchParams.set("teamConnection", "local");
+    const session = this.teamSessions.get(id);
+    if (!session || !this.sessions.has(id)) throw new HttpError(409, "Open team server setup on this SSH connection first");
+    // The local policy gate already parsed JSON; forward its cached value rather than an exhausted stream.
+    const body = method === "GET" ? undefined : await readJson(req, 192 * 1024);
+    return session.gateway.forward(req, res, url.pathname + url.search, origin, body);
+  }
+  async stopTeamServer(id: string) {
+    this.assertBrowse();
+    if (this.teamPending.has(id)) throw new HttpError(409, "Wait for team server setup to finish");
+    const session = this.teamSessions.get(id);
+    if (!session) throw new HttpError(409, "Open team server setup before stopping it");
+    await session.gateway.json("/api/team-host-runtime/stop", "POST", {});
+    this.teamSessions.delete(id); await session.gateway.close(); await session.transport.close();
   }
   private directoryPending?: Promise<ComputerProjects[]>;
   private directoryCache?: { until: number; value: ComputerProjects[] };
@@ -122,6 +192,9 @@ export class SshProjects {
     return session.gateway.forward(req, res, path, origin);
   }
   async disconnect(id: string) {
+    await this.teamPending.get(id)?.catch(() => undefined);
+    const team = this.teamSessions.get(id); this.teamSessions.delete(id);
+    if (team) { await team.gateway.close(); await team.transport.close(); }
     const session = this.sessions.get(id) ?? await this.pending.get(id)?.catch(() => undefined);
     this.sessions.delete(id); this.directoryCache = undefined;
     if (session) { await session.gateway.close(); await session.transport.close(); }

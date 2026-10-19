@@ -50,7 +50,7 @@ host paths are omitted. See [shared projects](shared-projects.md).
 bound to a shared account. It is shown once, stored only as a hash on the team
 server, reaches only the team routes and is revoked there in one step; the
 owner's own token is matched before a bearer is read as a runner credential, and
-the file that holds the credential on a linked computer (`team-link.json`) is
+the files that hold credentials on a linked computer (`team-connections/` and legacy `team-link.json`) are
 left out of backups like the other credential stores. The team server never
 reaches into a teammate's machine: every connection is outbound from that
 machine, to the exact address its owner entered (a redirect or an untrusted

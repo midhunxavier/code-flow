@@ -4,10 +4,11 @@ import { HttpError, readJson, send } from "../http.js";
 import { Previews } from "../preview.js";
 import type { SshTransport } from "./transport.js";
 
-export interface Runtime { protocol: 1; port: number; token: string; instance: string; version: string; pid: number }
+export interface Runtime { protocol: 1; port: number; token: string; instance: string; version: string; pid: number; remotePort?: number }
 export function parseRuntime(text: string): Runtime {
   const raw = JSON.parse(text.split(/\r?\n/).reverse().find((line) => line.startsWith("CODEFLOW_SSH_READY "))?.slice(19) ?? "null");
   if (raw?.protocol !== 1 || !Number.isInteger(raw.port) || raw.port < 1 || raw.port > 65535 || !/^[a-f0-9]{64}$/.test(raw.token) || !/^[a-f0-9]{32}$/.test(raw.instance) || !/^[a-f0-9]{64}$/.test(raw.version)) throw new Error("The SSH host returned an invalid backend handshake");
+  if (raw.remotePort !== undefined && (!Number.isInteger(raw.remotePort) || raw.remotePort < 1 || raw.remotePort > 65535)) throw new Error("The SSH host returned an invalid team port");
   return raw;
 }
 const HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"]);
@@ -20,7 +21,7 @@ export class SshGateway {
   private previews: Previews;
   private restoring?: Promise<void>;
   error?: string;
-  constructor(private transport: SshTransport, private runtime: Runtime, private reconnect: () => Promise<{ transport: SshTransport; runtime: Runtime }>) {
+  constructor(private transport: SshTransport, private runtime: Runtime, private reconnect: () => Promise<{ transport: SshTransport; runtime: Runtime }>, private readonly probe = "/api/ssh-runtime") {
     this.previews = new Previews(() => [...this.origins], () => [this.runtime.port], (target) => this.open(target.port, target.hostname));
   }
   private open(port: number, hostname?: string) {
@@ -37,10 +38,10 @@ export class SshGateway {
     })().finally(() => { this.restoring = undefined; });
   }
   async ensureConnected() {
-    try { await this.json("/api/ssh-runtime"); }
+    try { await this.json(this.probe); }
     catch { await this.restore(); }
   }
-  async forward(req: IncomingMessage, res: ServerResponse, path: string, origin: string) {
+  async forward(req: IncomingMessage, res: ServerResponse, path: string, origin: string, body?: object) {
     if (this.closed) throw new HttpError(410, "This computer was disconnected");
     if (!path.startsWith("/api/")) throw new HttpError(404, "Unknown remote operation");
     this.origins.add(origin);
@@ -54,6 +55,8 @@ export class SshGateway {
     for (const [key, value] of Object.entries(req.headers)) if (value !== undefined && !HOP.has(key) && !["cookie", "authorization", "host", "origin", "referer", "forwarded"].includes(key) && !key.startsWith("x-forwarded-")) headers[key] = value;
     headers.host = `127.0.0.1:${this.runtime.port}`;
     headers.authorization = `Bearer ${this.runtime.token}`;
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    if (payload !== undefined) { headers["content-type"] = "application/json"; headers["content-length"] = String(Buffer.byteLength(payload)); }
     if (req.headers.origin) headers.origin = `http://${headers.host}`;
     const up = request({ host: "127.0.0.1", port: this.runtime.port, method: req.method, path, headers, createConnection: () => this.open(this.runtime.port) }, (incoming) => {
       this.error = undefined;
@@ -74,7 +77,7 @@ export class SshGateway {
       if (res.headersSent) res.destroy(); else send(res, 502, { error: this.error });
     });
     res.on("close", () => { if (!res.writableFinished) up.destroy(); });
-    req.pipe(up);
+    if (payload !== undefined) up.end(payload); else req.pipe(up);
   }
   json(path: string, method = "GET", body?: unknown, timeoutMs = 30_000): Promise<any> {
     return new Promise((resolve, reject) => {

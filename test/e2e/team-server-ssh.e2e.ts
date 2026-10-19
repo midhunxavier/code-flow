@@ -1,0 +1,162 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { spawn, type ChildProcess } from "node:child_process";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { chromium, type Browser } from "playwright-core";
+import axe from "axe-core";
+import { buildHost, fixture, pause, port, root } from "../ssh-project-fixture.js";
+import { certificateFixture } from "../remote-tls-fixture.js";
+
+test("wizard installs an isolated team server over connected SSH, configures HTTPS and resumes without duplicate data", { timeout: 180_000 }, async () => {
+  buildHost(); const f = await fixture(); let server: ChildProcess | undefined, service: ChildProcess | undefined, browser: Browser | undefined;
+  const localPort = await port(), teamPort = await port(), base = `http://localhost:${localPort}`, token = "team-ssh-e2e-owner";
+  const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+  const call = async (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") => {
+    const response = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const value = await response.json(); assert.ok(response.ok, `${path}: ${response.status} ${JSON.stringify(value)}`); return value;
+  };
+  try {
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("CODEFLOW_")));
+    server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...env, PORT: String(localPort), CODEFLOW_REMOTE_PORT: String(await port()), CODEFLOW_HOME: f.localHome, CODEFLOW_TOKEN: token, PATH: `${f.bin}:${process.env.PATH}` }, stdio: "ignore" });
+    let healthy = false;
+    for (let i = 0; i < 150; i++) { healthy = await fetch(base + "/api/health", { headers }).then((res) => res.ok, () => false); if (healthy) break; await pause(200); }
+    assert.ok(healthy);
+    const localProject = await call("/api/projects", { name: "Local only", repos: [] });
+    const connection = await call("/api/ssh-hosts", { sshHost: "fixture", name: "Connected VM" });
+    const prefix = `/api/ssh-hosts/${connection.id}/team-server`;
+    assert.equal((await fetch(base + prefix, { method: "POST", headers, body: JSON.stringify({ remotePort: teamPort }) })).status, 409, "a saved but disconnected host cannot install a server");
+    await call(`/api/ssh-hosts/${connection.id}/connect`, {});
+    assert.equal((await fetch(base + prefix + "/autostart", { headers })).status, 409, "startup needs an opened setup session");
+    const workspaceProject = await call(`/computer/${connection.id}/api/projects`, { name: "SSH only", repos: [] });
+    assert.equal((await fetch(base + prefix, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
+    assert.equal((await fetch(base + prefix, { method: "POST", headers: { ...headers, origin: "https://evil.example" }, body: "{}" })).status, 403);
+    assert.equal((await fetch(base + prefix, { method: "POST", headers, body: JSON.stringify({ remotePort: 0 }) })).status, 400);
+    await call(`/api/ssh-hosts/${connection.id}/disconnect`, {});
+    browser = await chromium.launch({ channel: "chrome", headless: true });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
+    const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${base}/?token=${token}`);
+    await page.goto(`${base}/?team=local#/settings/team`);
+    await page.getByRole("button", { name: "Set up team server", exact: true }).click();
+    await page.getByLabel("Server", { exact: true }).selectOption(connection.id);
+    await page.getByLabel("Team HTTPS port", { exact: true }).fill(String(teamPort));
+    await page.getByRole("button", { name: "Connect and set up on this server", exact: true }).click();
+    const wizard = page.getByRole("region", { name: "Team server setup", exact: true });
+    await wizard.getByLabel("Your name on the team", { exact: true }).waitFor({ timeout: 60_000 });
+    assert.equal(await page.getByLabel("Team HTTPS port", { exact: true }).count(), 0);
+    const runtimeFile = join(f.remoteHome, ".codeflow/team-server/runtime.json");
+    const runtime = JSON.parse(await readFile(runtimeFile, "utf8"));
+    const sshRuntime = JSON.parse(await readFile(join(f.remoteHome, ".codeflow/ssh-host/runtime.json"), "utf8"));
+    const startupStatus = await call(prefix + "/autostart");
+    assert.equal(typeof startupStatus.supported, "boolean"); assert.equal(startupStatus.enabled, false);
+    assert.equal((await fetch(base + prefix + "/autostart", { method: "POST", headers, body: JSON.stringify({ action: "arbitrary command" }) })).status, 400);
+    assert.equal((await fetch(base + prefix + "/autostart", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "enable" }) })).status, 401);
+    // Exercise the Linux controls without changing the developer machine's service manager.
+    let enabled = false;
+    await page.route("**/team-server/autostart", async route => {
+      const action = route.request().method() === "POST" ? route.request().postDataJSON().action : "status";
+      if (action !== "status") enabled = action === "enable";
+      await route.fulfill({ json: { supported: true, enabled, message: enabled ? "Automatic startup is enabled and verified." : "Automatic startup is off." } });
+    });
+    await page.getByRole("button", { name: "Check startup status", exact: true }).click();
+    await page.getByRole("button", { name: "Enable automatic startup", exact: true }).click();
+    await page.getByRole("button", { name: "Disable automatic startup", exact: true }).click();
+    await page.getByRole("button", { name: "Enable automatic startup", exact: true }).waitFor();
+    await page.unroute("**/team-server/autostart");
+    assert.notEqual(runtime.pid, sshRuntime.pid); assert.notEqual(runtime.token, sshRuntime.token);
+    assert.equal((await fetch(`http://127.0.0.1:${runtime.port}/api/projects`)).status, 401, "remote owner listener cannot be claimed");
+    assert.equal((await fetch(base + prefix + "/api/fs", { headers })).status, 404, "setup proxy cannot browse arbitrary remote files");
+    assert.equal((await fetch(base + prefix + "/api/runs", { method: "POST", headers, body: "{}" })).status, 404, "setup proxy cannot launch arbitrary work");
+    await wizard.getByLabel("Your name on the team", { exact: true }).fill("Remote owner");
+    await wizard.getByLabel("Project", { exact: true }).selectOption("");
+    await wizard.getByLabel("Project name", { exact: true }).fill("Remote team project");
+    assert.equal(await wizard.getByLabel("Local repository folder (optional)", { exact: true }).inputValue(), "");
+    await wizard.getByRole("button", { name: "Save and continue", exact: true }).click();
+    await wizard.getByRole("button", { name: "Save repositories and continue", exact: true }).waitFor({ timeout: 8000 }).catch(async (error) => { throw new Error(`${error.message}\nWizard: ${await wizard.innerText()}`); });
+    await wizard.getByRole("button", { name: "Save repositories and continue", exact: true }).click();
+    await wizard.getByLabel("Connection method", { exact: true }).selectOption("lan");
+    await wizard.getByRole("button", { name: "Enable team access on network", exact: true }).click();
+    await wizard.getByRole("button", { name: "Set up secure remote access", exact: true }).click();
+    const certificate = await certificateFixture(f.directory, "team.example.test");
+    await wizard.getByLabel("Remote hostname or IP", { exact: true }).fill(certificate.hostname);
+    await wizard.getByLabel("Certificate file (PEM)", { exact: true }).setInputFiles(certificate.certPath);
+    await wizard.getByLabel("Private key file (PEM)", { exact: true }).setInputFiles(certificate.keyPath);
+    await wizard.getByRole("button", { name: "Save and apply HTTPS", exact: true }).click();
+    await wizard.getByRole("button", { name: "Continue to teammates", exact: true }).click();
+    await wizard.getByLabel("Username", { exact: true }).fill("teammate");
+    await wizard.getByLabel("Display name", { exact: true }).fill("Remote teammate");
+    const password = "private remote team password 12345";
+    await wizard.getByLabel("Initial password", { exact: true }).fill(password);
+    await wizard.getByRole("button", { name: "Add teammate", exact: true }).click();
+    await wizard.getByText("Teammate saved. Share their initial password privately.", { exact: true }).waitFor();
+    await wizard.getByRole("button", { name: "Review setup", exact: true }).click();
+    await wizard.getByRole("heading", { name: "Ready to share with your team", exact: true }).waitFor();
+    const instructions = await wizard.getByLabel("Connection instructions", { exact: true }).inputValue();
+    assert.ok(instructions.includes(`https://team.example.test:${teamPort}`));
+    for (const secret of [password, runtime.token, "/r/"]) assert.ok(!instructions.includes(secret));
+    assert.deepEqual((await call("/api/projects")).map((p: any) => p.id), [localProject.id]);
+    assert.deepEqual((await call(`/computer/${connection.id}/api/projects`)).map((p: any) => p.id), [workspaceProject.id]);
+    assert.equal((await call(`/computer/${connection.id}/api/remote`)).enabled, false);
+    assert.equal((await call("/api/remote")).enabled, false);
+    const teamProjects = await call(prefix + "/api/projects");
+    assert.equal(teamProjects.length, 1); assert.equal(teamProjects[0].name, "Remote team project");
+    assert.equal((await call(prefix + "/api/accounts")).users.length, 1);
+    const wrongTeam = await call(prefix + "/api/team/board?teamConnection=bogus");
+    assert.equal(wrongTeam.me.displayName, "Remote owner", "setup pins its target even if a caller passes another team");
+    await mkdir(join(root, "output/playwright"), { recursive: true });
+    await page.screenshot({ path: join(root, "output/playwright/team-server-ssh.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await page.addScriptTag({ content: axe.source });
+    const audit = await page.evaluate(async () => (window as any).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } }));
+    assert.deepEqual(audit.violations.map((v: any) => v.id), []);
+    await call(`/api/ssh-hosts/${connection.id}/disconnect`, {});
+    assert.equal((await fetch(`http://127.0.0.1:${runtime.port}/api/team-host-runtime`, { headers: { authorization: `Bearer ${runtime.token}` } })).status, 200, "team server outlives SSH disconnect");
+    assert.equal((await fetch(base + prefix + "/api/projects", { headers })).status, 409);
+    await call(`/api/ssh-hosts/${connection.id}/connect`, {});
+    const resumed = await call(prefix, { remotePort: teamPort });
+    assert.equal(resumed.currentVersion, true);
+    assert.equal(JSON.parse(await readFile(runtimeFile, "utf8")).pid, runtime.pid, "resume reuses the existing team server");
+    assert.equal((await call(prefix + "/api/projects")).length, 1);
+    assert.equal((await call(prefix + "/api/accounts")).users.length, 1);
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "Stop team server", exact: true }).click();
+    await page.getByRole("button", { name: "Set up on this server", exact: true }).waitFor();
+    for (let i = 0; i < 60; i++) { if (await fetch(`http://127.0.0.1:${runtime.port}/api/health`, { headers: { authorization: `Bearer ${runtime.token}` } }).then(() => false, () => true)) break; await pause(100); }
+    // Launch the exact installed systemd entry point, without SSH or a login shell.
+    // This tests boot-time execution, supervision and persistence without rebooting the host.
+    // Model a reboot and a recycled PID while keeping this test machine running.
+    const bootIdFile = join(f.directory, "boot-id"); await writeFile(bootIdFile, "current-test-boot");
+    const servicePath = join(f.remoteHome, ".codeflow/team-server/service-bootstrap.mjs");
+    await writeFile(servicePath, (await readFile(servicePath, "utf8")).replace("process.platform === 'linux'", "true").replace("/proc/sys/kernel/random/boot_id", bootIdFile));
+    await writeFile(runtimeFile, JSON.stringify({ ...runtime, pid: process.pid, bootId: "previous-test-boot" }));
+    await mkdir(join(f.remoteHome, ".codeflow/team-server/bootstrap.previous-test-boot.lock"));
+    let serviceOutput = "";
+    service = spawn(process.execPath, [join(f.remoteHome, ".codeflow/team-server/service-bootstrap.mjs"), "--team-server", "--service"], { cwd: f.remoteHome, env: { HOME: f.remoteHome, PATH: process.env.PATH }, stdio: ["ignore", "pipe", "pipe"] });
+    service.stdout!.on("data", chunk => { serviceOutput += chunk; });
+    let booted: any;
+    for (let i = 0; i < 150; i++) {
+      booted = JSON.parse(await readFile(runtimeFile, "utf8"));
+      if (booted.pid !== runtime.pid && await fetch(`http://127.0.0.1:${booted.port}/api/health`, { headers: { authorization: `Bearer ${booted.token}` } }).then(r => r.ok, () => false)) break;
+      await pause(100);
+    }
+    assert.notEqual(booted.pid, runtime.pid); assert.notEqual(booted.pid, process.pid, "a previous boot’s recycled PID does not block startup"); assert.equal(booted.bootId, "current-test-boot"); assert.equal(service.exitCode, null, "service supervisor remains in the foreground");
+    assert.ok(!serviceOutput.includes(booted.token), "service logs never print the owner handshake");
+    await page.getByRole("button", { name: "Set up on this server", exact: true }).click();
+    await wizard.getByLabel("Project", { exact: true }).waitFor({ timeout: 60_000 });
+    assert.equal(JSON.parse(await readFile(runtimeFile, "utf8")).pid, booted.pid, "SSH setup reuses the boot-started instance");
+    assert.equal((await call(prefix + "/api/projects"))[0].id, teamProjects[0].id, "restart preserves team data");
+    assert.equal(JSON.parse(await readFile(join(f.remoteHome, ".codeflow/ssh-host/runtime.json"), "utf8")).pid, sshRuntime.pid, "workspace was never restarted");
+    const exited = new Promise<void>(resolve => service!.once("exit", () => resolve()));
+    service.kill("SIGTERM"); await exited;
+    assert.ok(await fetch(`http://127.0.0.1:${booted.port}/api/health`, { headers: { authorization: `Bearer ${booted.token}` } }).then(() => false, () => true), "stopping the supervisor stops its child");
+    assert.deepEqual(errors, []);
+  } finally {
+    service?.kill("SIGTERM");
+    await browser?.close(); server?.kill("SIGTERM");
+    if (server && server.exitCode === null) await new Promise<void>((resolve) => { server!.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); });
+    await f.cleanup();
+  }
+});

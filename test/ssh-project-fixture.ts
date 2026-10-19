@@ -42,7 +42,7 @@ if (args.includes('-W')) {
 }
 `, { mode: 0o700 });
   const cleanup = async () => {
-    try { const state = JSON.parse(await readFile(join(remoteHome, ".codeflow/ssh-host/runtime.json"), "utf8")); process.kill(state.pid, "SIGTERM"); for (let i = 0; i < 50; i++) { try { process.kill(state.pid, 0); } catch { break; } await pause(100); } } catch { /* never started or already stopped */ }
+    for (const kind of ["ssh-host", "team-server"]) try { const state = JSON.parse(await readFile(join(remoteHome, `.codeflow/${kind}/runtime.json`), "utf8")); process.kill(state.pid, "SIGTERM"); for (let i = 0; i < 50; i++) { try { process.kill(state.pid, 0); } catch { break; } await pause(100); } } catch { /* never started or already stopped */ }
     await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   };
   return { directory, remoteHome, localHome, bin, repo, ssh, audit, git, login, networkPort, cleanup };

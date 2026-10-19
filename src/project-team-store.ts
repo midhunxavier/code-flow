@@ -13,12 +13,25 @@ export class ProjectTeamStore {
   private listeners = new Set<() => void>();
   readonly faults = new Map<string, string>();
   private loaded = false;
+  private feature?: { version: 1; enabled: boolean; revision: number };
   constructor(readonly directory = join(CODEFLOW_HOME, "project-teams")) {}
   subscribe(fn: () => void) { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; }
   private publish(team: ProjectTeam) { this.teams.set(team.id, structuredClone(team)); for (const listener of this.listeners) { try { listener(); } catch {} } }
   async load() {
     const files = await readdir(this.directory).catch((e) => { if (e.code === "ENOENT") return []; throw e; });
-    this.teams.clear(); this.faults.clear();
+    this.teams.clear(); this.faults.clear(); this.feature = undefined;
+    try {
+      const file = await open(join(this.directory, "settings.json"), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      let raw;
+      try {
+        const stat = await file.stat(); if (!stat.isFile() || stat.size > 4096) throw new Error("Standing teams settings exceed their regular-file bound");
+        const buffer = Buffer.alloc(4097); const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+        if (bytesRead > 4096) throw new Error("Standing teams settings grew beyond their limit");
+        raw = JSON.parse(buffer.subarray(0, bytesRead).toString());
+      } finally { await file.close(); }
+      if (!raw || raw.version !== 1 || typeof raw.enabled !== "boolean" || !Number.isSafeInteger(raw.revision) || raw.revision < 1 || Object.keys(raw).some(key => !["version", "enabled", "revision"].includes(key))) throw new Error("Invalid Standing teams setting");
+      this.feature = raw;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.faults.set("settings", (error as Error).message); }
     for (const name of files.filter((f) => /^pt-[a-f0-9]{24}\.json$/.test(f))) {
       try {
         const file = await open(join(this.directory, name), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -31,6 +44,27 @@ export class ProjectTeamStore {
     for (const team of this.teams.values()) if (team.status !== "archived") owners.set(team.repo, [...owners.get(team.repo) ?? [], team.id]);
     for (const ids of owners.values()) if (ids.length > 1) for (const id of ids) { this.faults.set(id, "Multiple active teams claim this repository; resolve ownership before dispatch"); this.teams.delete(id); }
     this.loaded = true;
+  }
+  configuration(defaultEnabled: boolean) {
+    if (!this.loaded || this.faults.has("settings") || this.faults.has("storage")) return { enabled: false, revision: 0, source: "unavailable" };
+    return { enabled: this.feature?.enabled ?? defaultEnabled, revision: this.feature?.revision ?? 0, source: this.feature ? "saved" : "default" };
+  }
+  setEnabled(enabled: boolean, revision: number) {
+    return this.serialized(async () => {
+      if (!this.loaded || this.faults.has("settings") || this.faults.has("storage")) throw new Error("Repair Standing teams settings before changing them");
+      if (revision !== (this.feature?.revision ?? 0)) throw new ProjectTeamConflict("Standing teams settings changed. Reload before trying again.");
+      const next = { version: 1 as const, enabled, revision: revision + 1 };
+      await mkdir(this.directory, { recursive: true, mode: 0o700 });
+      const temporary = join(this.directory, `.settings-${randomBytes(6).toString("hex")}.tmp`);
+      try {
+        const file = await open(temporary, "wx", 0o600);
+        try { await file.writeFile(JSON.stringify(next)); await file.sync(); } finally { await file.close(); }
+        await rename(temporary, join(this.directory, "settings.json"));
+        if (process.platform !== "win32") { const directory = await open(this.directory, "r"); try { await directory.sync(); } finally { await directory.close(); } }
+        this.feature = next;
+        for (const listener of this.listeners) { try { listener(); } catch {} }
+      } finally { await rm(temporary, { force: true }).catch(() => undefined); }
+    });
   }
   list() { return [...this.teams.values()].map((t) => structuredClone(t)); }
   get(id: string): ProjectTeam {

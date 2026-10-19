@@ -50,10 +50,9 @@ import { CollaborationReviews, CollaborationReviewError } from "./collaboration-
 import { handleSharedApi } from "./shared-api.js";
 import { CollabStore, memberActor, ownerActor, type ChangeEvent, type MemberRecord } from "./collab/store.js";
 import { handleRunnerConnect, handleTeamApi, looksLikeRunnerToken, runnerAllowed, teamRoutePolicy } from "./collab/api.js";
-import { LocalHub, RemoteHub } from "./collab/hub-client.js";
-import { TeamLink, type LinkConnection } from "./collab/link.js";
-import { CollabRunner } from "./collab/runner.js";
-import { handleTeamLinkApi } from "./collab/link-api.js";
+import { CollabError } from "./collab/model.js";
+import { TeamConnections } from "./collab/connections.js";
+import { handleTeamLinkApi, linkInfo } from "./collab/link-api.js";
 import type { CollabActor } from "./collab/model.js";
 import { userInfo } from "node:os";
 import { RemoteWorkers } from "./remote-workers/client.js";
@@ -181,9 +180,8 @@ const teamMembers = (): MemberRecord[] => sharedAccounts.available ? sharedAccou
 /** What teammates see the hub owner called until the owner sets a display name (PUT /api/team/profile). */
 const osUser = (() => { try { return userInfo().username || undefined; } catch { return undefined; } })();
 const collab = new CollabStore({ members: teamMembers, projects: () => projects.list().map((project) => ({ id: project.id, name: project.name })), ownerName: () => osUser });
-const teamLink = new TeamLink();
-const hubs = { local: new LocalHub(collab), remote: new RemoteHub(teamLink) };
-const collabRunner = new CollabRunner({ manager, hub: () => teamLink.linked ? hubs.remote : hubs.local, findPattern, resolveRepo: (projectId, key) => teamLink.resolveRepo(projectId, key), projectFor: (repo) => projects.forRepo(repo)?.id });
+const teamConnections = new TeamConnections({ store: collab, manager, findPattern, projectFor: (repo) => projects.forRepo(repo)?.id,
+  onEvent: (id, event) => teamBroadcast(event, undefined, id) });
 const resolveQueuedProviders: Parameters<typeof createDeferredRuns>[1]["resolveProviders"] = (request) => trackPolicyPreparation(async () => {
     const pattern = findPattern(request.pattern);
     if (!pattern) throw new Error("This pattern no longer exists; cancel and review the saved request");
@@ -519,7 +517,7 @@ async function attempt<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err) {
-    throw err instanceof HttpError ? err : new HttpError(err instanceof TeamPlanEditError || err instanceof TeamRerunError || err instanceof ConventionsError || err instanceof SharedAccountError || err instanceof SharedPathError || err instanceof CollaborationReviewError || err instanceof FilePolicyError ? err.status : err instanceof MemoryConflictError || err instanceof RunConflictError || err instanceof DeferredRunConflictError || err instanceof RetentionPolicyConflictError ? 409 : 400, (err as Error).message);
+    throw err instanceof HttpError ? err : new HttpError(err instanceof CollabError || err instanceof TeamPlanEditError || err instanceof TeamRerunError || err instanceof ConventionsError || err instanceof SharedAccountError || err instanceof SharedPathError || err instanceof CollaborationReviewError || err instanceof FilePolicyError ? err.status : err instanceof MemoryConflictError || err instanceof RunConflictError || err instanceof DeferredRunConflictError || err instanceof RetentionPolicyConflictError ? 409 : 400, (err as Error).message);
   }
 }
 
@@ -1182,28 +1180,15 @@ function streamAllRuns(req: IncomingMessage, res: ServerResponse, limit?: number
  * the link (linked mode), as `{type: "change" | "inbox" | "resync" | "link"}` frames the UI reloads on. Inbox
  * events become an unread count, never their text, like the hub's own stream.
  */
-const teamFeed = new Set<Deliver>();
-let linkConnection: LinkConnection = "offline";
-function teamBroadcast(frame: unknown, seq?: number) { for (const deliver of teamFeed) deliver(frame, seq); }
+const teamFeed = new Map<string, Set<Deliver>>();
+function teamBroadcast(frame: unknown, seq?: number, id = "local") { for (const deliver of teamFeed.get(id) ?? []) deliver(frame, seq); }
 function teamFrame(event: ChangeEvent) { const frame: Record<string, unknown> = { type: "change", seq: event.seq, kind: event.kind }; if (event.taskId !== undefined) frame.taskId = event.taskId; if (event.projectId !== undefined) frame.projectId = event.projectId; return frame; }
 collab.onChange((event) => {
-  if (teamLink.linked || !teamFeed.size) return;
   if (event.kind !== "inbox") return teamBroadcast(teamFrame(event), event.seq);
   if (event.userIds?.includes("owner")) void collab.inbox(ownerActor(collab.ownerName)).then(({ unread }) => teamBroadcast({ type: "inbox", seq: event.seq, unread }, event.seq), () => undefined);
 });
-// Membership and the project list shape the board without passing through the store, so windows reload on them too.
 sharedAccounts.onChange(() => teamBroadcast({ type: "resync" }));
 projects.onChange(() => teamBroadcast({ type: "resync" }));
-/** Hub ↔ linked mode: while linked, the hub's events are relayed (and local attempts reconciled whenever the connection comes back); either way every team subscriber reloads. */
-function syncTeamLink() {
-  if (teamLink.linked) teamLink.events((event) => teamBroadcast(event, typeof event.seq === "number" ? event.seq : undefined), (connection, error) => {
-    const was = linkConnection; linkConnection = connection;
-    if (connection === "connected" && was === "reconnecting") void collabRunner.reconcile().catch((err) => logError("Local team attempts could not be reconciled after reconnecting to the team server", err));
-    if (connection !== "reconnecting" || was !== "reconnecting") teamBroadcast(error ? { type: "link", connection, error } : { type: "link", connection });
-  });
-  else { teamLink.close(); linkConnection = "offline"; }
-  teamBroadcast({ type: "resync" });
-}
 
 /**
  * What a window watches (see src/stream.ts). Each starts with what the window needs and then sends
@@ -1213,7 +1198,7 @@ const topics: Record<string, TopicSource> = {
   "project-teams"(projectId, _after, deliver) {
     if (fileAccess.hasRestrictions() || !projects.get(projectId)) throw new TopicError(403, "Standing team scope is unavailable");
     const generation = filesystemFeedRevision;
-    const publish = () => { if (generation === filesystemFeedRevision && !fileAccess.hasRestrictions() && projects.get(projectId)) deliver({ type: "snapshot", teams: projectTeams.list(projectId) }); };
+    const publish = () => { if (generation === filesystemFeedRevision && !fileAccess.hasRestrictions() && projects.get(projectId)) deliver({ type: "snapshot", teams: projectTeams.list(projectId), ...projectTeams.configuration() }); };
     const off = projectTeams.store.subscribe(publish); publish(); return off;
   },
   /**
@@ -1296,10 +1281,12 @@ const topics: Record<string, TopicSource> = {
 
   /** The team board: hub mode replays the store's ring from the cursor (or asks for a reload), linked mode relays the hub's stream. */
   team(name, after, deliver) {
-    if (name) throw new TopicError(404, "Watch “team” itself; the team board has no named streams");
-    if (teamLink.linked) deliver({ type: "hello", epoch: `link-${EPOCH}`, seq: 0, linked: true, connection: linkConnection });
+    let entry;
+    try { entry = teamConnections.get(name); } catch (error) { throw new TopicError(404, (error as Error).message); }
+    if (entry.link.linked) deliver({ type: "hello", epoch: `link-${entry.id}-${EPOCH}`, seq: 0, linked: true, connection: entry.link.state().connection });
     else { const page = collab.eventsSince(after); deliver({ type: "hello", epoch: page.epoch, seq: page.seq, linked: false }, page.seq); if (page.resync) deliver({ type: "resync" }); for (const event of page.events) if (event.kind !== "inbox") deliver(teamFrame(event), event.seq); }
-    teamFeed.add(deliver); return () => { teamFeed.delete(deliver); };
+    const feed = teamFeed.get(entry.id) ?? new Set<Deliver>(); teamFeed.set(entry.id, feed);
+    feed.add(deliver); return () => { feed.delete(deliver); if (!feed.size) teamFeed.delete(entry.id); };
   },
 };
 const hub = new StreamHub(topics);
@@ -1438,6 +1425,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (via === "lan" && !phoneControl()) throw new HttpError(404, "Not found");
   if (!owner) throw Object.assign(new HttpError(401, "Not signed in: use the owner link or sign in to shared projects"), { signIn: true });
   if (parts.join("/") === "api/ssh-context" && req.method === "GET") return send(res, 200, { kind: process.env.CODEFLOW_SSH_HOST ? "host" : "local" });
+  if (process.env.CODEFLOW_TEAM_HOST && parts.join("/") === "api/team-host-runtime" && req.method === "GET") return send(res, 200, { instance: process.env.CODEFLOW_TEAM_HOST });
   if (process.env.CODEFLOW_SSH_HOST && parts.join("/") === "api/ssh-runtime" && req.method === "GET") return send(res, 200, { instance: process.env.CODEFLOW_SSH_HOST });
   if (parts[1] === "projects" && parts[2] && parts[3] === "filesystem-policy") {
     const project = projects.get(parts[2]); if (!project) throw new HttpError(404, "Project not found");
@@ -1468,7 +1456,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     await attempt(async () => assertImproveEnvironment());
   }
   await attempt(() => fileAccess.ownerGate(req, url, parts));
-  if (parts[1] === "ssh-runtime" && process.env.CODEFLOW_SSH_HOST) {
+  if ((parts[1] === "ssh-runtime" && process.env.CODEFLOW_SSH_HOST) || (parts[1] === "team-host-runtime" && process.env.CODEFLOW_TEAM_HOST)) {
     if (parts[2] === "preview" && parts.length === 3 && req.method === "POST") {
       if (fileAccess.hasRestrictions()) throw new HttpError(409, "Filesystem restrictions pause remote previews");
       const body = await readJson(req, 8192); const target = previewTarget(String(body.url ?? ""));
@@ -1494,6 +1482,21 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (fileAccess.hasRestrictions()) throw new HttpError(409, "Filesystem restrictions pause SSH connection management");
     if (parts.length === 2 && req.method === "GET") return send(res, 200, await attempt(() => sshProjects.list()));
     if (parts.length === 2 && req.method === "POST") return send(res, 201, await attempt(async () => sshProjects.add(await readJson(req, 8192))));
+    if (parts[3] === "team-server") {
+      if (parts[4] === "autostart" && parts.length === 5) {
+        if (req.method === "GET") return send(res, 200, await attempt(() => sshProjects.teamAutostart(parts[2]!)));
+        if (req.method === "POST") return send(res, 200, await attempt(async () => {
+          const body = await readJson(req, 8192);
+          if (body.action !== "enable" && body.action !== "disable") throw new HttpError(400, "Choose enable or disable for automatic startup");
+          return sshProjects.teamAutostart(parts[2]!, body.action);
+        }));
+        throw new HttpError(405, "Use GET or POST for automatic startup");
+      }
+      if (parts.length === 4 && req.method === "POST") return send(res, 200, await attempt(async () => sshProjects.setupTeamServer(parts[2]!, await readJson(req, 8192))));
+      if (parts.length === 4 && req.method === "DELETE") { await attempt(() => sshProjects.stopTeamServer(parts[2]!)); return send(res, 200, { ok: true }); }
+      if (parts[4] === "api") return attempt(() => sshProjects.forwardTeamServer(parts[2]!, req, res, url.pathname.slice(`/api/ssh-hosts/${parts[2]}/team-server`.length) + url.search, `http://${req.headers.host}`));
+      throw new HttpError(404, "Unknown team server setup operation");
+    }
     if (parts.length === 3 && req.method === "DELETE") { await attempt(() => sshProjects.remove(parts[2]!)); return send(res, 200, { ok: true }); }
     if (parts.length === 4 && req.method === "POST") {
       if (parts[3] === "connect") return send(res, 200, await attempt(() => sshProjects.connect(parts[2]!)));
@@ -1543,11 +1546,27 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (parts[1] === "project-teams") return handleProjectTeams(projectTeams, req, res, parts, url);
   if (parts[1] === "coordinated-changes") return coordinatedApi.handle(req, res, parts);
   // The team board: served here in hub mode, forwarded to the team server under this computer's runner credential in linked mode. The link itself (connect, mappings, start/stop/hand over on this computer) is always local and the owner's own.
-  if (parts[1] === "team") return teamLink.linked ? teamLink.proxy(req, res, parts, url) : handleTeamApi(req, res, url, parts, { store: collab, actor: ownerActor(collab.ownerName), principal: "owner", mutation: () => {} });
-  if (parts[1] === "team-link") {
-    if (via !== "local") throw new HttpError(404, "Not found");
-    const installed = req.method === "POST" && !fileAccess.hasRestrictions() ? (await agentAvailability()).filter((agent) => agent.available).map((agent) => agent.id) : [];
-    return handleTeamLinkApi(req, res, url, parts, { link: teamLink, runner: collabRunner, store: collab, manager, findPattern, agents: () => installed, hubName: collab.ownerName, onLinkChanged: () => syncTeamLink() });
+  if (parts[1] === "team" || parts[1] === "team-link") {
+    if (parts[1] === "team-link" && via !== "local") throw new HttpError(404, "Not found");
+    return attempt(async () => {
+      if (parts[1] === "team-link" && parts[2] === "connections" && parts.length === 3 && req.method === "GET") return send(res, 200, { connections: teamConnections.inventory() });
+      if (parts[1] === "team-link" && parts[2] === "connect" && parts.length === 3 && req.method === "POST") {
+        const body = await readJson(req, 16 * 1024, { timeoutMs: 10_000 });
+        if (Object.keys(body).some((key) => !["url", "username", "password", "name"].includes(key))) throw new HttpError(400, "Unknown connection field");
+        const entry = await teamConnections.connect({ url: body.url, username: body.username, password: body.password, name: body.name });
+        return send(res, 201, { id: entry.id, ...await linkInfo({ link: entry.link, runner: entry.runner, store: collab, manager, findPattern, agents: () => [] }) });
+      }
+      const selection = url.searchParams.get("teamConnection") ?? req.headers["x-codeflow-team"];
+      url.searchParams.delete("teamConnection");
+      if (selection !== undefined && typeof selection !== "string") throw new HttpError(400, "Choose one team connection");
+      const entry = teamConnections.get(selection);
+      if (parts[1] === "team-link" && parts.length === 2 && req.method === "DELETE") { await teamConnections.disconnect(entry.id); return send(res, 200, { disconnected: true }); }
+      return teamConnections.use(entry.id, async () => {
+        if (parts[1] === "team") return entry.link.linked ? entry.link.proxy(req, res, parts, url) : handleTeamApi(req, res, url, parts, { store: collab, actor: ownerActor(collab.ownerName), principal: "owner", mutation: () => {} });
+        const installed = req.method === "POST" && !fileAccess.hasRestrictions() ? (await agentAvailability()).filter((agent) => agent.available).map((agent) => agent.id) : [];
+        return handleTeamLinkApi(req, res, url, parts, { link: entry.link, runner: entry.runner, store: collab, manager, findPattern, agents: () => installed, hubName: collab.ownerName });
+      });
+    });
   }
   if (parts[1] === "runs" && parts.length === 6 && parts[3] === "remote-steps" && ["receipt", "cancel"].includes(parts[5]!) && req.method === "POST") {
     return send(res, 200, redactExport(await attempt(() => manager.inspectRemoteStep(parts[2]!, parts[4]!, { cancel: parts[5] === "cancel" }))));
@@ -2357,7 +2376,7 @@ await manager.load();
 await projects.load(manager.list());
 await acpConnections.load().catch((error) => logError("ACP connections unavailable; repair their configuration and restart", error));
 await collab.load();
-await teamLink.load();
+await teamConnections.load();
 await fileAccess.all().catch((error) => logError("Filesystem policy is unavailable; protected operations and extension loading remain disabled until the private policy file is repaired", error));
 filteredTasksReady = await filteredTasks.load().then(() => true, (error) => { logError("Filtered tasks unavailable; policy activation remains blocked until task receipts are repaired", error); return false; });
 if (!fileAccess.hasRestrictions()) await extensions.load().catch((error) => logError("Extension configuration could not be loaded; built-in workflows remain available", error));
@@ -2390,8 +2409,7 @@ if (notificationsReady) {
 }
 if (!fileAccess.hasRestrictions()) startPolicyBackground();
 else await pausePolicyBackground();
-syncTeamLink();
-void collabRunner.reconcile().catch((error) => logError("Local team attempts could not be reconciled at startup; they are retried when the link reconnects", error));
+teamConnections.start();
 /** Team board housekeeping: revoked runners and read inbox items older than 30 days go, attempts silent for a day become unknown. */
 const teamPruneTimer = setInterval(() => { if (collab.available) void collab.prune().catch((error) => logError("Team board housekeeping failed", error)); }, 60 * 60_000);
 teamPruneTimer.unref();
@@ -2555,8 +2573,7 @@ async function stop(reason: string, code = 0) {
   }
   await sshProjects?.close();
   // Heartbeats and the link's event stream stop here; runs keep going, and reconcile() picks their attempts up again after the restart. A hub that stopped answering must not hold the shutdown.
-  await Promise.race([collabRunner.close(), new Promise((resolve) => setTimeout(resolve, 5000).unref())]).catch((err) => logError("Team runner shutdown failed", err));
-  teamLink.close();
+  await Promise.race([teamConnections.close(), new Promise((resolve) => setTimeout(resolve, 5000).unref())]).catch((err) => logError("Team runner shutdown failed", err));
   await collab.close().catch((err) => logError("Team board shutdown failed", err));
   await projectTeams.stop().catch((err) => logError("Project team shutdown failed", err));
   await coordinatedApi.service.stop().catch((err) => logError("Coordinated changes shutdown failed", err));

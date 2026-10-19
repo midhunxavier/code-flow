@@ -17,18 +17,29 @@ const api = async (path: string, body?: unknown) => {
   const response = await fetch(`${base}${path}`, { headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) }, ...(body !== undefined ? { method: "POST", body: JSON.stringify(body) } : {}) });
   return { status: response.status, body: await response.json() };
 };
-before(async () => {
-  mkdirSync(repo); execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
-  writeFileSync(join(repo, "README.md"), "Empty input is valid.\n"); writeFileSync(join(repo, "check.mjs"), "process.exit(0);\n");
-  mkdirSync(join(repo, ".codeflow")); writeFileSync(join(repo, ".codeflow/config.json"), JSON.stringify({ prove: false }));
-  execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], { cwd: repo });
-  // Own the server process directly: killing an npx wrapper can leave its server and pipes alive.
-  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_REMOTE_PORT: String(await freePort()), CODEFLOW_HOME: join(home, "data"), CODEFLOW_TOKEN: token, CODEFLOW_PROJECT_TEAMS_ENABLED: "true", CODEFLOW_SCHEDULER_TICK_MS: "250", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+async function startServer() {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("CODEFLOW_")));
+  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...env, PORT: String(port), CODEFLOW_REMOTE_PORT: String(await freePort()), CODEFLOW_HOME: join(home, "data"), CODEFLOW_TOKEN: token, CODEFLOW_SCHEDULER_TICK_MS: "250", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
   server.stdout?.resume();
   server.stderr?.on("data", (data) => errors.push(String(data)));
   let ready = false;
   for (let i = 0; i < 100; i++) { ready = await api("/api/health").then((r) => r.status === 200, () => false); if (ready) break; await new Promise((r) => setTimeout(r, 200)); }
   assert.equal(ready, true, `fixture server started: ${errors.join("\n")}`);
+}
+async function stopServer() {
+  if (!server || server.exitCode !== null || server.signalCode !== null) return;
+  const exited = new Promise<void>(resolve => server.once("exit", () => resolve()));
+  const timer = setTimeout(() => server.kill("SIGKILL"), 5000); server.kill("SIGTERM");
+  try { await exited; } finally { clearTimeout(timer); }
+  assert.equal(server.exitCode, 0, errors.join("\n"));
+}
+before(async () => {
+  mkdirSync(repo); execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+  writeFileSync(join(repo, "README.md"), "Empty input is valid.\n"); writeFileSync(join(repo, "check.mjs"), "process.exit(0);\n");
+  mkdirSync(join(repo, ".codeflow")); writeFileSync(join(repo, ".codeflow/config.json"), JSON.stringify({ prove: false }));
+  execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], { cwd: repo });
+  execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
+  await startServer();
   browser = await chromium.launch({ channel: "chrome", headless: true });
 });
 after(async () => {
@@ -58,6 +69,18 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
     await route.fulfill({ response, json: catalogs });
   });
   await page.goto(`${base}/?token=${token}#/project/${id}`);
+  assert.equal((await api("/api/project-teams/settings")).body.enabled, false);
+  await page.getByRole("button", { name: "Enable Standing teams", exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Connect a team", exact: true }).isEnabled(), false);
+  await page.getByRole("button", { name: "Enable Standing teams", exact: true }).click();
+  await page.getByRole("button", { name: "Disable Standing teams", exact: true }).waitFor();
+  assert.equal((await api("/api/project-teams/settings")).body.enabled, true);
+  await stopServer(); await startServer(); await page.reload();
+  await page.getByRole("button", { name: "Disable Standing teams", exact: true }).waitFor();
+  assert.equal((await api("/api/project-teams/settings")).body.source, "saved", "feature remains enabled after a server restart without environment flags");
+  assert.equal((await api("/api/project-teams/settings", { enabled: false, revision: 0 })).status, 409);
+  assert.equal((await api("/api/project-teams/settings", { enabled: "yes", revision: 1 })).status, 400);
+  assert.equal((await fetch(base + "/api/project-teams/settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: true, revision: 1 }) })).status, 401);
   await page.getByRole("button", { name: "Connect a team", exact: true }).click();
   await page.getByLabel("Mission", { exact: true }).fill("Improve the documented input contract");
   await page.getByLabel("Intended users").fill("Developers");
@@ -90,6 +113,12 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   await page.getByText("Approved. Open the result to publish a PR or merge using the existing review controls.").waitFor();
   const tab = await context.newPage(); await tab.goto(`${base}/#/project/${id}`); await tab.getByRole("button", { name: "Preview next cycle" }).waitFor();
   const health = await api("/api/health"); assert.equal(health.body.streams.streams, 1, "project team subscriptions reuse the shared transport");
+  await page.getByRole("button", { name: "Disable Standing teams", exact: true }).click();
+  await tab.getByRole("button", { name: "Enable Standing teams", exact: true }).waitFor();
+  assert.equal(await tab.getByRole("button", { name: "Run cycle now", exact: true }).isEnabled(), false);
+  assert.equal((await api(`/api/project-teams/${team.id}/cycle`, { operationId: "disabled-cycle" })).status, 400);
+  await page.getByRole("button", { name: "Enable Standing teams", exact: true }).click();
+  await tab.getByRole("button", { name: "Disable Standing teams", exact: true }).waitFor();
   await tab.goto(`${base}/#/run/${resultId}`);
   await tab.getByRole("main").getByText(/Standing team implementation/).waitFor();
   assert.equal(await tab.getByRole("main").getByRole("button", { name: "Delete…", exact: true }).count(), 0);

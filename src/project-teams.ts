@@ -55,9 +55,19 @@ export class ProjectTeams {
   async load() { await this.store.load(); }
   start() { if (!this.stopped) return; this.stopped = false; this.off = this.options.manager.subscribeAll((r) => { if (r.projectTeam && r.endedAt) void this.reconcile().catch(() => undefined); }); }
   async stop() { this.stopped = true; this.off?.(); this.off = undefined; await this.queue; await this.store.flush(); }
+  configuration() { return { ...this.store.configuration(projectTeamsEnabled()), autoTeamEnabled: autoTeamEnabled() }; }
+  enabled() { return this.configuration().enabled; }
+  setEnabled(raw: unknown) { return this.serialize(async () => {
+    const body = closed(raw, ["enabled", "revision"], "Standing teams settings");
+    if (typeof body.enabled !== "boolean" || !Number.isSafeInteger(body.revision) || body.revision < 0) throw new Error("Include enabled and the current settings revision");
+    if (!body.enabled && this.store.list().some(active)) throw new ProjectTeamConflict("Stop active or unresolved standing-team cycles before disabling Standing teams");
+    await this.store.setEnabled(body.enabled, body.revision);
+    return this.configuration();
+  }); }
   list(project?: string) { return this.store.list().filter((t) => !project || t.projectId === project); }
   private async permitted(t: Pick<ProjectTeam, "repo" | "projectId">, dispatch = true) {
-    if (dispatch && (!projectTeamsEnabled() || !autoTeamEnabled())) throw new Error("Enable project teams and Auto team on this host before running a cycle");
+    if (dispatch && !this.enabled()) throw new Error("Enable Standing teams on a project page before running a cycle");
+    if (dispatch && !autoTeamEnabled()) throw new Error("Auto team execution is disabled by this host’s configuration");
     if (this.stopped) throw new Error("Project team dispatch is paused");
     if (!this.options.projects.get(t.projectId)?.repos.includes(t.repo)) throw new ProjectTeamConflict("The project no longer explicitly contains this repository");
     await this.options.allowed?.(t.repo);
@@ -81,6 +91,7 @@ export class ProjectTeams {
   update(id: string, raw: unknown) { return this.serialize(async () => {
     const r = closed(raw, ["operationId", "revision", "mission", "status", "name"], "team update"), op = operation(r.operationId, r);
     const before = this.store.get(id); await this.permitted(before, false);
+    if (r.status === "active") await this.permitted(before);
     const mission = r.mission === undefined ? undefined : validateMission(r.mission);
     if (r.status !== undefined && !["draft", "active", "paused", "archived"].includes(r.status)) throw new Error("Invalid team status");
     if (mission && active(before)) throw new ProjectTeamConflict("Stop the active cycle before changing its mission");
@@ -186,7 +197,7 @@ export class ProjectTeams {
   reconcile(): Promise<void> {
     if (this.reconciling) return this.reconciling;
     const work = this.serialize(async () => {
-    if (this.stopped || !projectTeamsEnabled()) return;
+    if (this.stopped || !this.enabled()) return;
     for (const snapshot of this.store.list()) {
       try {
         if (snapshot.status === "archived") { await this.options.automations.syncProjectTeam(snapshot); continue; }

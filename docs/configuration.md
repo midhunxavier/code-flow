@@ -158,4 +158,4 @@ Project memory is in `memory.json`; evaluation reports and the explicit rollout 
 
 ## Standing project teams
 
-Set `CODEFLOW_PROJECT_TEAMS_ENABLED=true` to opt into standing teams on project pages. `CODEFLOW_AUTO_TEAM_ENABLED` must also permit Auto team execution. Each team is separately activated by its owner. Schedules, budgets, missions, recovery and provider limits are described in [Standing project teams](project-teams.md).
+Click **Enable Standing teams** on a project page to enable the feature immediately and save the choice for this host across restarts. `CODEFLOW_PROJECT_TEAMS_ENABLED=true` is an optional initial default; a saved UI choice takes precedence. `CODEFLOW_AUTO_TEAM_ENABLED` must also permit Auto team execution. Each team is separately activated by its owner. Schedules, budgets, missions, recovery and provider limits are described in [Standing project teams](project-teams.md).
