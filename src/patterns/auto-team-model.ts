@@ -6,7 +6,7 @@ const str = { type: "string" };
 const identifier = { type: "string", pattern: "^[a-z][a-z0-9-]{0,39}$", description: "Stable lowercase identifier, e.g. api, add-validation, goal; never T1 or R1" };
 const strings = { type: "array", items: str };
 const array = (items: object) => ({ type: "array", items });
-const member = obj({ id: identifier, name: str, role: { type: "string", enum: ["coordinator", "worker", "reviewer"] }, provider: { type: "string", enum: ["claude", "codex", "agy"] }, model: str, effort: str, reason: str });
+const member = obj({ id: identifier, name: str, role: { type: "string", enum: ["coordinator", "worker", "reviewer"] }, provider: { type: "string", description: "Exact provider ID from the supplied eligible inventory and selected pool" }, model: str, effort: str, reason: str });
 const legacyTask = obj({ id: identifier, title: str, instructions: str, owner: { type: "string", description: "An active worker member ID (or coordinator for investigation). Never the reviewer: code-flow schedules independent review automatically." }, kind: { type: "string", enum: ["implementation", "investigation"] }, dependsOn: strings, requirements: strings, acceptance: strings, paths: strings });
 const task = obj({ ...legacyTask.properties, dependencyTypes: array(obj({ taskId: identifier, kind: { type: "string", enum: ["completion", "artifact", "knowledge"] } })) });
 const subplans = array(obj({ id: { type: "string", pattern: "^[a-z][a-z0-9-]{0,27}$" }, strategy: { type: "string", enum: ["investigate-implement", "implement-verify", "bounded-repair"] }, owner: str, requirements: strings, acceptance: strings, paths: strings, dependsOn: strings, instructions: str }));

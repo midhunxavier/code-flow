@@ -26,6 +26,51 @@ before(async () => {
 after(async () => { await browser?.close(); server?.kill("SIGTERM"); await new Promise<void>((resolve) => { if (server?.exitCode !== null) return resolve(); server?.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }); rmSync(directory, { recursive: true, force: true }); });
 const category = (name: string) => page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name, exact: true }).click();
 
+test("ACP settings connect, discover models, persist, edit, disable and remove a compatible CLI", async () => {
+  await page.goto(`${base}/#/settings/agents`);
+  const panel = page.getByRole("region", { name: "ACP connections", exact: true });
+  await panel.getByRole("button", { name: "Connect OpenCode", exact: true }).click();
+  assert.equal(await panel.getByLabel("ACP executable").inputValue(), "opencode");
+  assert.equal(await panel.getByLabel("ACP arguments").inputValue(), "acp");
+  await panel.getByRole("button", { name: "Cancel", exact: true }).click();
+  await panel.getByRole("button", { name: "Add compatible CLI", exact: true }).click();
+  await panel.getByLabel("ACP connection ID").fill("fixture");
+  await panel.getByLabel("ACP connection name").fill("Fixture ACP");
+  await panel.getByLabel("ACP executable").fill(process.execPath);
+  await panel.getByLabel("ACP arguments").fill(`${join(root, "test/fake-acp.mjs")}\nhappy`);
+  await panel.getByRole("button", { name: "Check connection", exact: true }).click();
+  await panel.getByText("Fixture ACP: connected", { exact: true }).waitFor();
+  await panel.getByText(/2 models/).waitFor();
+  await panel.getByRole("button", { name: "Save connection", exact: true }).click();
+  await page.getByLabel("Fixture ACP model", { exact: true }).selectOption("fixture/model-b");
+  await page.reload();
+  assert.equal(await page.getByLabel("Fixture ACP model", { exact: true }).inputValue(), "fixture/model-b");
+  await panel.getByRole("button", { name: "Edit Fixture ACP", exact: true }).click();
+  assert.equal(await panel.getByLabel("ACP connection ID").getAttribute("readonly"), "");
+  await panel.getByLabel("ACP connection name").fill("Renamed ACP");
+  await panel.getByRole("button", { name: "Save connection", exact: true }).click();
+  await page.getByLabel("Renamed ACP model", { exact: true }).waitFor();
+  await panel.getByRole("button", { name: "Disable Renamed ACP", exact: true }).click();
+  await page.getByLabel("Renamed ACP model", { exact: true }).waitFor({ state: "detached" });
+  await panel.getByRole("button", { name: "Enable Renamed ACP", exact: true }).click();
+  await page.getByLabel("Renamed ACP model", { exact: true }).waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await panel.getByRole("button", { name: "Edit Renamed ACP", exact: true }).click();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  const screenshots = process.env.CODEFLOW_TEST_SCREENSHOTS ?? directory;
+  await page.screenshot({ path: join(screenshots, "acp-mobile.png"), fullPage: true });
+  await page.addScriptTag({ content: axe.source });
+  const accessibility = await page.evaluate(async () => (window as any).axe.run({ include: [".acp-connection-form"] }, { runOnly: ["wcag2a", "wcag2aa", "wcag21aa"] }));
+  assert.deepEqual(accessibility.violations.filter((item: any) => ["serious", "critical"].includes(item.impact)).map((item: any) => item.id), []);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator("#main-content").evaluate((element) => { element.scrollTop = 0; });
+  await page.screenshot({ path: join(screenshots, "acp-desktop.png"), fullPage: true });
+  await panel.getByRole("button", { name: "Cancel", exact: true }).click();
+  await panel.getByRole("button", { name: "Remove Renamed ACP", exact: true }).click();
+  await panel.getByRole("button", { name: "Edit Renamed ACP", exact: true }).waitFor({ state: "detached" });
+  assert.deepEqual(errors, []);
+});
+
 test("settings navigation, search, appearance, and run defaults persist and drive the composer", async () => {
   await page.goto(`${base}/`);
   await page.getByRole("button", { name: /^Settings/ }).click();

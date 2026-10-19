@@ -91,6 +91,8 @@ import { exhausted } from "./routing.js";
 import { assertTransferTree } from "./remote-workers/bundles.js";
 import { assertPolicyExecution, type FilePolicySnapshot } from "./filesystem-policy.js";
 import { assertExtensionBindings, extensionBindings, type ExtensionBinding } from "./extensions.js";
+import { acpBindings, assertAcpBindings } from "./acp-connections.js";
+import type { AcpBinding } from "./adapters/acp-types.js";
 import { RemoteWorkers, type RemoteRunResult } from "./remote-workers/client.js";
 import { rankAgents } from "./stats.js";
 import type { TeamState, TeamInventory, TeamContextManifest, TeamCommandReceipt, TeamMessage } from "./teams.js";
@@ -325,6 +327,7 @@ export interface Artifact {
 
 export interface Run {
   extensions?: ExtensionBinding[];
+  acpConnections?: AcpBinding[];
   filePolicies?: FilePolicySnapshot[];
   id: string;
   pattern: string;
@@ -2455,6 +2458,8 @@ export class TeamContext {
       await this.manager.assertExecutionAllowed(this.run.repo, this.run, "agent invocation");
       await assertWorktree(this.run.repo, params.cwd);
       assertExtensionBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
+      assertAcpBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
+      if (params.agent.startsWith("acp:") && (this.run.loop.agentContainer || this.run.loop.remoteWorker || (params.trust ?? this.run.trust) !== "full")) throw new Error("ACP connections require Full access on the current host; SSH workers and containers are unavailable");
       if (params.agent.startsWith("plugin:") && (this.run.loop.agentContainer || this.run.loop.remoteWorker || this.run.approvals.tools)) throw new Error("Extension providers support local dispatch only; container, SSH and native approval profiles are unavailable");
       this.checkCancelled();
       const assembledPrompt = this.notesFor(step.id) + prompt;
@@ -2502,7 +2507,7 @@ export class TeamContext {
         return activeTurn && !this.signal.aborted && this.run.status === "running" && !!currentMember && currentMember.status !== "retired" &&
           (!params.taskId || !!currentTask && currentTask.owner === currentMember.id && currentTask.attempts === attempt);
       };
-      const grant = member && params.agent !== "agy" && !params.agent.startsWith("plugin:") && !this.run.loop.agentContainer && !remote ? await teamToolBridge.issue({
+      const grant = member && params.agent !== "agy" && !params.agent.startsWith("plugin:") && !params.agent.startsWith("acp:") && !this.run.loop.agentContainer && !remote ? await teamToolBridge.issue({
         identity: { runId: this.run.id, memberId: member.id, taskId: params.taskId, attempt, stepId: step.id, attemptId: logicalAttemptId },
         handler: (request, identity) => this.teamTool(request, identity, params.cwd, activeCapability), signal: this.signal, ttlMs: STEP_TIMEOUT_MS,
         isActive: activeCapability,
@@ -2548,7 +2553,11 @@ export class TeamContext {
           const { remote: _remote, artifact: _artifact, ...publicResult } = value; result = publicResult;
           if (recoveringRemote) onEvent({ kind: "status", text: "Recovered the durable remote receipt; no new provider invocation was launched." });
           if (value.remote.ambiguous) this.stop("ambiguous remote execution; inspect its durable receipt before resuming or starting another invocation");
-        } else result = await getAdapter(params.agent).run(agentOptions, onEvent);
+        } else {
+          // Team bookkeeping above can yield; recheck immediately before capturing the adapter.
+          assertAcpBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
+          result = await getAdapter(params.agent).run(agentOptions, onEvent);
+        }
       } finally { activeTurn = false; grant?.revoke(); approvals.cancelStep(this.run.id, step.id); }
       if (remote || result.ok || this.signal.aborted) return result;
       const kind = failureKind(result, !!resume);
@@ -2809,7 +2818,7 @@ export class RunManager {
     const fresh = await this.filesystemPolicyGuard?.(repo, run) ?? [];
     if (this.executionPolicyLease) throw new RunConflictError("Filesystem policy activation holds the global execution lease");
     assertPolicyExecution([...(run?.filePolicies ?? []), ...fresh], surface);
-    if (run) assertExtensionBindings(run);
+    if (run) { assertExtensionBindings(run); assertAcpBindings(run); }
     return structuredClone(fresh);
   }
   async withIdleExecution<T>(operation: () => T): Promise<Awaited<T>> {
@@ -4044,6 +4053,7 @@ export class RunManager {
     if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
     const filePolicies = await this.assertExecutionAllowed(input.repo, undefined, "run startup");
     const extensions = extensionBindings(input.pattern.id, input.roles);
+    const acpConnections = acpBindings(input.roles);
     if (input.teamRerun) {
       const parent = input.parentRunId ? this.get(input.parentRunId) : undefined;
       if (input.pattern.id !== "auto-team" || !parent?.team || input.teamRerun.parentRunId !== parent.id || input.baseRef !== input.teamRerun.baseCommit) throw new TeamRerunError("Task reruns must start from their owned source checkpoint", 409);
@@ -4140,6 +4150,7 @@ export class RunManager {
     // Full access turns off the agents' sandboxes, and nobody watches an automation or a sweep as it runs.
     const fullCapped = trust === "full" && !!input.trigger;
     if (fullCapped) trust = "trusted";
+    if (acpConnections.length && (trust !== "full" || loop.agentContainer || loop.remoteWorker)) throw new Error("ACP connections require Full access on the current host. SSH workers, containers, lockdown and automated triggers are unavailable.");
     // An untrusted PR's branch can rewrite AGENTS.md too: read conventions from where it started.
     const conventions = parent?.lockdown ? parent.conventions ?? "" : await readConventions(repo, lockdown && reviewBase ? reviewBase : baseRef).catch(() => "");
     const learn = config.learn !== false;
@@ -4169,6 +4180,7 @@ export class RunManager {
       id,
       filePolicies,
       extensions,
+      acpConnections,
       pattern: input.pattern.id,
       task: input.task,
       deferred: input.deferred ? structuredClone(input.deferred) : undefined,

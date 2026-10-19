@@ -1,5 +1,5 @@
 import { computed, signal } from "@preact/signals";
-import { api, ApiError, post, showToast, store } from "./lib.js";
+import { api, ApiError, post, showToast, store, SHORT } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
 import { onStreamState, subscribe } from "./stream.js";
 import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
@@ -22,6 +22,11 @@ import type {
 
 // ---------------------------------------------------------------- app-wide
 export const agents = signal<AgentInfo[]>([]);
+export async function loadAgents() {
+  const inventory = await api<AgentInfo[]>("/api/agents");
+  for (const agent of inventory) SHORT[agent.id] = agent.displayName;
+  agents.value = inventory;
+}
 export const patterns = signal<PatternInfo[]>([]);
 export const catalogs = signal<Record<string, CatalogOrError>>({});
 export const runs = signal<Map<string, RunSummary>>(new Map());
@@ -656,7 +661,8 @@ export function setLimits(patch: Partial<{ maxMinutes: number; maxSteps: number;
 export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]> {
   if (!p) return {};
   const saved = roleSel.value[p.id] ?? {};
-  const firstAvailable = agents.value.find((a) => a.available)?.id;
+  const eligibleDefaults = agents.value.filter((a) => a.available && (!a.id.startsWith("acp:") || trust.value === "full"));
+  const firstAvailable = eligibleDefaults[0]?.id;
   const roles: Record<string, RoleValue[]> = {};
   for (const role of p.roles) {
     let ids = (saved[role.id] ?? role.default).filter((id) => id === "auto" || available(id));
@@ -666,7 +672,7 @@ export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]
     roles[role.id] = ids;
   }
   // Judges, reviewers and synthesizers default to a vendor that didn't do the work they check.
-  return independentRoles(p.id, roles, saved, agents.value.filter((a) => a.available).map((a) => a.id));
+  return independentRoles(p.id, roles, saved, eligibleDefaults.map((a) => a.id));
 }
 
 export function optionsFor(p: PatternInfo | undefined): Record<string, number | boolean> {

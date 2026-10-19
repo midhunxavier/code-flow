@@ -17,6 +17,7 @@ import {
   agentAvailability,
   AGENT_IDS,
   registerProviderAdapters,
+  replaceAcpAdapters,
   agentCatalog,
   adapters,
   getAdapter,
@@ -92,6 +93,8 @@ import { changeRemote, isOwnAddress, lanAddresses, loadRemote, renderRemote, sav
 import { projectOf, Projects } from "./projects.js";
 import { memoryStore, MemoryConflictError, type MemoryAuthority, type MemoryEntry } from "./memory.js";
 import { adapterTeamCapabilities } from "./adapters/team-tools.js";
+import { createAcpAdapter, probeAcp } from "./adapters/acp.js";
+import { AcpConnections, validateAcpConnection } from "./acp-connections.js";
 import { teamToolBridge } from "./team-tools.js";
 import { teamEvaluationStore, buildTeamEvaluation, assessTeamRollout } from "./team-evaluation.js";
 import type { Run, RunEvent, RunSummary, SideTurn, StartRunInput } from "./engine.js";
@@ -130,6 +133,8 @@ const extensions = new Extensions({ register: (providers, workflows) => {
   registerProviderAdapters(providers); patterns.push(...workflows);
 } });
 const projects = new Projects();
+const acpConnections = new AcpConnections((connections) => replaceAcpAdapters(connections.map(createAcpAdapter)));
+let acpChecks = 0;
 const remoteWorkers = new RemoteWorkers();
 await remoteWorkers.load().catch((error) => logError("SSH workers disabled; repair their configuration to enable remote execution", error));
 const manager = new RunManager(findPattern, projects, remoteWorkers);
@@ -545,19 +550,21 @@ function requestedRoles(pattern: Pattern, input: unknown): Record<string, string
 }
 
 /** Who fills each role; "auto" picks an installed agent whose plan has room (see routing.ts). */
-async function validateRoles(pattern: Pattern, input: unknown, repo?: string, remoteWorker?: LoopSettings["remoteWorker"]): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
+async function validateRoles(pattern: Pattern, input: unknown, repo?: string, remoteWorker?: LoopSettings["remoteWorker"], requestedTrust?: string): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
   assertPolicyExecution(await fileAccess.execution(repo ?? ""), "Provider selection");
   const requested = requestedRoles(pattern, input);
   const inventory = remoteWorker ? (await manager.remoteInventory(remoteWorker)).providers : await agentAvailability();
   const installed = new Set(inventory.filter((a) => a.available).map((a) => a.id));
+  const trust = requestedTrust ?? (repo ? (await readRepoConfig(repo)).config.trust : undefined);
+  const eligible = new Set([...installed].filter((id) => !id.startsWith("acp:") || trust === "full" && !remoteWorker));
   if (pattern.id === "auto-team") {
     const supplied = input && typeof input === "object" ? input as Record<string, unknown> : {};
     if (!Array.isArray(supplied.coordinator)) requested.coordinator = ["auto"];
-    if (!Array.isArray(supplied.pool)) requested.pool = [...installed];
+    if (!Array.isArray(supplied.pool)) requested.pool = [...eligible];
   }
   const wantsAuto = Object.values(requested).some((list) => list.includes("auto"));
   const rank = wantsAuto && repo ? rankAgents(manager.list(), repo, { pattern: pattern.id }) : undefined;
-  const resolved = resolveAuto(requested, manager.quotaForWorker(remoteWorker?.workerId), installed, rank);
+  const resolved = resolveAuto(requested, manager.quotaForWorker(remoteWorker?.workerId), eligible, rank);
   const roles: Record<string, AgentId[]> = {};
   const needed = new Set<AgentId>();
   for (const spec of pattern.roles) {
@@ -775,7 +782,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   if (body.externalSource !== undefined || (body.externalSourceId !== undefined && typeof body.externalSourceId !== "string")) throw new HttpError(400, "Import the external source through its configured integration first");
   if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
   const loop = validateLoop(body.loop);
-  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), loop.remoteWorker);
+  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), loop.remoteWorker, body.trust);
   let externalSource = typeof body.externalSourceId === "string" ? await attempt(async () => integrations.resolveSource(body.externalSourceId)) : undefined;
   if (body.externalSourceRef) {
     const ref = body.externalSourceRef;
@@ -1418,6 +1425,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     throw new HttpError(404, "Unknown remote worker operation");
   }
   if (parts.join("/") === "api/extensions" && req.method === "GET") return send(res, 200, { api: { major: 1, minor: 0 }, extensions: extensions.list() });
+  if (parts[1] === "acp-connections") {
+    if (req.method === "GET" && parts.length === 2) return send(res, 200, acpConnections.snapshot());
+    if (req.method === "POST" && parts[2] === "check" && parts.length === 3) {
+      const body = await readJson(req);
+      return attempt(async () => {
+        const connection = validateAcpConnection(body.connection);
+        if (acpChecks >= 2) throw new HttpError(429, "Two connection checks are already running. Try again shortly.");
+        acpChecks++;
+        try { return send(res, 200, await probeAcp(connection)); } finally { acpChecks--; }
+      });
+    }
+    if (req.method === "POST" && parts.length === 2) {
+      const body = await readJson(req);
+      return send(res, 200, await attempt(() => acpConnections.save(body.revision, body.connection)));
+    }
+    if (req.method === "DELETE" && parts[2] && parts.length === 3) return send(res, 200, await attempt(() => acpConnections.remove(Number(url.searchParams.get("revision")), parts[2]!)));
+    throw new HttpError(404, "Unknown ACP connection operation");
+  }
   if (parts[1] === "coordinated-changes") return coordinatedApi.handle(req, res, parts);
   // The team board: served here in hub mode, forwarded to the team server under this computer's runner credential in linked mode. The link itself (connect, mappings, start/stop/hand over on this computer) is always local and the owner's own.
   if (parts[1] === "team") return teamLink.linked ? teamLink.proxy(req, res, parts, url) : handleTeamApi(req, res, url, parts, { store: collab, actor: ownerActor(collab.ownerName), principal: "owner", mutation: () => {} });
@@ -2186,6 +2211,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
 
 await manager.load();
 await projects.load(manager.list());
+await acpConnections.load().catch((error) => logError("ACP connections unavailable; repair their configuration and restart", error));
 await collab.load();
 await teamLink.load();
 await fileAccess.all().catch((error) => logError("Filesystem policy is unavailable; protected operations and extension loading remain disabled until the private policy file is repaired", error));

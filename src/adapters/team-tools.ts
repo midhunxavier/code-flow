@@ -40,6 +40,7 @@ export function adapterTeamCapabilities(provider: AgentId): Promise<AdapterTeamC
 }
 
 async function probe(provider: AgentId): Promise<AdapterTeamCapabilities> {
+  if (provider.startsWith("acp:")) return { provider, structuredOutput: "unsupported", sessionResume: "unknown", liveInput: "unsupported", scopedTools: "unsupported", sandbox: "unsupported", nestedAgentControl: "unknown", nestedUsage: "unknown", evidence: ["Shared ACP v1 adapter; session loading is negotiated per connection. JSON outcomes use prompt instructions and engine validation. Local Full access only; no client filesystem, terminal or scoped team-tool capabilities."] };
   if (provider.startsWith("plugin:")) return { provider, structuredOutput: "unknown", sessionResume: "unknown", liveInput: "unsupported", scopedTools: "unsupported", sandbox: "unknown", nestedAgentControl: "unknown", nestedUsage: "unknown", evidence: ["Owner-configured provider plugin. Built-in provider protocol fixtures and sandbox probes do not establish compatibility for this extension."] };
   const [versionResult, helpResult] = await Promise.allSettled([
     captureOutput(provider, ["--version"], 5_000), captureOutput(provider, ["--help"], 5_000),

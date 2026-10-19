@@ -72,6 +72,8 @@ A pattern with a reviewer asks for `REVIEW_SCHEMA` with `reproRule()` and `REVIE
 
 ### Adding an agent
 
+For a CLI that speaks ACP v1 over stdio, use [Settings → Agents & models](acp-agents.md). The shared adapter in `src/adapters/acp.ts` handles transport and normalized events; `src/acp-connections.ts` persists owner-configured invocations and pins them to runs.
+
 Implement `AgentAdapter` in `src/adapters/`, then register it in `src/adapters/index.ts`. Add a fake for it in `test/fake-agent.mjs`.
 
 Owner-configured providers and workflows can also use [versioned extensions](extensions.md) without modifying the built-in registry. They use namespaced IDs, explicit capability/API negotiation, reviewed bundle hashes and per-run version pins. Additional provider capabilities remain unknown until separately verified.

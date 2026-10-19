@@ -34,7 +34,7 @@ export interface ComposerLibrary { schemaVersion: 1; presets: TeamPreset[]; temp
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const identifier = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(value);
 const text = (value: unknown, max: number): value is string => typeof value === "string" && value.length <= max;
-const provider = (value: unknown): value is AgentId => ["claude", "codex", "agy"].includes(String(value));
+const provider = (value: unknown): value is AgentId => typeof value === "string" && (["claude", "codex", "agy"].includes(value) || /^acp:[a-z][a-z0-9-]{0,40}$/.test(value) || /^plugin:[a-z][a-z0-9-]{0,40}\/[a-z][a-z0-9-]{0,40}$/.test(value));
 const whole = (value: unknown, min: number, max: number): value is number => typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
 const fail = (message: string): never => { throw new Error(message); };
 

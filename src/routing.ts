@@ -48,7 +48,7 @@ export function resolveAuto(
 ): { roles: Record<string, AgentId[]>; notes: string[] } {
   const notes: string[] = [];
   const out: Record<string, AgentId[]> = {};
-  const order = [...rank.order, ...PREFERENCE.filter((a) => !rank.order.includes(a))];
+  const order = [...new Set([...rank.order, ...PREFERENCE, ...AGENT_IDS])];
   const candidates = order.filter((a) => installed.has(a));
   const roomy = candidates.filter((a) => !exhausted(a, quota));
   const skipped = candidates.filter((a) => exhausted(a, quota));

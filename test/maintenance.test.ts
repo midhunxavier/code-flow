@@ -34,6 +34,7 @@ test("encrypted backups round-trip application data while excluding live session
   await writeFile(join(home, "team-link.json.corrupt-2026-10-19T00-00-00-000Z"), `{"token":"${runnerCredential}"`);
   await mkdir(join(home, "team")); await writeFile(join(home, "team", "board.json"), '{"version":1,"projects":{}}');
   await mkdir(join(home, "team-link", "attempts"), { recursive: true }); await writeFile(join(home, "team-link", "attempts", "0123456789abcdef0123456789abcdef.json"), '{"attemptId":"0123456789abcdef0123456789abcdef","runId":"run-1"}');
+  await writeFile(join(home, "acp-connections.json"), '{"connections":[{"command":"must-not-restore-executable"}]}');
   await mkdir(join(home, "extension-cache")); await writeFile(join(home, "extension-cache", "pinned.mjs"), 'throw new Error("must-not-restore-executable-code");');
   await mkdir(join(home, "remote-worker-private")); await writeFile(join(home, "remote-worker-private", "request.json"), '{"capability":"must-not-restore-worker-authority"}');
   await mkdir(join(home, "ssh-host")); await writeFile(join(home, "ssh-host", "runtime.json"), '{"token":"must-not-restore-host-authority"}');
@@ -49,6 +50,7 @@ test("encrypted backups round-trip application data while excluding live session
   assert.ok(backup.omitted.some((path) => path.includes("remote-worker-private")));
   assert.ok(backup.omitted.some((path) => path.includes("ssh-host")));
   assert.ok(backup.omitted.some((path) => path.includes("extension-cache")));
+  assert.ok(backup.omitted.some((path) => path.includes("acp-connections.json")));
   assert.ok(backup.omitted.some((path) => path.includes("shared-accounts.json")));
   assert.ok(backup.omitted.some((path) => path.includes("symbolic link")));
   assert.equal((await readFile(archive)).includes(Buffer.from("super-secret-note")), false);
@@ -146,7 +148,7 @@ test("authenticated malicious backups cannot escape the destination or restore o
   await writeFile(archive, archiveManifest({ version: 1, createdAt: 1, omitted: [], files: [file] }));
   await assert.rejects(restoreEncryptedBackup({ input: archive, destination: join(root, "unsafe"), password: PASSWORD }), /unsafe/);
   assert.equal(await lstat(join(root, "escape")).then(() => true, () => false), false);
-  await writeFile(archive, archiveManifest({ version: 1, createdAt: 1, omitted: [], files: [{ ...file, path: "remote.json" }, { ...file, path: "phone-devices.json" }, { ...file, path: "shared-accounts.json.old" }, { ...file, path: "team-link.json" }, { ...file, path: "team-link.json.corrupt-2026-10-19T00-00-00-000Z" }, { ...file, path: "remote-worker-private/request.json" }, { ...file, path: "extension-cache/pinned.mjs" }, { ...file, path: "notes.json" }] }));
+  await writeFile(archive, archiveManifest({ version: 1, createdAt: 1, omitted: [], files: [{ ...file, path: "remote.json" }, { ...file, path: "phone-devices.json" }, { ...file, path: "shared-accounts.json.old" }, { ...file, path: "team-link.json" }, { ...file, path: "team-link.json.corrupt-2026-10-19T00-00-00-000Z" }, { ...file, path: "remote-worker-private/request.json" }, { ...file, path: "extension-cache/pinned.mjs" }, { ...file, path: "acp-connections.json" }, { ...file, path: "notes.json" }] }));
   const destination = join(root, "clean");
   const restored = await restoreEncryptedBackup({ input: archive, destination, password: PASSWORD });
   assert.equal(restored.files, 1);

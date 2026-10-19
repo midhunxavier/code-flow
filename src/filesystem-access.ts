@@ -54,7 +54,7 @@ export class FilesystemAccess {
     if (targetRestricted && !fileApi && !safeSearch && !filteredDiff) throw new FilePolicyError("This project's filesystem policy blocks raw history, configuration and operations that cannot enforce its paths", req.method === "GET" ? 403 : 409);
     if (globallyRestricted) {
       const globalPrivate = ["fs", "notes", "memory", "stats", "automations", "deferred-runs", "coordination", "coordinated-changes", "notifications", "maintenance", "diagnostics", "shells", "serve", "preview", "snapshot", "disk", "cleanup", "models", "doctor", "approvals", "team-capabilities", "team-evaluations", "team-rollout"].includes(parts[1] ?? "");
-      const execution = req.method !== "GET" && (["runs", "readiness", "verification", "compare", "sweeps", "automations", "deferred-runs", "coordination", "coordinated-changes", "remote-workers", "code-hosts", "improve-prompt", "team-link"].includes(parts[1] ?? "") || parts[1] === "workspace" && !fileApi);
+      const execution = req.method !== "GET" && (["acp-connections", "runs", "readiness", "verification", "compare", "sweeps", "automations", "deferred-runs", "coordination", "coordinated-changes", "remote-workers", "code-hosts", "improve-prompt", "team-link"].includes(parts[1] ?? "") || parts[1] === "workspace" && !fileApi);
       if (globalPrivate || execution || parts[1] === "workspace" && ["references", "dependencies"].includes(parts[2] ?? "") || parts[1] === "workspace" && parts[2] === "search" && url.searchParams.get("mode") === "semantic") throw new FilePolicyError("Custom filesystem restrictions pause app-managed execution and unscoped private data access globally because current backends share host authority", req.method === "GET" ? 403 : 409);
     }
   }

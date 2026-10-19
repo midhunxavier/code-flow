@@ -28,6 +28,14 @@ export function registerProviderAdapters(providers: AgentAdapter[]) {
   for (const provider of providers) { adapters[provider.id] = Object.freeze({ ...provider }); AGENT_IDS.push(provider.id); }
 }
 
+/** Saved ACP connections may be edited at runtime; running turns retain their captured adapter. */
+export function replaceAcpAdapters(providers: AgentAdapter[]) {
+  if (providers.some((provider) => !provider.id.startsWith("acp:")) || new Set(providers.map((provider) => provider.id)).size !== providers.length) throw new Error("Invalid ACP provider registration");
+  for (const id of AGENT_IDS.filter((id) => id.startsWith("acp:"))) { delete adapters[id]; catalogCache.delete(id); }
+  AGENT_IDS.splice(0, AGENT_IDS.length, ...AGENT_IDS.filter((id) => !id.startsWith("acp:")));
+  for (const provider of providers) { adapters[provider.id] = Object.freeze({ ...provider }); AGENT_IDS.push(provider.id); }
+}
+
 const CATALOG_TTL_MS = 10 * 60_000;
 const catalogCache = new Map<AgentId, { at: number; value: Promise<ModelCatalog> }>();
 
@@ -51,8 +59,9 @@ export function validateAgentSettings(input: unknown): AgentSettings {
   for (const id of AGENT_IDS) {
     const model = typeof raw[id]?.model === "string" ? raw[id].model.trim() : "";
     const effort = typeof raw[id]?.effort === "string" ? raw[id].effort.trim() : "";
-    if (model && !MODEL_RE.test(model)) throw new Error(`Invalid model name for ${getAdapter(id).displayName}: "${model}"`);
-    if (effort && !EFFORT_RE.test(effort)) throw new Error(`Invalid effort for ${getAdapter(id).displayName}: "${effort}"`);
+    // ACP settings are JSON-RPC values, not CLI flags; agents choose their own opaque IDs.
+    if (model && !(id.startsWith("acp:") ? model.length <= 256 && !/[\x00-\x1f\x7f]/.test(model) : MODEL_RE.test(model))) throw new Error(`Invalid model name for ${getAdapter(id).displayName}: "${model}"`);
+    if (effort && !(id.startsWith("acp:") ? effort.length <= 64 && !/[\x00-\x1f\x7f]/.test(effort) : EFFORT_RE.test(effort))) throw new Error(`Invalid effort for ${getAdapter(id).displayName}: "${effort}"`);
     if (model || effort) settings[id] = { ...(model && { model }), ...(effort && { effort }) };
   }
   return settings;
