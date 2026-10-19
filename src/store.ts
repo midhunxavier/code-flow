@@ -273,13 +273,19 @@ export async function listRunIds(): Promise<string[]> {
     .map((f) => f.slice(0, -".jsonl".length));
 }
 
+/** Tombstones also serve as durable cleanup requests after an interrupted deletion. */
+export async function listDeletedRunIds(): Promise<string[]> {
+  if (!existsSync(RUNS_DIR)) return [];
+  return (await readdir(RUNS_DIR)).filter(file => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}\.deleted$/.test(file)).map(file => file.slice(0, -8));
+}
+
 /** Serialized with pending writes. The durable marker prevents partial cleanup from restoring history. */
 export function deleteRunHistory(id: string): Promise<void> {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(id)) throw new Error("Invalid run ID");
   const work = writeQueue.then(async () => {
     await writeFile(join(RUNS_DIR, `${id}.deleted`), "", { mode: 0o600, flush: true });
     for (const suffix of [".jsonl", ".journal.jsonl", ".checkpoint.json", ".cold-index.json", ".cold-detail.json"]) {
-      await rm(join(RUNS_DIR, id + suffix), { force: true }).catch((error: Error) => logWarn(`Couldn't remove deleted run file ${id}${suffix}: ${error.message}`));
+      await rm(join(RUNS_DIR, id + suffix), { force: true });
     }
   });
   writeQueue = work.catch(() => undefined);

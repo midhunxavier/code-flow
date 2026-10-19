@@ -82,7 +82,7 @@ import {
   type Snapshot,
   type Worktree,
 } from "./git.js";
-import { appendLine, deleteRunHistory, flushWrites, journalEntry, listRunIds, loadJournal, readJsonLines, rewriteLines, RUNS_DIR } from "./store.js";
+import { appendLine, deleteRunHistory, flushWrites, journalEntry, listDeletedRunIds, listRunIds, loadJournal, readJsonLines, rewriteLines, RUNS_DIR } from "./store.js";
 import { compactRunLog, decodeRunLog, RunLogWriter } from "./run-log.js";
 import { branchDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
@@ -2911,6 +2911,11 @@ export class RunManager {
   /** Rebuild runs from their event logs; runs that were mid-flight become "interrupted". */
   async load(): Promise<void> {
     await this.loadQuota();
+    // A tombstone hides history immediately and keeps cleanup retryable across restarts.
+    for (const id of await listDeletedRunIds()) {
+      try { await memoryStore.purgeRun(id); await deleteRunHistory(id); }
+      catch (error) { logWarn(`Couldn't finish deleting run ${id}; cleanup will retry on next load`, { error: String(error) }); }
+    }
     const ids = (await listRunIds()).filter((id) => !this.runs.has(id) && !this.coldRuns.has(id));
     const compact: string[] = [];
     // Recover each record incrementally and release its log before opening another batch.
@@ -3213,13 +3218,13 @@ export class RunManager {
     this.deletedRuns.add(id);
     try {
       await this.coldWrites.get(id);
+      await memoryStore.purgeRun(id);
       await deleteRunHistory(id);
     } catch (error) { this.deletedRuns.delete(id); throw error; }
     this.bus.emit("workspace-stop", id);
     this.devServers.stopMatching(`${id}/`);
     this.runs.delete(id); this.coldRuns.drop(id); this.history.delete(id); this.runIdentities.delete(id); this.logWriter.forget(id);
     this.bus.emit("*", { ...strip(run), deleted: true });
-    await memoryStore.purgeRun(id).catch((error: Error) => logWarn(`Couldn't retire deleted run memory for ${id}: ${error.message}`));
   }
 
   /** Move a run to another project; its repo joins that project if it isn't in it yet. */
