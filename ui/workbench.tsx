@@ -3,7 +3,7 @@ import { api, enc, post, showToast } from "./lib.js";
 import { LaunchProfilesPanel } from "./launch-profiles.js";
 import { FilteredTasksPanel } from "./filtered-tasks.js";
 import { CoordinatedChangesPanel } from "./repo-coordination.js";
-import { repo, runs, route, projects } from "./state.js";
+import { repo, runs, route, projects, projectsLoaded } from "./state.js";
 import type { VerificationProfile, VerificationReport } from "../src/verification.js";
 import type { CodeHit } from "../src/workspace.js";
 import type { SymbolHit } from "../src/code-intelligence.js";
@@ -29,9 +29,11 @@ export function downloadArtifact(name: string, contents: string, type = "applica
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function WorkbenchView() {
+export function WorkbenchView({ projectId }: { projectId?: string }) {
+  const project = projects.value.find(item => item.id === projectId);
+  const repositories = projectId ? project?.repos ?? [] : repo.value ? [repo.value] : [];
   const [tab, setTab] = useState<Tab>("verification");
-  const [folder, setFolder] = useState(repo.value);
+  const [folder, setFolder] = useState(repositories[0] ?? "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [profile, setProfile] = useState<VerificationProfile | null>(null);
@@ -64,7 +66,7 @@ export function WorkbenchView() {
   const [hunks, setHunks] = useState<CheckpointHunks | null>(null);
   const [chosenHunks, setChosenHunks] = useState<string[]>([]);
   const [taskProjectId, setTaskProjectId] = useState("");
-  const availableRuns = [...runs.value.values()].filter((run) => run.repo === repo.value || run.worktrees.some((tree) => tree.path === folder));
+  const availableRuns = [...runs.value.values()].filter((run) => repositories.includes(run.repo));
   const selectedRun = availableRuns.find((run) => run.worktrees.some((tree) => tree.path === folder));
   const selectedTree = selectedRun?.worktrees.find((tree) => tree.path === folder);
   const taskProject = projects.value.find((project) => project.id === taskProjectId) ?? projects.value.find((project) => project.repos.includes(selectedRun?.repo ?? folder)) ?? projects.value[0];
@@ -74,7 +76,7 @@ export function WorkbenchView() {
     setBusy(true); setError("");
     try { await action(); } catch (error) { setError((error as Error).message); } finally { setBusy(false); }
   };
-  useEffect(() => { if (!folder && repo.value) setFolder(repo.value); }, [repo.value]);
+  useLayoutEffect(() => { if (!folder && repositories[0]) setFolder(repositories[0]); }, [repositories.join("\0"), folder]);
   useEffect(() => { setFile(null); setReport(null); setProfile(null); setGraph(null); setHistory(null); setContext(null); setComparison(null); setRevertPreview(null); setHits([]); setHunks(null); setError(""); }, [folder]);
   useLayoutEffect(() => { if (file?.folder === folder) setDraftRecovery(retainFileDraft(folder, file, draft, mergeConflict)); }, [folder, file, mergeConflict]);
   useEffect(() => {
@@ -104,12 +106,13 @@ export function WorkbenchView() {
       setFile({ ...file, ...saved, text: draft }); setMergeConflict(false); setPreview(false); showToast("File saved");
     } catch (error) { setConflict(true); throw error; }
   });
+  if (projectId && !project) return <p role="status">{projectsLoaded.value ? "This project no longer exists." : "Loading project…"}</p>;
   return <div class="workbench">
     <header class="page-head"><div class="page-head-text"><h3>Inspect, verify, and recover</h3>
       <p>Check the repository, inspect code and context, and manage results with evidence.</p></div></header>
     <div class="wb-target"><label class="lbl" for="wb-folder">Repository or run worktree</label>
     <select id="wb-folder" class="field" value={folder} disabled={busy} onChange={(event) => setFolder(event.currentTarget.value)}>
-      {repo.value ? <option value={repo.value}>{repo.value}</option> : <option value="">Choose a repository in New run</option>}
+      {repositories.length ? repositories.map(repository => <option key={repository} value={repository}>{repository}</option>) : <option value="">Choose a repository in New run</option>}
       {availableRuns.flatMap((run) => run.worktrees.map((tree) => <option key={`${run.id}/${tree.name}`} value={tree.path}>{(run.task.split("\n")[0] || "(no task)").slice(0, 50)} · {tree.name}</option>))}
     </select></div>
     <div class="wb-mobile-tool"><label class="lbl" for="wb-tool">Workspace tool</label><select id="wb-tool" class="field" value={tab} disabled={busy} onChange={(event) => setTab(event.currentTarget.value as Tab)}>{TOOL_GROUPS.map((group) => <optgroup key={group.label} label={group.label}>{group.tools.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</optgroup>)}</select></div>

@@ -15,6 +15,15 @@ test("explicit priorities outrank reason, then older waiting items win determini
   const ordered = prioritizedReviewRuns([run("b", { triage, createdAt: 4 }), run("a", { triage, createdAt: 4 }), run("old", { triage, createdAt: 2 }), run("priority", { triage, priority: 10, createdAt: 10 }), run("question", { awaiting: {} as RunSummary["awaiting"], createdAt: 9 })]);
   assert.deepEqual(ordered.map((item) => item.id), ["priority", "question", "old", "a", "b"]);
 });
+test("manual results and failed checks appear alongside automation results until viewed", () => {
+  const artifacts = [{ branch: "result", label: "Result", path: "/result", stat: "1 file changed" }];
+  assert.equal(reviewReason(run("manual", { artifacts })), "review");
+  assert.equal(reviewReason(run("seen", { artifacts, seen: true })), undefined);
+  assert.equal(reviewReason(run("check", { artifacts, verdict: "failing" })), "failed");
+  assert.equal(reviewReason(run("environment", { checkCantRun: { command: "test", reason: "missing tool" } })), "blocked");
+  assert.equal(reviewReason(run("limit", { status: "stopped" })), "blocked");
+  assert.equal(reviewReason(run("active", { status: "running", artifacts, verdict: "failing" })), undefined);
+});
 test("search/reason filters and grouping preserve the priority order without duplicate runs", () => {
   const items = prioritizedReviewRuns([run("low", { status: "failed", repo: "/a" }), run("high", { status: "failed", repo: "/b", priority: 10 }), run("answer", { awaiting: {} as RunSummary["awaiting"] })], { query: "task", reason: "failed" });
   const groups = groupReviewRuns(items, (item) => ({ id: item.repo, label: item.repo }));

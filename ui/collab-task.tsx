@@ -3,11 +3,11 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Attempt, Checkpoint, Comment, Instruction, Task, TaskStatus } from "../src/collab/model.js";
 import { useDialog } from "./app.js";
-import { TRUST } from "./composer.js";
+import { TRUST, ModelRow } from "./composer.js";
 import { Icon } from "./icons.js";
 import { apiPath, ApiError, enc, fmtSize, post, showToast, useLatest, usePoll } from "./lib.js";
 import { roleAtLeast } from "./shared-roles.js";
-import { agents, agentSettings, available, patterns, repo, trust, type Trust } from "./state.js";
+import { agents, agentSettings, patterns, repo, trust, limits, loadModels, type Trust } from "./state.js";
 import type { AgentId, RoleSpec } from "./types.js";
 import { ATTEMPT_LABEL, ATTEMPT_PILL, STATUS_LABEL, STATUS_PILL, TASK_STATUSES, type Member, type TeamRoute, ago, attemptLive, attemptResumable, attemptStale, board, busyAttempt, del, initials, latestCheckpoint, loadBoard, loadLocalAttempts, loadTask, loadTeamLink, localAttempts, openTask, ownerProblem, put, shortCommit, shownAttempt, teamLink, teamTick, transitionProblem, when, whoLabel } from "./collab-state.js";
 
@@ -89,7 +89,7 @@ export function TeamTaskView({ id, shared = false, navigate }: { id: string; sha
             {local?.runId ? <a class="btn small" href={`#/run/${enc(local.runId)}`}>Open run</a> : null}
             {canExecute ? <>
               {offeredToMe ? <><button type="button" class="btn small primary" disabled={!!busy} onClick={() => setDialog("accept")}>Accept and download</button><button type="button" class="btn small" disabled={!!busy} onClick={() => void respond("decline")}>Decline</button></> : null}
-              {!offered && !running ? <button type="button" class="btn small primary" disabled={!!busy} onClick={() => setDialog("start")}>Start on this computer</button> : null}
+              {!offered && !running && task.status !== "done" ? <button type="button" class="btn small primary" disabled={!!busy} onClick={() => setDialog("start")}>Build with agents</button> : null}
               {running && local ? <button type="button" class="btn small" disabled={!!busy} onClick={() => { if (confirm("Stop the attempt running on this computer? Its run can be resumed later and its work is kept.")) void link_("/stop", {}, "Stopping…", "Attempt stopped"); }}>Stop</button> : null}
               {resumable ? <button type="button" class="btn small" disabled={!!busy} onClick={() => void link_("/resume", {}, "Resuming…", "Attempt resumed")}>Resume</button> : null}
               {!offered && !running ? <button type="button" class="btn small" disabled={!!busy} onClick={() => setDialog("handover")}>Hand over…</button> : null}
@@ -113,7 +113,7 @@ export function TeamTaskView({ id, shared = false, navigate }: { id: string; sha
         <details class="team-section team-history"><summary>History <span class="team-count">{task.audit.length}</span></summary><ol>{task.audit.slice().reverse().map((entry, index) => <li key={`${entry.at}-${index}`}><span class="th-when">{when(entry.at)}</span> <strong>{entry.by.displayName}</strong> {entry.action}{entry.detail ? <span class="th-detail"> — {entry.detail}</span> : null}</li>)}</ol></details>
       </div>
     </div>
-    {dialog === "start" ? <StartDialog task={task} checkpoint={checkpoint} onClose={() => setDialog(null)} onStarted={() => { setDialog(null); showToast("Started on this computer"); void load(); void loadLocalAttempts(); }} /> : null}
+    {dialog === "start" ? <StartDialog task={task} checkpoint={checkpoint} onClose={() => setDialog(null)} onStarted={() => { setDialog(null); showToast("Agents started on this computer"); void load(); void loadLocalAttempts(); }} /> : null}
     {dialog === "handover" && meId ? <HandoverDialog task={task} meId={meId} members={members} onClose={() => setDialog(null)} onDone={() => { setDialog(null); showToast("Hand-over offered"); void load(); }} /> : null}
     {dialog === "recover" && attempt?.state === "unknown" ? <RecoverDialog task={task} attempt={attempt} onClose={() => setDialog(null)} onDone={() => { setDialog(null); showToast("Attempt recovered"); void load(); void loadLocalAttempts(); }} /> : null}
     {dialog === "accept" && offered ? <RepoPathDialog title="Accept and download" help={`The checkpoint is downloaded into your clone of ${task.repository} before the task becomes yours; a failed download changes nothing.`} action="Accept and download" initial={link?.mappings[task.projectId]?.[task.repository] ?? ""} onClose={() => setDialog(null)} submit={async (path) => { await post(`/api/team-link/tasks/${enc(id)}/accept`, { handoffId: offered.id, ...(path ? { repo: path } : {}) }); setDialog(null); showToast("Hand-over accepted"); void load(); }} /> : null}
@@ -290,42 +290,58 @@ function DecisionsCard({ task, canEdit, busy, act }: { task: Task; canEdit: bool
   </section>;
 }
 
-/** "Start on this computer": the repository clone, the pattern, an agent per role, the permissions and whether to continue from the latest checkpoint. */
+/** "Build with agents": the repository clone, the pattern, an agent per role, the permissions and whether to continue from the latest checkpoint. */
 function StartDialog({ task, checkpoint, onClose, onStarted }: { task: Task; checkpoint?: Checkpoint; onClose: () => void; onStarted: () => void }) {
   const ref = useDialog(true, onClose);
+  useEffect(() => { void loadModels(); }, []);
   const link = teamLink.value, mapped = link?.mappings[task.projectId]?.[task.repository] ?? "";
   const list = patterns.value;
   const [path, setPath] = useState(mapped);
   const [patternId, setPatternId] = useState(() => { const wanted = link?.defaults?.pattern; return wanted && list.some((entry) => entry.id === wanted) ? wanted : list.some((entry) => entry.id === "solo") ? "solo" : list[0]?.id ?? ""; });
   const pattern = list.find((entry) => entry.id === patternId);
-  const sorted = agents.value.slice().sort((x, y) => Number(y.available) - Number(x.available));
-  const [roles, setRoles] = useState<Record<string, AgentId>>({});
+  const sorted = agents.value.filter((agent) => agent.available);
+  const [roles, setRoles] = useState<Record<string, AgentId[]>>({});
+  const [settings, setSettings] = useState(agentSettings.value);
+  const [check, setCheck] = useState("");
+  const [minutes, setMinutes] = useState(limits.value.maxMinutes);
+  const [calls, setCalls] = useState(limits.value.maxSteps);
   const [trustValue, setTrustValue] = useState<Trust>(() => { const wanted = link?.defaults?.trust; return wanted && wanted in TRUST ? wanted as Trust : trust.value; });
   const continuable = !!checkpoint && checkpoint.bundle === "available";
   const [fromCheckpoint, setFromCheckpoint] = useState(continuable);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
-  const agentFor = (role: RoleSpec): AgentId | "" => roles[role.id] ?? (link?.defaults?.roles?.[role.id]?.find((id) => sorted.some((agent) => agent.id === id)) as AgentId | undefined) ?? role.default.find((id) => available(id)) ?? sorted[0]?.id ?? "";
+  const agentsFor = (role: RoleSpec): AgentId[] => {
+    const configured = roles[role.id] ?? link?.defaults?.roles?.[role.id] ?? role.default;
+    const selected = configured.filter((id) => sorted.some((agent) => agent.id === id)) as AgentId[];
+    if (role.id in roles) return role.multiple ? selected : selected.slice(0, 1);
+    return selected.length ? role.multiple ? selected : selected.slice(0, 1) : sorted[0] ? [sorted[0].id] : [];
+  };
+  const minimumCalls = pattern?.id === "auto-team" ? 4 : 1;
+  const valid = !!pattern && sorted.length > 0 && !!path.trim() && pattern.roles.every((role) => role.optional || agentsFor(role).length > 0) && Number.isInteger(calls) && calls >= minimumCalls && calls <= 200 && Number.isInteger(minutes) && minutes >= 1 && minutes <= 720 && (!pattern.requiresCheck || !!check.trim());
   const submit = async (event: Event) => {
-    event.preventDefault(); if (busy || !pattern) return; setBusy(true); setError("");
+    event.preventDefault(); if (busy || !pattern || !valid) return; setBusy(true); setError("");
     try {
-      await post<{ attemptId: string; runId: string }>(`/api/team-link/tasks/${enc(task.id)}/start`, { ...(path.trim() ? { repo: path.trim() } : {}), pattern: pattern.id, roles: Object.fromEntries(pattern.roles.map((role) => [role.id, agentFor(role) ? [agentFor(role)] : []])), trust: trustValue, agentSettings: agentSettings.value, ...(fromCheckpoint && checkpoint ? { fromCheckpointId: checkpoint.id } : {}) });
+      await post<{ attemptId: string; runId: string }>(`/api/team-link/tasks/${enc(task.id)}/start`, { ...(path.trim() ? { repo: path.trim() } : {}), pattern: pattern.id, roles: Object.fromEntries(pattern.roles.map((role) => [role.id, agentsFor(role)])), trust: trustValue, agentSettings: settings, loop: { ...(check.trim() ? { check: check.trim() } : {}), maxMinutes: minutes, maxSteps: calls }, ...(fromCheckpoint && checkpoint ? { fromCheckpointId: checkpoint.id } : {}) });
       onStarted();
     } catch (err) { setError((err as Error).message); setBusy(false); }
   };
-  return <dialog class="picker small-dialog" ref={ref} aria-labelledby="tt-start-title"><form class="picker-inner" onSubmit={(event) => void submit(event)}>
-    <div class="picker-head"><h3 id="tt-start-title">Start on this computer</h3><p class="help">Your own agents run the task in a worktree of your clone; progress and a checkpoint go to the team board.</p></div>
+  return <dialog class="picker team-build-dialog" ref={ref} aria-labelledby="tt-start-title"><form class="picker-inner" onSubmit={(event) => void submit(event)}>
+    <div class="picker-head"><h3 id="tt-start-title">Build with agents</h3><p class="help">Build on this computer in a worktree of your clone. Progress, checks and a checkpoint return to this task for review.</p></div>
     <div class="dialog-body">
       <label for="tt-start-repo">Repository path for <code>{task.repository}</code></label>
       <div class="row-inline"><input id="tt-start-repo" class="field mono" value={path} placeholder={mapped || "/absolute/path/to/your/clone"} disabled={busy} onInput={(event) => setPath(event.currentTarget.value)} /><button type="button" class="btn small" disabled={busy || !repo.value} title={repo.value || "Choose a repository in the composer first"} onClick={() => setPath(repo.value)}>Use current repository</button></div>
       {!mapped && !path ? <p class="help">No folder is mapped for this repository key yet; the path you enter here is used for this attempt (map it for good in Settings → Team).</p> : null}
-      <label for="tt-start-pattern">Pattern</label><select id="tt-start-pattern" class="field" value={patternId} disabled={busy} onChange={(event) => { setPatternId(event.currentTarget.value); setRoles({}); }}>{list.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select>
-      {pattern ? <fieldset class="team-roles" disabled={busy}><legend>Agents</legend>{pattern.roles.map((role) => <label key={role.id}>{role.label}<select class="field" value={agentFor(role)} onChange={(event) => setRoles({ ...roles, [role.id]: event.currentTarget.value as AgentId })}>{sorted.map((agent) => <option key={agent.id} value={agent.id}>{agent.displayName}{agent.available ? "" : " (not installed)"}</option>)}</select></label>)}</fieldset> : null}
+      <label for="tt-start-pattern">Workflow</label><select id="tt-start-pattern" class="field" value={patternId} disabled={busy} onChange={(event) => { setPatternId(event.currentTarget.value); setRoles({}); }}>{list.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select>
+      {pattern ? <><p class="help">{pattern.summary}</p><fieldset class="team-roles" disabled={busy}><legend>Agents</legend>{pattern.roles.map((role) => role.multiple ? <fieldset class="team-checks" key={role.id}><legend>{role.label}</legend>{sorted.map((agent) => <label class="check" key={agent.id}><input type="checkbox" checked={agentsFor(role).includes(agent.id)} onChange={(event) => setRoles({ ...roles, [role.id]: event.currentTarget.checked ? [...agentsFor(role), agent.id] : agentsFor(role).filter((id) => id !== agent.id) })} />{agent.displayName}</label>)}</fieldset> : <label key={role.id}>{role.label}<select class="field" aria-label={role.label} value={agentsFor(role)[0] ?? ""} onChange={(event) => setRoles({ ...roles, [role.id]: event.currentTarget.value ? [event.currentTarget.value as AgentId] : [] })}>{role.optional ? <option value="">None</option> : null}{sorted.map((agent) => <option key={agent.id} value={agent.id}>{agent.displayName}</option>)}</select></label>)}</fieldset></> : null}
+      {!sorted.length ? <p class="msg warn">Install and sign in to an agent on this computer before building.</p> : null}
+      <details><summary>Models and reasoning</summary><fieldset disabled={busy}>{sorted.filter((agent) => pattern?.roles.some((role) => agentsFor(role).includes(agent.id))).map((agent) => <ModelRow key={agent.id} agent={agent} used settings={settings[agent.id] ?? {}} onChange={(patch) => setSettings({ ...settings, [agent.id]: { ...settings[agent.id], ...patch } })} />)}</fieldset></details>
+      <label>Check command<input class="field" maxLength={1000} required={pattern?.requiresCheck} placeholder="Use repository default, or enter e.g. npm test" value={check} disabled={busy} onInput={(event) => setCheck(event.currentTarget.value)} /></label>
+      <div class="team-fields"><label>Time budget (minutes)<input class="field" type="number" min={1} max={720} value={minutes} disabled={busy} onInput={(event) => setMinutes(Number(event.currentTarget.value))} /></label><label>Agent call budget<input class="field" type="number" min={minimumCalls} max={200} value={calls} disabled={busy} onInput={(event) => setCalls(Number(event.currentTarget.value))} /></label></div>
       <label for="tt-start-trust">Agent permissions</label><select id="tt-start-trust" class="field" value={trustValue} disabled={busy} onChange={(event) => setTrustValue(event.currentTarget.value as Trust)}>{(Object.keys(TRUST) as Trust[]).map((value) => <option key={value} value={value}>{TRUST[value].label}</option>)}</select>
       <p class={trustValue === "full" ? "msg warn" : "help"}>{TRUST[trustValue].help}</p>
       {checkpoint ? <label class="check"><input type="checkbox" checked={fromCheckpoint} disabled={busy || !continuable} onChange={(event) => setFromCheckpoint(event.currentTarget.checked)} /> Continue from the latest checkpoint ({shortCommit(checkpoint.commit)}, {ago(checkpoint.at)}){continuable ? "" : " — its bundle is not available"}</label> : null}
       {error ? <p class="msg err" role="alert">{error}</p> : null}
     </div>
-    <div class="picker-foot"><span class="ps">{busy ? "Starting…" : ""}</span><button type="button" class="btn" disabled={busy} onClick={onClose}>Cancel</button><button type="submit" class="btn primary" disabled={busy || !pattern || !sorted.length}>Start</button></div>
+    <div class="picker-foot"><span class="ps">{busy ? "Starting…" : ""}</span><button type="button" class="btn" disabled={busy} onClick={onClose}>Cancel</button><button type="submit" class="btn primary" disabled={busy || !valid}>Build with agents</button></div>
   </form></dialog>;
 }
 

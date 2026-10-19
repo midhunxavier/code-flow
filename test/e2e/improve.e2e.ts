@@ -136,7 +136,7 @@ test("Improve and Undo preserve criteria and attachments; modes support keyboard
     await page.keyboard.press("Escape"); assert.equal(await menu.evaluate((element) => element === document.activeElement), true);
     await page.keyboard.press("ArrowUp");
     const request = page.waitForRequest("**/api/improve-prompt"); await page.keyboard.press("Enter");
-    assert.deepEqual((await request).postDataJSON(), { text: original, repo: repos[0], mode: "repo", execution: "local", context: ["sample.txt"] });
+    assert.deepEqual((await request).postDataJSON(), { text: original, repo: repos[0], mode: "repo", execution: "local", settings: { agent: "auto", defaultMode: "quick", providers: {} }, context: ["sample.txt"] });
     assert.equal(await page.locator(".improve > .btn").evaluate((element) => element === document.activeElement), true, "mode selection leaves focus on the Improve/Stop action");
     await page.getByRole("button", { name: "Undo", exact: true }).waitFor();
     assert.match(await page.locator(".taskbox [role=status]").innerText(), /repo/);
@@ -285,5 +285,59 @@ test("Improve respects SSH and Docker selection and its mode menu remains access
       if (screenshots) { mkdirSync(screenshots, { recursive: true }); await page.screenshot({ path: join(screenshots, `improve-mobile-${colorScheme}.png`), fullPage: true }); }
       await page.keyboard.press("Escape"); assert.equal(await trigger.evaluate((element) => element === document.activeElement), true);
     }
+  } finally { await page.close(); }
+});
+
+test("Prompt improvement settings persist, select the configured provider and default mode, and keep Undo", async () => {
+  const page = await openPage();
+  try {
+    await page.goto(`${base}/#/settings/agents`);
+    const panel = page.getByRole("region", { name: "Prompt improvement", exact: true });
+    await panel.getByLabel("Prompt improvement agent", { exact: true }).selectOption("claude");
+    await panel.getByLabel("Quick model · Claude Code", { exact: true }).fill("haiku");
+    assert.equal(await panel.getByLabel("Quick effort · Claude Code", { exact: true }).isDisabled(), true);
+    await panel.getByLabel("Prompt improvement agent", { exact: true }).selectOption("codex");
+    await panel.getByLabel("Default improvement mode", { exact: true }).selectOption("repo");
+    await panel.getByLabel("Quick model · Codex", { exact: true }).fill("quick-model");
+    await panel.getByLabel("Repo model · Codex", { exact: true }).fill("repo-model");
+    await panel.getByLabel("Repo effort · Codex", { exact: true }).selectOption("high");
+    await panel.getByLabel("Prompt improvement agent", { exact: true }).selectOption("claude");
+    assert.equal(await panel.getByLabel("Quick model · Claude Code", { exact: true }).inputValue(), "haiku");
+    await panel.getByLabel("Prompt improvement agent", { exact: true }).selectOption("codex");
+    await page.reload();
+    assert.equal(await panel.getByLabel("Prompt improvement agent", { exact: true }).inputValue(), "codex");
+    assert.equal(await panel.getByLabel("Default improvement mode", { exact: true }).inputValue(), "repo");
+    assert.equal(await panel.getByLabel("Repo model · Codex", { exact: true }).inputValue(), "repo-model");
+    assert.equal(await panel.getByLabel("Repo effort · Codex", { exact: true }).inputValue(), "high");
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.addScriptTag({ content: axe.source });
+    const audit = await page.evaluate(async () => (window as any).axe.run('section[aria-label="Prompt improvement"]', { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } }));
+    assert.deepEqual(audit.violations.map((item: any) => ({ id: item.id, nodes: item.nodes.map((node: any) => node.target) })), []);
+    mkdirSync(join(root, "output/playwright"), { recursive: true });
+    await panel.screenshot({ path: join(root, "output/playwright/improve-settings-mobile.png") });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await panel.screenshot({ path: join(root, "output/playwright/improve-settings.png") });
+    await page.goto(`${base}/#/new`);
+    const area = page.getByRole("textbox", { name: "Task", exact: true });
+    await area.fill("Clarify the login task");
+    assert.match(await page.getByRole("button", { name: "Improve", exact: true }).innerText(), /Codex/);
+    const response = page.waitForResponse("**/api/improve-prompt");
+    await page.getByRole("button", { name: "Improve", exact: true }).click();
+    const result = await response;
+    assert.equal(result.status(), 200, await result.text());
+    assert.equal((await result.json()).agent, "codex");
+    await page.getByRole("button", { name: "Undo", exact: true }).waitFor();
+    assert.match(await page.locator(".taskbox [role=status]").innerText(), /Codex:/);
+    const sent = result.request().postDataJSON();
+    assert.equal(sent.mode, "repo"); assert.equal(sent.settings.agent, "codex");
+    assert.deepEqual(sent.settings.providers.codex, { quick: { model: "quick-model" }, repo: { model: "repo-model", effort: "high" } });
+    await page.getByRole("button", { name: "Undo", exact: true }).click();
+    assert.equal(await area.inputValue(), "Clarify the login task");
+    await page.goto(`${base}/#/settings/agents`);
+    assert.equal(await panel.getByLabel("Default improvement mode", { exact: true }).inputValue(), "repo");
+    await panel.getByRole("button", { name: "Reset Improve defaults", exact: true }).click();
+    assert.equal(await panel.getByLabel("Prompt improvement agent", { exact: true }).inputValue(), "auto");
+    assert.equal(await panel.getByLabel("Default improvement mode", { exact: true }).inputValue(), "quick");
   } finally { await page.close(); }
 });

@@ -224,7 +224,7 @@ test("saved SSH connections survive reload, reject invalid ports, and retain a c
 
 test("all settings categories render; desktop and mobile preferences are accessible", async () => {
   await page.goto(`${base}/#/settings`);
-  for (const name of ["Agents & models", "Notifications", "Remote access", "Integrations", "Workspace", "Insights", "Automations", "Projects & access", "Extensions", "Data & storage", "Advanced"]) {
+  for (const name of ["Agents & models", "Notifications", "Remote access", "Integrations", "Projects & access", "Extensions", "Data & storage", "Advanced"]) {
     await category(name);
     await page.getByRole("heading", { name, exact: true }).first().waitFor();
   }
@@ -232,7 +232,7 @@ test("all settings categories render; desktop and mobile preferences are accessi
   await page.addScriptTag({ content: axe.source });
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
-    for (const name of ["General", "SSH connections", "Run defaults", "Automations", "Workspace", "Insights"]) {
+    for (const name of ["General", "SSH connections", "Run defaults"]) {
       await category(name);
       const violations = await page.evaluate(async () => (await (window as any).axe.run(".settings-page", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } })).violations);
       assert.deepEqual(violations.map((v: any) => `${v.id}: ${v.nodes.map((n: any) => n.target.join(" ")).join(", ")}`), []);
@@ -243,54 +243,36 @@ test("all settings categories render; desktop and mobile preferences are accessi
 });
 
 
-test("Workspace, Insights and Automations have one destination inside Settings", async () => {
+test("operational tools are direct destinations and old Settings links still work", async () => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${base}/#/workspace`);
-  const names = ["Verification", "Code", "Dependencies", "Context", "History", "Services", "Coordinated changes", "Filtered tasks"];
-  const tools = page.getByRole("navigation", { name: "Workspace tools" });
-  await tools.waitFor();
-  assert.deepEqual(await tools.getByRole("button").allTextContents(), names);
-  assert.deepEqual(await page.getByLabel("Workspace tool", { exact: true }).locator("option").allTextContents(), names);
-  assert.ok(page.url().endsWith("#/settings/workspace"));
-  for (const name of ["Workspace", "Insights", "Automations"]) assert.equal(await page.getByRole("navigation", { name: "Runs", exact: true }).getByRole("button", { name, exact: true }).count(), 0);
-  await category("Automations");
-  await page.getByRole("region", { name: "Deferred runs", exact: true }).waitFor();
-  assert.ok(page.url().endsWith("#/settings/automations"));
-  assert.equal(await page.getByRole("checkbox", { name: "Enable remote access", exact: true }).count(), 0);
-  await page.getByRole("link", { name: "Remote access settings", exact: true }).click();
-  await page.getByRole("checkbox", { name: "Enable remote access", exact: true }).waitFor();
-  await page.goBack();
-  await page.getByRole("heading", { name: "Automations", exact: true }).waitFor();
-
-  await page.goto(`${base}/#/workspace`);
-  await tools.waitFor();
-  await page.evaluate(() => { location.hash = "/automations"; });
-  await page.getByRole("heading", { name: "Automations", exact: true }).waitFor();
-  assert.ok(page.url().endsWith("#/settings/automations"), "legacy deep links canonicalize to Settings");
-  await page.goBack();
-  await tools.waitFor();
-  await page.keyboard.press("a");
-  await page.getByRole("heading", { name: "Automations", exact: true }).waitFor();
-  assert.ok(page.url().endsWith("#/settings/automations"), "keyboard shortcut opens Settings");
-  await page.keyboard.press("i");
-  await page.getByRole("heading", { name: "Insights", exact: true }).waitFor();
-  assert.ok(page.url().endsWith("#/settings/insights"));
-  await page.evaluate(() => { location.hash = "/insights/comparison%2F1"; });
-  await page.waitForURL("**/#/settings/insights/comparison%2F1");
-  await page.reload();
-  await page.getByRole("heading", { name: "Insights", exact: true }).waitFor();
-  assert.ok(page.url().endsWith("#/settings/insights/comparison%2F1"));
-  for (const name of ["Workspace", "Insights", "Automations"]) {
+  for (const [path, name] of [["workspace", "Repository workspace"], ["automations", "Automations"], ["inbox", "Inbox"], ["insights", "Insights"]] as const) {
+    await page.goto(`${base}/#/${path}`);
+    await page.getByRole("heading", { name, exact: true }).first().waitFor();
+    assert.ok(page.url().endsWith(`#/${path}`));
+    assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).count(), 0);
     await page.getByRole("button", { name: "Open command palette", exact: true }).click();
     await page.getByRole("combobox", { name: "Find a command, project or run" }).fill(name);
     const commands = page.getByRole("listbox", { name: "Matching commands" });
-    await commands.getByRole("option", { name: new RegExp(`^${name} Settings`) }).waitFor();
-    assert.equal(await commands.getByRole("option").count(), 1, `the command palette has no duplicate ${name} entry`);
-    await page.keyboard.press("Enter");
-    await page.getByRole("heading", { name, exact: true }).waitFor();
+    const match = commands.getByRole("option", { name: new RegExp(`^${name} `) });
+    assert.equal(await match.count(), 1);
+    await match.click();
   }
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.reload();
+  await page.goto(`${base}/#/settings/workspace`);
+  await page.getByRole("navigation", { name: "Workspace tools" }).waitFor();
+  await page.keyboard.press("a");
   await page.getByRole("region", { name: "Deferred runs", exact: true }).waitFor();
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  assert.ok(page.url().endsWith("#/automations"));
+  await page.goBack();
+  await page.getByRole("navigation", { name: "Workspace tools" }).waitFor();
+  await page.goForward();
+  await page.getByRole("region", { name: "Deferred runs", exact: true }).waitFor();
+  await page.keyboard.press("i");
+  await page.getByRole("heading", { name: "Insights", exact: true }).first().waitFor();
+  assert.ok(page.url().endsWith("#/insights"));
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const path of ["automations", "inbox", "workspace"]) {
+    await page.goto(`${base}/#/${path}`);
+    await page.locator(".activity-page").waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  }
 });

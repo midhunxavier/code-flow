@@ -30,3 +30,29 @@ test("collaboration comments accept reviewer, contributor and maintainer roles w
     else { await assert.rejects(request, (error: unknown) => error instanceof HttpError && error.status === 403 && /reviewer role is required/.test(error.message)); assert.deepEqual(added, [], "a viewer's comment is refused before any store access"); }
   }
 });
+
+test("unpublished task drafts stay private across shared history, events and run routes", async () => {
+  const identity = { kind: "shared", userId: "u-drafts", username: "maintainer", displayName: "Teammate", revision: 1, roles: { one: "maintainer" } };
+  const visible = { id: "visible", project: "one", repo: "/repo/one", task: "Published work", pattern: "solo", status: "done", createdAt: 1, worktrees: [], steps: [] } as unknown as Run;
+  // No explicit project is not sufficient: legacy runs inherit access from their repository.
+  const drafts = ["one", undefined].map((project, index) => ({ ...visible, id: `draft-${index}`, project, pattern: "team-task-draft", task: "Unreviewed private idea", summary: "Unreviewed private result" }));
+  const runs = [visible, ...drafts]; let listener: (run: RunSummary) => void = () => undefined;
+  const host = { token: "session", identity, accounts: { authenticate: () => identity, onChange: () => () => undefined }, projects: { list: () => [{ id: "one", name: "One", repos: ["/repo/one"], createdAt: 1 }], onChange: () => () => undefined }, manager: { list: () => runs.map((run) => ({ ...run, cold: true })), get: (id: string) => runs.find((run) => run.id === id), subscribeAll: (fn: typeof listener) => { listener = fn; return () => undefined; } }, comments: {}, patterns: [], templates: [] } as any;
+  for (const query of ["", "?project=one", "?q=Unreviewed"]) {
+    let body: any; const res = { writeHead: () => undefined, end: (text: string) => { body = JSON.parse(text); } } as unknown as ServerResponse;
+    await handleSharedApi({ method: "GET" } as IncomingMessage, res, new URL(`http://localhost/api/runs${query}`), ["api", "runs"], host);
+    assert.deepEqual(body.runs.map((run: Run) => run.id), query.includes("q=") ? [] : ["visible"]);
+  }
+  for (const draft of drafts) for (const suffix of ["", "/export", "/events", "/diff", "/review-coverage", "/collaboration"]) {
+    const path = `/api/runs/${draft.id}${suffix}`;
+    await assert.rejects(handleSharedApi({ method: "GET" } as IncomingMessage, {} as ServerResponse, new URL(`http://localhost${path}`), path.slice(1).split("/"), host), (error: unknown) => error instanceof HttpError && error.status === 404);
+  }
+  const frames: string[] = [], stream = Object.assign(new PassThrough(), { writeHead: () => undefined }); stream.on("data", (chunk) => frames.push(String(chunk)));
+  try {
+    await handleSharedApi({ method: "GET" } as IncomingMessage, stream as unknown as ServerResponse, new URL("http://localhost/api/events"), ["api", "events"], host);
+    const initial = frames.join(""); assert.ok(initial.includes("visible")); assert.equal(initial.includes("draft-"), false);
+    frames.length = 0; for (const draft of drafts) listener(draft as unknown as RunSummary);
+    assert.deepEqual(frames, [], "live notifications do not reveal private drafts");
+    listener(visible as unknown as RunSummary); assert.ok(frames.join("").includes("visible"));
+  } finally { stream.destroy(); }
+});

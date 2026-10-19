@@ -8,15 +8,18 @@ const config: PresetConfig = { pattern: "pipeline", roles: { planner: ["claude"]
 const library = (): ComposerLibrary => ({ schemaVersion: 1, presets: [{ id: "team-1", name: "Backend team", revision: 2, updatedAt: 2000, config: structuredClone(config), history: [{ revision: 1, updatedAt: 1000, config: { ...structuredClone(config), trust: "safe" } }] }], templates: [{ id: "task-1", name: "Component task", pattern: "pipeline", task: "Add tests for {{component}} in {{package}}.", criteria: ["{{component}} rejects invalid input."] }] });
 
 test("deep links round-trip encoded paths and malformed escapes remain recoverable", () => {
-  const routes: Route[] = [{ view: "composer" }, { view: "settings", section: "workspace" }, { view: "settings" }, { view: "settings", section: "ssh" }, { view: "run", id: "run / # 1" }, { view: "review", id: "run", branch: "feature/emoji-✓" }, { view: "side", tab: "files", scope: "repo:/tmp/a b" }, { view: "project", id: "project/1" }, { view: "settings", section: "insights", group: "a/b" }, { view: "settings", section: "automations" }];
+  const routes: Route[] = [{ view: "inbox" }, { view: "automations" }, { view: "workspace", project: "a/b" }, { view: "workspace" }, { view: "insights", group: "a/b" }, { view: "composer" }, { view: "settings" }, { view: "settings", section: "ssh" }, { view: "run", id: "run / # 1" }, { view: "review", id: "run", branch: "feature/emoji-✓" }, { view: "side", tab: "files", scope: "repo:/tmp/a b" }, { view: "project", id: "project/1" }];
   for (const route of routes) assert.deepEqual(parseRouteHash(hashFor(route)), route);
   for (const hash of ["#/run/%", "#/project/%E0%A4%A", "#/review/a/b%GG"]) { assert.deepEqual(parseRouteHash(hash), { view: "invalid", hash }); assert.equal(hashFor(parseRouteHash(hash)), hash); }
   assert.deepEqual(parseRouteHash("#/settings/unknown"), { view: "settings", section: "general" });
-  assert.deepEqual(parseRouteHash("#/automations"), { view: "settings", section: "automations" });
-  assert.equal(hashFor(parseRouteHash("#/automations")), "#/settings/automations");
-  assert.deepEqual(parseRouteHash("#/workspace"), { view: "settings", section: "workspace" });
-  assert.deepEqual(parseRouteHash("#/insights"), { view: "settings", section: "insights" });
-  assert.deepEqual(parseRouteHash("#/insights/a%2Fb"), { view: "settings", section: "insights", group: "a/b" });
+  assert.deepEqual(parseRouteHash("#/automations"), { view: "automations" });
+  assert.equal(hashFor(parseRouteHash("#/automations")), "#/automations");
+  assert.deepEqual(parseRouteHash("#/workspace"), { view: "workspace" });
+  assert.deepEqual(parseRouteHash("#/insights"), { view: "insights" });
+  assert.deepEqual(parseRouteHash("#/insights/a%2Fb"), { view: "insights", group: "a/b" });
+  assert.deepEqual(parseRouteHash("#/settings/workspace"), { view: "workspace" });
+  assert.deepEqual(parseRouteHash("#/settings/automations"), { view: "automations" });
+  assert.deepEqual(parseRouteHash("#/settings/insights/a%2Fb"), { view: "insights", group: "a/b" });
   assert.deepEqual(parseRouteHash("#/run/"), { view: "composer" });
 });
 

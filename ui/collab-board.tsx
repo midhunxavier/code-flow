@@ -1,6 +1,7 @@
 import { TeamConnectionPicker } from "./team-connections.js";
 import { useEffect, useState } from "preact/hooks";
 import type { Board, BoardProject, InboxItem, Task, TaskStatus, TaskSummary } from "../src/collab/model.js";
+import { TaskDraftAssistant } from "./task-draft.js";
 import { Icon } from "./icons.js";
 import { post, showToast, usePoll } from "./lib.js";
 import { roleAtLeast } from "./shared-roles.js";
@@ -14,7 +15,7 @@ import { ATTEMPT_LABEL, INBOX_LABEL, STATUS_LABEL, TASK_STATUSES, type Member, t
 export function TeamBoardView({ project, shared = false, navigate }: { project?: string; shared?: boolean; navigate: (to: TeamRoute) => void }) {
   const [mine, setMine] = useState(false);
   const [status, setStatus] = useState<TaskStatus | "">("");
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<false | "manual" | "agent">(false);
   const [now, setNow] = useState(Date.now());
   // The owner app polls as a fallback to its stream; the shared dashboard reloads only on /api/team/events frames (and when its tab is shown again), so an idle shared session can still expire. The liveness clock ticks on its own, without a request.
   usePoll(() => { void loadBoard(); if (!shared) void loadTeamLink(); setNow(Date.now()); }, shared ? 0 : 15_000, [teamTick.value, shared]);
@@ -42,14 +43,14 @@ export function TeamBoardView({ project, shared = false, navigate }: { project?:
     {boardError.value ? <p class="msg err" role="alert">{boardError.value}</p> : null}
     <div class="page-head">
       <div class="page-head-text"><h1>Team</h1><p>{chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>
-      <div class="page-head-actions">{canCreate ? <button type="button" class="btn primary" aria-expanded={creating} onClick={() => setCreating(!creating)}><Icon name="plus" /> New task</button> : null}</div>
+      <div class="page-head-actions">{canCreate ? <button type="button" class="btn primary" aria-expanded={!!creating} disabled={!!creating} onClick={() => setCreating("manual")}><Icon name="plus" /> New task</button> : null}{canCreate && !shared ? <button type="button" class="btn" disabled={!!creating} onClick={() => setCreating("agent")}>Draft with agent</button> : null}</div>
     </div>
     {!shared && link && !link.linked && !b.tasks.length ? <div class="settings-callout team-callout"><Icon name="people" /><div><strong>Not connected to a team server</strong><p>Connect this computer in Settings → Team to work on a shared board, or create tasks here to use this computer as the team server.</p><a href="#/settings/team">Open Settings → Team <span aria-hidden="true">→</span></a></div></div> : null}
     {b.projects.length > 1 || chosen ? <div class="team-chips" role="group" aria-label="Project">
       <button type="button" class="chip-tpl" aria-pressed={!chosen} onClick={() => navigate({ view: "team" })}>All projects</button>
       {b.projects.map((entry) => <button key={entry.id} type="button" class="chip-tpl" aria-pressed={chosen === entry.id} onClick={() => navigate({ view: "team", project: entry.id })}>{entry.name}</button>)}
     </div> : null}
-    {creating && canCreate ? <NewTaskForm key={chosen ?? ""} b={b} projectId={chosen} shared={shared} onDone={() => { setCreating(false); void loadBoard(); }} onCancel={() => setCreating(false)} /> : null}
+    {creating && canCreate ? <NewTaskForm key={chosen ?? ""} b={b} projectId={chosen} shared={shared} draftWithAgent={creating === "agent"} onDone={(task) => { const open = creating === "agent"; setCreating(false); void loadBoard(); if (open) navigate({ view: "team-task", id: task.id }); }} onCancel={() => setCreating(false)} /> : null}
     <div class="team-toolbar">
       <div class="segmented small" role="group" aria-label="Whose tasks">
         <button type="button" class={mine ? "" : "on"} aria-pressed={!mine} onClick={() => setMine(false)}>All</button>
@@ -90,39 +91,45 @@ function TaskCard({ task, me, project, now, onOpen }: { task: TaskSummary; me: s
 }
 
 /** The inline "New task" form: the fields a card needs now; everything else is edited on the task page. */
-function NewTaskForm({ b, projectId: initial, shared, onDone, onCancel }: { b: Board; projectId?: string; shared: boolean; onDone: () => void; onCancel: () => void }) {
+function NewTaskForm({ b, projectId: initial, shared, draftWithAgent, onDone, onCancel }: { b: Board; projectId?: string; shared: boolean; draftWithAgent?: boolean; onDone: (task: Task) => void; onCancel: () => void }) {
   const options = b.projects.filter((entry) => roleAtLeast(entry.role, "contributor"));
   const [projectId, setProjectId] = useState(initial && options.some((entry) => entry.id === initial) ? initial : options[0]?.id ?? "");
   const project = options.find((entry) => entry.id === projectId);
   const [title, setTitle] = useState(""), [repository, setRepository] = useState(project?.repositories[0]?.key ?? ""), [goal, setGoal] = useState(""), [acceptance, setAcceptance] = useState(""), [baseRef, setBaseRef] = useState(""), [owner, setOwner] = useState(""), [reviewer, setReviewer] = useState("");
-  const [busy, setBusy] = useState(false), [error, setError] = useState("");
-  useEffect(() => { setRepository(project?.repositories[0]?.key ?? ""); setOwner(""); setReviewer(""); }, [projectId]);
+  const [saving, setSaving] = useState(false), [draftBusy, setDraftBusy] = useState(false), [drafting, setDrafting] = useState(!!draftWithAgent), [draftApplied, setDraftApplied] = useState(false);
+  const busy = saving || draftBusy;
+  const [error, setError] = useState("");
+  useEffect(() => { setRepository(project?.repositories[0]?.key ?? ""); setOwner(draftWithAgent ? b.me.userId : ""); setReviewer(""); }, [projectId]);
   const maintainer = roleAtLeast(project?.role, "maintainer");
   const members: Member[] = project?.members ?? [];
   const owners = members.filter((member) => roleAtLeast(member.role, "contributor") && (maintainer || member.userId === b.me.userId));
   const reviewers = members.filter((member) => roleAtLeast(member.role, "reviewer"));
   const submit = async (event: Event) => {
-    event.preventDefault(); if (busy || !project) return; setBusy(true); setError("");
+    event.preventDefault(); if (busy || !project) return; setSaving(true); setError("");
     try {
-      await post<Task>("/api/team/tasks", { projectId, repository, title: title.trim(), goal, acceptance, ...(baseRef.trim() ? { baseRef: baseRef.trim() } : {}), ...(owner ? { owner } : {}), ...(reviewer ? { reviewer } : {}) });
-      showToast("Task created"); onDone();
-    } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
+      const created = await post<Task>("/api/team/tasks", { projectId, repository, title: title.trim(), goal, acceptance, ...(baseRef.trim() ? { baseRef: baseRef.trim() } : {}), ...(owner ? { owner } : {}), ...(reviewer ? { reviewer } : {}) });
+      showToast("Task created"); onDone(created);
+    } catch (err) { setError((err as Error).message); } finally { setSaving(false); }
   };
   return <form id="team-new" class="team-section team-new" aria-labelledby="team-new-title" onSubmit={(event) => void submit(event)}>
     <h2 id="team-new-title">New task</h2>
+    {draftApplied ? <p class="help" role="status">Draft applied. Review and edit the fields, then create the task.</p> : null}
     <div class="team-fields">
       {options.length > 1 ? <label>Project<select class="field" value={projectId} disabled={busy} onChange={(event) => setProjectId(event.currentTarget.value)}>{options.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label> : null}
-      <label>Title<input class="field" required maxLength={200} value={title} disabled={busy} onInput={(event) => setTitle(event.currentTarget.value)} /></label>
       <label>Repository<select class="field" required value={repository} disabled={busy || !project?.repositories.length} onChange={(event) => setRepository(event.currentTarget.value)}>{project?.repositories.map((repo) => <option key={repo.key} value={repo.key}>{repo.label} ({repo.key})</option>)}</select></label>
       <label>Base branch<input class="field" maxLength={100} placeholder={project?.repositories.find((repo) => repo.key === repository)?.defaultBranch ?? "The repository's default branch"} value={baseRef} disabled={busy} onInput={(event) => setBaseRef(event.currentTarget.value)} /></label>
+    </div>
+    {project && !project.repositories.length ? <p class="msg warn" role="status">{project.name} has no repository keys yet. A maintainer defines repository keys in Settings → Team{!shared && maintainer ? <>: <a href="#/settings/team">open Settings → Team</a></> : null}.</p> : null}
+    {!shared && drafting ? <TaskDraftAssistant key={`${projectId}/${repository}`} projectId={projectId} repository={repository} baseRef={baseRef} onBusy={setDraftBusy} onApply={(draft) => { setTitle(draft.title); setGoal(draft.goal); setAcceptance(draft.acceptance); setDrafting(false); setDraftApplied(true); }} /> : null}
+    <div class="team-fields">
+      <label>Title<input class="field" required maxLength={200} value={title} disabled={busy} onInput={(event) => setTitle(event.currentTarget.value)} /></label>
       <label>Owner<select class="field" value={owner} disabled={busy} onChange={(event) => setOwner(event.currentTarget.value)}><option value="">Unassigned</option>{owners.map((member) => <option key={member.userId} value={member.userId}>{member.userId === b.me.userId ? `${member.displayName} (you)` : member.displayName}</option>)}</select></label>
       <label>Reviewer<select class="field" value={reviewer} disabled={busy} onChange={(event) => setReviewer(event.currentTarget.value)}><option value="">None yet</option>{reviewers.map((member) => <option key={member.userId} value={member.userId}>{member.userId === b.me.userId ? `${member.displayName} (you)` : member.displayName}</option>)}</select></label>
     </div>
-    {project && !project.repositories.length ? <p class="msg warn" role="status">{project.name} has no repository keys yet. A maintainer defines repository keys in Settings → Team{!shared && maintainer ? <>: <a href="#/settings/team">open Settings → Team</a></> : null}.</p> : null}
     <label class="team-wide">Goal<textarea class="field" rows={4} maxLength={16384} placeholder="What should be true when this task is done, and why it matters" value={goal} disabled={busy} onInput={(event) => setGoal(event.currentTarget.value)} /></label>
     <label class="team-wide">Acceptance criteria<textarea class="field" rows={3} maxLength={8192} placeholder="How a reviewer will check the result" value={acceptance} disabled={busy} onInput={(event) => setAcceptance(event.currentTarget.value)} /></label>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
-    <div class="team-actions"><button type="submit" class="btn primary" disabled={busy || !project?.repositories.length || !title.trim()}>{busy ? "Creating…" : "Create task"}</button><button type="button" class="btn" disabled={busy} onClick={onCancel}>Cancel</button></div>
+    <div class="team-actions"><button type="submit" class="btn primary" disabled={busy || !project?.repositories.length || !title.trim()}>{saving ? "Creating…" : "Create task"}</button><button type="button" class="btn" disabled={busy} onClick={onCancel}>Cancel</button></div>
   </form>;
 }
 

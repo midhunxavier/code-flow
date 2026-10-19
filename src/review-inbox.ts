@@ -6,9 +6,14 @@ export function reviewReason(run: RunSummary): ReviewReason | undefined {
   if (run.awaiting || run.team?.awaitingRequestId) return "answer";
   if (run.team?.status === "blocked") return "blocked";
   if (!run.seen && (run.status === "failed" || run.status === "interrupted")) return "failed";
+  if (!run.seen && run.status !== "running") {
+    if (run.checkCantRun || run.status === "stopped" || run.verification?.state === "blocked") return "blocked";
+    if (run.verdict === "failing" || run.verification?.state === "needs-changes") return "failed";
+  }
   if (run.triage?.state === "pending") return "review";
+  if (!run.seen && run.status === "done" && run.artifacts?.some(artifact => artifact.stat?.trim())) return "review";
 }
-export const REVIEW_REASON_LABELS: Record<ReviewReason, string> = { answer: "Waiting for your answer", blocked: "Blocked work", failed: "Failed or interrupted", review: "Results to review" };
+export const REVIEW_REASON_LABELS: Record<ReviewReason, string> = { answer: "Waiting for your answer", blocked: "Blocked work", failed: "Failed checks or execution", review: "Results to review" };
 const reasonOrder: Record<ReviewReason, number> = { answer: 0, blocked: 1, failed: 2, review: 3 };
 export function prioritizedReviewRuns(runs: RunSummary[], input: { query?: string; reason?: ReviewReason } = {}): RunSummary[] {
   const words = (input.query ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);

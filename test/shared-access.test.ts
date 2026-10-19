@@ -22,10 +22,10 @@ test("canonicalization rejects ambiguous traversal, encoded separators, double e
 test("project assignment requires current exact membership; removed or ambiguous legacy runs remain inaccessible", () => {
   const identity: SharedPrincipal = { kind: "shared", userId: "user", username: "viewer", displayName: "Viewer", revision: 1, roles: { one: "viewer" } };
   const projects = [{ id: "one", name: "One", repos: ["/repo/one"], createdAt: 1 }, { id: "two", name: "Two", repos: ["/repo/two"], createdAt: 1 }];
-  assert.equal(sharedCanReadRun(identity, { project: "one", repo: "/repo/one" }, projects), true);
-  assert.equal(sharedCanReadRun(identity, { project: "one", repo: "/repo/one", projectTeam: { teamId: "private-team" } as import("../src/engine.js").Run["projectTeam"] }, projects), false);
-  for (const run of [{ project: "two", repo: "/repo/two" }, { project: "one", repo: "/repo/two" }, { project: "missing", repo: "/repo/one" }]) assert.equal(sharedCanReadRun(identity, run, projects), false);
-  assert.equal(sharedCanReadRun(identity, { repo: "/repo/one" }, projects), true); assert.equal(sharedCanReadRun(identity, { repo: "/repo/one" }, [...projects, { ...projects[1]!, repos: ["/repo/one"] }]), false);
+  assert.equal(sharedCanReadRun(identity, { pattern: "solo", project: "one", repo: "/repo/one" }, projects), true);
+  assert.equal(sharedCanReadRun(identity, { pattern: "solo", project: "one", repo: "/repo/one", projectTeam: { teamId: "private-team" } as import("../src/engine.js").Run["projectTeam"] }, projects), false);
+  for (const run of [{ project: "two", repo: "/repo/two" }, { project: "one", repo: "/repo/two" }, { project: "missing", repo: "/repo/one" }]) assert.equal(sharedCanReadRun(identity, { ...run, pattern: "solo" }, projects), false);
+  assert.equal(sharedCanReadRun(identity, { pattern: "solo", repo: "/repo/one" }, projects), true); assert.equal(sharedCanReadRun(identity, { pattern: "solo", repo: "/repo/one" }, [...projects, { ...projects[1]!, repos: ["/repo/one"] }]), false);
   assert.deepEqual(sharedProjectProjection({ ...projects[0]!, defaults: { pattern: "solo", teams: {} } }), { id: "one", name: "One", createdAt: 1 });
 });
 test("shared projections whitelist results while excluding private agent state, credentials, prompts and unauthorized parent links", () => {
@@ -54,5 +54,5 @@ test("sharedProjectRole returns the raw assigned role for rank checks and contri
   const identity: SharedPrincipal = { kind: "shared", userId: "user", username: "builder", displayName: "Builder", revision: 1, roles: { one: "contributor", two: "maintainer" } };
   assert.equal(sharedProjectRole(identity, "one"), "contributor"); assert.equal(sharedProjectRole(identity, "two"), "maintainer"); assert.equal(sharedProjectRole(identity, "three"), undefined); assert.equal(sharedProjectRole(identity, undefined), undefined); assert.equal(sharedProjectRole(identity, "toString"), undefined, "inherited object keys never grant a role");
   const projects = [{ id: "one", name: "One", repos: ["/repo/one"], createdAt: 1 }, { id: "three", name: "Three", repos: ["/repo/three"], createdAt: 1 }];
-  assert.equal(sharedCanReadRun(identity, { project: "one", repo: "/repo/one" }, projects), true); assert.equal(sharedCanReadRun(identity, { project: "three", repo: "/repo/three" }, projects), false);
+  assert.equal(sharedCanReadRun(identity, { pattern: "solo", project: "one", repo: "/repo/one" }, projects), true); assert.equal(sharedCanReadRun(identity, { pattern: "solo", project: "three", repo: "/repo/three" }, projects), false);
 });

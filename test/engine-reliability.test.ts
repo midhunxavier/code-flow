@@ -306,7 +306,10 @@ test("a usage limit with no reset time keeps the reset times already known; quot
   assert.equal(run.status, "stopped");
   assert.deepEqual(manager.quota.codex, { status: "limited", windows: { five_hour: { utilization: 0.4, resetsAt: later } }, at: manager.quota.codex!.at });
   const file = join(HOME, "quota.json");
-  await until(() => existsSync(file) && JSON.parse(readFileSync(file, "utf8")).codex?.status === "limited", 5_000);
+  // Local and remote quota snapshots are renamed independently. Wait for this snapshot
+  // and both writes to settle, not an older limited status or the first rename alone.
+  await until(() => existsSync(file) && JSON.parse(readFileSync(file, "utf8")).codex?.windows?.five_hour?.resetsAt === later && !readdirSync(HOME).some((f) => f.endsWith(".tmp")), 5_000);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).codex, manager.quota.codex);
   assert.deepEqual(readdirSync(HOME).filter((f) => f.endsWith(".tmp")), []);
 });
 

@@ -2,6 +2,9 @@
 
 ## Review and ship
 
+**Review changes** opens a workspace containing the diff, verification evidence, commit-scoped human review coverage and review comments. Mark files reviewed in the file pane. Expand **Publish changes** to use the existing merge, PR and validation controls without leaving review. **Refresh changes** reloads the diff and coverage after an external branch update; coverage is reset when the commit changes.
+
+
 When a run finishes, each result branch has **Review changes**, **Merge…** and **Open PR…** buttons.
 
 - **Review changes** opens a per-file diff. Click any line to comment on it, and add an overall comment if you like.

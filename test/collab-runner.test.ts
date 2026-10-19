@@ -25,7 +25,7 @@ const { checkpointRef, createCheckpointBundle, importCheckpointBundle } = await 
 const { LocalHub, RemoteHub } = await import("../src/collab/hub-client.js");
 const { TeamLink, unreachable, validateHubUrl } = await import("../src/collab/link.js");
 const { CollabRunner, MAX_FINISH_TRIES, mapRunStatus, progressFromRun, scrubLocalPaths, taskPrompt } = await import("../src/collab/runner.js");
-const { handleTeamLinkApi, validateStartBody } = await import("../src/collab/link-api.js");
+const { handleTeamLinkApi, validateStartBody, validateDraftBody } = await import("../src/collab/link-api.js");
 const { handleRunnerConnect, handleTeamApi } = await import("../src/collab/api.js");
 type Run = import("../src/engine.js").Run; type RunEvent = import("../src/engine.js").RunEvent; type MemberRecord = import("../src/collab/store.js").MemberRecord; type Task = import("../src/collab/model.js").Task; type SharedRole = import("../src/shared-accounts.js").SharedRole; type SharedUser = import("../src/shared-accounts.js").SharedUser;
 type Checkpoint = import("../src/collab/model.js").Checkpoint;
@@ -57,7 +57,54 @@ async function newStore(name: string) { const store = new CollabStore({ dir: joi
 const newTask = (store: InstanceType<typeof CollabStore>, taskOwner = "owner", extra: Record<string, unknown> = {}) => store.createTask(owner, { projectId: "p-1", repository: "app", title: "Add a greeting file", goal: "Create a greeting file in the repository root.", acceptance: "A new text file exists in the repository root.", owner: taskOwner, ...extra });
 const manager = () => { const m = new RunManager(findPattern); managers.push(m); return m; };
 const solo = { pattern: "solo", roles: { agent: ["claude" as const] }, trust: "safe" as const, loop: { check: "true", maxSteps: 4, maxMinutes: 2 } };
+
+test("task drafts use bounded read-only runs, ignore repository setup, and never create shared tasks or attempts", async () => {
+  const f = fixture("draft"), repo = f.clone("work"), store = await newStore("draft"), hub = new LocalHub(store), m = manager();
+  // Planning must not inherit commands or copied files intended for builds.
+  writeFileSync(join(repo, ".codeflow/config.json"), JSON.stringify({ setup: "touch should-not-run", check: "touch should-not-check", copy: ["private.txt"] }));
+  writeFileSync(join(repo, "private.txt"), "local secret");
+  const runner = new CollabRunner({ manager: m, hub: () => hub, findPattern, dir: join(f.folder, "runner"), resolveRepo: () => repo, retryIntervalMs: 0 }); runners.push(runner);
+  const input = validateDraftBody({ projectId: "p-1", repository: "app", idea: "Improve the greeting", agent: "claude" }, ["claude"]);
+  const { runId } = await runner.draftTask(input), run = m.get(runId)!; await finished(run);
+  assert.equal(run.status, "done", run.error); assert.equal(run.pattern, "team-task-draft");
+  assert.equal(JSON.parse(run.summary!).title, "Improve the team greeting");
+  assert.equal(run.trust, "safe"); assert.equal(run.loop.maxSteps, 2); assert.equal(run.loop.maxInvocations, 2); assert.equal(run.loop.maxMinutes, 5);
+  assert.ok(run.steps.filter((step) => step.agent).every((step) => step.mode === "read"));
+  assert.equal(run.loop.setup, undefined); assert.equal(run.loop.check, undefined); assert.deepEqual(run.loop.copy, []);
+  assert.equal(existsSync(join(run.worktrees[0]!.path, "private.txt")), false);
+  assert.equal(git(run.worktrees[0]!.path, "rev-parse", "HEAD"), f.base);
+  assert.equal(existsSync(join(run.worktrees[0]!.path, "should-not-run")), false);
+  assert.deepEqual((await hub.board()).tasks, []); assert.deepEqual(await runner.attempts(), []);
+  await assert.rejects(runner.draftTask({ ...input, repository: "missing" }), refuses(400, /repository/));
+  await assert.rejects(runner.draftTask({ ...input, projectId: "missing" }), refuses(404));
+  const viewHub = { ...hub, board: async () => ({ ...(await hub.board()), projects: (await hub.board()).projects.map((project) => ({ ...project, role: "viewer" as const })) }) } as HubClient;
+  const viewer = new CollabRunner({ manager: m, hub: () => viewHub, findPattern, dir: join(f.folder, "viewer"), retryIntervalMs: 0 }); runners.push(viewer);
+  await assert.rejects(viewer.draftTask(input), refuses(403, /contributor/));
+});
+
+test("draft requests and responses reject unavailable agents, oversized input, and agent-supplied execution settings", async () => {
+  const { taskDraftProblem } = await import("../src/task-draft.js");
+  const input = { projectId: "p-1", repository: "app", idea: "Improve greeting", agent: "claude" };
+  for (const patch of [{ agent: "codex" }, { idea: " " }, { idea: "x".repeat(16385) }, { repo: "relative" }, { trust: "full" }, { roles: {} }]) {
+    assert.throws(() => validateDraftBody({ ...input, ...patch }, ["claude"]), refuses(400));
+  }
+  const draft = { title: "Greeting", goal: "Update greeting", acceptance: "Greeting matches" };
+  assert.equal(taskDraftProblem(draft), undefined);
+  for (const invalid of [null, [], { ...draft, title: " " }, { ...draft, goal: "x".repeat(16385) }, { ...draft, command: "rm -rf /" }, { ...draft, owner: "someone" }]) assert.ok(taskDraftProblem(invalid));
+});
 const slowAgent = async <T>(work: () => Promise<T>): Promise<T> => { process.env.FAKE_SLEEP_MS = "8000"; process.env.FAKE_SLEEP_VENDOR = "claude"; try { return await work(); } finally { delete process.env.FAKE_SLEEP_MS; delete process.env.FAKE_SLEEP_VENDOR; } };
+
+test("a drafting run can be stopped through ordinary run cancellation without claiming a board task", async () => {
+  const f = fixture("draft-stop"), repo = f.clone("work"), store = await newStore("draft-stop"), m = manager(), hub = new LocalHub(store);
+  const runner = new CollabRunner({ manager: m, hub: () => hub, findPattern, dir: join(f.folder, "runner"), retryIntervalMs: 0 }); runners.push(runner);
+  await slowAgent(async () => {
+    const { runId } = await runner.draftTask({ projectId: "p-1", repository: "app", repo, idea: "Improve the greeting", agent: "claude" });
+    const run = m.get(runId)!;
+    await until(() => run.steps.some((step) => step.status === "running"), Boolean, "draft agent to start");
+    m.cancel(runId); await finished(run); assert.equal(run.status, "cancelled");
+    assert.equal(run.summary, undefined); assert.deepEqual((await hub.board()).tasks, []); assert.deepEqual(await runner.attempts(), []);
+  });
+});
 const agentFiles = (dir: string) => existsSync(dir) ? readdirSync(dir).filter((name) => /^claude-.*\.txt$/.test(name)) : [];
 const listen = (server: Server) => new Promise<number>((resolve) => server.listen(0, "127.0.0.1", () => { servers.push(server); resolve((server.address() as AddressInfo).port); }));
 /** A RunManager stand-in over a real clone: `start` creates a worktree on a result branch the way the engine does (so heads, commits and checkpoints are real), the test ends, pauses or fails runs itself, and every call is counted. */

@@ -89,7 +89,8 @@ import { reapOrphanGroups } from "./adapters/process.js";
 import { logError, logInfo, logWarn } from "./log.js";
 import { listIssues, listPullRequests, MERGE_METHODS, type SourceInput } from "./github.js";
 import { listSweep, runSweep, sourceKeys, type SweepKind } from "./sweeps.js";
-import { resolveAuto } from "./routing.js";
+import { parseImproveSettings, IMPROVE_AGENTS, type ImproveAgent } from "./improve-settings.js";
+import { exhausted, resolveAuto } from "./routing.js";
 import { improvePrompt, assertImproveEnvironment, ImproveError, MAX_IMPROVE_CHARS, type ImproveRequest } from "./improve.js";
 import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
@@ -608,13 +609,18 @@ async function improveTask(body: any, res: ServerResponse) {
   const text = typeof body.text === "string" ? body.text : "";
   if (!text.trim()) throw new HttpError(400, "Write a task to improve first");
   if (text.length > MAX_IMPROVE_CHARS) throw new HttpError(400, `The task is too long to improve (${MAX_IMPROVE_CHARS.toLocaleString("en")} characters at most)`);
+  if (body.mode !== undefined && body.mode !== "quick" && body.mode !== "repo") throw new HttpError(400, "Choose Quick or Repo for prompt improvement");
+  let preferences;
+  try {
+    preferences = parseImproveSettings(body.settings ?? { agent: body.agent ?? "auto", defaultMode: body.mode ?? "quick", providers: {} });
+  } catch (error) { throw new HttpError(400, (error as Error).message); }
   const stop = new AbortController();
   res.once("close", () => stop.abort());
   if (res.destroyed || res.writableEnded) stop.abort();
   const request: ImproveRequest = {
     text,
     repo: await validRepo(typeof body.repo === "string" ? body.repo : ""),
-    mode: body.mode === "repo" ? "repo" : "quick",
+    mode: body.mode === undefined ? preferences.defaultMode : body.mode === "repo" ? "repo" : "quick",
     context: Array.isArray(body.context) ? body.context.filter((p: unknown): p is string => typeof p === "string" && !!p.trim()).slice(0, 50).map((p: string) => p.slice(0, 300)) : [],
     source:
       body.source && ["issue", "pr", "alert"].includes(body.source.kind) && Number.isInteger(body.source.number)
@@ -628,11 +634,16 @@ async function improveTask(body: any, res: ServerResponse) {
     return await attempt(() => manager.withIdleRepository(request.repo, async () => {
       await manager.assertExecutionAllowed(request.repo, undefined, "Prompt improvement");
       stop.signal.throwIfAborted();
-      const installed = new Set((await agentAvailability()).filter((a) => a.available).map((a) => a.id));
+      const installed = new Set((await agentAvailability()).filter((a) => a.available && IMPROVE_AGENTS.includes(a.id as ImproveAgent)).map((a) => a.id));
       stop.signal.throwIfAborted();
-      const agent = resolveAuto({ improve: [isAgentId(body.agent) ? body.agent : "auto"] }, manager.quota, installed).roles.improve?.[0];
+      const agent = preferences.agent === "auto" ? resolveAuto({ improve: ["auto"] }, manager.quota, installed).roles.improve?.[0] : preferences.agent;
       if (!agent) throw new HttpError(400, "Install the Claude Code, Codex or Antigravity CLI to improve tasks");
       if (!installed.has(agent)) throw new HttpError(400, `${getAdapter(agent).displayName} (\`${getAdapter(agent).binary}\`) is not installed or not on PATH`);
+      if (preferences.agent !== "auto") {
+        const unavailable = exhausted(agent, manager.quota);
+        if (unavailable) throw new HttpError(400, `${getAdapter(agent).displayName} ${unavailable}. Choose another Improve agent in Settings or try again later.`);
+      }
+      request.settings = preferences.providers[agent as ImproveAgent]?.[request.mode];
       await manager.assertExecutionAllowed(request.repo, undefined, "Prompt improvement");
       stop.signal.throwIfAborted(); manager.noteActivity();
       try {

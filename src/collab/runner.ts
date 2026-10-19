@@ -11,10 +11,11 @@ import { logError } from "../log.js";
 import { redactText } from "../privacy.js";
 import { assertTransferTree } from "../remote-workers/bundles.js";
 import type { Trust } from "../repo-config.js";
+import { taskDraftPattern } from "../patterns/task-draft.js";
 import { checkpointContext, checkpointRef, createCheckpointBundle, ensureCheckpointBranch, importCheckpointBundle } from "./checkpoints.js";
 import type { CheckpointContextInput } from "./checkpoints.js";
 import type { HubClient, ProgressReportBody } from "./hub-client.js";
-import { ATTEMPT_ID, busyAttempt, CHECKPOINT_ID, CollabError, COMMIT_ID, latestCheckpoint, MAX, newAttemptId, newCheckpointId, ownerChangedMessage, TASK_ID } from "./model.js";
+import { ATTEMPT_ID, busyAttempt, CHECKPOINT_ID, CollabError, COMMIT_ID, latestCheckpoint, roleAtLeast, MAX, newAttemptId, newCheckpointId, ownerChangedMessage, TASK_ID } from "./model.js";
 import type { AttemptProgress, Checkpoint, CheckpointInput, Instruction, Task } from "./model.js";
 import type { FinishInput, FinishState } from "./store.js";
 
@@ -31,6 +32,7 @@ export interface PendingFinish { state: FinishState; head?: string; summary?: st
 export interface LocalAttemptRecord { attemptId: string; taskId: string; hubUrl?: string; repo: string; base: string; runId?: string; state: LocalAttemptState; lastSeq: number; lastAckedSeq: number; deliveredInstructionIds: string[]; checkpointId?: string; pendingFinish?: PendingFinish; updatedAt: number }
 export interface StartAttemptInput { repo?: string; pattern: string | Pattern; roles: Record<string, AgentId[]>; agentSettings?: AgentSettings; roleSettings?: Record<string, AgentSettings>; trust?: Trust; loop?: Partial<LoopSettings>; fromCheckpointId?: string }
 export interface HandOverInput { to: string; note?: string; includeUncommitted?: boolean }
+export interface DraftTaskInput { projectId: string; repository: string; idea: string; agent: AgentId; repo?: string; baseRef?: string; agentSettings?: AgentSettings }
 /** What the runner needs from RunManager; a Pick so tests and other hosts can hand it a stand-in. */
 export type RunnerManager = Pick<RunManager, "start" | "get" | "subscribe" | "cancel" | "resume" | "addNote" | "reviewCoverage" | "list">;
 /** `retryIntervalMs` is the recovery timer's period (0 disables it; tests drive retryPending() themselves). */
@@ -174,6 +176,24 @@ export class CollabRunner {
   /** The hub as currently linked; the provider lets the server swap a LocalHub for a RemoteHub when the link changes. */
   get hub(): HubClient { return this.options.hub(); }
   private get manager() { return this.options.manager; }
+
+  /** Planning is a local run, with no task/attempt claim or publication to the shared hub. */
+  async draftTask(input: DraftTaskInput): Promise<{ runId: string }> {
+    this.assertOpen();
+    const project = (await this.hub.board(input.projectId)).projects.find((entry) => entry.id === input.projectId);
+    if (!project) throw new CollabError("Project not found", 404);
+    if (!roleAtLeast(project.role, "contributor")) throw new CollabError("A project contributor role is required to draft tasks", 403);
+    if (!project.repositories.some((entry) => entry.key === input.repository)) throw new CollabError("Choose a repository belonging to this project");
+    const repo = await this.resolveRepo(input, input.repo);
+    const run = await this.manager.start({
+      pattern: taskDraftPattern, repo, baseRef: input.baseRef || "HEAD", task: input.idea,
+      roles: { agent: [input.agent] }, options: {}, agentSettings: input.agentSettings,
+      trust: "safe", approvals: { plan: false, tools: false },
+      loop: { check: "", setup: "", copy: [], maxMinutes: 5, maxSteps: 2, maxInvocations: 2 },
+      project: this.options.projectFor?.(repo),
+    });
+    return { runId: run.id };
+  }
 
   // ---- Local records: journaled before every step the hub must see at most once.
   /** Re-reading the files never replaces a record that work in progress holds (a run being followed, a start under way, or an operation queued on its chain): that object carries changes its save has not finished writing, and a stale copy from disk would make the next pass publish the finish a second time or reuse a report number. */
