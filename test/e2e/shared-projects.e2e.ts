@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type AddressInfo } from "node:net";
-import { chromium, type Browser, type BrowserContext } from "playwright-core";
+import { chromium, type Browser, type BrowserServer } from "playwright-core";
 import axe from "axe-core";
 import { SharedAccounts } from "../../src/shared-accounts.js";
 
@@ -14,8 +14,8 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const fixture = realpathSync(mkdtempSync(join(tmpdir(), "codeflow-shared-ui-"))), home = join(fixture, "data");
 const owner = "shared-projects-owner-token", password = "a long local review password", ownerHeaders = { authorization: `Bearer ${owner}` };
 const port = await new Promise<number>((resolve) => { const server = createServer().listen(0, "127.0.0.1", () => { const port = (server.address() as AddressInfo).port; server.close(() => resolve(port)); }); });
-const base = `http://localhost:${port}`; let processServer: ChildProcess, browser: Browser, reviewerId: string, head: string;
-let viewerCookie: string, reviewerCookie: string; const contexts: BrowserContext[] = [];
+const base = `http://localhost:${port}`; let processServer: ChildProcess, browser: Browser, browserServer: BrowserServer, reviewerId: string, head: string;
+let viewerCookie: string, reviewerCookie: string;
 const jsonHeaders = { "content-type": "application/json", origin: base };
 const sharedHeaders = (cookie: string) => ({ ...jsonHeaders, cookie });
 async function signIn(username: string) { const response = await fetch(`${base}/api/auth/login`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ username, password }) }); assert.equal(response.status, 200, await response.clone().text()); const body = await response.json(); assert.equal("token" in body, false, "raw sessions never appear in JSON"); const cookie = response.headers.getSetCookie().find((cookie) => !cookie.includes("Max-Age=0"))!; assert.ok(cookie?.includes("HttpOnly")); assert.ok(cookie.includes("SameSite=Strict")); return cookie.split(";")[0]!; }
@@ -46,9 +46,23 @@ before(async () => {
   await accounts.create({ revision: 0, username: "viewer", displayName: "Project viewer", password, roles: { "p-one": "viewer" } }); const state = await accounts.create({ revision: 1, username: "reviewer", displayName: "Project reviewer", password, roles: { "p-one": "reviewer" } }); reviewerId = state.users.find((user) => user.username === "reviewer")!.id;
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root }); processServer = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, CODEFLOW_TOKEN: owner, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: process.env.E2E_DEBUG ? "inherit" : "ignore" });
   let ready = false; for (let attempt = 0; attempt < 150; attempt++) { ready = await fetch(`${base}/api/health`, { headers: ownerHeaders }).then((response) => response.ok, () => false); if (ready) break; await new Promise((resolve) => setTimeout(resolve, 100)); } assert.equal(ready, true, "fixture server started");
-  viewerCookie = await signIn("viewer"); reviewerCookie = await signIn("reviewer"); browser = await chromium.launch({ channel: "chrome", headless: true });
+  viewerCookie = await signIn("viewer"); reviewerCookie = await signIn("reviewer"); browserServer = await chromium.launchServer({ channel: "chrome", headless: true }); browser = await chromium.connect(browserServer.wsEndpoint());
 });
-after(async () => { for (const context of contexts) await context.close(); await browser?.close(); processServer?.kill("SIGTERM"); await new Promise<void>((resolve) => { if (!processServer || processServer.exitCode !== null) return resolve(); processServer.once("exit", resolve); setTimeout(resolve, 5000).unref(); }); rmSync(fixture, { recursive: true, force: true }); });
+after(async () => {
+  // These contexts retain live event streams. Terminate our owned Chrome process instead of
+  // letting an individual context's graceful close hold the entire browser suite open.
+  try { await browserServer?.kill(); }
+  finally {
+    if (processServer && processServer.exitCode === null && processServer.signalCode === null) {
+      const exited = new Promise<void>((resolve) => processServer.once("exit", () => resolve()));
+      const timer = setTimeout(() => processServer.kill("SIGKILL"), 5000);
+      processServer.kill("SIGTERM");
+      try { await exited; } finally { clearTimeout(timer); }
+      assert.equal(processServer.exitCode, 0, "fixture server stopped cleanly");
+    }
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
 
 test("shared route enforcement scopes aliases, search counts, exports and SSE while denying all execution surfaces", async () => {
   const ownerSelf = await fetch(`${base}/api/auth/self`, { headers: ownerHeaders }).then((response) => response.json());
@@ -64,7 +78,7 @@ test("shared route enforcement scopes aliases, search counts, exports and SSE wh
     const runs = await fetch(base + prefix + "/runs?limit=1&q=Shared", { headers: sharedHeaders(viewerCookie) }).then((response) => response.json()); assert.equal(runs.total, 1); assert.deepEqual(runs.runs.map((run: { id: string }) => run.id), ["shared-one"]); assert.equal(runs.nextCursor, undefined);
     const deep = await fetch(base + prefix + "/runs?project=p-one&q=DeepColdNeedle", { headers: sharedHeaders(viewerCookie) }).then((response) => response.json()); assert.equal(deep.total, 1); assert.equal(deep.runs[0].id, "cold-deep"); assert.equal(deep.runs[0].cold, true); assert.equal(deep.runs[0].detailAvailable, true); assert.equal(deep.runs[0].task.includes("DeepColdNeedle"), false, "query reads the full authorized cold task while the list remains a bounded preview");
     for (const path of ["/runs/shared-two", "/runs/shared-two/events", "/runs/shared-two/diff", "/runs/shared-two/export", "/runs/shared-two/review-coverage", "/runs/shared-two/collaboration"]) assert.equal((await fetch(base + prefix + path, { headers: sharedHeaders(viewerCookie) })).status, 404, path);
-    for (const path of ["/fs", "/file", "/tree", "/workspace/file", "/workspace/search", "/doctor", "/models", "/agents", "/stats", "/notes", "/approvals", "/remote", "/accounts", "/filtered-tasks", "/remote-workers", "/code-hosts", "/coordinated-changes", "/extensions", "/integrations", "/notifications", "/projects/p-one/conventions"]) assert.equal((await fetch(base + prefix + path, { headers: sharedHeaders(viewerCookie) })).status, 403, path);
+    for (const path of ["/fs", "/file", "/tree", "/workspace/file", "/workspace/search", "/doctor", "/models", "/agents", "/stats", "/notes", "/approvals", "/remote", "/accounts", "/filtered-tasks", "/remote-workers", "/code-hosts", "/coordinated-changes", "/project-teams", "/extensions", "/integrations", "/notifications", "/projects/p-one/conventions"]) assert.equal((await fetch(base + prefix + path, { headers: sharedHeaders(viewerCookie) })).status, 403, path);
     for (const path of ["/runs", "/runs/shared-one/followups", "/runs/shared-one/notes", "/runs/shared-one/answer", "/runs/shared-one/resume", "/runs/shared-one/merge", "/runs/shared-one/validate-merge", "/runs/shared-one/triage", "/runs/shared-one/launch-profiles", "/workspace/file", "/readiness", "/shells", "/preview", "/filtered-tasks", "/filtered-tasks/id/import", "/approvals/id"]) assert.equal((await fetch(base + prefix + path, { method: "POST", headers: sharedHeaders(reviewerCookie), body: "{}" })).status, 403, path);
     for (const cookie of [viewerCookie, reviewerCookie]) for (const mode of ["quick", "repo"]) assert.equal((await fetch(base + prefix + "/improve-prompt", { method: "POST", headers: sharedHeaders(cookie), body: JSON.stringify({ text: "Clarify this task", mode, repo: join(fixture, "repo-one"), agent: "claude" }) })).status, 403, `${prefix}/improve-prompt ${mode}: shared roles cannot start provider turns`);
   }
@@ -79,7 +93,7 @@ test("shared route enforcement scopes aliases, search counts, exports and SSE wh
 });
 
 test("shared login and reviewer dashboard record human review and commit-anchored comments with keyboard and phone layout", async () => {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } }); contexts.push(context); const page = await context.newPage(); await page.goto(base);
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } }); const page = await context.newPage(); await page.goto(base);
   await page.getByRole("heading", { name: "Sign in to shared projects", exact: true }).waitFor(); await auditShared(page, "shared login"); const username = page.getByLabel("Username", { exact: true }); await username.fill("reviewer"); await username.focus(); await page.keyboard.press("Tab"); assert.equal(await page.getByLabel("Password", { exact: true }).evaluate((element) => element === document.activeElement), true); await page.getByLabel("Password", { exact: true }).fill(password); await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("heading", { name: "Shared project review", exact: true }).waitFor(); await page.getByRole("button", { name: /Shared project one result/ }).click();
   await page.getByRole("heading", { name: "Shared project one result", exact: true }).waitFor();
@@ -102,7 +116,7 @@ test("shared login and reviewer dashboard record human review and commit-anchore
   await auditShared(page, "shared review dashboard");
   const comments = await fetch(`${base}/api/runs/shared-one/collaboration`, { headers: sharedHeaders(viewerCookie) }).then((response) => response.json()); assert.equal(comments.comments.length, 1); assert.deepEqual(comments.comments[0].actor, { id: `shared:${reviewerId}`, name: "Project reviewer" }); assert.equal(comments.comments[0].head, head);
   const ownerThread = await fetch(`${base}/api/runs/shared-one/collaboration`, { headers: ownerHeaders }); assert.equal(ownerThread.status, 200); assert.equal((await ownerThread.json()).comments[0].actor.id, `shared:${reviewerId}`);
-  const ownerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } }); contexts.push(ownerContext); const ownerPage = await ownerContext.newPage(); await ownerPage.addInitScript(() => { localStorage.setItem("sideOpen", "1"); localStorage.setItem("sideTab", "changes"); }); await ownerPage.goto(`${base}/?token=${owner}#/run/shared-one`); await ownerPage.getByRole("tab", { name: "Changes", exact: true }).click(); const ownerPanel = ownerPage.locator(".collaboration-comments"); await ownerPanel.locator(":scope > summary").click(); await ownerPanel.getByText("Reviewed the exported answer and its changed commit.", { exact: true }).waitFor(); await ownerPanel.getByLabel("Owner comment on this result commit", { exact: true }).fill("Owner acknowledged the reviewer finding."); const ownerReply = ownerPage.waitForResponse((response) => response.url().endsWith("/api/runs/shared-one/collaboration") && response.request().method() === "POST"); await ownerPanel.getByRole("button", { name: "Record owner comment", exact: true }).click(); assert.equal((await ownerReply).status(), 201); await ownerPanel.getByText("Owner acknowledged the reviewer finding.", { exact: true }).waitFor();
+  const ownerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } }); const ownerPage = await ownerContext.newPage(); await ownerPage.addInitScript(() => { localStorage.setItem("sideOpen", "1"); localStorage.setItem("sideTab", "changes"); }); await ownerPage.goto(`${base}/?token=${owner}#/run/shared-one`); await ownerPage.getByRole("tab", { name: "Changes", exact: true }).click(); const ownerPanel = ownerPage.locator(".collaboration-comments"); await ownerPanel.locator(":scope > summary").click(); await ownerPanel.getByText("Reviewed the exported answer and its changed commit.", { exact: true }).waitFor(); await ownerPanel.getByLabel("Owner comment on this result commit", { exact: true }).fill("Owner acknowledged the reviewer finding."); const ownerReply = ownerPage.waitForResponse((response) => response.url().endsWith("/api/runs/shared-one/collaboration") && response.request().method() === "POST"); await ownerPanel.getByRole("button", { name: "Record owner comment", exact: true }).click(); assert.equal((await ownerReply).status(), 201); await ownerPanel.getByText("Owner acknowledged the reviewer finding.", { exact: true }).waitFor();
   const sharedReply = await fetch(`${base}/api/runs/shared-one/collaboration`, { headers: sharedHeaders(viewerCookie) }).then((response) => response.json()); assert.equal(sharedReply.comments.length, 2); assert.equal(sharedReply.comments[1].actor.id, "owner"); assert.equal(sharedReply.comments[1].text, "Owner acknowledged the reviewer finding."); assert.equal(sharedReply.comments[1].head, head);
   await auditShared(ownerPage, "owner collaboration thread");
   await page.getByRole("button", { name: "Refresh result evidence", exact: true }).click(); await page.getByText("Owner acknowledged the reviewer finding.", { exact: true }).waitFor();
@@ -121,7 +135,7 @@ test("owner account changes revoke shared sessions immediately and stale account
 });
 
 test("owner account management creates scoped accounts, keeps conflicting drafts and revokes sessions through the UI", async () => {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } }); contexts.push(context); const page = await context.newPage(); await page.goto(`${base}/?token=${owner}`); await page.goto(`${base}/#/settings/projects`);
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } }); const page = await context.newPage(); await page.goto(`${base}/?token=${owner}`); await page.goto(`${base}/#/settings/projects`);
   const panel = page.getByRole("region", { name: "Shared project accounts", exact: true }); await panel.getByLabel("Account username", { exact: true }).fill("browser-viewer"); await panel.getByLabel("Display name", { exact: true }).fill("Browser viewer"); await panel.getByLabel("Initial password", { exact: true }).fill(password); await panel.getByLabel("Project two", { exact: true }).selectOption("viewer"); await panel.getByRole("button", { name: "Create account", exact: true }).click(); await panel.getByRole("status").getByText(/Account saved/).waitFor();
   assert.equal(await panel.getByLabel("Replace password (leave empty to keep)", { exact: true }).inputValue(), "", "successful account administration clears passwords");
   const id = await panel.getByLabel("Account", { exact: true }).inputValue(); const state = await fetch(`${base}/api/accounts`, { headers: ownerHeaders }).then((response) => response.json());
@@ -134,7 +148,7 @@ test("owner account management creates scoped accounts, keeps conflicting drafts
 });
 
 test("shared sign-in clears owner browser privileges and checks mutation origin and request type", async () => {
-  const context = await browser.newContext(); contexts.push(context); const page = await context.newPage(); await page.goto(`${base}/?token=${owner}`);
+  const context = await browser.newContext(); const page = await context.newPage(); await page.goto(`${base}/?token=${owner}`);
   const signed = await page.evaluate(async ({ password }) => { const response = await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: "viewer", password }) }); return response.status; }, { password }); assert.equal(signed, 200);
   assert.equal(await page.evaluate(async () => (await fetch("/api/accounts")).status), 403, "old owner cookie cannot override the active shared identity");
   assert.equal((await fetch(`${base}/api/accounts`, { headers: { ...sharedHeaders(viewerCookie), ...ownerHeaders } })).status, 200, "an explicit local owner bearer can recover despite an active shared cookie");

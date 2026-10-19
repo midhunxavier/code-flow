@@ -92,6 +92,9 @@ import { exhausted } from "./routing.js";
 import { assertTransferTree } from "./remote-workers/bundles.js";
 import { assertPolicyExecution, type FilePolicySnapshot } from "./filesystem-policy.js";
 import { assertExtensionBindings, extensionBindings, type ExtensionBinding } from "./extensions.js";
+import { assertProjectTeamChanges } from "./project-team-policy.js";
+import { providerEligibility } from "./provider-eligibility.js";
+import type { ProjectTeamRun, DiscoveryReceipt } from "./project-team-model.js";
 import { acpBindings, assertAcpBindings } from "./acp-connections.js";
 import type { AcpBinding } from "./adapters/acp-types.js";
 import { RemoteWorkers, type RemoteRunResult } from "./remote-workers/client.js";
@@ -327,6 +330,8 @@ export interface Artifact {
 }
 
 export interface Run {
+  projectTeam?: ProjectTeamRun;
+  projectDiscovery?: DiscoveryReceipt;
   extensions?: ExtensionBinding[];
   acpConnections?: AcpBinding[];
   filePolicies?: FilePolicySnapshot[];
@@ -2090,6 +2095,7 @@ export class TeamContext {
   async commit(wt: Worktree, message: string): Promise<string | null> {
     await this.manager.assertExecutionAllowed(this.run.repo, this.run, "Git checkpoint");
     this.checkCancelled();
+    await assertProjectTeamChanges(wt.path, this.run);
     const sha = await this.remember(
       "commit",
       `${wt.name}|${message}`,
@@ -2228,6 +2234,7 @@ export class TeamContext {
   /** Run one agent turn as a visible step in this run. */
   async ask(params: AskParams): Promise<StepOutcome> {
     this.checkCancelled();
+    if (this.run.projectTeam?.phase === "discovery" && params.mode !== "read") throw new Error("Project discovery cannot dispatch a write turn");
     if (params.resume && params.resume.agent !== params.agent) {
       throw new Error(`Cannot resume a ${params.resume.agent} session with ${params.agent}`);
     }
@@ -2456,6 +2463,7 @@ export class TeamContext {
         "warn",
       );
     }
+    if (params.mode === "write" && this.run.projectTeam) await assertProjectTeamChanges(params.cwd.path, this.run);
     return result;
   }
 
@@ -2478,6 +2486,7 @@ export class TeamContext {
     for (let retries = 0; ; ) {
       await this.manager.assertExecutionAllowed(this.run.repo, this.run, "agent invocation");
       await assertWorktree(this.run.repo, params.cwd);
+      if (this.run.projectTeam) { const reason = providerEligibility(params.agent, { trust: params.trust ?? this.run.trust, unattended: true, projectTeam: true }); if (reason) throw new Error(reason); }
       assertExtensionBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
       assertAcpBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
       if (params.agent.startsWith("acp:") && (this.run.loop.agentContainer || this.run.loop.remoteWorker || (params.trust ?? this.run.trust) !== "full")) throw new Error("ACP connections require Full access on the current host; SSH workers and containers are unavailable");
@@ -2761,6 +2770,9 @@ function knowledgePrompt(run: Run): string {
 // ---------------------------------------------------------------------------
 
 export interface StartRunInput {
+  projectTeam?: ProjectTeamRun;
+  /** Internal durable admission barrier; never accepted from HTTP bodies. */
+  beforeDispatch?: (run: Run) => Promise<void>;
   pattern: Pattern;
   task: string;
   repo: string;
@@ -2807,6 +2819,12 @@ export interface StartRunInput {
 const QUOTA_FILE = join(CODEFLOW_HOME, "quota.json");
 
 export class RunManager {
+  private projectTeamShippingGuard?: (run: Run, branch: string) => Promise<void>;
+  setProjectTeamShippingGuard(guard: (run: Run, branch: string) => Promise<void>) { this.projectTeamShippingGuard = guard; }
+  private async managedShipping(run: Run, branch: string) { if (run.projectTeam) { if (!this.projectTeamShippingGuard) throw new Error("Project team service unavailable"); await this.projectTeamShippingGuard(run, branch); } }
+  private projectTeamGuard?: (run: Run) => Promise<void>;
+  setProjectTeamGuard(guard: (run: Run) => Promise<void>) { this.projectTeamGuard = guard; }
+  private managedContinuation(run: Run) { if (run.projectTeam) throw new Error("Continue this result through its project team so its scope, budget and independent review are preserved"); }
   private readonly mergeValidating = new Map<string, AbortController>();
   private readonly mergeValidationWork = new Map<string, Promise<MergeValidation>>();
   private readonly runs = new Map<string, Run>();
@@ -2840,7 +2858,7 @@ export class RunManager {
     const fresh = await this.filesystemPolicyGuard?.(repo, run) ?? [];
     if (this.executionPolicyLease) throw new RunConflictError("Filesystem policy activation holds the global execution lease");
     assertPolicyExecution([...(run?.filePolicies ?? []), ...fresh], surface);
-    if (run) { assertExtensionBindings(run); assertAcpBindings(run); }
+    if (run) { assertExtensionBindings(run); assertAcpBindings(run); if (run.projectTeam) { if (!this.projectTeamGuard) throw new Error("Project team service is unavailable"); await this.projectTeamGuard(run); } }
     return structuredClone(fresh);
   }
   async withIdleExecution<T>(operation: () => T): Promise<Awaited<T>> {
@@ -3190,6 +3208,7 @@ export class RunManager {
   /** Delete conversation history only. Repository files, worktrees and branches remain owned by Git. */
   async deleteRun(id: string) {
     const run = this.require(id);
+    if (run.projectTeam) throw new RunConflictError("Standing project teams retain run history for cycle recovery and result approvals. Archive this run instead.");
     if (this.busyRun(run) || this.active.has(id) || this.coldMutations.has(id)) throw new RunConflictError("Finish or stop the run before deleting it");
     this.deletedRuns.add(id);
     try {
@@ -3343,6 +3362,7 @@ export class RunManager {
     },
   ) {
     const run = this.require(id);
+    this.managedContinuation(run);
     const release = this.holdColdMutation(run);
     try {
       await this.assertExecutionAllowed(run.repo, run, "follow-up dispatch");
@@ -3452,6 +3472,7 @@ export class RunManager {
   /** Execute selected accepted tasks and their dependents in a fresh child; the source is unchanged. */
   async rerunTeamTasks(id: string, input: unknown): Promise<Run> {
     const run = this.require(id), signature = JSON.stringify(input);
+    this.managedContinuation(run);
     const pending = this.taskReruns.get(id);
     if (pending) { if (pending.signature !== signature) throw new TeamRerunError("A different task rerun is already starting", 409); return pending.promise; }
     if (this.shuttingDown || this.busyRun(run)) throw new TeamRerunError("Wait for the source run and its operations to finish before rerunning tasks", 409);
@@ -3477,6 +3498,7 @@ export class RunManager {
   /** A user goal change creates a new approved plan after all original processes reconcile. */
   async reviseGoal(id: string, input: { message: string; budget?: Partial<Pick<LoopSettings, "maxSteps" | "maxInvocations" | "maxMinutes">> }): Promise<Run> {
     const run = this.require(id);
+    this.managedContinuation(run);
     if (run.pattern !== "auto-team") throw new Error("Goal revision requires an Auto team");
     if (!autoTeamEnabled()) throw new Error("New Auto team runs are disabled");
     if (typeof input.message !== "string" || !input.message.trim() || input.message.length > 20_000) throw new Error("Write a goal revision of at most 20,000 characters");
@@ -3577,13 +3599,14 @@ export class RunManager {
 
   async merge(id: string, input: { branch: string; into: string; archiveAfter?: boolean; requireValidation?: boolean }) {
     const run = this.require(id);
+    await this.managedShipping(run, input.branch);
     if (this.busyRun(run)) throw new Error("Wait for the run to finish before merging");
     if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
     // git would say "Already up to date" and code-flow would call that a merge.
     if (await isAncestor(run.repo, input.branch, `refs/heads/${input.into}`)) throw new Error(`Nothing to merge: ${input.into} already has everything on ${input.branch}`);
     const verified = run.mergeValidation;
     if (input.requireValidation && (!verified?.tree || verified.branch !== input.branch || verified.into !== input.into || verified.report?.state !== "verified" || verified.conflicts.length)) throw new Error("Validate this merge target successfully before merging");
-    const outcome = await mergeInto(run.repo, input.branch, input.into, `Merge ${input.branch} into ${input.into} (code-flow run ${run.id})`, input.requireValidation ? verified : undefined);
+    const outcome = await mergeInto(run.repo, input.branch, input.into, `Merge ${input.branch} into ${input.into} (code-flow run ${run.id})`, input.requireValidation ? verified : run.projectTeam ? { source: run.verification!.head!, target: await resolveCommit(run.repo, `refs/heads/${input.into}`) } : undefined);
     if (outcome.ok) {
       run.merges.push({ branch: input.branch, into: input.into, commit: outcome.commit, at: Date.now() });
       this.emit(run, { type: "log", level: "info", text: `Merged ${input.branch} into ${input.into} (${outcome.commit.slice(0, 8)})` });
@@ -3608,6 +3631,7 @@ export class RunManager {
    */
   async mergePr(id: string, input: { branch: string; method: MergeMethod; archiveAfter?: boolean }) {
     const run = this.require(id);
+    await this.managedShipping(run, input.branch);
     if (this.busyRun(run)) throw new Error("Wait for the run to finish before merging");
     if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
     const url = run.prs[input.branch];
@@ -3656,6 +3680,7 @@ export class RunManager {
   /** Push a result branch and open a pull request for it. */
   async pullRequest(id: string, input: { branch: string; into: string }) {
     const run = this.require(id);
+    await this.managedShipping(run, input.branch);
     // Opening one can merge into the branch (to catch up with a squash-merged base) and pushes it:
     // not under a turn that's still working on it (a follow-up, a side chat), whoever asks.
     if (this.busyRun(run)) throw new Error("Wait for the run to finish before opening a pull request");
@@ -3663,7 +3688,7 @@ export class RunManager {
     const title = run.task.split("\n")[0]!.slice(0, 72) || `code-flow run ${run.id}`;
     const agents = [...new Set(Object.values(run.roles).flat())].join(", ");
     const body = [
-      run.task,
+      run.projectTeam ? run.task.split("\n")[0]! : run.task,
       run.source?.kind === "issue" ? `\nCloses #${run.source.number}` : run.source?.kind === "alert" ? `\nFixes ${run.source.url}` : "",
       "",
       "---",
@@ -3672,7 +3697,7 @@ export class RunManager {
       "",
       run.summary ?? "",
     ].join("\n");
-    const { url, caughtUp, note } = await openPullRequest(run.repo, input.branch, input.into, title, body, run.baseRef);
+    const { url, caughtUp, note } = await openPullRequest(run.repo, input.branch, input.into, title, body, run.baseRef, run.projectTeam ? { expectedHead: run.verification!.head! } : undefined);
     if (note) this.emit(run, { type: "log", level: "warn", text: note });
     if (caughtUp) {
       this.emit(run, {
@@ -3697,6 +3722,7 @@ export class RunManager {
   /** Push a result branch to the pull request the run started from (fast-forward only). */
   async pushToPr(id: string, input: { branch: string }) {
     const run = this.require(id);
+    await this.managedShipping(run, input.branch);
     if (this.busyRun(run)) throw new Error("Wait for the run to finish before pushing");
     const source = run.source;
     if (source?.kind !== "pr") throw new Error("This run didn't start from a pull request");
@@ -3728,6 +3754,7 @@ export class RunManager {
    */
   watchPr(id: string, input: { branch: string; agent: AgentId; maxFixes?: number; allow?: string[] }): PrWatch {
     const run = this.require(id);
+    this.managedContinuation(run);
     const url = run.prs[input.branch];
     if (!url) throw new Error("Open a pull request for this branch first");
     if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
@@ -4145,6 +4172,8 @@ export class RunManager {
   private async startResolved(input: StartRunInput): Promise<Run> {
     if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
     const filePolicies = await this.assertExecutionAllowed(input.repo, undefined, "run startup");
+    if (input.projectTeam && (!input.beforeDispatch || !input.trigger || input.pattern.id !== "auto-team")) throw new Error("Managed runs require an internal durable admission and Auto team");
+    if (input.parentRunId && this.get(input.parentRunId)?.projectTeam && !input.projectTeam) throw new Error("Managed continuations must use the project-team service");
     const extensions = extensionBindings(input.pattern.id, input.roles);
     const acpConnections = acpBindings(input.roles);
     if (input.teamRerun) {
@@ -4274,6 +4303,7 @@ export class RunManager {
       filePolicies,
       extensions,
       acpConnections,
+      projectTeam: input.projectTeam ? structuredClone(input.projectTeam) : undefined,
       pattern: input.pattern.id,
       task: input.task,
       deferred: input.deferred ? structuredClone(input.deferred) : undefined,
@@ -4348,6 +4378,7 @@ export class RunManager {
     }
     if (conventions) this.emit(run, { type: "log", level: "info", text: "Agents get the repository's conventions (AGENTS.md, CLAUDE.md…)" });
     if (lessons.length) this.emit(run, { type: "log", level: "info", text: `Agents are told about ${lessons.length} problem(s) reviewers keep finding in this repo` });
+    try { await input.beforeDispatch?.(run); } catch (error) { run.status = "failed"; run.error = (error as Error).message; run.endedAt = Date.now(); this.emitRun(run); throw error; }
     this.execute(run, input.pattern, new Map());
     return run;
   }
@@ -4359,6 +4390,7 @@ export class RunManager {
    */
   async resume(id: string): Promise<Run> {
     const run = this.require(id);
+    this.managedContinuation(run);
     if (!run) throw new Error("Run not found");
     if (run.steps.some((step) => step.remote?.ambiguous)) throw new RunConflictError("Inspect or cancel the ambiguous remote receipt before resuming this run");
     this.assertNoWorkspaceLease(run.repo);
@@ -4533,6 +4565,8 @@ export class RunManager {
    * about real work. Nothing is ever merged automatically.
    */
   private async toInbox(run: Run) {
+    // Managed cycles own publication; discovery reports are valuable with an empty diff.
+    if (run.projectTeam) return;
     if (run.status === "cancelled" || run.status === "interrupted") return;
     if (run.triage && run.triage.state !== "pending") return; // you already decided
     // A check that can't run is news even when nothing changed: you need to set it up. A run
@@ -4555,6 +4589,7 @@ export class RunManager {
    */
   async triage(id: string, input: { decision: "approve" | "revise" | "reject"; note?: string; openPr?: boolean; pushPr?: boolean; budget?: Partial<Pick<LoopSettings, "maxSteps" | "maxInvocations" | "maxMinutes">> }) {
     const run = this.require(id);
+    this.managedContinuation(run);
     if (!run.trigger) throw new Error("Only automation and sweep runs go through the inbox");
     if (this.busyRun(run)) throw new Error("Wait for the run to finish");
     if (input.decision === "revise") {

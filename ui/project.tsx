@@ -1,3 +1,4 @@
+import { ProjectTeamsPanel } from "./project-teams.js";
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { automationProject, automations, inbox, loadAutomations } from "./automations.js";
@@ -89,6 +90,8 @@ export function ProjectView({ id }: { id: string }) {
         <Card label="Checks passed" value={week.length ? `${passed} of ${week.length}` : "–"} />
         <Card label="API-equivalent" value={cost ? fmtCost(cost) : "–"} hint="Claude's cost, as a measure of size" />
       </div>
+
+      <ProjectTeamsPanel projectId={id} repos={p.repos} />
 
       <div class="pp-layout">
         <div class="pp-main">

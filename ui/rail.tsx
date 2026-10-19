@@ -197,7 +197,7 @@ export function Rail() {
             close();
             post(`/api/runs/${r.id}/archive`, { archived: !r.archived, cleanup: false }).then(() => showToast(r.archived ? "Run unarchived" : "Run archived"), error => showToast(error.message));
           }}>{r.archived ? "Unarchive" : "Archive"}</MenuItem>
-          <MenuItem disabled={r.status === "running"} onClick={() => { close(); setDeleting(r); }}>Delete…</MenuItem>
+          <MenuItem disabled={r.status === "running" || !!r.projectTeam} sub={r.projectTeam ? "Standing team history is retained. Archive instead." : undefined} onClick={() => { close(); setDeleting(r); }}>Delete…</MenuItem>
         </>}
       </Menu> : null}
       </div>
@@ -394,9 +394,10 @@ export function Rail() {
             <button type="button" class="btn small" disabled={bulkBusy || !!bulkDeleting || !eligible.length} onClick={() => setSelected(selectedRuns.length === eligible.length ? new Set() : new Set(eligible.map(run => run.id)))}>{selectedRuns.length && selectedRuns.length === eligible.length ? "Clear selection" : "Select loaded"}</button>
             <button type="button" class="btn small" disabled={bulkBusy || !selectedRuns.length} onClick={() => void archiveSelected(true)}>Archive</button>
             {selectedRuns.some(run => run.archived) ? <button type="button" class="btn small" disabled={bulkBusy} onClick={() => void archiveSelected(false)}>Unarchive</button> : null}
-            <button type="button" class="btn small danger" disabled={bulkBusy || !selectedRuns.length} onClick={() => setBulkDeleting(selectedRuns)}>Delete…</button>
+            <button type="button" class="btn small danger" disabled={bulkBusy || !selectedRuns.length || selectedRuns.some(run => !!run.projectTeam)} onClick={() => setBulkDeleting(selectedRuns)}>Delete…</button>
           </div>
           <span class="help">{bulkBusy ? "Updating runs…" : "Only stopped runs on this computer. Select loaded includes matching runs in folded projects."}</span>
+          {selectedRuns.some(run => !!run.projectTeam) ? <span class="help">Standing team history is retained for recovery and approvals. Archive these runs instead.</span> : null}
           {bulkError ? <div class="err" role="alert">{bulkError}</div> : null}
         </> : null}
       </div> : null}
