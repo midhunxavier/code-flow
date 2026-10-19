@@ -33,6 +33,7 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
         <div><h3>Team and workflow</h3><span class="help">Revision {team.revision} · {team.scheduler === "event" ? "Ready work starts when dependencies resolve" : team.wave ? `${team.wave} waves so far · limit ${team.maxWaves} per execution` : "Before the first wave"}</span></div>
         <span class={`badge ${team.gaps.length || team.status === "blocked" ? "warn" : team.status === "completed" ? "ok" : ""}`}>{teamAwaitingAnswer(run) ? "Waiting for your answer" : STATUS[team.status]}</span>
       </div>
+      <LiveTeamMap run={run} />
       <TeamRunMetrics runId={run.id} running={run.status === "running"} />
       <TeamCapabilities providers={[...new Set(team.members.map((member) => member.provider))]} />
       <div class="at-metrics" role="group" aria-label="Coordination usage">
@@ -66,7 +67,7 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
       {team.tasks.length ? <div class="at-section"><h4>Workflow</h4><ol class="at-tasks">
         {team.tasks.map((task) => {
           const blockers = !task.status || task.status === "pending" || task.status === "needs_info" || task.status === "failed" ? taskBlockers(team, task) : [];
-          return <li key={task.id} class="at-task" id={`team-task-${task.id}`}>
+          return <li key={task.id} class="at-task" tabIndex={-1} id={`team-task-${task.id}`}>
             <div class="at-row"><b>{task.title}</b><span class={`badge ${task.status === "completed" ? "ok" : task.status === "failed" ? "warn" : ""}`}>{TASK_STATUS[task.status ?? "pending"]}</span></div>
             <div class="help">{name(task.owner)} · {task.kind} · {task.attempts ?? 0} attempts</div>
             {task.retainedBaseline ? <p class="help">Retained baseline input from {task.retainedBaseline.sourceRunId} · <code>{task.retainedBaseline.sourceTaskHead.slice(0, 12)}</code>. This task was not executed again.</p> : null}
@@ -247,7 +248,7 @@ export function TeamQuestionCard({ run }: { run: RunSummary }) {
   </section>;
 }
 
-export function QuestionReply({ run, message }: { run: RunSummary; message: TeamMessage }) {
+export function QuestionReply({ run, message, prefix = "team-answer" }: { run: RunSummary; message: TeamMessage; prefix?: string }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -262,6 +263,19 @@ export function QuestionReply({ run, message }: { run: RunSummary; message: Team
   };
   if (sent) return <p class="help" role="status">Answer sent.</p>;
   if (run.status !== "running") return <p class="help">Press Resume in the header to continue the run, then answer here.</p>;
-  const field = `team-answer-${message.id}`;
+  const field = `${prefix}-${message.id}`;
   return <div class="at-reply"><label class="lbl" for={field}>Your answer</label><textarea class="field" id={field} placeholder="Your answer…" rows={2} value={text} onInput={(event) => setText(event.currentTarget.value)} /><button class="btn primary small" disabled={!text.trim() || busy} onClick={answer}>{busy ? "Sending…" : "Send answer"}</button>{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
+}
+
+/** Task selection ties ownership, dependencies and the user's next decision together. */
+function LiveTeamMap({ run }: { run: RunSummary }) {
+  const [selected, setSelected] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const team = run.team!;
+  const task = team.tasks.find(task => task.id === selected) ?? team.tasks.find(task => task.status === "running") ?? team.tasks[0];
+  if (!task) return null;
+  const member = team.members.find(member => member.id === task.owner);
+  const blockers = taskBlockers(team, task);
+  const questions = team.messages.filter(message => message.taskId === task.id && message.kind === "question" && message.status === "open");
+  const prioritize = async (priority: number) => { setBusy(true); setError(""); try { await post(`/api/runs/${run.id}/task-priority`, { taskId: task.id, priority, revision: team.revision }); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } };
+  return <section class="live-team-map" aria-label="Live team map"><h4>Who's doing what</h4><div class="team-map-grid">{team.tasks.map(item => <button class={`team-map-node ${item.status ?? "pending"}`} key={item.id} aria-pressed={item.id === task.id} onClick={() => setSelected(item.id)}><strong>{item.title}</strong><span>{team.members.find(member => member.id === item.owner)?.name ?? item.owner}</span><span>{TASK_STATUS[item.status ?? "pending"]}</span><small>{item.dependsOn.length ? `After: ${item.dependsOn.join(", ")}` : "Independent task"}</small></button>)}</div><article class="team-map-detail"><h4>{task.title}</h4><p>{member?.name ?? task.owner} · {member?.provider} · {TASK_STATUS[task.status ?? "pending"]}</p><p class="help">Files and areas: {task.paths.join(", ") || "No paths assigned"}</p>{blockers.length ? <ul>{blockers.map(reason => <li key={reason}>{reason}</li>)}</ul> : null}<div class="experience-actions">{!run.projectTeam && run.status === "running" && ["pending", "needs_info", "failed"].includes(task.status ?? "pending") ? <label>Task priority<select class="field" disabled={busy} value={run.taskPriorities?.[task.id] ?? 0} onChange={e => void prioritize(Number(e.currentTarget.value))}><option value={0}>Normal</option><option value={10}>High</option><option value={-10}>Low</option></select></label> : null}<button class="btn small" onClick={() => { const element = document.getElementById(`team-task-${task.id}`); element?.scrollIntoView({ block: "center", behavior: "smooth" }); element?.focus(); }}>Inspect assignment</button></div><p class="help">Priority affects the next dispatch; dependency, file ownership and budget checks still apply.</p>{questions.map(message => <div key={message.id}><p>{message.body}</p>{message.recipient === "user" ? <button class="btn small" onClick={() => { const field = document.getElementById(`team-answer-${message.id}`); field?.scrollIntoView({ block: "center", behavior: "smooth" }); field?.focus(); }}>Answer this question</button> : <p class="help">Waiting for {team.members.find(member => member.id === message.recipient)?.name ?? message.recipient}</p>}</div>)}{error ? <p role="alert">{error}</p> : null}</article></section>;
 }

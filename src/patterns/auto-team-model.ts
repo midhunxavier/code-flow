@@ -117,9 +117,10 @@ export function planProblem(plan: TeamPlan, policy: TeamPolicy): string | undefi
 }
 
 /** Deterministic wave: dependencies available, one assignment per member, compatible writers. */
-export function readyTasks(tasks: TeamTask[], messages: TeamMessage[] = [], eligible: (task: TeamTask) => boolean = () => true): TeamTask[] {
+export function readyTasks(tasks: TeamTask[], messages: TeamMessage[] = [], eligible: (task: TeamTask) => boolean = () => true, priorities: Record<string, number> = {}): TeamTask[] {
+  const priority = (id: string) => Object.hasOwn(priorities, id) && Number.isFinite(priorities[id]) ? priorities[id]! : 0;
   const selected: TeamTask[] = [];
-  for (const t of [...tasks].sort((a, b) => a.id.localeCompare(b.id))) {
+  for (const t of [...tasks].sort((a, b) => priority(b.id) - priority(a.id) || a.id.localeCompare(b.id))) {
     if (t.status !== "pending" || !eligible(t)) continue;
     // Exclude occupied members/paths before packing the ready set, otherwise an
     // ineligible candidate can hide later runnable work with the same owner.

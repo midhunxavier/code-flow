@@ -284,7 +284,7 @@ export const autoTeamPattern: Pattern = {
       await ctx.remember("team-allocation", String(allocation), async () => ({ allocation }));
       for (const task of state.tasks) task.allocationStartAttempt = task.attempts ?? 0;
       const answeredInputs = new Set<string>();
-      const schedulableTasks = () => readyTasks(state.tasks, state.messages, (task) => !eventDriven || (task.attempts ?? 0) - (task.allocationStartAttempt ?? 0) < state.maxWaves);
+      const schedulableTasks = () => readyTasks(state.tasks, state.messages, (task) => !eventDriven || (task.attempts ?? 0) - (task.allocationStartAttempt ?? 0) < state.maxWaves, ctx.run.taskPriorities);
       const cycleLimit = eventDriven ? state.maxWaves * policy.maxTasks + state.coordinationLimit + 1 : state.maxWaves;
       const allocationStartWave = eventDriven ? state.wave : allocation * cycleLimit;
       const allocationEndWave = allocationStartWave + cycleLimit;
