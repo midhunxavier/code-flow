@@ -6,7 +6,7 @@ import { CODEFLOW_HOME, WORKTREE_DIR } from "./config.js";
 import { acquireLock } from "./store.js";
 import { git } from "./git.js";
 import { readOnlyGitMetadata } from "./agent-container.js";
-import { MemoryStore, type MemoryMaintenanceEntry, type MemoryRef } from "./memory.js";
+import { MemoryStore, validateDocument, type MemoryMaintenanceEntry, type MemoryRef } from "./memory.js";
 import { validateDeferredDocument } from "./deferred-runs.js";
 import { validateCodeHostDocument } from "./code-hosts.js";
 import { validateCoordinationDocument } from "./repo-coordination.js";
@@ -146,8 +146,20 @@ export async function previewRetention(input: { home: string; now?: number }): P
   }
   let memory: MemoryMaintenanceEntry[] = [];
   try {
-    const file = join(home, "memory.json"); if (await exists(file)) plan.sources[file] = (await readFingerprint(file, budget, 32 * 1024 * 1024)).file.fingerprint;
-    memory = (await new MemoryStore(file).maintenanceEntries()).filter((entry) => entry.status !== "deleted");
+    const file = join(home, "memory.sqlite"), legacy = join(home, "memory.json");
+    if (await exists(file)) {
+      const before = (await readFingerprint(file, budget)).file.fingerprint;
+      memory = await new MemoryStore(file).maintenanceEntries();
+      const after = (await readFingerprint(file, budget)).file.fingerprint;
+      if (before !== after) throw new Error("Memory changed during retention inspection");
+      plan.sources[file] = after;
+    } else if (await exists(legacy)) {
+      // Preview remains read-only for users who have not yet migrated.
+      const data = await readFingerprint(legacy, budget, 32 * 1024 * 1024);
+      plan.sources[legacy] = data.file.fingerprint;
+      memory = validateDocument(data.text).entries;
+    }
+    memory = memory.filter((entry) => entry.status !== "deleted");
     if (memory.length > RETENTION_LIMITS.memory) { plan.truncated = true; memory = memory.slice(0, RETENTION_LIMITS.memory); }
   } catch (error) { incomplete("memory", "memory-store", error); }
   for (const id of policy.keepRunIds) heldRuns.set(id, "Kept by the saved retention policy");
@@ -234,7 +246,7 @@ export async function applyRetention(input: { home: string; plan: RetentionPrevi
     if (plan.fingerprint !== supplied.fingerprint || canonical(plan) !== canonical(supplied)) throw new Error("Data, ownership or policy changed after preview. No changes applied; create and review another preview.");
     const applied: string[] = [], failed: { id: string; reason: string }[] = [];
     const memory = plan.targets.filter((item) => item.kind === "memory");
-    if (memory.length) { await new MemoryStore(join(home, "memory.json")).retireMaintenance(memory.map((item) => item.memory!)); applied.push(...memory.map((item) => item.id)); }
+    if (memory.length) { await new MemoryStore(join(home, "memory.sqlite")).retireMaintenance(memory.map((item) => item.memory!)); applied.push(...memory.map((item) => item.id)); }
     for (const item of [...plan.targets.filter((item) => item.kind === "worktrees"), ...plan.targets.filter((item) => item.kind === "attachments"), ...plan.targets.filter((item) => item.kind === "archivedRuns")]) {
       try {
         if (item.kind === "worktrees") { await safeParents(item.path!); readOnlyGitMetadata(item.path!); const current = await inventory(item.path!, { files: 0, bytes: 0 }), head = await git(["rev-parse", "--verify", "HEAD"], item.path!, { timeoutMs: 5000 }); if (head.code || sha(current.fingerprint + ":" + head.stdout.trim()) !== item.fingerprint) throw new Error("Workspace changed before removal; stopped applying this plan"); const removed = await git(["worktree", "remove", "--", item.path!], item.repo!, { timeoutMs: 30_000 }); if (removed.code) throw new Error(removed.stderr.trim() || "Git refused workspace removal"); }

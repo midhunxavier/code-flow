@@ -1,6 +1,6 @@
 # Guided dependency discovery
 
-Expand **Getting started** and choose **Check all dependencies**. The report separates required tools from optional capabilities, explains missing authentication or compatibility, and provides a concrete next step. A successful run requires Node.js 20 or newer, Git 2.38 or newer, and at least one compatible provider CLI signed in through its own authentication flow. Unknown authentication or unverified compatibility is displayed as unknown rather than ready.
+Expand **Getting started** and choose **Check all dependencies**. The report separates required tools from optional capabilities, explains missing authentication or compatibility, and provides a concrete next step. A successful run requires Node.js 22.13 or newer, Git 2.38 or newer, and at least one compatible provider CLI signed in through its own authentication flow. Unknown authentication or unverified compatibility is displayed as unknown rather than ready.
 
 Provider and Git checks reuse the application's doctor implementation. Optional terminal inspection checks whether the configured Python can load its pseudo-terminal modules and reports the actual shell fallback. Browser snapshot inspection uses the same Chrome-compatible browser discovery as snapshots and runs a bounded version probe. Docker inspection checks the CLI version and asks its daemon for its version; a present CLI with an unavailable daemon is reported separately. Docker availability does not prove a provider image or authenticated volume has been prepared.
 

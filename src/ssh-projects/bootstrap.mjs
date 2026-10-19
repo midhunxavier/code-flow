@@ -26,7 +26,7 @@ const alive = async state => {
 };
 let locked = false, serviceExit, serviceChild;
 try {
-  if (+process.versions.node.split('.')[0] < 20) throw new Error('Remote projects require Node.js 20 or newer on the SSH login PATH.');
+  if (+process.versions.node.split('.')[0] < 22 || (+process.versions.node.split('.')[0] === 22 && +process.versions.node.split('.')[1] < 13)) throw new Error('Remote projects require Node.js 22.13 or newer on the SSH login PATH.');
   process.stdin.setEncoding('utf8');
   let input = service ? await readFile(join(root, 'service-package.json'), 'utf8') : '';
   if (!service) for await (const chunk of process.stdin) { input += chunk; if (input.length > 32 * 1024 * 1024) throw new Error('Host package exceeds 32 MiB'); }

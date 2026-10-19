@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import { isAbsolute, join, normalize, resolve } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import { MemoryDatabase, type MemoryDocument, type KnowledgeGraph } from "./memory-sqlite.js";
+export type { KnowledgeGraph, KnowledgeEntity, KnowledgeRelationship } from "./memory-sqlite.js";
 import { CODEFLOW_HOME } from "./config.js";
 
 export type MemoryScope = "private" | "team" | "project";
@@ -111,7 +113,6 @@ export interface MemorySelection {
   };
 }
 
-interface MemoryDocument { schemaVersion: 1; entries: MemoryEntry[] }
 /** Project knowledge the user curates. Private and team records are bounded per run instead. */
 const MAX_ENTRIES = 5_000;
 /** Private checkpoints and team records one run may hold, so a looping member cannot fill the store for everyone. */
@@ -130,12 +131,17 @@ export class MemoryConflictError extends Error {
 
 /**
  * One server owns this store. A per-file queue also serializes local store instances. Each
- * transaction reads the latest snapshot and fsyncs a replacement before publishing success.
- * No historical bodies or secondary search index remain after redaction/deletion.
+ * transaction reads current revisions and commits changed rows with their graph/search indexes.
+ * Redaction removes body text from the live database and its search index.
  */
 export class MemoryStore {
   readonly file: string;
-  constructor(file = join(CODEFLOW_HOME, "memory.json")) { this.file = resolve(file); }
+  private readonly database: MemoryDatabase;
+  constructor(file = join(CODEFLOW_HOME, "memory.sqlite")) {
+    // Existing callers may still pass the old filename; they share the same migrated store.
+    this.file = resolve(file.replace(/\.json$/, ".sqlite"));
+    this.database = new MemoryDatabase(this.file, validateDocument);
+  }
 
   async load(): Promise<void> { await this.read(); }
 
@@ -318,7 +324,7 @@ export class MemoryStore {
   /** Inspector includes proposals, but never another member's private records. */
   async list(query: MemoryQuery, authority: MemoryAuthority): Promise<MemoryEntry[]> {
     validateQuery(query, authority);
-    const doc = await this.read();
+    const doc = await this.read(query);
     return doc.entries.filter((entry) => visible(entry, query, authority) && entry.status !== "deleted")
       .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)).map(clone);
   }
@@ -326,34 +332,41 @@ export class MemoryStore {
   /** Bounded lexical/path selection. Revisions and exclusions can be shown in the inspector. */
   async retrieve(query: MemoryQuery, authority: MemoryAuthority): Promise<MemorySelection> {
     validateQuery(query, authority);
-    const doc = await this.read();
-    const selection: MemorySelection = { entries: [], manifest: { included: [], omitted: [] } };
-    const maxEntries = bound(query.maxEntries, 8, 1, 32);
-    const maxChars = bound(query.maxChars, 8_000, 128, 32_000);
-    const words = terms(query.query ?? "");
-    const candidates = doc.entries.filter((entry) => visible(entry, query, authority) && entry.status !== "deleted")
-      .map((entry) => ({ entry, score: score(entry, query, words) }))
-      .sort((a, b) => b.score - a.score || b.entry.updatedAt - a.entry.updatedAt || a.entry.id.localeCompare(b.entry.id));
-    let size = 0;
-    for (const { entry, score: relevance } of candidates) {
-      const ref = { id: entry.id, revision: entry.revision };
-      let reason = exclusion(entry, query);
-      if (!reason && entry.paths.length && !query.paths?.some((path) => entry.paths.some((prefix) => pathMatches(path, prefix)))) reason = "outside task paths";
-      if (!reason && selection.entries.length >= maxEntries) reason = "entry budget";
-      if (!reason && size + entry.title.length + entry.body.length > maxChars) reason = "context budget";
-      if (reason) { selection.manifest.omitted.push({ ...ref, reason }); continue; }
-      selection.entries.push(clone(entry));
-      const rated = entry.feedback?.some((feedback) => feedback.revision === entry.revision && feedback.rating === "useful");
-      selection.manifest.included.push({ ...ref, reason: rated ? "applicable context with useful user feedback" : relevance > 0 ? "matching task text, tags or paths" : "applicable shared context" });
-      size += entry.title.length + entry.body.length;
-    }
-    return selection;
+    return this.snapshot((db) => {
+      const doc = this.database.read(db, query);
+      const eligible = doc.entries.filter((entry) => visible(entry, query, authority) && !exclusion(entry, query)
+        && (!entry.paths.length || query.paths?.some((path) => entry.paths.some((prefix) => pathMatches(path, prefix)))));
+      const matched = this.database.search(db, query, eligible.map((entry) => entry.id));
+      const graph = this.database.graph(db, eligible);
+      const related = relatedMemories(graph, new Set(matched.keys()));
+      const selection: MemorySelection = { entries: [], manifest: { included: [], omitted: [] } };
+      const maxEntries = bound(query.maxEntries, 8, 1, 32);
+      const maxChars = bound(query.maxChars, 8_000, 128, 32_000);
+      const words = terms(query.query ?? "");
+      const candidates = doc.entries.filter((entry) => visible(entry, query, authority) && entry.status !== "deleted")
+        .map((entry) => ({ entry, score: score(entry, query, words) + Math.min(6, matched.get(entry.id) ?? 0) + (related.has(entry.id) ? 1 : 0) }))
+        .sort((a, b) => b.score - a.score || b.entry.updatedAt - a.entry.updatedAt || a.entry.id.localeCompare(b.entry.id));
+      let size = 0;
+      for (const { entry, score: relevance } of candidates) {
+        const ref = { id: entry.id, revision: entry.revision };
+        let reason = exclusion(entry, query);
+        if (!reason && entry.paths.length && !query.paths?.some((path) => entry.paths.some((prefix) => pathMatches(path, prefix)))) reason = "outside task paths";
+        if (!reason && selection.entries.length >= maxEntries) reason = "entry budget";
+        if (!reason && size + entry.title.length + entry.body.length > maxChars) reason = "context budget";
+        if (reason) { selection.manifest.omitted.push({ ...ref, reason }); continue; }
+        selection.entries.push(clone(entry));
+        const rated = entry.feedback?.some((feedback) => feedback.revision === entry.revision && feedback.rating === "useful");
+        selection.manifest.included.push({ ...ref, reason: rated ? "applicable context with useful user feedback" : related.has(entry.id) && !matched.has(entry.id) ? "connected to matching memory through recorded evidence" : relevance > 0 ? "matching task text, tags or paths" : "applicable shared context" });
+        size += entry.title.length + entry.body.length;
+      }
+      return selection;
+    });
   }
 
   /** Resolve a recorded selection without adding newly-created or newer-revision content. */
   async resolveSelection(query: MemoryQuery, manifest: MemorySelection["manifest"], authority: MemoryAuthority): Promise<MemorySelection> {
     validateQuery(query, authority);
-    const doc = await this.read();
+    const doc = await this.read(query);
     const result: MemorySelection = { entries: [], manifest: { included: [], omitted: clone(manifest.omitted) } };
     let size = 0;
     for (const ref of manifest.included) {
@@ -373,19 +386,29 @@ export class MemoryStore {
     return result;
   }
 
-  private async read(): Promise<MemoryDocument> {
+  /** Inspector graph uses only visible memories; proposals stay explicitly labelled by callers. */
+  async graph(query: MemoryQuery, authority: MemoryAuthority): Promise<KnowledgeGraph> {
+    validateQuery(query, authority);
+    return this.snapshot((db) => this.database.graph(db,
+      this.database.read(db, query).entries.filter((entry) => visible(entry, query, authority) && entry.status !== "deleted")));
+  }
+
+  private async snapshot<T>(fn: (db: DatabaseSync) => T): Promise<T> {
     await queues.get(this.file);
-    return readDocument(this.file);
+    return this.database.withDatabase((db) => {
+      db.exec("BEGIN");
+      try { const result = fn(db); db.exec("COMMIT"); return result; }
+      catch (error) { db.exec("ROLLBACK"); throw error; }
+    });
+  }
+
+  private read(query?: MemoryQuery): Promise<MemoryDocument> {
+    return this.snapshot((db) => this.database.read(db, query));
   }
 
   private change<T>(fn: (document: MemoryDocument) => T): Promise<T> {
-    const next = (queues.get(this.file) ?? Promise.resolve()).then(async () => {
-      const document = await readDocument(this.file);
-      const before = JSON.stringify(document);
-      const result = fn(document);
-      if (JSON.stringify(document) !== before) await writeDocument(this.file, document);
-      return result;
-    });
+    const next = (queues.get(this.file) ?? Promise.resolve()).then(() =>
+      this.database.withDatabase((db) => this.database.change(db, fn)));
     const settled = next.catch(() => undefined);
     queues.set(this.file, settled);
     void settled.then(() => { if (queues.get(this.file) === settled) queues.delete(this.file); });
@@ -600,12 +623,7 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(sorted(value));
 }
 
-async function readDocument(file: string): Promise<MemoryDocument> {
-  let raw: string;
-  try { raw = await readFile(file, "utf8"); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { schemaVersion: 1, entries: [] };
-    throw error;
-  }
+export function validateDocument(raw: string): MemoryDocument {
   try {
     if (Buffer.byteLength(raw) > MAX_FILE) throw new Error("file is too large");
     const document: unknown = JSON.parse(raw);
@@ -627,26 +645,21 @@ async function readDocument(file: string): Promise<MemoryDocument> {
   }
 }
 
-async function writeDocument(file: string, document: MemoryDocument): Promise<void> {
-  const body = JSON.stringify(document);
-  if (Buffer.byteLength(body) > MAX_FILE) throw new Error("Memory storage limit reached");
-  const dir = dirname(file);
-  await mkdir(dir, { recursive: true });
-  // A process killed before rename may leave a complete body in a temporary snapshot.
-  // The server is the sole writer; clean those copies before any new durable mutation,
-  // including a deletion, so erased material cannot survive in a stale temp file.
-  const prefix = `${basename(file)}.`;
-  for (const name of await readdir(dir)) {
-    if (name.startsWith(prefix) && /^[0-9a-f-]{36}\.tmp$/.test(name.slice(prefix.length))) await rm(join(dir, name), { force: true });
-  }
-  const temporary = `${file}.${randomUUID()}.tmp`;
-  try {
-    const handle = await open(temporary, "wx", 0o600);
-    try { await handle.writeFile(body); await handle.sync(); } finally { await handle.close(); }
-    await rename(temporary, file);
-    if (process.platform !== "win32") {
-      const directory = await open(dir, "r");
-      try { await directory.sync(); } finally { await directory.close(); }
+/** Two bounded hops through permitted evidence: a derivation, or a shared file/run/commit.
+ * Eligibility is filtered before traversal, so private/stale/branch-inapplicable records
+ * cannot act as hidden bridges. Graph ranking never broadens path or approval scope. */
+function relatedMemories(graph: KnowledgeGraph, matches: Set<string>): Set<string> {
+  const nodes = new Map(graph.entities.map((entity) => [entity.id, entity]));
+  let frontier = new Set(graph.entities.filter((entity) => entity.kind === "memory" && matches.has(entity.key)).map((entity) => entity.id));
+  const visited = new Set(frontier);
+  for (let hop = 0; hop < 2; hop++) {
+    const next = new Set<string>();
+    for (const edge of graph.relationships) {
+      if (frontier.has(edge.from) && !visited.has(edge.to)) next.add(edge.to);
+      if (frontier.has(edge.to) && !visited.has(edge.from)) next.add(edge.from);
     }
-  } finally { await rm(temporary, { force: true }); }
+    for (const id of next) visited.add(id);
+    frontier = next;
+  }
+  return new Set([...visited].flatMap((id) => nodes.get(id)?.kind === "memory" ? [nodes.get(id)!.key] : []));
 }

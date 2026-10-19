@@ -120,7 +120,7 @@ export function SshConnections() {
             <label>Identity file<input class="field" value={identityFile} onInput={(event) => setIdentityFile(event.currentTarget.value)} placeholder="~/.ssh/id_ed25519 (optional)" maxLength={4096} disabled={!!busy} /></label>
           </div>
           <p class="help">Leave port and key blank to use your SSH config and agent. Jump hosts are read from ~/.ssh/config. Only the key path is saved; key contents stay on this computer.</p>
-          <p class="help">Use a Linux or macOS server with Node.js 20+ and Git. Install and sign in to your agent CLIs there. Python 3 enables interactive terminals.</p>
+          <p class="help">Use a Linux or macOS server with Node.js 22.13+ and Git. Install and sign in to your agent CLIs there. Python 3 enables interactive terminals.</p>
           <p class="help">Uses your SSH config and keys. First verify the host with SSH in a terminal; unlock protected keys in your SSH agent. Connecting installs the backend under ~/.codeflow/ssh-host on the server.</p>
           <div class="ssh-actions"><button class="btn" type="submit" value="save" disabled={!!busy || loading || !sshHost.trim()}>Save connection</button><button class="btn primary" type="submit" value="connect" disabled={!!busy || loading || !sshHost.trim()}>Connect and open</button></div>
         </form>

@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rename, stat, writeFile, mkdir } from "node:fs/promises";
@@ -24,7 +25,7 @@ test("memory snapshots survive reconstruction, preserve permissions, and seriali
   const restored = new MemoryStore(store.file);
   assert.equal((await restored.list({ repo, projectId }, user)).length, 16);
   if (process.platform !== "win32") assert.equal((await stat(store.file)).mode & 0o777, 0o600);
-  assert.deepEqual(await readdir(join(store.file, "..")), ["memory.json"]);
+  assert.deepEqual(await readdir(join(store.file, "..")), ["memory.sqlite"]);
 });
 
 test("revision-scoped user feedback tunes retrieval without changing trust or leaking across revisions", async () => {
@@ -92,13 +93,14 @@ test("a crashed temporary snapshot cannot overwrite the last complete snapshot",
 
 test("corrupt and unsupported stores fail closed and never get reset on writes", async () => {
   const store = await fresh();
+  const legacy = store.file.replace(/\.sqlite$/, ".json");
   for (const body of ['{"broken":', '{"schemaVersion":99,"entries":[]}', '{"schemaVersion":1,"entries":[{"id":"x"}]}']) {
-    await writeFile(store.file, body);
+    await writeFile(legacy, body);
     await assert.rejects(store.load(), /cannot be read/);
     await assert.rejects(store.propose(input(), user), /cannot be read/);
-    assert.equal(await readFile(store.file, "utf8"), body);
+    assert.equal(await readFile(legacy, "utf8"), body);
   }
-  await writeFile(store.file, '{"schemaVersion":1,"entries":[]}');
+  await writeFile(legacy, '{"schemaVersion":1,"entries":[]}');
   assert.equal((await store.propose(input(), user)).status, "accepted", "a failed queue operation does not poison later repaired storage");
 });
 
@@ -109,7 +111,7 @@ test("storage failures are returned to callers and do not report successful muta
   await rename(store.file, backup);
   await mkdir(store.file);
   await assert.rejects(store.revise(saved.id, saved.revision, { body: "must not be reported saved" }, user));
-  const original = JSON.parse(await readFile(backup, "utf8"));
+  const original = { entries: readEntries(backup) };
   assert.equal(original.entries[0].body, saved.body);
   assert.equal(original.entries[0].revision, 1);
 });
@@ -290,7 +292,7 @@ test("deletion erases the entry's body; entries that saw it keep theirs, keep it
   assert.equal(removed.status, "deleted");
   const raw = await readFile(store.file, "utf8");
   assert.ok(!raw.includes("SECRET"), "the deleted body and the crash-left snapshot are gone");
-  const stored = JSON.parse(raw).entries;
+  const stored = readEntries(store.file);
   // "Derived from" records what was in a member's context, not text copied from it: a deletion must not
   // cascade through every checkpoint and note of every run that saw the entry.
   assert.equal(stored.find((entry: { id: string }) => entry.id === summary.id).status, "proposed");
@@ -301,7 +303,7 @@ test("deletion erases the entry's body; entries that saw it keep theirs, keep it
   assert.ok(later.origins.some((origin) => origin.trust === "untrusted" && origin.lockedDown));
   // The worker's checkpoint, written with the deleted entry in context, is still its own retrievable record.
   assert.deepEqual((await store.retrieve({ repo, projectId, runId: "run-1", memberId: "worker" }, run)).entries.map((entry) => entry.title).sort(), [checkpoint.title, "Unrelated"].sort());
-  assert.deepEqual(await readdir(join(store.file, "..")), ["memory.json"], "there is no history/index/temp body left behind");
+  assert.deepEqual(await readdir(join(store.file, "..")), ["memory.sqlite"], "there is no history/index/temp body left behind");
 });
 
 test("a user's edit keeps a proposal a proposal unless they accept it, and archiving a run retires only its private and team records", async () => {
@@ -340,3 +342,9 @@ test("invalid paths, scopes, oversized content and source versions fail before p
   await assert.rejects(store.propose(input({ derivedFrom: [{ id: source.id, revision: 9 }] }), user), MemoryConflictError);
   await assert.rejects(store.revise(source.id, 1, { derivedFrom: [{ id: source.id, revision: 1 }] }, user), /derive from itself/);
 });
+
+function readEntries(file: string): any[] {
+  const db = new DatabaseSync(file, { readOnly: true });
+  try { return db.prepare("SELECT document FROM memories").all().map((row) => JSON.parse(String(row.document))); }
+  finally { db.close(); }
+}

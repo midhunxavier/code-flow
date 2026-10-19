@@ -685,6 +685,12 @@
   .project-memory > .help { margin: 8px 0 0; }
   .project-memory > .at-row { justify-content: flex-start; gap: 8px; margin-top: 12px; }
   .memory-list { display: grid; gap: 10px; margin-top: 12px; }
+  .knowledge-graph { margin-top: 12px; font-size: 13px; }
+  .knowledge-graph label { display: grid; gap: 6px; margin: 12px 0; }
+  .knowledge-connections { overflow-x: auto; contain: inline-size; }
+  .knowledge-graph table { width: 100%; min-width: 720px; border-collapse: collapse; }
+  .knowledge-graph th, .knowledge-graph td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+  .knowledge-graph th { color: var(--text-2); font-weight: 600; white-space: nowrap; }
   .memory-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); padding: 12px 14px; font-size: 13px; overflow-wrap: anywhere; }
   .memory-card > .at-row { flex-wrap: wrap; }
   .memory-card > .at-row > b { font-size: 14px; font-weight: 600; }

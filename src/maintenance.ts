@@ -10,6 +10,7 @@ import { disableRestoredDeferredRuns } from "./deferred-runs.js";
 import { disableRestoredCodeHostActions } from "./code-hosts.js";
 import { disableRestoredCoordinatedChanges } from "./repo-coordination.js";
 import { StrictRunLogReader } from "./run-log.js";
+import { MemoryStore } from "./memory.js";
 
 const compress = promisify(gzip);
 const decompress = promisify(gunzip);
@@ -59,6 +60,12 @@ export async function createEncryptedBackup(input: { home: string; output: strin
   return offline(input.home, async (home) => {
     const inside = relative(home, output);
     if (inside !== ".." && !inside.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(inside)) throw new Error("Save backups outside the data directory.");
+    // Recover an interrupted SQLite transaction before copying the offline database.
+    // The memory store uses DELETE journaling and closes every operation, so there is
+    // no live WAL to omit or replay separately in the portable archive.
+    const memoryFile = join(home, "memory.sqlite");
+    const memoryExists = await lstat(memoryFile).then(() => true, (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? false : Promise.reject(error));
+    if (memoryExists) await new MemoryStore(memoryFile).load();
     const files: BackupEntry[] = [];
     const omitted: string[] = [];
     let bytes = 0;

@@ -1,7 +1,7 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -185,4 +185,28 @@ test("memory semantic review compares overlapping policy and normalized settings
   const target = item.getByRole("button", { name: "Guest requests permitted", exact: true }); await target.focus(); await page.keyboard.press("Enter"); assert.equal(await page.locator(`#memory-${allow.id}`).evaluate((element) => element === document.activeElement), true, "source navigation restores keyboard focus to the exact entry");
   await panel.getByText("Write explicit semantic facts", { exact: true }).click(); assert.match(await panel.innerText(), /codeflow-claims/); assert.match(await panel.innerText(), /unsupported prose/);
   const after = await api<MemoryEntry[]>(endpoint); assert.equal(after.length, 5); assert.equal(after.find((entry) => entry.id === allow.id)!.body, allow.body, "analysis and evidence navigation never merge or rewrite guidance");
+});
+
+test("knowledge graph filters connections, navigates to source memory and refreshes after deletion", { timeout: 30_000 }, async () => {
+  const entry = await api<MemoryEntry>(endpoint + "/commands", { op: "create", repo, title: "Session contract", body: "Exercise the session contract", paths: ["src/session.ts"] });
+  await page.goto(base + "/memory-fixture");
+  await page.getByText("Project memory", { exact: true }).click();
+  await page.getByText("Knowledge graph", { exact: true }).click();
+  await page.addStyleTag({ content: await readFile(join(root, "ui/styles.css"), "utf8") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const connections = page.getByRole("region", { name: "Knowledge connections", exact: true });
+  await connections.waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "the graph does not widen the page on a phone");
+  assert.equal(await connections.evaluate((element) => element.scrollWidth > element.clientWidth), true, "the readable table scrolls within its own region");
+  await page.getByLabel("Find knowledge connections").fill("src/session.ts");
+  const row = page.getByRole("row").filter({ hasText: "src/session.ts" });
+  await row.waitFor();
+  assert.match(await row.innerText(), /applies to/);
+  assert.match(await row.innerText(), /Revision 1 · Accepted/);
+  await row.getByRole("link", { name: "Session contract", exact: true }).click();
+  assert.equal(await page.locator(`#memory-${entry.id}`).evaluate((element) => element === document.activeElement), true);
+  await api(endpoint + "/commands", { op: "delete", id: entry.id, expectedRevision: 1 });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByText("No matching connections.", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("row").filter({ hasText: "src/session.ts" }).count(), 0);
 });

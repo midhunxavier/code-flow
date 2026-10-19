@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -41,7 +42,10 @@ async function writeRun(f: Awaited<ReturnType<typeof fixture>>, id: string, patc
 async function privateMemory(f: Awaited<ReturnType<typeof fixture>>, runId: string) {
   const store = new MemoryStore(join(f.home, "memory.json"));
   const entry = await store.propose({ scope: "private", repo: f.repo, projectId: "p-fixture", runId, memberId: "worker", title: "PRIVATE TITLE", body: "PRIVATE BODY MUST NOT APPEAR IN MANIFEST" }, { kind: "run", repo: f.repo, projectId: "p-fixture", runId, memberId: "worker", lockedDown: false, sourceTrust: "trusted" });
-  const document = JSON.parse(await readFile(store.file, "utf8")); for (const item of document.entries) { item.createdAt = +old; item.updatedAt = +old; } await writeFile(store.file, JSON.stringify(document)); return { store, entry };
+  const db = new DatabaseSync(store.file);
+  try { db.prepare("UPDATE memories SET document=json_set(document, '$.createdAt', ?, '$.updatedAt', ?)").run(+old, +old); }
+  finally { db.close(); }
+  return { store, entry };
 }
 
 test("revisioned policies default to keeping all types and conflicts preserve the winning settings", async () => {
@@ -64,7 +68,7 @@ test("one reviewed offline plan retires each enabled type while preserving branc
   await assert.rejects(access(join(f.home, "runs/old.jsonl")), /ENOENT/); await assert.rejects(access(join(run.worktreeDir, ".context/attachments/upload.txt")), /ENOENT/); await assert.rejects(access(run.worktrees[0]!.path), /ENOENT/);
   for (const suffix of [".cold-index.json", ".cold-detail.json"]) await assert.rejects(access(join(f.home, "runs", run.id + suffix)), /ENOENT/);
   assert.ok(f.git("show-ref", "--verify", `refs/heads/${run.worktrees[0]!.branch}`));
-  const stored = JSON.parse(await readFile(store.file, "utf8")); assert.equal(stored.entries[0].id, entry.id); assert.equal(stored.entries[0].status, "deleted"); assert.doesNotMatch(await readFile(store.file, "utf8"), /PRIVATE BODY|PRIVATE TITLE/);
+  const stored = await store.maintenanceEntries(); assert.equal(stored[0]!.id, entry.id); assert.equal(stored[0]!.status, "deleted"); assert.doesNotMatch(await readFile(store.file, "utf8"), /PRIVATE BODY|PRIVATE TITLE/);
 });
 
 test("active, resumable, unarchived, pinned, watched, child and pending deferred sources stay protected", async () => {
