@@ -44,5 +44,5 @@ export async function optionalDependencyHealth(options: { chrome?: string | null
 /** Reuses the application's provider authentication/compatibility and Git health checks. */
 export async function discoverDependencies(quota: Partial<Record<AgentId, HealthEntry["quota"]>> = {}): Promise<DependencyHealthReport> {
   const [providers, git, optional] = await Promise.all([doctor(quota), checkGit(), optionalDependencyHealth()]);
-  return { checkedAt: Date.now(), node: { version: process.version, ok: Number(process.versions.node.split(".")[0]) >= 20 }, git, providers, optional };
+  return { checkedAt: Date.now(), node: { version: process.version, ok: (Number(process.versions.node.split(".")[0]) > 22 || (Number(process.versions.node.split(".")[0]) === 22 && Number(process.versions.node.split(".")[1]) >= 13)) }, git, providers, optional };
 }

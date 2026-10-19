@@ -28,7 +28,7 @@
     "test:rust": "cargo build --release --locked --manifest-path experiments/rust-transcript/Cargo.toml && CODEFLOW_TEST_RUST=1 tsx --test test/rust-transcript.test.ts"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

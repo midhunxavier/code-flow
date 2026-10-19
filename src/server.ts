@@ -1815,6 +1815,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const requested = url.searchParams.get("repo");
       if (requested && !project.repos.includes(requested)) throw new HttpError(400, "That repository is not in this project");
       const repos = requested ? [requested] : project.repos;
+      if (parts[4] === "graph" && !parts[5] && req.method === "GET") {
+        const repo = requested ?? (project.repos.length === 1 ? project.repos[0] : undefined);
+        if (!repo) throw new HttpError(400, "Choose a repository in this project");
+        return send(res, 200, await attempt(() => memoryStore.graph({ repo, projectId: id, scope: "project" }, { kind: "user", repo, projectId: id })));
+      }
       if (parts[4] === "analysis") {
         const body = req.method === "POST" ? await readJson(req) : {};
         const repo = typeof body.repo === "string" ? body.repo : requested ?? (project.repos.length === 1 ? project.repos[0] : undefined);

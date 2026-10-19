@@ -29,7 +29,7 @@ You pick how the agents work together (plan → build → review, a race, a deba
 
 ## Quickstart
 
-You need Node 20+, git 2.38+ (for **Merge**), and at least one of [`claude`](https://docs.anthropic.com/en/docs/claude-code), [`codex`](https://github.com/openai/codex) or `agy` installed and signed in.
+You need Node 22.13+, git 2.38+ (for **Merge**), and at least one of [`claude`](https://docs.anthropic.com/en/docs/claude-code), [`codex`](https://github.com/openai/codex) or `agy` installed and signed in.
 
 ```bash
 git clone https://github.com/midhunxavier/code-flow.git
@@ -64,6 +64,8 @@ threads](docs/github-review-threads.md), [architecture exploration](docs/archite
 and [semantic memory claims](docs/memory-claims.md) provide bounded evidence for
 review. [Filesystem policies](docs/filesystem-policy.md) and explicit trusted
 [extensions](docs/extensions.md) document their execution boundaries.
+
+[Structured memory](docs/memory-storage.md) uses local SQLite storage, keyword search and a lightweight graph connecting memories to files, runs, commits and source memories. Existing JSON memory migrates automatically; inspect connections under **Project memory → Knowledge graph**.
 
 - **A team, not one agent.** Seven patterns, from Plan → Build → Review to a Best-of-N race judged blind, with any agent in any role and a model and effort per role. Having a different vendor review or judge catches what a model misses in its own work.
 - **Auto team (experimental, opt-in).** [Auto team](docs/auto-team.md) proposes members, tasks and acceptance criteria, asks for plan approval, then adapts within your limits. Members ask each other addressed questions and keep private, team and project memory. It is kept opt-in until its [measured evidence](docs/dynamic-teams-evaluation.md) supports more.

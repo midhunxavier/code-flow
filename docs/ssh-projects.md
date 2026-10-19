@@ -4,7 +4,7 @@ Open an existing repository on a Linux or macOS server and use the complete code
 
 ## Connect
 
-1. Install Node.js 20 or newer and Git on the server. Install and sign in to the agent CLIs you want to use on that server. Python 3 enables interactive terminals; Chrome/Chromium on the server enables snapshots. The server must allow SSH TCP forwarding to its loopback interface.
+1. Install Node.js 22.13 or newer and Git on the server. Install and sign in to the agent CLIs you want to use on that server. Python 3 enables interactive terminals; Chrome/Chromium on the server enables snapshots. The server must allow SSH TCP forwarding to its loopback interface.
 2. Configure keys, ports, jump hosts and hostnames in your normal `~/.ssh/config`, for example:
 
    ```sshconfig
@@ -45,7 +45,7 @@ Only the local app owner can manage SSH connections. Shared-account and phone se
 ## Troubleshooting
 
 - **Host key or authentication failed:** run the exact alias with `ssh` in a terminal and resolve the error there. The app never accepts unknown fingerprints automatically.
-- **Node not found:** put Node.js 20+ on the remote login shell's PATH. No Node runtime is downloaded automatically.
+- **Node not found:** put Node.js 22.13+ on the remote login shell's PATH. No Node runtime is downloaded automatically.
 - **Connection refused / forwarding prohibited:** check the server's `AllowTcpForwarding`/`PermitOpen` settings and `~/.codeflow/ssh-host/host.log`.
 - **Backend still running but unavailable:** inspect the log and process before stopping it. The app avoids restarting a process that might still be doing work.
 - **Another host setup is running:** wait for it to finish. If setup crashed, verify no bootstrap process remains before removing `~/.codeflow/ssh-host/bootstrap.lock`.
