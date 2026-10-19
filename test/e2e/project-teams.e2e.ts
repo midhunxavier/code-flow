@@ -89,6 +89,14 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   await page.getByText("Approved. Open the result to publish a PR or merge using the existing review controls.").waitFor();
   const tab = await context.newPage(); await tab.goto(`${base}/#/project/${id}`); await tab.getByRole("button", { name: "Preview next cycle" }).waitFor();
   const health = await api("/api/health"); assert.equal(health.body.streams.streams, 1, "project team subscriptions reuse the shared transport");
+  await tab.goto(`${base}/#/run/${resultId}`);
+  await tab.getByRole("main").getByText(/Standing team implementation/).waitFor();
+  assert.equal(await tab.getByRole("main").getByRole("button", { name: "Delete…", exact: true }).count(), 0);
+  const rail = tab.getByRole("navigation", { name: "Runs", exact: true });
+  await rail.getByRole("button", { name: "Select runs", exact: true }).click();
+  await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
+  assert.equal(await rail.getByRole("button", { name: "Delete…", exact: true }).isEnabled(), false);
+  assert.equal(await rail.getByRole("button", { name: "Archive", exact: true }).isEnabled(), true);
   const stale = await api(`/api/project-teams/${team.id}`, { operationId: "stale", revision: 1, status: "paused" }); assert.equal(stale.status, 409);
   const injection = await api("/api/runs", { projectTeam: { teamId: team.id }, pattern: "auto-team", repo, task: "bypass" }); assert.equal(injection.status, 400);
   assert.deepEqual(pageErrors, [], errors.join("\n"));
