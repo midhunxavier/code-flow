@@ -1245,6 +1245,9 @@ test("sidebar archives, hides and deletes runs with confirmation across tabs", a
     if (run.status !== "running") break;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
+  // Opening an unread completed run moves its row out of Needs you. Settle that
+  // unrelated transition before exercising the row's archive/delete menu.
+  assert.equal((await fetch(`${BASE}/api/runs/${created.id}/seen`, { method: "POST", headers: bearer })).ok, true);
   const fresh = await browser.newPage({ viewport: { width: 1267, height: 1042 } });
   const other = await browser.newPage();
   try {
