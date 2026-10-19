@@ -1,5 +1,5 @@
 import type { ComponentChildren } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
 import { api, enc, showToast } from "./lib.js";
 import { ModelRow, TRUST } from "./composer.js";
@@ -33,7 +33,8 @@ import {
 export function SettingsView({ section = "general", group }: { section?: SettingsSection; group?: string }) {
   const [query, setQuery] = useState("");
   const navigation = useRef<HTMLElement>(null);
-  useEffect(() => {
+  // Reset before the new section is interactive so a delayed effect cannot erase fresh input.
+  useLayoutEffect(() => {
     setQuery("");
     document.getElementById("main-content")?.scrollTo({ top: 0 });
   }, [section, group]);
