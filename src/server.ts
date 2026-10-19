@@ -40,11 +40,19 @@ import { SharedAccounts, SharedAccountError, type SharedPrincipal } from "./shar
 import { canonicalSharedPath, SharedPathError } from "./shared-access.js";
 import { CollaborationReviews, CollaborationReviewError } from "./collaboration-reviews.js";
 import { handleSharedApi } from "./shared-api.js";
+import { CollabStore, memberActor, ownerActor, type ChangeEvent, type MemberRecord } from "./collab/store.js";
+import { handleRunnerConnect, handleTeamApi, looksLikeRunnerToken, runnerAllowed, teamRoutePolicy } from "./collab/api.js";
+import { LocalHub, RemoteHub } from "./collab/hub-client.js";
+import { TeamLink, type LinkConnection } from "./collab/link.js";
+import { CollabRunner } from "./collab/runner.js";
+import { handleTeamLinkApi } from "./collab/link-api.js";
+import type { CollabActor } from "./collab/model.js";
+import { userInfo } from "node:os";
 import { RemoteWorkers } from "./remote-workers/client.js";
 import { createCoordinatedApi } from "./coordinated-api.js";
 import { Extensions } from "./extensions.js";
 import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
-import { cursorSeq, StreamHub, TopicError, type TopicSource } from "./stream.js";
+import { cursorSeq, StreamHub, TopicError, type Deliver, type TopicSource } from "./stream.js";
 import { replayEvents } from "./run-log.js";
 import { previewTarget, Previews } from "./preview.js";
 import { SnapshotError, takeSnapshot } from "./snapshot.js";
@@ -151,6 +159,18 @@ const retentionPolicy = new RetentionPolicyStore();
 const sharedAccounts = new SharedAccounts();
 await sharedAccounts.load().catch((error) => logError("Shared accounts unavailable; owner recovery remains available", error));
 const collaborationReviews = new CollaborationReviews();
+/**
+ * The team board (docs/team-collaboration.md). Every instance serves its own board from CODEFLOW_HOME/team to
+ * shared accounts and linked runners (hub mode), and runs tasks on this computer itself: in-process against
+ * that board, or, once Settings → Team linked it to another team server, against that hub through the link.
+ */
+const teamMembers = (): MemberRecord[] => sharedAccounts.available ? sharedAccounts.snapshot().users.map((user) => ({ userId: user.id, username: user.username, displayName: user.displayName, enabled: user.enabled, roles: user.roles })) : [];
+/** What teammates see the hub owner called until the owner sets a display name (PUT /api/team/profile). */
+const osUser = (() => { try { return userInfo().username || undefined; } catch { return undefined; } })();
+const collab = new CollabStore({ members: teamMembers, projects: () => projects.list().map((project) => ({ id: project.id, name: project.name })), ownerName: () => osUser });
+const teamLink = new TeamLink();
+const hubs = { local: new LocalHub(collab), remote: new RemoteHub(teamLink) };
+const collabRunner = new CollabRunner({ manager, hub: () => teamLink.linked ? hubs.remote : hubs.local, findPattern, resolveRepo: (projectId, key) => teamLink.resolveRepo(projectId, key), projectFor: (repo) => projects.forRepo(repo)?.id });
 const resolveQueuedProviders: Parameters<typeof createDeferredRuns>[1]["resolveProviders"] = (request) => trackPolicyPreparation(async () => {
     const pattern = findPattern(request.pattern);
     if (!pattern) throw new Error("This pattern no longer exists; cancel and review the saved request");
@@ -285,6 +305,21 @@ function sharedSession(req: IncomingMessage): { token: string; identity: SharedP
   const transport = sharedTransport(req);
   if (!transport.secure && !transport.loopback) return;
   for (const token of readCookies(req, SHARED_COOKIE)) { const identity = sharedAccounts.authenticate(token); if (identity) return { token, identity }; }
+}
+/** A shared principal as the team store sees members; a live session already proves the account is enabled. */
+function memberOf(identity: SharedPrincipal): MemberRecord { return { userId: identity.userId, username: identity.username, displayName: identity.displayName, enabled: true, roles: identity.roles }; }
+/** The account behind a runner credential: the credential must be live (not revoked) and the account enabled; the store touches lastSeenAt. */
+function runnerActor(token: string): CollabActor | undefined { const credential = collab.authenticateRunner(token); if (!credential) return undefined; const member = teamMembers().find((entry) => entry.userId === credential.userId && entry.enabled); return member && memberActor(member, "runner", credential.runnerId); }
+/** Bearer credentials are not ambient, so runners owe no Origin; a body still has to say what it is, so readJson and the bundle upload see what they expect. */
+function runnerMutation(req: IncomingMessage) { const hasBody = Number(req.headers["content-length"] ?? 0) > 0 || req.headers["transfer-encoding"] !== undefined; if (hasBody && !/^application\/(?:json|octet-stream)(?:\s*;|$)/i.test(String(req.headers["content-type"] ?? ""))) throw new HttpError(415, "Runner requests send application/json, or application/octet-stream for a checkpoint bundle"); }
+/** A linked runner's request: the credential is its whole identity, and it reaches only the team routes the policy table opens to runners, as the account the credential was issued to. Like shared sessions it travels over TLS or stays on this computer. */
+async function handleRunnerRequest(req: IncomingMessage, res: ServerResponse, url: URL, parts: string[], token: string): Promise<void> {
+  const transport = sharedTransport(req); if (!transport.secure && !transport.loopback) throw new HttpError(403, "Runner credentials are accepted over HTTPS or on this computer only");
+  const actor = runnerActor(token); if (!actor) throw new HttpError(401, "This runner credential is not valid; connect this computer again in Settings → Team");
+  const route = teamRoutePolicy(req.method ?? "GET", parts);
+  if (parts[1] !== "team" || (route && !runnerAllowed(route))) throw new HttpError(403, "This credential only reaches the team API");
+  await attempt(() => fileAccess.sharedGate(req));
+  return handleTeamApi(req, res, url, parts, { store: collab, actor, principal: "runner", reauthorize: () => { const current = runnerActor(token); if (!current) throw new HttpError(401, "This runner credential was revoked"); return current; }, mutation: runnerMutation });
 }
 
 function sessionCookie(): string {
@@ -1068,6 +1103,34 @@ function streamAllRuns(req: IncomingMessage, res: ServerResponse, limit?: number
 }
 
 /**
+ * The owner window's `team` topic: the board's changes (hub mode) or the hub's event stream relayed through
+ * the link (linked mode), as `{type: "change" | "inbox" | "resync" | "link"}` frames the UI reloads on. Inbox
+ * events become an unread count, never their text, like the hub's own stream.
+ */
+const teamFeed = new Set<Deliver>();
+let linkConnection: LinkConnection = "offline";
+function teamBroadcast(frame: unknown, seq?: number) { for (const deliver of teamFeed) deliver(frame, seq); }
+function teamFrame(event: ChangeEvent) { const frame: Record<string, unknown> = { type: "change", seq: event.seq, kind: event.kind }; if (event.taskId !== undefined) frame.taskId = event.taskId; if (event.projectId !== undefined) frame.projectId = event.projectId; return frame; }
+collab.onChange((event) => {
+  if (teamLink.linked || !teamFeed.size) return;
+  if (event.kind !== "inbox") return teamBroadcast(teamFrame(event), event.seq);
+  if (event.userIds?.includes("owner")) void collab.inbox(ownerActor(collab.ownerName)).then(({ unread }) => teamBroadcast({ type: "inbox", seq: event.seq, unread }, event.seq), () => undefined);
+});
+// Membership and the project list shape the board without passing through the store, so windows reload on them too.
+sharedAccounts.onChange(() => teamBroadcast({ type: "resync" }));
+projects.onChange(() => teamBroadcast({ type: "resync" }));
+/** Hub ↔ linked mode: while linked, the hub's events are relayed (and local attempts reconciled whenever the connection comes back); either way every team subscriber reloads. */
+function syncTeamLink() {
+  if (teamLink.linked) teamLink.events((event) => teamBroadcast(event, typeof event.seq === "number" ? event.seq : undefined), (connection, error) => {
+    const was = linkConnection; linkConnection = connection;
+    if (connection === "connected" && was === "reconnecting") void collabRunner.reconcile().catch((err) => logError("Local team attempts could not be reconciled after reconnecting to the team server", err));
+    if (connection !== "reconnecting" || was !== "reconnecting") teamBroadcast(error ? { type: "link", connection, error } : { type: "link", connection });
+  });
+  else { teamLink.close(); linkConnection = "offline"; }
+  teamBroadcast({ type: "resync" });
+}
+
+/**
  * What a window watches (see src/stream.ts). Each starts with what the window needs and then sends
  * live events; `after` is the cursor (`<epoch>:<seq>`) of the last event it got before reconnecting.
  */
@@ -1149,6 +1212,14 @@ const topics: Record<string, TopicSource> = {
     deliver({ type: "hello", shell, history: shells.history(id) });
     return shells.subscribe(id, (e: ShellEvent) => deliver(e)) ?? (() => {});
   },
+
+  /** The team board: hub mode replays the store's ring from the cursor (or asks for a reload), linked mode relays the hub's stream. */
+  team(name, after, deliver) {
+    if (name) throw new TopicError(404, "Watch “team” itself; the team board has no named streams");
+    if (teamLink.linked) deliver({ type: "hello", epoch: `link-${EPOCH}`, seq: 0, linked: true, connection: linkConnection });
+    else { const page = collab.eventsSince(after); deliver({ type: "hello", epoch: page.epoch, seq: page.seq, linked: false }, page.seq); if (page.resync) deliver({ type: "resync" }); for (const event of page.events) if (event.kind !== "inbox") deliver(teamFrame(event), event.seq); }
+    teamFeed.add(deliver); return () => { teamFeed.delete(deliver); };
+  },
 };
 const hub = new StreamHub(topics);
 const ownerHubStreams = new Set<ServerResponse>();
@@ -1210,11 +1281,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (await handlePublic(req, res, url, parts, via)) return;
   if (via === "lan") checkLanOrigin(req); else checkOrigin(req);
   const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+  // The owner token is matched first (constant-time, so no oracle), so a CODEFLOW_TOKEN the user chose that happens to look like a runner credential keeps working. Any other `tr-…` bearer (issued by the team board) is a principal of its own: it never doubles as a session, and cookies sent beside it are ignored.
   const explicitOwner = via === "local" && !!bearer && tokenMatches(bearer, auth.token);
-  const shared = explicitOwner ? undefined : sharedSession(req);
+  const runnerBearer = !explicitOwner && looksLikeRunnerToken(bearer);
+  const shared = explicitOwner || runnerBearer ? undefined : sharedSession(req);
   // A revoked shared cookie must never silently fall back to an older owner cookie.
   const sharedPresent = readCookies(req, SHARED_COOKIE).length > 0;
-  const owner = explicitOwner || !sharedPresent && (via === "lan" ? phoneSignedIn(req) : signedIn(req));
+  const owner = explicitOwner || !sharedPresent && !runnerBearer && (via === "lan" ? phoneSignedIn(req) : signedIn(req));
 
   if (parts.join("/") === "api/auth/login" && req.method === "POST") {
     sharedMutation(req);
@@ -1233,6 +1306,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     res.setHeader("set-cookie", [clearCookie(SHARED_COOKIE), clearCookie(COOKIE), clearCookie(PHONE_COOKIE)]);
     return send(res, 200, { signedOut: true });
   }
+  // Runner enrolment proves a shared account's password like sign-in (same transport rule and limiter) and mints a per-machine credential instead of a cookie; a browser cannot send this JSON body cross-site without a preflight, so no Origin is demanded.
+  if (parts.join("/") === "api/team/runners/connect" && req.method === "POST") return handleRunnerConnect(req, res, { accounts: sharedAccounts, store: collab, transport: sharedTransport(req) });
   if (req.method === "GET" && url.pathname === "/") {
     const given = url.searchParams.get("token");
     if (given) {
@@ -1253,8 +1328,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return sendAppPage(req, res, { ...NO_FRAMES, ...(claim ? { "set-cookie": sessionCookie() } : {}) });
   }
   if (parts[0] !== "api") throw new HttpError(404, "Not found");
+  if (runnerBearer) return handleRunnerRequest(req, res, url, parts, bearer);
   if (shared) {
     await attempt(() => fileAccess.sharedGate(req));
+    // The team board is the shared principals' second API: as closed as handleSharedApi (its own route table), and the session is re-checked on every stream frame.
+    if (parts[1] === "team") return handleTeamApi(req, res, url, parts, { store: collab, actor: memberActor(memberOf(shared.identity), "browser"), principal: "browser", reauthorize: () => { const current = sharedAccounts.authenticate(shared.token, { touch: false }); if (!current) throw new HttpError(401, "Your session ended; sign in again"); return memberActor(memberOf(current), "browser"); }, mutation: sharedMutation });
     if (req.method !== "GET") sharedMutation(req);
     return attempt(() => handleSharedApi(req, res, url, parts, { accounts: sharedAccounts, token: shared.token, identity: shared.identity, manager, projects, comments: collaborationReviews, canReadFilePolicy: (run) => !fileAccess.restrictedRun(run), onFilePolicyChange: (listener) => filePolicies.onChange(listener), patterns: patterns.map(describePattern), templates }));
   }
@@ -1341,6 +1419,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (parts.join("/") === "api/extensions" && req.method === "GET") return send(res, 200, { api: { major: 1, minor: 0 }, extensions: extensions.list() });
   if (parts[1] === "coordinated-changes") return coordinatedApi.handle(req, res, parts);
+  // The team board: served here in hub mode, forwarded to the team server under this computer's runner credential in linked mode. The link itself (connect, mappings, start/stop/hand over on this computer) is always local and the owner's own.
+  if (parts[1] === "team") return teamLink.linked ? teamLink.proxy(req, res, parts, url) : handleTeamApi(req, res, url, parts, { store: collab, actor: ownerActor(collab.ownerName), principal: "owner", mutation: () => {} });
+  if (parts[1] === "team-link") {
+    if (via !== "local") throw new HttpError(404, "Not found");
+    const installed = req.method === "POST" && !fileAccess.hasRestrictions() ? (await agentAvailability()).filter((agent) => agent.available).map((agent) => agent.id) : [];
+    return handleTeamLinkApi(req, res, url, parts, { link: teamLink, runner: collabRunner, store: collab, manager, findPattern, agents: () => installed, hubName: collab.ownerName, onLinkChanged: () => syncTeamLink() });
+  }
   if (parts[1] === "runs" && parts.length === 6 && parts[3] === "remote-steps" && ["receipt", "cancel"].includes(parts[5]!) && req.method === "POST") {
     return send(res, 200, redactExport(await attempt(() => manager.inspectRemoteStep(parts[2]!, parts[4]!, { cancel: parts[5] === "cancel" }))));
   }
@@ -2101,6 +2186,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
 
 await manager.load();
 await projects.load(manager.list());
+await collab.load();
+await teamLink.load();
 await fileAccess.all().catch((error) => logError("Filesystem policy is unavailable; protected operations and extension loading remain disabled until the private policy file is repaired", error));
 filteredTasksReady = await filteredTasks.load().then(() => true, (error) => { logError("Filtered tasks unavailable; policy activation remains blocked until task receipts are repaired", error); return false; });
 if (!fileAccess.hasRestrictions()) await extensions.load().catch((error) => logError("Extension configuration could not be loaded; built-in workflows remain available", error));
@@ -2124,6 +2211,11 @@ if (notificationsReady) {
 }
 if (!fileAccess.hasRestrictions()) startPolicyBackground();
 else await pausePolicyBackground();
+syncTeamLink();
+void collabRunner.reconcile().catch((error) => logError("Local team attempts could not be reconciled at startup; they are retried when the link reconnects", error));
+/** Team board housekeeping: revoked runners and read inbox items older than 30 days go, attempts silent for a day become unknown. */
+const teamPruneTimer = setInterval(() => { if (collab.available) void collab.prune().catch((error) => logError("Team board housekeeping failed", error)); }, 60 * 60_000);
+teamPruneTimer.unref();
 if (!process.env.CODEFLOW_SSH_HOST) void (async () => {
   if (remote.transport === "tailscale") await refreshTailscale();
   await syncLanServer();
@@ -2264,6 +2356,7 @@ async function stop(reason: string, code = 0) {
     server.close();
     remoteStopping = true;
     clearInterval(tailscaleTimer);
+    clearInterval(teamPruneTimer);
     lanServer?.close();
     lanServer?.closeAllConnections();
     watcher.stop();
@@ -2277,6 +2370,10 @@ async function stop(reason: string, code = 0) {
     // still starting up: nothing is listening yet
   }
   await sshProjects?.close();
+  // Heartbeats and the link's event stream stop here; runs keep going, and reconcile() picks their attempts up again after the restart. A hub that stopped answering must not hold the shutdown.
+  await Promise.race([collabRunner.close(), new Promise((resolve) => setTimeout(resolve, 5000).unref())]).catch((err) => logError("Team runner shutdown failed", err));
+  teamLink.close();
+  await collab.close().catch((err) => logError("Team board shutdown failed", err));
   await coordinatedApi.service.stop().catch((err) => logError("Coordinated changes shutdown failed", err));
   await deferredRuns.stop().catch((err) => logError("Deferred queue shutdown failed", err));
   for (const controller of improvingControllers) controller.abort();

@@ -4,7 +4,8 @@ import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote, Markdown } from "./bits.js";
 import { TriageActions } from "./automations.js";
 import { Icon } from "./icons.js";
-import { api, ApiError, baseName, copy, duration, fmtCost, fmtSize, fmtTokens, onPhone, post, safeHref, SHORT, showToast, STATUS_TEXT, usePoll } from "./lib.js";
+import { api, ApiError, baseName, copy, duration, enc, fmtCost, fmtSize, fmtTokens, onPhone, post, safeHref, SHORT, showToast, STATUS_TEXT, usePoll } from "./lib.js";
+import { loadLocalAttempts, localAttempts } from "./collab-state.js";
 import {
   agents,
   attachments,
@@ -66,6 +67,9 @@ export function RunView({ id }: { id: string }) {
   useEffect(() => {
     if (run && run.status !== "running" && !run.seen && !document.hidden) void markSeen(run.id);
   }, [run?.status, run?.seen]);
+  // A run started from the team board links back to its task: the runner's own records say which attempt it executes (the engine knows nothing of tasks).
+  useEffect(() => { void loadLocalAttempts(); }, [id]);
+  const teamTask = localAttempts.value.find((entry) => entry.runId === id)?.taskId;
 
   // [ and ] step through the timeline.
   useEffect(() => {
@@ -141,6 +145,7 @@ export function RunView({ id }: { id: string }) {
                   {awaitingInput ? "Waiting for you" : teamNeedsResume(run) ? "Unresolved work" : state === "failing" ? "Done · check failing" : state === "unchecked" ? "Done · check can't run" : STATUS_TEXT[run.status] ?? run.status}
                 </span>
                 <span class="run-pattern">{p?.name ?? run.pattern}</span>
+                {teamTask ? <a class="run-team-task" href={`#/team/task/${enc(teamTask)}`} title="This run executes a task of the team board">Team task</a> : null}
               </div>
               <h2 title={run.task}>{run.task.split("\n")[0] || "(no task)"}</h2>
             </div>

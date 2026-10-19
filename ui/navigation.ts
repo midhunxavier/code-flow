@@ -9,6 +9,8 @@ export type Route =
   | { view: "side"; tab: SideTab; scope: string }
   | { view: "run"; id: string }
   | { view: "review"; id: string; branch: string }
+  | { view: "team"; project?: string }
+  | { view: "team-task"; id: string }
   | { view: "invalid"; hash: string };
 
 /** Decode a deep link without allowing malformed URL escapes to prevent the app rendering. */
@@ -25,6 +27,8 @@ export function parseRouteHash(hash: string): Route {
   if (view === "automations") return { view: "settings", section: "automations" };
   if (view === "insights") return { view: "settings", section: "insights", ...(id ? { group: id } : {}) };
   if (view === "project" && id) return { view: "project", id };
+  // The team board and its tasks: #/team, #/team/project/<id>, #/team/task/<id>; anything else under #/team is the board.
+  if (view === "team") return id === "task" && rest[0] ? { view: "team-task", id: rest[0] } : id === "project" && rest[0] ? { view: "team", project: rest[0] } : { view: "team" };
   if (view === "side" && id && rest[0]) return { view: "side", tab: SIDE_TABS.includes(id as SideTab) ? id as SideTab : "chat", scope: rest[0] };
   return { view: "composer" };
 }
@@ -34,6 +38,8 @@ export function hashFor(r: Route): string {
   if (r.view === "run") return `#/run/${encodeURIComponent(r.id)}`;
   if (r.view === "settings") return r.section ? `#/settings/${r.section}${r.section === "insights" && r.group ? `/${encodeURIComponent(r.group)}` : ""}` : "#/settings";
   if (r.view === "project") return `#/project/${encodeURIComponent(r.id)}`;
+  if (r.view === "team") return r.project ? `#/team/project/${encodeURIComponent(r.project)}` : "#/team";
+  if (r.view === "team-task") return `#/team/task/${encodeURIComponent(r.id)}`;
   if (r.view === "side") return `#/side/${r.tab}/${encodeURIComponent(r.scope)}`;
   if (r.view === "review") return `#/review/${encodeURIComponent(r.id)}/${r.branch.split("/").map(encodeURIComponent).join("/")}`;
   return "#/";

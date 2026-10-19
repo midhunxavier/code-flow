@@ -608,6 +608,9 @@
   .run-kicker { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .run-title h2 { margin: 0; min-width: 0; font-family: var(--display); font-size: 26px; font-weight: 400; letter-spacing: -.5px; line-height: 1.2; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .run-pattern { min-width: 0; font-size: 12px; font-weight: 500; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* the way back to the team board task a run executes (ui/collab-task.tsx has "Open run" the other way) */
+  .run-kicker .run-team-task { flex: none; font-size: 12px; font-weight: 500; color: var(--text-2); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; white-space: nowrap; }
+  .run-kicker .run-team-task:hover { color: var(--text); text-decoration-color: currentColor; }
   .run-actions { flex: none; display: flex; align-items: center; gap: 6px; }
   .status-pill { flex: none; height: 22px; font-size: 12px; font-weight: 500; line-height: 1; padding: 0 9px; border-radius: 999px; background: var(--sunken); color: var(--text-2); border: 0; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
   /* running: a mint dot that breathes (an empty pseudo-element, so the pill's text stays just its words) */
@@ -2695,4 +2698,172 @@
 @container settings (max-width: 640px) {
   .settings-content .workbench .wb-tabs { display: none; }
   .settings-content .workbench .wb-mobile-tool { display: block; margin: 16px 0; }
+}
+
+/* ---------- team ---------- */
+/* The team board and its task pages (ui/collab-*.tsx), in the paper tokens: columns of raised cards on
+   the panel tone, the inbox beside them; a task page as sections with hairline rows. Both themes come
+   from the tokens; nothing here names a colour. */
+.rail .team-entry { flex: none; margin: 8px 0 0; }
+.rail .team-entry + .settings-entry { margin-top: 0; }
+.team-page { max-width: 1400px; margin: 0 auto; padding: 28px 40px 64px; }
+.team-page .page-head { margin-bottom: 20px; }
+.team-callout { margin-bottom: 20px; }
+.team-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.team-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-bottom: 16px; }
+.team-toolbar .help { margin: 0; }
+.team-filter { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 500; color: var(--text-2); }
+.team-filter .field { width: auto; min-height: 30px; padding: 4px 10px; font-size: 13px; font-weight: 400; }
+.team-empty { margin: 0 0 16px; padding: 28px 20px; text-align: center; font-size: 13px; color: var(--muted); border: 1px dashed var(--border-strong); border-radius: var(--radius); }
+.team-board { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+.team-columns { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.team-columns.single { grid-template-columns: minmax(0, 1fr); }
+.team-column { display: grid; gap: 8px; align-content: start; min-width: 0; min-height: 140px; padding: 10px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
+.team-column h2 { display: flex; align-items: center; gap: 8px; margin: 0; padding: 2px 4px 4px; font-size: 13px; font-weight: 600; letter-spacing: 0; color: var(--text-2); }
+.team-count { display: inline-flex; align-items: center; justify-content: center; height: 20px; min-width: 20px; padding: 0 7px; border-radius: 999px; background: var(--sunken); color: var(--text-2); font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.team-count.warn { background: var(--warn-soft); color: var(--warn); }
+.team-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.team-column-empty { margin: 0; padding: 10px 4px 6px; font-size: 12px; color: var(--faint); }
+.team-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; width: 100%; min-width: 0; padding: 10px 12px; text-align: left; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--raised); color: var(--text); box-shadow: var(--shadow); font: inherit; font-size: 13px; transition: border-color .16s var(--ease), background-color .16s var(--ease); }
+.team-card:hover { border-color: var(--border-strong); background: var(--hover); }
+.team-card.needs-you { border-color: color-mix(in srgb, var(--warn-dot) 55%, var(--border)); }
+.team-card .tc-title { font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+.team-card .tc-meta, .team-card .tc-attempt { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--muted); }
+.team-card .tc-meta code, .team-task-meta code { font-size: 11px; }
+.team-card .pills:empty { display: none; }
+.team-card .badge { height: auto; min-height: 22px; padding: 2px 9px; line-height: 1.3; white-space: normal; text-align: left; overflow-wrap: anywhere; } /* a narrow column wraps a badge instead of overflowing */
+.team-avatar { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--selected); color: var(--text-2); font-size: 10px; font-weight: 600; letter-spacing: .02em; }
+.team-live { display: inline-flex; align-items: center; gap: 6px; color: var(--accent-ink); }
+.team-live .dot, .tc-attempt .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.team-stale { color: var(--warn); }
+.team-inbox { min-width: 0; background: var(--raised); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.team-inbox-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px 10px; }
+.team-inbox-head h2 { display: flex; align-items: center; gap: 8px; flex: 1; margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0; color: var(--text); }
+.team-inbox-head h2:focus-visible { outline-offset: 4px; }
+.team-inbox > .msg, .team-inbox > .help { margin: 0; padding: 0 16px 12px; }
+.team-inbox-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: start; padding: 10px 16px; border-top: 1px solid var(--border); }
+.team-inbox-item.is-unread { background: color-mix(in srgb, var(--accent-soft) 45%, var(--raised)); } /* not `.unread`: that is the rail's dot */
+.ti-open { display: grid; gap: 2px; min-width: 0; padding: 0; border: 0; background: none; text-align: left; font: inherit; font-size: 13px; color: var(--text); }
+.ti-open:hover .ti-title { text-decoration: underline; }
+.ti-title { font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+.team-inbox-item.is-unread .ti-title { font-weight: 600; }
+.ti-text { color: var(--text-2); font-size: 12.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.ti-meta { color: var(--muted); font-size: 12px; }
+/* the task page */
+.team-back { margin-bottom: 10px; font-size: 12px; }
+.team-back a { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); text-decoration: none; }
+.team-back a:hover { color: var(--text); }
+.team-back .icon.back { width: 14px; height: 14px; transform: rotate(90deg); }
+.team-task-head h1 { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+.team-task-head .team-edit { width: 28px; height: 28px; color: var(--muted); }
+.team-task-head .team-edit .icon { width: 14px; height: 14px; }
+.team-title-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.team-title-edit .field { flex: 1 1 280px; font-size: 16px; font-weight: 500; }
+.team-task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 8px 0 0; font-size: 12.5px; color: var(--muted); }
+.team-task-meta strong { color: var(--text-2); }
+.team-task-head .page-head-actions { flex-direction: column; align-items: flex-end; }
+.team-task-head .page-head-actions .help { margin: 0; max-width: 340px; text-align: right; }
+.team-status { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 500; color: var(--text-2); }
+.team-status .field { width: auto; min-height: 30px; padding: 4px 10px; font-size: 13px; font-weight: 400; }
+.team-blocker { display: grid; gap: 6px; width: min(100%, 360px); text-align: left; }
+.team-blocker label { font-size: 12px; font-weight: 500; color: var(--text-2); }
+.team-task-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.team-main, .team-aside { min-width: 0; }
+.team-section { min-width: 0; margin-bottom: 16px; padding: 16px 20px; background: var(--raised); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.team-section > h2, .team-section > summary { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 14px; font-weight: 600; letter-spacing: 0; color: var(--text); }
+.team-history > summary { margin: 0; list-style: none; cursor: pointer; color: var(--text-2); }
+.team-history > summary::-webkit-details-marker { display: none; }
+.team-history > summary::before { content: ""; flex: none; width: 5px; height: 5px; margin: 0 2px 0 1px; border-right: 1.5px solid var(--dim); border-bottom: 1.5px solid var(--dim); transform: rotate(-45deg); transition: transform .16s var(--ease); }
+.team-history[open] > summary { margin-bottom: 10px; color: var(--text); }
+.team-history[open] > summary::before { transform: rotate(45deg); }
+.team-history > summary:hover { color: var(--text); }
+.team-section > .help:first-of-type { margin-top: 0; }
+.team-new { margin-bottom: 16px; }
+.team-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.team-fields.column { grid-template-columns: minmax(0, 1fr); }
+.team-fields label:not(.check), .team-wide, .team-text label, .team-inline label, .team-connect label, .team-mapping label, .team-composer label:not(.check), .team-review-form label:not(.check) { display: grid; gap: 6px; font-size: 12px; font-weight: 500; color: var(--text-2); }
+.team-fields label .help, .team-text label .help { margin: 0; font-weight: 400; }
+.team-wide { margin-top: 12px; }
+.team-text + .team-text { margin-top: 12px; }
+.team-text textarea, .team-wide textarea, .team-composer textarea, .team-review-form textarea, .team-blocker textarea { resize: vertical; font-size: 13px; line-height: 1.5; }
+.team-prose { margin: 8px 0 0; padding: 10px 12px; max-height: 320px; overflow: auto; border: 0; border-radius: var(--radius-sm); background: var(--sunken); color: var(--text); font: 13px/1.55 var(--sans); white-space: pre-wrap; overflow-wrap: anywhere; }
+.team-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.team-actions .help { margin: 0; }
+.team-actions:empty { display: none; }
+.team-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 16px; align-items: baseline; margin: 10px 0 0; font-size: 13px; }
+.team-kv dt { font-size: 12px; font-weight: 500; color: var(--muted); }
+.team-kv dd { margin: 0; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.team-kv dd .help { display: inline; margin: 0; }
+.team-list { margin: 6px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
+.team-list.mono { font-family: var(--mono); font-size: 12px; }
+.team-list.decisions { display: grid; gap: 8px; padding-left: 0; list-style: none; }
+.team-list.decisions li { display: grid; gap: 2px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--sunken); }
+.team-list.decisions .help { margin: 0; }
+.team-files { margin-top: 10px; font-size: 13px; }
+.team-item { padding: 12px 0; border-top: 1px solid var(--border); }
+.team-item:first-of-type { border-top: 0; padding-top: 4px; }
+.team-item .team-task-meta { margin: 0; }
+.team-item details { margin-top: 6px; font-size: 13px; }
+.team-timeline { display: grid; gap: 8px; }
+.team-comment { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--sunken); }
+.team-comment.system { background: transparent; border-style: dashed; }
+.team-comment.instruction { border-color: var(--accent-line); background: color-mix(in srgb, var(--accent-soft) 60%, var(--raised)); }
+.team-comment.instruction.declined { border-color: var(--border); background: var(--sunken); }
+.team-comment-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--muted); }
+.team-comment-head strong { font-size: 13px; color: var(--text); }
+.team-comment-text { margin: 6px 0 0; font-size: 13px; line-height: 1.55; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.team-mention { font-weight: 600; color: var(--accent-ink); }
+.team-composer { margin-top: 14px; }
+.team-composer .check, .team-review-form .check, .team-checks .check { font-size: 13px; color: var(--text-2); }
+.team-inline { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 10px; }
+.team-inline label { flex: 1 1 220px; }
+.team-review-form { margin-top: 12px; display: grid; gap: 8px; }
+.team-review-form fieldset, .team-checks, .team-roles, .team-keys { display: grid; gap: 6px; margin: 0; padding: 10px 14px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.team-review-form legend, .team-checks legend, .team-roles legend, .team-keys legend { padding: 0 6px; margin-left: -6px; font-size: 12px; font-weight: 500; color: var(--text-2); }
+.team-roles label { display: grid; gap: 4px; font-size: 12px; font-weight: 500; color: var(--text-2); }
+.team-history { font-size: 12.5px; color: var(--text-2); }
+.team-history ol { margin: 0; padding-left: 18px; display: grid; gap: 6px; line-height: 1.45; }
+.team-history .th-when { color: var(--muted); font-variant-numeric: tabular-nums; }
+.team-history .th-detail { color: var(--muted); }
+/* Settings → Team */
+.team-connect .settings-grid { margin-top: 12px; }
+.team-connect label, .team-mapping label { font-size: 12px; }
+.team-mappings { display: grid; gap: 14px; margin-top: 12px; }
+.team-mapping { display: grid; gap: 6px; }
+.team-mapping > label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.team-mapping .row-inline .field { flex: 1 1 240px; }
+.team-mapping .help { margin: 0; }
+.team-keys { margin-top: 14px; }
+.team-key-row { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr); gap: 6px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.team-key-row label { font-weight: 500; color: var(--text-2); }
+.team-key-row .btn { grid-column: 1 / -1; justify-self: start; }
+.team-keys .settings-actions { margin: 10px 0 0; }
+.settings-card .team-kv { margin: 0 0 6px; }
+.settings-card .team-inline { margin-top: 12px; }
+/* the shared dashboard's tabs and bell */
+.shared-tabs { display: flex; align-items: center; gap: 2px; margin: 0 0 16px; border-bottom: 1px solid var(--border); }
+.shared-tab { position: relative; height: 40px; padding: 0 12px; border: 0; background: none; color: var(--muted); font-size: 13px; font-weight: 500; transition: color .16s var(--ease); }
+.shared-tab:hover { color: var(--text); }
+.shared-tab[aria-selected="true"] { color: var(--text); }
+.shared-tab[aria-selected="true"]::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--ink); }
+.shared-top .shared-bell { margin-left: 0; gap: 4px; }
+.shared-page .team-page { max-width: none; padding: 0 0 32px; }
+.status-pill.review { background: var(--info-soft); color: var(--info); }
+.status-pill.blocked { background: var(--warn-soft); color: var(--warn); }
+.status-pill.planned { background: var(--sunken); color: var(--text-2); }
+@media (max-width: 1300px) { .team-board { grid-template-columns: minmax(0, 1fr); } } /* the inbox goes under the columns before they get cramped */
+@media (max-width: 1100px) {
+  .team-columns { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+  .team-task-layout { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .team-page { padding: 16px 16px 48px; }
+  .team-columns, .team-fields, .team-key-row { grid-template-columns: minmax(0, 1fr); }
+  .team-key-row label { margin-top: 4px; }
+  .team-task-head .page-head-actions { align-items: stretch; }
+  .team-task-head .page-head-actions .help { text-align: left; }
+  .team-kv { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+  .team-kv dd { margin-bottom: 8px; }
+  .team-inbox-item { grid-template-columns: minmax(0, 1fr); }
+  .shared-page .team-page { padding: 0 0 24px; }
 }

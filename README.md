@@ -49,6 +49,8 @@ The **Settings** page centralizes appearance, agent models, run defaults, notifi
 Additional workflows include [selective task reruns](docs/task-reruns.md), [deferred starts](docs/deferred-runs.md), [context budgets](docs/context-inspection.md), [versioned conventions](docs/project-conventions.md), [reviewed commit reversions](docs/checkpoint-review.md), and a [local VS Code extension](integrations/vscode/README.md). The [review inbox](docs/review-inbox.md) groups questions, blocked work, failures and results across projects.
 
 Use [shared project accounts](docs/shared-projects.md) for scoped human review,
+[team collaboration](docs/team-collaboration.md) for a shared task board whose
+work runs on each teammate's own computer,
 [SSH projects](docs/ssh-projects.md) for a complete remote workspace,
 [SSH workers](docs/remote-workers.md) for provisioned remote execution and
 [coordinated changes](docs/coordinated-changes.md) for repository dependency

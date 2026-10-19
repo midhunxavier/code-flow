@@ -8,6 +8,7 @@ import { notificationPermission, canNotify, setDesktopNotifications } from "./pr
 import { themeChoice, setTheme, type ThemeChoice } from "./theme.js";
 import { executionHost, SshConnections } from "./ssh-projects.js";
 import { RemoteAccess } from "./remote-access.js";
+import { TeamSettings } from "./collab-settings.js";
 import { AutomationsView, inbox } from "./automations.js";
 import { DeferredRunsPanel } from "./deferred-runs.js";
 import { NotificationsView } from "./notifications.js";
@@ -65,6 +66,7 @@ export function SettingsView({ section = "general", group }: { section?: Setting
             {section === "runs" ? <RunSettings /> : null}
             {section === "ssh" ? <SshConnections /> : null}
             {section === "remote-access" ? host.kind === "local" ? <RemoteAccess /> : <SettingsCard title="Manage access on your computer"><p>Remote device access is configured in your local workspace.</p>{host.kind === "ssh" ? <a class="btn" href={`${host.returnUrl}#/settings/remote-access`}>Back to this computer</a> : null}</SettingsCard> : null}
+            {section === "team" ? <TeamSettings /> : null}
             {section === "notifications" ? <><SettingsCard title="Desktop notifications"><SettingsRow title="Run updates" description="Notify when a run finishes or needs your attention, while you’re away from it."><button class="settings-switch" role="switch" aria-label="Desktop notifications" aria-checked={canNotify()} onClick={() => void setDesktopNotifications(!canNotify())}><span /></button></SettingsRow><p class="help">{"Notification" in window ? notificationPermission.value === "denied" ? "Notifications are blocked. Allow them in your browser’s site permissions to enable this setting." : "This preference is saved in this browser for the current workspace." : "This browser doesn’t support desktop notifications."}</p></SettingsCard><NotificationsView /></> : null}
             {section === "integrations" ? <><IntegrationsView onImport={(imported) => { externalSource.value = imported; source.value = null; setTask(`Address ${imported.provider} ${imported.kind} ${imported.key}: ${imported.title}`); route.value = { view: "composer" }; }} /><CodeHostsPanel projects={projects.value} /><RemoteWorkersView /></> : null}
             {section === "workspace" ? <WorkbenchView /> : null}

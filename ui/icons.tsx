@@ -42,6 +42,7 @@ const PATHS = {
   alert: "M10.3 4.2 2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01",
   play: "M7 5v14l11-7z",
   issue: `${circle(12, 12, 9)}${circle(12, 12, 1)}`,
+  people: `${circle(9, 8, 3.5)}M3 20v-1.5A4.5 4.5 0 0 1 7.5 14h3a4.5 4.5 0 0 1 4.5 4.5V20M16 4.6a3.5 3.5 0 0 1 0 6.8M21 20v-1.5a4.5 4.5 0 0 0-3.5-4.4`,
 } as const;
 
 export type IconName = keyof typeof PATHS;

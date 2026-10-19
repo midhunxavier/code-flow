@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canonicalSharedPath, sharedCanReadRun, sharedCoverageProjection, sharedDiffProjection, sharedEventProjection, sharedProjectProjection, sharedRoutePolicy, sharedRunProjection } from "../src/shared-access.js";
+import { canonicalSharedPath, sharedCanReadRun, sharedCoverageProjection, sharedDiffProjection, sharedEventProjection, sharedProjectProjection, sharedProjectRole, sharedRoutePolicy, sharedRunProjection } from "../src/shared-access.js";
 import type { Run, RunEvent } from "../src/engine.js";
 import type { SharedPrincipal } from "../src/shared-accounts.js";
 
@@ -48,4 +48,10 @@ test("shared result projections bound UTF-8 text and recent steps with explicit 
   const value = sharedRunProjection(run); assert.equal(value.steps!.length, 200); assert.equal(value.steps![0]!.id, "5");
   assert.deepEqual(value.truncation, { task: true, summary: true, error: true, omittedSteps: 5 }); assert.ok(Buffer.byteLength(value.task) <= 24 * 1024); assert.ok(Buffer.byteLength(value.summary!) <= 32 * 1024); assert.ok(Buffer.byteLength(value.error!) <= 4 * 1024);
   assert.ok(Buffer.byteLength(value.steps![0]!.finalText!) <= 8 * 1024); assert.ok(Buffer.byteLength(value.steps![0]!.error!) <= 4 * 1024); assert.equal(value.steps![0]!.finalTextTruncated, true); assert.equal(value.task.includes("�"), false, "truncation preserves complete UTF-8 characters");
+});
+test("sharedProjectRole returns the raw assigned role for rank checks and contributors read their projects like viewers", () => {
+  const identity: SharedPrincipal = { kind: "shared", userId: "user", username: "builder", displayName: "Builder", revision: 1, roles: { one: "contributor", two: "maintainer" } };
+  assert.equal(sharedProjectRole(identity, "one"), "contributor"); assert.equal(sharedProjectRole(identity, "two"), "maintainer"); assert.equal(sharedProjectRole(identity, "three"), undefined); assert.equal(sharedProjectRole(identity, undefined), undefined); assert.equal(sharedProjectRole(identity, "toString"), undefined, "inherited object keys never grant a role");
+  const projects = [{ id: "one", name: "One", repos: ["/repo/one"], createdAt: 1 }, { id: "three", name: "Three", repos: ["/repo/three"], createdAt: 1 }];
+  assert.equal(sharedCanReadRun(identity, { project: "one", repo: "/repo/one" }, projects), true); assert.equal(sharedCanReadRun(identity, { project: "three", repo: "/repo/three" }, projects), false);
 });

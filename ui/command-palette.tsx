@@ -19,6 +19,7 @@ export function CommandPalette() {
     { id: "new", label: "New run", detail: "Actions", icon: "plus", run: () => (route.value = { view: "composer" }) },
     { id: "settings", label: "Settings", detail: "Preferences, agents and remote connections", icon: "sliders", run: () => (route.value = { view: "settings" }) },
     ...SETTINGS_SECTIONS.map((section): Command => ({ id: `settings:${section.id}`, label: section.label, detail: `Settings · ${section.keywords}`, icon: section.icon, run: () => (route.value = { view: "settings", section: section.id }) })),
+    { id: "team", label: "Team board", detail: "Tasks, hand-overs and your team inbox", icon: "people", run: () => (route.value = { view: "team" }) },
     { id: "repo", label: "Choose repository", detail: "Actions", icon: "folder", run: () => (pickerOpen.value = true) },
     { id: "projects", label: "Manage projects", detail: "Actions", icon: "project", run: () => (projectsOpen.value = true) },
     { id: "health", label: "Check provider and Git health", detail: "Actions", icon: "alert", run: () => (healthOpen.value = true) },

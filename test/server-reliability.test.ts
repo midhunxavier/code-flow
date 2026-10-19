@@ -5,6 +5,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo, type Server } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -55,8 +56,9 @@ async function startServer(env: Record<string, string>): Promise<Instance> {
   });
   const instance = { base: `http://localhost:${port}`, remotePort, child };
   servers.push(instance);
+  const ready = { authorization: `Bearer ${env.CODEFLOW_TOKEN ?? TOKEN}` };
   for (let i = 0; i < 150; i++) {
-    if (await fetch(`${instance.base}/api/health`, { headers: bearer }).then((r) => r.ok, () => false)) return instance;
+    if (await fetch(`${instance.base}/api/health`, { headers: ready }).then((r) => r.ok, () => false)) return instance;
     await new Promise((r) => setTimeout(r, 200));
   }
   throw new Error("server didn't start");
@@ -540,4 +542,15 @@ test("Improve refuses relative PATH before source Git validation can execute a c
     assert.equal(existsSync(marker), false, "repository discovery must not execute source/git before environment validation"); assert.deepEqual(readdirSync(records), [], "no provider fallback executes");
   }
   finally { instance.child.kill("SIGTERM"); }
+});
+
+test("an owner token shaped like a runner credential still signs in on this machine, and an unknown runner credential still does not", async () => {
+  const token = `tr-${randomBytes(32).toString("base64url")}`; assert.match(token, /^tr-[A-Za-z0-9_-]{43}$/, "the fixture token has the runner-credential shape");
+  const instance = await startServer({ CODEFLOW_TOKEN: token });
+  try {
+    const self = await fetch(`${instance.base}/api/auth/self`, { headers: { authorization: `Bearer ${token}` } }); assert.equal(self.status, 200); assert.equal((await self.json()).kind, "owner", "the owner token is matched before the bearer is read as a runner credential");
+    assert.equal((await fetch(`${instance.base}/api/health`, { headers: { authorization: `Bearer ${token}` } })).status, 200);
+    const stranger = await fetch(`${instance.base}/api/health`, { headers: { authorization: `Bearer tr-${randomBytes(32).toString("base64url")}` } }); assert.equal(stranger.status, 401); assert.match((await stranger.json()).error, /runner credential is not valid/);
+    const other = await fetch(`${instance.base}/api/health`, { headers: bearer }); assert.equal(other.status, 401, "another instance's owner token is still refused");
+  } finally { instance.child.kill("SIGTERM"); }
 });

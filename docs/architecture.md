@@ -8,6 +8,7 @@ ui/*.tsx                 UI: Preact + TypeScript, compiled against the server's 
                           · project: a project's page · side: the side panel, its files and notes · side-chat, changes, terminal, browser: its other tabs
                           · panel-bits: what the tabs share (folders, the strip of open sessions, menus))
 ui/bits.tsx              small shared pieces: agent tags, the Markdown renderer, QR codes
+ui/collab-*.tsx          the Team page: the board and its inbox (collab-board), a task with its attempt, checkpoints, reviews and discussion (collab-task), Settings → Team (collab-settings); collab-state.ts holds their signals and API helpers
 ui/styles.css, ui/fonts  the stylesheet (the paper theme, light and dark) and its font (Inter; licence included)
 ui/theme.ts              light or dark: follows the system until you pick one with the top bar's theme button
 scripts/build-ui.mjs     bundles the UI, fonts and images into one self-contained public/index.html (npm start builds it)
@@ -41,6 +42,7 @@ src/sweeps.ts            sweeps: list issues, Dependabot PRs and alerts; start o
 src/automation.ts        automations: schedules, webhooks (Bearer or GitHub signature), firing runs
 src/tailscale.ts         bounded, read-only Tailscale detection for the remote listener
 src/remote.ts            the phone link: read-only view (server-rendered), settings for full phone control
+src/collab/*.ts          the team board: model (types, bounds, validators, the task state machine), store (CODEFLOW_HOME/team/, atomic writes with a write-behind for heartbeats and progress only, authorization checked in the store), api (/api/team/* for owner, shared and runner principals, with its SSE stream), checkpoints (Git bundles whose only ref is refs/codeflow/team/<checkpoint id>, the id minted by the runner before bundling), hub-client (LocalHub and RemoteHub: the same runner code against the in-process store or a team server over HTTPS), link, runner and link-api (the linked computer: team-link.json, local attempt records, hand-overs, reconciliation and the recovery pass, /api/team-link/*)
 src/engine.ts            RunManager, TeamContext (ask / worktree / commit / diff), event log
 src/patterns/*.ts        the team patterns, written against TeamContext
 src/adapters/*.ts        AgentAdapter per CLI → normalized AgentEvent stream
@@ -74,7 +76,7 @@ Implement `AgentAdapter` in `src/adapters/`, then register it in `src/adapters/i
 
 Owner-configured providers and workflows can also use [versioned extensions](extensions.md) without modifying the built-in registry. They use namespaced IDs, explicit capability/API negotiation, reviewed bundle hashes and per-run version pins. Additional provider capabilities remain unknown until separately verified.
 
-The HTTP boundaries for shared access, filesystem policy, coordinated changes, code hosts and workspace operations live in separate modules. SSH framing/artifacts/receipts, durable queues, memory claim analysis and Git shipping each have independent contracts and focused tests. [Run storage](run-storage.md) separates recovery/projection from execution and bounds archived detail hydration. These boundaries retain server-owned authority and replay identities rather than moving them into client request bodies.
+The HTTP boundaries for shared access, the team board and its linked runners, filesystem policy, coordinated changes, code hosts and workspace operations live in separate modules. SSH framing/artifacts/receipts, durable queues, memory claim analysis and Git shipping each have independent contracts and focused tests. [Run storage](run-storage.md) separates recovery/projection from execution and bounds archived detail hydration. These boundaries retain server-owned authority and replay identities rather than moving them into client request bodies.
 
 ## Development
 

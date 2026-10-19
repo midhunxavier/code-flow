@@ -4,7 +4,13 @@ import { dirname, join } from "node:path";
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import { CODEFLOW_HOME } from "./config.js";
 
-export type SharedRole = "viewer" | "reviewer";
+export type SharedRole = "viewer" | "reviewer" | "contributor" | "maintainer";
+/** Weakest first: each role may do everything the roles before it may do, so authorization compares rank with roleAtLeast instead of enumerating roles. */
+export const SHARED_ROLES: readonly SharedRole[] = ["viewer", "reviewer", "contributor", "maintainer"];
+/** A missing or unrecognised role never satisfies a requirement; the owner is not a SharedRole and is granted maintainer rank by callers. */
+export function roleAtLeast(role: SharedRole | undefined, needed: SharedRole): boolean { const rank = role === undefined ? -1 : SHARED_ROLES.indexOf(role), floor = SHARED_ROLES.indexOf(needed); return rank >= 0 && floor >= 0 && rank >= floor; }
+/** Browser sign-in and runner enrolment prove the same password; only sign-in receives a session. */
+export interface SharedCredentials { username: unknown; password: unknown; address: string; secure: boolean; loopback: boolean }
 export interface SharedUser { id: string; username: string; displayName: string; enabled: boolean; revision: number; roles: Record<string, SharedRole>; createdAt: number; updatedAt: number }
 export interface SharedPrincipal { kind: "shared"; userId: string; username: string; displayName: string; revision: number; roles: Record<string, SharedRole> }
 export interface SharedAccountState { revision: number; users: SharedUser[] }
@@ -20,13 +26,14 @@ const keys = (v: Record<string, unknown>, allowed: readonly string[]) => Object.
 const integer = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const hex = (v: unknown, length: number) => typeof v === "string" && new RegExp(`^[a-f0-9]{${length}}$`).test(v);
 const userId = (v: unknown): v is string => typeof v === "string" && /^u-[a-f0-9-]{36}$/.test(v);
-function username(value: unknown): string { if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$/.test(value)) throw new SharedAccountError("Use 3–64 letters, digits, dots, underscores or dashes for the username"); return value.toLowerCase(); }
+/** `owner` is the team board's name for the person running the server (`@owner` mentions, the member list), so no account may take it; `reserved: false` lets a file written before this rule still load. */
+function username(value: unknown, reserved = true): string { if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$/.test(value)) throw new SharedAccountError("Use 3–64 letters, digits, dots, underscores or dashes for the username"); const name = value.toLowerCase(); if (reserved && name === "owner") throw new SharedAccountError("The username owner is reserved for the server owner"); return name; }
 function displayName(value: unknown): string { if (typeof value !== "string" || !value.trim() || value.length > 120 || /[\x00-\x1f\x7f]/.test(value)) throw new SharedAccountError("Enter a display name of up to 120 characters"); return value.trim(); }
 function passwordText(value: unknown, creating = true): string { if (typeof value !== "string" || Buffer.byteLength(value) > 1024 || (creating && [...value].length < 15)) throw new SharedAccountError("Passwords need at least 15 characters and at most 1024 UTF-8 bytes"); return value; }
 export function validateSharedRoles(value: unknown): Record<string, SharedRole> {
   if (!object(value) || Object.keys(value).length > 200) throw new SharedAccountError("Project roles must be a map with at most 200 assigned projects");
   const roles: Record<string, SharedRole> = {};
-  for (const [id, role] of Object.entries(value)) { if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id) || ["__proto__", "constructor", "prototype"].includes(id) || !["viewer", "reviewer"].includes(String(role))) throw new SharedAccountError("Only project viewer and reviewer roles may be assigned"); roles[id] = role as SharedRole; }
+  for (const [id, role] of Object.entries(value)) { if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id) || ["__proto__", "constructor", "prototype"].includes(id) || !SHARED_ROLES.includes(role as SharedRole)) throw new SharedAccountError("Only project viewer, reviewer, contributor and maintainer roles may be assigned"); roles[id] = role as SharedRole; }
   return roles;
 }
 let activeDerivations = 0;
@@ -43,7 +50,7 @@ function principal(user: StoredUser): SharedPrincipal { return { kind: "shared",
 function validateState(raw: unknown): State {
   if (!object(raw) || !keys(raw, ["version", "revision", "users", "sessions"]) || raw.version !== 1 || !integer(raw.revision) || !Array.isArray(raw.users) || raw.users.length > MAX_USERS || !Array.isArray(raw.sessions) || raw.sessions.length > MAX_SESSIONS) throw new Error("Invalid shared account storage");
   for (const u of raw.users) {
-    if (!object(u) || !keys(u, ["id", "username", "displayName", "enabled", "revision", "roles", "createdAt", "updatedAt", "password"]) || !userId(u.id) || username(u.username) !== u.username || displayName(u.displayName) !== u.displayName || typeof u.enabled !== "boolean" || !integer(u.revision) || u.revision < 1 || !integer(u.createdAt) || !integer(u.updatedAt) || u.updatedAt < u.createdAt || !object(u.password) || !keys(u.password, ["algorithm", "N", "r", "p", "salt", "hash"]) || u.password.algorithm !== "scrypt" || u.password.N !== 131072 || u.password.r !== 8 || u.password.p !== 1 || !hex(u.password.salt, 32) || !hex(u.password.hash, 64)) throw new Error("Invalid shared account record");
+    if (!object(u) || !keys(u, ["id", "username", "displayName", "enabled", "revision", "roles", "createdAt", "updatedAt", "password"]) || !userId(u.id) || username(u.username, false) !== u.username || displayName(u.displayName) !== u.displayName || typeof u.enabled !== "boolean" || !integer(u.revision) || u.revision < 1 || !integer(u.createdAt) || !integer(u.updatedAt) || u.updatedAt < u.createdAt || !object(u.password) || !keys(u.password, ["algorithm", "N", "r", "p", "salt", "hash"]) || u.password.algorithm !== "scrypt" || u.password.N !== 131072 || u.password.r !== 8 || u.password.p !== 1 || !hex(u.password.salt, 32) || !hex(u.password.hash, 64)) throw new Error("Invalid shared account record");
     validateSharedRoles(u.roles);
   }
   if (new Set(raw.users.map((u) => u.id)).size !== raw.users.length || new Set(raw.users.map((u) => u.username)).size !== raw.users.length) throw new Error("Duplicate shared account identity");
@@ -63,7 +70,7 @@ class LoginLimiter {
     while (this.buckets.size > 2048) this.buckets.delete(this.buckets.keys().next().value!);
   }
 }
-/** Local accounts delegate result review only. These identities never authorize host process execution. */
+/** Local accounts delegate result review and team-board work only. These identities never authorize execution on this host; contributors run team tasks on their own computers. */
 export class SharedAccounts {
   private state: State = { version: 1, revision: 0, users: [], sessions: [] };
   private loaded = false; private loading?: Promise<void>; private readable = true; private writes: Promise<unknown> = Promise.resolve();
@@ -90,15 +97,10 @@ export class SharedAccounts {
     return this.change(async (state) => { this.cas(state, input.revision); const user = this.find(state, id); if (input.displayName !== undefined) user.displayName = displayName(input.displayName); if (input.enabled !== undefined) { if (typeof input.enabled !== "boolean") throw new SharedAccountError("Enabled must be true or false"); user.enabled = input.enabled; } if (input.roles !== undefined) user.roles = validateSharedRoles(input.roles); if (input.password !== undefined) user.password = await makePassword(input.password); user.revision++; user.updatedAt = Date.now(); state.sessions = state.sessions.filter((session) => session.userId !== id); });
   }
   revokeSessions(id: string, input: { revision: unknown }): Promise<SharedAccountState> { return this.change((state) => { this.cas(state, input.revision); const user = this.find(state, id); user.revision++; user.updatedAt = Date.now(); state.sessions = state.sessions.filter((session) => session.userId !== id); }); }
-  async login(input: { username: unknown; password: unknown; address: string; secure: boolean; loopback: boolean }) {
-    await this.load(); this.require();
-    if (!input.secure && !input.loopback) throw new SharedAccountError("Shared sign-in requires HTTPS outside this computer", 403);
-    const name = typeof input.username === "string" ? input.username.toLowerCase() : "";
-    this.limiter.check(input.address, name.slice(0, 128), Date.now());
-    const supplied = passwordText(input.password, false), user = this.state.users.find((entry) => entry.username === name);
-    const expected = user ? Buffer.from(user.password.hash, "hex") : dummyHash;
-    const result = await derive(supplied, user?.password.salt ?? dummySalt);
-    if (!timingSafeEqual(result, expected) || !user?.enabled) throw new SharedAccountError("Invalid username or password", 401);
+  /** Runner enrolment (POST /api/team/runners/connect) proves a password exactly like sign-in, with the same transport rule, limiter and constant-time compare, but must not mint a cookie session. */
+  async verifyCredentials(input: SharedCredentials): Promise<SharedUser> { return publicUser(await this.verify(input)); }
+  async login(input: SharedCredentials) {
+    const user = await this.verify(input);
     const token = randomBytes(32).toString("base64url"), now = Date.now(); const revision = user.revision;
     await this.mutate((state) => {
       const current = this.find(state, user.id); if (!current.enabled || current.revision !== revision) throw new SharedAccountError("Account changed during sign-in; try again", 401);
@@ -120,6 +122,18 @@ export class SharedAccounts {
     if (typeof options === "number" || options.touch !== false) session.lastSeenAt = Math.max(session.lastSeenAt, now); return principal(user);
   }
   async logout(token: string): Promise<void> { await this.load(); await this.mutate((state) => { state.sessions = state.sessions.filter((session) => session.hash !== digest(token)); }, true); }
+  /** The single password check: an unknown account still derives against a dummy salt, so timing never reveals which usernames exist. */
+  private async verify(input: SharedCredentials): Promise<StoredUser> {
+    await this.load(); this.require();
+    if (!input.secure && !input.loopback) throw new SharedAccountError("Shared sign-in requires HTTPS outside this computer", 403);
+    const name = typeof input.username === "string" ? input.username.toLowerCase() : "";
+    this.limiter.check(input.address, name.slice(0, 128), Date.now());
+    const supplied = passwordText(input.password, false), user = this.state.users.find((entry) => entry.username === name);
+    const expected = user ? Buffer.from(user.password.hash, "hex") : dummyHash;
+    const result = await derive(supplied, user?.password.salt ?? dummySalt);
+    if (!timingSafeEqual(result, expected) || !user?.enabled) throw new SharedAccountError("Invalid username or password", 401);
+    return user;
+  }
   private require() { if (!this.available) throw new SharedAccountError("Shared account storage is unavailable; use the owner recovery link", 503); }
   private find(state: State, id: string) { const user = state.users.find((user) => user.id === id); if (!user) throw new SharedAccountError("Shared account not found", 404); return user; }
   private cas(state: State, revision: unknown) { if (!integer(revision) || revision !== state.revision) throw new SharedAccountError("Accounts changed; reload before saving", 409); }

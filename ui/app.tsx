@@ -13,6 +13,9 @@ import { GitHubPicker } from "./github.js";
 import { SweepDialog } from "./sweeps.js";
 import { ProjectsDialog } from "./projects.js";
 import { ProjectView } from "./project.js";
+import { TeamBoardView } from "./collab-board.js";
+import { TeamTaskView } from "./collab-task.js";
+import { board as teamBoard, openTask, watchTeam } from "./collab-state.js";
 import { Rail } from "./rail.js";
 import { Icon } from "./icons.js";
 import { api, showToast, store, toast } from "./lib.js";
@@ -104,6 +107,8 @@ function MainApp() {
     window.addEventListener("keydown", onShortcut);
     return () => window.removeEventListener("keydown", onShortcut);
   }, []);
+  // The team board's live updates (and the Team entry's unread count) for as long as the app is open.
+  useEffect(() => { watchTeam(); }, []);
   // On phones the runs list is a drawer: going anywhere closes it.
   useEffect(() => {
     railOpen.value = false;
@@ -127,6 +132,10 @@ function MainApp() {
               <ProjectView key={route.value.id} id={route.value.id} />
             ) : route.value.view === "settings" ? (
               <SettingsView section={route.value.section} group={route.value.group} />
+            ) : route.value.view === "team" ? (
+              <TeamBoardView key="team" project={route.value.project} navigate={navigate} />
+            ) : route.value.view === "team-task" ? (
+              <TeamTaskView key={route.value.id} id={route.value.id} navigate={navigate} />
             ) : route.value.view === "invalid" ? (
               <div class="composer" role="alert">
                 <h1>This link is invalid</h1>
@@ -240,6 +249,35 @@ function Crumbs() {
     trail = (
       <span class="crumb here" aria-current="page">
         {projects.value.find((p) => p.id === r.id)?.name ?? "Project"}
+      </span>
+    );
+  } else if (r.view === "team" || r.view === "team-task") {
+    // The board, or a task under it: its title comes from the open task, else from the board's card.
+    const title = r.view === "team-task" ? (openTask.value?.id === r.id ? openTask.value.title : teamBoard.value?.tasks.find((t) => t.id === r.id)?.title ?? "Task") : undefined;
+    const projectName = r.view === "team" && r.project ? teamBoard.value?.projects.find((p) => p.id === r.project)?.name : undefined;
+    trail = title !== undefined ? (
+      <>
+        <a class="crumb" href="#/team">
+          Team
+        </a>
+        {sep}
+        <span class="crumb title here" title={title} aria-current="page">
+          {title}
+        </span>
+      </>
+    ) : projectName ? (
+      <>
+        <a class="crumb" href="#/team">
+          Team
+        </a>
+        {sep}
+        <span class="crumb here" aria-current="page">
+          {projectName}
+        </span>
+      </>
+    ) : (
+      <span class="crumb here" aria-current="page">
+        Team
       </span>
     );
   } else if (r.view === "settings") {

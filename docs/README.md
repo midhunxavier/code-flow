@@ -22,7 +22,8 @@
 - [Code intelligence](code-intelligence.md): isolated JavaScript/TypeScript symbol and reference resolution.
 - [Architecture explorer](architecture-explorer.md): static imports, packages, cycles and directory boundaries across six languages.
 - [Semantic memory claims](memory-claims.md): bounded duplicate/contradiction evidence with source revisions and overlapping applicability.
-- [Shared projects](shared-projects.md): local viewer/reviewer accounts, scoped results, reviews and immediate revocation.
+- [Shared projects](shared-projects.md): local accounts with viewer, reviewer, contributor and maintainer roles, scoped results, reviews and immediate revocation.
+- [Team collaboration](team-collaboration.md): a shared board of tasks on a team server, runners on each teammate's own computer, hand-over checkpoints and reviews.
 - [SSH projects](ssh-projects.md): connect to a server, open its repositories, and run the full workspace remotely.
 - [SSH workers](remote-workers.md): explicit remote targets, source/result bundles, durable receipts and recovery.
 - [Coordinated changes](coordinated-changes.md): pinned dependencies and per-repository validation/shipping.

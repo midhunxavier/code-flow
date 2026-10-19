@@ -40,10 +40,30 @@ App-managed subprocesses use absolute PATH entries, including explicit environme
 overrides. On macOS/Linux, an absent or unusable PATH falls back to `/usr/bin:/bin`
 so repository-owned tools cannot be selected through the current directory.
 
-Local shared-project accounts grant scoped viewer/reviewer access through a
-separate closed API surface. They do not delegate execution or the owner's
-phone capability. Sessions expire and revoke immediately; raw transcripts,
-private context and host paths are omitted. See [shared projects](shared-projects.md).
+Local shared-project accounts grant scoped viewer, reviewer, contributor and
+maintainer access through two closed API surfaces, the shared review routes and
+the team board. They do not delegate execution or the owner's phone capability.
+Sessions expire and revoke immediately; raw transcripts, private context and
+host paths are omitted. See [shared projects](shared-projects.md).
+
+[Team collaboration](team-collaboration.md) adds a per-machine runner credential
+bound to a shared account. It is shown once, stored only as a hash on the team
+server, reaches only the team routes and is revoked there in one step; the
+owner's own token is matched before a bearer is read as a runner credential, and
+the file that holds the credential on a linked computer (`team-link.json`) is
+left out of backups like the other credential stores. The team server never
+reaches into a teammate's machine: every connection is outbound from that
+machine, to the exact address its owner entered (a redirect or an untrusted
+certificate is refused), and execution starts only from each computer's own
+code-flow, with that person's own CLI logins, in a worktree there. Progress,
+checkpoints and discussion are the only things that travel; transcripts, local
+paths and copied secret files stay where the run is, and the reasons published
+for failed, stopped or lost attempts have local paths replaced by `<local path>`.
+Teammates' comments never enter a prompt; an instruction they send to an agent
+reaches it only after the task's owner, or a maintainer of its project (the team
+server's owner is one everywhere), approves it, and then as a message to the run
+attributed to its author; a hand-over checkpoint's context arrives fenced as
+information, not instructions.
 
 Custom [filesystem policies](filesystem-policy.md) enforce application reads,
 writes and filtered diffs, and pause ordinary code execution globally where its

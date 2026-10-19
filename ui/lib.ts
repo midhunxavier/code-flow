@@ -118,8 +118,12 @@ export function useLatest(): () => () => boolean {
 
 /**
  * Call `fn` now and every `ms` while `active` and the page is in view: a hidden tab (or a closed
- * panel) polls nothing, and catches up with one call when it's shown again. `fn` gets a check that
- * turns false once `deps` change or the component goes, for answers that come back after that.
+ * panel) polls nothing, and catches up with one call when it's shown again. `ms` 0 means no
+ * interval at all (the call still happens on mount, when `deps` change and when the page is shown
+ * again), for pages that reload on an event stream instead: a shared account's session ends after
+ * 30 minutes idle, and a timer that asks the server every 15 s would keep it alive for ever. `fn`
+ * gets a check that turns false once `deps` change or the component goes, for answers that come
+ * back after that.
  */
 export function usePoll(fn: (current: () => boolean) => unknown, ms: number, deps: unknown[], active = true) {
   const latest = useRef(fn);
@@ -132,11 +136,11 @@ export function usePoll(fn: (current: () => boolean) => unknown, ms: number, dep
       if (!document.hidden) void latest.current(current);
     };
     tick();
-    const timer = setInterval(tick, ms);
+    const timer = ms > 0 ? setInterval(tick, ms) : undefined;
     document.addEventListener("visibilitychange", tick);
     return () => {
       live = false;
-      clearInterval(timer);
+      if (timer !== undefined) clearInterval(timer);
       document.removeEventListener("visibilitychange", tick);
     };
   }, [active, ms, ...deps]);

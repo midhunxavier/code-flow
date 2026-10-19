@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { HttpError, readJson, send } from "./http.js";
 import type { Run, RunManager, RunSummary } from "./engine.js";
 import type { Projects } from "./projects.js";
-import type { SharedAccounts, SharedPrincipal } from "./shared-accounts.js";
+import { roleAtLeast, type SharedAccounts, type SharedPrincipal } from "./shared-accounts.js";
 import { sharedCanReadRun, sharedCoverageProjection, sharedDiffProjection, sharedEventProjection, sharedProjectProjection, sharedProjectRole, sharedRoutePolicy, sharedRunProjection } from "./shared-access.js";
 import type { CollaborationReviews } from "./collaboration-reviews.js";
 import { afterRunCursor, compareRuns, decodeRunCursor, encodeRunCursor } from "./run-history.js";
@@ -107,17 +107,19 @@ export async function handleSharedApi(req: IncomingMessage, res: ServerResponse,
   }
   const run = requestedRun();
   if (policy === "run-review") {
-    if (sharedProjectRole(current(), projectId(run)) !== "reviewer") throw new HttpError(403, "A project reviewer role is required");
+    // Contributors and maintainers outrank reviewers, so rank rather than equality decides who may review.
+    const reviewer = (identity: SharedPrincipal) => roleAtLeast(sharedProjectRole(identity, projectId(run)), "reviewer");
+    if (!reviewer(current())) throw new HttpError(403, "A project reviewer role is required");
     const body = await readJson(req, 16 * 1024, { timeoutMs: 10_000 });
     const branch = assertBranch(run, body.branch);
     const identity = current();
-    if (!canRead(run) || sharedProjectRole(identity, projectId(run)) !== "reviewer") throw new HttpError(404, "Run not found");
+    if (!canRead(run) || !reviewer(identity)) throw new HttpError(404, "Run not found");
     if (parts[3] === "review-coverage") {
       if (typeof body.path !== "string" || sensitiveContextPath(body.path)) throw new HttpError(403, "This path requires owner review");
-      const result = await host.manager.recordFileReview(run.id, { branch, expectedHead: body.expectedHead, path: body.path, reviewed: body.reviewed }, `shared:${identity.userId}:${identity.username}`, () => { if (!canRead(run) || sharedProjectRole(current(), projectId(run)) !== "reviewer") throw new HttpError(403, "Project reviewer access changed"); });
+      const result = await host.manager.recordFileReview(run.id, { branch, expectedHead: body.expectedHead, path: body.path, reviewed: body.reviewed }, `shared:${identity.userId}:${identity.username}`, () => { if (!canRead(run) || !reviewer(current())) throw new HttpError(403, "Project reviewer access changed"); });
       current(); if (!canRead(run)) throw new HttpError(404, "Run not found"); return send(res, 200, coverage(result));
     }
-    const result = await host.comments.add(run.id, { branch, expectedHead: body.expectedHead, text: body.text }, { id: `shared:${identity.userId}`, name: identity.displayName }, async () => { current(); const latest = requestedRun(); assertBranch(latest, branch); return (await host.manager.reviewCoverage(run.id, branch)).head; }, () => { if (!canRead(run) || sharedProjectRole(current(), projectId(run)) !== "reviewer") throw new HttpError(403, "Project reviewer access changed"); });
+    const result = await host.comments.add(run.id, { branch, expectedHead: body.expectedHead, text: body.text }, { id: `shared:${identity.userId}`, name: identity.displayName }, async () => { current(); const latest = requestedRun(); assertBranch(latest, branch); return (await host.manager.reviewCoverage(run.id, branch)).head; }, () => { if (!canRead(run) || !reviewer(current())) throw new HttpError(403, "Project reviewer access changed"); });
     current(); if (!canRead(run)) throw new HttpError(404, "Run not found"); return send(res, 201, result);
   }
   if (parts.length === 3) return send(res, 200, projection(run));

@@ -42,6 +42,7 @@ import {
 } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
 import { teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
+import { inboxUnread } from "./collab-state.js";
 
 const STATUS_FILTERS: [RunFilter["status"], string][] = [
   ["all", "All"],
@@ -98,6 +99,7 @@ export function Rail() {
   const archivedCount = all.filter((r) => r.archived).length;
   const waiting = list.filter(needsYou);
   const pending = inbox().length;
+  const unread = inboxUnread.value;
 
   const go = (to: typeof route.value) => {
     route.value = to;
@@ -407,6 +409,7 @@ export function Rail() {
         {historyError.value ? <div class="help" role="alert">{historyError.value}<button class="btn small" onClick={() => void refreshRuns()}>Retry history</button></div> : null}
         {filtering && !f.q.trim() && historyNextCursor.value ? <span class="help">Filters apply to loaded pages. Load older runs to include more history.</span> : null}
       </div>
+      <button class="nav-item team-entry" aria-current={r.view === "team" || r.view === "team-task" ? "page" : undefined} title={`Team board${unread ? ` · ${unread} unread in your team inbox` : ""}`} onClick={() => go({ view: "team" })}><Icon name="people" /><span class="t">Team</span>{unread ? <span class="count" aria-hidden="true">{unread}</span> : null}{unread ? <span class="sr-only"> · {unread} unread in your team inbox</span> : null}</button>
       <button class="nav-item settings-entry" aria-current={r.view === "settings" ? "page" : undefined} title={`Settings (⌘, / Ctrl+,)${pending ? ` · ${pending} runs need attention in Automations` : ""}`} onClick={() => go({ view: "settings" })}><Icon name="sliders" /><span class="t">Settings</span>{pending ? <span class="count" aria-hidden="true">{pending}</span> : null}<span class="kbd">⌘,</span></button>
       <div class="rail-foot">
         <AgentDots />
