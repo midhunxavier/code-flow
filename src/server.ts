@@ -1,5 +1,10 @@
 import { TeamTerminals, handleTeamTerminals } from "./collab/terminals.js";
 import { HostExecution, handleHostExecution } from "./collab/host-execution.js";
+import { closeCodeIntelligence, codeIntelligenceHealth } from "./code-intelligence.js";
+import { sendAsset } from "./assets.js";
+import { transcriptPage, transcriptPreview, TranscriptCursorError } from "./transcript.js";
+import { createSseWriter, streamHealth } from "./sse-writer.js";
+import { PerformanceMetrics } from "./performance.js";
 import { JourneyStore } from "./journey-store.js";
 import { journeyApi } from "./journey-api.js";
 import { taskIntent, outcomeMetrics, workflowRecommendations } from "./experience.js";
@@ -89,7 +94,7 @@ import { git, listBranches, repoRoot, worktreeRoot, type GitCwd } from "./git.js
 import { stat } from "node:fs/promises";
 import { folderSizes, remoteBranches, removeWorktrees } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
-import { acquireLock, writeHealth, loadJournal } from "./store.js";
+import { acquireLock, writeHealth, writeQueueStats, loadJournal } from "./store.js";
 import { reapOrphanGroups } from "./adapters/process.js";
 import { logError, logInfo, logWarn } from "./log.js";
 import { listIssues, listPullRequests, MERGE_METHODS, type SourceInput } from "./github.js";
@@ -165,7 +170,7 @@ let filteredTasksReady = false;
 configureFilePolicyResolver((repo) => fileAccess.forRepo(repo), { suppressRepositoryCommands: () => fileAccess.hasRestrictions() });
 manager.setFilesystemPolicyGuard((repo, run) => fileAccess.execution(repo, run));
 let filesystemFeedRevision = 0;
-filePolicies.onChange(() => { filesystemFeedRevision++; });
+filePolicies.onChange(() => { filesystemFeedRevision++; void closeCodeIntelligence(); });
 const policyPreparations = new Set<Promise<unknown>>();
 function trackPolicyPreparation<T>(operation: () => Promise<T>): Promise<T> {
   const work = Promise.resolve().then(operation); policyPreparations.add(work);
@@ -460,11 +465,9 @@ const signingInPage = (target: string) =>
 const NO_FRAMES = { "x-frame-options": "DENY", "content-security-policy": "frame-ancestors 'none'" };
 
 /**
- * The app page, public/index.html: the whole UI in one file, about 800 KB, and a third of that
- * compressed. It's compressed once per version of the file rather than per request, and read
- * again once the file changes, so a rebuild shows on the next reload without a restart. The ETag
- * is a hash of the page: with `no-cache` a reload asks again, and gets a 304 instead of the bundle
- * when nothing changed.
+ * The small HTML entry point revalidates on reload; hashed JS/CSS assets cache independently.
+ * Compression is shared per version and a rebuild is picked up without restarting the server.
+ * The page hash lets an unchanged reload receive 304.
  */
 interface AppPage {
   hash: string;
@@ -1138,21 +1141,11 @@ function openStream(res: ServerResponse, epoch = EPOCH): { send(event: unknown, 
     "cache-control": "no-cache",
     connection: "keep-alive",
   });
-  let stalled: ReturnType<typeof setTimeout> | undefined;
-  const write = (chunk: string) => {
-    if (res.destroyed || res.writableEnded) return;
-    if (res.write(chunk) || stalled) return;
-    // The client's buffer is full: wait for it to drain, but not forever.
-    stalled = setTimeout(() => res.destroy(), STALL_MS);
-    res.once("drain", () => {
-      clearTimeout(stalled);
-      stalled = undefined;
-    });
-  };
+  const writer = createSseWriter(res, { stallMs: STALL_MS, maxBytes: envNumber("CODEFLOW_SSE_BUFFER_BYTES", 8 * 1024 * 1024, { min: 1024 }) });
+  const write = (chunk: string) => writer.write(chunk);
   const ping = setInterval(() => write(": ping\n\n"), 15_000);
   res.on("close", () => {
     clearInterval(ping);
-    clearTimeout(stalled);
   });
   return { send: (event, seq) => write(`${seq === undefined ? "" : `id: ${epoch}:${seq}\n`}data: ${JSON.stringify(event)}\n\n`) };
 }
@@ -1166,14 +1159,15 @@ function lastEventSeq(req: IncomingMessage, expectedEpoch = EPOCH): number | und
  * Every run snapshot as it changes, numbered, with the latest few hundred kept so a client that
  * reconnects gets only what it missed. Subscribed before runs load, so none is missed.
  */
-const runFeed = { seq: 0, recent: [] as { seq: number; run: RunSummary }[], clients: new Set<(entry: { seq: number; run: RunSummary }) => void>() };
+const runFeed = { seq: 0, bytes: 0, recent: [] as { seq: number; run: RunSummary; bytes: number }[], clients: new Set<(entry: { seq: number; run: RunSummary }) => void>() };
 const RUN_FEED_KEEP = 500;
 let runHistoryRevision = 0;
 manager.subscribeAll((run) => {
   if (run.deleted) runHistoryRevision++; // A reconnect replaces stale paged history even after the deletion leaves the replay ring.
-  const entry = { seq: ++runFeed.seq, run };
+  const entry = { seq: ++runFeed.seq, run, bytes: Buffer.byteLength(JSON.stringify(run)) };
   runFeed.recent.push(entry);
-  if (runFeed.recent.length > RUN_FEED_KEEP) runFeed.recent.shift();
+  runFeed.bytes += entry.bytes;
+  while (runFeed.recent.length > RUN_FEED_KEEP || runFeed.bytes > 32 * 1024 * 1024) runFeed.bytes -= runFeed.recent.shift()!.bytes;
   for (const client of runFeed.clients) client(entry);
 });
 
@@ -1245,6 +1239,37 @@ const topics: Record<string, TopicSource> = {
     const client = (e: { seq: number; run: RunSummary }) => { if (!fileAccess.restrictedRun(e.run)) deliver({ type: "run", seq: e.seq, run: e.run }, e.seq); };
     runFeed.clients.add(client);
     return () => runFeed.clients.delete(client);
+  },
+
+  async "run-page"(id, after, deliver) {
+    const run = await manager.getAsync(id);
+    if (!run) throw new TopicError(404, "This run no longer exists");
+    if (fileAccess.restrictedRun(run)) throw new TopicError(403, "This run is unavailable under its filesystem policy");
+    const generation = filesystemFeedRevision, epoch = `run-${id}`;
+    let waiting: RunEvent[] | undefined = [], waitingBytes = 0, overflow = false, last = 0;
+    const allowed = () => generation === filesystemFeedRevision && !fileAccess.restrictedRun(run);
+    const send = (event: RunEvent) => { if (event.seq > last && allowed()) { last = event.seq; deliver(transcriptPreview(event), event.seq); } };
+    const stop = manager.subscribe(id, (event) => {
+      if (!waiting) { send(event); return; }
+      const preview = transcriptPreview(event); waitingBytes += Buffer.byteLength(JSON.stringify(preview));
+      if (waitingBytes > 2 * 1024 * 1024) { overflow = true; return; }
+      waiting.push(preview);
+    });
+    try {
+      const page = await transcriptPage(id, { after: cursorSeq(after, epoch) });
+      if (!allowed()) throw new TopicError(409, "Filesystem policy changed; reconnect to refresh authorization");
+      if (overflow) throw new TopicError(503, "Run updates exceeded the replay buffer; reconnect to catch up");
+      const current = await manager.getAsync(id);
+      if (!current || !allowed()) throw new TopicError(404, "This run is no longer available");
+      const { steps, ...snapshot } = current;
+      const newest = Math.max(page.latestSeq, waiting.at(-1)?.seq ?? 0);
+      deliver({ type: "hello", epoch, resumed: page.resumed, snapshot: { run: snapshot, steps, seq: newest }, transcript: page, persistence: manager.persistence.get(id) });
+      last = page.latestSeq;
+      const queued = waiting; waiting = undefined;
+      for (const event of queued) send(event);
+      const stopPersistence = manager.persistence.subscribe(id, (status) => { if (allowed()) deliver({ type: "persistence", status }); });
+      return () => { stop(); stopPersistence(); };
+    } catch (error) { stop(); throw error; }
   },
 
   /**
@@ -1364,7 +1389,9 @@ async function streamTopic(req: IncomingMessage, res: ServerResponse, kind: "run
 /** Which listener a request came in on: this machine's, or the one on your network. */
 type Via = "local" | "lan";
 
+const performanceMetrics = new PerformanceMetrics();
 async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
+  performanceMetrics.observe(req, res);
   if (stopping) throw new HttpError(503, "The backend is stopping");
   const url = new URL(req.url ?? "/", "http://localhost");
   let parts = url.pathname.split("/").filter(Boolean);
@@ -1418,6 +1445,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (owner || shared || claim) auth.claimable = false;
     return sendAppPage(req, res, { ...NO_FRAMES, ...(claim ? { "set-cookie": sessionCookie() } : {}) });
   }
+  if (parts[0] === "assets" && parts.length === 2 && req.method === "GET") return sendAsset(fileURLToPath(new URL("../public/assets/", import.meta.url)), parts[1]!, req, res);
   if (parts[0] === "computer") {
     if (via !== "local" || !owner || !sshProjects) throw new HttpError(403, "Use the local owner app to open remote projects");
     const id = parts[1] ?? "";
@@ -1708,7 +1736,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (req.method === "GET" && parts[1] === "health") {
     // interactiveTerminal: false when there's no python3 for the Terminal's pseudo-terminal (src/shell.ts).
-    return send(res, 200, { busy: manager.busy, activity: manager.inspectRepositoryActivity(), writes: writeHealth, runs: manager.list().filter((r) => r.status === "running").length, interactiveTerminal: !fileAccess.hasRestrictions() && await shells.interactive(), streams: hub.stats });
+    return send(res, 200, { busy: manager.busy, activity: manager.inspectRepositoryActivity(), writes: writeHealth, performance: performanceMetrics.snapshot(), disk: writeQueueStats(), delivery: streamHealth, codeIntelligence: codeIntelligenceHealth, storage: manager.inspectStorage(), runs: manager.runningCount, interactiveTerminal: !fileAccess.hasRestrictions() && await shells.interactive(), streams: hub.stats });
   }
   if (req.method === "GET" && parts[1] === "experience" && parts.length === 2) {
     const list = runsIn(url.searchParams.get("project")).filter(run => !url.searchParams.get("repo") || run.repo === url.searchParams.get("repo"));
@@ -2149,8 +2177,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       }
     }
 
-    const run = runId ? manager.get(runId) : undefined;
+    const run = runId ? await manager.getAsync(runId) : undefined;
     if (!run) throw new HttpError(404, "Run not found");
+    if (req.method === "GET" && parts[3] === "transcript" && parts.length === 4) {
+      const abort = new AbortController(); res.once("close", () => abort.abort());
+      try { return send(res, 200, await transcriptPage(run.id, { before: url.searchParams.get("before") ?? undefined, step: url.searchParams.get("step") ?? undefined, signal: abort.signal })); }
+      catch (error) { if (error instanceof TranscriptCursorError) throw new HttpError(409, error.message); throw error; }
+    }
     if (parts[3] === "collaboration" && parts.length === 4) {
       if (req.method === "GET") return send(res, 200, await attempt(() => collaborationReviews.list(run.id)));
       if (req.method === "POST") {
@@ -2595,6 +2628,8 @@ let stopping = false;
 async function stop(reason: string, code = 0) {
   if (stopping) process.exit(1); // second Ctrl-C: don't wait
   stopping = true;
+  performanceMetrics.close();
+  await closeCodeIntelligence();
   console.log(`\nStopping code-flow (${reason}): interrupting running runs so they can be resumed…`);
   logInfo(`Stopping: ${reason}`);
   let automationsSaved: Promise<unknown> = Promise.resolve();

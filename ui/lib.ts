@@ -1,3 +1,4 @@
+import { pollVisible } from "./polling.js";
 import { signal } from "@preact/signals";
 import { useCallback, useEffect, useRef } from "preact/hooks";
 import type { AgentId } from "./types.js";
@@ -35,8 +36,20 @@ export async function initializeTeamConnection() {
 }
 export const localApi = <T = any>(path: string, opts: RequestInit = {}) => request<T>(path, opts);
 export const api = <T = any>(path: string, opts: RequestInit = {}) => request<T>(path === "/api/auth/logout" ? path : apiPath(path), opts);
+/** Opt in only for background inventories; selection-sensitive reads need fresh requests. */
+export const sharedGet = <T = any>(path: string) => request<T>(apiPath(path), {}, true);
 
-async function request<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
+const pendingGets = new Map<string, Promise<unknown>>();
+function request<T = any>(path: string, opts: RequestInit = {}, share = false): Promise<T> {
+  const method = opts.method ?? "GET";
+  if (method !== "GET") pendingGets.clear();
+  if (!share || method !== "GET" || Object.keys(opts).length) return fetchJson<T>(path, opts);
+  const existing = pendingGets.get(path); if (existing) return existing as Promise<T>;
+  const work = fetchJson<T>(path, opts); pendingGets.set(path, work);
+  void work.finally(() => { if (pendingGets.get(path) === work) pendingGets.delete(path); }).catch(() => {});
+  return work;
+}
+async function fetchJson<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   let res: Response;
   try {
     res = await fetch(path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
@@ -155,17 +168,8 @@ export function usePoll(fn: (current: () => boolean) => unknown, ms: number, dep
     if (!active) return;
     let live = true;
     const current = () => live;
-    const tick = () => {
-      if (!document.hidden) void latest.current(current);
-    };
-    tick();
-    const timer = ms > 0 ? setInterval(tick, ms) : undefined;
-    document.addEventListener("visibilitychange", tick);
-    return () => {
-      live = false;
-      if (timer !== undefined) clearInterval(timer);
-      document.removeEventListener("visibilitychange", tick);
-    };
+    const stop = pollVisible(() => latest.current(current), ms);
+    return () => { live = false; stop(); };
   }, [active, ms, ...deps]);
 }
 export const baseName = (p: string) => (p || "").replace(/\/+$/, "").split("/").pop() ?? "";

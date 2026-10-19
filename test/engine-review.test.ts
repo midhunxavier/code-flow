@@ -197,23 +197,24 @@ function holding() {
 }
 
 // ---------------------------------------------------------------- Stop while a resume starts
-test("Stop pressed while a resume reads the run's log and journal: the run doesn't start", async () => {
+test("Stop pressed while a resume prepares execution: the run doesn't start", async () => {
   const manager = new RunManager(findPattern);
   const run = await withStub(["codex"], async () => ({ ok: false, finalText: "", error: "boom", errorKind: "other" }), async () =>
     idle(manager, await manager.start({ pattern: findPattern("pipeline")!, task: "Stop me", repo, roles: pipeline, options: {} })),
   );
   assert.equal(run.status, "failed");
   const steps = run.steps.length;
-  const events = manager.events.bind(manager);
+  const prepare = manager.assertExecutionAllowed.bind(manager);
   let said: boolean | undefined;
-  manager.events = async (id: string) => {
-    said = manager.cancel(id);
-    return events(id);
+  manager.assertExecutionAllowed = async (...args) => {
+    const policy = await prepare(...args);
+    said = manager.cancel(run.id);
+    return policy;
   };
   try {
     await manager.resume(run.id);
   } finally {
-    manager.events = events;
+    manager.assertExecutionAllowed = prepare;
   }
   assert.equal(said, true, "Stop said yes");
   assert.equal(run.status, "failed", "and the run stayed as it was");

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import { childEnv } from "./env.js";
 import { logError, logWarn } from "./log.js";
+import { WorkQueue } from "./work-queue.js";
 
 /**
  * Runs are persisted as their append-only event log (`<id>.jsonl`): every run snapshot and
@@ -21,7 +22,14 @@ export const RUNS_DIR = join(CODEFLOW_HOME, "runs");
 /** Newer versions are rejected by strict recovery; legacy readers skip them. */
 export const JOURNAL_VERSION = 2;
 
-let writeQueue: Promise<unknown> = mkdir(RUNS_DIR, { recursive: true }).catch(() => undefined);
+const ready = mkdir(RUNS_DIR, { recursive: true });
+const writes = new WorkQueue(4), checkpoints = new WorkQueue(1);
+const runKey = (file: string) => file.replace(/(?:\.journal)?\.jsonl$/, "");
+let queuedBytes = 0;
+export const WRITE_BUFFER_BYTES = 64 * 1024 * 1024;
+export const writeQueueStats = () => ({ writes: { ...writes.stats, bytes: queuedBytes }, checkpoints: checkpoints.stats });
+interface AppendBatch { file: string; text: string; bytes: number; count: number; promise: Promise<void> }
+const appendBatches = new Map<string, AppendBatch>();
 
 /** Failed writes: event projections are best-effort; authoritative callers fail closed. */
 export const writeHealth: { failures: number; lastError?: string; at?: number } = { failures: 0 };
@@ -33,10 +41,9 @@ interface CheckpointSource { size: string; mtimeNs: string; ctimeNs: string; dev
 const sourceIdentity = (info: import("node:fs").BigIntStats): CheckpointSource => ({ size: String(info.size), mtimeNs: String(info.mtimeNs), ctimeNs: String(info.ctimeNs), dev: String(info.dev), ino: String(info.ino) });
 const checksum = (text: string) => createHash("sha256").update(text).digest("hex");
 
-async function writeRunCheckpoint(file: string, seq: number, runJson: string) {
+async function writeRunCheckpoint(file: string, seq: number, runJson: string, source: CheckpointSource) {
   const id = checkpointId(file);
   if (!id) return;
-  const source = sourceIdentity(await stat(join(RUNS_DIR, file), { bigint: true }));
   const payload = `${JSON.stringify({ version: 1, source, seq }).slice(0, -1)},"run":${runJson}}`;
   const text = `${payload.slice(0, -1)},"checksum":"${checksum(payload)}"}\n`;
   if (Buffer.byteLength(text) > MAX_CHECKPOINT_BYTES) return;
@@ -44,6 +51,7 @@ async function writeRunCheckpoint(file: string, seq: number, runJson: string) {
   const temp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   try {
     await writeFile(temp, text, { mode: 0o600, flag: "wx" });
+    if (JSON.stringify(sourceIdentity(await stat(join(RUNS_DIR, file), { bigint: true }))) !== JSON.stringify(source)) return;
     await rename(temp, path);
   } finally { await unlink(temp).catch(() => undefined); }
 }
@@ -152,6 +160,7 @@ async function truncateIncompleteTail(path: string): Promise<void> {
  */
 export function appendLine(file: string, value: unknown, opts: { sync?: boolean; strict?: boolean; checkpoint?: { seq: number; run: unknown }; onFailed?: () => void } = {}): Promise<void> {
   const line = `${JSON.stringify(value)}\n`;
+  let checkpointWork: Promise<void> | undefined;
   // Capture now, alongside the event: the live run may change before its queued write executes.
   let checkpoint: { seq: number; runJson: string } | undefined;
   if (opts.checkpoint && Number.isSafeInteger(opts.checkpoint.seq) && opts.checkpoint.seq >= 0 && typeof value === "object" && value && "seq" in value && value.seq === opts.checkpoint.seq) {
@@ -160,15 +169,29 @@ export function appendLine(file: string, value: unknown, opts: { sync?: boolean;
       if (runJson && Buffer.byteLength(runJson) <= MAX_CHECKPOINT_BYTES) checkpoint = { seq: opts.checkpoint.seq, runJson };
     } catch { /* The event log remains authoritative if a projection cannot be serialized. */ }
   }
-  const written = writeQueue
-    .then(async () => {
+  const key = runKey(file), size = Buffer.byteLength(line);
+  const previous = appendBatches.get(key);
+  const batchable = !opts.sync && !opts.strict && !opts.checkpoint;
+  let written: Promise<void>;
+  if (queuedBytes + size > WRITE_BUFFER_BYTES) {
+    appendBatches.delete(key);
+    written = Promise.reject(new Error("Run write buffer is full; storage cannot keep up"));
+  } else if (batchable && previous?.file === file && previous.bytes + size <= 256 * 1024 && previous.count < 128) {
+    previous.text += line; previous.bytes += size; previous.count++; queuedBytes += size; written = previous.promise;
+  } else {
+    appendBatches.delete(key);
+    const batch: AppendBatch = { file, text: line, bytes: size, count: 1, promise: Promise.resolve() };
+    queuedBytes += size;
+    written = writes.run(key, async () => {
+      if (appendBatches.get(key) === batch) appendBatches.delete(key);
+      await ready;
       const path = join(RUNS_DIR, file);
       if (opts.strict && !repaired.has(file)) await truncateIncompleteTail(path);
       // Close a torn last line first, or this line would be glued to it and both lost.
       const prefix = repaired.has(file) || (await endsWithNewline(path)) ? "" : "\n";
       try {
-        if (opts.sync) await appendSynced(path, prefix + line);
-        else await appendFile(path, prefix + line);
+        if (opts.sync) await appendSynced(path, prefix + batch.text);
+        else await appendFile(path, prefix + batch.text);
       } catch (err) {
         // Part of the line may have been written: look at the end of the file again next time.
         repaired.delete(file);
@@ -177,12 +200,22 @@ export function appendLine(file: string, value: unknown, opts: { sync?: boolean;
       repaired.add(file);
       if (opts.sync) unsynced.delete(file);
       else unsynced.add(file);
-      if (checkpoint) await writeRunCheckpoint(file, checkpoint.seq, checkpoint.runJson).catch((error: Error) => {
-        checkpointHealth.failures++; checkpointHealth.lastError = error.message; checkpointHealth.at = Date.now();
-        if (checkpointHealth.failures === 1 || checkpointHealth.failures % 100 === 0) logWarn("couldn't save optional run checkpoint", { file, error: error.message });
-      });
-    });
-  const observed = written.catch((err: Error) => {
+      if (checkpoint && checkpoints.stats.bytes + Buffer.byteLength(checkpoint.runJson) <= 32 * 1024 * 1024) {
+        const captured = checkpoint;
+        const source = await stat(path, { bigint: true }).then(sourceIdentity).catch(() => undefined);
+        // Optional checkpoints cannot hold up later authoritative appends.
+        if (source) checkpointWork = checkpoints.run(key, () => writeRunCheckpoint(file, captured.seq, captured.runJson, source), Buffer.byteLength(captured.runJson)).catch((error: Error) => {
+          checkpointHealth.failures++; checkpointHealth.lastError = error.message; checkpointHealth.at = Date.now();
+          if (checkpointHealth.failures === 1 || checkpointHealth.failures % 100 === 0) logWarn("couldn't save optional run checkpoint", { file, error: error.message });
+        });
+      }
+    }, size).finally(() => { queuedBytes -= batch.bytes; });
+    batch.promise = written;
+    if (batchable) appendBatches.set(key, batch);
+  }
+  // Preserve callers' checkpoint completion contract without holding the append queue.
+  const complete = written.then(() => checkpointWork);
+  const observed = complete.catch((err: Error) => {
       opts.onFailed?.();
       writeHealth.failures++;
       writeHealth.lastError = err.message;
@@ -192,8 +225,7 @@ export function appendLine(file: string, value: unknown, opts: { sync?: boolean;
       }
     });
   // A caller can fail closed without poisoning the queue for every later run.
-  writeQueue = observed;
-  return opts.strict ? written : observed;
+  return opts.strict ? complete : observed;
 }
 
 async function syncFile(file: string) {
@@ -206,18 +238,20 @@ async function syncFile(file: string) {
 }
 
 /** Resolves once everything queued so far is on disk, fsynced (so a clean shutdown is durable). */
-export function flushWrites(): Promise<unknown> {
-  writeQueue = writeQueue.then(async () => {
-    const files = [...unsynced];
-    unsynced.clear();
-    for (const file of files) {
-      await syncFile(file).catch((err: NodeJS.ErrnoException) => {
-        if (err.code !== "ENOENT") logWarn("couldn't sync a run log to disk", { file, error: err.message });
-      });
-    }
-  });
-  return writeQueue;
+export async function flushWrites(id?: string): Promise<void> {
+  if (id === undefined) appendBatches.clear(); else appendBatches.delete(id);
+  await writes.flush(id);
+  const files = [...unsynced].filter((file) => id === undefined || runKey(file) === id);
+  await Promise.all(files.map((file) => writes.run(runKey(file), async () => {
+    if (!unsynced.has(file)) return;
+    await syncFile(file);
+    unsynced.delete(file);
+  })));
+  await checkpoints.flush(id);
 }
+
+/** Wait for appends without a durability barrier, for read-only transcript requests. */
+export async function waitForRunWrites(id: string): Promise<void> { await writes.flush(id); }
 
 /** Files whose unreadable lines were already logged this process. */
 const reportedBadLines = new Set<string>();
@@ -282,13 +316,16 @@ export async function listDeletedRunIds(): Promise<string[]> {
 /** Serialized with pending writes. The durable marker prevents partial cleanup from restoring history. */
 export function deleteRunHistory(id: string): Promise<void> {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(id)) throw new Error("Invalid run ID");
-  const work = writeQueue.then(async () => {
+  appendBatches.delete(id);
+  const work = writes.run(id, async () => {
+    await ready;
+    await checkpoints.flush(id);
     await writeFile(join(RUNS_DIR, `${id}.deleted`), "", { mode: 0o600, flush: true });
     for (const suffix of [".jsonl", ".journal.jsonl", ".checkpoint.json", ".cold-index.json", ".cold-detail.json"]) {
       await rm(join(RUNS_DIR, id + suffix), { force: true });
+      repaired.delete(id + suffix); unsynced.delete(id + suffix); directorySynced.delete(join(RUNS_DIR, id + suffix));
     }
   });
-  writeQueue = work.catch(() => undefined);
   return work;
 }
 
@@ -322,7 +359,10 @@ export async function loadJournal(runId: string, opts: { strict?: boolean } = {}
  * synced and then renamed over the old one, so a crash leaves one or the other. True if rewritten.
  */
 export function rewriteLines(file: string, make: (lines: unknown[]) => unknown[] | undefined): Promise<boolean> {
-  const done = writeQueue.then(async () => {
+  appendBatches.delete(runKey(file));
+  const done = writes.run(runKey(file), async () => {
+    await ready;
+    await checkpoints.flush(runKey(file));
     const path = join(RUNS_DIR, file);
     const lines = make(await readJsonLines(file));
     if (!lines) return false;
@@ -338,7 +378,6 @@ export function rewriteLines(file: string, make: (lines: unknown[]) => unknown[]
     unsynced.delete(file);
     return true;
   });
-  writeQueue = done.catch(() => undefined);
   return done;
 }
 

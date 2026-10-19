@@ -36,6 +36,13 @@ before(async () => {
     const run = { id, task: index === 0 ? "Ancient needle task outside the initial history page" : index === 125 ? "Services fixture result" : `Historical fixture ${index}`, pattern: "solo", repo, baseRef: commit, baseLabel: "main", branchPrefix: `codeflow/${id}`, worktreeDir: join(fixture, "worktrees", id), roles: { worker: ["codex"] }, options: {}, context: { paths: [], attachments: [] }, agentSettings: {}, roleSettings: {}, trust: "standard", loop: { check: "", setup: "", maxSteps: 10, maxMinutes: 10 }, usage: { agentSteps: 0, checks: 0 }, status: "done", createdAt: index < 2 ? timestamp - 1000 : timestamp, endedAt: timestamp + 100, seen: index !== 1, archived: false, worktrees: index === 125 ? [{ name: "preview", path: worktree, branch: "" }] : [], steps: [], notes: [], approvals: {}, followUps: [], merges: [], prs: {}, watches: {}, artifacts: [] };
     writeFileSync(join(home, "runs", `${id}.jsonl`), JSON.stringify({ seq: index + 1, ts: timestamp, runId: id, type: "run", run }) + "\n");
   }
+  const transcriptRun = JSON.parse(readFileSync(join(home, "runs/history-124.jsonl"), "utf8")).run;
+  const transcriptStep = { id: "paged-step", kind: "agent", title: "Transcript page fixture", role: "worker", agent: "codex", mode: "write", status: "done", worktree: "", startedAt: timestamp, endedAt: timestamp + 100, finalText: "Transcript fixture complete" };
+  writeFileSync(join(home, "runs/history-124.jsonl"), [
+    JSON.stringify({ seq: 1000, ts: timestamp, runId: transcriptRun.id, type: "run", run: transcriptRun }),
+    JSON.stringify({ seq: 1001, ts: timestamp, runId: transcriptRun.id, type: "step", step: transcriptStep }),
+    ...Array.from({ length: 1200 }, (_, index) => JSON.stringify({ seq: 1002 + index, ts: timestamp, runId: transcriptRun.id, type: "agent", stepId: transcriptStep.id, event: { kind: "text", text: `TRANSCRIPT_EVENT_${index + 1}` } })),
+  ].join("\n") + "\n");
   const cold = JSON.parse(readFileSync(join(home, "runs/history-000.jsonl"), "utf8")).run;
   cold.id = "history-cold"; cold.createdAt = timestamp - 2000; cold.archived = true;
   cold.task = `Archived full detail ${"padding ".repeat(1300)}COLD_TASK_FULL_END`;
@@ -71,6 +78,23 @@ test("HTTP cursor pages preserve timestamp ties and bounded SSE keeps older atte
     assert.equal(hello.runs.length, 101); assert.ok(hello.runs.some((run) => run.id === "history-001"), "older unseen result is in attention");
     assert.equal(hello.runs.some((run) => run.id === "history-000"), false, "older ordinary history remains paginated");
   } finally { clearTimeout(timer); abort.abort(); }
+});
+
+test("large transcripts page backwards and return to live history with bounded rendered rows", async () => {
+  const response = await fetch(`${base}/api/runs/history-124/transcript?step=paged-step`, { headers });
+  const latest = await response.json(); assert.equal(latest.events.length, 500); assert.ok(latest.before);
+  await page.goto(`${base}/#/run/history-124`);
+  await page.getByRole("button", { name: /^Show work/ }).click();
+  const transcript = page.getByRole("group", { name: "Transcript of Transcript page fixture" });
+  await transcript.getByText("TRANSCRIPT_EVENT_1200", { exact: true }).waitFor();
+  assert.ok(await transcript.locator(".ev").count() <= 200);
+  await transcript.getByRole("button", { name: "Earlier events", exact: true }).click();
+  await transcript.getByText("Viewing earlier events", { exact: true }).waitFor();
+  await transcript.getByText("TRANSCRIPT_EVENT_700", { exact: true }).waitFor();
+  assert.equal(await transcript.getByText("TRANSCRIPT_EVENT_1200", { exact: true }).count(), 0);
+  await transcript.getByRole("button", { name: "Latest events", exact: true }).click();
+  await transcript.getByText("TRANSCRIPT_EVENT_1200", { exact: true }).waitFor();
+  assert.ok(await transcript.locator(".ev").count() <= 200);
 });
 
 test("sidebar searches beyond loaded pages and loads older history without discarding visible results", async () => {

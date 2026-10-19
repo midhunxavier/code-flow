@@ -1,3 +1,4 @@
+import { pollVisible } from "./polling.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, ApiError, enc, post, showToast } from "./lib.js";
 import type { LaunchProfile, LaunchSession } from "../src/launch-profiles.js";
@@ -25,8 +26,8 @@ export function LaunchProfilesPanel({ runId, worktree }: { runId: string; worktr
         setInventory(result); setError(""); setProfileId((current) => result.profiles.some((profile) => profile.id === current) ? current : result.profiles[0]?.id ?? "");
       } catch (err) { if (alive && generation.current === scope && request.current === seq) setError((err as Error).message); }
     };
-    void load(); const timer = setInterval(() => void load(), 2000);
-    return () => { alive = false; clearInterval(timer); generation.current++; action.current++; };
+    const stopPolling = pollVisible(load, 2000);
+    return () => { alive = false; stopPolling(); generation.current++; action.current++; };
   }, [runId, worktree]);
   const start = async () => {
     const scope = generation.current; const op = ++action.current;

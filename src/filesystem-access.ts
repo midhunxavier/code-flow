@@ -17,7 +17,7 @@ export class FilesystemAccess {
   async all() { try { const policies = await Promise.all(this.projects.list().map(async (project) => { const policy = await this.store.get(project.id); this.cache.set(project.id, policy); return policy; })); this.failure = undefined; return policies; } catch (error) { this.failure = error; throw error; } }
   hasRestrictions() { return !!this.failure || [...this.cache.values()].some(policyIsRestrictive); }
   private projectIds(repo: string, run?: Run | RunSummary): string[] {
-    const related = new Set([repo]); const owned = this.manager.list().filter((item) => item.repo === repo || item.worktrees.some((tree) => tree.path === repo));
+    const related = new Set([repo]); const owned = this.manager.relatedRuns(repo);
     for (const item of owned) related.add(item.repo);
     return [...new Set([...this.projects.list().filter((project) => project.repos.some((repo) => related.has(repo))).map((project) => project.id), ...owned.flatMap((item) => item.project ? [item.project] : []), ...(run?.project ? [run.project] : [])])];
   }
@@ -45,7 +45,7 @@ export class FilesystemAccess {
     const body = ["POST", "PUT", "PATCH"].includes(req.method ?? "") && req.headers["content-type"]?.startsWith("application/json") ? await readJson(req) : {};
     const requested = typeof body.repo === "string" ? body.repo : url.searchParams.get("repo");
     const selected = requested?.startsWith("/") ? await repoRoot(requested).catch(() => requested) : requested;
-    const run = parts[1] === "runs" && parts[2] ? this.manager.get(parts[2]) : undefined;
+    const run = parts[1] === "runs" && parts[2] ? await this.manager.getAsync(parts[2]) : undefined;
     const policyProject = parts[1] === "projects" && parts[2] ? this.cache.get(parts[2]) : typeof body.project === "string" ? this.cache.get(body.project) : undefined;
     const targetRestricted = !!run && this.restrictedRun(run) || !!policyProject && policyIsRestrictive(policyProject) || !!selected && (await this.forRepo(selected)).some(policyIsRestrictive);
     const fileApi = parts[1] === "file" && req.method === "GET" || parts[1] === "workspace" && parts[2] === "file" && ["GET", "POST"].includes(req.method ?? "");

@@ -1,7 +1,8 @@
 node_modules/
 *.log
 .codeflow-dev/
-public/index.html
+public/
 output/playwright/
 output/vscode/
 dist/
+output/performance/

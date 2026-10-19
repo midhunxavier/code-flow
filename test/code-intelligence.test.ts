@@ -4,12 +4,13 @@ import { mkdtemp, writeFile, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/git.js";
-import { findCodeReferences, searchSemanticSymbols } from "../src/code-intelligence.js";
+import { closeCodeIntelligence, codeIntelligenceHealth, findCodeReferences, searchSemanticSymbols } from "../src/code-intelligence.js";
 
 test("language service resolves imported references and aliases rather than matching text", async () => {
   const repo = await mkdtemp(join(tmpdir(), "codeflow-language-service-"));
   try {
     assert.equal((await git(["init", "-q", "-b", "main"], repo)).code, 0);
+    const reused = codeIntelligenceHealth.reused;
     await writeFile(join(repo, "math.ts"), "export function add(a: number, b: number) { return a + b; }\n");
     await writeFile(join(repo, "consumer.ts"), "import { add as sum } from './math.js';\nconst unrelated = 'add';\nexport const result = sum(1, 2);\n");
     const symbols = await searchSemanticSymbols(repo, "add");
@@ -21,7 +22,10 @@ test("language service resolves imported references and aliases rather than matc
     await writeFile(join(repo, "consumer.ts"), "export const result = 3;\n");
     const refreshed = await findCodeReferences(repo, { path: symbol.path, line: symbol.line, column: symbol.column });
     assert.equal(refreshed.hits.some((hit) => hit.path === "consumer.ts"), false, "each request sees current saved content");
-  } finally { await rm(repo, { recursive: true, force: true }); }
+    assert.ok(codeIntelligenceHealth.reused >= reused + 2, "repeated lookups reuse the isolated language service");
+    await rm(join(repo, "math.ts"));
+    assert.equal((await searchSemanticSymbols(repo, "add")).hits.length, 0, "removed sources disappear from a reused worker");
+  } finally { await closeCodeIntelligence(); await rm(repo, { recursive: true, force: true }); }
 });
 test("language service cannot read symlinks, credential selections or project compiler plugins", async () => {
   const repo = await mkdtemp(join(tmpdir(), "codeflow-language-boundary-"));
@@ -40,5 +44,5 @@ test("language service cannot read symlinks, credential selections or project co
     await assert.rejects(findCodeReferences(repo, { path: "../outside.ts", line: 1, column: 1 }), /inside|repository/);
     const controller = new AbortController(); controller.abort();
     await assert.rejects(searchSemanticSymbols(repo, "VisibleSymbol", controller.signal));
-  } finally { await rm(repo, { recursive: true, force: true }); await rm(external, { recursive: true, force: true }); }
+  } finally { await closeCodeIntelligence(); await rm(repo, { recursive: true, force: true }); await rm(external, { recursive: true, force: true }); }
 });

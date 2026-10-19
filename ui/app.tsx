@@ -1,5 +1,6 @@
 import { ActivityView } from "./activity.js";
-import { SettingsView } from "./settings.js";
+import { lazyView } from "./lazy-view.js";
+const SettingsView = lazyView(() => import("./settings.js").then((module) => module.SettingsView));
 import { SETTINGS_SECTIONS } from "./settings-sections.js";
 import { canNotify, setDesktopNotifications } from "./preferences.js";
 import { HostControl, executionHost } from "./ssh-projects.js";

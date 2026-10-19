@@ -12,6 +12,11 @@ export async function buildHost() {
     banner: { js: 'import { createRequire as __createRequire } from "node:module"; import { fileURLToPath as __fileURLToPath } from "node:url"; import { dirname as __dirnameOf } from "node:path"; const __filename = __fileURLToPath(import.meta.url); const __dirname = __dirnameOf(__filename); const require = __createRequire(import.meta.url);' } });
   const files = { "src/server.mjs": result.outputFiles[0].text };
   for (const path of ["public/index.html", "package.json", "src/preview-overlay.js", "src/team-tool-client.mjs", "scripts/pty.py"]) files[path] = await readFile(resolve(root, path), "utf8");
+  const manifest = JSON.parse(await readFile(resolve(root, "public/assets.json"), "utf8"));
+  if (createHash("sha256").update(files["public/index.html"]).digest("hex") !== manifest.htmlHash) throw new Error("UI changed during packaging; retry the build after it finishes");
+  for (const name of manifest.files.sort()) {
+    if (/^[\w-]+-[A-Z0-9]{8}\.(?:js|css)$/.test(name)) files[`public/assets/${name}`] = await readFile(resolve(root, "public/assets", name), "utf8");
+  }
   const worker = await build({ absWorkingDir: root, entryPoints: ["src/code-intelligence-worker.mjs"], bundle: true, platform: "node", format: "esm", target: "node22.13", minify: true, write: false,
     banner: { js: 'import { createRequire as __createRequire } from "node:module"; import { fileURLToPath as __fileURLToPath } from "node:url"; import { dirname as __dirnameOf } from "node:path"; const __filename = __fileURLToPath(import.meta.url); const __dirname = __dirnameOf(__filename); const require = __createRequire(import.meta.url);' } });
   files["src/code-intelligence-worker.mjs"] = worker.outputFiles[0].text;
