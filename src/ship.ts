@@ -351,15 +351,17 @@ export async function openPullRequest(
   title: string,
   body: string,
   base?: string,
+  options: { expectedHead?: string } = {},
 ): Promise<{ url: string; caughtUp?: string; note?: string }> {
   const { branches, defaultBranch } = await remoteBranches(repo);
   if (!branches.includes(into)) {
     const instead = defaultBranch && defaultBranch !== into ? `, such as ${defaultBranch}` : "";
     throw new Error(`"${into}" isn't a branch on GitHub (it may have been merged and deleted), so a pull request can't go into it. Pick another branch${instead}.`);
   }
-  const caught = base ? await catchUpWithSquashedBase(repo, branch, into, base) : {};
+  const caught = base && !options.expectedHead ? await catchUpWithSquashedBase(repo, branch, into, base) : {};
+  if (options.expectedHead && (await gitOrThrow(["rev-parse", `refs/heads/${branch}`], repo)).trim() !== options.expectedHead) throw new Error("The approved result moved before publication; review the current commit again");
   // Your pre-push hooks run, as on your own pushes (Git LFS uploads its files in one).
-  const push = await git(["push", "-u", "origin", branch], repo, { hooks: true });
+  const push = await git(options.expectedHead ? ["push", "origin", `${options.expectedHead}:refs/heads/${branch}`] : ["push", "-u", "origin", branch], repo, { hooks: true });
   if (push.code !== 0) {
     const kind = classifyGitFailure(push);
     throw new Error(`Pushing ${branch} failed: ${kind === "other" ? push.stderr.trim().split("\n").slice(-2).join(" ") : describeGitFailure(kind)}`);

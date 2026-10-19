@@ -1,3 +1,5 @@
+import { ProjectTeams } from "./project-teams.js";
+import { handleProjectTeams } from "./project-teams-api.js";
 import { SshProjects } from "./ssh-projects/manager.js";
 import { readFileSync } from "node:fs";
 import { ProjectFilePolicies, FilePolicyError, assertPolicyExecution, configureFilePolicyResolver, filterPolicyDiff, policyIsRestrictive } from "./filesystem-policy.js";
@@ -198,14 +200,15 @@ const shells = new Shells();
 const notes = new Notes();
 const watcher = new PrWatcher(manager);
 const automations = new Automations(manager, (body, extra) => trackPolicyPreparation(() => startFromBody(body, extra)), (repo, kind) => trackPolicyPreparation(async () => { assertPolicyExecution(await fileAccess.execution(repo), "Automation source discovery"); return listSweep(repo, kind, manager.list()); }));
+const projectTeams = new ProjectTeams({ manager, projects, automations, build: buildStartInput, allowed: async (repo) => assertPolicyExecution(await fileAccess.execution(repo), "Standing project teams") });
 async function pausePolicyBackground() {
-  const results = await Promise.allSettled([watcher.stop(), automations.stop(), deferredRuns.stop(), coordinatedApi.service.stop(), ...(notificationsReady ? [notifications.stop()] : [])]);
+  const results = await Promise.allSettled([watcher.stop(), automations.stop(), projectTeams.stop(), deferredRuns.stop(), coordinatedApi.service.stop(), ...(notificationsReady ? [notifications.stop()] : [])]);
   // Queue deadlines do not prove a child readiness request ended. Retain the underlying work too.
   while (policyPreparations.size) await Promise.allSettled([...policyPreparations]);
   const failure = results.find((result) => result.status === "rejected"); if (failure?.status === "rejected") throw failure.reason;
 }
 function startPolicyBackground() {
-  watcher.start(); automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 })); deferredRuns.start(); coordinatedApi.service.start();
+  projectTeams.start(); watcher.start(); automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 })); deferredRuns.start(); coordinatedApi.service.start();
   if (notificationsReady) notifications.start();
 }
 let remote: RemoteSettings;
@@ -771,7 +774,7 @@ function validateOptions(pattern: Pattern, input: unknown): Record<string, numbe
 
 /** Validate a run request (from the composer or an automation) into what the engine starts. */
 async function buildStartInput(body: Record<string, any>): Promise<StartRunInput> {
-  if (body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
+  if (body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.projectTeam !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
   const pattern = findPattern(String(body.pattern ?? ""));
   if (!pattern) throw new HttpError(400, "Unknown pattern");
   const task = String(body.task ?? "").trim();
@@ -1142,6 +1145,12 @@ function syncTeamLink() {
  * live events; `after` is the cursor (`<epoch>:<seq>`) of the last event it got before reconnecting.
  */
 const topics: Record<string, TopicSource> = {
+  "project-teams"(projectId, _after, deliver) {
+    if (fileAccess.hasRestrictions() || !projects.get(projectId)) throw new TopicError(403, "Standing team scope is unavailable");
+    const generation = filesystemFeedRevision;
+    const publish = () => { if (generation === filesystemFeedRevision && !fileAccess.hasRestrictions() && projects.get(projectId)) deliver({ type: "snapshot", teams: projectTeams.list(projectId) }); };
+    const off = projectTeams.store.subscribe(publish); publish(); return off;
+  },
   /**
    * Every run's status changes, for the sidebar and notifications. A first connection (or one
    * from before a restart, or that missed too much) starts with the whole list, in step with the
@@ -1443,6 +1452,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "DELETE" && parts[2] && parts.length === 3) return send(res, 200, await attempt(() => acpConnections.remove(Number(url.searchParams.get("revision")), parts[2]!)));
     throw new HttpError(404, "Unknown ACP connection operation");
   }
+  if (parts[1] === "project-teams") return handleProjectTeams(projectTeams, req, res, parts, url);
   if (parts[1] === "coordinated-changes") return coordinatedApi.handle(req, res, parts);
   // The team board: served here in hub mode, forwarded to the team server under this computer's runner credential in linked mode. The link itself (connect, mappings, start/stop/hand over on this computer) is always local and the owner's own.
   if (parts[1] === "team") return teamLink.linked ? teamLink.proxy(req, res, parts, url) : handleTeamApi(req, res, url, parts, { store: collab, actor: ownerActor(collab.ownerName), principal: "owner", mutation: () => {} });
@@ -2220,6 +2230,7 @@ if (!fileAccess.hasRestrictions()) await extensions.load().catch((error) => logE
 else logWarn("Extensions deferred: custom filesystem policy cannot isolate trusted plugin initialization; clear the policy and restart to load extensions");
 await codeHostsApi.service.load();
 await automations.load();
+await projectTeams.load().catch((error) => { projectTeams.store.faults.set("storage", (error as Error).message); logError("Project teams disabled: their private storage cannot be read", error); });
 await deferredRuns.load();
 await coordinatedApi.service.load();
 await coordinatedApi.recover().catch((error) => logError("A coordinated launch requires manual recovery", error));
@@ -2227,6 +2238,7 @@ await recoverDeferredRuns(deferredRuns, manager).catch((error) => logError("A de
 remote = await loadRemote();
 await phoneSessions.load().catch((error) => logError("Phone pairing disabled: session storage cannot be read", error));
 if (notificationsReady) {
+  projectTeams.store.subscribe(() => { for (const team of projectTeams.list()) void notifications.observeProjectTeam(team).catch((error) => logError("Project team notification could not be retained", error)); });
   manager.subscribeAll((run) => { void notifications.observe(run).catch((error) => logError("Notification event could not be retained", error)); });
   approvals.subscribe(() => {
     for (const request of approvals.list()) {
@@ -2400,6 +2412,7 @@ async function stop(reason: string, code = 0) {
   await Promise.race([collabRunner.close(), new Promise((resolve) => setTimeout(resolve, 5000).unref())]).catch((err) => logError("Team runner shutdown failed", err));
   teamLink.close();
   await collab.close().catch((err) => logError("Team board shutdown failed", err));
+  await projectTeams.stop().catch((err) => logError("Project team shutdown failed", err));
   await coordinatedApi.service.stop().catch((err) => logError("Coordinated changes shutdown failed", err));
   await deferredRuns.stop().catch((err) => logError("Deferred queue shutdown failed", err));
   for (const controller of improvingControllers) controller.abort();

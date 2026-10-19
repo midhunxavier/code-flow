@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import type { Run, RunManager, RunSummary } from "./engine.js";
@@ -18,6 +18,7 @@ export type Schedule = { every: number } | { at: string; days?: number[]; timezo
 
 export interface Trigger {
   id: string;
+  target?: { kind: "project-team"; teamId: string };
   name: string;
   enabled: boolean;
   /** The run to start: the same fields as a run request from the composer. */
@@ -70,6 +71,7 @@ export interface FireInput {
   source?: SourceInput;
   /** Internal reference used when draining a queued event. */
   eventId?: string;
+  occurrence?: string;
 }
 
 export interface AutomationEvent {
@@ -259,6 +261,20 @@ export function describeSchedule(schedule?: Schedule): string {
 
 export class Automations {
   private triggers: Trigger[] = [];
+  private managed?: { fire: (teamId: string, operationId: string) => Promise<FireResult>; preview: (teamId: string) => Promise<AutomationPreview>; tick: () => Promise<void> };
+  setProjectTeams(hooks: NonNullable<Automations["managed"]>) { this.managed = hooks; }
+  /** Internal projection: execution settings remain owned by the team's versioned mission. */
+  async syncProjectTeam(team: { id: string; name: string; repo: string; projectId: string; status: string; mission: { schedule: Schedule } }) {
+    this.requireWritable();
+    const id = `t-${team.id}`, previous = this.get(id);
+    if (previous && previous.target?.teamId !== team.id) throw new Error("Managed automation identity collision");
+    const enabled = team.status === "active", schedule = team.mission.schedule;
+    const next: Trigger = { ...previous, id, target: { kind: "project-team", teamId: team.id }, name: team.name, run: { repo: team.repo, project: team.projectId, pattern: "auto-team", task: `Standing team: ${team.name}` }, schedule, enabled, webhook: false, isolate: false, token: previous?.token ?? randomBytes(24).toString("hex"), createdAt: previous?.createdAt ?? Date.now(), nextAt: enabled ? previous?.enabled && JSON.stringify(previous.schedule) === JSON.stringify(schedule) ? previous.nextAt : nextFire(schedule, Date.now()) : undefined };
+    if (previous && JSON.stringify(previous) === JSON.stringify(next)) return id;
+    this.triggers = [...this.triggers.filter((t) => t.id !== id), next];
+    try { await this.save(true); } catch (error) { this.triggers = this.triggers.filter((t) => t.id !== id); if (previous) this.triggers.push(previous); throw error; }
+    return id;
+  }
   private timer?: ReturnType<typeof setInterval>;
   private unsubscribe?: () => void;
   private saving: Promise<unknown> = Promise.resolve();
@@ -367,6 +383,7 @@ export class Automations {
   async update(id: string, patch: Partial<Pick<Trigger, "name" | "enabled" | "schedule" | "webhook" | "isolate" | "image" | "run">> & { rotateToken?: boolean }) {
     this.requireWritable();
     const t = this.require(id);
+    if (t.target) throw new Error("Edit this automation through its standing project team");
     const { rotateToken, ...rest } = patch;
     const timing = JSON.stringify([t.enabled, t.schedule]);
     Object.assign(t, rest);
@@ -393,7 +410,7 @@ export class Automations {
 
   async remove(id: string) {
     this.requireWritable();
-    this.require(id);
+    if (this.require(id).target) throw new Error("Archive this automation through its standing project team");
     this.triggers = this.triggers.filter((t) => t.id !== id);
     await this.save();
   }
@@ -401,7 +418,7 @@ export class Automations {
   start(tickMs = 30_000) {
     if (this.timer) return;
     this.stopped = false;
-    this.timer = setInterval(() => void this.tick(), tickMs);
+    this.timer = setInterval(() => { void this.tick().catch((error) => logError("Automation tick failed", error)); }, tickMs);
     this.timer.unref?.();
     // A webhook event that waited for a run fires as soon as that run ends.
     this.unsubscribe = this.manager.subscribeAll((run) => this.runChanged(run));
@@ -425,6 +442,7 @@ export class Automations {
    */
   async tick(now = Date.now()) {
     if (this.stopped) return;
+    await this.managed?.tick().catch((error) => logError("Project team recovery failed", error));
     let changed = false;
     for (const t of this.triggers) {
       if (this.stopped) return;
@@ -437,6 +455,13 @@ export class Automations {
       }
       if (t.nextAt > now) continue;
       const due = t.nextAt;
+      if (t.target) {
+        if (stillDue(t.schedule, due, now)) {
+          try { await this.fire(t.id, { via: "schedule", occurrence: `schedule:${due}` }); }
+          catch (error) { logWarn("Managed cycle admission failed; retaining the scheduled occurrence", { error: (error as Error).message }); continue; }
+        }
+        t.nextAt = nextFire(t.schedule, now); await this.save(true); continue;
+      }
       t.nextAt = nextFire(t.schedule, now);
       changed = true;
       if (!stillDue(t.schedule, due, now)) {
@@ -503,7 +528,7 @@ export class Automations {
     const event = input.eventId ? t.eventHistory?.find((e) => e.id === input.eventId) : undefined;
     const tracked = event ?? this.recordEvent(t, validated);
     try {
-      const result = await this.fireOne(t, { ...validated, eventId: tracked.id });
+      const result = await this.fireOne(t, { ...validated, occurrence: input.occurrence, eventId: tracked.id });
       const runs = result.runs ?? (result.run ? [result.run] : []);
       tracked.runIds = runs.map((run) => run.id);
       const state = result.queued ? "queued" : result.skipped ? /already started \d+ runs from webhooks/.test(result.skipped) ? "dropped" : "skipped" : "started";
@@ -538,6 +563,7 @@ export class Automations {
   /** List the same candidates and execution settings without claiming items or starting agents. */
   async dryRun(id: string, raw: FireInput = { via: "manual" }): Promise<AutomationPreview> {
     const t = this.require(id);
+    if (t.target) { if (!this.managed) throw new Error("Project teams are unavailable"); return this.managed.preview(t.target.teamId); }
     const input = validateFireInput(raw);
     const { config, error: configError } = await readRepoConfig(t.run.repo);
     const busy = this.busy(t);
@@ -598,6 +624,12 @@ export class Automations {
 
   private async fireOne(t: Trigger, input: FireInput): Promise<FireResult> {
     if (!t.enabled && input.via !== "manual") return { skipped: "This automation is disabled" };
+    if (t.target) {
+      if (!this.managed || input.via === "webhook") throw new Error("Project team automations require the project team service");
+      const result = await this.managed.fire(t.target.teamId, input.occurrence ?? `manual:${input.eventId}`);
+      t.lastFiredAt = Date.now(); t.lastRunId = result.run?.id ?? t.lastRunId; t.lastError = result.skipped;
+      return result;
+    }
     if (t.sweep) return this.fireSweep(t, input);
     // Everything up to `starting.add` is synchronous: two webhooks at once can't both get past it.
     const busy = this.busy(t);
@@ -838,17 +870,19 @@ export class Automations {
     return t;
   }
 
-  private save() {
-    if (!this.writable) return this.saving;
-    this.saving = this.saving
-      .then(async () => {
-        await mkdir(dirname(this.file), { recursive: true });
-        const tmp = `${this.file}.tmp`;
-        await writeFile(tmp, JSON.stringify(this.triggers, null, 2), { mode: 0o600 });
-        await rename(tmp, this.file);
-      })
-      .catch((err) => logError(`Couldn't save automations to ${this.file}`, err));
-    return this.saving;
+  private save(strict = false) {
+    if (!this.writable) { if (strict) return Promise.reject(new Error("Automations storage is unavailable")); return this.saving; }
+    const snapshot = JSON.stringify(this.triggers, null, 2);
+    const saving = this.saving.then(async () => {
+      await mkdir(dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.tmp`;
+      const handle = await open(tmp, "w", 0o600);
+      try { await handle.writeFile(snapshot); await handle.sync(); } finally { await handle.close(); }
+      await rename(tmp, this.file);
+      if (process.platform !== "win32") { const dir = await open(dirname(this.file), "r"); try { await dir.sync(); } finally { await dir.close(); } }
+    });
+    this.saving = saving.catch((err) => logError(`Couldn't save automations to ${this.file}`, err));
+    return strict ? saving : this.saving;
   }
 }
 
@@ -898,6 +932,7 @@ function readTrigger(raw: any): Trigger | undefined {
   if (typeof raw.id !== "string" || !raw.id || typeof raw.token !== "string" || raw.token.length < 16) return undefined;
   const run = raw.run;
   if (!run || typeof run !== "object" || typeof run.repo !== "string" || typeof run.pattern !== "string" || typeof run.task !== "string") return undefined;
+  if (raw.target && (raw.target.kind !== "project-team" || !/^pt-[a-f0-9]{24}$/.test(raw.target.teamId))) return undefined;
   const problems: string[] = [];
   let schedule: Schedule | undefined;
   try {
@@ -930,6 +965,7 @@ function readTrigger(raw: any): Trigger | undefined {
   if (problems.length) logWarn(`Automation "${raw.name ?? raw.id}" was turned off: ${problems.join("; ")}`);
   return {
     id: raw.id,
+    target: raw.target,
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name.slice(0, 80) : "Automation",
     enabled: raw.enabled === true && !problems.length,
     run,

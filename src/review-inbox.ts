@@ -2,7 +2,7 @@ import type { RunSummary } from "./engine.js";
 
 export type ReviewReason = "answer" | "blocked" | "failed" | "review";
 export function reviewReason(run: RunSummary): ReviewReason | undefined {
-  if (run.archived) return;
+  if (run.archived || run.projectTeam && !run.awaiting && !run.team?.awaitingRequestId) return;
   if (run.awaiting || run.team?.awaitingRequestId) return "answer";
   if (run.team?.status === "blocked") return "blocked";
   if (!run.seen && (run.status === "failed" || run.status === "interrupted")) return "failed";

@@ -1,0 +1,60 @@
+import { test, before, after } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { createServer, type AddressInfo } from "node:net";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { chromium, type Browser } from "playwright-core";
+const root = fileURLToPath(new URL("../..", import.meta.url));
+const freePort = () => new Promise<number>((resolve) => { const probe = createServer().listen(0, "127.0.0.1", () => { const port = (probe.address() as AddressInfo).port; probe.close(() => resolve(port)); }); });
+const port = await freePort(), base = `http://localhost:${port}`, token = "standing-team-e2e-token";
+const home = mkdtempSync(join(tmpdir(), "codeflow-standing-e2e-")), repo = join(home, "repo");
+let server: ChildProcess, browser: Browser;
+const errors: string[] = [];
+const api = async (path: string, body?: unknown) => {
+  const response = await fetch(`${base}${path}`, { headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) }, ...(body !== undefined ? { method: "POST", body: JSON.stringify(body) } : {}) });
+  return { status: response.status, body: await response.json() };
+};
+before(async () => {
+  mkdirSync(repo); execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+  writeFileSync(join(repo, "README.md"), "Empty input is valid.\n"); writeFileSync(join(repo, "check.mjs"), "process.exit(0);\n");
+  mkdirSync(join(repo, ".codeflow")); writeFileSync(join(repo, ".codeflow/config.json"), JSON.stringify({ prove: false }));
+  execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], { cwd: repo });
+  server = spawn("npx", ["tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_REMOTE_PORT: String(await freePort()), CODEFLOW_HOME: join(home, "data"), CODEFLOW_TOKEN: token, CODEFLOW_PROJECT_TEAMS_ENABLED: "true", CODEFLOW_SCHEDULER_TICK_MS: "250", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+  server.stderr?.on("data", (data) => errors.push(String(data)));
+  for (let i = 0; i < 100; i++) { if (await api("/api/health").then((r) => r.status === 200, () => false)) break; await new Promise((r) => setTimeout(r, 200)); }
+  browser = await chromium.launch({ channel: "chrome", headless: true });
+});
+after(async () => { await browser?.close(); server?.kill("SIGTERM"); /* Server owns worktree cleanup until it has exited. */ });
+
+test("owner creates a standing team, previews, runs, reviews and approves with one shared stream", async () => {
+  const project = await api("/api/projects", { name: "Standing product", repos: [repo] }); assert.equal(project.status, 201, JSON.stringify(project));
+  const id = project.body.id;
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
+  const page = await context.newPage(); const pageErrors: string[] = []; page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.goto(`${base}/?token=${token}#/project/${id}`);
+  await page.getByRole("button", { name: "Connect a team", exact: true }).click();
+  await page.getByLabel("Mission", { exact: true }).fill("Improve the documented input contract");
+  await page.getByLabel("Intended users").fill("Developers");
+  await page.getByLabel("Autonomy").selectOption("build-within-scope");
+  await page.getByLabel("Required check command").fill("node check.mjs");
+  await page.getByRole("button", { name: "Save draft team" }).click();
+  await page.getByRole("button", { name: "Activate", exact: true }).click();
+  await page.getByRole("button", { name: "Preview next cycle" }).click();
+  await page.getByText("Ready to discover", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Run cycle now" }).click();
+  await page.getByRole("button", { name: "Approve this commit" }).waitFor({ timeout: 45000 });
+  await page.screenshot({ path: join(home, "standing-team-ready.png"), fullPage: true });
+  const inventory = await api(`/api/project-teams?project=${id}`), team = inventory.body.teams[0];
+  assert.equal(team.cycles[0].launches.length, 2); assert.equal(team.opportunities[0].status, "ready");
+  await page.getByRole("button", { name: "Approve this commit" }).click();
+  await page.getByText("Approved. Open the result to publish a PR or merge using the existing review controls.").waitFor();
+  const tab = await context.newPage(); await tab.goto(`${base}/#/project/${id}`); await tab.getByRole("button", { name: "Preview next cycle" }).waitFor();
+  const health = await api("/api/health"); assert.equal(health.body.streams.streams, 1, "project team subscriptions reuse the shared transport");
+  const stale = await api(`/api/project-teams/${team.id}`, { operationId: "stale", revision: 1, status: "paused" }); assert.equal(stale.status, 409);
+  const injection = await api("/api/runs", { projectTeam: { teamId: team.id }, pattern: "auto-team", repo, task: "bypass" }); assert.equal(injection.status, 400);
+  assert.deepEqual(pageErrors, [], errors.join("\n"));
+  await context.close();
+});

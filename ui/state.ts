@@ -748,7 +748,7 @@ export async function loadModels() {
 
 // ---------------------------------------------------------------- runs
 /** A run needs you when it finished and you haven't looked, or it was interrupted. */
-export const needsYou = (r: RunSummary) => !r.archived && (!!r.awaiting || teamAwaitingAnswer(r) || (r.status !== "running" && (r.status === "interrupted" || !r.seen)));
+export const needsYou = (r: RunSummary) => !r.archived && (!r.projectTeam || !!r.awaiting || teamAwaitingAnswer(r)) && (!!r.awaiting || teamAwaitingAnswer(r) || (r.status !== "running" && (r.status === "interrupted" || !r.seen)));
 /**
  * A finished run whose result fails its check is a warning, not a success; so is one whose check
  * couldn't run here at all ("unchecked": nobody knows whether it works).

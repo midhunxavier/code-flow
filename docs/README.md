@@ -6,6 +6,7 @@
 - [Runs](runs.md): the run view, talking to a running team, replies, projects, the side panel (chat, files, terminal, browser, notes), restarts and resume, Insights.
 - [GitHub, review and shipping](github.md): review and merge results, start from issues and PRs, review councils, PR follow-through, untrusted text.
 - [Automations and away mode](automations.md): schedules, webhooks, the inbox, Docker isolation, the phone view and direct Tailscale access.
+- [Standing project teams](project-teams.md): recurring repository discovery, bounded implementation, owner decisions and recovery.
 - [Configuration](configuration.md): `.codeflow/config.json`, permissions, health, environment variables.
 - [Security, subscriptions and caveats](security.md): how the CLIs and their logins are used, what runs where, known limits.
 - [Verification profiles](verification.md): required gates, baseline/flaky diagnosis, requirements, human review and merge-target checks.

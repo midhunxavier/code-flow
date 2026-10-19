@@ -1,3 +1,4 @@
+import { ProjectTeamsInbox } from "./project-teams.js";
 import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
@@ -23,6 +24,7 @@ const automationInScope = (a: Automation, scope = currentProject.value) => {
 };
 
 export interface Automation {
+  target?: { kind: "project-team"; teamId: string };
   id: string;
   name: string;
   enabled: boolean;
@@ -59,7 +61,7 @@ export const inbox = () => prioritizedReviewRuns([...runs.value.values()]);
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const localTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
-function SchedulePreview({ schedule }: { schedule?: Schedule }) {
+export function SchedulePreview({ schedule }: { schedule?: Schedule }) {
   const [times, setTimes] = useState<number[]>([]);
   const [error, setError] = useState("");
   const key = JSON.stringify(schedule);
@@ -74,17 +76,19 @@ function SchedulePreview({ schedule }: { schedule?: Schedule }) {
   return <div role="group" aria-label="Next scheduled times"><p class="help">Next runs{timezone ? ` in ${timezone}` : ""}:</p>{times.length ? <ol class="help">{times.map((at) => <li key={at}>{format(at)}</li>)}</ol> : <p class="help">{schedule ? "Calculating…" : "No schedule"}</p>}{timezone ? <p class="help">Runs once per local day. A skipped daylight-saving time moves forward; a repeated time uses its first occurrence.</p> : null}{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
 }
 
-function ScheduleEditor({ automation: a, save }: { automation: Automation; save: (patch: object) => unknown }) {
+export function ScheduleEditor({ automation: a, save }: { automation: Pick<Automation, "name" | "schedule">; save: (patch: object) => unknown }) {
   const current = a.schedule;
   const [mode, setMode] = useState<"daily" | "every" | "off">(!current ? "off" : "every" in current ? "every" : "daily");
   const [at, setAt] = useState(current && "at" in current ? current.at : "07:00");
   const [timezone, setTimezone] = useState(current && "at" in current ? current.timezone ?? localTimezone() : localTimezone());
+  const [days, setDays] = useState<number[]>(current && "at" in current ? current.days ?? [0, 1, 2, 3, 4, 5, 6] : [0, 1, 2, 3, 4, 5, 6]);
   const [every, setEvery] = useState(current && "every" in current ? current.every : 60);
-  const schedule: Schedule | undefined = mode === "off" ? undefined : mode === "every" ? { every } : { at, timezone, days: current && "at" in current ? current.days : undefined };
+  const schedule: Schedule | undefined = mode === "off" ? undefined : mode === "every" ? { every } : { at, timezone, days: days.length === 7 ? undefined : days };
   return <details><summary>Schedule and next times</summary>
     <label>Schedule<select class="field" aria-label={`Schedule for ${a.name}`} value={mode} onChange={(event) => setMode(event.currentTarget.value as typeof mode)}><option value="off">Only when triggered</option><option value="daily">At a time</option><option value="every">Every N minutes</option></select></label>
     {mode === "daily" ? <><label>Time<input class="field" type="time" value={at} onInput={(event) => setAt(event.currentTarget.value)} /></label><label>Time zone<input class="field" placeholder="Europe/Stockholm" value={timezone} onInput={(event) => setTimezone(event.currentTarget.value)} /></label></> : mode === "every" ? <label>Minutes<input class="field" type="number" min={5} max={10080} value={every} onInput={(event) => setEvery(Number(event.currentTarget.value))} /></label> : null}
-    <SchedulePreview schedule={schedule} /><button class="btn small" onClick={() => save({ schedule: schedule ?? null })}>Save schedule</button>
+    {mode === "daily" && <fieldset><legend>Days</legend>{["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day, index) => <label key={day}><input type="checkbox" checked={days.includes(index)} onChange={(event) => setDays(event.currentTarget.checked ? [...days, index].sort() : days.filter((d) => d !== index))} /> {day}</label>)}</fieldset>}
+    <SchedulePreview schedule={schedule} /><button type="button" class="btn small" onClick={() => save({ schedule: schedule ?? null })}>Save schedule</button>
   </details>;
 }
 
@@ -113,6 +117,7 @@ export function AutomationsView() {
   const here = activeProject.value ? ` in ${activeProject.value.name}` : scoped ? " without a project" : "";
   return (
     <div class="automations">
+      <ProjectTeamsInbox projectId={currentProject.value !== ALL && currentProject.value !== NONE ? currentProject.value : undefined} />
       <div class="page-head">
         <div class="ph-text page-head-text">
           <h3>Project scope</h3>
@@ -275,6 +280,7 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
   const project = projectLabel(automationProject(a.run), a.run.repo, scoped);
   const update = (patch: object) => post<Automation>(`/api/automations/${a.id}`, patch).then(loadAutomations, (e) => showToast(e.message, 5000));
   const hookUrl = `${location.origin}${a.hookPath}`;
+  if (a.target) return <div class="auto-row"><b>{a.name}</b><p class="help">Standing project team · {a.enabled ? "active" : "paused"} · {a.scheduleText}</p><button class="btn small" onClick={() => { const id = a.run.project; if (id) route.value = { view: "project", id }; }}>Mission, cycles and opportunities</button></div>;
   return (
     <div class={`auto-row ${a.enabled ? "" : "off"}`}>
       <div class="ar-head">

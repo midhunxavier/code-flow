@@ -154,6 +154,9 @@ test("memory analysis publishes canonical source revisions and deletion preview 
   assert.match(summary.body, /Setup database safely/);
   assert.equal((await api<MemoryAnalysis>(endpoint + "/analysis")).onboarding.sourceRefs.length, 2, "published summary is not recursively summarized");
   await panel.getByText("Source and derived-entry graph", { exact: true }).click();
+  // Publication completes before the panel's asynchronous analysis refresh.
+  // Inspect source edges only after the newly published node is rendered.
+  await panel.getByRole("button", { name: `${summary.title}, revision ${summary.revision}`, exact: true }).waitFor();
   await panel.getByRole("button", { name: `Setup database safely, revision ${source.revision}`, exact: true }).click();
   assert.match(await panel.getByRole("status").innerText(), /1 derived references/);
   const card = page.locator(`#memory-${source.id}`);
