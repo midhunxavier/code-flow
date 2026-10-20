@@ -224,6 +224,18 @@ test("a signed-in maintainer can cancel task deletion in the app modal", async (
   await context.close();
 });
 
+test("a route handed off by another window cancels destructive confirmation", async () => {
+  await page.goto(`${base}/#/team/task/${taskId}`);
+  await page.getByRole("button", { name: "Delete task", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete this task?", exact: true });
+  await dialog.waitFor();
+  await page.evaluate(() => window.postMessage({ type: "codeflow:open", route: { view: "team" } }, location.origin));
+  await page.waitForURL(/#\/team$/);
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal((await task()).id, taskId, "navigation declines the deletion without changing the task");
+  assert.deepEqual(errors, []);
+});
+
 test("the rail's Team badge counts the inbox from the first paint, and marking items read clears the cards' Needs-you badges at once", async () => {
   // A fresh load lands on the composer: the badge must not wait for a Team page to load the board.
   await page.goto(`${base}/#/`); await page.reload(); await page.getByRole("button", { name: "New run", exact: true }).waitFor();
