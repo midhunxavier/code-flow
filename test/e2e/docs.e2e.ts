@@ -148,39 +148,60 @@ test("local docs search, CLI answers, follow-ups and cancellation work", async (
     .first()
     .click();
   await page.waitForURL("**/ssh-projects.html");
-  await page
-    .getByRole("button", { name: "Ask code-flow", exact: true })
-    .click();
+  await page.getByRole("complementary", { name: "Ask code-flow", exact: true }).waitFor();
   await page.getByLabel("Use your CLI").selectOption("claude");
   await page.getByLabel("Your question").fill("How do I start?");
-  await page.getByRole("button", { name: "Send ↗" }).click();
+  await page.getByRole("button", { name: "Send message" }).click();
   await page.locator("#help-messages .answer").waitFor();
   assert.match(
     await page.locator("#help-messages .answer").innerText(),
     /Start run/,
   );
   assert.ok(await page.locator("#help-messages .sources a").count());
+  await page.getByLabel("Your question").fill("Keep this draft");
+  await page.locator("#help-messages .sources a").first().click();
+  await page.locator("#help-messages .answer").waitFor();
+  assert.equal(await page.getByLabel("Your question").inputValue(), "Keep this draft");
+  await page.reload();
+  await page.getByLabel("Use your CLI").waitFor();
+  assert.equal(await page.locator("#help-messages .answer").count(), 1);
+  const followup = page.waitForRequest(r => r.url().endsWith("/api/docs-help") && r.method() === "POST");
   await page.getByLabel("Your question").fill("And what next?");
-  await page.getByRole("button", { name: "Send ↗" }).click();
+  await page.getByRole("button", { name: "Send message" }).click();
+  assert.equal((await followup).postDataJSON().history.length, 1);
   await page.getByRole("button", { name: "Stop", exact: true }).click();
   await page
     .getByText("Stopped. You can ask again.", { exact: true })
     .waitFor();
-  await page.getByRole("button", { name: "Close help" }).click();
-  assert.equal(await page.locator("dialog[open]").count(), 0);
+  await page.getByRole("button", { name: "Close AI companion" }).click();
+  assert.equal(await page.locator("#help-panel:visible").count(), 0);
+  await page.getByRole("button", { name: "Ask code-flow", exact: true }).click();
+  assert.equal(await page.locator("#help-messages .answer").count(), 1);
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  assert.equal(await page.locator("#help-messages .message").count(), 0);
+  await page.reload();
+  assert.equal(await page.locator("#help-messages .message").count(), 0);
+  await page.getByLabel("Use your CLI").waitFor();
+  await page.getByLabel("Your question").fill("Discard this question");
+  await page.getByLabel("Your question").press("Enter");
+  await page.getByRole("button", { name: "Stop", exact: true }).waitFor();
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  const fresh = page.waitForRequest(r => r.url().endsWith("/api/docs-help") && r.method() === "POST");
+  await page.getByLabel("Your question").fill("Start fresh");
+  await page.getByLabel("Your question").press("Shift+Enter");
+  assert.equal(await page.getByLabel("Your question").inputValue(), "Start fresh\n");
+  await page.getByLabel("Your question").press("Enter");
+  assert.deepEqual((await fresh).postDataJSON().history, []);
+  await page.locator("#help-messages .answer").waitFor();
+  assert.equal(await page.locator("#help-messages .message").count(), 2);
+  assert.doesNotMatch(await page.locator("#help-messages").innerText(), /Discard this question/);
 });
-test("static project subpaths work without API calls, with keyboard search and local-help explanation", async () => {
+test("static project subpaths have no companion controls or API calls", async () => {
   const requests: string[] = [];
   page.on("request", (r) => requests.push(r.url()));
   await page.goto(staticBase);
-  await page
-    .getByRole("button", { name: "Ask code-flow", exact: true })
-    .click();
-  await page
-    .getByText(/The assistant runs in your local code-flow app/)
-    .waitFor();
-  assert.equal(await page.locator("#help-form:visible").count(), 0);
-  await page.keyboard.press("Escape");
+  assert.equal(await page.locator("#open-help, #help-panel, [data-help]").count(), 0);
+  assert.equal(await page.getByRole("button", { name: /Ask code-flow/ }).count(), 0);
   await page.keyboard.press("Control+k");
   await page.getByRole("searchbox").fill("verification");
   await page.locator("#search-results a").first().click();
@@ -227,6 +248,30 @@ test("desktop and mobile documentation pass accessibility checks in both themes"
         })),
         [],
       );
+    }
+  assert.deepEqual(errors, []);
+});
+
+test("local chat stays beside the guide on desktop and fits mobile in both themes", async () => {
+  for (const theme of ["light", "dark"])
+    for (const width of [1440, 900, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(base + "/docs/");
+      await page.evaluate(theme => localStorage.setItem("theme", theme), theme);
+      await page.reload();
+      if (!await page.locator("#help-panel").isVisible())
+        await page.getByRole("button", { name: "Ask code-flow", exact: true }).click();
+      await page.getByLabel("Use your CLI").waitFor();
+      const panel = await page.locator("#help-panel").boundingBox();
+      const content = await page.locator("#content").boundingBox();
+      if (width > 760) assert.ok(content!.x + content!.width <= panel!.x + 1);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      await page.addScriptTag({ content: axe.source });
+      const result = await page.evaluate(async () => await (window as any).axe.run(document, {
+        runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+      }));
+      assert.deepEqual(result.violations.map((v: any) => ({ id: v.id, nodes: v.nodes.map((n: any) => n.target) })), []);
+      await page.getByRole("button", { name: "Close AI companion" }).click();
     }
   assert.deepEqual(errors, []);
 });

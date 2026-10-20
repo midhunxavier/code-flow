@@ -6,7 +6,7 @@ Code Flow brings coding CLIs into one workspace for planning, implementation, re
 <a href="getting-started.md"><strong>Start your first run ↗</strong><span>Install the app, connect a CLI and take a task from prompt to review.</span></a>
 <a href="patterns.md"><strong>Choose a workflow ↗</strong><span>Plan and build, test first, compare candidates or ask a team to investigate.</span></a>
 <a href="runs.md"><strong>Find your way around ↗</strong><span>Follow agent activity, ask questions and open files, changes and terminals.</span></a>
-<a href="help.md"><strong>Ask code-flow ↗</strong><span>Get guidance from these docs using your configured CLI in the local app.</span></a>
+<a href="verification.md"><strong>Review with confidence ↗</strong><span>Understand checks, review evidence and when a result is ready to ship.</span></a>
 </div>
 
 ## From task to reviewed result
