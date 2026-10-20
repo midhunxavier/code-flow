@@ -207,7 +207,7 @@ test("the rail's Team badge counts the inbox from the first paint, and marking i
   await page.goto(`${base}/#/`); await page.reload(); await page.getByRole("button", { name: "New run", exact: true }).waitFor();
   await page.locator(".rail-menu-count", { hasText: "1" }).waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: "Application menu", exact: true }).click();
-  await page.getByRole("menuitem", { name: /^Team 1 unread$/ }).click(); await page.waitForURL(/#\/team$/);
+  await page.getByRole("menuitem", { name: /^People 1 unread$/ }).click(); await page.waitForURL(/#\/team$/);
   const card = page.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }); await card.waitFor();
   await page.locator(".team-card.needs-you").filter({ hasText: TITLE }).waitFor(); await card.getByText("Needs you", { exact: true }).waitFor();
   await page.getByRole("heading", { name: /^Inbox/ }).getByText("1", { exact: true }).waitFor();

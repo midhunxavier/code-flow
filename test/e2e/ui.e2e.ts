@@ -218,7 +218,6 @@ test("a message sent while Codex is working reaches its running turn", async () 
 
 test("start from a PR with a template: the council's findings are ranked, and posting takes your click", async () => {
   await page.goto(BASE);
-  await page.locator(".task-starters > summary").click();
   await page.getByRole("button", { name: "Template library", exact: true }).click();
   await page.getByRole("button", { name: /Review a PR as a council/ }).click();
   await page.locator(".gh-item", { hasText: "Add feature loop" }).click();
@@ -311,8 +310,7 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   ];
   writeFileSync(ghState, JSON.stringify(s));
 
-  await page.goto(BASE);
-  await page.locator(".task-starters > summary").click();
+  await page.goto(`${BASE}/#/automations/backlog`);
   await page.getByRole("button", { name: /Fix open issues/ }).click();
   const dialog = page.locator("dialog.sweep-dialog");
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).waitFor();
@@ -327,8 +325,7 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   await item.waitFor({ state: "detached" });
 
   // The next sweep knows #41 has a run.
-  await page.goto(BASE);
-  await page.locator(".task-starters > summary").click();
+  await page.goto(`${BASE}/#/automations/backlog`);
   await page.getByRole("button", { name: /Fix open issues/ }).click();
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).getByText("Already has a run").waitFor();
   assert.equal(await dialog.getByRole("checkbox", { name: /fix the greeting/ }).isChecked(), false);
@@ -366,7 +363,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const tab = await phone.newPage();
   await tab.goto(`${PHONE}${phonePath}`);
-  await tab.getByRole("heading", { name: "What should the team build?" }).waitFor();
+  await tab.getByRole("heading", { name: "What should the agents build?" }).waitFor();
   assert.equal(new URL(tab.url()).pathname, "/");
   await tab.getByRole("button", { name: "Show runs" }).click();
   await tab.locator(".rail.open").waitFor();
@@ -379,7 +376,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   await scanned.route("http://qr-scanner.example/", (route) => route.fulfill({ contentType: "text/html", body: `<a href="${PHONE}${phonePath}">Open link</a>` }));
   await scanned.goto("http://qr-scanner.example/");
   await scanned.getByRole("link", { name: "Open link" }).click();
-  await scanned.getByRole("heading", { name: "What should the team build?" }).waitFor();
+  await scanned.getByRole("heading", { name: "What should the agents build?" }).waitFor();
   assert.equal(new URL(scanned.url()).pathname, "/");
   await scanner.close();
 
