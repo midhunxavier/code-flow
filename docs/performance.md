@@ -1,4 +1,8 @@
-# Performance and resource boundaries
+# Performance
+
+Use the diagnostic and benchmark commands below to identify the affected boundary. Compare the same workload and record variance before changing concurrency, caching or storage.
+
+## Measure the workload first
 
 The backend remains Node/TypeScript and the UI remains Preact. Execution journals,
 provider receipts and repository leases retain their existing authority. The changes
@@ -145,3 +149,7 @@ bytes, not compressed wire bytes. Heap is JavaScript heap after forced GC, not
 whole-process memory. Timeouts are failures, never silently replaced with a timing.
 Agent execution and provider inference are excluded. See the Rust experiment's
 [README](../experiments/rust-transcript/README.md) for its scope and parity test.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

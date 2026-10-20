@@ -1,4 +1,8 @@
-# Versioned provider and workflow extensions
+# Provider and workflow extensions
+
+Inspect the extension bundle and its declared API version before enabling it. Pin the version you intend to run; an extension is trusted executable code, not a sandboxed configuration file.
+
+## Connect a trusted extension
 
 For OpenCode or another CLI that speaks Agent Client Protocol, use [ACP connections in Settings](acp-agents.md). No JavaScript extension bundle is needed for a compatible stdio agent.
 
@@ -39,3 +43,7 @@ Each ID must be `plugin:example/name`. Provider adapters implement `available()`
 Runs pin every selected extension's version and SHA-256. Resume or further dispatch refuses a missing or changed pin; restore the exact reviewed bundle or create a fresh run. A restrictive filesystem policy also blocks plugin execution. The fixture acceptance test loads a real captured bundle, registers a new provider/workflow, runs it through the actual engine, commits its result and executes its real check without provider quota or external requests.
 
 `GET /api/extensions` is owner-only and returns status, hashes, negotiated versions and registered IDs, with bounded redacted error details. It does not return module source or the configuration document. Extension caches are executable code, not portable project data; restore does not enable plugins without an explicit environment configuration.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

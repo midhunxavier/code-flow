@@ -1,145 +1,117 @@
 <p align="center">
-  <img src="docs/images/logo.png" alt="" width="80" height="80">
+  <img src="ui/brand/vibesboard-mark.png" alt="" width="64" height="64">
 </p>
-
 <h1 align="center">code-flow</h1>
-
+<p align="center">Your coding agents. One workspace.</p>
 <p align="center">
-  Run <b>Claude Code</b>, <b>Codex</b> and <b>Antigravity CLI</b> as one team of coding agents,<br>
-  on the subscriptions you already pay for.
+  Bring Claude Code, Codex and Antigravity together to plan, build and review.<br>
+  Use your installed CLIs and existing logins, with work you can inspect before shipping.
 </p>
-
 <p align="center">
   <a href="#quickstart">Quickstart</a> ·
-  <a href="docs/patterns.md">Team patterns</a> ·
-  <a href="docs/README.md">Docs</a> ·
+  <a href="https://midhunxavier.github.io/code-flow/">Documentation</a> ·
+  <a href="docs/patterns.md">Workflows</a> ·
   <a href="docs/security.md">Security</a>
 </p>
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/run-dark.png">
-    <img src="docs/images/run-light.png" alt="A code-flow run: the task, eight steps by Claude and Codex, and the approved, proven result with its branch (demo data)" width="100%">
-  </picture>
-</p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/run-dark.png">
+  <img src="docs/images/run-light.png" alt="Code Flow run with the task, agent activity, verification evidence and review actions. Captured from the local app using demo agents." width="100%">
+</picture>
 
----
-
-You pick how the agents work together (plan → build → review, a race, a debate, a supervisor with workers…), assign an agent to each role, and watch them work live in your browser. An experimental, opt-in **Auto team** lets code-flow propose the team and workflow from your task instead. Agent work runs in Git worktrees on your own CLI logins. Results distinguish passing independent checks, failed checks, and finished work that remains unverified.
+*Screenshots show the current local app with deterministic demo agents. They do not represent real provider output or a production verification result.*
 
 ## Quickstart
 
-You need Node 22.13+, git 2.38+ (for **Merge**), and at least one of [`claude`](https://docs.anthropic.com/en/docs/claude-code), [`codex`](https://github.com/openai/codex) or `agy` installed and signed in.
+Install **Node.js 22.13+**, **Git 2.38+**, and at least one supported CLI: `claude`, `codex` or `agy`. Sign in through the CLI before starting. Additional [ACP agents](docs/acp-agents.md) can be connected in Settings.
 
 ```bash
 git clone https://github.com/midhunxavier/code-flow.git
 cd code-flow
-npm install
+npm ci
 npm start
 ```
 
-Open **http://localhost:4317**, choose a repository, describe the task, pick a team, and press **Start run** (⌘↵). Each result lands on a branch such as `codeflow/<run>/build`, ready to review, merge or open as a pull request. More in [Getting started](docs/getting-started.md).
+Open [localhost:4317](http://localhost:4317), or use the owner link printed in the terminal if sign-in is required.
 
-## Highlights
+1. Choose a repository and describe the outcome you want.
+2. Pick a workflow and its agents. Set a check command such as `npm test`.
+3. Select **Start run**. Review any plan or question that needs your input.
+4. Inspect the result and its evidence, then review, merge or open a pull request.
 
-**Inbox** and **Scheduling** are direct sidebar destinations. Open **Repository tools** from a project, or find the workspace and **Insights** in the application menu or command palette. **Settings** holds appearance, agent models, run defaults, notifications, connections and administration (**⌘, / Ctrl+,**).
+Results live on branches such as `codeflow/<run>/build` in separate Git worktrees. The [first-run guide](docs/getting-started.md) explains context, permissions and model settings.
 
-**Settings → Agents & models** also connects [OpenCode, Kilo, Cline and other ACP-compatible CLIs](docs/acp-agents.md), with connection checks, discovered models and saved executable settings. These agents currently require Full access on the application host.
+**Inbox** and **Scheduling** are in the sidebar. **New run → Template library** groups task starters and saved configurations. Open **Repository tools** from a project; use **Settings → Connections** for remote work and sharing.
 
-**Project → Repository tools** provides verification profiles and requirement mappings, code editing with three-way conflicts, selective checkpoint files/hunks, service launch profiles, coordinated repository changes and filtered tasks. Configuration, diagnostics, integrations and notifications live in Settings. The composer has one template library for built-in tasks, saved workflows and complete task configurations, plus advanced controls, readiness checks and settings provenance. Auto-team plans can be edited before approval; dispatch can be paused or prioritized. See the [implementation checklist and boundaries](docs/application-improvements.md), [API/client](docs/api.md), [verification](docs/verification.md), and [backup/maintenance](docs/maintenance.md).
+## A workspace for the whole task
 
-[Project missions](docs/project-teams.md) can investigate a repository on a schedule, propose improvements, and prepare one verified draft per cycle. Enable the preview from Scheduling → Pursue a mission or a project page, then create a mission. You approve the exact result before using the existing publishing controls.
+| You want to… | Use… |
+| --- | --- |
+| Build a feature with an independent review | [Plan → Build → Review](docs/patterns.md) |
+| Let a coordinator propose a team and task graph | [Auto team](docs/auto-team.md), with plan approval and bounded execution |
+| Fix failing tests, compare solutions or explore a design | [Loop, race, test-first and debate workflows](docs/patterns.md) |
+| Inspect files, changes, terminals and app previews | The [run workspace and side panel](docs/runs.md) |
+| See what needs a decision across projects | The [review inbox](docs/review-inbox.md) |
+| Run scheduled work or revisit it from another device | [Automations and remote access](docs/automations.md) |
+| Work with teammates or a remote machine | [Team collaboration](docs/team-collaboration.md) and [SSH projects](docs/ssh-projects.md) |
 
-Additional workflows include [selective task reruns](docs/task-reruns.md), [deferred starts](docs/deferred-runs.md), [context budgets](docs/context-inspection.md), [versioned conventions](docs/project-conventions.md), [reviewed commit reversions](docs/checkpoint-review.md), and a [local VS Code extension](integrations/vscode/README.md). The [review inbox](docs/review-inbox.md) groups questions, blocked work, failures and results across projects.
+Code Flow shows checks, independent review and fail-to-pass evidence separately. Finished work can still be unverified; the [verification guide](docs/verification.md) explains the distinction. Publishing remains an explicit workflow action.
 
-Enable optional **People** controls in Settings → Connections → Share access to use [shared project accounts](docs/shared-projects.md) for scoped human review,
-[team collaboration](docs/team-collaboration.md) for a shared task board whose
-work runs on each teammate's own computer or, with explicit project grants, queues on the host using its installed CLIs. A separate opt-in grant lets trusted teammates open interactive host terminals from their browsers.
-Use
-[SSH projects](docs/ssh-projects.md) for a complete remote workspace,
-[SSH workers](docs/remote-workers.md) for provisioned remote execution and
-[coordinated changes](docs/coordinated-changes.md) for repository dependency
-workflows. [GitLab/Bitbucket code workflows](docs/code-hosts.md), [GitHub review
-threads](docs/github-review-threads.md), [architecture exploration](docs/architecture-explorer.md)
-and [semantic memory claims](docs/memory-claims.md) provide bounded evidence for
-review. [Filesystem policies](docs/filesystem-policy.md) and explicit trusted
-[extensions](docs/extensions.md) document their execution boundaries.
-
-[Structured memory](docs/memory-storage.md) uses local SQLite storage, keyword search and a lightweight graph connecting memories to files, runs, commits and source memories. Existing JSON memory migrates automatically; inspect connections under **Project memory → Knowledge graph**.
-
-- **A team, not one agent.** Seven patterns, from Plan → Build → Review to a Best-of-N race judged blind, with any agent in any role and a model and effort per role. Having a different vendor review or judge catches what a model misses in its own work.
-- **Auto team (experimental, opt-in).** [Auto team](docs/auto-team.md) proposes members, tasks and acceptance criteria, asks for plan approval, then adapts within your limits. Members ask each other addressed questions and keep private, team and project memory. It is kept opt-in until its [measured evidence](docs/dynamic-teams-evaluation.md) supports more.
-- **Your subscriptions, their official CLIs.** code-flow launches `claude`, `codex` and `agy` headless, as they ship. It never reads or stores credentials.
-- **Your checkout stays untouched.** Every run works in git worktrees. Results are branches: review them line by line, send comments back to the agent, merge safely, or open a PR.
-- **Done means the check passes, and proves something.** code-flow runs your test command itself after every change, feeds failures back, and flags edits that make tests pass without fixing anything. Then it runs the result's tests on the original code: at least one should fail there, or nothing shows the change works, and the agent is asked for a test that does. Reviewers show the bugs they report with a test that code-flow runs, so a false alarm doesn't cost a fix round.
-- **A conversation, not a job queue.** Approve the plan before anyone builds, message the team while it works (straight into a running Codex turn), and reply after it finishes.
-- **A side panel, like the apps you know.** Next to the work, and following what you open: side chats that work in the run's own worktree (ask, or change it), the run's changes, its files, real terminals (two at once, one above the other), a browser for the app it started where you pick or box what's wrong and send it to the agent with a snapshot (or a snapshot of any site, to draw boxes on), and your notes. A pin keeps it on one run; it can open in a window of its own.
-- **Where the work lives, even when you're away.** Start from GitHub issues and PRs, fix failing CI, have a council review a PR, run on a schedule or from webhooks, and check in or take over from your phone. Built-in Tailscale detection gives your devices a private remote link and QR code.
-- **Projects.** Runs are grouped by project with no setup: each repository gets one the first time you run in it. A project can span several repositories, and remembers the team you last used there.
-- **Sweep the backlog.** Fix every open issue, every Dependabot PR with failing CI, or every security alert in one go: pick from the list, get one run each, approve the results from your inbox. Optionally every night, for new ones only.
-
-## Find your work
-
-- **New run → Template library** combines task starters, GitHub sources, saved workflows and complete templates. New templates remember the prompt, acceptance criteria, agent/model choices, permissions, checks and run settings. Existing libraries remain usable.
-- **Scheduling** brings together Run once later, Repeat, Process a backlog and Pursue a mission. A configured task uses the same choices under **Schedule…**.
-- **Settings → Connections** groups remote work by purpose: Work on another computer, Delegate execution and Share access. Human collaboration is optional under **People**; hiding it does not revoke existing access or stop work.
-- **Files** and **Repository tools → Code** share the same browser and editor, with an explicit repository/worktree scope and draft/conflict recovery. **What could this change affect?** brings static dependency evidence into editing and review.
-- **Insights → Experiments** holds workflow comparisons. Semantic memory analysis is under **Advanced memory tools**.
-
-## Pick a team
+## Choose how the agents work
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/composer-dark.png">
-  <img src="docs/images/composer-light.png" alt="The composer: the project and repository, getting started and task starters, the task, acceptance criteria and the workflow with Plan → Build → Review picked (demo data)" width="100%">
+  <img src="docs/images/composer-light.png" alt="Code Flow composer with a task, workflow selection, agents and run options, using demo data." width="100%">
 </picture>
 
-| Pattern | How the agents work | Reach for it when |
-|---|---|---|
-| **Auto team** | propose and approve the team → ready tasks, addressed questions and bounded revisions → integrate, check, review and repair | you want code-flow to choose the team and workflow |
-| **Plan → Build → Review** | one plans, one builds, another vendor reviews against the task; code-flow runs the tests the reviewer shows bugs with; fixes until the check passes and nothing blocks | most features and bug fixes |
-| **Loop until green** | fix → code-flow runs the check → repeat; hands over to the next vendor when stuck | "done" is a command: failing tests, a broken build |
-| **Best-of-N race** | everyone solves it in parallel → a judge picks from anonymized diffs | the task is open-ended or risky |
-| **Debate → Synthesize → Build** | anonymous proposals → critique rounds → one plan → build → review until approved | architecture, API design, big refactors |
-| **Supervisor → Workers** | split into parallel subtasks → build on branches → integrate and review | larger tasks that split cleanly |
-| **Test-first** | one writes failing tests, another makes them pass without touching them | behavior you can specify with tests |
-| **Review council** | independent read-only reviews, bugs shown with tests code-flow runs → a chair ranks the worst confirmed first | reviewing a PR before merging |
+| Workflow | Flow | Good for |
+| --- | --- | --- |
+| **Plan → Build → Review** | Plan, implement, review, repair | Features and bug fixes |
+| **Loop until green** | Change, check, repeat | A failing test or build |
+| **Best-of-N race** | Parallel candidates, blind judging | Exploring alternative implementations |
+| **Debate → Synthesize → Build** | Proposals, critique, synthesis, optional implementation | Design decisions |
+| **Supervisor → Workers** | Subtasks, separate branches, integration | Work that splits cleanly |
+| **Test-first** | Failing tests, implementation, verification | Precisely specified behavior |
+| **Review council** | Independent reviews, evidence, ranked findings | Reviewing a change |
+| **Auto team** | Proposed team, dependency graph, bounded adaptation | Delegating workflow design |
 
-How each pattern loops, checks and stops: [Team patterns, checks and limits](docs/patterns.md).
+Assign providers, models and effort per role. Auto team availability and its default selection follow the current rollout state; see [Auto team](docs/auto-team.md). [Project missions](docs/project-teams.md) are a separate preview for recurring repository work.
 
-## How it uses your subscriptions
+## Your CLIs, your machine
 
-| Agent | Runs | Uses the login from |
-|---|---|---|
-| Claude Code | `claude -p` (stream-json) | `claude` (Pro/Max, or an API key) |
-| Codex | `codex app-server`, or `codex exec` | `codex login` (ChatGPT plan, or an API key) |
-| Antigravity | `agy -p` (stream-json), sandboxed | `agy` (Google AI Pro/Ultra) |
+| Provider | How Code Flow runs it | Authentication |
+| --- | --- | --- |
+| Claude Code | `claude -p` | The CLI's own login |
+| Codex | `codex app-server` or `codex exec` | `codex login` |
+| Antigravity | `agy -p` | The CLI's own login |
+| ACP connections | Saved executable and ACP arguments | The connected CLI's authentication |
 
-code-flow enforces the team's read-only steps itself, for every agent (a side chat's **Ask** reports changes instead of undoing them, since you may be working in the same worktree). It never merges on its own, and pushes only where you asked it to (a pull request you open, or one you told it to watch). This is the boundary each vendor draws for personal use: don't extend code-flow to read or reuse the CLIs' OAuth tokens. Checks run the agents' code on your machine, as your CI would, so use code-flow on repos you trust or run checks in Docker. Details in [Security](docs/security.md).
+Code Flow delegates authentication to the CLIs. Provider access, model availability and usage limits depend on your account and CLI configuration. It does not extract or reuse OAuth tokens. Repository checks execute code; choose suitable permissions and isolation for the repository. Read the [security and execution boundaries](docs/security.md).
 
-## Docs
+## Documentation, wherever you work
 
-- [Getting started](docs/getting-started.md): install, your first run, context, models, worktrees
-- [Application improvement checklist](docs/application-improvements.md): all six priority packages, 14 product issues and 73 feature acceptance items
-- [Expanded workspace workflows](docs/README.md): remote workers, shared reviews, coordinated repositories, semantic memory, extensions and verification
-- [Team patterns, checks and limits](docs/patterns.md)
-- [Auto team](docs/auto-team.md): dynamic workflows, messages, private/team/project memory, budgets and recovery
-- [Runs](docs/runs.md): the run view, talking to a run, projects, the side panel, restarts and resume, Insights
-- [GitHub, review and shipping](docs/github.md): review, merge, PRs, issues, follow-through
-- [Automations and away mode](docs/automations.md): schedules, webhooks, the inbox, the phone view and full control from your phone
-- [Configuration](docs/configuration.md): `.codeflow/config.json`, permissions, environment variables
-- [Security, subscriptions and caveats](docs/security.md)
-- [Architecture and development](docs/architecture.md): code layout, adding patterns and agents, tests
+Open **Application menu → Help & documentation** or find it in the command palette. The bundled docs at [localhost:4317/docs/](http://localhost:4317/docs/) include search, page navigation and an **Ask code-flow** assistant that answers using your installed CLI and the guides. [How local help works](docs/help.md).
+
+The same docs can be hosted on GitHub Pages, with the local app's typography, colors and light/dark themes. Search and reading work on the static site; CLI help runs in the local app.
+
+```bash
+npm run docs:preview  # build and preview the static site at 127.0.0.1:4319
+npm run build:docs    # produces dist/docs for GitHub Pages
+```
+
+See [publishing and maintaining the docs](docs/documentation.md) for repository setup, screenshots and the deployment workflow. The complete [documentation library](docs/README.md) covers configuration, project memory, remote workers, shared accounts, integrations, APIs and maintenance.
 
 ## Development
 
 ```bash
-npm run dev        # http://localhost:4318 with fake agents: no real runs, no quota
-npm test           # unit + workflow tests against fake CLIs
-npm run test:e2e   # the real UI in headless Chrome
+npm run dev          # localhost:4318, fake agents, no provider quota
+npm run typecheck
+npm test
+npm run test:e2e     # browser acceptance tests; requires Chrome
 ```
 
-See [Architecture and development](docs/architecture.md).
+The [development guide](docs/architecture.md) covers the source layout, adapter and workflow contracts, and tests. Engineering plans and evaluation records are grouped separately in the docs library.
 
 ## License
 
-[MIT](LICENSE). The bundled font keeps its own licence: Inter under the [SIL Open Font License 1.1](ui/fonts/OFL-1.1.txt).
+[MIT](LICENSE). Bundled Inter fonts are distributed under the [SIL Open Font License 1.1](ui/fonts/OFL-1.1.txt).

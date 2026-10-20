@@ -1,4 +1,8 @@
-# SQLite memory and knowledge graph
+# Project memory
+
+Open Project memory to search saved guidance, then use Knowledge graph to follow links to files, runs, commits and source memories. Review provenance before applying an entry to new work.
+
+## Explore project knowledge
 
 Code Flow stores private, team and project memory in `CODEFLOW_HOME/memory.sqlite` (normally `~/.codeflow/memory.sqlite`). Node **22.13 or newer** is required for the built-in `node:sqlite` driver. No database server, native npm addon, downloaded extension or extra SSH deployment asset is needed. This replaces the earlier Node 20 memory-storage baseline. SQLite is experimental in Node 22 and may print a startup warning.
 
@@ -37,3 +41,7 @@ For retrieval, Code Flow first filters to accepted, visible, current, branch-app
 Expand **Project memory → Knowledge graph** to filter connections and inspect their source revisions. The inspector includes proposals for review; it does not approve them. `GET /api/projects/:id/memory/graph?repo=<absolute-path>` exposes the same bounded, authenticated project view and reports truncation.
 
 Run journals, settings and the older recurring-review lessons under `learnings/` retain their existing formats. SQLite is used for the structured agent-memory system; this is not a migration of all application state.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

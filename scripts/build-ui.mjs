@@ -1,6 +1,8 @@
 // Publish hashed ESM chunks before atomically replacing the HTML entry point.
 // Older chunks remain available to tabs opened before a rebuild.
 import "./check-node.mjs";
+import { buildDocs } from "./build-docs.mjs";
+await buildDocs();
 import * as esbuild from "esbuild";
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";

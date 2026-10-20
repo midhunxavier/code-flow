@@ -1,6 +1,10 @@
-# Commit comparison and reviewed reversions
+# Checkpoints and reversions
 
-Settings → Workspace → History compares the selected checkpoint with the observed HEAD across
+Open Project → Repository tools → History, compare the checkpoint, then preview the inverse commit. Apply only after inspecting the patch; the inverse change remains staged for your own commit.
+
+## Review before reverting
+
+Project → Repository tools → History compares the selected checkpoint with the observed HEAD across
 all changed paths. The patch preview is bounded to 2 MiB; large comparisons are
 explicitly marked truncated. Both comparison endpoints resolve to immutable commits.
 
@@ -26,3 +30,7 @@ the returned `fingerprint`. Caller-authored patches are not accepted.
 Validation covers complete comparison, staged inverse changes, history preservation,
 conflicts, stale/forged previews, dirty worktrees, hidden tracked-file changes, and
 the actual browser preview/application flow.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

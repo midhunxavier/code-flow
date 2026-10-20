@@ -67,6 +67,9 @@ test("persisted restrictions defer plugin initialization, CLI probes and prompt 
     const scopedHeaders = { cookie }; const listed = await fetch(`${base}/api/runs?limit=100`, { headers: scopedHeaders }).then((response) => response.json()); assert.equal(listed.total, 0); assert.deepEqual(listed.runs, []);
     for (const suffix of ["", "/diff", "/export", "/review-coverage", "/collaboration"]) assert.equal((await fetch(`${base}/api/runs/restricted-result${suffix}`, { headers: scopedHeaders })).status, 404, suffix);
     const controller = new AbortController(); try { const response = await fetch(`${base}/api/events?limit=100`, { headers: scopedHeaders, signal: controller.signal }); const reader = response.body!.getReader(); const first = await reader.read(); const content = new TextDecoder().decode(first.value); assert.equal(content.includes("RESTRICTED_PRIVATE"), false); assert.match(content, /"total":0/); await reader.cancel(); } finally { controller.abort(); }
+    assert.equal((await fetch(`${base}/api/docs-help`, { headers })).status, 403);
+    assert.equal((await fetch(`${base}/api/docs-help`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ agent: "claude", question: "How do I start?" }) })).status, 409);
+    assert.equal((await fetch(`${base}/api/docs-help`, { headers: scopedHeaders })).status, 403);
     assert.equal(existsSync(pluginMarker), false); assert.equal(existsSync(pythonMarker), false); assert.equal(existsSync(providerMarker), false);
   } finally { server.kill("SIGTERM"); await new Promise<void>((resolve) => { if (server.exitCode !== null) return resolve(); server.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }); rmSync(directory, { recursive: true, force: true }); }
 });

@@ -1,4 +1,8 @@
-# Selective Auto-team task reruns
+# Selective task reruns
+
+Open an idle Auto-team result, select tasks to rerun and inspect the dependency preview. Allocate a fresh budget; the new child run must verify its final result independently.
+
+## Repeat only the work that changed
 
 Open an idle Auto-team result and expand **Rerun selected tasks**. Select the accepted tasks to execute again, optionally replace instructions for those selected tasks, review the dependency preview, and allocate a fresh call/time budget. Every transitive dependent task is invalidated, including completion, artifact and knowledge dependencies. Unselected tasks with unfinished or stale work must also be selected; their old evidence cannot be silently retained.
 
@@ -24,3 +28,7 @@ Plan approval follows the source's setting. A rerun's held plan cannot be replac
 ```
 
 It returns `201 {"id":"CHILD_RUN_ID"}`. Requests need 1–24 distinct known tasks and an explicit fresh allocation of 4–200 calls and 1–720 minutes. The effective call budget must fund the invalidated tasks, independent review and one recovery allowance. Unknown fields, forged seeds and instructions for unselected tasks are rejected. Stale source state, unavailable pinned roles, or overlapping source operations return 409. Concurrent identical creation requests share one child while pending; after that creation finishes, a repeated request deliberately creates another child. A dropped response should therefore be reconciled by inspecting run history before retrying.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

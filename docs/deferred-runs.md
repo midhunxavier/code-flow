@@ -1,5 +1,9 @@
 # Deferred runs
 
+Configure a task in the composer and choose a time, provider capacity, or both as its start condition.
+
+## Queue a one-time task
+
 Inspect and manage the queue in **Scheduling → Run once later**. Save a new deferred request from the composer after configuring its task.
 
 Deferred runs save one explicit run request for later execution. They are separate from recurring automations. A job can start at or after a chosen local time, when selected providers have capacity, or after both conditions are satisfied. The application must be running; closing it preserves the queue for the next launch.
@@ -19,3 +23,7 @@ Limits are explicit: at most 100 active/unknown jobs, 200 retained jobs, 30 hist
 The saved request includes the exact task and command text you entered. Reference environment variable names for credentials; inline credential values would become part of that local configuration. Provider authentication files and environment values are never automatically captured. Diagnostic history is redacted, while executable configuration is preserved so redaction cannot silently change a command's behavior.
 
 The reusable service is `DeferredRuns` in `src/deferred-runs.ts`; `ready`, `launch` and optional `cancelRun` callbacks connect it to the application. Call `load()` once, reconcile unknown claims against durable run snapshots, then `start()`. Stop the queue before shutting down the engine. Tests use fake launch callbacks and provider windows, without real provider credentials or quota.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

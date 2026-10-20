@@ -1,4 +1,8 @@
-# Context inspection and invocation budgets
+# Context and budgets
+
+Open Context inspector before starting a run. Review file sources, omissions and size estimates; select individual modified files when you need the current working copy included.
+
+## Check what you are sending
 
 The composer’s **Context inspector** previews explicit repository selections and attachment metadata before a run. Folder selections expand tracked files from the chosen committed base. Current modified or uncommitted descendants are not implicitly copied by a folder selection; select those individual files to stage their current copies. Explicit file previews use the current file where present and fall back to the selected base when it is missing locally. Each preview identifies its source and content hash.
 
@@ -15,3 +19,7 @@ Saved team presets capture this budget, including previous revisions and library
 Evidence records exact UTF-8 prompt/schema byte counts, their aggregate, an approximate token count of one token per four bytes, a content hash, resumed-session status, exclusions and any exceeded ceilings. Prompt bodies are not duplicated into this size evidence. Earlier CLI conversations, hidden provider system instructions, protocol wrappers, tool outputs, later file reads, and image/audio tokenization are outside this measurement. An approximate guard cannot guarantee that the provider’s complete context fits its window.
 
 `POST /api/workspace/context` accepts `{repo,baseRef?,paths,attachments?:[{name,size}]}` and returns source-labeled file results, attachment metadata, byte/token aggregates, omissions and limits. Run settings carry `loop.contextBudget = {maxPromptBytes?,maxApproximateTokens?,policy:'warn'|'block'}`. Both ceilings require positive bounded integers. The warning and block policies are enforced on the server and persisted with per-step input-size evidence.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

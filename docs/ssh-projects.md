@@ -1,5 +1,9 @@
 # SSH projects
 
+Add a connection in Settings → Connections → Work on another computer, connect to the host and select a repository there. The remote workspace has its own execution environment and installed CLIs.
+
+## Open a remote workspace
+
 Open an existing repository on a Linux or macOS server and use the complete code-flow workspace there. File browsing and editing, Git, agent sessions, approvals, terminals, worktrees, setup, builds, verification, and development servers all run on that server. Local and connected remote projects appear together in the sidebar. Click a project to work on its computer; the top bar shows the computer name. Everything stays on the main app address, with remote projects under `/computer/<saved-host-id>/`.
 
 ## Connect
@@ -56,3 +60,7 @@ This feature differs from [SSH workers](remote-workers.md): workers transfer ind
 ## Validation
 
 `npx tsx --test test/ssh-projects.test.ts` runs the packaged backend in a separate host home using an injected SSH transport. Browser coverage is in `test/e2e/ssh-projects.e2e.ts`. Run `CODEFLOW_TEST_LOOPBACK_SSH=1 npx tsx --test test/ssh-projects-ssh.test.ts` for the real OpenSSH acceptance test. It uses temporary keys, known hosts and an unprivileged loopback SSH daemon, and never edits personal SSH configuration.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

@@ -1,8 +1,12 @@
 # Auto team
 
+Choose Auto team in the composer and describe the outcome. Inspect members, task dependencies, file ownership and acceptance criteria before approving the proposed plan.
+
+## Review the proposed team
+
 Choose **Auto team**, describe the goal, and select the providers code-flow may use. A coordinator inspects the repository and proposes individual members, tasks, dependencies, file ownership, and acceptance criteria. You can approve, revise, or reject that plan before workers start. Planning itself uses a CLI invocation. Approval defaults on; an explicitly saved preference or automation policy still applies.
 
-Auto team is opt-in. Existing manual patterns remain available. It uses the same official CLI adapters, worktrees, checks, permissions, review/shipping actions, and subscription logins as other runs.
+Auto team is available unless disabled with `CODEFLOW_AUTO_TEAM_ENABLED=false`. Whether it is initially selected follows the measured rollout state and your saved workflow preference. Existing manual patterns remain available. It uses the same official CLI adapters, worktrees, checks, permissions, review/shipping actions, and subscription logins as other runs.
 
 ## How work proceeds
 
@@ -80,8 +84,12 @@ The implementation uses `src/teams.ts`, `src/patterns/auto-team-model.ts`, and `
 
 Tests use fake vendor CLIs and isolated repositories. They exercise plan validation/approval, same-provider identities, dependency waves, peer and user questions, restart/resume, member replacement, independent verification, storage failures, memory trust/revision/deletion, and the browser workflow. They demonstrate behavior, not model quality or subscription savings. `npm run evaluate:teams -- --fake` runs an isolated comparison without model calls. Use `--real --runs 1 --providers claude,codex --max-steps 12 --max-minutes 5 --out /absolute/output` for a bounded comparison through signed-in CLIs. Reports record mode, CLI versions, actual calls, coverage, coordinator overhead, peer waiting and journal-load size/time. Estimated avoidable barrier delay is labeled separately from observed waiting.
 
-Insights shows evaluations and the recorded rollout decision. Fake or unknown runs cannot justify beta/default promotion. Auto remains experimental until the evidence meets the documented thresholds; default rollout requires a larger representative sample. See [implementation evidence](dynamic-teams-evaluation.md).
+Insights shows evaluations and the recorded rollout decision. Fake or unknown runs cannot justify beta/default promotion. Promotion beyond the experimental stage requires the documented evidence thresholds; default rollout requires a larger representative sample. See [implementation evidence](dynamic-teams-evaluation.md).
 
 Set `CODEFLOW_AUTO_TEAM_ENABLED=false` to disable creation of new Auto runs. Existing teams remain inspectable and resumable; manual patterns and saved automations retain their compatibility. The feature does not require a database or new Node baseline.
 
 The evaluation runner also accepts `--register-home /absolute/codeflow-home` to copy immutable reports into a chosen installation for Insights. This is explicit: it does not copy transcripts or change rollout settings. Reports are also available in the isolated evaluation home's `team-evaluations/` folder.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

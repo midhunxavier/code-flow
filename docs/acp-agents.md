@@ -1,5 +1,9 @@
 # ACP coding agents
 
+Open Settings → Agents & models, select a preset and check the executable and arguments. Run Check connection before saving, then select a discovered model for an eligible run.
+
+## Connect your CLI
+
 Settings → Agents & models provides **Connect OpenCode**, **Connect Kilo** and **Connect Cline** presets through the shared Agent Client Protocol (ACP) v1 adapter. **Add compatible CLI** connects other agents implementing the same stdio protocol.
 
 ## Connect a supported CLI
@@ -82,3 +86,7 @@ Both Kilo and Cline passed the same two-turn acceptance test on October 19, 2026
 | Cline 3.0.73 | `anthropic/claude-sonnet-5.5` | 24.8 s | 5 | Passed both turns and session restoration |
 
 The [sanitized acceptance receipts](evaluations/acp-live-2026-10-19.json) record run IDs, commits, streamed event counts and checked assertions. Each run changed a baseline with three failing tests into four passing tests without modifying those tests, then produced a second clean commit after restoring the same session. The Cline run exposed and verified a fix for file-edit approvals: its native editor supplies `rawInput.path` without ACP `locations`, which the adapter now carries into the approval inbox. These observations establish compatibility for the listed versions and models; model availability and task success can vary.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

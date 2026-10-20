@@ -1,5 +1,9 @@
 # Versioned project conventions
 
+Save a private convention draft, inspect its version history, and preview publication to a project repository. Commit the staged conventions file if future runs should inherit it.
+
+## Keep project guidance current
+
 Settings → Projects & access keeps human-authored project guidance privately beneath `CODEFLOW_HOME/conventions/`. A saved draft does not change a repository and is never inserted into agent context automatically. External run content cannot author guidance through the team capability API.
 
 Each save requires the exact observed revision. A concurrent edit returns HTTP 409 and preserves the editor draft. Compare the latest saved text, then deliberately keep your draft against that newer base or export it. Versions retain their original text, timestamp, hash, and note. The latest 32 revisions are retained; each holds at most 64 KiB of UTF-8 text. Line endings normalize to LF and nonempty guidance ends with a newline. History files use atomic durable replacement with private file permissions. Corrupt or inaccessible histories are left untouched, and a failed operation does not poison later writes.
@@ -13,3 +17,7 @@ Review and commit the staged file yourself. Only `.codeflow/conventions.md` at a
 Publication attempts restore the prior target file if staging fails and the source has not changed concurrently. If another tool changes HEAD or the target during publication, those changes are preserved and the UI requires a new inspection. Review any reported Git index error before retrying.
 
 API contracts: `GET /api/projects/:id/conventions`, `PUT` with `{revision,text,note?}`, `POST /restore-preview` with `{version}`, and `POST /restore` with `{revision,version,hash}`. `GET /publication?repo=PATH` returns the observed `{sourceHash,head,clean,text,...}`. Explicit `POST /publish` requires `{repo,revision,sourceHash,head}`. Publication authorization is checked against the project's repository membership and current activity on the server; private drafts are not automatic execution instructions.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

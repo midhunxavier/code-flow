@@ -1,5 +1,9 @@
 # Accessibility acceptance
 
+Test the relevant flow with a keyboard, at a narrow viewport and in both themes. Automated audits supplement focus, navigation and readable status checks; they do not replace them.
+
+## Check the complete interaction
+
 The main browser suite runs local axe-core checks against WCAG 2 A/AA, 2.1 AA and 2.2 AA rules. It covers the composer, Insights, Settings (including Automations), completed runs, Workspace tools, command palette, folder picker and the Files/Notes/Chat side panel in light and dark themes, plus mobile composer/workspace layouts. The suites also check Settings categories, shared login/reviewer views, human collaboration, filtered-task imports and the Improve mode menu. Reports and screenshots are generated under `output/playwright/`.
 
 The audit fixed helper/status/provider text contrast, named dialogs, small breadcrumb targets, keyboard access to scrolling results, focusable controls inside the hidden side panel, empty tab strips and keyboard resizing of the panel. A visible-on-focus skip link moves focus to the main content. The command palette supports arrow keys/Enter/Escape, and Escape returns focus to its trigger. The side panel supports arrow-key tab selection and keyboard resizing; closed panels are inert. Mobile Workspace uses a labelled grouped selector so its tools do not overflow into a long strip of tiny buttons. Reduced-motion preferences disable sustained animation and smooth scrolling.
@@ -7,3 +11,7 @@ The audit fixed helper/status/provider text contrast, named dialogs, small bread
 Run `node --import tsx --test test/e2e/accessibility.e2e.ts` with Google Chrome installed. This uses the real server and browser with deterministic fake agents; it makes no account requests. The test asserts every enabled automatic rule and writes incomplete/manual-check results rather than treating them as passing assertions. Decorative status glyphs have adjacent text and are hidden from assistive technology.
 
 Automatic checks and scripted keyboard flows do not establish complete WCAG conformance or replace testing with assistive technology and users. The mobile screenshots were also inspected for clipped controls and unreadable content. New forms, dialogs and interactive states should extend the browser coverage. Native screen-reader/device acceptance remains an ongoing product-quality check.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

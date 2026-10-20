@@ -101,6 +101,7 @@ import { listIssues, listPullRequests, MERGE_METHODS, type SourceInput } from ".
 import { listSweep, runSweep, sourceKeys, type SweepKind } from "./sweeps.js";
 import { parseImproveSettings, IMPROVE_AGENTS, type ImproveAgent } from "./improve-settings.js";
 import { exhausted, resolveAuto } from "./routing.js";
+import { DocsHelp, serveDocs, parseHelpRequest } from "./docs-help.js";
 import { improvePrompt, assertImproveEnvironment, ImproveError, MAX_IMPROVE_CHARS, type ImproveRequest } from "./improve.js";
 import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
@@ -257,6 +258,13 @@ function changeSavedRemote(patch: Parameters<typeof changeRemote>[1]): Promise<R
   return change;
 }
 const REMOTE_PORT = envNumber("CODEFLOW_REMOTE_PORT", PORT + 1, { min: 1, max: 65_535 });
+const docsDirectory = fileURLToPath(new URL("../public/docs/", import.meta.url));
+const docsHelp = new DocsHelp(docsDirectory, (agent, event) => {
+  if (event.kind === "quota") manager.recordQuota(agent, event.status, event.windows);
+}, (agent, error) => {
+  if (error.kind === "usage_limit") manager.recordLimit(agent, error.resetsAt);
+  if (error.kind === "auth") manager.recordQuota(agent, "signed_out", {});
+});
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
 const HOST = "127.0.0.1";
 const sshProjects = process.env.CODEFLOW_SSH_HOST ? undefined : new SshProjects({ localProjects: () => projects.list(), canBrowse: () => !fileAccess.hasRestrictions() });
@@ -1445,6 +1453,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (owner || shared || claim) auth.claimable = false;
     return sendAppPage(req, res, { ...NO_FRAMES, ...(claim ? { "set-cookie": sessionCookie() } : {}) });
   }
+  if (parts[0] === "docs" && req.method === "GET") return serveDocs(docsDirectory, url.pathname, res);
   if (parts[0] === "assets" && parts.length === 2 && req.method === "GET") return sendAsset(fileURLToPath(new URL("../public/assets/", import.meta.url)), parts[1]!, req, res);
   if (parts[0] === "computer") {
     if (via !== "local" || !owner || !sshProjects) throw new HttpError(403, "Use the local owner app to open remote projects");
@@ -1507,12 +1516,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "POST" && parts.length === 2) manager.noteActivity();
     if (await handleFilteredTasksApi(req, res, url, parts.slice(1), filteredTasks)) return;
   }
+  if (parts[1] === "docs-help" && req.method === "POST") parseHelpRequest(await readJson(req, 64 * 1024, { timeoutMs: 10_000 }));
   // Check before ownerGate/validRepo: even repository discovery can invoke Git in its cwd.
   if (parts[1] === "improve-prompt") {
     if (req.method !== "POST" || parts.length !== 2) throw new HttpError(404, "Unknown prompt improvement operation");
     await attempt(async () => assertImproveEnvironment());
   }
   await attempt(() => fileAccess.ownerGate(req, url, parts));
+  if (parts[1] === "docs-help") {
+    if (parts.length !== 2 || via !== "local") throw new HttpError(403, "Use the local owner app for documentation help");
+    manager.noteActivity();
+    return attempt(() => docsHelp.handle(req, res));
+  }
   if ((parts[1] === "ssh-runtime" && process.env.CODEFLOW_SSH_HOST) || (parts[1] === "team-host-runtime" && process.env.CODEFLOW_TEAM_HOST)) {
     if (parts[2] === "preview" && parts.length === 3 && req.method === "POST") {
       if (fileAccess.hasRestrictions()) throw new HttpError(409, "Filesystem restrictions pause remote previews");
@@ -2661,6 +2676,7 @@ async function stop(reason: string, code = 0) {
   await projectTeams.stop().catch((err) => logError("Project team shutdown failed", err));
   await coordinatedApi.service.stop().catch((err) => logError("Coordinated changes shutdown failed", err));
   await deferredRuns.stop().catch((err) => logError("Deferred queue shutdown failed", err));
+  docsHelp.close();
   for (const controller of improvingControllers) controller.abort();
   await filteredTasks.close().catch((err) => logError("Filtered task shutdown failed; inspect its durable unknown receipt before retrying", err));
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));

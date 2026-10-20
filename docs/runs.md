@@ -1,4 +1,6 @@
-# Runs: talking to them, projects, restarts, insights
+# Runs and workspace
+
+Open a run from the sidebar or Inbox. Read the result and verification evidence, then use the suggested next action to answer a question, request a fix or review changes.
 
 ## The run view
 
@@ -13,7 +15,7 @@ A run reads like a conversation, top to bottom:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/transcript-dark.png">
-  <img src="images/transcript-light.png" alt="A step opened in a run: Codex's tool calls, its checklist and its summary (demo data)">
+  <img src="images/transcript-light.png" alt="A step opened in a run: the agent’s recorded tool calls and output (demo data)">
 </picture>
 
 ## Recovering work
@@ -124,3 +126,7 @@ Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and t
 - **Disk:** every worktree is a full checkout, often with its own `node_modules`. Insights measures them and **Clean up** removes the worktrees, not the branches, of runs that finished more than *N* days ago and need nothing from you.
   - **Archive…** with its worktrees removed also clears the rest of the run's folder in `.worktrees/`: scratch checkouts an interrupted attempt left (where proofs and reviewers' tests ran), and, when the branches go too, the context staged for its agents (kept otherwise: a resume or a reply copies it into the worktree it checks out again). The folder goes once it's empty. The pull request's head code-flow fetched for a run started from one (`codeflow-pr/<n>`) is deleted with the last run still using it, unless it's checked out somewhere; it can be fetched again.
 - **Finding runs:** the sidebar lists every [project](#projects)'s runs, one line each: a status dot, the task and its age (hover for the rest). It has search (<kbd>/</kbd>) and, behind the button next to it, grouping by project or by status, filters (needs you, running, passed, failing, tests changed; pattern; agent; this repo) and **show archived runs** (also the archive button at the bottom of the sidebar). While you search or filter, matching archived runs show too. <kbd>j</kbd>/<kbd>k</kbd> move between runs. In a run, <kbd>[</kbd>/<kbd>]</kbd> move between steps. <kbd>\</kbd> shows or hides the side panel. <kbd>?</kbd> lists every shortcut. Run status changes are announced to screen readers.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

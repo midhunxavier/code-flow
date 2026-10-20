@@ -1,4 +1,6 @@
-# Team patterns, checks and limits
+# Team patterns
+
+Start with Plan → Build → Review for a feature or bug fix. Choose a loop when success is a command, a council for review, or a debate when the design needs discussion before implementation.
 
 ## Team patterns
 
@@ -110,3 +112,7 @@ Agents may suggest their own test command (the tester in Test-first does). code-
 > **Security:** a check runs the agents' code (tests, scripts) on your machine, outside Codex's and agy's sandboxes, as your CI would. Use code-flow on repos and tasks you trust, or run checks in Docker (see [Automations](automations.md#isolation)) or code-flow itself inside a container or VM. More in [Security](security.md).
 
 Adding your own pattern: see [Architecture](architecture.md#adding-a-pattern).
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

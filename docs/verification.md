@@ -1,6 +1,10 @@
 # Verification and review
 
-In the composer, select a verification profile instead of the single legacy check. Lightweight, standard and thorough presets detect existing repository commands. In **Settings → Workspace → Verification**, review/edit the detected commands, add bounded custom gates, map acceptance criteria to checks, and run them at a pinned commit. A baseline comparison runs the same profile on both commits; repeated attempts distinguish consistent failures from flaky results. Export the report or profile for reuse through the API.
+Open Project → Repository tools → Verification to inspect the repository’s checks. Select the profile in the composer, then review each required gate and criterion mapping on the final result.
+
+## Verify a result
+
+In the composer, select a verification profile instead of the single legacy check. Lightweight, standard and thorough presets detect existing repository commands. In **Project → Repository tools → Verification**, review/edit the detected commands, add bounded custom gates, map acceptance criteria to checks, and run them at a pinned commit. A baseline comparison runs the same profile on both commits; repeated attempts distinguish consistent failures from flaky results. Export the report or profile for reuse through the API.
 
 Every required gate must pass. Skipped gates, mixed results, missing criterion mappings and failing mapped checks cannot produce `verified`. A criterion mapping is your assertion that the chosen checks exercise its behavior; passing a command is not a semantic proof of an arbitrary requirement. Finished work without independent verification is labeled accordingly.
 
@@ -13,3 +17,7 @@ The **Changes** side tab records human review of individual files at an exact co
 The result's merge panel can **Validate merge result** against the current local target branch. This constructs the combined tree in a disposable checkout and runs the configured setup/profile. Requiring validation pins source, target and merged tree; moving refs, rewriting checks or a different merge result invalidates it. Commit-hook changes are detected, with rollback of the application's own clean merge when possible. GitHub PR merges still use the repository's remote checks and policies; this local validation does not replace a remote merge queue.
 
 Checks execute repository code. Use a check container or explicitly trust host execution, especially with imported source text. Agent isolation and check isolation are separate settings. See [security](security.md), [agent containers](agent-containers.md), and the [API contract](api.md).
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

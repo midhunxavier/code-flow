@@ -1,6 +1,10 @@
 # Filtered Docker tasks
 
-Settings → Workspace → Filtered tasks → Filtered Docker task runs one explicitly requested provider turn against a bounded, isolated committed snapshot. This is the enforcing execution path for custom project file policies. Normal native, SSH, automated and multi-agent runs remain refused while any custom restriction is active.
+Use a filtered task when only selected project files should reach a container. Inspect the snapshot, provision its runtime explicitly, and review the returned branch before importing changes.
+
+## Run against a bounded snapshot
+
+Project → Repository tools → Filtered tasks → Filtered Docker task runs one explicitly requested provider turn against a bounded, isolated committed snapshot. This is the enforcing execution path for custom project file policies. Normal native, SSH, automated and multi-agent runs remain refused while any custom restriction is active.
 
 Select the project/repository, supported provider (`claude`, `codex`, `agy`), an already prepared local Docker image, instructions and a 1–30 minute limit. Network defaults off; enable it deliberately when the provider needs remote inference. The service resolves the local image to an immutable SHA-256 ID and uses that ID for dispatch. No images are pulled, no host-provider probe or login runs, and no fallback launches a host CLI. A local Docker context is required.
 
@@ -51,3 +55,7 @@ History holds at most 100 jobs. **Delete private task and export** uses the curr
 All endpoints are owner-only, including `/api/v1` aliases. `GET /api/filtered-tasks?project=…` returns metadata; `GET /:id` returns detail only while its current policy identity still matches. `POST /api/filtered-tasks` accepts `{project,repo,task,agent,image,network?,maxMinutes?}` and returns 202. `POST /:id/preview-import` produces a bounded preview; `/import` accepts `{revision,expectedHead,resultHash}`. `/cancel` and `/receipt` accept `{revision}`. `DELETE /:id` accepts `{revision}`. Closed routes reject extra path segments. These requests participate in the filesystem activation barrier; policy activation refuses any preparation, import or unconfirmed daemon work.
 
 Run the regular filtered task, lifecycle, limits and browser suites for CAS/races/restore/UI evidence. Run `CODEFLOW_TEST_DOCKER=1 node --import tsx --test test/filtered-tasks-docker.test.ts` for real Docker namespace, original Git/denied blob absence, readonly mounts, fresh-home credential seeding, branch import and cancellation removal. The Docker fixture builds/removes its own small image and never contacts a model provider.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

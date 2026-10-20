@@ -1,4 +1,8 @@
-# Architecture exploration
+# Architecture explorer
+
+Use static dependency evidence to investigate how a change may affect other files. Unresolved imports still need interpretation.
+
+## Explore repository structure
 
 Open **What could this change affect?** while editing a file in Files or Repository tools → Code, or while reviewing a result branch. This inspects saved tracked source without executing repository code, build hooks, compilers or package managers. It resolves JavaScript/TypeScript syntax with TypeScript's parser, including literal dynamic imports and CommonJS requires. Conservative static scans also cover Python imports, Go import groups and local module packages, Rust modules and basic use declarations, and Java class imports.
 
@@ -7,3 +11,7 @@ The view includes file relationships, directory coupling, dependency cycles, dec
 The scan considers at most 600 tracked files and 8 MiB of readable source, with 4,000 relationships, 1,000 manifest dependencies, 500 unresolved imports and 200 computed targets. Truncation is visible. Existing symlink and regular-text file checks apply, and credential paths and dependency/build directories are excluded. Untracked and unsaved editor drafts are excluded. Cancellation stops the scan.
 
 The import rules follow the [Python import system](https://docs.python.org/3/reference/import.html), [Go import declarations](https://go.dev/ref/spec#Import_declarations), and [Rust use declarations](https://doc.rust-lang.org/reference/items/use-declarations.html); these static scans do not reproduce every language's runtime resolution.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

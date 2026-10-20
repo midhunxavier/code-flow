@@ -1,6 +1,10 @@
-# Multi-service launch profiles
+# Service launch profiles
 
-Create `.codeflow/launch.json` in the repository. Settings → Workspace → Services reads the selected run's worktree configuration. It does not execute anything until you click **Start launch profile**. Review commands first: they execute repository code on your computer with your ordinary development environment. Runs from an untrusted external source require an additional explicit confirmation.
+Open Project → Repository tools → Services to define a named launch profile. Check dependencies and readiness before starting the profile, then use its logs and stop controls to manage the services.
+
+## Start the services you need
+
+Create `.codeflow/launch.json` in the repository. Project → Repository tools → Services reads the selected run's worktree configuration. It does not execute anything until you click **Start launch profile**. Review commands first: they execute repository code on your computer with your ordinary development environment. Runs from an untrusted external source require an additional explicit confirmation.
 
 ```json
 {
@@ -41,3 +45,7 @@ The default readiness check requests `/` on the service's assigned `127.0.0.1` p
 The panel exposes each service's status, local URL, and its last 100 bounded log lines. **Stop services** cancels pending startup and terminates all process groups in the stack. Failed health checks or process exits stop the other services and preserve recent logs for diagnosis. Only one stack per run/worktree may run at a time; stop it before choosing a different profile. Service state is ephemeral and profiles do not restart automatically after code-flow restarts.
 
 The API uses `GET /api/runs/:id/launch-profiles?worktree=NAME` for `{profiles,found,error?,session}`, `POST` with `{worktree,profile,allowUntrusted?}` to explicitly start, and `DELETE` with the worktree query to stop. The backend resolves run-owned worktrees; callers cannot supply an arbitrary filesystem root. A start returns a `LaunchSession` after readiness succeeds. Errors retain session logs, retrievable through `GET`.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

@@ -1,0 +1,69 @@
+{
+  "Get started": [
+    "README",
+    "getting-started",
+    "patterns",
+    "acp-agents",
+    "help"
+  ],
+  "Work with agents": [
+    "runs",
+    "auto-team",
+    "project-teams",
+    "review-inbox",
+    "verification",
+    "github",
+    "github-review-threads",
+    "task-reruns",
+    "deferred-runs"
+  ],
+  "Your workspace": [
+    "configuration",
+    "context-inspection",
+    "project-conventions",
+    "checkpoint-review",
+    "launch-profiles",
+    "code-intelligence",
+    "architecture-explorer",
+    "memory-storage",
+    "memory-claims",
+    "coordinated-changes"
+  ],
+  "Connect and collaborate": [
+    "team-collaboration",
+    "shared-projects",
+    "ssh-projects",
+    "remote-workers",
+    "code-hosts",
+    "external-sources",
+    "automations",
+    "notifications"
+  ],
+  "Operate safely": [
+    "security",
+    "filesystem-policy",
+    "agent-containers",
+    "filtered-tasks",
+    "dependency-discovery",
+    "maintenance"
+  ],
+  "Build and extend": [
+    "architecture",
+    "api",
+    "extensions",
+    "provider-compatibility",
+    "accessibility",
+    "performance",
+    "run-storage",
+    "documentation"
+  ],
+  "Engineering records": [
+    "application-improvements",
+    "dynamic-teams-evaluation",
+    "dynamic-teams-implementation-plan",
+    "dynamic-teams-implementation-review-1",
+    "dynamic-teams-plan-review-0",
+    "project-teams-implementation-plan",
+    "performance-results"
+  ]
+}

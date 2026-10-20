@@ -1,5 +1,7 @@
 # Application improvement program
 
+> Engineering record. Status, measurements and decisions below describe the recorded implementation or review. For current usage, start with the [documentation library](README.md).
+
 This work continues the application review on branch `codex/application-improvements`, created from `main` at `abbb6be`. The original review contained defects, 14 broader product problems, and 73 feature ideas; those are tracked separately below.
 
 The later `main` update at `d1677e1` is also integrated. Its composer Improve feature
@@ -280,3 +282,5 @@ impact and recency. Cards expose users, benefit, risk, source quotes and the
 pinned source commit. **Dismiss opportunity** records a rejection through the
 existing team decision service, so subsequent discovery respects it. Schedules
 and standing teams remain explicitly activated by the owner.
+
+[Documentation library](README.md) · [Development guide](architecture.md)

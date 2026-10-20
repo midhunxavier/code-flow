@@ -1,6 +1,10 @@
-# Symbol and reference inspection
+# Code intelligence
 
-Settings → Workspace → Code offers text search, simple multi-language declaration search,
+Open Project → Repository tools → Code, search for a JavaScript or TypeScript symbol, and choose Find references. Save editor changes first: the inspection reads saved files.
+
+## Find a symbol
+
+Project → Repository tools → Code offers text search, simple multi-language declaration search,
 and JavaScript/TypeScript symbols backed by TypeScript's language service.
 Semantic symbol results include a **Find references** action. Imported aliases
 are resolved; ordinary text mentions are not treated as references. Each request
@@ -23,3 +27,7 @@ service. Results include the actual language-service version and scope limits.
 Unit fixtures check imported aliases, string-mention exclusions, current-content
 refresh, symlink/credential/plugin boundaries and cancellation. Browser acceptance
 exercises symbol search and cross-file reference navigation against saved JavaScript.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

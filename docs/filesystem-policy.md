@@ -1,5 +1,9 @@
 # Project filesystem policy
 
+Choose explicit read and write rules for the project. Review the execution boundary before enabling restrictions: operations that cannot enforce those paths pause rather than silently bypassing the policy.
+
+## Set project path rules
+
 Settings → Projects & access stores owner-managed read and write rules per project. Each save uses the exact displayed revision; conflicting saves preserve the browser draft. Private files live at `CODEFLOW_HOME/filesystem-policies/<project>.json`, with version 1, a revision, timestamp and SHA-256 content hash. Corrupt or symbolic policy storage fails closed without replacing it with unrestricted defaults.
 
 Rules use literal relative repository paths. `.` covers the whole repository; `src` covers that file or subtree. Each read/write operation must match an allow entry and no deny entry. Empty allow lists deny everything. Denies also match conservatively across case and Unicode compatibility variants. There are no globs, traversal components, absolute paths or Git internals. Credential paths, private keys and symbolic filesystem ancestors have fixed application-level denies. Policies from every matching project and the run's pinned snapshots intersect: choosing another project or weakening today's policy cannot silently weaken an older run's pinned policy.
@@ -21,3 +25,7 @@ This is an application policy with fail-closed execution, not an OS sandbox or r
 Owner-only `GET /api/projects/:id/filesystem-policy` returns the committed snapshot. `PUT` accepts `{revision, read:{allow,deny}, write:{allow,deny}}`; each list has at most 100 paths, each at most 500 characters. Saves return the next committed snapshot. Revision, activity or unsupported execution conflicts return 409; denied data returns 403; invalid paths return 400; unreadable private policy storage returns 503. `/api/v1` follows the same authorization and policy. Shared accounts cannot edit policy. Parsed JSON is reused by authorization and dispatch, while a later endpoint-specific byte limit remains enforced.
 
 Tests cover exact CAS/hash/private storage, failures before activation, pinned policy intersection, case/traversal/credential/symlink rejection, actual browser allowed/denied reads and writes, version aliases, global execution denial and cross-repository activation races. Startup regressions ensure saved policies prevent trusted plugin initialization, interpreter probes and public phone history, and remove restricted results from shared feeds.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

@@ -1,5 +1,9 @@
 # Shared project accounts
 
+Create a local account and grant roles only for the projects that person should see. Review the role table before allowing contributions or maintenance, and revoke access when it is no longer needed.
+
+## Share review access
+
 The server owner can create local accounts and assign one of four project roles; each role includes everything the roles before it may do. A **viewer** reads project run results, safe verification metadata, changed-file diffs and sanitized result exports. A **reviewer** also records human file-review coverage and comments in a separate thread anchored to the exact result commit. A **contributor** also owns tasks on the project's team board and runs them on their own computer with their own agents. A **maintainer** also assigns any task owner, defines a project's repository keys, deletes board tasks and checkpoints, revokes runners, cancels hand-overs and approves instructions to agents; accounts and roles stay with the owner. The contributor and maintainer capabilities are described in [Team collaboration](team-collaboration.md). The owner reads and replies to comments through **Changes → Human collaboration comments** on the normal run page. Comments are collaboration records: they never enter an agent's prompt or resume work.
 
 The owner retains administration and generic run controls. Project roles alone do not allow users to start or resume arbitrary runs on this server, approve agent/tool requests, send agent notes, run checks/setup/services, change repository files, choose Docker images or authentication volumes, use terminals, merge/push/post to GitHub, edit private memory/conventions, configure integrations, manage accounts or inspect global filesystem/settings/quotas. Project assignment is not an operating-system sandbox. An explicit owner grant under Settings → Connections → Share access → People allows a contributor to queue their own team tasks on the host through the dedicated [host execution queue](team-collaboration.md#let-teammates-run-tasks-on-the-host). This delegates host execution authority to trusted teammates; it does not provide an operating-system sandbox. Generic run and shell APIs remain owner-only. A separate [interactive terminal grant](team-collaboration.md#give-trusted-teammates-an-interactive-terminal) lets a trusted contributor open their own shell on the host. That shell has the host OS user’s authority, including file changes and access outside the project; the review API restrictions do not sandbox terminal commands.
@@ -31,3 +35,7 @@ Run collaboration uses `GET /api/runs/:id/collaboration` and, for reviewers and 
 The account, access-policy and comment-store tests cover hash-only storage, modes, exact revisions, role escalation refusal, revocation, expiry, bounded login work, malformed paths/aliases, cross-project membership, projection privacy and durable commit-anchored comments. End-to-end server/browser tests are required before exposing the shared routes.
 
 The password parameters and authorization model follow the [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html), [Authorization Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html) and [Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

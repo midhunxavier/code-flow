@@ -1,5 +1,9 @@
 # Read-only external sources
 
+Configure the source integration, select an issue or pull request, and review the imported context before starting work. Imported descriptions remain untrusted task data.
+
+## Bring source context into a run
+
 code-flow can list and import GitLab issues and merge requests, Bitbucket Cloud issues and pull requests, Linear issues, and Jira Cloud issues. Import reads the item's text and metadata. It does not fetch a review request's branch, publish comments, transition issues, push commits or merge remote work.
 
 Configure integrations on the server with `CODEFLOW_INTEGRATIONS_FILE` pointing to a JSON file, or `CODEFLOW_INTEGRATIONS_JSON` containing the array directly. The file takes precedence. Restart code-flow after changing configuration. Credentials are read from named environment variables; the browser receives connection names and availability, never credential values or environment variable names.
@@ -75,3 +79,7 @@ Implementation references checked on 18 October 2026:
 - [Jira Cloud enhanced issue search](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/) and [email/API-token authentication](https://developer.atlassian.com/cloud/jira/platform/basic-auth-for-rest-apis/).
 
 Automated coverage uses deterministic HTTP fixtures. Live account compatibility depends on each account's current API access and credentials; tests do not spend quota or create remote content.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

@@ -1,4 +1,8 @@
-# Running agent CLIs in Docker
+# Agent containers
+
+Choose an explicit image and authentication volume before selecting container execution. A Docker installation alone does not make a provider ready to run inside that image.
+
+## Prepare an isolated agent
 
 Agent isolation runs the actual vendor CLI in a prepared Docker image. It is separate from
 the existing container option for setup and verification commands. Set `loop.agentContainer`
@@ -77,3 +81,7 @@ Per-project read/write restrictions use the separate [filtered task
 backend](filesystem-policy.md), with a fresh allowed-file Git namespace and
 explicit review-branch import. Ordinary agent containers mount their worktree's
 full Git common directory and cannot enforce those restricted reads.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

@@ -1,4 +1,8 @@
-# Continuous provider compatibility
+# Provider compatibility
+
+Run the provider diagnostics when an installed CLI stops accepting an invocation. Protocol fixtures and live version/help probes provide different evidence; a fixture passing does not verify a real provider login.
+
+## Check the installed CLI
 
 The Provider compatibility workflow runs on adapter changes, pushes to main, manual dispatch and weekly. It installs official Claude Code 2.1.300/2.1.302 and Codex 0.162.0/0.162.1 in isolated directories, plus the current official Linux x64 Antigravity build. Antigravity downloads are verified against the SHA-512 checksum in the official updater manifest. The exact observed version, platform, Node version, timestamp, required flags and missing capabilities are retained in a 30-day JSON artifact per matrix entry. A missing required flag, unknown probe or unexpected pinned version fails its job.
 
@@ -9,3 +13,7 @@ Run a pinned probe locally with `node --import tsx scripts/check-provider-compat
 Vendor references: [Claude Code releases](https://github.com/anthropics/claude-code/releases), [Codex releases](https://github.com/openai/codex/releases), [Antigravity installation](https://antigravity.google/docs/cli/install/).
 
 Local acceptance on October 18, 2026 passed official Claude Code 2.1.300/2.1.302 and Codex 0.162.0/0.162.1 probes on macOS arm64, plus the official current Antigravity 1.4.2 binary in an isolated Linux arm64 musl Docker container. Exact receipts are in [provider-compatibility-evidence.json](provider-compatibility-evidence.json). Linux x64 CI execution remains a separate platform check.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

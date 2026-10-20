@@ -1,17 +1,19 @@
 # Getting started
 
+Take a small, well-defined task from your own repository to a reviewed result. This guide covers installation, your first run and the settings that influence what the agents receive.
+
 ## Requirements
 
 - Node 22.13+ (`npm start` and `npm run dev` stop with a clear message on an older Node).
 - git 2.38 or newer: **Merge** relies on `git merge-tree --write-tree`, which 2.38 added. Check yours with `git --version`.
-- At least one of `claude`, `codex` and `agy` installed and signed in. Run each CLI once interactively first. The dots at the bottom of the sidebar show which agents code-flow found.
+- At least one of `claude`, `codex` and `agy` installed and signed in. Run each CLI once interactively first. Open **Settings → Agents & models** to inspect provider health and model choices.
 
 ## Install and run
 
 ```bash
 git clone https://github.com/midhunxavier/code-flow.git
 cd code-flow
-npm install
+npm ci
 npm start            # http://localhost:4317
 ```
 
@@ -19,7 +21,7 @@ npm start            # http://localhost:4317
 
 The first browser that opens code-flow is signed in automatically. That stays possible until a browser signs in (with or without the link) or code-flow first starts an agent, a check or an app. After that, other browsers need the link code-flow prints when it starts (`Open http://localhost:4317/?token=…`).
 
-The session token exists only in the server's memory, so the agents code-flow runs can't use its API, even sandboxed ones with network access. A restart starts a new session, and reloading the page signs you in again.
+The session token exists only in the server's memory, so the agents code-flow runs can't use its API, even sandboxed ones with network access. A restart starts a new session. If the browser asks you to sign in, use the new owner link printed by that server.
 
 ## Your first run
 
@@ -32,7 +34,7 @@ The session token exists only in the server's memory, so the agents code-flow ru
    - The arrow next to it picks a mode for the current composer without changing the saved default: **Quick rewrite** (the default) works from your text alone (by default, Claude's Haiku, or low effort for Codex and Antigravity). **Use the repository** reads a snapshot of the current committed version so the rewrite can name real files and commands; it takes longer. Uncommitted changes, untracked/ignored files and executable provider configuration are not copied.
    - **Stop** cancels. Editing the task or changing its repository, context, source or execution profile discards the old request; Undo applies only while the rewritten text is still current.
    - Improve supports the **local** execution profile. SSH and container selections disable it, and filesystem restrictions pause it. Other Code Flow mutations in that repository are refused until the turn and cleanup finish. Repository snapshots allow up to 5,000 regular files, 2 MiB per file and 128 MiB in total; unsupported symlinks, submodules and larger snapshots fail explicitly.
-3. Choose an optional intent starter: **Fix a bug**, **Build a feature**, **Review code**, or **Explore an idea**. Each selects an existing workflow and explains why. Existing task text is preserved; exploration disables the build/review roles for a design-only debate. You can still pick any workflow manually. Pick how the agents work together, and click an agent for each role. Under each role you can set that agent's model and effort for the role. The sentence under the team, such as *"Claude plans → Codex builds → Claude reviews"*, shows what will happen.
+3. Open **Template library** and choose an optional intent starter: **Fix a bug**, **Build a feature**, **Review code**, or **Explore an idea**. Each selects an existing workflow and explains why. Existing task text is preserved; exploration disables the build/review roles for a design-only debate. You can still pick any workflow manually. Pick how the agents work together, and click an agent for each role. Under each role you can set that agent's model and effort for the role. The sentence under the team, such as *"Claude plans → Codex builds → Claude reviews"*, shows what will happen.
 4. Review the repository/branch, team, checks and execution limit in the compact summary. Open **Run options** to pick the base branch, the result branch name, rounds, limits, permissions, and the default model and effort per provider.
 5. Press **Start run** (⌘↵).
    - The run reads like a conversation: your task, then the agents' work as one list of steps (open any step to see its live transcript), then the result. A reply box stays at the bottom.
@@ -45,6 +47,10 @@ Review and merge results yourself if you prefer the command line:
 git diff main...codeflow/<run>/build
 git merge codeflow/<run>/build
 ```
+
+## Find help in the app
+
+Open **Application menu → Help & documentation** for the searchable local guides. **Ask code-flow** answers questions from these guides using an installed CLI. See [the help guide](help.md) for supported providers, privacy and limits.
 
 ## Giving agents context
 
@@ -60,7 +66,7 @@ Every agent's first prompt gets a *Context from the user* section listing these 
 
 ## Models and effort
 
-**Settings → Models & effort** sets a model and a reasoning effort per provider. Every role that uses that provider runs with them. Leave either on *Default* to use the CLI's own configuration.
+**Settings → Agents & models** sets a model and a reasoning effort per provider. Every role that uses that provider runs with them. Leave either on *Default* to use the CLI's own configuration.
 
 | Provider | Model list | Flags passed |
 |---|---|---|

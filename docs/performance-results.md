@@ -1,5 +1,7 @@
 # Measured performance: 19 October 2026
 
+> Engineering record. Status, measurements and decisions below describe the recorded implementation or review. For current usage, start with the [documentation library](README.md).
+
 The architecture changes improved latest-transcript opening by **1.9×** with
 1,000 events and **27.6×** with 5,000 events on this machine.
 The experimental Rust reader showed no consistent end-to-end benefit and increased
@@ -108,3 +110,5 @@ The harness requires Chrome and Cargo for the experimental third variant. See
 [raw samples and environment metadata](benchmarks/2026-10-19-performance.json),
 [resource limits and architecture](performance.md), and the
 [Rust experiment](../experiments/rust-transcript/README.md).
+
+[Documentation library](README.md) · [Development guide](architecture.md)

@@ -51,7 +51,9 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
   let answer = `${vendor} handled the request.`;
   const json = (obj) => `Done.\n\`\`\`json\n${JSON.stringify(obj)}\n\`\`\``;
 
-  if (prompt.includes("## Task to improve")) {
+  if (prompt.includes("You are the code-flow documentation assistant.")) {
+    answer = json({ answer: "Open the composer, choose a repository, describe the task and select Start run. See Getting started for the full walkthrough." });
+  } else if (prompt.includes("## Task to improve")) {
     // The composer's Improve: the task restated with a done line. IMPROVE-EMPTY answers with nothing usable.
     const original = prompt.slice(prompt.indexOf("## Task to improve") + "## Task to improve".length).trim();
     const repo = prompt.includes("look around the repository");
