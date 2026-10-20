@@ -351,6 +351,7 @@ test("the team wizard reuses HTTPS and existing project access, and shares only 
   await setStatus(connected()); await api("/api/remote?refresh=1");
   await api("/api/remote", { enabled: true, lan: true, transport: "tailscale" });
   await owner.goto(`${base}/?team=local#/settings/team`);
+  await owner.getByLabel("Show People collaboration").check();
   await owner.getByRole("button", { name: "Set up team server", exact: true }).click();
   const wizard = owner.getByRole("region", { name: "Team server setup", exact: true });
   await wizard.getByLabel("Your name on the team", { exact: true }).fill("Team host");

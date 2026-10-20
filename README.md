@@ -42,17 +42,17 @@ Open **http://localhost:4317**, choose a repository, describe the task, pick a t
 
 ## Highlights
 
-**Inbox** and **Automations** are direct sidebar destinations. Open **Repository tools** from a project, or find the workspace and **Insights** in the application menu or command palette. **Settings** holds appearance, agent models, run defaults, notifications, connections and administration (**⌘, / Ctrl+,**).
+**Inbox** and **Scheduling** are direct sidebar destinations. Open **Repository tools** from a project, or find the workspace and **Insights** in the application menu or command palette. **Settings** holds appearance, agent models, run defaults, notifications, connections and administration (**⌘, / Ctrl+,**).
 
 **Settings → Agents & models** also connects [OpenCode, Kilo, Cline and other ACP-compatible CLIs](docs/acp-agents.md), with connection checks, discovered models and saved executable settings. These agents currently require Full access on the application host.
 
-**Project → Repository tools** provides verification profiles and requirement mappings, code editing with three-way conflicts, selective checkpoint files/hunks, service launch profiles, coordinated repository changes and filtered tasks. Configuration, diagnostics, integrations and notifications live in Settings. The composer includes simple/advanced modes, named presets, task templates, readiness checks and settings provenance. Auto-team plans can be edited before approval; dispatch can be paused or prioritized. See the [implementation checklist and boundaries](docs/application-improvements.md), [API/client](docs/api.md), [verification](docs/verification.md), and [backup/maintenance](docs/maintenance.md).
+**Project → Repository tools** provides verification profiles and requirement mappings, code editing with three-way conflicts, selective checkpoint files/hunks, service launch profiles, coordinated repository changes and filtered tasks. Configuration, diagnostics, integrations and notifications live in Settings. The composer has one template library for built-in tasks, saved workflows and complete task configurations, plus advanced controls, readiness checks and settings provenance. Auto-team plans can be edited before approval; dispatch can be paused or prioritized. See the [implementation checklist and boundaries](docs/application-improvements.md), [API/client](docs/api.md), [verification](docs/verification.md), and [backup/maintenance](docs/maintenance.md).
 
-[Standing project teams](docs/project-teams.md) can investigate a repository on a schedule, propose improvements, and prepare one verified draft per cycle. Enable the preview with `CODEFLOW_PROJECT_TEAMS_ENABLED=true`, then connect a team from a project page. You approve the exact result before using the existing publishing controls.
+[Project missions](docs/project-teams.md) can investigate a repository on a schedule, propose improvements, and prepare one verified draft per cycle. Enable the preview from Scheduling → Pursue a mission or a project page, then create a mission. You approve the exact result before using the existing publishing controls.
 
 Additional workflows include [selective task reruns](docs/task-reruns.md), [deferred starts](docs/deferred-runs.md), [context budgets](docs/context-inspection.md), [versioned conventions](docs/project-conventions.md), [reviewed commit reversions](docs/checkpoint-review.md), and a [local VS Code extension](integrations/vscode/README.md). The [review inbox](docs/review-inbox.md) groups questions, blocked work, failures and results across projects.
 
-Use [shared project accounts](docs/shared-projects.md) for scoped human review,
+Enable optional **People** controls in Settings → Connections → Share access to use [shared project accounts](docs/shared-projects.md) for scoped human review,
 [team collaboration](docs/team-collaboration.md) for a shared task board whose
 work runs on each teammate's own computer or, with explicit project grants, queues on the host using its installed CLIs. A separate opt-in grant lets trusted teammates open interactive host terminals from their browsers.
 Use
@@ -77,6 +77,14 @@ review. [Filesystem policies](docs/filesystem-policy.md) and explicit trusted
 - **Where the work lives, even when you're away.** Start from GitHub issues and PRs, fix failing CI, have a council review a PR, run on a schedule or from webhooks, and check in or take over from your phone. Built-in Tailscale detection gives your devices a private remote link and QR code.
 - **Projects.** Runs are grouped by project with no setup: each repository gets one the first time you run in it. A project can span several repositories, and remembers the team you last used there.
 - **Sweep the backlog.** Fix every open issue, every Dependabot PR with failing CI, or every security alert in one go: pick from the list, get one run each, approve the results from your inbox. Optionally every night, for new ones only.
+
+## Find your work
+
+- **New run → Template library** combines task starters, GitHub sources, saved workflows and complete templates. New templates remember the prompt, acceptance criteria, agent/model choices, permissions, checks and run settings. Existing libraries remain usable.
+- **Scheduling** brings together Run once later, Repeat, Process a backlog and Pursue a mission. A configured task uses the same choices under **Schedule…**.
+- **Settings → Connections** groups remote work by purpose: Work on another computer, Delegate execution and Share access. Human collaboration is optional under **People**; hiding it does not revoke existing access or stop work.
+- **Files** and **Repository tools → Code** share the same browser and editor, with an explicit repository/worktree scope and draft/conflict recovery. **What could this change affect?** brings static dependency evidence into editing and review.
+- **Insights → Experiments** holds workflow comparisons. Semantic memory analysis is under **Advanced memory tools**.
 
 ## Pick a team
 

@@ -35,7 +35,7 @@ export function MemoryAnalysisPanel({ endpoint, repo, entries, refreshKey, onPub
     finally { setPublishing(false); }
   };
   return <details class="at-section memory-analysis" onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>Memory health, provenance and onboarding</summary>
+    <summary>Advanced memory tools</summary>
     <p class="help">Inspect sources, review applicability and repeated wording, and curate accepted guidance before publishing it.</p>
     <button class="btn small" disabled={loading} onClick={() => setVersion((value) => value + 1)}>{loading ? "Inspecting…" : "Refresh memory analysis"}</button>
     {error ? <p class="msg err" role="alert">{error}</p> : null}

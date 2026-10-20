@@ -19,7 +19,7 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     const secondLocalProject = await page.evaluate(async () => (await fetch("/api/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Another local project", repos: [] }) })).json());
     await page.getByRole("button", { name: "Application menu", exact: true }).click();
     await page.getByRole("menuitem", { name: /^Settings/ }).click();
-    await page.getByRole("link", { name: "SSH connections", exact: true }).click();
+    await page.getByRole("link", { name: "Connections", exact: true }).click();
     const dialog = page.locator(".settings-content");
     await dialog.getByLabel("SSH host", { exact: true }).fill("fixture");
     await dialog.getByLabel("Display name").fill("Linux development");

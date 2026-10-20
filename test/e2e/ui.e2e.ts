@@ -218,7 +218,7 @@ test("a message sent while Codex is working reaches its running turn", async () 
 
 test("start from a PR with a template: the council's findings are ranked, and posting takes your click", async () => {
   await page.goto(BASE);
-  await page.locator(".task-starters > summary").click();
+  await page.getByRole("button", { name: "Template library", exact: true }).click();
   await page.getByRole("button", { name: /Review a PR as a council/ }).click();
   await page.locator(".gh-item", { hasText: "Add feature loop" }).click();
   assert.match(await page.getByLabel("Task", { exact: true }).inputValue(), /^Review pull request #1\./);
@@ -310,8 +310,7 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   ];
   writeFileSync(ghState, JSON.stringify(s));
 
-  await page.goto(BASE);
-  await page.locator(".task-starters > summary").click();
+  await page.goto(`${BASE}/#/automations/backlog`);
   await page.getByRole("button", { name: /Fix open issues/ }).click();
   const dialog = page.locator("dialog.sweep-dialog");
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).waitFor();
@@ -326,8 +325,7 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   await item.waitFor({ state: "detached" });
 
   // The next sweep knows #41 has a run.
-  await page.goto(BASE);
-  await page.locator(".task-starters > summary").click();
+  await page.goto(`${BASE}/#/automations/backlog`);
   await page.getByRole("button", { name: /Fix open issues/ }).click();
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).getByText("Already has a run").waitFor();
   assert.equal(await dialog.getByRole("checkbox", { name: /fix the greeting/ }).isChecked(), false);
@@ -365,7 +363,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const tab = await phone.newPage();
   await tab.goto(`${PHONE}${phonePath}`);
-  await tab.getByRole("heading", { name: "What should the team build?" }).waitFor();
+  await tab.getByRole("heading", { name: "What should the agents build?" }).waitFor();
   assert.equal(new URL(tab.url()).pathname, "/");
   await tab.getByRole("button", { name: "Show runs" }).click();
   await tab.locator(".rail.open").waitFor();
@@ -378,7 +376,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   await scanned.route("http://qr-scanner.example/", (route) => route.fulfill({ contentType: "text/html", body: `<a href="${PHONE}${phonePath}">Open link</a>` }));
   await scanned.goto("http://qr-scanner.example/");
   await scanned.getByRole("link", { name: "Open link" }).click();
-  await scanned.getByRole("heading", { name: "What should the team build?" }).waitFor();
+  await scanned.getByRole("heading", { name: "What should the agents build?" }).waitFor();
   assert.equal(new URL(scanned.url()).pathname, "/");
   await scanner.close();
 
@@ -508,10 +506,11 @@ test("side panel: chat with one agent, read a file, run a command, keep a note",
   assert.match(await side.locator(".chat-meta code").innerText(), /\/solo$/, "the chat works on its own branch");
   assert.equal(await page.locator(".rail .run-item", { hasText: "E2E: what does check.mjs do?" }).count(), 1, "a chat is a run like any other");
 
-  // Files: a file opens in the viewer.
+  // Files: a file opens in the shared editor.
   await side.getByRole("tab", { name: "Files" }).click();
   await side.locator(".node", { hasText: "package.json" }).click();
-  await side.locator(".file-view").getByText(/"name":"e2e"/).waitFor();
+  await side.getByRole("textbox", { name: "File contents", exact: true }).waitFor();
+  assert.match(await side.getByRole("textbox", { name: "File contents", exact: true }).inputValue(), /"name":"e2e"/);
   await side.getByRole("button", { name: "Back to the files" }).click();
   await side.locator(".node", { hasText: "check.mjs" }).waitFor();
 
@@ -865,16 +864,16 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
       await fresh.locator(".composer-library > summary").click();
     };
     await openLibrary();
-    await fresh.getByLabel("Team name", { exact: true }).fill("E2E saved team");
-    await fresh.getByRole("button", { name: "Save current team", exact: true }).click();
+    await fresh.getByLabel("Workflow name", { exact: true }).fill("E2E saved team");
+    await fresh.getByRole("button", { name: "Save current workflow", exact: true }).click();
     await fresh.getByLabel("Revision to apply").waitFor();
     await fresh.evaluate(() => { location.hash = "/"; });
-    await fresh.getByRole("button", { name: "Team mode", exact: true }).click();
+    await fresh.getByRole("button", { name: "Agent workflow mode", exact: true }).click();
     await openLibrary();
-    await fresh.getByLabel("Team preset", { exact: true }).selectOption({ label: "E2E saved team · r1" });
+    await fresh.getByLabel("Saved workflow", { exact: true }).selectOption({ label: "E2E saved team · r1" });
     await fresh.getByRole("button", { name: "Save new revision", exact: true }).click();
     await fresh.getByLabel("Revision to apply").selectOption("1");
-    await fresh.getByRole("button", { name: "Apply team", exact: true }).click();
+    await fresh.getByRole("button", { name: "Apply workflow", exact: true }).click();
     await fresh.getByLabel("Template name", { exact: true }).fill("E2E parameterized task");
     await fresh.getByRole("button", { name: "Save current task as template", exact: true }).click();
     await fresh.evaluate(() => { location.hash = "/"; });
@@ -883,7 +882,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.locator(".composer-options > summary").click();
     await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
     await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click();
-    const templateDialog = fresh.getByRole("dialog", { name: "Use template", exact: true });
+    const templateDialog = fresh.getByRole("dialog", { name: "Template library", exact: true });
     await templateDialog.getByLabel("Library", { exact: true }).selectOption("personal");
     await templateDialog.getByLabel("Template", { exact: true }).selectOption({ label: "E2E parameterized task" });
     await fresh.getByLabel("component", { exact: true }).fill("login form");
@@ -1026,14 +1025,14 @@ test("single-agent setup is inline and completed replies show running checks cle
     await box.getByRole("menuitem", { name: "high", exact: true }).click();
     assert.equal(await fresh.evaluate(() => JSON.parse(localStorage.getItem("agentSettings") || "{}").claude?.model), undefined, "run model choices do not change the provider default in Settings");
     assert.equal(await fresh.getByLabel("Workflow", { exact: true }).count(), 0);
-    await box.getByRole("button", { name: "Team mode", exact: true }).click();
+    await box.getByRole("button", { name: "Agent workflow mode", exact: true }).click();
     await box.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
     assert.equal(await box.locator(".chat-controls").count(), 0);
-    await fresh.getByRole("button", { name: "Team mode", exact: true }).click();
+    await fresh.getByRole("button", { name: "Agent workflow mode", exact: true }).click();
     assert.match(await box.getByRole("button", { name: "Model", exact: true }).innerText(), /Haiku/);
-    await box.getByRole("button", { name: "Team mode", exact: true }).click();
+    await box.getByRole("button", { name: "Agent workflow mode", exact: true }).click();
     assert.equal(await box.getByLabel("Workflow", { exact: true }).inputValue(), "supervisor", "team toggle remembers the last workflow");
-    await box.getByRole("button", { name: "Team mode", exact: true }).click();
+    await box.getByRole("button", { name: "Agent workflow mode", exact: true }).click();
     await fresh.locator(".composer-options > summary").click();
     await fresh.getByLabel("Done when this passes", { exact: true }).fill('node -e "setTimeout(() => {}, 4000)"');
     await fresh.locator(".composer-options > summary").click();
@@ -1074,7 +1073,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(await fresh.getByLabel("Default verification profile").inputValue(), "standard");
     assert.equal(await fresh.getByLabel("Default container image").inputValue(), "fixture-image:latest");
     await fresh.evaluate(() => { location.hash = "/"; });
-    await fresh.getByRole("button", { name: "Team mode", exact: true }).waitFor();
+    await fresh.getByRole("button", { name: "Agent workflow mode", exact: true }).waitFor();
     assert.equal(await fresh.locator(".composer-options").getAttribute("open"), null);
     assert.equal(await fresh.locator(".readiness, .composer-library, #setupCmd").count(), 0, "project setup and library management are absent from the run view");
     await fresh.locator(".taskbox").getByLabel("Start from branch", { exact: true }).selectOption("origin/feature");
@@ -1089,7 +1088,8 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(await fresh.evaluate((path) => localStorage.getItem(`check:${path}`), realpathSync(repo)), "node -e \"process.exit(0)\"", "run overrides do not overwrite the project default");
     await fresh.getByLabel("Task", { exact: true }).fill("Verify selected branch and project defaults");
     await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
-    await fresh.getByRole("menuitem", { name: "Start later…", exact: true }).click();
+    await fresh.getByRole("menuitem", { name: "Schedule…", exact: true }).click();
+    await fresh.getByRole("dialog", { name: "Schedule work" }).getByRole("button", { name: /Run once later/ }).click();
     await fresh.getByRole("dialog", { name: "Start later", exact: true }).waitFor();
     await fresh.getByRole("dialog", { name: "Start later", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
     await fresh.getByRole("button", { name: "Start run", exact: true }).click();
@@ -1117,8 +1117,9 @@ test("chatbox saves templates to the chosen library and makes them immediately r
     await menu.click();
     assert.equal(await fresh.getByRole("menuitem", { name: "Save as template…", exact: true }).isDisabled(), true);
     await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click();
-    const useDialog = fresh.getByRole("dialog", { name: "Use template", exact: true });
-    await useDialog.getByRole("status").getByText(/No templates in this library/).waitFor();
+    const useDialog = fresh.getByRole("dialog", { name: "Template library", exact: true });
+    await useDialog.getByLabel("Template", { exact: true }).waitFor();
+    assert.equal(await useDialog.locator('optgroup[label="Saved templates"] option').count(), 0);
     assert.equal(await useDialog.getByRole("button", { name: "Use template", exact: true }).isDisabled(), true);
     await useDialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await fresh.getByLabel("Task", { exact: true }).fill("Review {{component}} for regressions.");
@@ -1190,8 +1191,8 @@ test("template picker edits and deletes within its library without changing the 
     await fresh.reload();
     await fresh.getByLabel("Task", { exact: true }).fill("Keep my draft");
     const open = async () => { await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click(); await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click(); };
-    const dialog = fresh.getByRole("dialog", { name: "Use template", exact: true });
-    await open(); await dialog.getByLabel("Template", { exact: true }).selectOption("template-one");
+    const dialog = fresh.getByRole("dialog", { name: "Template library", exact: true });
+    await open(); await dialog.getByLabel("Template", { exact: true }).selectOption("saved:template-one");
     await dialog.getByRole("button", { name: "Edit template", exact: true }).click();
     await dialog.getByLabel("Template name", { exact: true }).fill("Discarded edit");
     await dialog.getByRole("button", { name: "Cancel editing", exact: true }).click();
@@ -1222,10 +1223,10 @@ test("template picker edits and deletes within its library without changing the 
     assert.deepEqual(saved, { id: "template-one", name: "Updated review", pattern: "pipeline", task: "Inspect {{module}} carefully", criteria: ["Test {{module}}", "Keep compatibility"] });
     await dialog.getByRole("button", { name: "Delete template…", exact: true }).click();
     await dialog.getByRole("button", { name: "Keep template", exact: true }).click();
-    assert.equal(await dialog.getByLabel("Template", { exact: true }).inputValue(), "template-one");
+    assert.equal(await dialog.getByLabel("Template", { exact: true }).inputValue(), "saved:template-one");
     await dialog.getByRole("button", { name: "Delete template…", exact: true }).click();
     await dialog.getByRole("button", { name: "Delete template", exact: true }).click();
-    await dialog.getByRole("status").getByText(/No templates in this library/).waitFor();
+    assert.equal(await dialog.getByLabel("Template", { exact: true }).getByRole("option", { name: "Updated review", exact: true }).count(), 0);
     await dialog.getByLabel("Library", { exact: true }).selectOption("personal");
     await dialog.getByLabel("Template", { exact: true }).selectOption({ label: "Review" });
     await dialog.getByLabel("component", { exact: true }).fill("login");

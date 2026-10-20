@@ -3219,3 +3219,18 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 .briefing-grid pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .result-studio p, .live-progress p, .team-map-detail p { overflow-wrap: anywhere; }
 @media (max-width: 760px) { .experience-columns, .team-map-grid, .briefing-grid { grid-template-columns: 1fr; } .experience-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .result-studio, .live-progress, .live-team-map, .project-briefing { padding: 14px; } }
+
+/* Shared task-focused navigation and code editing surfaces. */
+.purpose-nav, .template-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 16px 0; }
+.purpose-nav .btn { white-space: normal; text-align: left; }
+.purpose-choices { display: grid; gap: 12px; }
+.code-browser { min-width: 0; padding: 16px; }
+.code-browser .field, .code-browser pre { max-width: 100%; }
+.code-browser .wb-row { flex-wrap: wrap; }
+.code-scope { overflow-wrap: anywhere; }
+.code-browser .wb-editor { width: 100%; min-height: 280px; }
+.change-impact { margin-top: 16px; }
+.change-impact li { overflow-wrap: anywhere; }
+.change-impact pre { overflow: auto; max-height: 300px; }
+.connections-hub, .scheduling-hub { min-width: 0; }
+@media (max-width: 600px) { .purpose-nav { display: grid; grid-template-columns: 1fr; } .code-browser { padding: 10px; } .code-browser .wb-diff { grid-template-columns: 1fr; } }

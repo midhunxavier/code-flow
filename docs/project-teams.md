@@ -1,16 +1,16 @@
-# Standing project teams (preview)
+# Project missions (preview)
 
-A standing team connects an owner mission to one repository. Existing Automations supplies the clock, and existing Auto team runs do the investigation, implementation, checks and independent review. The team brings opportunities and verified drafts back to the owner. It never merges or publishes automatically.
+A project mission connects an owner mission to one repository. Existing Automations supplies the clock, and existing Auto team runs do the investigation, implementation, checks and independent review. The team brings opportunities and verified drafts back to the owner. It never merges or publishes automatically.
 
 ## Start a team
 
-1. Open a project and click **Enable Standing teams** in its Standing teams section. The choice applies immediately to every project on this host and is saved across restarts; no startup flag is required. Auto team must also be permitted by the host (`CODEFLOW_AUTO_TEAM_ENABLED` defaults to enabled).
-2. Open a project that explicitly contains the repository. Select **Connect a team**.
-3. Enter its mission, intended users, priorities, exclusions and named local base branch. Select a coordinator and worker/reviewer providers. Claude, Codex and Antigravity are eligible when installed; ACP and extension providers are currently excluded from unattended standing teams.
+1. Open a project and click **Enable project missions** in its Project missions section. The choice applies immediately to every project on this host and is saved across restarts; no startup flag is required. Auto team must also be permitted by the host (`CODEFLOW_AUTO_TEAM_ENABLED` defaults to enabled).
+2. Open a project that explicitly contains the repository. Select **Create a mission**.
+3. Enter its mission, intended users, priorities, exclusions and named local base branch. Select a coordinator and worker/reviewer providers. Claude, Codex and Antigravity are eligible when installed; ACP and extension providers are currently excluded from unattended project missions.
 4. Choose **Build within scope** and supply a required check command, or choose proposals only. Set allowed paths, categories and change limits. Models and reasoning use the existing provider catalog.
 5. Review the schedule and budgets, save the draft, then **Activate**. Use **Preview next cycle** before **Run cycle now**.
 
-**Disable Standing teams** prevents new cycles on this host. Stop active or unresolved cycles first. Individual teams keep their activation state; enabling the feature again resumes schedules for teams already active. `CODEFLOW_PROJECT_TEAMS_ENABLED` remains an optional initial default until a UI choice is saved in `CODEFLOW_HOME/project-teams/settings.json`. Separate local and SSH hosts keep their own settings.
+**Disable project missions** prevents new cycles on this host. Stop active or unresolved cycles first. Individual teams keep their activation state; enabling the feature again resumes schedules for teams already active. `CODEFLOW_PROJECT_TEAMS_ENABLED` remains an optional initial default until a UI choice is saved in `CODEFLOW_HOME/project-teams/settings.json`. Separate local and SSH hosts keep their own settings.
 
 The default schedule is Monday at 09:00 in the browser's time zone. Daily, selected weekdays and intervals use the existing Automations schedule editor and DST behavior. Code Flow must be running for its local scheduler to work. Cycles pin the current local branch commit; they do not fetch remote changes.
 
@@ -30,7 +30,7 @@ There is one active cycle per repository, at most two unresolved implementation 
 
 ## Review and feedback
 
-The project page contains the full opportunity cards, cycle history, selection reasons, budgets and links to existing run diffs/checks. The review inbox contains compact links to actionable standing teams.
+The project page contains the full opportunity cards, cycle history, selection reasons, budgets and links to existing run diffs/checks. The review inbox contains compact links to actionable project missions.
 
 - **Build proposal** allocates a bounded whole Auto team. High-risk, unsupported or stale work requires a revised mission or an ordinary owner-directed task.
 - **Request revision** records feedback and launches a fresh bounded whole team from the pinned base, with the previous result referenced as evidence. It does not silently continue a single writer or refresh the old run's allowance.
@@ -38,7 +38,7 @@ The project page contains the full opportunity cards, cycle history, selection r
 - **Defer one week** retains the idea and feedback; once due it may be rediscovered. **Reject** suppresses the problem in later discovery. Owners may explicitly reconsider a saved proposal.
 - **Pause** prevents new cycles and the next implementation stage. An already running discovery may finish into proposals. **Stop cycle** cancels owned work, retaining unresolved reservations. **Archive team** stops scheduling and retains its history.
 
-Changing the mission makes previously ready/accepted results require new verification. Moving a result branch after review invalidates readiness. Generic run resumes, selective reruns, writer follow-ups, automatic PR-fix watchers and triage revision shortcuts are blocked for managed runs; use the standing team's revision controls.
+Changing the mission makes previously ready/accepted results require new verification. Moving a result branch after review invalidates readiness. Generic run resumes, selective reruns, writer follow-ups, automatic PR-fix watchers and triage revision shortcuts are blocked for managed runs; use the project mission's revision controls.
 
 Standing team runs can be archived individually or in a sidebar selection. They cannot be deleted: cycle recovery, budgets and exact-result approvals retain their run history. Ordinary runs still support individual and bulk deletion. The mission editor's searchable model picker includes the same free-model filter and badges as the composer; its selections update only that team's mission.
 

@@ -2,9 +2,9 @@ import { lazyView } from "./lazy-view.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 const BrowserTab = lazyView(() => import("./browser.js").then((module) => module.BrowserTab));
 const ChangesTab = lazyView(() => import("./changes.js").then((module) => module.ChangesTab));
-import { addContext, FileTree } from "./composer.js";
+import { CodeBrowser } from "./code-browser.js";
 import { Icon, type IconName } from "./icons.js";
-import { ago, api, baseName, enc, fmtSize, onPhone, post, showToast, store, useLatest } from "./lib.js";
+import { ago, api, baseName, enc, onPhone, post, showToast, store } from "./lib.js";
 import { placesFor, PlacePicker, usePlace } from "./panel-bits.js";
 import { ChatTab } from "./side-chat.js";
 import {
@@ -31,7 +31,7 @@ import {
   type SideTab,
 } from "./state.js";
 const TerminalTab = lazyView(() => import("./terminal.js").then((module) => module.TerminalTab));
-import type { DevServer, FileContent } from "./types.js";
+
 
 /**
  * The side panel: what you'd keep open next to the work in Claude's or Codex's app. A chat with
@@ -197,76 +197,7 @@ function FilesTab() {
       <div class="side-toolbar">
         <PlacePicker label="Folder" place={place} places={places} onChange={setPlace} />
       </div>
-      {place && open?.root === place.path ? (
-        <FileViewer key={`${place.path}\n${open.path}`} root={place.path} path={open.path} onClose={() => setOpen(null)} />
-      ) : (
-        <FileTree key={viewKey} root={viewKey} onOpen={(path) => setOpen({ root: viewKey, path })} />
-      )}
-    </>
-  );
-}
-
-const MAX_SHOWN_LINES = 5_000;
-
-function FileViewer({ root, path, onClose }: { root: string; path: string; onClose: () => void }) {
-  const [file, setFile] = useState<FileContent | null>(null);
-  const [error, setError] = useState("");
-  const request = useLatest();
-  useEffect(() => {
-    const current = request();
-    setFile(null);
-    setError("");
-    api<FileContent>(`/api/file?repo=${enc(root)}&path=${enc(path)}`).then(
-      (f) => current() && setFile(f),
-      (err) => current() && setError((err as Error).message),
-    );
-  }, [root, path]);
-  const lines = file?.text?.split("\n") ?? [];
-  const inComposer = route.value.view === "composer" && root === repo.value;
-  return (
-    <>
-      <div class="file-head">
-        <button type="button" class="btn ghost small" aria-label="Back to the files" title="Back to the files" onClick={onClose}>
-          ←
-        </button>
-        {/* cut from the start (see .fp): the path isolated, so a leading dot stays in front */}
-        <span class="fp" title={path}>
-          <bdi>{path}</bdi>
-        </span>
-        {file ? <span class="help">{fmtSize(file.size)}</span> : null}
-        {inComposer ? (
-          <button type="button" class="btn ghost small" title="Add this file to the task as context" onClick={() => addContext({ path, type: "file" })}>
-            + Task
-          </button>
-        ) : null}
-        <button
-          type="button"
-          class="btn ghost small"
-          title="Ask the agent about this file in the chat"
-          onClick={() => {
-            sideDraft.value = `About \`${path}\`: `;
-            setSideChat(null);
-            openSide("chat");
-          }}
-        >
-          <Icon name="chat" />
-        </button>
-      </div>
-      {error ? <div class="side-empty msg err">{error}</div> : null}
-      {!file && !error ? <div class="side-empty help">Loading…</div> : null}
-      {file?.binary ? <div class="side-empty help">This is a binary file ({fmtSize(file.size)}).</div> : null}
-      {file && !file.binary ? (
-        <pre class="file-view" tabIndex={0}>
-          {lines.slice(0, MAX_SHOWN_LINES).map((line, i) => (
-            <span key={i} class="fl">
-              <span class="ln">{i + 1}</span>
-              {line}
-              {"\n"}
-            </span>
-          ))}
-          {lines.length > MAX_SHOWN_LINES || file.truncated ? <span class="help">… showing the first {Math.min(lines.length, MAX_SHOWN_LINES).toLocaleString()} lines</span> : null}
-        </pre>
-      ) : null}
+      {place ? <CodeBrowser key={viewKey} folder={viewKey} initialPath={open?.root === viewKey ? open.path : undefined} onClose={() => setOpen(null)} /> : <p class="side-empty">Choose a repository or run worktree.</p>}
     </>
   );
 }

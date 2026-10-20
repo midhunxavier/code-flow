@@ -264,7 +264,7 @@ function Crumbs() {
     trail = title !== undefined ? (
       <>
         <a class="crumb" href="#/team">
-          Team
+          People
         </a>
         {sep}
         <span class="crumb title here" title={title} aria-current="page">
@@ -274,7 +274,7 @@ function Crumbs() {
     ) : projectName ? (
       <>
         <a class="crumb" href="#/team">
-          Team
+          People
         </a>
         {sep}
         <span class="crumb here" aria-current="page">
@@ -283,11 +283,11 @@ function Crumbs() {
       </>
     ) : (
       <span class="crumb here" aria-current="page">
-        Team
+        People
       </span>
     );
   } else if (r.view === "inbox" || r.view === "automations" || r.view === "workspace" || r.view === "insights") {
-    trail = <>{r.view === "workspace" && r.project ? <><a class="crumb" href={`#/project/${encodeURIComponent(r.project)}`}>{projects.value.find(p => p.id === r.project)?.name ?? "Project"}</a>{sep}</> : null}<span class="crumb here" aria-current="page">{{ inbox: "Inbox", automations: "Automations", workspace: "Repository workspace", insights: "Insights" }[r.view]}</span></>;
+    trail = <>{r.view === "workspace" && r.project ? <><a class="crumb" href={`#/project/${encodeURIComponent(r.project)}`}>{projects.value.find(p => p.id === r.project)?.name ?? "Project"}</a>{sep}</> : null}<span class="crumb here" aria-current="page">{{ inbox: "Inbox", automations: "Scheduling", workspace: "Repository workspace", insights: "Insights" }[r.view]}</span></>;
   } else if (r.view === "settings") {
     const section = r.section ? SETTINGS_SECTIONS.find((item) => item.id === r.section) : undefined;
     trail = section ? (
@@ -375,9 +375,9 @@ const SHORTCUTS: [string, string][] = [
   ["j / k", "Next / previous run in the list"],
   ["[ / ]", "Previous / next step of the open run"],
   ["n", "New run"],
-  ["p", "Pick the project for new runs, Insights and Automations"],
+  ["p", "Pick the project for new runs, Insights and Scheduling"],
   ["i", "Insights"],
-  ["a", "Automations"],
+  ["a", "Scheduling"],
   ["⌘↵", "Start the run, or send what you typed"],
   ["Esc", "Close a dialog, or leave the search box"],
   ["\\", "Show or hide the side panel"],

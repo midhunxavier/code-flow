@@ -48,18 +48,18 @@ test("team routes parse from their hashes and serialize back to them", () => {
   assert.equal(hashFor({ view: "team", project: "p 1/x" }), "#/team/project/p%201%2Fx", "project ids are encoded like other ids");
   // Neighbouring routes are untouched.
   assert.deepEqual(parseRouteHash("#/project/p-1"), { view: "project", id: "p-1" });
-  assert.deepEqual(parseRouteHash("#/settings/team"), { view: "settings", section: "team" });
-  assert.equal(hashFor({ view: "settings", section: "team" }), "#/settings/team");
+  assert.deepEqual(parseRouteHash("#/settings/team"), { view: "settings", section: "connections", group: "sharing" });
+  assert.equal(hashFor({ view: "settings", section: "connections", group: "sharing" }), "#/settings/connections/sharing");
 });
 
 test("Settings has a Team section under Connections that search and the palette find", () => {
-  assert.equal(settingsSection("team"), "team");
+  assert.equal(settingsSection("connections"), "connections");
   assert.equal(settingsSection("teams"), "general", "unknown ids still fall back to General");
-  const entry = SETTINGS_SECTIONS.find((item) => item.id === "team");
+  const entry = SETTINGS_SECTIONS.find((item) => item.id === "connections");
   assert.ok(entry, "SETTINGS_SECTIONS lists team");
-  assert.equal(entry.label, "Team"); assert.equal(entry.group, "Connections"); assert.equal(entry.icon, "people");
-  assert.equal(entry.description, "Share a task board and hand work over to teammates.");
-  for (const word of ["handoff", "runner", "board", "teammates", "tailscale"]) assert.ok(searchSettings(word).some((item) => item.id === "team"), `searching ${word} finds Team`);
+  assert.equal(entry.label, "Connections"); assert.equal(entry.group, "Connections"); assert.equal(entry.icon, "terminal");
+  assert.equal(entry.description, "Work on another computer, delegate execution, or share access.");
+  for (const word of ["handoff", "runner", "board", "teammates", "tailscale"]) assert.ok(searchSettings(word).some((item) => item.id === "connections"), `searching ${word} finds Team`);
   const ids = SETTINGS_SECTIONS.map((item) => item.id); assert.equal(new Set(ids).size, ids.length, "section ids stay unique");
 });
 

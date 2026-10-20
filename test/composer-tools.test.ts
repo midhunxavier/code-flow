@@ -8,7 +8,7 @@ const config: PresetConfig = { pattern: "pipeline", roles: { planner: ["claude"]
 const library = (): ComposerLibrary => ({ schemaVersion: 1, presets: [{ id: "team-1", name: "Backend team", revision: 2, updatedAt: 2000, config: structuredClone(config), history: [{ revision: 1, updatedAt: 1000, config: { ...structuredClone(config), trust: "safe" } }] }], templates: [{ id: "task-1", name: "Component task", pattern: "pipeline", task: "Add tests for {{component}} in {{package}}.", criteria: ["{{component}} rejects invalid input."] }] });
 
 test("deep links round-trip encoded paths and malformed escapes remain recoverable", () => {
-  const routes: Route[] = [{ view: "inbox" }, { view: "automations" }, { view: "workspace", project: "a/b" }, { view: "workspace" }, { view: "insights", group: "a/b" }, { view: "composer" }, { view: "settings" }, { view: "settings", section: "ssh" }, { view: "run", id: "run / # 1" }, { view: "review", id: "run", branch: "feature/emoji-✓" }, { view: "side", tab: "files", scope: "repo:/tmp/a b" }, { view: "project", id: "project/1" }];
+  const routes: Route[] = [{ view: "inbox" }, { view: "automations" }, { view: "workspace", project: "a/b" }, { view: "workspace" }, { view: "insights", group: "a/b" }, { view: "composer" }, { view: "settings" }, { view: "settings", section: "connections", group: "workspace" }, { view: "run", id: "run / # 1" }, { view: "review", id: "run", branch: "feature/emoji-✓" }, { view: "side", tab: "files", scope: "repo:/tmp/a b" }, { view: "project", id: "project/1" }];
   for (const route of routes) assert.deepEqual(parseRouteHash(hashFor(route)), route);
   for (const hash of ["#/run/%", "#/project/%E0%A4%A", "#/review/a/b%GG"]) { assert.deepEqual(parseRouteHash(hash), { view: "invalid", hash }); assert.equal(hashFor(parseRouteHash(hash)), hash); }
   assert.deepEqual(parseRouteHash("#/settings/unknown"), { view: "settings", section: "general" });
@@ -72,4 +72,39 @@ test("version 1 presets preserve independent context budgets in import/export an
   assert.equal(parseComposerLibrary(library(), patterns).presets[0]!.config.contextBudget, undefined);
   assert.throws(() => validatePresetConfig({ ...config, contextBudget: { maxPromptBytes: 0, policy: "block" } }, patterns), /ceilings/);
   assert.throws(() => validatePresetConfig({ ...config, contextBudget: { maxPromptBytes: 100, policy: "ignore" } }, patterns), /policy/);
+});
+
+
+test("legacy connection links resolve to one purpose-based hub", () => {
+  for (const [legacy, group] of [["ssh", "workspace"], ["team", "sharing"], ["remote-access", "sharing"]]) {
+    assert.deepEqual(parseRouteHash(`#/settings/${legacy}`), { view: "settings", section: "connections", group });
+  }
+  for (const kind of ["once", "repeat", "backlog", "missions"]) assert.deepEqual(parseRouteHash(hashFor({ view: "automations", kind })), { view: "automations", kind });
+});
+
+test("complete templates retain agent settings and validate execution options without changing legacy templates", () => {
+  const value = library();
+  value.templates[0]!.config = { ...config, roleSettings: { planner: { claude: { model: "primary", variants: [{ model: "alternate", effort: "high" }] } } }, check: "npm test", setup: "npm ci", baseRef: "main" };
+  value.templates[0]!.intent = "bug";
+  value.templates[0]!.runOptions = { verification: "thorough", container: { enabled: true, image: "local/agents", authVolume: "agents-auth" } };
+  const parsed = parseComposerLibrary(JSON.parse(JSON.stringify(value)), patterns);
+  assert.deepEqual(parsed, value);
+  assert.equal(parseComposerLibrary(library(), patterns).templates[0]!.config, undefined);
+  (value.templates[0]! as any).intent = "unknown";
+  assert.throws(() => parseComposerLibrary(value, patterns), /task intent/);
+  value.templates[0]!.intent = "bug";
+  value.templates[0]!.config.pattern = "solo";
+  assert.throws(() => parseComposerLibrary(value, patterns));
+  value.templates[0]!.config = config;
+  (value.templates[0]!.runOptions as any).verification = "invalid";
+  assert.throws(() => parseComposerLibrary(value, patterns), /execution settings/);
+});
+
+test("complete templates support the composer's full 128-model variant limit", () => {
+  const value = library();
+  const variants = Array.from({ length: 128 }, (_, index) => ({ model: `model-${index}`, effort: "high" }));
+  value.templates[0]!.config = { ...config, roleSettings: { planner: { claude: { variants } } } };
+  assert.deepEqual(parseComposerLibrary(value, patterns).templates[0]!.config!.roleSettings.planner!.claude!.variants, variants);
+  variants.push({ model: "one-too-many", effort: "high" });
+  assert.throws(() => parseComposerLibrary(value, patterns), /model variants/);
 });

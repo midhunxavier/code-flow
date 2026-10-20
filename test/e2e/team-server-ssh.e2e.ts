@@ -38,6 +38,7 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`${base}/?token=${token}`);
     await page.goto(`${base}/?team=local#/settings/team`);
+    await page.getByLabel("Show People collaboration").check();
     await page.getByRole("button", { name: "Set up team server", exact: true }).click();
     await page.getByLabel("Server", { exact: true }).selectOption(connection.id);
     await page.getByLabel("Team HTTPS port", { exact: true }).fill(String(teamPort));

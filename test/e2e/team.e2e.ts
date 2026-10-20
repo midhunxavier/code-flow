@@ -65,23 +65,24 @@ async function audit(target: Page, screen: string) {
 }
 const fits = (target: Page) => target.evaluate(() => { const main = document.getElementById("main-content") ?? document.querySelector("main"); return document.documentElement.scrollWidth <= innerWidth && (!main || main.scrollWidth <= main.clientWidth + 1); });
 
-test("the Team entry opens a board with five columns and the not-connected callout", async () => {
+test("the People entry opens a board with five columns and the not-connected callout", async () => {
+  await page.evaluate(() => localStorage.setItem("peopleEnabled", "1")); await page.reload();
   await page.getByRole("button", { name: "Application menu", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+  await page.getByRole("menuitem", { name: "People", exact: true }).click();
   await page.waitForURL(/#\/team$/);
-  await page.getByRole("heading", { level: 1, name: "Team", exact: true }).waitFor();
+  await page.getByRole("heading", { level: 1, name: "People", exact: true }).waitFor();
   const columns = page.locator("section.team-column"); await columns.first().waitFor();
   assert.deepEqual(await columns.evaluateAll((sections) => sections.map((section) => section.querySelector("h2")?.firstChild?.textContent)), ["Planned", "Working", "Blocked", "In review", "Done"]);
   assert.equal(await page.locator("section.team-column .team-column-empty").count(), 5, "an empty board says so in every column");
   await page.getByText("Not connected to a team server", { exact: true }).waitFor();
-  assert.equal(await page.getByRole("link", { name: /Open Settings → Team/ }).getAttribute("href"), "#/settings/team");
+  assert.equal(await page.getByRole("link", { name: /Open Connections → Share access/ }).getAttribute("href"), "#/settings/connections/sharing");
   await page.getByRole("heading", { name: /^Inbox/ }).waitFor(); await page.getByText("Nothing yet.", { exact: false }).waitFor();
   assert.deepEqual(errors, []);
 });
 
 test("Settings → Team defines a repository key and maps it; the board form creates a task that lands in Planned", async () => {
   await page.goto(`${base}/#/settings/team`);
-  await page.getByRole("heading", { level: 2, name: "Team", exact: true }).waitFor();
+  await page.getByRole("heading", { level: 2, name: "Connections", exact: true }).waitFor();
   await page.getByRole("button", { name: "Connect this computer", exact: true }).waitFor(); // not linked: the connect form, named as the docs and the server's hints name it, with this computer's name prefilled
   const machine = page.getByLabel("Machine name"); await page.waitForFunction((input) => (input as HTMLInputElement).value !== "", await machine.elementHandle()); assert.notEqual(await machine.inputValue(), "");
   await page.getByText("No repository keys yet.", { exact: false }).waitFor();
@@ -174,8 +175,8 @@ test("a shared contributor signs in, finds the task under Team and comments, wit
   await shared.getByRole("heading", { name: "Sign in to shared projects", exact: true }).waitFor();
   await shared.getByLabel("Username", { exact: true }).fill("casey"); await shared.getByLabel("Password", { exact: true }).fill(password); await shared.getByRole("button", { name: "Sign in", exact: true }).click();
   await shared.getByRole("heading", { name: "Shared project review", exact: true }).waitFor();
-  await shared.getByRole("tab", { name: "Team", exact: true }).click();
-  await shared.waitForURL(/#\/team$/); await shared.getByRole("tab", { name: "Team", exact: true, selected: true }).waitFor();
+  await shared.getByRole("tab", { name: "People", exact: true }).click();
+  await shared.waitForURL(/#\/team$/); await shared.getByRole("tab", { name: "People", exact: true, selected: true }).waitFor();
   const card = shared.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }); await card.waitFor();
   assert.equal(await shared.getByText("Not connected to a team server").count(), 0, "the shared dashboard never talks about this computer's link");
   await card.click();
@@ -206,7 +207,7 @@ test("the rail's Team badge counts the inbox from the first paint, and marking i
   await page.goto(`${base}/#/`); await page.reload(); await page.getByRole("button", { name: "New run", exact: true }).waitFor();
   await page.locator(".rail-menu-count", { hasText: "1" }).waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: "Application menu", exact: true }).click();
-  await page.getByRole("menuitem", { name: /^Team 1 unread$/ }).click(); await page.waitForURL(/#\/team$/);
+  await page.getByRole("menuitem", { name: /^People 1 unread$/ }).click(); await page.waitForURL(/#\/team$/);
   const card = page.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }); await card.waitFor();
   await page.locator(".team-card.needs-you").filter({ hasText: TITLE }).waitFor(); await card.getByText("Needs you", { exact: true }).waitFor();
   await page.getByRole("heading", { name: /^Inbox/ }).getByText("1", { exact: true }).waitFor();
@@ -320,8 +321,8 @@ test("an unknown execution blocks Start until the owner confirms it stopped and 
 test("three shared tabs on Team hold one connection each, so a request from the first still goes through", async () => {
   const extra: Page[] = [];
   try {
-    for (let n = 0; n < 2; n++) { const tab = await sharedContext.newPage(); extra.push(tab); await tab.goto(`${base}/#/team`); await tab.getByRole("tab", { name: "Team", exact: true, selected: true }).waitFor(); await tab.getByRole("heading", { level: 1, name: "Team", exact: true }).waitFor(); }
-    await shared.getByRole("tab", { name: "Team", exact: true, selected: true }).waitFor(); // the first tab is still on the task page
+    for (let n = 0; n < 2; n++) { const tab = await sharedContext.newPage(); extra.push(tab); await tab.goto(`${base}/#/team`); await tab.getByRole("tab", { name: "People", exact: true, selected: true }).waitFor(); await tab.getByRole("heading", { level: 1, name: "People", exact: true }).waitFor(); }
+    await shared.getByRole("tab", { name: "People", exact: true, selected: true }).waitFor(); // the first tab is still on the task page
     // A browser gives one server six connections for all its tabs; with two streams per tab the third tab exhausted them and this fetch never returned.
     const result = await shared.evaluate(async () => { const started = performance.now(), control = new AbortController(), timer = setTimeout(() => control.abort(), 6_000); try { const response = await fetch("/api/team/inbox", { signal: control.signal }); return { status: response.status, ms: Math.round(performance.now() - started) }; } catch (error) { return { status: 0, ms: Math.round(performance.now() - started), error: String(error) }; } finally { clearTimeout(timer); } });
     assert.equal(result.status, 200, `the request from the first Team tab stalled: ${JSON.stringify(result)}`);
@@ -335,7 +336,7 @@ test("a shared dashboard left open asks the server for nothing: no board, task o
   const polls: string[] = []; tab.on("request", (request) => { const path = new URL(request.url()).pathname; if (/^\/api\/team\/(?:board|inbox|tasks\/)/.test(path)) polls.push(`${request.method()} ${path}`); });
   try {
     await tab.clock.install();
-    await tab.goto(`${base}/#/team`); await tab.getByRole("tab", { name: "Team", exact: true, selected: true }).waitFor(); await tab.getByRole("region", { name: /^Working|^Planned/ }).first().waitFor(); await tab.getByRole("heading", { name: /^Inbox/ }).waitFor();
+    await tab.goto(`${base}/#/team`); await tab.getByRole("tab", { name: "People", exact: true, selected: true }).waitFor(); await tab.getByRole("region", { name: /^Working|^Planned/ }).first().waitFor(); await tab.getByRole("heading", { name: /^Inbox/ }).waitFor();
     await tab.clock.runFor(2_000); await sleep(500); polls.length = 0; // the first loads and the reload the stream's hello asks for are done
     await tab.clock.runFor(5 * 60_000); await sleep(500);
     assert.deepEqual(polls, [], "the Team tab reloads on events only; a timer would keep an idle shared session alive for ever");

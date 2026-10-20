@@ -124,18 +124,19 @@ export function GitHubPicker() {
 }
 
 /** Template chips: pick one, then (if it needs one) an issue or PR. Sweeps open their own list. */
-export function Templates() {
+export function Templates({ only, onChoose }: { only?: "backlog" | "sources"; onChoose?: () => void } = {}) {
   if (!templates.value.length) return null;
   const choose = (t: Template) => {
+    onChoose?.();
     if (t.sweep) sweepPicker.value = t;
     else if (t.needs) ghPicker.value = { kind: t.needs, template: t };
     else applyTemplate(t);
   };
-  const single = templates.value.filter((t) => !t.sweep);
-  const sweeps = templates.value.filter((t) => t.sweep);
+  const single = templates.value.filter((t) => !t.sweep && only !== "backlog");
+  const sweeps = templates.value.filter((t) => t.sweep && only !== "sources");
   return (
-    <details class="settings task-starters">
-      <summary><span class="st">Task starters</span><span class="ss">GitHub issues, pull requests and sweeps</span></summary>
+    <details class="settings task-starters" open>
+      <summary><span class="st">{only === "backlog" ? "Choose backlog items" : "From GitHub"}</span><span class="ss">Issues and pull requests</span></summary>
       <div class="settings-body">
       <div class="templates">
         <span class="lbl">Start from</span>

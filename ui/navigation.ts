@@ -4,7 +4,8 @@ export const SIDE_TABS: SideTab[] = ["chat", "changes", "files", "terminal", "br
 
 export type Route =
   | { view: "composer" }
-  | { view: "inbox" | "automations" }
+  | { view: "inbox" }
+  | { view: "automations"; kind?: string }
   | { view: "workspace"; project?: string }
   | { view: "insights"; group?: string }
   | { view: "settings"; section?: SettingsSection; group?: string }
@@ -25,10 +26,12 @@ export function parseRouteHash(hash: string): Route {
   if (view === "run" && id) return { view: "run", id };
   if (view === "review" && id && rest.length) return { view: "review", id, branch: rest.join("/") };
   if (view === "settings" && (id === "workspace" || id === "automations" || id === "insights")) return { view: id, ...(id === "insights" && rest[0] ? { group: rest[0] } : {}) };
-  if (view === "settings") return { view: "settings", ...(id ? { section: settingsSection(id) } : {}), ...(id === "insights" && rest[0] ? { group: rest[0] } : {}) };
+  if (view === "settings" && ["ssh", "remote-access", "team"].includes(id ?? "")) return { view: "settings", section: "connections", group: id === "ssh" ? "workspace" : "sharing" };
+  if (view === "settings") return { view: "settings", ...(id ? { section: settingsSection(id) } : {}), ...((id === "insights" || id === "connections") && rest[0] ? { group: rest[0] } : {}) };
   // Everyday work has standalone destinations; old Settings bookmarks remain valid.
   if (view === "workspace") return { view: "workspace" };
-  if (view === "automations" || view === "inbox") return { view };
+  if (view === "automations") return { view, ...(id ? { kind: id } : {}) };
+  if (view === "inbox") return { view };
   if (view === "insights") return { view: "insights", ...(id ? { group: id } : {}) };
   if (view === "project" && id && rest[0] === "workspace") return { view: "workspace", project: id };
   if (view === "project" && id) return { view: "project", id };
@@ -40,11 +43,12 @@ export function parseRouteHash(hash: string): Route {
 
 export function hashFor(r: Route): string {
   if (r.view === "invalid") return r.hash;
-  if (r.view === "inbox" || r.view === "automations") return `#/${r.view}`;
+  if (r.view === "inbox") return "#/inbox";
+  if (r.view === "automations") return `#/automations${r.kind ? `/${encodeURIComponent(r.kind)}` : ""}`;
   if (r.view === "workspace") return r.project ? `#/project/${encodeURIComponent(r.project)}/workspace` : "#/workspace";
   if (r.view === "insights") return `#/insights${r.group ? `/${encodeURIComponent(r.group)}` : ""}`;
   if (r.view === "run") return `#/run/${encodeURIComponent(r.id)}`;
-  if (r.view === "settings") return r.section ? `#/settings/${r.section}${r.section === "insights" && r.group ? `/${encodeURIComponent(r.group)}` : ""}` : "#/settings";
+  if (r.view === "settings") return r.section ? `#/settings/${r.section}${(r.section === "insights" || r.section === "connections") && r.group ? `/${encodeURIComponent(r.group)}` : ""}` : "#/settings";
   if (r.view === "project") return `#/project/${encodeURIComponent(r.id)}`;
   if (r.view === "team") return r.project ? `#/team/project/${encodeURIComponent(r.project)}` : "#/team";
   if (r.view === "team-task") return `#/team/task/${encodeURIComponent(r.id)}`;

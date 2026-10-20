@@ -1,6 +1,6 @@
 # Architecture exploration
 
-Settings → Workspace → Dependencies inspects saved tracked source without executing repository code, build hooks, compilers or package managers. It resolves JavaScript/TypeScript syntax with TypeScript's parser, including literal dynamic imports and CommonJS requires. Conservative static scans also cover Python imports, Go import groups and local module packages, Rust modules and basic use declarations, and Java class imports.
+Open **What could this change affect?** while editing a file in Files or Repository tools → Code, or while reviewing a result branch. This inspects saved tracked source without executing repository code, build hooks, compilers or package managers. It resolves JavaScript/TypeScript syntax with TypeScript's parser, including literal dynamic imports and CommonJS requires. Conservative static scans also cover Python imports, Go import groups and local module packages, Rust modules and basic use declarations, and Java class imports.
 
 The view includes file relationships, directory coupling, dependency cycles, declared npm/Python/Go/Rust/Maven packages, unresolved imports and computed runtime targets. Export the same evidence as JSON. An unresolved import may be an external or standard library package; it is not evidence that a dependency is missing. Runtime loaders, path aliases, Rust macros, Java wildcards, generated source and conditional builds still need manual inspection. No package installation or dependency-tree network lookup occurs.
 

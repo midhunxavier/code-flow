@@ -5,19 +5,15 @@ import { FilteredTasksPanel } from "./filtered-tasks.js";
 import { CoordinatedChangesPanel } from "./repo-coordination.js";
 import { repo, runs, route, projects, projectsLoaded } from "./state.js";
 import type { VerificationProfile, VerificationReport } from "../src/verification.js";
-import type { CodeHit } from "../src/workspace.js";
-import type { SymbolHit } from "../src/code-intelligence.js";
 import type { RevertPreview } from "../src/checkpoint-review.js";
 import type { CheckpointHunks } from "../src/workspace-changes.js";
-import type { ArchitectureGraph } from "../src/architecture.js";
-import { loadFileDraft, retainFileDraft } from "./file-drafts.js";
+import { CodeBrowser } from "./code-browser.js";
 
-type Tab = "verification" | "code" | "dependencies" | "context" | "history" | "services" | "coordination" | "filtered-tasks";
+type Tab = "verification" | "code" | "context" | "history" | "services" | "coordination" | "filtered-tasks";
 const TOOL_GROUPS: readonly { label: string; tools: readonly (readonly [Tab, string])[] }[] = [
-  { label: "Code and verification", tools: [["verification", "Verification"], ["code", "Code"], ["dependencies", "Dependencies"], ["context", "Context"], ["history", "History"]] },
+  { label: "Code and verification", tools: [["verification", "Verification"], ["code", "Code"], ["context", "Context"], ["history", "History"]] },
   { label: "Repository operations", tools: [["services", "Services"], ["coordination", "Coordinated changes"], ["filtered-tasks", "Filtered tasks"]] },
 ];
-interface Editable { path: string; text: string; hash: string; bytes: number; folder?: string }
 /** A raw status value as a sentence-case pill label ("needs-changes" → "Needs changes"). */
 const sentence = (value: string) => { const text = value.replace(/-/g, " "); return text.charAt(0).toUpperCase() + text.slice(1); };
 interface Checkpoint { sha: string; at: number; subject: string }
@@ -43,18 +39,6 @@ export function WorkbenchView({ projectId }: { projectId?: string }) {
   const [setup, setSetup] = useState("");
   const [repeats, setRepeats] = useState(1);
   const [report, setReport] = useState<(VerificationReport & { markdown: string; commit: string }) | null>(null);
-  const [query, setQuery] = useState("");
-  const [mode, setMode] = useState("text");
-  const [hits, setHits] = useState<(CodeHit & Partial<SymbolHit>)[]>([]);
-  const [searchNote, setSearchNote] = useState("");
-  const [file, setFile] = useState<Editable | null>(null);
-  const [draft, setDraft] = useState("");
-  const [preview, setPreview] = useState(false);
-  const [conflict, setConflict] = useState(false);
-  const [draftRecovery, setDraftRecovery] = useState("");
-  const [mergeNote, setMergeNote] = useState("");
-  const [mergeConflict, setMergeConflict] = useState(false);
-  const [graph, setGraph] = useState<ArchitectureGraph | null>(null);
   const [paths, setPaths] = useState("");
   const [context, setContext] = useState<any>(null);
   const [history, setHistory] = useState<{ head: string; checkpoints: Checkpoint[] } | null>(null);
@@ -77,35 +61,7 @@ export function WorkbenchView({ projectId }: { projectId?: string }) {
     try { await action(); } catch (error) { setError((error as Error).message); } finally { setBusy(false); }
   };
   useLayoutEffect(() => { if (!folder && repositories[0]) setFolder(repositories[0]); }, [repositories.join("\0"), folder]);
-  useEffect(() => { setFile(null); setReport(null); setProfile(null); setGraph(null); setHistory(null); setContext(null); setComparison(null); setRevertPreview(null); setHits([]); setHunks(null); setError(""); }, [folder]);
-  useLayoutEffect(() => { if (file?.folder === folder) setDraftRecovery(retainFileDraft(folder, file, draft, mergeConflict)); }, [folder, file, mergeConflict]);
-  useEffect(() => {
-    if (!file || draft === file.text) return;
-    const beforeUnload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
-    window.addEventListener("beforeunload", beforeUnload);
-    return () => window.removeEventListener("beforeunload", beforeUnload);
-  }, [file, draft]);
-  const loadFile = (path: string) => perform(async () => {
-    const loaded = { ...await api<Editable>(`/api/workspace/file?repo=${enc(folder)}&path=${enc(path)}`), folder };
-    const retained = loadFileDraft(folder, loaded.path);
-    setMergeConflict(retained?.mergeConflict === true);
-    setFile(retained ? { ...loaded, text: retained.text, hash: retained.hash } : loaded); setDraft(retained?.draft ?? loaded.text); setConflict(!!retained && retained.hash !== loaded.hash); setPreview(false); setMergeNote(""); setTab("code");
-    if (retained) showToast("Recovered your unsaved draft for this tab. Review it before saving.", 5000);
-  });
-  const refreshForMerge = () => perform(async () => {
-    if (!file) return;
-    const merged = await post<{ current: Editable; text: string; conflicts: number; clean: boolean }>("/api/workspace/merge-file", { repo: folder, path: file.path, base: file.text, draft });
-    setFile({ ...merged.current, folder }); setDraft(merged.text); setConflict(false); setPreview(true);
-    setMergeConflict(!merged.clean);
-    setMergeNote(merged.clean ? "Independent edits merged. Review the result before saving." : `${merged.conflicts} overlapping change(s). Edit the marked sections to preserve the intended result, then remove every conflict marker before saving.`);
-  });
-  const save = () => perform(async () => {
-    if (!file) return;
-    try {
-      const saved = await post<{ hash: string; bytes: number }>("/api/workspace/file", { repo: folder, path: file.path, text: draft, expectedHash: file.hash });
-      setFile({ ...file, ...saved, text: draft }); setMergeConflict(false); setPreview(false); showToast("File saved");
-    } catch (error) { setConflict(true); throw error; }
-  });
+  useEffect(() => { setReport(null); setProfile(null); setHistory(null); setContext(null); setComparison(null); setRevertPreview(null); setHunks(null); setError(""); }, [folder]);
   if (projectId && !project) return <p role="status">{projectsLoaded.value ? "This project no longer exists." : "Loading project…"}</p>;
   return <div class="workbench">
     <header class="page-head"><div class="page-head-text"><h3>Inspect, verify, and recover</h3>
@@ -138,14 +94,7 @@ export function WorkbenchView({ projectId }: { projectId?: string }) {
       </> : <p class="help">Detect commands from this repository, then review the profile before executing it.</p>}
       {report ? <><h3>Result: {report.state}</h3><p class="help">Commit {report.commit.slice(0, 12)}</p><div class="wb-scroll"><table><thead><tr><th>Gate</th><th>Required</th><th>Result</th><th>Evidence</th></tr></thead><tbody>{report.checks.map((gate) => <tr key={gate.check.id}><td>{gate.check.title ?? gate.check.id}</td><td>{gate.check.required ? "Yes" : "No"}</td><td><span class={`badge ${gate.diagnosis === "passed" ? "ok" : gate.diagnosis === "failed" || gate.diagnosis === "regression" ? "err" : "warn"}`}>{sentence(gate.diagnosis)}</span></td><td><details><summary>{gate.attempts.length} attempts</summary>{gate.attempts.map((attempt, index) => <pre key={index}>{attempt.output || `Exit ${attempt.exitCode}`}</pre>)}</details></td></tr>)}</tbody></table></div>{report.skipped.map((gate) => <p class="msg err">{gate.check.id}: {gate.reason}</p>)}{report.requirements?.length ? <section aria-label="Requirement verification results"><h4>Requirement evidence</h4><ul>{report.requirements.map((requirement) => <li key={requirement.id}>{requirement.covered ? "Covered" : "Uncovered"}: {requirement.description}{requirement.missing.length ? ` · missing ${requirement.missing.join(", ")}` : !requirement.covered ? " · no checks mapped" : ""}</li>)}</ul></section> : null}<button class="btn" onClick={() => downloadArtifact("verification.md", report.markdown, "text/markdown")}>Export report</button></> : null}
     </section> : null}
-    {tab === "code" ? <section class="wb-card">
-      <h2>Search and edit</h2><div class="wb-row"><select class="field" aria-label="Code search mode" value={mode} onChange={(event) => setMode(event.currentTarget.value)}><option value="text">Text</option><option value="symbols">Declarations</option><option value="semantic">JavaScript/TypeScript symbols</option></select><input class="field" aria-label="Search code" placeholder={mode === "symbols" ? "Function, class, or variable" : "Search file contents"} value={query} onInput={(event) => setQuery(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === "Enter") void perform(async () => { const result = await api<{ hits: CodeHit[]; scanned: number; truncated: boolean }>(`/api/workspace/search?repo=${enc(folder)}&q=${enc(query)}&mode=${mode}`); setHits(result.hits); setSearchNote(`${result.scanned} files inspected${result.truncated ? " · results limited; narrow your query" : ""}`); }); }} /><button class="btn" disabled={!folder || busy} onClick={() => perform(async () => { const result = await api<{ hits: CodeHit[]; scanned: number; truncated: boolean }>(`/api/workspace/search?repo=${enc(folder)}&q=${enc(query)}&mode=${mode}`); setHits(result.hits); setSearchNote(`${result.scanned} files inspected${result.truncated ? " · results limited" : ""}`); })}>Search</button></div>
-      <p class="help">Declaration search recognizes common forms in several languages. JavaScript/TypeScript symbols and references use an isolated TypeScript language service over bounded saved repository files; external libraries and compiler plugins are excluded.</p>{searchNote ? <p class="help">{searchNote}</p> : null}
-      <div class="wb-hits">{hits.map((hit) => <p key={`${hit.path}:${hit.line}`}><button class="btn ghost wb-path" onClick={() => loadFile(hit.path)}>{hit.path}:{hit.line} {hit.symbol ?? ""}</button><code>{hit.text}</code>{hit.column ? <button class="btn small" disabled={busy} onClick={() => perform(async () => { const result = await api<{hits:SymbolHit[];scanned:number;truncated:boolean;note:string}>(`/api/workspace/references?repo=${enc(folder)}&path=${enc(hit.path)}&line=${hit.line}&column=${hit.column}`); setHits(result.hits); setSearchNote(`${result.hits.length} references in ${result.scanned} saved source files${result.truncated ? " · results limited" : ""}. ${result.note}`); })}>Find references to {hit.symbol ?? `${hit.path}:${hit.line}`}</button> : null}</p>)}</div>
-      <div class="wb-row"><input class="field" aria-label="File to edit" placeholder="Repository-relative file path" value={paths} onInput={(event) => setPaths(event.currentTarget.value)} /><button class="btn" disabled={busy || !folder || !paths.trim()} onClick={() => loadFile(paths.trim())}>Open file</button></div>
-      {file ? <><h3>{file.path}</h3><textarea class="field wb-editor" aria-label="File contents" spellcheck={false} disabled={busy} value={draft} onInput={(event) => { const value = event.currentTarget.value; setDraft(value); if (file.folder === folder) setDraftRecovery(retainFileDraft(folder, file, value, mergeConflict)); }} />{mergeNote ? <p class="at-notice" role="status">{mergeNote}</p> : null}<div class="wb-row"><button class="btn" onClick={() => setPreview(!preview)}>{preview ? "Hide comparison" : "Preview changes"}</button><button class="btn primary" disabled={busy || conflict || draft === file.text || mergeConflict && /^(?:<<<<<<< |=======$|>>>>>>> |\|\|\|\|\|\|\| )/m.test(draft)} onClick={save}>Save file</button>{conflict ? <button class="btn" onClick={refreshForMerge}>Load current version and keep draft</button> : null}<button class="btn" onClick={() => downloadArtifact(file.path.split("/").pop() ?? "draft.txt", draft, "text/plain")}>Export draft</button></div>{preview ? <div class="wb-diff"><div><h4>Current file</h4><pre>{file.text}</pre></div><div><h4>Your draft</h4><pre>{draft}</pre></div></div> : null}<p class="help">Saving checks the loaded version and preserves concurrent edits. Files in active run worktrees cannot be edited here. {draftRecovery === "sensitive" ? "This credential filename is excluded from browser draft recovery; export your draft before leaving." : draftRecovery === "full" ? "Browser draft storage is unavailable; export your draft before leaving." : "Unsaved drafts can be recovered in this browser tab for 24 hours."}</p></> : null}
-    </section> : null}
-    {tab === "dependencies" ? <section class="wb-card"><h2>Architecture and dependencies</h2><p class="help">Inspect static imports, package manifests, directory boundaries, and cycles across JavaScript, TypeScript, Python, Go, Rust, and Java.</p><button class="btn" disabled={!folder || busy} onClick={() => perform(async () => setGraph(await api(`/api/workspace/dependencies?repo=${enc(folder)}`)))}>Inspect dependencies</button>{graph ? <><p>{graph.nodes.length} files · {graph.edges.length} import relationships{graph.truncated ? " · bounded scan; more files or relationships omitted" : ""}</p><p class="help">{graph.languages.join(", ")} · {graph.scannedBytes.toLocaleString()} bytes. {graph.note}</p><details><summary>Directory boundaries</summary><ul>{graph.components.map((component) => <li key={component.directory}>{component.directory}: {component.files} files · {component.incoming} incoming / {component.outgoing} outgoing imports</li>)}</ul></details>{graph.cycles.length ? <details open><summary>{graph.cycles.length} dependency cycles</summary><ul>{graph.cycles.map((cycle, index) => <li key={index}>{cycle.join(" → ")}</li>)}</ul></details> : null}<details><summary>{graph.packages.length} declared package dependencies</summary><ul>{graph.packages.map((dependency, index) => <li key={index}>{dependency.name} {dependency.version} · {dependency.kind} · {dependency.manifest}</li>)}</ul></details><details><summary>{graph.unresolved.length} external or unresolved imports · {graph.dynamic.length} computed import targets</summary><ul>{graph.unresolved.map((item, index) => <li key={index}>{item.from}: {item.specifier} · {item.reason}</li>)}{graph.dynamic.map((item, index) => <li key={`dynamic-${index}`}>{item.from}:{item.line} · {item.reason}</li>)}</ul></details><button class="btn" onClick={() => downloadArtifact("architecture.json", JSON.stringify(graph, null, 2))}>Export architecture</button><div class="wb-scroll"><table><thead><tr><th>Source</th><th>Imports</th></tr></thead><tbody>{graph.edges.map((edge, i) => <tr key={i}><td><button class="btn ghost wb-path" onClick={() => loadFile(edge.from)}>{edge.from}</button></td><td><button class="btn ghost wb-path" onClick={() => loadFile(edge.to)}>{edge.to}</button></td></tr>)}</tbody></table></div></> : null}</section> : null}
+    {tab === "code" ? <CodeBrowser key={folder} folder={folder} /> : null}
     {tab === "context" ? <section class="wb-card"><h2>Context inspector</h2><p class="help">Preview explicit file context before selecting it for a task. Credential-file contents are excluded, and recognizable secrets are redacted.</p><textarea class="field" aria-label="Context file paths" rows={5} placeholder="One repository-relative file per line" value={paths} onInput={(event) => setPaths(event.currentTarget.value)} /><button class="btn" disabled={!folder || busy || !paths.trim()} onClick={() => perform(async () => setContext(await post("/api/workspace/context", { repo: folder, paths: paths.split("\n").map((path) => path.trim()).filter(Boolean) })))}>Inspect context</button>{context ? <><p>{context.bytes.toLocaleString()} bytes · approximately {context.approximateTokens.toLocaleString()} tokens</p><p class="help">{context.note}</p>{context.files.map((file: any) => <details key={file.path}><summary>{file.path} {file.sensitive ? "· sensitive" : `· ${file.bytes} bytes`}</summary><pre>{file.omitted ?? file.preview}</pre></details>)}</> : null}</section> : null}
     {tab === "history" ? <section class="wb-card"><h2>Checkpoints and run controls</h2>{selectedRun ? <><p>{selectedRun.task.split("\n")[0]} · {selectedRun.status}{selectedRun.pauseRequested ? " · pause requested" : ""}</p><div class="wb-row"><button class="btn" onClick={() => { route.value = { view: "run", id: selectedRun.id }; }}>Open run</button>{selectedRun.status === "running" ? <button class="btn" disabled={busy} onClick={() => runAction(`/api/runs/${selectedRun.id}/pause`, { paused: !selectedRun.pauseRequested })}>{selectedRun.pauseRequested ? "Continue dispatch" : "Pause after active work"}</button> : null}<label>Priority<select class="field" value={selectedRun.priority ?? 0} onChange={(event) => runAction(`/api/runs/${selectedRun.id}/priority`, { priority: Number(event.currentTarget.value) })}>{[-10, 0, 10].map((priority) => <option value={priority}>{priority === 10 ? "High" : priority === -10 ? "Background" : "Normal"}</option>)}</select></label><button class="btn" disabled={busy} onClick={() => perform(async () => downloadArtifact(`run-${selectedRun.id}.json`, JSON.stringify(await api(`/api/runs/${selectedRun.id}/export?transcript=1`), null, 2)))}>Export run evidence</button></div></> : <p class="help">Select a run worktree above to pause, prioritize, fork, or apply its checkpoint files.</p>}
       <button class="btn" disabled={!folder || busy} onClick={() => perform(async () => { const data = await api<{ head: string; checkpoints: Checkpoint[] }>(`/api/workspace/checkpoints?repo=${enc(folder)}`); setHistory(data); setCheckpoint(data.checkpoints[0]?.sha ?? ""); })}>Load checkpoints</button>

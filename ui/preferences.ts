@@ -17,3 +17,7 @@ export async function setDesktopNotifications(enabled: boolean) {
     showToast(desktopNotifications.value ? "You'll be notified when a run needs you" : enabled ? "Notifications are blocked in the browser settings" : "Notifications off");
   } catch { showToast("Couldn't enable notifications. Check your browser's site permissions."); }
 }
+
+/** An optional workspace surface, not an authorization or execution switch. */
+export const peopleEnabled = signal(store.get("peopleEnabled") === "1");
+export function setPeopleEnabled(enabled: boolean) { peopleEnabled.value = enabled; store.set("peopleEnabled", enabled ? "1" : "0"); }

@@ -44,12 +44,12 @@ export function TeamBoardView({ project, shared = false, navigate }: { project?:
     {!shared ? <TeamConnectionPicker /> : null}
     {boardError.value ? <p class="msg err" role="alert">{boardError.value}</p> : null}
     <div class="page-head">
-      <div class="page-head-text"><h1>Team</h1><p>{chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>
+      <div class="page-head-text"><h1>People</h1><p>{chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>
       <div class="page-head-actions">{canCreate ? <button type="button" class="btn primary" aria-expanded={!!creating} disabled={!!creating} onClick={() => setCreating("manual")}><Icon name="plus" /> New task</button> : null}{canCreate && !shared ? <button type="button" class="btn" disabled={!!creating} onClick={() => setCreating("agent")}>Draft with agent</button> : null}</div>
     </div>
     {shared ? <TeamTerminalPanel board={b} project={chosen} /> : null}
     {shared || link && !link.linked ? <HostQueue board={b} project={chosen} /> : null}
-    {!shared && link && !link.linked && !b.tasks.length ? <div class="settings-callout team-callout"><Icon name="people" /><div><strong>Not connected to a team server</strong><p>Connect this computer in Settings → Team to work on a shared board, or create tasks here to use this computer as the team server.</p><a href="#/settings/team">Open Settings → Team <span aria-hidden="true">→</span></a></div></div> : null}
+    {!shared && link && !link.linked && !b.tasks.length ? <div class="settings-callout team-callout"><Icon name="people" /><div><strong>Not connected to a team server</strong><p>Connect this computer in Connections → Share access to work on a shared board, or create tasks here to use this computer as the team server.</p><a href="#/settings/connections/sharing">Open Connections → Share access <span aria-hidden="true">→</span></a></div></div> : null}
     {b.projects.length > 1 || chosen ? <div class="team-chips" role="group" aria-label="Project">
       <button type="button" class="chip-tpl" aria-pressed={!chosen} onClick={() => navigate({ view: "team" })}>All projects</button>
       {b.projects.map((entry) => <button key={entry.id} type="button" class="chip-tpl" aria-pressed={chosen === entry.id} onClick={() => navigate({ view: "team", project: entry.id })}>{entry.name}</button>)}
@@ -123,7 +123,7 @@ function NewTaskForm({ b, projectId: initial, shared, draftWithAgent, onDone, on
       <label>Repository<select class="field" required value={repository} disabled={busy || !project?.repositories.length} onChange={(event) => setRepository(event.currentTarget.value)}>{project?.repositories.map((repo) => <option key={repo.key} value={repo.key}>{repo.label} ({repo.key})</option>)}</select></label>
       <label>Base branch<input class="field" maxLength={100} placeholder={project?.repositories.find((repo) => repo.key === repository)?.defaultBranch ?? "The repository's default branch"} value={baseRef} disabled={busy} onInput={(event) => setBaseRef(event.currentTarget.value)} /></label>
     </div>
-    {project && !project.repositories.length ? <p class="msg warn" role="status">{project.name} has no repository keys yet. A maintainer defines repository keys in Settings → Team{!shared && maintainer ? <>: <a href="#/settings/team">open Settings → Team</a></> : null}.</p> : null}
+    {project && !project.repositories.length ? <p class="msg warn" role="status">{project.name} has no repository keys yet. A maintainer defines repository keys in Connections → Share access{!shared && maintainer ? <>: <a href="#/settings/connections/sharing">open Connections → Share access</a></> : null}.</p> : null}
     {!shared && drafting ? <TaskDraftAssistant key={`${projectId}/${repository}`} projectId={projectId} repository={repository} baseRef={baseRef} onBusy={setDraftBusy} onApply={(draft) => { setTitle(draft.title); setGoal(draft.goal); setAcceptance(draft.acceptance); setDrafting(false); setDraftApplied(true); }} /> : null}
     <div class="team-fields">
       <label>Title<input class="field" required maxLength={200} value={title} disabled={busy} onInput={(event) => setTitle(event.currentTarget.value)} /></label>

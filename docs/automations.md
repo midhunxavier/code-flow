@@ -72,7 +72,7 @@ Check isolation runs the repository's scripts in the selected image. Agents norm
 
 ## Phone view
 
-Turn on **Enable remote access** in **Settings → Remote access**. Choose **This computer only**, **Tailscale · access anywhere**, or **Wi-Fi · local network**.
+Turn on **Enable remote access** in **Settings → Connections → Share access**. Choose **This computer only**, **Tailscale · access anywhere**, or **Wi-Fi · local network**.
 
 - On its own it's a read-only view: what's running and what needs you, and each run's summary, review, results and steps. It refreshes itself and has no buttons.
 - Runs are listed under their project's name. Projects with runs that need you come first, then those with runs going; runs in no project come last.
@@ -84,7 +84,7 @@ Turn on **Enable remote access** in **Settings → Remote access**. Choose **Thi
 ### Remote access with Tailscale
 
 1. Install [Tailscale](https://tailscale.com/download) on the computer running code-flow and your phone, tablet or second computer. Sign in to the same tailnet and connect both devices.
-2. Open **Settings → Remote access**, enable remote access and select **Tailscale · access anywhere**.
+2. Open **Settings → Connections → Share access**, enable remote access and select **Tailscale · access anywhere**.
 3. Code-flow detects the local Tailscale client and shows its connection status. If it is missing, signed out, awaiting approval or disconnected, follow the displayed instructions and select **Refresh Tailscale**. Detection also refreshes automatically.
 4. Once connected and listening, copy the link or scan the QR code on the other device. The link uses this computer's Tailscale IPv4 address and `CODEFLOW_REMOTE_PORT` (normally 4318). For full control, choose **Set up secure remote access → Use Tailscale → Get Tailscale certificate**. Enable HTTPS certificates in your tailnet DNS settings first. Once setup succeeds, turn on **Full control from remote devices** and use the new pairing link. No environment variables or application restart are needed.
 
@@ -96,7 +96,7 @@ Use the link on another device: connections from the server computer itself rema
 
 ### Set up HTTPS in Settings
 
-On the computer running Codeflow, open **Settings → Remote access**, enable remote access and select a network connection. Choose **Set up secure remote access**:
+On the computer running Codeflow, open **Settings → Connections → Share access**, enable remote access and select a network connection. Choose **Set up secure remote access**:
 
 - **Use Tailscale** requests a certificate for the connected computer's detected tailnet DNS name through `tailscale cert`. Tailscale HTTPS must already be enabled in your tailnet's DNS settings, and the current OS user must be allowed to request certificates. Codeflow never logs you in, elevates privileges or changes your tailnet configuration. The setup explains that the DNS name appears in public certificate transparency logs; the app remains private to your network. See [Tailscale HTTPS setup](https://tailscale.com/docs/how-to/set-up-https-certificates).
 - **Import certificate files** accepts a PEM certificate (including its chain) and unencrypted PEM private key. Enter the hostname or IP address your device will use. Codeflow checks the matching key, validity dates and certificate identity. The device must trust the issuer and resolve the hostname to this computer; importing does not install device trust or configure DNS.

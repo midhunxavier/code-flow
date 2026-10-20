@@ -1,4 +1,6 @@
 import { OutcomeMetrics } from "./experience.js";
+import { comparisonDraft } from "./workflow-ui.js";
+import { CompareDialog, startProblem } from "./composer.js";
 import { useEffect, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
 import { api, baseName, duration, fmtCost, fmtSize, fmtTokens, pct, post, showToast, STATUS_TEXT } from "./lib.js";
@@ -16,6 +18,9 @@ const PERIODS = { "7": 7, "30": 30, all: 0 } as const;
  */
 export function InsightsView({ group }: { group?: string }) {
   // The project you're in (or the runs in none), one repo, or everything.
+  const [comparing, setComparing] = useState(false);
+  const draft = comparisonDraft.value;
+  const comparisonProblem = !draft ? "Configure a task in New run first." : startProblem(patterns.value.find(p => p.id === draft.pattern), draft.roles) || (!draft.task.trim() ? "Describe a task in New run first." : "");
   const project = activeProject.value;
   const inProject = !!project || currentProject.value === NONE;
   // A repo is worth its own button when it isn't simply the whole project.
@@ -56,6 +61,8 @@ export function InsightsView({ group }: { group?: string }) {
   const groups = stats ? [...stats.groups].sort((a, b) => (a.id === group ? -1 : b.id === group ? 1 : 0)) : [];
   return (
     <div class="insights">
+      <details class="settings"><summary>Experiments</summary><div class="settings-body"><p class="help">Compare workflows against your current New run draft. Each selected setup starts a separate run and uses provider capacity.</p>{draft ? <p>{draft.task.split("\n")[0] || "No task in the current draft"}</p> : null}<button class="btn" disabled={!!comparisonProblem} title={comparisonProblem} onClick={() => setComparing(true)}>Compare setups…</button>{comparisonProblem ? <p class="help">{comparisonProblem} <a href="#/">Configure task</a></p> : null}</div></details>
+      {comparing && draft ? <CompareDialog base={{ ...draft, approvals: {} }} onClose={() => setComparing(false)} onStarted={group => { setComparing(false); route.value = { view: "insights", group }; }} /> : null}
       <div class="page-head ins-head">
         <div class="page-head-text">
           <p>What runs cost and how they went, per agent and per pattern.</p>
@@ -92,7 +99,7 @@ export function InsightsView({ group }: { group?: string }) {
       {stats && !stats.runs ? (
         <div class="ins-empty">
           <h2>No runs in this period</h2>
-          <p>Start one, or compare setups from the composer.</p>
+          <p>Start a run, or compare setups under Experiments above.</p>
         </div>
       ) : null}
       {stats && stats.runs ? (

@@ -25,6 +25,6 @@ export function TeamConnectionPicker() {
     </select></label>
     <p class="help">Each team keeps its own projects, account and repository mappings. Switching teams keeps other connections and running tasks active.</p>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
-    <a class="btn small" href="#/settings/team">Manage team connections</a>
+    <a class="btn small" href="#/settings/connections/sharing">Manage team connections</a>
   </section>;
 }
