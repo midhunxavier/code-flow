@@ -1,8 +1,12 @@
 # Project missions (preview)
 
+Enable the project-mission preview, create a mission, and review its first proposal before accepting an implementation cycle. Keep budgets and publication decisions explicit.
+
+## Start with a bounded preview
+
 A project mission connects an owner mission to one repository. Existing Automations supplies the clock, and existing Auto team runs do the investigation, implementation, checks and independent review. The team brings opportunities and verified drafts back to the owner. It never merges or publishes automatically.
 
-## Start a team
+## Create a mission
 
 1. Open a project and click **Enable project missions** in its Project missions section. The choice applies immediately to every project on this host and is saved across restarts; no startup flag is required. Auto team must also be permitted by the host (`CODEFLOW_AUTO_TEAM_ENABLED` defaults to enabled).
 2. Open a project that explicitly contains the repository. Select **Create a mission**.
@@ -40,7 +44,7 @@ The project page contains the full opportunity cards, cycle history, selection r
 
 Changing the mission makes previously ready/accepted results require new verification. Moving a result branch after review invalidates readiness. Generic run resumes, selective reruns, writer follow-ups, automatic PR-fix watchers and triage revision shortcuts are blocked for managed runs; use the project mission's revision controls.
 
-Standing team runs can be archived individually or in a sidebar selection. They cannot be deleted: cycle recovery, budgets and exact-result approvals retain their run history. Ordinary runs still support individual and bulk deletion. The mission editor's searchable model picker includes the same free-model filter and badges as the composer; its selections update only that team's mission.
+Project mission runs can be archived individually or in a sidebar selection. They cannot be deleted: cycle recovery, budgets and exact-result approvals retain their run history. Ordinary runs still support individual and bulk deletion. The mission editor's searchable model picker includes the same free-model filter and badges as the composer; its selections update only that team's mission.
 
 Existing notification destinations receive actionable cycle outcomes using their saved event/project scope. Child completions and no-op cycles do not produce duplicate alerts. Destinations remain opt-in.
 
@@ -82,3 +86,7 @@ The existing stream broker multiplexes `project-teams:<projectId>`. Generic run 
 Tests cover the full cycle, exact-commit approval, scope violations, failed checks, provider exclusions, budget limits, duplicate admission, durable receipt failure, restart adoption/ambiguity, cancellation, membership removal, feedback retention, storage corruption, restored authority, notifications, owner-only APIs, filesystem restrictions and shared browser transport.
 
 The initial synthetic ten-cycle pilot produced two ready drafts and eight no-ops across two fixture repositories. It establishes mechanics only. Real-provider quality, novelty, usefulness and owner acceptance have not been measured; keep the flag opt-in until that separate pilot is assessed.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

@@ -1,5 +1,7 @@
 # GitHub, review and shipping
 
+Review the result diff and its check evidence. Use the run’s publishing controls to merge locally or open a pull request; confirm the repository and target branch before applying the action.
+
 ## Review and ship
 
 **Review changes** opens a workspace containing the diff, verification evidence, commit-scoped human review coverage and review comments. Mark files reviewed in the file pane. Expand **Publish changes** to use the existing merge, PR and validation controls without leaving review. **Refresh changes** reloads the diff and coverage after an external branch update; coverage is reset when the commit changes.
@@ -107,3 +109,7 @@ Text from outside the repo is untrusted. Issue and PR titles and descriptions, c
 Without Docker, code-flow asks before running that person's tests on your machine; automations never do. **▶ Run app** on a locked-down run asks first too: the app is that code, running on your machine outside any container. The text itself — title, branch name and description — is quoted in a fence it can't break out of, marked as information rather than instructions. Conventions files are read from where the PR started, not from the PR.
 
 To run these jobs on a schedule or from webhooks, see [Automations](automations.md).
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

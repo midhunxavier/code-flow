@@ -1,4 +1,8 @@
-# Offline data maintenance
+# Backup and maintenance
+
+Create an encrypted backup before restoring or removing stored data. Read the offline requirements and inspect the retention preview before applying a maintenance operation.
+
+## Protect your local history
 
 Stop the code-flow server before running maintenance. Every operation against an existing data directory takes the same exclusive `server.lock` as the server and refuses to run while another server holds it. A restore writes a new directory and never merges into existing data.
 
@@ -81,3 +85,7 @@ Compaction previews savings unless `--apply` is supplied. It keeps the first and
 `readRunCheckpoint<T>(id)` returns `{ run, seq }` only when the version, checksum, run ID, steps, safe sequence number and source file identity match. Source identity includes length, nanosecond modification/change times, device and inode. A subsequent append, replacement, malformed or oversized cache, or missing file falls back to journal reconstruction. Reads are bounded to 16 MiB. Cache write failures update `checkpointHealth` and never reject an authoritative append or poison the write queue.
 
 Checkpoints speed up startup but are optional projections. JSONL logs and recovery journals remain the source of truth and are preserved until an explicit retention or compaction operation.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

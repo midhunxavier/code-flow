@@ -1,5 +1,7 @@
 # Review 0: Dynamic teams implementation plan
 
+> Engineering record. Status, measurements and decisions below describe the recorded implementation or review. For current usage, start with the [documentation library](README.md).
+
 Reviewed: `docs/dynamic-teams-implementation-plan.md`, uncommitted, dated 17 October 2026, written against `ee246c7` (the current `main`).
 
 Lens: the product promise the plan exists to serve.
@@ -165,3 +167,5 @@ Exit criteria: fake-agent run of the section 9 scenario minus restart-under-deli
 - Tight, well-structured, and unusually honest about unknowns. The invariants in 3.3, 3.5, 5.2 and 5.3 should be lifted verbatim into the architecture doc when any of this ships.
 - "Likely files" per phase is useful. Add "likely files removed or shrunk": the plan adds a great deal and retires nothing, and the supervisor pattern in particular should be slated to become a strategy under the new mode rather than a parallel implementation.
 - The `docs/README.md` link added alongside this plan describes it as proposed. Keep that word until Slice 0 has numbers.
+
+[Documentation library](README.md) · [Development guide](architecture.md)

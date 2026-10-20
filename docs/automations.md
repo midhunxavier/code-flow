@@ -1,20 +1,24 @@
 # Automations and away mode
 
-Set up a run in the composer (task, team, check, settings), then choose **Save as automation…** next to *Start run*. It runs unattended.
+Open Scheduling → Repeat for recurring work, Inbox for results that need attention, and Scheduling → Run once later for a single task that should start later. Keep the application running when a scheduled task is due.
 
-Open **Automations** from the sidebar or press **a** to manage schedules, webhooks and deferred runs. **Inbox** is a separate sidebar destination for questions, blocked work, failures and results. Older `#/settings/automations` links open the standalone Automations page.
+## Choose the right trigger
+
+Set up a run in the composer (task, team, check, settings), then choose **More run actions → Schedule… → Repeat**. It runs unattended.
+
+Open **Scheduling** from the sidebar or press **a** to manage recurring tasks, deferred runs, backlog processing and project missions. **Inbox** is a separate sidebar destination for questions, blocked work, failures and results. Older `#/settings/automations` links open the Scheduling page.
 
 ## Projects
 
 An automation's runs start in the [project](runs.md#projects) you were in when you saved it (from *All projects*, in its repository's project). If that project is deleted later, they start in the repository's project. Turning it off and on, or making a new webhook secret, keeps its project.
 
-**Automations** follows the project you're in (the project button next to its title picks it). It lists that project's automations. Inbox lists the results waiting for you. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The **Inbox** count in the sidebar counts attention items across projects, so nothing waiting for you is out of sight.
+**Scheduling → Repeat** follows the project you're in (the project button next to its title picks it). It lists that project's automations. Inbox lists the results waiting for you. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The **Inbox** count in the sidebar counts attention items across projects, so nothing waiting for you is out of sight.
 
 ## When it runs
 
 - at a time on chosen weekdays (e.g. weekdays at 07:00), or every *N* minutes (at least 5);
 - from a webhook;
-- or when you press **Run now** on the **Automations** page.
+- or when you press **Run now** on the **Scheduling → Repeat** page.
 
 The next time is saved, so restarting code-flow doesn't move it. A time missed while code-flow was closed or the computer asleep fires once when code-flow is back, if it's at most an hour late and today is still one of the schedule's days; otherwise it's skipped and the schedule moves on to its next time. A schedule never fires on a day you left out.
 
@@ -52,7 +56,7 @@ code-flow answers `202` at once (GitHub gives up on a delivery after 10 seconds)
 
 ## The inbox
 
-Automation and sweep results wait on the Automations page (with a count in the sidebar) and under *Needs you* at the top of the sidebar:
+Automation and sweep results wait in **Inbox**, with an attention count in the sidebar:
 
 - **Approve:** keeps the result. **Approve & open PR** also pushes the branch and opens a pull request. For a run that started from a pull request (a Dependabot PR, say), **Approve & push to PR #N** pushes the fix to that PR instead.
 - **Revise:** your note goes to the agent that wrote the code, in its own session. The result comes back to the inbox.
@@ -117,3 +121,7 @@ With HTTPS configured for **Tailscale** or **Wi-Fi**, you can turn on **Full con
 - Paired devices have owner control and can run commands on the computer. This pairing does not provide separate user identities or project roles.
 
 Automations live in `~/.codeflow/triggers.json` and the phone settings in `~/.codeflow/remote.json`. Both files are readable only by you, and are written whole (through a temporary file), so a crash can't leave half of one. One that can't be read is moved aside to `triggers.json.corrupt-<time>` (or `remote.json.corrupt-<time>`) and logged in `~/.codeflow/server.log`; code-flow then starts without those automations, or with phone access off, rather than write over it. Automations in it that can be read are kept, and one whose schedule can't be read is kept but turned off.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

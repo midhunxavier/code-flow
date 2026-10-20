@@ -1,5 +1,9 @@
 # GitLab and Bitbucket code workflows
 
+Configure the GitLab or Bitbucket connection, fetch the change into an isolated review workflow, and inspect the pinned result before commenting, pushing or opening a pull request.
+
+## Review on another code host
+
 Settings → Integrations → GitLab and Bitbucket code hosts provides explicit owner workflows for GitLab and Bitbucket Cloud. Jira, Linear and source-provider extensions remain read-only. No provider account is contacted in the fixture tests.
 
 Configure integrations with `CODEFLOW_INTEGRATIONS_JSON` or `CODEFLOW_INTEGRATIONS_FILE`:
@@ -36,3 +40,7 @@ Credentialed Git runs in a private temporary bare repository with no user/global
 The bounded `code-host-operations.json` ledger retains at most 200 explicit actions and safe identity/commit/run/branch facts. Unknown receipts are never silently evicted: if all slots are unresolved, new actions stop until the owner explicitly records manual inspection of one exact outcome. Inspection is labelled separately from provider confirmation and never replays the action. The ledger stores no tokens, comment bodies, tasks or executable callbacks. Claims are fsynced before remote mutation; interrupted or restored claims become unknown metadata, all server previews are lost, and there is no startup dispatch or automatic replay. Retention protects referenced run receipts. Encrypted restore also excludes executable extension caches and live identity/session credentials. Any custom filesystem policy blocks all code-host POST operations, and shared project sessions cannot access these owner-only routes.
 
 Provider protocol references: [GitLab merge requests](https://docs.gitlab.com/api/merge_requests/), [GitLab discussions](https://docs.gitlab.com/api/discussions/), [GitLab approvals](https://docs.gitlab.com/api/merge_request_approvals/), [GitLab external status checks](https://docs.gitlab.com/api/status_checks/), [Bitbucket Cloud pull requests](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/), [Bitbucket branch restrictions](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-branch-restrictions/), [GitLab HTTPS tokens](https://docs.gitlab.com/user/profile/personal_access_tokens/), [Bitbucket HTTPS access tokens](https://support.atlassian.com/bitbucket-cloud/docs/using-access-tokens/).
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

@@ -489,7 +489,7 @@ export function Rail() {
             <MenuItem on={showFilters} onClick={() => { close(); setRailCollapsed(false); setShowFilters(!showFilters); if (!showFilters) requestAnimationFrame(() => document.querySelector<HTMLButtonElement>("#rail-filters button")?.focus()); }}><Icon name="sliders" /><span>View and filter runs</span></MenuItem>
             <MenuItem on={view.archived} onClick={() => { close(); setRailView({ archived: !view.archived }); }}><Icon name="archive" /><span>{view.archived ? "Hide archived runs" : "Show archived runs"}</span><span class="rail-menu-meta">{archivedCount}</span></MenuItem>
             <MenuItem onClick={() => { close(); railOpen.value = false; shortcutsOpen.value = true; }}><Icon name="keyboard" /><span>Keyboard shortcuts</span><kbd class="rail-menu-meta">?</kbd></MenuItem>
-            <a class="pop-item" role="menuitem" href="https://github.com/midhunxavier/code-flow/blob/main/docs/README.md" target="_blank" rel="noreferrer" onClick={close}><span class="pi-main"><Icon name="help" /><span>Help & documentation</span><Icon name="external" class="rail-menu-meta" /></span></a>
+            <a class="pop-item" role="menuitem" href="/docs/" target="_blank" rel="noreferrer" onClick={close}><span class="pi-main"><Icon name="help" /><span>Help & documentation</span><Icon name="external" class="rail-menu-meta" /></span></a>
           </>}
         </Menu>
       </div>

@@ -1,5 +1,7 @@
 # Code Flow for VS Code
 
+Use the local VS Code integration to create tasks and inspect Code Flow results without leaving your editor. The Code Flow server must be running and authenticated before the extension can connect.
+
 Connect a local VS Code window to a running Code Flow server. Start a Safe solo task
 from the current saved file and selected text, inspect recent run states, open the
 full review in Code Flow, stop a running task, or open a result worktree in a new window.
@@ -46,3 +48,5 @@ then exercises that installed artifact's activation, command registration, token
 storage, task execution, refresh, token deletion and delayed connection responses.
 See [VS Code extension testing](https://code.visualstudio.com/api/working-with-extensions/testing-extension).
 No marketplace publishing or changes to the user's installed extensions are performed.
+
+[Documentation library](../../docs/README.md) · [API and CLI](../../docs/api.md) · [Getting started](../../docs/getting-started.md)

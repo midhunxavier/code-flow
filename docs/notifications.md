@@ -1,5 +1,9 @@
 # Outbound notifications
 
+Open Settings → Notifications, configure a destination and its scope, then inspect delivery history. Outbound destinations are opt-in and can disclose the event details selected for delivery.
+
+## Choose where alerts go
+
 Notifications require an explicitly configured destination and a saved opt-in for its events and project scope. New destinations start disabled. No account is connected and no destination can be created from the browser.
 
 Set `CODEFLOW_NOTIFICATIONS_FILE` to a server-side JSON file, or set `CODEFLOW_NOTIFICATIONS_JSON` to its contents:
@@ -33,3 +37,7 @@ The local outbox persists an event before sending, keeps at most 200 deliveries 
 The `Idempotency-Key` request header is the persistent delivery ID. Recipients should deduplicate it. Exactly-once delivery is not guaranteed: a timeout or crash can happen after a recipient accepts a message. A delivery interrupted while sending becomes an unknown-outcome failure on restart and requires an explicit retry. Slack incoming webhooks do not provide an application-level deduplication guarantee. After 2,000 newer event identities have displaced an old identity, replaying that old event may deliver it again.
 
 Changing the configured URL or protocol requires renewed opt-in. Disabling a destination or narrowing its scope cancels pending automatic deliveries, but cannot retract a request already in flight. Restoring an encrypted backup disables saved notification opt-ins and cancels pending or sending deliveries. Corrupt saved state leaves notifications unavailable and preserves the file for repair. Delivery state belongs to one server process; do not share its storage across multiple running servers.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

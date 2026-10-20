@@ -1,5 +1,7 @@
 # Dynamic teams, workflows, messaging, and memory
 
+> Engineering record. Status, measurements and decisions below describe the recorded implementation or review. For current usage, start with the [documentation library](README.md).
+
 Status: implementation complete, revision 3. P0–P8 are implemented, including the previously conditional asynchronous scheduler and live-tool bridge. Auto remains opt-in under an explicit evaluation/rollout gate. See the [user guide](auto-team.md) and [measured evidence and rollout decision](dynamic-teams-evaluation.md).
 
 Prepared 17 October 2026 against repository revision `ee246c7`. Revised against [Review 0](dynamic-teams-plan-review-0.md). Phase numbers below supersede the original ordering; the review remains a record of the original proposal.
@@ -455,3 +457,5 @@ These are architectural references, not dependencies on a vendor's internal team
 - Parent attachments, source trust and lockdown survive whole-team continuation. Reading private memory cannot silently publish it through live memory tools; provenance references are persisted separately from erasable bodies.
 - User memory feedback affects relevance for the exact revision, never trust. Synthetic seeded-memory evaluation measures retrieval plumbing; it does not claim human-rated usefulness.
 - Supervisor retains its public ID and saved-run behavior through shared decomposition/integration helpers. Other manual patterns retain their established behavior; moving them to Auto is not necessary to complete this plan.
+
+[Documentation library](README.md) · [Development guide](architecture.md)

@@ -1,5 +1,9 @@
 # Local API and command-line client
 
+Use the owner token with the local API or the bundled command-line client. Keep credentials out of repository files and shell history, and inspect an operation’s request and response contract before scripting mutations.
+
+## Use the authenticated client
+
 Use `npm run client -- --help` for the HTTP client. It requires the explicit
 `CODEFLOW_TOKEN` printed/configured by the server and accepts `CODEFLOW_URL` for
 another configured origin. It never reads agent login files. JSON files and
@@ -469,3 +473,27 @@ returned/visible group before retrying an interrupted request.
 A replay receipt's `passed` status means only that the expected visible text
 appeared after the recorded interactions. It is separate from Git verification;
 see [result experiences](application-improvements.md#result-first-product-experiences).
+
+## Documentation and help
+
+`GET /docs/` serves the bundled documentation without requiring a session; it contains only repository documentation. Page URLs use `/docs/<guide>.html`. Static files do not expose project state.
+
+`GET /api/docs-help` lists installed built-in CLI providers for the authenticated owner. `POST /api/docs-help` invokes the selected CLI with documentation excerpts:
+
+```json
+{
+  "agent": "claude",
+  "question": "How do I choose a workflow?",
+  "page": "patterns",
+  "settings": {"model": "sonnet"},
+  "history": []
+}
+```
+
+The response contains `answer` (plain text) and `sources` (guide IDs and titles). `page` is an optional guide ID; it is never a filesystem path. `history` accepts at most three `{question,answer}` pairs. The JSON body is limited to 64 KiB, questions to 4,000 characters and answers to 12,000. Settings accept a model and effort for the selected provider.
+
+The endpoint is owner-only on the main listener, subject to the existing origin checks and filesystem execution policy. It does not support ACP, extension providers, repository paths or remote/container execution. Closing the request aborts the turn. Two help requests can run at once; extra requests return 429. See [Ask code-flow](help.md) for execution and privacy boundaries.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

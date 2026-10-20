@@ -1,4 +1,8 @@
-# Local semantic memory review
+# Semantic claim review
+
+Open Project memory → Semantic claim review. Compare the cited revisions and applicability before deciding whether to edit either entry; findings do not change memory automatically.
+
+## Review conflicting guidance
 
 Project memory → **Advanced memory tools** → **Semantic claim review** compares supported facts with overlapping applicability. It identifies equivalent claims and potential contradictions with the exact source entry revisions, character offsets, evidence snippets and normalized values. Findings are suggestions for human review. Analysis never selects a winner, changes status, combines text or publishes guidance automatically.
 
@@ -25,3 +29,7 @@ Subjects use Unicode normalization, case/spacing normalization, a small noun nor
 Comparisons stay inside the already authorized repository and project. Private/deleted entries are excluded. Paths must intersect by exact path or directory ancestry; repository-wide entries overlap every path. Two branch-specific entries must name the same branch, and conflicting exact commit applicability is excluded. Source revision metadata is retained. Opposite supported facts inside one entry can also be flagged; repeated equivalent facts inside one entry are not listed as duplicate entries.
 
 Limits: 500 entries; 20,000 source characters per body; 12 claims per entry; 1,000 claims total; 50,000 candidate comparisons; 100 findings; 512-character evidence snippets; 8 KiB-character structured blocks. Offsets refer to UTF-16 positions in the source body, as used by the browser editor. Every truncation and unsupported fact is reported. The feature runs locally without provider quota, network downloads, shell execution or automatic memory mutation.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

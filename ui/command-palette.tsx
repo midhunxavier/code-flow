@@ -18,6 +18,7 @@ export function CommandPalette() {
   const [active, setActive] = useState(0);
   const actions: Command[] = [
     { id: "new", label: "New run", detail: "Actions", icon: "plus", run: () => (route.value = { view: "composer" }) },
+    { id: "docs", label: "Help & documentation", detail: "Guides, search and Ask code-flow using your local CLI", icon: "help", run: () => { window.open("/docs/", "_blank", "noopener"); } },
     { id: "settings", label: "Settings", detail: "Preferences, agents and remote connections", icon: "sliders", run: () => (route.value = { view: "settings" }) },
     ...SETTINGS_SECTIONS.filter(section => !["workspace", "automations", "insights"].includes(section.id)).map((section): Command => ({ id: `settings:${section.id}`, label: section.label, detail: `Settings · ${section.keywords}`, icon: section.icon, run: () => (route.value = { view: "settings", section: section.id }) })),
     { id: "inbox", label: "Inbox", detail: "Questions, failures and results needing review", icon: "bell", run: () => (route.value = { view: "inbox" }) },

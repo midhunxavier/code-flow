@@ -1,50 +1,72 @@
-# code-flow docs
+# Your agents. A clear path forward.
 
-- [Getting started](getting-started.md): install, sign in, your first run, giving agents context, models and effort, worktrees and branches.
-- [Team patterns, checks and limits](patterns.md): manual patterns, Auto roles, and the loop code-flow runs around the agents.
-- [Auto team](auto-team.md): dynamic team creation, dependency workflows, member communication, private/team/project memory, and recovery.
-- [Runs](runs.md): the run view, talking to a running team, replies, projects, the side panel (chat, files, terminal, browser, notes), restarts and resume, Insights.
-- [GitHub, review and shipping](github.md): review and merge results, start from issues and PRs, review councils, PR follow-through, untrusted text.
-- [Automations and away mode](automations.md): schedules, webhooks, the inbox, Docker isolation, the phone view and direct Tailscale access.
-- [Standing project teams](project-teams.md): recurring repository discovery, bounded implementation, owner decisions and recovery.
-- [Configuration](configuration.md): `.codeflow/config.json`, permissions, health, environment variables.
-- [Security, subscriptions and caveats](security.md): how the CLIs and their logins are used, what runs where, known limits.
-- [Verification profiles](verification.md): required gates, baseline/flaky diagnosis, requirements, human review and merge-target checks.
-- [API and CLI](api.md): authenticated versioned operations and the local HTTP client.
-- [Agent containers](agent-containers.md): explicit images, authentication volumes, filesystem mounts and cancellation.
-- [Service launch profiles](launch-profiles.md): named dependent services, readiness, logs and cleanup.
-- [Dependency discovery](dependency-discovery.md): explicit Git, provider, terminal, browser and Docker readiness checks.
-- [Selective task reruns](task-reruns.md): pinned baselines, downstream resets and fresh final verification.
-- [Deferred starts](deferred-runs.md): durable start conditions, quota windows and ambiguous-launch recovery.
-- [Context inspection](context-inspection.md): folder previews, explicit input budgets and recorded measurements.
-- [Project conventions](project-conventions.md): private version history and guarded publication to committed instructions.
-- [Commit comparison and revert](checkpoint-review.md): complete comparisons and reviewed staged inverse changes.
-- [Review inbox](review-inbox.md): grouped and prioritized attention across manual and unattended runs.
-- [Code intelligence](code-intelligence.md): isolated JavaScript/TypeScript symbol and reference resolution.
-- [Architecture explorer](architecture-explorer.md): static imports, packages, cycles and directory boundaries across six languages.
-- [Semantic memory claims](memory-claims.md): bounded duplicate/contradiction evidence with source revisions and overlapping applicability.
-- [Shared projects](shared-projects.md): local accounts with viewer, reviewer, contributor and maintainer roles, scoped results, reviews and immediate revocation.
-- [Team collaboration](team-collaboration.md): a shared board of tasks on a team server, runners on each teammate's own computer, hand-over checkpoints and reviews.
-- [SSH projects](ssh-projects.md): connect to a server, open its repositories, and run the full workspace remotely.
-- [SSH workers](remote-workers.md): explicit remote targets, source/result bundles, durable receipts and recovery.
-- [Coordinated changes](coordinated-changes.md): pinned dependencies and per-repository validation/shipping.
-- [GitHub review threads](github-review-threads.md): inspect, reply, resolve and reopen real review threads with stale-state checks.
-- [GitLab and Bitbucket code workflows](code-hosts.md): fetch, isolated review, comments, guarded pushes, PR creation and pinned Git merges.
-- [Provider/workflow extensions](extensions.md): explicit trusted bundles, API negotiation and immutable version pins.
-- [Provider compatibility](provider-compatibility.md): continuous official CLI version/help probes and separate protocol fixtures.
-- [Accessibility](accessibility.md): browser audits, keyboard/focus behavior, contrast and mobile acceptance.
-- [Run storage](run-storage.md): streamed recovery and bounded archived detail caches.
-- [Filesystem policies](filesystem-policy.md): literal per-project allow/deny rules and conservative execution pauses.
-- [Filtered Docker tasks](filtered-tasks.md): allowed-file snapshots, private runtime provisioning and explicit review-branch imports.
-- [VS Code integration](../integrations/vscode/README.md): local authenticated task creation, run inspection and result worktrees.
-- [External sources](external-sources.md): read-only GitLab, Bitbucket, Linear and Jira imports.
-- [Notifications](notifications.md): opt-in outbound destinations, scopes, retries and delivery history.
-- [Backup and maintenance](maintenance.md): encrypted recovery, safe restore, retention, compaction and startup checkpoints.
-- [Application improvement checklist](application-improvements.md): implemented behavior, partial coverage and remaining roadmap work.
-- [Architecture and development](architecture.md): the code layout, adding patterns and agents, the dev server, tests, what's next.
-- [Dynamic teams implementation plan](dynamic-teams-implementation-plan.md): architecture, completed P0–P8 packages, and evaluation gates.
-- [Dynamic team implementation evidence](dynamic-teams-evaluation.md): automated checks, real CLI trials, comparison measurements and the rollout decision.
-- [Review 1 of the implementation](dynamic-teams-implementation-review-1.md): what was fixed, what remains open, and what to avoid.
-- [Review 0 of the plan](dynamic-teams-plan-review-0.md): the original plan review that re-sequenced the work.
+Code Flow brings coding CLIs into one workspace for planning, implementation, review and verification. Start with a small task, follow the evidence, and decide when the result is ready to ship.
 
-Back to the [README](../README.md).
+<div class="cards">
+<a href="getting-started.md"><strong>Start your first run ↗</strong><span>Install the app, connect a CLI and take a task from prompt to review.</span></a>
+<a href="patterns.md"><strong>Choose a workflow ↗</strong><span>Plan and build, test first, compare candidates or ask a team to investigate.</span></a>
+<a href="runs.md"><strong>Find your way around ↗</strong><span>Follow agent activity, ask questions and open files, changes and terminals.</span></a>
+<a href="help.md"><strong>Ask code-flow ↗</strong><span>Get guidance from these docs using your configured CLI in the local app.</span></a>
+</div>
+
+## From task to reviewed result
+
+1. **Describe the outcome.** Choose a repository and add the context the agents need.
+2. **Choose the team.** Assign roles yourself or review a proposed Auto-team plan.
+3. **Follow the work.** Answer questions, inspect changes and watch the checks.
+4. **Review and ship.** Read the evidence before merging or opening a pull request.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/run-dark.png">
+  <img src="images/run-light.png" alt="The Code Flow workspace with a completed demo run and review actions." width="100%">
+</picture>
+
+*Captured from the local application with demo agents. See [screenshot provenance](documentation.md#screenshots).*
+
+## Work with agents
+
+- [Team patterns](patterns.md) · [Auto team](auto-team.md) · [Project missions](project-teams.md)
+- [Runs and the workspace](runs.md) · [Review inbox](review-inbox.md) · [Verification](verification.md)
+- [GitHub and shipping](github.md) · [GitHub review threads](github-review-threads.md)
+- [Selective task reruns](task-reruns.md) · [Deferred starts](deferred-runs.md)
+
+## Make the workspace yours
+
+- [Configuration](configuration.md) · [ACP agents](acp-agents.md) · [Context inspection](context-inspection.md)
+- [Project conventions](project-conventions.md) · [Checkpoints and reversions](checkpoint-review.md)
+- [Service launch profiles](launch-profiles.md) · [Code intelligence](code-intelligence.md) · [Architecture explorer](architecture-explorer.md)
+- [Project memory and knowledge graph](memory-storage.md) · [Semantic claim review](memory-claims.md)
+- [Coordinated repository changes](coordinated-changes.md)
+
+## Connect and collaborate
+
+- [Team collaboration](team-collaboration.md) · [Shared project accounts](shared-projects.md)
+- [SSH projects](ssh-projects.md) · [Remote workers](remote-workers.md)
+- [GitLab and Bitbucket workflows](code-hosts.md) · [External sources](external-sources.md)
+- [Automations and remote access](automations.md) · [Notifications](notifications.md)
+- [VS Code integration](../integrations/vscode/README.md)
+
+## Operate safely
+
+- [Security and execution boundaries](security.md) · [Filesystem policies](filesystem-policy.md)
+- [Agent containers](agent-containers.md) · [Filtered Docker tasks](filtered-tasks.md)
+- [Dependency discovery](dependency-discovery.md) · [Backup and maintenance](maintenance.md)
+
+## Build and extend
+
+- [Architecture and development](architecture.md) · [API and CLI](api.md) · [Extensions](extensions.md)
+- [Provider compatibility](provider-compatibility.md) · [Accessibility](accessibility.md)
+- [Performance](performance.md) · [Run storage](run-storage.md)
+- [Documentation and GitHub Pages](documentation.md)
+
+## Engineering records
+
+These documents record implementation decisions and evidence at a particular point in time. Use the guides above for current product instructions.
+
+- [Application improvement program](application-improvements.md)
+- [Dynamic-team evaluation](dynamic-teams-evaluation.md) and [implementation plan](dynamic-teams-implementation-plan.md)
+- [Implementation review](dynamic-teams-implementation-review-1.md) and [original plan review](dynamic-teams-plan-review-0.md)
+- [Standing-team implementation plan](project-teams-implementation-plan.md)
+- [Measured performance](performance-results.md)
+
+[Project README](../README.md) · [Getting started](getting-started.md)

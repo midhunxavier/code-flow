@@ -1,4 +1,8 @@
-# Bounded run recovery and archived details
+# Run storage
+
+Archive completed work to reduce retained detail in memory. Open an archived run to load its full evidence; archival caches do not replace the durable event log or delete worktrees by themselves.
+
+## Understand archived history
 
 The append-only run event log and execution journal remain the source of truth. Startup recovers at most four runs concurrently, consuming fallback logs one record at a time. Recovery retains the latest run snapshot and latest state of each step; provider transcripts are read only when that run’s history is requested. It no longer builds an array containing every historical event log. A recovery record has a 64 MiB bound; exceeding it fails recovery visibly instead of silently dropping an ID.
 
@@ -15,3 +19,7 @@ History keeps every run ID and count. Cursor ordering uses creation time and run
 Reviewed retention manifests include both cold projection files when deleting their owner run. Their recent cache-generation time does not reset the original run’s retention age. Offline log compaction removes the derived cold projections so the next start rebuilds them. The normal backup and filesystem-policy boundaries continue to apply to these files.
 
 This bounds retained full archived metadata and recovery batches. The compact index still grows with the number of recorded runs, and active/resumable runs remain in memory deliberately. The current UI reads bounded transcript pages directly by byte offset. Legacy stream clients and full exports can still request complete event history. Search uses an in-memory index, not a database. See [Performance and resource boundaries](performance.md) for limits, diagnostics and benchmarks.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

@@ -1,6 +1,6 @@
 import "./check-node.mjs";
 import { build } from "esbuild";
-import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, readdir } from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
@@ -12,6 +12,9 @@ export async function buildHost() {
     banner: { js: 'import { createRequire as __createRequire } from "node:module"; import { fileURLToPath as __fileURLToPath } from "node:url"; import { dirname as __dirnameOf } from "node:path"; const __filename = __fileURLToPath(import.meta.url); const __dirname = __dirnameOf(__filename); const require = __createRequire(import.meta.url);' } });
   const files = { "src/server.mjs": result.outputFiles[0].text };
   for (const path of ["public/index.html", "package.json", "src/preview-overlay.js", "src/team-tool-client.mjs", "scripts/pty.py"]) files[path] = await readFile(resolve(root, path), "utf8");
+  for (const name of (await readdir(resolve(root, "public/docs"))).sort()) {
+    if (/^[a-z\d-]+\.(?:html|css|js|json|txt)$/.test(name)) files[`public/docs/${name}`] = await readFile(resolve(root, "public/docs", name), "utf8");
+  }
   const manifest = JSON.parse(await readFile(resolve(root, "public/assets.json"), "utf8"));
   if (createHash("sha256").update(files["public/index.html"]).digest("hex") !== manifest.htmlHash) throw new Error("UI changed during packaging; retry the build after it finishes");
   for (const name of manifest.files.sort()) {

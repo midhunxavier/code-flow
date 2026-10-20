@@ -1,5 +1,9 @@
 # GitHub review threads
 
+Inspect the actual GitHub review thread and its current revision before replying or changing its resolved state. Refresh a stale thread before retrying an action.
+
+## Work through PR feedback
+
 Runs started from a GitHub pull request and result branches with an opened pull request show a **GitHub review threads** disclosure. It reads actual GraphQL thread IDs, diff sides, line ranges, original locations, outdated flags, resolution state, authors and replies. This complements conversation comments and review summaries; a REST root-comment ID is not used as a resolution thread ID.
 
 GitHub discussion is untrusted reference material. Comments are rendered as plain text, credential-like values are redacted and shortened bodies are labeled. Reading or resolving a thread does not send its content to an agent, approve a pull request or mark local checks and requirements complete.
@@ -21,3 +25,7 @@ The application uses the owner’s installed `gh` login against the explicit hos
 `POST` with `{action:"resolve",snapshotId,threadId,expectedHead,expectedRevision,resolved:true|false}` performs one explicit resolution action. A stale/foreign/expired snapshot, changed PR/thread or incomplete comments returns 409; missing GitHub permission returns 403; malformed requests return 400. A failed or ambiguous remote mutation returns 502 with instructions to refresh. A confirmed action returns `{applied:true,refreshRequired:true,thread?,warning?}`. Any old snapshot for that PR is invalidated before mutation.
 
 Automated tests use injected GraphQL and a fake `gh` process only. Browser acceptance covers stale-reply rejection, refresh, resolve and reopen, forged snapshot rejection and separation from local verification. No live GitHub mutations were performed during development.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

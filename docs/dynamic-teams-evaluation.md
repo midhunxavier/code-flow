@@ -1,5 +1,7 @@
 # Dynamic teams: implementation evidence and rollout decision
 
+> Engineering record. Status, measurements and decisions below describe the recorded implementation or review. For current usage, start with the [documentation library](README.md).
+
 Recorded 17 October 2026 for the P0–P8 implementation on top of `main` at `8cb364143716a3feda3edd12e7fa0a310c92ecf5`. The implementation is described in the [plan](dynamic-teams-implementation-plan.md) and [Auto team guide](auto-team.md). The [machine-readable evidence](evaluations/dynamic-teams-2026-10-17.json) preserves the trial reports, limitations, assessment and explicit rollout decision.
 
 **Decision: keep Auto experimental and opt-in.** All implementation packages are delivered. The evidence supports exercising the feature with bounded budgets; it does not support replacing Supervisor by default. Earlier unsuccessful trials are retained. A successful final trial does not erase them.
@@ -101,3 +103,5 @@ npm run evaluate:teams -- --real --confirm --runs 1 --providers codex,claude --m
 Use a fresh output directory for each invocation. `--real` consumes signed-in CLI quota; ordinary tests use fakes. The runner saves immutable measurement reports and source runs under its isolated directory. Optional `--register-home DIR` copies measurement reports into another installation without copying transcripts or changing rollout. Generated fixtures and private CLI transcripts are not committed with this evidence.
 
 The recorded decision selects all three real development comparisons, including the failures, and stays experimental. It was written into an isolated evaluation store and copied into the evidence artifact; the user's normal app configuration was not changed. The app starts at experimental in the absence of a separate explicit decision. Beta/default changes require a written rationale and qualifying real reports through the rollout API/UI; fake runs cannot qualify them, and since review 1 eligibility is judged over every real report in the store, not only the cited ones. The stage is a recorded label shown in Insights and used as a composer default; the only switch that changes whether Auto teams can start is `CODEFLOW_AUTO_TEAM_ENABLED`. More representative tasks, verified multi-worker runs, meaningful memory feedback and lower observed coordination overhead are needed before promotion.
+
+[Documentation library](README.md) · [Development guide](architecture.md)

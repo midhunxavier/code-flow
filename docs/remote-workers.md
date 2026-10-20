@@ -1,5 +1,9 @@
 # Remote agent workers
 
+Provision and verify a worker before assigning it work. Keep source and result receipts available so interrupted connections can be reconciled without launching duplicate work.
+
+## Choose an execution target
+
 An explicitly registered SSH worker runs agent turns in disposable Git worktrees on another machine. The application transfers an exact commit, the turn prompt and regular files from the run’s `.codeflow-context` folder. Official agent CLIs use the worker’s own login. SSH agent forwarding, environment forwarding, port forwarding and automatic host-key acceptance are disabled.
 
 This is an operator provisioned service: it does not discover hosts, install remote dependencies, copy local provider credentials or automatically fetch repositories from the network. Commands and checks outside agent turns still run where the application server runs. Choose the remote worker in the composer’s advanced controls.
@@ -82,3 +86,7 @@ Source and result transfers are each limited to 64 MiB, with binary Git output c
 The automated acceptance fixture launches the standalone worker in a separate process through an injected SSH transport. It exercises the official adapter against a fake CLI, source/context transfer, bundle import, read-only rejection, private capability ownership, restart recovery, dropped transport, cancellation, tampered bundles and changed local heads. No provider quota or external messages are used.
 
 An additional opt-in acceptance test passed over real encrypted loopback OpenSSH: a temporary unprivileged daemon bound to 127.0.0.1, temporary host/client keys and isolated ssh -F configuration, the bundled worker process, a fake CLI, exact source transfer, result import and receipt recovery. Run it with `CODEFLOW_TEST_LOOPBACK_SSH=1 npx tsx --test test/remote-workers-ssh.test.ts`. It never modifies user SSH configuration or system settings, and reports a skip if unprivileged sshd is unavailable. No external SSH host or live provider login was tested. Validate those on an explicitly configured host before relying on unattended work. Container inventory uses an injected Docker fixture; an actual Docker worker image was not exercised in this acceptance run.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

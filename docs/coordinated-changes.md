@@ -1,6 +1,10 @@
-# Coordinated repository changes
+# Coordinated changes
 
-Open **Settings → Workspace → Coordinated changes**, choose a project containing 2–10 local Git repositories and create one task per repository. Select a provider and verification command for each task, and mark its explicit dependencies. Commands left blank use the repository configuration. The graph must be acyclic and every repository must be distinct. This is local coordination; it does not clone remote repositories or supply credentials.
+Use coordinated changes when one repository depends on another repository’s result. Pin the dependency inputs, inspect each repository’s verification, and review publishing separately for each result.
+
+## Plan across repositories
+
+Open **Project → Repository tools → Coordinated changes**, choose a project containing 2–10 local Git repositories and create one task per repository. Select a provider and verification command for each task, and mark its explicit dependencies. Commands left blank use the repository configuration. The graph must be acyclic and every repository must be distinct. This is local coordination; it does not clone remote repositories or supply credentials.
 
 Creation pins each authorized canonical repository, its Git metadata ownership and starting commit. Linked worktrees sharing one underlying repository cannot masquerade as separate shipping targets. Replaced repository metadata blocks dispatch and result validation. Tasks execute in separate managed workspaces with safe trust, disabled native approval waits, no inherited uploads or parent-run sessions, and no copied ignored files. The interface defaults to 20 agent invocations and 15 minutes per task. The service caps each task at 50 calls, 60 minutes, two million tokens and $100 API-equivalent usage, with defaults of 500,000 tokens and $25. These are usage limits, not subscription charges. Existing external-source trust restrictions continue to apply at launch.
 
@@ -25,3 +29,7 @@ Git repositories do not share an atomic transaction. A successful merge in one r
 Normal restart converts claimed launches and shipping operations to unknown outcomes and does not repeat them. Verified dependency facts are checked again before further work. Encrypted backup restore disables all implicit coordinated dispatch while retaining claim and shipping metadata for investigation. Review restored jobs explicitly before any retry. Private remote-worker capability receipts remain excluded from backups and restore.
 
 The versioned authenticated HTTP interface uses `/api/coordinated-changes`: create/list jobs, cancel, explicitly retry tasks, link exact unknown runs, preview a shipping matrix, merge one repository and recover a proven unknown shipping receipt. Mutating existing jobs requires their current revision. The coordinator's callback interface is defined in `src/repo-coordination.ts`; callbacks must supply actual authorization, durable engine receipts, verification evidence and compare-and-swap merging. A callback's success is not synthetic verification evidence.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

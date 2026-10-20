@@ -1,5 +1,7 @@
 # Security, subscriptions and caveats
 
+Before starting work, decide whether you trust the repository, which agent permissions it needs, and where its checks should run. Read the boundaries below before enabling remote access or Full access.
+
 ## How code-flow uses your subscriptions
 
 code-flow does not read agent login files. Each adapter launches the vendor's **official, unmodified CLI** in headless mode, and that CLI uses its own login. Explicit external integrations and notification destinations use server-side environment credential references; those variables are stripped from child processes and filtered from exports:
@@ -108,3 +110,13 @@ A broken worktree is never mistaken for your checkout. Worktrees live inside you
 Auto team's [memory boundary](auto-team.md#three-memory-scopes) keeps source trust separate from execution permissions. Agent messages cannot authorize actions. Private memory is isolated in context assembly and APIs, not from fully trusted local processes. Untrusted/unknown project-memory proposals require explicit revision approval; source provenance follows derived memories. Deleting a memory removes it from retrieval; entries written with it in context keep their own text and inherit its provenance. Deletion does not touch source run transcripts, provider conversations or backups.
 
 Auto team live collaboration uses a separate loopback bridge and an expiring capability for a single run/member/attempt. The general API token is never delegated. Credentials are kept in mode-0600 temporary files, revoked after the turn and excluded from prompts, logs and arguments. Members run as the same user, so a member with a shell could read another member's credential in the brief window before the bridge client deletes it; such a capability is scoped to that member's attempt, never to the application token or to you. Claude turns receive the bridge with `--strict-mcp-config`, so your own and the repository's MCP servers are not loaded in Auto team turns. Every mutation rechecks the active assignment and uses runtime-derived provenance. Collaboration does not widen the CLI's existing filesystem or network permissions. Native nested agents are disabled for supported Claude/Codex team turns; unsupported capabilities stay explicit. See [Auto team](auto-team.md#adapter-capabilities).
+
+## Documentation assistant
+
+The local documentation assistant uses the owner's installed built-in CLI in a disposable empty Git directory with read-only, Safe adapter settings. It receives bounded documentation excerpts and the question/conversation supplied by the browser. Code Flow does not copy a project, run transcript or credential file into the help directory. Provider-level configuration and hooks still belong to the CLI trust boundary; the “do not use tools” prompt is not an OS isolation mechanism.
+
+The endpoint inherits owner authentication, origin validation and the global filesystem-policy pause. Shared accounts and runner credentials cannot invoke it. Answers render as text and source links are selected from known guide IDs. GitHub Pages hosts static guides only and never probes localhost for an assistant. Read [Ask code-flow](help.md) for retention, quota, cancellation and limits.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

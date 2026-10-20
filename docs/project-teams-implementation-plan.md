@@ -1,5 +1,7 @@
 # Standing project teams implementation plan
 
+> Engineering record. Status, measurements and decisions below describe the recorded implementation or review. For current usage, start with the [documentation library](README.md).
+
 Status: implemented as an opt-in preview on 19 October 2026, synchronized with `origin/main` at `7933ecf` before PR review. The requirements below retain the design context. The implementation record here and [the operating guide](project-teams.md) describe the implemented interfaces and deliberate initial boundaries. Real-provider usefulness remains an unmeasured rollout gate.
 
 ## Implementation record
@@ -511,3 +513,5 @@ The implementation is complete when this path works alongside the failure/recove
 - A later CI run reproduced the shared-project Chrome teardown stall after all six tests passed. That fixture now owns Chrome through `BrowserServer`, terminates the owned browser process during teardown, and waits for bounded server shutdown before deleting its files. Shared-project and SSH browser files pass together (seven tests), and typecheck passes. An isolated SSH fixture connection failure also passes on local retry; it remains covered by both complete CI browser jobs.
 - Synthetic pilot: ten cycles across two isolated fixtures; four child launches, 14 observed fake CLI calls, two verified drafts and eight no-ops. The redacted measurement summary is [saved here](evaluations/project-teams-synthetic-2026-10-19.json).
 - Real CLI/provider quality, real product usefulness and owner acceptance have not been measured. These remain explicit rollout gates, rather than inferred from synthetic output.
+
+[Documentation library](README.md) · [Development guide](architecture.md)

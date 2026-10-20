@@ -1,5 +1,7 @@
 # Architecture and development
 
+Use `npm run dev` for UI work without provider quota. Read the source layout below, then run type checking and the tests relevant to your change. The documentation site shares the app’s theme and builds alongside the UI.
+
 ## Layout
 
 ```
@@ -8,7 +10,7 @@ ui/*.tsx                 UI: Preact + TypeScript, compiled against the server's 
                           · project: a project's page · side: the side panel, its files and notes · side-chat, changes, terminal, browser: its other tabs
                           · panel-bits: what the tabs share (folders, the strip of open sessions, menus))
 ui/bits.tsx              small shared pieces: agent tags, the Markdown renderer, QR codes
-ui/collab-*.tsx          the Team page: the board and its inbox (collab-board), a task with its attempt, checkpoints, reviews and discussion (collab-task), Settings → Team (collab-settings); collab-state.ts holds their signals and API helpers
+ui/collab-*.tsx          the Team page: the board and its inbox (collab-board), a task with its attempt, checkpoints, reviews and discussion (collab-task), Settings → Connections → Share access → People (collab-settings); collab-state.ts holds their signals and API helpers
 ui/styles.css, ui/fonts  the stylesheet (the paper theme, light and dark) and its font (Inter; licence included)
 ui/theme.ts              light or dark: follows the system until you pick one with the top bar's theme button
 scripts/build-ui.mjs     builds hashed ESM chunks and CSS, then atomically publishes public/index.html (npm start builds it)
@@ -155,3 +157,15 @@ A live tool command and its receipt are fsynced together before acknowledgement.
 The scoped loopback bridge is separate from the user API and its bearer token. Official adapters receive a temporary stdio MCP configuration for supported turns. Memory tools inherit the active member, project, task and source provenance from the engine. Native spawning controls, sandbox support and nested usage limitations are exposed through the capability inventory. Supervisor shares decomposition/integration primitives while retaining its public ID and historical replay identities.
 
 See [Performance and resource boundaries](performance.md) for the paged UI stream, lazy assets, worker reuse, storage ordering, diagnostics and load benchmark.
+
+## Documentation system
+
+`scripts/build-docs.mjs` renders the Markdown guides into `public/docs` for the local application and `dist/docs` for static hosting. The build reads the theme/font section from `ui/styles.css`, so documentation colors and typography follow the app. `docs/site` contains the navigation groups and the small browser layer for search, appearance and help. The application menu and command palette both link to `/docs/`.
+
+`src/docs-help.ts` serves the local files and runs bounded, owner-authenticated CLI questions using the same provider adapters as the application. Source selection is deterministic local keyword retrieval; there is no embedding service or hosted AI backend. Static builds omit the local capability marker. The host packager includes the documentation's UTF-8 assets, with screenshots/fonts embedded in the generated files.
+
+See [Documentation and GitHub Pages](documentation.md) for authoring, preview, screenshot capture and deployment. `npm run test:docs` checks guide links and the help service; `test/e2e/docs.e2e.ts` exercises local and static browser behavior.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

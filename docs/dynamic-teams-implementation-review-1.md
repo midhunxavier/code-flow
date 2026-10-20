@@ -1,5 +1,7 @@
 # Review 1: the dynamic teams implementation
 
+> Engineering record. Status, measurements and decisions below describe the recorded implementation or review. For current usage, start with the [documentation library](README.md).
+
 Reviewed: commits `2cf0736` (Add dynamic agent teams with durable collaboration and scoped memory) and `dfd752d`, on top of `8cb3641`, together with the evidence document `dynamic-teams-evaluation.md`. About 8,600 lines across 80 files: the Auto team pattern and plan model, the event scheduler, the mailbox, the memory store, the live tool bridge and its adapters, the evaluation runner and rollout store, the UI, and the documentation.
 
 Method: four independent read-throughs (runtime and scheduler; memory store and trust boundary; live bridge, adapters and credentials; evaluation, rollout and documentation claims) plus a UI pass. Suspected defects were reproduced with scripts or tests before they were counted. The evidence JSON was checked number by number against the document. Everything marked **fixed** below was changed in this review and is covered by a test; everything marked **open** is not.
@@ -105,3 +107,5 @@ Keep Auto team experimental and opt-in, as the evidence document already decides
 | Memory cascade, cap and reference-limit reproductions | executed before the fixes; covered by tests after |
 | Overlay cost benchmark | executed before the fix (36 s per call at 4,096 pending commands) |
 | Real CLI probes (`claude --help`, `codex mcp get`, `codex features list`) | executed against the installed CLIs; claims in `auto-team.md` about them hold |
+
+[Documentation library](README.md) · [Development guide](architecture.md)

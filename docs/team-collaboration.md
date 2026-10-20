@@ -1,10 +1,14 @@
 # Team collaboration
 
+Connect each teammate’s computer as a runner for its local repositories and CLI logins. Use explicit host-execution or terminal grants only when teammates should work on the team server itself.
+
+## Choose where work runs
+
 Team collaboration lets the people who work on a project share one **team board** of tasks and hand work between their computers. One ordinary code-flow instance acts as the **team server**: teammates reach it over HTTPS through Tailscale or another network and sign in with the existing [shared project accounts](shared-projects.md). Each teammate's own code-flow installation can be linked to that server as a **runner** ("this computer"): it executes board tasks locally, in a Git worktree, with that person's own agent CLIs and logins; publishes bounded progress and a final **hand-over checkpoint** (a verified Git bundle plus structured context) to the board; and can hand the task over to a teammate, who continues from the checkpoint with any agent. Reviews attach to checkpoint commits.
 
 The team server never commands another machine. In the linked-runner workflow every connection is made outbound, from a teammate's computer to the server; execution starts from that computer's own code-flow, by its owner; and nothing on the server can start, steer or stop a run elsewhere. The server holds the board, the checkpoints and who is doing what. The work happens where the agents and their logins already are.
 
-Vocabulary in this document: *team* and *teammates* are people, not the agents' [Auto team](auto-team.md); a *board task* is an entry on the team board, not an Auto-team task; a *hand-over checkpoint* is a published Git bundle, not one of the [commit checkpoints](checkpoint-review.md) under **Settings → Workspace → History**; a *runner* is a teammate's own code-flow, not an [SSH worker](remote-workers.md). In the code and the tests the feature is called `collab`.
+Vocabulary in this document: *team* and *teammates* are people, not the agents' [Auto team](auto-team.md); a *board task* is an entry on the team board, not an Auto-team task; a *hand-over checkpoint* is a published Git bundle, not one of the [commit checkpoints](checkpoint-review.md) under **Project → Repository tools → History**; a *runner* is a teammate's own code-flow, not an [SSH worker](remote-workers.md). In the code and the tests the feature is called `collab`.
 
 Deliberately absent in this version: live pairing in the same terminal; moving a provider's live session between machines; automatic merging of combined results (fetching checkpoints into local branches and the existing merge and verification flows is the integration path); issue-tracker links; the server pushing anything to teammates' machines. Opt-in host tasks and individual interactive terminals for shared users are described below.
 
@@ -222,3 +226,7 @@ No real Tailscale network, second physical machine, TLS certificate or real prov
 ### Selecting connections through the owner API
 
 `GET /api/team-link/connections` lists saved connection IDs and public connection state, including `local`. `POST /api/team-link/connect` adds a server and returns its ID. Scope `/api/team/*` and `/api/team-link/*` calls with `?teamConnection=<id>` or the `X-Codeflow-Team` header; this selector is consumed locally and is never sent to another server. Downloads use the query form. `DELETE /api/team-link?teamConnection=<id>` removes that connection. An unknown explicit ID returns 404; an omitted selector with multiple remote connections returns 409 rather than choosing a team. With one remote connection, unscoped clients continue to use it; with none, they use the local board. Shared accounts and runner credentials always access the receiving server's own board and cannot select the owner's other connections. The owner event stream uses `team:<connection id>` topics.
+
+---
+
+[Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)
