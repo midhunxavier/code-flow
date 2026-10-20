@@ -99,3 +99,12 @@ test("complete templates retain agent settings and validate execution options wi
   (value.templates[0]!.runOptions as any).verification = "invalid";
   assert.throws(() => parseComposerLibrary(value, patterns), /execution settings/);
 });
+
+test("complete templates support the composer's full 128-model variant limit", () => {
+  const value = library();
+  const variants = Array.from({ length: 128 }, (_, index) => ({ model: `model-${index}`, effort: "high" }));
+  value.templates[0]!.config = { ...config, roleSettings: { planner: { claude: { variants } } } };
+  assert.deepEqual(parseComposerLibrary(value, patterns).templates[0]!.config!.roleSettings.planner!.claude!.variants, variants);
+  variants.push({ model: "one-too-many", effort: "high" });
+  assert.throws(() => parseComposerLibrary(value, patterns), /model variants/);
+});

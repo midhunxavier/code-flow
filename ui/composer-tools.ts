@@ -54,7 +54,7 @@ function settings(value: unknown): AgentSettings {
   const out: AgentSettings = {};
   for (const [id, setting] of Object.entries(value)) {
     if (!provider(id) || !object(setting) || (setting.model !== undefined && !text(setting.model, 256)) || (setting.effort !== undefined && !text(setting.effort, 64))) return fail("A preset contains invalid provider model settings.");
-    if (setting.variants !== undefined && (!Array.isArray(setting.variants) || setting.variants.length > 3 || setting.variants.some(v => !object(v) || !text(v.model, 256) || !v.model.trim() || v.effort !== undefined && !text(v.effort, 64)))) return fail("Invalid model variants.");
+    if (setting.variants !== undefined && (!Array.isArray(setting.variants) || setting.variants.length > 128 || setting.variants.some(v => !object(v) || !text(v.model, 256) || !v.model.trim() || v.effort !== undefined && !text(v.effort, 64)))) return fail("Invalid model variants.");
     out[id] = { ...(setting.model !== undefined ? { model: setting.model as string } : {}), ...(setting.effort !== undefined ? { effort: setting.effort as string } : {}), ...(Array.isArray(setting.variants) ? { variants: setting.variants.map(v => ({ model: v.model as string, ...(v.effort !== undefined ? { effort: v.effort as string } : {}) })) } : {}) };
   }
   return out;

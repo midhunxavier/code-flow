@@ -191,7 +191,10 @@ export function Composer() {
       copy: remoteWorker ? [] : repoConfig.value?.config.copy,
     },
   });
-  useEffect(() => { comparisonDraft.value = p ? structuredClone(runBody(p)) : null; }, [JSON.stringify(p ? runBody(p) : null)]);
+  // Publish a lightweight snapshot after rendering. Attachment strings are immutable;
+  // serializing or cloning their payloads on each keystroke would block editing.
+  const comparisonBody = p ? runBody(p) : null;
+  useLayoutEffect(() => { comparisonDraft.value = comparisonBody; }, [comparisonBody]);
   const [scheduleKind, setScheduleKind] = useState<ScheduleKind | null>(null);
   const start = async () => {
     if (problem || !p || starting || profileLoading) return;

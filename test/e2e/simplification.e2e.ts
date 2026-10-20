@@ -18,6 +18,8 @@ execFileSync("mkdir", [repo]);
 const git = (...args: string[]) => execFileSync("git", args, { cwd: repo });
 git("init", "-q", "-b", "main");
 writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "fixture", type: "module", scripts: { test: "node --test" } }));
+writeFileSync(join(repo, "asset.bin"), Buffer.from([137, 80, 78, 71, 0, 1]));
+writeFileSync(join(repo, "large.txt"), "Large file preview\n".repeat(40000));
 writeFileSync(join(repo, "README.md"), "Title\n=======\n\nFixture documentation.\n");
 writeFileSync(join(repo, "sum.mjs"), "export function sum(a, b) { return a - b; }\n");
 writeFileSync(join(repo, "sum.test.mjs"), "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { sum } from './sum.mjs';\ntest('sum', () => assert.equal(sum(1, 2), 3));\n");
@@ -159,6 +161,62 @@ test("side-panel and repository tools share file editing and draft recovery", { 
   await page.locator(".workbench").getByRole("button", { name: "Save file", exact: true }).click();
   await page.getByRole("status").getByText("File saved", { exact: true }).waitFor();
   assert.equal(readFileSync(join(repo, "README.md"), "utf8"), "Shared editor draft\n");
+});
+
+test("typing with a large attachment avoids copying its payload and comparisons retain the draft", { timeout: 45_000 }, async () => {
+  await page.goto(`${base}/#/`);
+  await page.locator('.taskbox input[type="file"]').setInputFiles({ name: "context.txt", mimeType: "text/plain", buffer: Buffer.alloc(2 * 1024 * 1024, "x") });
+  await page.locator('.chip-ctx[title="context.txt"]').waitFor();
+  await page.evaluate(() => {
+    const host = window as any;
+    host.payloadCopies = 0;
+    host.originalStringify = JSON.stringify;
+    host.originalClone = window.structuredClone;
+    JSON.stringify = ((value: any, ...args: any[]) => { if (value?.context?.attachments?.some((item: any) => item.data?.length > 1024 * 1024)) host.payloadCopies++; return host.originalStringify(value, ...args); }) as typeof JSON.stringify;
+    window.structuredClone = ((value: any, ...args: any[]) => { if (value?.context?.attachments?.some((item: any) => item.data?.length > 1024 * 1024)) host.payloadCopies++; return host.originalClone(value, ...args); }) as typeof structuredClone;
+  });
+  try {
+    await page.getByLabel("Task", { exact: true }).fill("Compare attachment context");
+    await page.getByLabel("Task", { exact: true }).pressSequentially(" while editing the latest draft");
+    assert.equal(await page.evaluate(() => (window as any).payloadCopies), 0);
+  } finally {
+    await page.evaluate(() => { JSON.stringify = (window as any).originalStringify; window.structuredClone = (window as any).originalClone; });
+  }
+  await page.evaluate(() => { location.hash = "/insights"; });
+  await page.getByText("Experiments", { exact: true }).click();
+  await page.getByRole("button", { name: "Compare setups…", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Compare setups", exact: true });
+  await dialog.locator('.compare-choice input:checked').uncheck();
+  await dialog.locator('.compare-choice:not(.off) input').nth(0).check();
+  await dialog.locator('.compare-choice:not(.off) input').nth(1).check();
+  let request: any;
+  await page.route("**/api/compare", async route => { request = route.request().postDataJSON(); await route.fulfill({ json: { group: "fixture-comparison" } }); });
+  try {
+    await dialog.getByRole("button", { name: "Start 2 runs", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
+    assert.match(request.run.task, /while editing the latest draft/);
+    assert.equal(request.run.context.attachments[0].name, "context.txt");
+    assert.equal(Buffer.from(request.run.context.attachments[0].data, "base64").length, 2 * 1024 * 1024);
+  } finally { await page.unroute("**/api/compare"); }
+});
+
+test("the shared browser keeps binary and oversized files in bounded read-only previews", { timeout: 45_000 }, async () => {
+  await page.goto(`${base}/#/workspace`);
+  await page.getByRole("navigation", { name: "Workspace tools" }).getByRole("button", { name: "Code", exact: true }).click();
+  const browser = page.locator(".workbench .code-browser");
+  for (const path of ["asset.bin", "large.txt"]) {
+    await browser.getByLabel("File to edit", { exact: true }).fill(path);
+    await browser.getByRole("button", { name: "Open file", exact: true }).click();
+    const preview = browser.getByRole("region", { name: "Read-only file preview", exact: true });
+    await preview.getByRole("heading", { name: path, exact: true }).waitFor();
+    assert.equal(await browser.getByRole("button", { name: "Save file", exact: true }).count(), 0);
+    if (path === "asset.bin") await preview.getByText("This is a binary file.", { exact: true }).waitFor();
+    else {
+      await preview.getByText("Showing a bounded preview; the rest of the file is omitted.", { exact: true }).waitFor();
+      assert.ok((await preview.locator("pre").innerText()).length <= 512 * 1024);
+      assert.ok((await preview.locator("pre").innerText()).split("\n").length <= 5000);
+    }
+  }
 });
 
 test("revised hubs and template picker fit phones and have no serious accessibility errors", { timeout: 45_000 }, async () => {
