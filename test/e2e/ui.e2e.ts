@@ -509,10 +509,11 @@ test("side panel: chat with one agent, read a file, run a command, keep a note",
   assert.match(await side.locator(".chat-meta code").innerText(), /\/solo$/, "the chat works on its own branch");
   assert.equal(await page.locator(".rail .run-item", { hasText: "E2E: what does check.mjs do?" }).count(), 1, "a chat is a run like any other");
 
-  // Files: a file opens in the viewer.
+  // Files: a file opens in the shared editor.
   await side.getByRole("tab", { name: "Files" }).click();
   await side.locator(".node", { hasText: "package.json" }).click();
-  await side.locator(".file-view").getByText(/"name":"e2e"/).waitFor();
+  await side.getByRole("textbox", { name: "File contents", exact: true }).waitFor();
+  assert.match(await side.getByRole("textbox", { name: "File contents", exact: true }).inputValue(), /"name":"e2e"/);
   await side.getByRole("button", { name: "Back to the files" }).click();
   await side.locator(".node", { hasText: "check.mjs" }).waitFor();
 

@@ -85,10 +85,14 @@ test("legacy connection links resolve to one purpose-based hub", () => {
 test("complete templates retain agent settings and validate execution options without changing legacy templates", () => {
   const value = library();
   value.templates[0]!.config = { ...config, roleSettings: { planner: { claude: { model: "primary", variants: [{ model: "alternate", effort: "high" }] } } }, check: "npm test", setup: "npm ci", baseRef: "main" };
+  value.templates[0]!.intent = "bug";
   value.templates[0]!.runOptions = { verification: "thorough", container: { enabled: true, image: "local/agents", authVolume: "agents-auth" } };
   const parsed = parseComposerLibrary(JSON.parse(JSON.stringify(value)), patterns);
   assert.deepEqual(parsed, value);
   assert.equal(parseComposerLibrary(library(), patterns).templates[0]!.config, undefined);
+  (value.templates[0]! as any).intent = "unknown";
+  assert.throws(() => parseComposerLibrary(value, patterns), /task intent/);
+  value.templates[0]!.intent = "bug";
   value.templates[0]!.config.pattern = "solo";
   assert.throws(() => parseComposerLibrary(value, patterns));
   value.templates[0]!.config = config;
