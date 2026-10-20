@@ -1,6 +1,7 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { readFile, readdir } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,4 +62,35 @@ test("relative Markdown and image references resolve in the repository", async (
       }
     }
   assert.deepEqual(broken, []);
+});
+test("concurrent rebuilds keep published pages and search assets complete and readable", async () => {
+  const paths = ["public/docs", "dist/docs"].flatMap((directory) =>
+    ["index.html", "getting-started.html", "search.json", "style.css", "app.js"].map(
+      (name) => resolve(root, directory, name),
+    ),
+  );
+  const expected = await Promise.all(paths.map((path) => readFile(path, "utf8")));
+  const failures = new Set<string>();
+  let building = true;
+  let reads = 0;
+  const builds = Promise.allSettled(
+    Array.from({ length: 2 }, () =>
+      promisify(execFile)(process.execPath, ["scripts/build-docs.mjs"], { cwd: root }),
+    ),
+  ).finally(() => { building = false; });
+  while (building) {
+    await Promise.all(paths.map(async (path, index) => {
+      try {
+        if (await readFile(path, "utf8") !== expected[index])
+          failures.add(`Partial or changed content: ${path}`);
+      } catch {
+        failures.add(`Temporarily unavailable: ${path}`);
+      }
+      reads++;
+    }));
+  }
+  for (const result of await builds)
+    assert.equal(result.status, "fulfilled", JSON.stringify(result));
+  assert.ok(reads > 0);
+  assert.deepEqual([...failures], []);
 });

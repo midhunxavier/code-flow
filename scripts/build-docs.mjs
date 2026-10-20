@@ -1,6 +1,7 @@
 // One Markdown source, two destinations: /docs/ in the app and a portable Pages artifact.
 import { Marked } from "marked";
-import { readFile, writeFile, mkdir, readdir, cp, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, writeFile, mkdir, readdir, rename, rm } from "node:fs/promises";
 import { dirname, resolve, relative, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -56,16 +57,13 @@ export async function buildDocs() {
       `url("data:font/woff;base64,${(await readFile(resolve(root, "ui/fonts", match[1]))).toString("base64")}")`,
     );
   const brand = `data:image/png;base64,${(await readFile(resolve(root, "ui/brand/vibesboard-mark.png"))).toString("base64")}`;
-  const out = resolve(root, "public/docs");
-  await mkdir(out, { recursive: true });
-  await writeFile(
-    `${out}/style.css`,
-    theme + (await read("docs/site/style.css")),
-  );
-  await cp(resolve(root, "docs/site/app.js"), `${out}/app.js`);
-  await writeFile(`${out}/search.json`, JSON.stringify(docs));
-  await writeFile(`${out}/.nojekyll`, "");
-  await cp(resolve(root, "ui/fonts/OFL-1.1.txt"), `${out}/font-license.txt`);
+  const files = new Map([
+    ["style.css", theme + (await read("docs/site/style.css"))],
+    ["app.js", await read("docs/site/app.js")],
+    ["search.json", JSON.stringify(docs)],
+    [".nojekyll", ""],
+    ["font-license.txt", await read("ui/fonts/OFL-1.1.txt")],
+  ]);
   const hrefFor = (href, source) => {
     if (/^(?:https?:|mailto:|#)/i.test(href)) return href;
     if (/^[a-z][a-z\d+.-]*:/i.test(href) || href.startsWith("//")) return "#";
@@ -152,19 +150,26 @@ export async function buildDocs() {
 <dialog id="search-dialog" aria-labelledby="search-title"><div class="dialog-title"><h2 id="search-title">Search documentation</h2><button data-close="search-dialog" aria-label="Close search">✕</button></div><label class="sr-only" for="search">Search all guides</label><input id="search" type="search" placeholder="Search workflows, settings, troubleshooting…" autocomplete="off"><div id="search-results" aria-live="polite"></div></dialog>
 <dialog id="help-dialog" aria-labelledby="help-title"><div class="dialog-title"><div><span class="eyebrow">Your docs companion</span><h2 id="help-title">Ask code-flow</h2></div><button data-close="help-dialog" aria-label="Close help">✕</button></div><p id="help-status" role="status">Checking local assistant availability…</p><div id="help-messages" role="log" aria-label="Help conversation"></div><form id="help-form" hidden><label for="help-agent">Use your CLI</label><select id="help-agent"></select><div class="suggestions"><button type="button" data-question="How do I start my first run?">Start my first run</button><button type="button" data-question="What should I do when a check fails?">Fix a failed check</button></div><label for="question">Your question</label><textarea id="question" rows="3" maxlength="4000" placeholder="How can I use code-flow to…" required></textarea><div class="help-actions"><small>Uses your CLI login and quota. No project files are included.</small><button type="button" id="stop-help" hidden>Stop</button><button class="primary" id="send-help">Send ↗</button></div></form><a id="help-guide" href="help.html">About the local assistant →</a></dialog>
 </body></html>`;
-    await writeFile(`${out}/${doc.id}.html`, html);
+    files.set(`${doc.id}.html`, html);
   }
-  for (const directory of [out, resolve(root, "dist/docs")]) {
+  for (const directory of [resolve(root, "public/docs"), resolve(root, "dist/docs")]) {
     await mkdir(directory, { recursive: true });
+    // Keep every published file readable during live or concurrent builds. Copying
+    // over an existing destination can unlink it; direct writes can truncate it.
+    for (const [name, content] of files) {
+      const target = resolve(directory, name);
+      const temporary = `${target}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporary, content);
+        await rename(temporary, target);
+      } finally {
+        await rm(temporary, { force: true });
+      }
+    }
     for (const name of await readdir(directory))
-      if (
-        name.endsWith(".html") &&
-        !docs.some((doc) => name === `${doc.id}.html`)
-      )
-        await rm(resolve(directory, name));
+      if (name.endsWith(".html") && !files.has(name))
+        await rm(resolve(directory, name), { force: true });
   }
-  await mkdir(resolve(root, "dist/docs"), { recursive: true });
-  await cp(out, resolve(root, "dist/docs"), { recursive: true });
   console.log(
     `[docs] Built ${docs.length} guides in public/docs and dist/docs`,
   );
