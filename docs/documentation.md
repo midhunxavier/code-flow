@@ -9,7 +9,7 @@ The Markdown files in this repository are the source for both the local help lib
 
 ## Read locally
 
-`npm start` builds the documentation with the app. Open **Application menu → Help & documentation** or visit `/docs/` on the application server. Search and navigation work locally; **Ask code-flow** uses your installed CLI after owner authentication.
+`npm start` builds the documentation with the app. Open **Application menu → Help & documentation** or visit `/docs/` on the application server. Search and navigation work locally; the **Ask code-flow** chat side panel uses your installed CLI after owner authentication. The conversation and draft follow you between guides in the same tab.
 
 To preview only the static site:
 
@@ -18,7 +18,7 @@ npm ci
 npm run docs:preview
 ```
 
-Open [127.0.0.1:4319](http://127.0.0.1:4319). This preview intentionally behaves like GitHub Pages, so the CLI assistant is unavailable. Restart the preview after editing Markdown or site assets.
+Open [127.0.0.1:4319](http://127.0.0.1:4319). This preview intentionally behaves like GitHub Pages, so companion controls are omitted. Restart the preview after editing Markdown or site assets.
 
 ## Publish to GitHub Pages
 
@@ -68,7 +68,7 @@ Keep images focused, use descriptive alternative text, and label demo data where
 | `scripts/build-docs.mjs` | Markdown rendering, links, navigation, table of contents and search corpus |
 | `docs/site/navigation.json` | Guide groups and reading order |
 | `docs/site/style.css` | Documentation layout, using app theme tokens and fonts |
-| `docs/site/app.js` | Search, theme, code copying and help dialog |
+| `docs/site/app.js` | Search, theme, code copying and local chat panel |
 | `src/docs-help.ts` | Static local serving, bounded retrieval and CLI help requests |
 | `.github/workflows/docs.yml` | Build validation and Pages deployment |
 

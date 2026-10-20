@@ -145,7 +145,7 @@ try {
       animations: "disabled",
     });
   };
-  for (const theme of ["light", "dark"]) {
+  if (!process.argv.includes("--docs-only")) for (const theme of ["light", "dark"]) {
     await page.evaluate((theme) => localStorage.setItem("theme", theme), theme);
     await page.goto(base + "/#/");
     await page.reload();
@@ -159,6 +159,7 @@ try {
     await page.goto(base + `/#/run/${run.id}`);
     await page.getByRole("region", { name: "Next action" }).waitFor();
     await page.getByText(/Loading commit/).waitFor({ state: "hidden" });
+    await page.getByText("Saving run…", { exact: true }).waitFor({ state: "hidden" });
     await capture(`run-${theme}`);
     // The work disclosure is a real UI control; capture its expanded evidence.
     const work = page.locator("details.work");
@@ -182,6 +183,12 @@ try {
     await page
       .getByRole("heading", { name: "Your agents. A clear path forward." })
       .waitFor();
+    await page.getByLabel("Use your CLI").waitFor();
+    if (theme === "light") {
+      await page.getByLabel("Your question").fill("How do I start my first run?");
+      await page.getByRole("button", { name: "Send message" }).click();
+      await page.locator("#help-messages .answer").waitFor();
+    }
     await capture(`docs-${theme}`);
   }
   console.log(

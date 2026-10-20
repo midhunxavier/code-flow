@@ -16,9 +16,10 @@ test("all documentation pages produce portable links, anchors and no local assis
     if (file.endsWith(".html"))
       pages.set(file, await readFile(resolve(directory, file), "utf8"));
   assert.ok(pages.size >= 54);
+  assert.match(await readFile(resolve(root, "public/docs/index.html"), "utf8"), /id="help-panel"/);
   const broken: string[] = [];
   for (const [file, html] of pages) {
-    assert.doesNotMatch(html, /data-local-docs/);
+    assert.doesNotMatch(html, /data-local-docs|id="(?:open-help|help-panel)"|data-help/);
     for (const [, href] of html.matchAll(/href="([^"]+)"/g)) {
       if (/^(?:https?:|data:|mailto:|\/)/.test(href!)) continue;
       const [target, anchor] = href!.split("#");

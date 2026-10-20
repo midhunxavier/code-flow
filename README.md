@@ -90,9 +90,9 @@ Code Flow delegates authentication to the CLIs. Provider access, model availabil
 
 ## Documentation, wherever you work
 
-Open **Application menu → Help & documentation** or find it in the command palette. The bundled docs at [localhost:4317/docs/](http://localhost:4317/docs/) include search, page navigation and an **Ask code-flow** assistant that answers using your installed CLI and the guides. [How local help works](docs/help.md).
+Open **Application menu → Help & documentation** or find it in the command palette. The bundled docs at [localhost:4317/docs/](http://localhost:4317/docs/) include search, page navigation and an **Ask code-flow** chat side panel that answers using your installed CLI and the guides. [How local help works](docs/help.md).
 
-The same docs can be hosted on GitHub Pages, with the local app's typography, colors and light/dark themes. Search and reading work on the static site; CLI help runs in the local app.
+The same docs can be hosted on GitHub Pages, with the local app's typography, colors and light/dark themes. The static site provides search and reading with no companion controls. CLI chat runs in the local app, keeping the conversation while you browse guides.
 
 ```bash
 npm run docs:preview  # build and preview the static site at 127.0.0.1:4319

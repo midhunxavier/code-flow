@@ -97,7 +97,7 @@ async function search() {
       .slice(0, 12);
     if (!matches.length)
       results.textContent =
-        "No matching guides. Try fewer words or ask code-flow in the local app.";
+        "No matching guides. Try fewer words or use the guide navigation.";
     for (const { doc } of matches) {
       const a = document.createElement("a");
       a.href = doc.id + ".html";
@@ -125,125 +125,193 @@ document.addEventListener("keydown", (event) => {
     if (!$("#search-dialog").open) $("#open-search").click();
   }
 });
-// The local server injects this marker only into its own docs. Static Pages never probes localhost.
+// Only the application server enables the companion. The static build omits its controls.
 const local = document.documentElement.dataset.localDocs === "true";
 $("#back-app").hidden = !local;
-let initialized = false,
-  stop,
-  history = [];
-async function openHelp() {
-  $("#help-dialog").showModal();
-  if (initialized) return;
-  if (!local) {
-    $("#help-status").textContent =
-      "The assistant runs in your local code-flow app using your signed-in CLI. Open the app, then choose Help & documentation → Ask code-flow. These hosted guides and search work without an agent.";
-    return;
-  }
-  $("#help-status").textContent = "Checking your installed CLIs…";
+if (local && $("#help-panel")) initializeCompanion();
+function initializeCompanion() {
+  const panel = $("#help-panel");
+  const mobile = matchMedia("(max-width: 760px)");
+  const key = "codeflow-docs-chat-v1";
+  let saved = {};
   try {
-    const response = await fetch("/api/docs-help");
-    const data = await response.json();
-    if (!response.ok)
-      throw Error(
-        data.error || "Open the owner app and sign in to use the assistant.",
-      );
-    if (!data.agents.length)
-      throw Error(
-        "No supported CLI found. Install and sign in to Claude Code, Codex or Antigravity, then reopen help.",
-      );
-    $("#help-agent").replaceChildren();
-    for (const agent of data.agents) {
-      const option = document.createElement("option");
-      option.value = agent.id;
-      option.textContent = agent.displayName;
-      $("#help-agent").append(option);
-    }
-    const saved = getPreference("docs-help-agent");
-    if (data.agents.some((a) => a.id === saved)) $("#help-agent").value = saved;
-    $("#help-form").hidden = false;
-    $("#help-status").textContent =
-      "Ask about workflows, setup or troubleshooting. Answers use the bundled guides; verify important steps in the linked sources.";
-    initialized = true;
-  } catch (error) {
-    $("#help-status").textContent = error.message;
-  }
-}
-$("#open-help").onclick = () => void openHelp();
-for (const button of document.querySelectorAll("[data-help]"))
-  button.onclick = () => void openHelp();
-for (const button of document.querySelectorAll("[data-question]"))
-  button.onclick = () => {
-    $("#question").value = button.dataset.question;
-    $("#question").focus();
-  };
-function appendMessage(text, kind, sources = []) {
-  const node = document.createElement("div");
-  node.className = "message " + kind;
-  node.textContent = text;
-  if (sources.length) {
-    const list = document.createElement("div");
-    list.className = "sources";
-    for (const source of sources) {
-      const link = document.createElement("a");
-      link.href = source.id + ".html";
-      link.textContent = source.title;
-      list.append(link);
-    }
-    node.append(list);
-  }
-  $("#help-messages").append(node);
-  node.scrollIntoView({ block: "nearest" });
-}
-$("#stop-help").onclick = () => stop?.abort();
-$("#help-dialog").addEventListener("close", () => stop?.abort());
-$("#help-form").onsubmit = async (event) => {
-  event.preventDefault();
-  if (stop) return;
-  const question = $("#question").value.trim();
-  if (!question) return;
-  const agent = $("#help-agent").value;
-  setPreference("docs-help-agent", agent);
-  let settings = {};
-  try {
-    settings = JSON.parse(getPreference("agentSettings", "{}"))[agent] || {};
+    const raw = sessionStorage.getItem(key);
+    if (raw && raw.length < 300000) saved = JSON.parse(raw) || {};
   } catch {}
-  const controller = new AbortController();
-  stop = controller;
-  $("#send-help").disabled = true;
-  $("#stop-help").hidden = false;
-  $("#help-agent").disabled = true;
-  appendMessage(question, "question");
-  $("#question").value = "";
-  $("#help-status").textContent = "Reading the guides with your CLI…";
-  try {
-    const response = await fetch("/api/docs-help", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        question,
-        agent,
-        page: document.body.dataset.page,
-        history,
-        settings: { model: settings.model, effort: settings.effort },
-      }),
-      signal: controller.signal,
-    });
-    const data = await response.json();
-    if (!response.ok)
-      throw Error(data.error || "The CLI could not answer. Try again.");
-    appendMessage(data.answer, "answer", data.sources);
-    history = [...history, { question, answer: data.answer }].slice(-3);
-    $("#help-status").textContent =
-      "Answer complete. Continue with a follow-up or open a source guide.";
-  } catch (error) {
-    $("#help-status").textContent = controller.signal.aborted
-      ? "Stopped. You can ask again."
-      : error.message;
-    $("#question").value ||= question;
-  } finally {
+  let history = Array.isArray(saved.history) ? saved.history.filter(h =>
+    typeof h?.question === "string" && h.question.length <= 4000 &&
+    typeof h.answer === "string" && h.answer.length <= 12000).slice(-3) : [];
+  let messages = Array.isArray(saved.messages) ? saved.messages.filter(m =>
+    ["question", "answer"].includes(m?.kind) && typeof m.text === "string" &&
+    m.text.length <= 12000).slice(-12) : [];
+  let stop, initialized = false, initializing = false, generation = 0;
+  let opened = typeof saved.open === "boolean" ? saved.open : !mobile.matches;
+  $("#question").value = typeof saved.draft === "string" ? saved.draft.slice(0, 4000) : "";
+  function persist() {
+    try {
+      sessionStorage.setItem(key, JSON.stringify({ messages, history, draft: $("#question").value, open: opened }));
+    } catch {}
+  }
+  function layout() {
+    panel.hidden = !opened;
+    document.body.classList.toggle("help-open", opened);
+    $("#open-help").setAttribute("aria-expanded", String(opened));
+    for (const el of [$("#content"), $("#sidebar"), $(".on-page")])
+      el.inert = opened && mobile.matches;
+  }
+  function openHelp(focus = true) {
+    opened = true;
+    layout();
+    persist();
+    if (focus) $("#close-help").focus();
+    void connect();
+  }
+  function closeHelp() {
+    opened = false;
+    layout();
+    persist();
+    $("#open-help").focus();
+  }
+  function renderMessage(message) {
+    const node = document.createElement("div");
+    node.className = "message " + message.kind;
+    const label = document.createElement("strong");
+    label.className = "message-author";
+    label.textContent = message.kind === "question" ? "You" : "Code Flow";
+    const body = document.createElement("div");
+    body.textContent = message.text;
+    node.append(label, body);
+    if (Array.isArray(message.sources)) {
+      const list = document.createElement("div");
+      list.className = "sources";
+      for (const source of message.sources.slice(0, 5)) {
+        if (!/^[a-z\d-]{1,80}$/.test(source?.id) || typeof source.title !== "string") continue;
+        const link = document.createElement("a");
+        link.href = source.id + ".html";
+        link.textContent = source.title;
+        list.append(link);
+      }
+      node.append(list);
+    }
+    $("#help-messages").append(node);
+  }
+  function renderMessages() {
+    for (const node of document.querySelectorAll("#help-messages .message")) node.remove();
+    $("#chat-welcome").hidden = messages.length > 0;
+    messages.forEach(renderMessage);
+    $("#help-messages").scrollTop = $("#help-messages").scrollHeight;
+  }
+  function appendMessage(text, kind, sources = []) {
+    messages = [...messages, { text, kind, sources }].slice(-12);
+    renderMessages();
+    persist();
+  }
+  async function connect() {
+    if (initialized || initializing) return;
+    initializing = true;
+    $("#retry-help").hidden = true;
+    $("#help-status").textContent = "Checking your installed CLIs…";
+    try {
+      const response = await fetch("/api/docs-help");
+      const data = await response.json();
+      if (!response.ok) throw Error(data.error || "Open the owner app and sign in to use the companion.");
+      if (!data.agents.length) throw Error("No supported CLI found. Install and sign in to Claude Code, Codex or Antigravity, then retry.");
+      $("#help-agent").replaceChildren();
+      for (const agent of data.agents) {
+        const option = document.createElement("option");
+        option.value = agent.id;
+        option.textContent = agent.displayName;
+        $("#help-agent").append(option);
+      }
+      const agent = getPreference("docs-help-agent");
+      if (data.agents.some(a => a.id === agent)) $("#help-agent").value = agent;
+      $("#help-form").hidden = false;
+      $("#help-status").textContent = "Answers use your guides. Check the linked sources for details.";
+      initialized = true;
+    } catch (error) {
+      $("#help-status").textContent = error.message;
+      $("#retry-help").hidden = false;
+    } finally { initializing = false; }
+  }
+  $("#open-help").hidden = false;
+  $("#open-help").onclick = () => opened ? closeHelp() : openHelp();
+  $("#close-help").onclick = closeHelp;
+  $("#retry-help").onclick = () => void connect();
+  mobile.addEventListener("change", layout);
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && opened && !$("#search-dialog").open) closeHelp();
+  });
+  $("#question").oninput = persist;
+  $("#question").onkeydown = event => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      if (!stop) $("#help-form").requestSubmit();
+    }
+  };
+  $("#help-agent").onchange = () => setPreference("docs-help-agent", $("#help-agent").value);
+  for (const button of document.querySelectorAll("[data-question]"))
+    button.onclick = () => { $("#question").value = button.dataset.question; persist(); $("#question").focus(); };
+  $("#stop-help").onclick = () => stop?.abort();
+  function resetBusy() {
     stop = undefined;
+    panel.removeAttribute("aria-busy");
     $("#send-help").disabled = false;
     $("#stop-help").hidden = true;
     $("#help-agent").disabled = false;
   }
-};
+  $("#new-chat").onclick = () => {
+    generation++;
+    stop?.abort();
+    resetBusy();
+    messages = []; history = [];
+    $("#question").value = "";
+    renderMessages(); persist();
+    $("#help-status").textContent = initialized ? "A fresh conversation. What would you like to know?" : "Connect your CLI to start chatting.";
+    if (initialized) $("#question").focus();
+  };
+  window.addEventListener("pagehide", () => { persist(); stop?.abort(); });
+  $("#help-form").onsubmit = async event => {
+    event.preventDefault();
+    if (stop || !initialized) return;
+    const question = $("#question").value.trim();
+    if (!question) return;
+    const agent = $("#help-agent").value;
+    setPreference("docs-help-agent", agent);
+    let settings = {};
+    try { settings = JSON.parse(getPreference("agentSettings", "{}"))[agent] || {}; } catch {}
+    const controller = new AbortController();
+    const turn = ++generation;
+    stop = controller;
+    panel.setAttribute("aria-busy", "true");
+    $("#send-help").disabled = true;
+    $("#stop-help").hidden = false;
+    $("#help-agent").disabled = true;
+    $("#question").value = "";
+    appendMessage(question, "question");
+    $("#help-status").textContent = "Reading the guides with your CLI…";
+    try {
+      const response = await fetch("/api/docs-help", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question, agent, page: document.body.dataset.page, history,
+          settings: { model: settings.model, effort: settings.effort } }),
+        signal: controller.signal,
+      });
+      const data = await response.json();
+      if (turn !== generation) return;
+      if (!response.ok) throw Error(data.error || "The CLI could not answer. Try again.");
+      history = [...history, { question, answer: data.answer }].slice(-3);
+      appendMessage(data.answer, "answer", data.sources);
+      $("#help-status").textContent = "Continue with a follow-up or explore a source guide.";
+    } catch (error) {
+      if (turn !== generation) return;
+      $("#help-status").textContent = controller.signal.aborted ? "Stopped. You can ask again." : error.message;
+      $("#question").value ||= question;
+      persist();
+    } finally {
+      if (turn === generation) resetBusy();
+    }
+  };
+  renderMessages();
+  layout();
+  if (opened) openHelp(false);
+}
