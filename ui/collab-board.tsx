@@ -1,3 +1,5 @@
+import { executionHost } from "./ssh-projects.js";
+import { SshTeamServerCard } from "./team-server-status.js";
 import { TeamTerminalPanel } from "./team-terminals.js";
 import { HostQueue } from "./host-execution.js";
 import { TeamConnectionPicker } from "./team-connections.js";
@@ -22,12 +24,15 @@ export function TeamBoardView({ project, shared = false, navigate }: { project?:
   // The owner app polls as a fallback to its stream; the shared dashboard reloads only on /api/team/events frames (and when its tab is shown again), so an idle shared session can still expire. The liveness clock ticks on its own, without a request.
   usePoll(() => { void loadBoard(); if (!shared) void loadTeamLink(); setNow(Date.now()); }, shared ? 0 : 15_000, [teamTick.value, shared]);
   usePoll(() => setNow(Date.now()), 15_000, [], shared);
+  const host = executionHost.value;
+  const ssh = !shared && host.kind === "ssh" ? host : null;
   const b = board.value;
   const chosen = project && b?.projects.some((entry) => entry.id === project) ? project : undefined;
-  if (!b) return <div class="team-page" aria-busy={!boardLoaded.value}>{!shared ? <TeamConnectionPicker /> : null}{boardError.value ? <p class="msg err" role="alert">{boardError.value} <button class="btn small" onClick={() => void loadBoard()}>Retry</button></p> : <p class="help" role="status">Loading the team board…</p>}</div>;
+  if (!b) return <div class="team-page" aria-busy={!boardLoaded.value}>{!shared && !ssh ? <TeamConnectionPicker /> : null}{boardError.value ? <p class="msg err" role="alert">{boardError.value} <button class="btn small" onClick={() => void loadBoard()}>Retry</button></p> : <p class="help" role="status">Loading the team board…</p>}</div>;
   const me = b.me.userId;
   const involvesMe = (task: TaskSummary) => task.owner?.userId === me || task.reviewer?.userId === me || task.collaborators.some((who) => who.userId === me) || (task.handoff?.state === "offered" && task.handoff.to.userId === me);
-  const tasks = b.tasks.filter((task) => (!chosen || task.projectId === chosen) && (!mine || involvesMe(task)) && (!status || task.status === status));
+  const projectTasks = b.tasks.filter(task => !chosen || task.projectId === chosen);
+  const tasks = projectTasks.filter(task => (!mine || involvesMe(task)) && (!status || task.status === status));
   const canCreate = b.projects.some((entry) => roleAtLeast(entry.role, "contributor") && (!chosen || entry.id === chosen));
   const columns = status ? [status] : TASK_STATUSES;
   const projectOf = (task: TaskSummary) => b.projects.find((entry) => entry.id === task.projectId);
@@ -41,15 +46,16 @@ export function TeamBoardView({ project, shared = false, navigate }: { project?:
   };
   const link = teamLink.value;
   return <div class="team-page">
-    {!shared ? <TeamConnectionPicker /> : null}
+    {!shared && !ssh ? <TeamConnectionPicker /> : null}
     {boardError.value ? <p class="msg err" role="alert">{boardError.value}</p> : null}
     <div class="page-head">
-      <div class="page-head-text"><h1>People</h1><p>{chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>
+      <div class="page-head-text"><h1>{ssh ? "Workspace tasks" : "People"}</h1><p>{ssh ? `Tasks, ownership and reviews in the ${ssh.name} workspace.` : chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>
       <div class="page-head-actions">{canCreate ? <button type="button" class="btn primary" aria-expanded={!!creating} disabled={!!creating} onClick={() => setCreating("manual")}><Icon name="plus" /> New task</button> : null}{canCreate && !shared ? <button type="button" class="btn" disabled={!!creating} onClick={() => setCreating("agent")}>Draft with agent</button> : null}</div>
     </div>
+    {ssh ? <><SshTeamServerCard key={ssh.id} host={ssh} /><div class="team-board-context"><strong>Viewing the SSH workspace board · {ssh.name}</strong><p>Tasks below belong to this workspace. To use the shared team board, connect your computer with the team address and account from team server setup.</p></div></> : null}
     {shared ? <TeamTerminalPanel board={b} project={chosen} /> : null}
-    {shared || link && !link.linked ? <HostQueue board={b} project={chosen} /> : null}
-    {!shared && link && !link.linked && !b.tasks.length ? <div class="settings-callout team-callout"><Icon name="people" /><div><strong>Not connected to a team server</strong><p>Connect this computer in Connections → Share access to work on a shared board, or create tasks here to use this computer as the team server.</p><a href="#/settings/connections/sharing">Open Connections → Share access <span aria-hidden="true">→</span></a></div></div> : null}
+    {!ssh && (shared || link && !link.linked) ? <HostQueue board={b} project={chosen} /> : null}
+    {!shared && !ssh && link && !link.linked && !b.tasks.length ? <div class="settings-callout team-callout"><Icon name="people" /><div><strong>Not connected to a team server</strong><p>Connect this computer in Connections → Share access to work on a shared board, or create tasks here to use this computer as the team server.</p><a href="#/settings/connections/sharing">Open Connections → Share access <span aria-hidden="true">→</span></a></div></div> : null}
     {b.projects.length > 1 || chosen ? <div class="team-chips" role="group" aria-label="Project">
       <button type="button" class="chip-tpl" aria-pressed={!chosen} onClick={() => navigate({ view: "team" })}>All projects</button>
       {b.projects.map((entry) => <button key={entry.id} type="button" class="chip-tpl" aria-pressed={chosen === entry.id} onClick={() => navigate({ view: "team", project: entry.id })}>{entry.name}</button>)}
@@ -61,11 +67,18 @@ export function TeamBoardView({ project, shared = false, navigate }: { project?:
         <button type="button" class={mine ? "on" : ""} aria-pressed={mine} onClick={() => setMine(true)}>Mine</button>
       </div>
       <label class="team-filter">Status<select class="field" value={status} onChange={(event) => setStatus(event.currentTarget.value as TaskStatus | "")}><option value="">All statuses</option>{TASK_STATUSES.map((state) => <option key={state} value={state}>{STATUS_LABEL[state]}</option>)}</select></label>
-      <span class="help" role="status">{tasks.length} of {b.tasks.length} tasks{mine ? " involve you" : ""}</span>
+      <span class="help" role="status">{tasks.length} of {projectTasks.length} tasks{mine ? " involve you" : ""}</span>
     </div>
     {!b.projects.length ? <p class="team-empty">{shared ? "You have no role in a shared project yet. Ask the owner for one." : "Create a project first: the board's tasks belong to projects, and teammates see the projects their accounts have a role in."}</p> : null}
     <div class="team-board">
-      <div class={`team-columns ${columns.length === 1 ? "single" : ""}`}>{columns.map(column)}</div>
+      {tasks.length ? <div class={`team-columns ${columns.length === 1 ? "single" : ""}`}>{columns.map(column)}</div> : <section class="team-board-empty" aria-label="Task board">
+        <div class="team-workflow" aria-label="Task workflow">{TASK_STATUSES.map(state => <span key={state}>{STATUS_LABEL[state]}<span class="team-count">{projectTasks.filter(task => task.status === state).length}</span></span>)}</div>
+        <div class="team-board-empty-body"><Icon name="people" /><h2>{projectTasks.length ? "No tasks match these filters" : "Your board is ready for its first task"}</h2>
+          <p>{projectTasks.length ? "Try another status or show everyone’s tasks." : "Give a task a goal and an owner. Follow its progress here, from planning through review to done."}</p>
+          {mine || status ? <button class="btn" onClick={() => { setMine(false); setStatus(""); }}>Clear filters</button> : canCreate ? <button class="btn primary" disabled={!!creating} onClick={() => setCreating("manual")}><Icon name="plus" /> Create first task</button> : <p class="help">{shared ? "Ask your project maintainer for access to create tasks." : "Add a project to start creating tasks."}</p>}
+        </div>
+      </section>}
+
       <InboxPanel shared={shared} navigate={navigate} />
     </div>
   </div>;

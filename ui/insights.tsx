@@ -1,3 +1,4 @@
+import { confirmAction } from "./confirm-state.js";
 import { OutcomeMetrics } from "./experience.js";
 import { comparisonDraft } from "./workflow-ui.js";
 import { CompareDialog, startProblem } from "./composer.js";
@@ -353,7 +354,7 @@ function DiskPanel({ scope }: { scope: URLSearchParams }) {
         <button
           class="btn small"
           onClick={async () => {
-            if (!confirm(`Remove the worktrees of runs that finished more than ${days} days ago and need nothing from you? Branches are kept, so you can still merge or resume them.`)) return;
+            if (!await confirmAction(`Remove the worktrees of runs that finished more than ${days} days ago and need nothing from you? Branches are kept, so you can still merge or resume them.`, {"title":"Remove old worktrees?","confirmLabel":"Remove worktrees","danger":true})) return;
             try {
               const result = await post<{ runs: number; worktrees: number }>("/api/cleanup", { olderThanDays: days, repo: scope.get("repo") ?? undefined, project: scope.get("project") ?? undefined });
               showToast(result.worktrees ? `Removed ${result.worktrees} worktree(s) from ${result.runs} run(s)` : "Nothing to clean up", 4000);

@@ -1,4 +1,5 @@
 import { ActivityView } from "./activity.js";
+import { ConfirmationHost } from "./confirm-dialog.js";
 import { lazyView } from "./lazy-view.js";
 const SettingsView = lazyView(() => import("./settings.js").then((module) => module.SettingsView));
 import { SETTINGS_SECTIONS } from "./settings-sections.js";
@@ -59,8 +60,7 @@ import type { DirListing, RunSummary } from "./types.js";
 import { teamNeedsResume } from "./team-state.js";
 
 export function App() {
-  if (route.value.view === "side") return <PoppedSide tab={route.value.tab} />;
-  return <MainApp />;
+  return <>{route.value.view === "side" ? <PoppedSide tab={route.value.tab} /> : <MainApp />}<ConfirmationHost /></>;
 }
 
 /**

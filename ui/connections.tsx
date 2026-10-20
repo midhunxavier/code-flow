@@ -22,7 +22,7 @@ export function ConnectionsView({ purpose = "workspace" }: { purpose?: string })
     {selected.id === "sharing" ? <>
       {host.kind === "local" ? <RemoteAccess /> : <p class="help">Device access is configured on your local computer. {host.kind === "ssh" ? <a href="/#/settings/connections/sharing">Open local access settings</a> : null}</p>}
       <section class="settings-card"><h3>People</h3><p>Optional shared task boards, reviews and handovers. Enable these controls when you work with other people.</p><label class="checkpoint"><input type="checkbox" checked={peopleEnabled.value} onChange={event => setPeopleEnabled(event.currentTarget.checked)} /><span>Show People collaboration</span></label><p class="help">This changes navigation in this browser. Existing accounts, access grants and running tasks retain their settings.</p></section>
-      {peopleEnabled.value ? <><a class="btn" href="#/team">Open People board</a><TeamSettings /><SharedAccountsPanel projects={projects.value} /></> : null}
+      {peopleEnabled.value ? <><a class="btn" href="#/team">{host.kind === "ssh" ? "Open workspace task board" : "Open People board"}</a><TeamSettings />{host.kind !== "ssh" ? <SharedAccountsPanel projects={projects.value} /> : null}</> : null}
     </> : null}
   </div>;
 }

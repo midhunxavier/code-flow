@@ -1,3 +1,4 @@
+import { confirmAction } from "./confirm-state.js";
 import { JourneyRecorder, recording, recordAction } from "./journeys.js";
 import { signal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -203,7 +204,7 @@ export function BrowserTab() {
     if (!active?.url) return false;
     const at = key;
     const drawn = pageState(at).pins.filter((x) => x.source === "snapshot").length;
-    if (drawn && !confirm(`A new snapshot drops the ${drawn === 1 ? "box" : `${drawn} boxes`} drawn on this one. Take it anyway?`)) return false;
+    if (drawn && !await confirmAction(`A new snapshot drops the ${drawn === 1 ? "box" : `${drawn} boxes`} drawn on this one. Take it anyway?`, {"title":"Replace annotated snapshot?","confirmLabel":"Take new snapshot","danger":true})) return false;
     const asked = pageState(at).at ?? active.url;
     // A phone's or a tablet's screen, or the space this page has in the panel (half of it, comparing
     // side by side): the live page, or the snapshot shown in its place.

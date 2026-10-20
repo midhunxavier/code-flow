@@ -11,6 +11,7 @@ import { showToast } from "./lib.js";
 import { editableTeamPlan, teamPlanPolicy, validateTeamPlanEdit, type EditableTeamTask, type PendingTeamPlanEdit } from "../src/workflow-control.js";
 import { analyzeRunTiming, analyzeWorkflow } from "../src/run-analysis.js";
 import type { Note, RunSummary, Step, TeamMessage, TeamState } from "./types.js";
+import { readableTeamMessage } from "./team-message-text.js";
 
 const STATUS: Record<TeamState["status"], string> = {
   planning: "Building the team", awaiting_approval: "Plan ready for approval", running: "Working", blocked: "Unresolved work", verifying: "Verifying the result", completed: "Finished",
@@ -90,9 +91,11 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
       {team.messages.length ? <div class="at-section"><div class="at-row"><h4>Team messages</h4><label>Inbox <select class="field" aria-label="Member inbox" value={inbox} onChange={(event) => setInbox(event.currentTarget.value)}><option value="all">All members</option><option value="user">Questions for you</option>{team.members.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}</select></label></div><div class="at-messages">
         {team.messages.filter((message) => inbox === "all" || message.recipient === inbox).map((message) => <article key={message.id} class={`at-message ${message.status}`}>
           <div class="at-row"><b>{name(message.sender)} → {name(message.recipient)}</b><span class="badge">{message.kind === "question" ? message.status === "open" ? "Open question" : "Answered" : message.kind[0]!.toUpperCase() + message.kind.slice(1)}</span></div>
-          <Markdown text={message.body} />
+          <TeamMessageBody message={message} />
+          <div class="at-message-meta">
           <div class="help">{message.origin === "user" ? "From you" : "From a team member"}{message.blocking ? message.status === "open" ? " · blocks dependent work" : " · blocker resolved" : ""}</div>
           <div class="help">{message.createdAt ? new Date(message.createdAt).toLocaleTimeString() : ""}{message.delivery ? ` · ${message.delivery.status === "steered" ? "delivered during a turn" : message.delivery.status === "steering" ? "sent during a turn, acknowledgement pending" : message.delivery.status === "context" ? "included in member context" : "queued for the next turn"}` : ""}{message.originalRecipient ? ` · routed from ${name(message.originalRecipient)}` : ""}{message.deadlineAt && message.status === "open" ? ` · answer due ${new Date(message.deadlineAt).toLocaleTimeString()}` : ""}</div>
+          </div>
           {message.evidence.length ? <details><summary>Evidence</summary><ul>{message.evidence.map((item, i) => <li key={i}>{item}</li>)}</ul></details> : null}
           {message.kind === "question" && message.recipient === "user" && message.status === "open" ? (teamAwaitingAnswer(run) && team.awaitingRequestId === message.id ? <p class="help">Answer it in the card under the run header.</p> : <QuestionReply run={run} message={message} />) : null}
         </article>)}
@@ -110,6 +113,17 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
       {editing ? <TeamPlanEditor run={run} onClose={() => setEditing(false)} /> : null}
     </section>
   );
+}
+
+function TeamMessageBody({ message }: { message: TeamMessage }) {
+  // publish_finding stores its title on the first line. Preserve the wording;
+  // add reading breaks only to long prose, leaving Markdown blocks intact.
+  const newline = message.body.indexOf("\n");
+  const hasTitle = message.kind === "finding" && newline > 0 && newline <= 200;
+  return <div class="at-message-content">
+    {hasTitle ? <h5 class="at-message-title">{message.body.slice(0, newline)}</h5> : null}
+    <Markdown text={readableTeamMessage(hasTitle ? message.body.slice(newline + 1) : message.body)} />
+  </div>;
 }
 
 function TaskRerunPanel({ run }: { run: RunSummary }) {

@@ -1,3 +1,4 @@
+import { confirmAction } from "./confirm-state.js";
 import { intentDraft, WorkflowRecommendation } from "./experience.js";
 import { journeyDraft } from "./journeys.js";
 import { comparisonDraft } from "./workflow-ui.js";
@@ -388,7 +389,7 @@ async function postConfirmed<T>(path: string, body: Record<string, unknown>): Pr
     return await post<T>(path, body);
   } catch (err) {
     if (!(err instanceof ApiError) || err.confirm !== "allowUntrusted") throw err;
-    if (!confirm(`${err.message}\n\nRun its checks on this machine anyway?`)) throw new Error("Not started: the source isn't trusted and Docker isn't available.");
+    if (!await confirmAction(`${err.message}\n\nRun its checks on this machine anyway?`, {"title":"Run checks locally?","confirmLabel":"Run checks","danger":true})) throw new Error("Not started: the source isn't trusted and Docker isn't available.");
     return post<T>(path, { ...body, allowUntrusted: true });
   }
 }

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium, type Browser } from "playwright-core";
 import axe from "axe-core";
@@ -22,19 +22,22 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     let healthy = false;
     for (let i = 0; i < 150; i++) { healthy = await fetch(base + "/api/health", { headers }).then((res) => res.ok, () => false); if (healthy) break; await pause(200); }
     assert.ok(healthy);
-    const localProject = await call("/api/projects", { name: "Local only", repos: [] });
+    const localProject = await call("/api/projects", { name: "Local only", repos: [root] });
     const connection = await call("/api/ssh-hosts", { sshHost: "fixture", name: "Connected VM" });
     const prefix = `/api/ssh-hosts/${connection.id}/team-server`;
     assert.equal((await fetch(base + prefix, { method: "POST", headers, body: JSON.stringify({ remotePort: teamPort }) })).status, 409, "a saved but disconnected host cannot install a server");
     await call(`/api/ssh-hosts/${connection.id}/connect`, {});
     assert.equal((await fetch(base + prefix + "/autostart", { headers })).status, 409, "startup needs an opened setup session");
-    const workspaceProject = await call(`/computer/${connection.id}/api/projects`, { name: "SSH only", repos: [] });
+    assert.deepEqual(await call(prefix + "/status"), { state: "not-installed" }, "checking status does not install a team server");
+    const workspaceProject = await call(`/computer/${connection.id}/api/projects`, { name: "SSH only", repos: [f.repo] });
     assert.equal((await fetch(base + prefix, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
     assert.equal((await fetch(base + prefix, { method: "POST", headers: { ...headers, origin: "https://evil.example" }, body: "{}" })).status, 403);
     assert.equal((await fetch(base + prefix, { method: "POST", headers, body: JSON.stringify({ remotePort: 0 }) })).status, 400);
     await call(`/api/ssh-hosts/${connection.id}/disconnect`, {});
     browser = await chromium.launch({ channel: "chrome", headless: true });
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
+    page.setDefaultTimeout(15000);
+    await page.emulateMedia({ reducedMotion: "reduce" });
     const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`${base}/?token=${token}`);
     await page.goto(`${base}/?team=local#/settings/team`);
@@ -49,6 +52,7 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     const runtimeFile = join(f.remoteHome, ".codeflow/team-server/runtime.json");
     const runtime = JSON.parse(await readFile(runtimeFile, "utf8"));
     const sshRuntime = JSON.parse(await readFile(join(f.remoteHome, ".codeflow/ssh-host/runtime.json"), "utf8"));
+    assert.equal((await call(prefix + "/status")).access, "disabled");
     const startupStatus = await call(prefix + "/autostart");
     assert.equal(typeof startupStatus.supported, "boolean"); assert.equal(startupStatus.enabled, false);
     assert.equal((await fetch(base + prefix + "/autostart", { method: "POST", headers, body: JSON.stringify({ action: "arbitrary command" }) })).status, 400);
@@ -73,8 +77,33 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     await wizard.getByLabel("Project", { exact: true }).selectOption("");
     await wizard.getByLabel("Project name", { exact: true }).fill("Remote team project");
     assert.equal(await wizard.getByLabel("Local repository folder (optional)", { exact: true }).inputValue(), "");
+    // The setup board has no clone; the picker must discover the SSH workspace repository.
     await wizard.getByRole("button", { name: "Save and continue", exact: true }).click();
     await wizard.getByRole("button", { name: "Save repositories and continue", exact: true }).waitFor({ timeout: 8000 }).catch(async (error) => { throw new Error(`${error.message}\nWizard: ${await wizard.innerText()}`); });
+    const canonicalRepo = await realpath(f.repo);
+    assert.equal((await call(prefix + "/api/projects"))[0].repos.length, 0);
+    await wizard.getByRole("button", { name: "Refresh repositories", exact: true }).click();
+    const repositoryPicker = wizard.getByLabel("Existing repository 1", { exact: true });
+    await repositoryPicker.selectOption(canonicalRepo);
+    assert.equal(await repositoryPicker.locator("option").count(), 2, "only the selected server's checkout is offered, not the local computer's");
+    const inventoryRoute = `**/computer/${connection.id}/api/projects`;
+    await page.route(inventoryRoute, route => route.fulfill({ status: 503, json: { error: "Workspace temporarily unavailable" } }));
+    await wizard.getByRole("button", { name: "Refresh repositories", exact: true }).click();
+    await wizard.getByRole("alert").filter({ hasText: "Workspace temporarily unavailable" }).waitFor();
+    assert.equal(await repositoryPicker.inputValue(), canonicalRepo, "refresh failure preserves the user's choice");
+    await page.unroute(inventoryRoute);
+    await wizard.getByRole("button", { name: "Refresh repositories", exact: true }).click();
+    await wizard.getByRole("alert").filter({ hasText: "Workspace temporarily unavailable" }).waitFor({ state: "hidden" });
+    assert.equal(await wizard.getByLabel("Repository key", { exact: true }).inputValue(), "project");
+    assert.equal(await wizard.getByLabel("Repository label", { exact: true }).inputValue(), "project");
+    await wizard.getByRole("button", { name: "Add repository", exact: true }).click();
+    await wizard.getByLabel("Existing repository 2", { exact: true }).locator(`option[value="${canonicalRepo}"][disabled]`).waitFor({ state: "attached" });
+    await wizard.getByRole("button", { name: "Remove repository 2", exact: true }).click();
+    await wizard.screenshot({ path: "/tmp/code-flow-repository-picker.png", animations: "disabled" });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await wizard.screenshot({ path: "/tmp/code-flow-repository-picker-mobile.png", animations: "disabled" });
+    await page.setViewportSize({ width: 1440, height: 1100 });
     await wizard.getByRole("button", { name: "Save repositories and continue", exact: true }).click();
     await wizard.getByLabel("Connection method", { exact: true }).selectOption("lan");
     await wizard.getByRole("button", { name: "Enable team access on network", exact: true }).click();
@@ -93,6 +122,11 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     await wizard.getByText("Teammate saved. Share their initial password privately.", { exact: true }).waitFor();
     await wizard.getByRole("button", { name: "Review setup", exact: true }).click();
     await wizard.getByRole("heading", { name: "Ready to share with your team", exact: true }).waitFor();
+    const secureStatus = await call(prefix + "/status");
+    assert.equal(secureStatus.state, "running"); assert.equal(secureStatus.access, "ready");
+    assert.equal(secureStatus.address, `https://team.example.test:${teamPort}`);
+    assert.ok(!JSON.stringify(secureStatus).includes(runtime.token));
+    assert.ok(!JSON.stringify(secureStatus).includes("/r/"));
     const instructions = await wizard.getByLabel("Connection instructions", { exact: true }).inputValue();
     assert.ok(instructions.includes(`https://team.example.test:${teamPort}`));
     for (const secret of [password, runtime.token, "/r/"]) assert.ok(!instructions.includes(secret));
@@ -116,15 +150,19 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     assert.equal((await fetch(`http://127.0.0.1:${runtime.port}/api/team-host-runtime`, { headers: { authorization: `Bearer ${runtime.token}` } })).status, 200, "team server outlives SSH disconnect");
     assert.equal((await fetch(base + prefix + "/api/projects", { headers })).status, 409);
     await call(`/api/ssh-hosts/${connection.id}/connect`, {});
+    assert.equal((await call(prefix + "/status")).access, "ready", "status works without opening a setup session after reconnect");
     const resumed = await call(prefix, { remotePort: teamPort });
     assert.equal(resumed.currentVersion, true);
     assert.equal(JSON.parse(await readFile(runtimeFile, "utf8")).pid, runtime.pid, "resume reuses the existing team server");
     assert.equal((await call(prefix + "/api/projects")).length, 1);
     assert.equal((await call(prefix + "/api/accounts")).users.length, 1);
     await page.setViewportSize({ width: 1440, height: 1100 });
-    page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "Stop team server", exact: true }).click();
-    await page.getByRole("button", { name: "Set up on this server", exact: true }).waitFor();
+    await page.getByRole("dialog", { name: "Stop team server?", exact: true }).getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal((await fetch(`http://127.0.0.1:${runtime.port}/api/health`, { headers: { authorization: `Bearer ${runtime.token}` } })).status, 200);
+    await page.getByRole("button", { name: "Stop team server", exact: true }).click();
+    await page.getByRole("dialog", { name: "Stop team server?", exact: true }).getByRole("button", { name: "Stop server", exact: true }).click();
+    await page.getByRole("button", { name: "Open or start team server", exact: true }).waitFor();
     for (let i = 0; i < 60; i++) { if (await fetch(`http://127.0.0.1:${runtime.port}/api/health`, { headers: { authorization: `Bearer ${runtime.token}` } }).then(() => false, () => true)) break; await pause(100); }
     // Launch the exact installed systemd entry point, without SSH or a login shell.
     // This tests boot-time execution, supervision and persistence without rebooting the host.
@@ -145,7 +183,7 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     }
     assert.notEqual(booted.pid, runtime.pid); assert.notEqual(booted.pid, process.pid, "a previous boot’s recycled PID does not block startup"); assert.equal(booted.bootId, "current-test-boot"); assert.equal(service.exitCode, null, "service supervisor remains in the foreground");
     assert.ok(!serviceOutput.includes(booted.token), "service logs never print the owner handshake");
-    await page.getByRole("button", { name: "Set up on this server", exact: true }).click();
+    await page.getByRole("button", { name: "Open or start team server", exact: true }).click();
     await wizard.getByLabel("Project", { exact: true }).waitFor({ timeout: 60_000 });
     assert.equal(JSON.parse(await readFile(runtimeFile, "utf8")).pid, booted.pid, "SSH setup reuses the boot-started instance");
     assert.equal((await call(prefix + "/api/projects"))[0].id, teamProjects[0].id, "restart preserves team data");
@@ -153,6 +191,35 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     const exited = new Promise<void>(resolve => service!.once("exit", () => resolve()));
     service.kill("SIGTERM"); await exited;
     assert.ok(await fetch(`http://127.0.0.1:${booted.port}/api/health`, { headers: { authorization: `Bearer ${booted.token}` } }).then(() => false, () => true), "stopping the supervisor stops its child");
+    await page.goto(`${base}/computer/${connection.id}/#/team`);
+    await page.getByRole("heading", { name: "Workspace tasks", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Your board is ready for its first task", exact: true }).waitFor();
+    assert.equal(await page.getByText("Unknown team link operation", { exact: true }).count(), 0);
+    assert.equal(await page.getByRole("heading", { name: "Host queue", exact: true }).count(), 0);
+    await page.getByRole("button", { name: "Create first task", exact: true }).click();
+    await page.getByLabel("Title", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.getByRole("button", { name: "Mine", exact: true }).click();
+    await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+    await page.screenshot({ path: "/tmp/code-flow-team-board.png", fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await page.screenshot({ path: "/tmp/code-flow-team-board-mobile.png", fullPage: true, animations: "disabled" });
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    await page.goto(`${base}/computer/${connection.id}/#/settings/connections/sharing`);
+    await page.getByLabel("Show People collaboration").check();
+    const statusCard = page.getByRole("region", { name: "Team server on Connected VM", exact: true });
+    await statusCard.getByText("Not responding", { exact: true }).waitFor();
+    await statusCard.getByRole("button", { name: "Delete team server", exact: true }).click();
+    const deletion = page.getByRole("dialog", { name: "Delete team server on Connected VM?", exact: true });
+    await deletion.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal((await call(prefix + "/status")).state, "unavailable");
+    await statusCard.getByRole("button", { name: "Delete team server", exact: true }).click();
+    await deletion.getByRole("button", { name: "Delete permanently", exact: true }).click();
+    await statusCard.getByText("Not set up", { exact: true }).waitFor();
+    assert.deepEqual(await call(prefix + "/status"), { state: "not-installed" });
+    assert.equal((await call(`/computer/${connection.id}/api/projects`))[0].id, workspaceProject.id, "deleting the team server preserves the SSH workspace");
+    assert.equal(await readFile(join(f.repo, "remote.txt"), "utf8"), "REMOTE_ONLY\n");
     assert.deepEqual(errors, []);
   } finally {
     service?.kill("SIGTERM");

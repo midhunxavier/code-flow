@@ -1555,6 +1555,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (parts.length === 2 && req.method === "GET") return send(res, 200, await attempt(() => sshProjects.list()));
     if (parts.length === 2 && req.method === "POST") return send(res, 201, await attempt(async () => sshProjects.add(await readJson(req, 8192))));
     if (parts[3] === "team-server") {
+      if (parts[4] === "status" && parts.length === 5 && req.method === "GET") return send(res, 200, await attempt(() => sshProjects.teamServerStatus(parts[2]!)));
+      if (parts[4] === "installation" && parts.length === 5 && req.method === "DELETE") return send(res, 200, await attempt(() => sshProjects.removeTeamServer(parts[2]!)));
       if (parts[4] === "autostart" && parts.length === 5) {
         if (req.method === "GET") return send(res, 200, await attempt(() => sshProjects.teamAutostart(parts[2]!)));
         if (req.method === "POST") return send(res, 200, await attempt(async () => {

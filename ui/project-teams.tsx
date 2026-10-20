@@ -1,5 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
-import { api, post, showToast } from "./lib.js";
+import { api, post, showToast, ApiError } from "./lib.js";
 import { route, loadModels, agents } from "./state.js";
 import { ModelRow } from "./composer.js";
 import { subscribe } from "./stream.js";
@@ -12,9 +12,15 @@ type Inventory = { enabled: boolean; revision: number; autoTeamEnabled: boolean;
 const key = () => crypto.randomUUID();
 const lines = (value: string) => value.split("\n").map((s) => s.trim()).filter(Boolean);
 export function ProjectTeamsPanel({ projectId, repos }: { projectId: string; repos: string[] }) {
-  const [data, setData] = useState<Inventory>(), [error, setError] = useState(""), [creating, setCreating] = useState(false);
+  const [data, setData] = useState<Inventory>(), [error, setError] = useState<{ message: string; status?: number }>(), [creating, setCreating] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [featureBusy, setFeatureBusy] = useState(false), [featureError, setFeatureError] = useState("");
-  const load = () => api<Inventory>(`/api/project-teams?project=${encodeURIComponent(projectId)}`).then(setData, (e) => setError(e.message));
+  const load = async () => {
+    setLoading(true);
+    try { setData(await api<Inventory>(`/api/project-teams?project=${encodeURIComponent(projectId)}`)); setError(undefined); }
+    catch (e) { setError({ message: (e as Error).message, status: e instanceof ApiError ? e.status : undefined }); }
+    finally { setLoading(false); }
+  };
   const toggle = async () => {
     if (!data || featureBusy) return; setFeatureBusy(true); setFeatureError("");
     try { await post("/api/project-teams/settings", { enabled: !data.enabled, revision: data.revision }); setCreating(false); await load(); }
@@ -22,7 +28,13 @@ export function ProjectTeamsPanel({ projectId, repos }: { projectId: string; rep
     finally { setFeatureBusy(false); }
   };
   useEffect(() => { void load(); const refresh = () => { void load(); }; window.addEventListener("focus", refresh); const off = subscribe(`project-teams:${projectId}`, (event) => { if (event.type === "snapshot") setData((prior) => prior ? { ...prior, teams: event.teams, enabled: event.enabled, revision: event.revision, source: event.source, autoTeamEnabled: event.autoTeamEnabled } : prior); }); return () => { off(); window.removeEventListener("focus", refresh); }; }, [projectId]);
-  if (error) return <section class="pp-card"><h2>Project mission</h2><p role="alert">{error}</p></section>;
+  if (error) return <section class="pp-card pp-unavailable" aria-label="Project missions">
+    <div class="pp-card-head"><h2>Project missions</h2><span class="badge">Unavailable</span><button class="btn small" disabled={loading} onClick={() => void load()}>{loading ? "Retrying…" : "Retry"}</button></div>
+    <div class="pp-unavailable-body" role="alert">
+      <p>{error.status === 404 ? "Project missions aren’t available on this workspace." : "Couldn’t load project missions."}</p>
+      <p class="help">{error.status === 404 ? "The connected server doesn’t provide this feature. It may need an update." : error.message}</p>
+    </div>
+  </section>;
   if (!data) return null;
   return <section class="pp-card standing-teams" aria-label="Project missions">
     <ProjectBriefing teams={data.teams} />

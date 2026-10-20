@@ -230,8 +230,8 @@ test("start from a PR with a template: the council's findings are ranked, and po
   assert.match(await page.locator(".findings li").first().innerText(), /2 reviewers agree/);
   assert.equal(JSON.parse(readFileSync(ghState, "utf8")).prs[1].comments.length, 0, "nothing posted yet");
 
-  page.once("dialog", (d) => void d.accept());
   await page.getByRole("button", { name: "Post to PR #1" }).click();
+  await page.getByRole("dialog", { name: "Post review to GitHub?", exact: true }).getByRole("button", { name: "Post review", exact: true }).click();
   await page.getByText("Posted to PR #1").waitFor();
   assert.match(JSON.parse(readFileSync(ghState, "utf8")).prs[1].comments.at(-1).body, /Off-by-one in the loop/);
 });

@@ -65,15 +65,15 @@ async function audit(target: Page, screen: string) {
 }
 const fits = (target: Page) => target.evaluate(() => { const main = document.getElementById("main-content") ?? document.querySelector("main"); return document.documentElement.scrollWidth <= innerWidth && (!main || main.scrollWidth <= main.clientWidth + 1); });
 
-test("the People entry opens a board with five columns and the not-connected callout", async () => {
+test("the People entry opens a useful empty board with a workflow summary", async () => {
   await page.evaluate(() => localStorage.setItem("peopleEnabled", "1")); await page.reload();
   await page.getByRole("button", { name: "Application menu", exact: true }).click();
   await page.getByRole("menuitem", { name: "People", exact: true }).click();
   await page.waitForURL(/#\/team$/);
   await page.getByRole("heading", { level: 1, name: "People", exact: true }).waitFor();
-  const columns = page.locator("section.team-column"); await columns.first().waitFor();
-  assert.deepEqual(await columns.evaluateAll((sections) => sections.map((section) => section.querySelector("h2")?.firstChild?.textContent)), ["Planned", "Working", "Blocked", "In review", "Done"]);
-  assert.equal(await page.locator("section.team-column .team-column-empty").count(), 5, "an empty board says so in every column");
+  await page.getByRole("heading", { name: "Your board is ready for its first task", exact: true }).waitFor();
+  assert.deepEqual(await page.locator(".team-workflow > span").evaluateAll(items => items.map(item => item.firstChild?.textContent)), ["Planned", "Working", "Blocked", "In review", "Done"]);
+  assert.equal(await page.locator("section.team-column").count(), 0, "an empty board uses one actionable state instead of empty columns");
   await page.getByText("Not connected to a team server", { exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: /Open Connections → Share access/ }).getAttribute("href"), "#/settings/connections/sharing");
   await page.getByRole("heading", { name: /^Inbox/ }).waitFor(); await page.getByText("Nothing yet.", { exact: false }).waitFor();
@@ -199,6 +199,40 @@ test("a shared contributor signs in, finds the task under Team and comments, wit
   await shared.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" }); await shared.setViewportSize({ width: 1280, height: 900 });
   assert.deepEqual(violations, []);
   if (process.env.CODEFLOW_UI_SCREENSHOTS) { mkdirSync(join(root, "output/playwright"), { recursive: true }); await shared.screenshot({ path: join(root, "output/playwright/team-task-shared-mobile.png"), fullPage: true }); }
+  assert.deepEqual(errors, []);
+});
+
+test("a signed-in maintainer can cancel task deletion in the app modal", async () => {
+  const accounts = await api<{ revision: number }>("/api/accounts");
+  await api("/api/accounts", { method: "POST", body: JSON.stringify({ revision: accounts.revision, username: "morgan", displayName: "Morgan Maintainer", password, roles: { [projectId]: "maintainer" } }) });
+  const context = await browser.newContext(); contexts.push(context);
+  const maintainer = await context.newPage();
+  maintainer.on("pageerror", error => errors.push(`maintainer: ${error.message}`));
+  await maintainer.goto(base);
+  await maintainer.getByLabel("Username", { exact: true }).fill("morgan");
+  await maintainer.getByLabel("Password", { exact: true }).fill(password);
+  await maintainer.getByRole("button", { name: "Sign in", exact: true }).click();
+  await maintainer.getByRole("heading", { name: "Shared project review", exact: true }).waitFor();
+  await maintainer.goto(`${base}/#/team/task/${taskId}`);
+  await maintainer.getByRole("button", { name: "Delete task", exact: true }).click();
+  const dialog = maintainer.getByRole("dialog");
+  await dialog.waitFor();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal((await task()).id, taskId);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test("a route handed off by another window cancels destructive confirmation", async () => {
+  await page.goto(`${base}/#/team/task/${taskId}`);
+  await page.getByRole("button", { name: "Delete task", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete this task?", exact: true });
+  await dialog.waitFor();
+  await page.evaluate(() => window.postMessage({ type: "codeflow:open", route: { view: "team" } }, location.origin));
+  await page.waitForURL(/#\/team$/);
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal((await task()).id, taskId, "navigation declines the deletion without changing the task");
   assert.deepEqual(errors, []);
 });
 
