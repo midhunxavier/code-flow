@@ -212,9 +212,9 @@ test("pair through Tailscale, mutate and stream, revoke a device and rotate link
   assert.equal((await tab.request.get(`https://codeflow.tail-test.ts.net:${remotePort}/api/runs`)).status(), 401);
   const second = await phone(); await second.goto(info.tailscaleUrl);
   assert.equal((await responseFrom(second, "/api/runs")).status, 200);
-  owner.once("dialog", (dialog) => dialog.accept());
   const rotated = owner.waitForResponse((r) => r.url().endsWith("/api/remote") && r.request().method() === "POST");
   await section.getByRole("button", { name: "New link", exact: true }).click();
+  await owner.getByRole("dialog", { name: "Replace access link?", exact: true }).getByRole("button", { name: "Replace link", exact: true }).click();
   await rotated;
   const changed = await api();
   assert.notEqual(changed.phonePath, info.phonePath);

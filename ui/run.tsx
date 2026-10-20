@@ -1,3 +1,4 @@
+import { confirmAction } from "./confirm-state.js";
 import { intentDraft, LiveProgress, ResultStudio } from "./experience.js";
 import { journeyDraft } from "./journeys.js";
 import { nextRunAction, executionLabel } from "./run-experience.js";
@@ -199,8 +200,8 @@ export function RunView({ id }: { id: string }) {
               {!finished ? (
                 <button
                   class="btn danger"
-                  onClick={() => {
-                    if (confirm(checking ? "Stop the running checks? Finished work stays on its branch; verification will be incomplete." : "Stop this run? Agents still working will be stopped; finished work stays on its branches.")) {
+                  onClick={async () => {
+                    if (await confirmAction(checking ? "Stop the running checks? Finished work stays on its branch; verification will be incomplete." : "Stop this run? Agents still working will be stopped; finished work stays on its branches.", {"title":"Stop current work?","confirmLabel":"Stop work","danger":true})) {
                       post(`/api/runs/${run.id}/cancel`).catch((e) => showToast(e.message));
                     }
                   }}
@@ -803,7 +804,7 @@ function ReviewCard({ run }: { run: RunSummary }) {
               class="btn small primary"
               disabled={busy || run.status === "running"}
               onClick={async () => {
-                if (!confirm(`Post this review as a comment on PR #${pr.number}? Everyone with access to the PR will see it.`)) return;
+                if (!await confirmAction(`Post this review as a comment on PR #${pr.number}? Everyone with access to the PR will see it.`, {"title":"Post review to GitHub?","confirmLabel":"Post review","danger":false})) return;
                 setBusy(true);
                 try {
                   await post(`/api/runs/${run.id}/post-review`);
@@ -890,7 +891,7 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false }: { run:
               disabled={pushing}
               title={`Push this branch to ${fromPr.headRefName}, updating PR #${fromPr.number} (never forced)`}
               onClick={async () => {
-                if (!confirm(`Push ${artifact.branch} to ${fromPr.headRefName}? This updates PR #${fromPr.number} on GitHub.`)) return;
+                if (!await confirmAction(`Push ${artifact.branch} to ${fromPr.headRefName}? This updates PR #${fromPr.number} on GitHub.`, {"title":"Push changes to GitHub?","confirmLabel":"Push changes","danger":false})) return;
                 setPushing(true);
                 try {
                   await post(`/api/runs/${run.id}/push-pr`, { branch: artifact.branch });
@@ -1183,7 +1184,7 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
     setValidation(null);
     try { setValidation(await post(`/api/runs/${run.id}/validate-merge`, { branch, into: target, allowUntrusted })); }
     catch (error) {
-      if (error instanceof ApiError && error.confirm === "allowUntrusted" && confirm(`${error.message}\n\nRun validation on this computer?`)) { setBusy(false); await validateTarget(true); return; }
+      if (error instanceof ApiError && error.confirm === "allowUntrusted" && await confirmAction(`${error.message}\n\nRun validation on this computer?`, {"title":"Run validation locally?","confirmLabel":"Run validation","danger":true})) { setBusy(false); await validateTarget(true); return; }
       showToast((error as Error).message, 5000);
     } finally { setBusy(false); }
   };
@@ -1267,7 +1268,7 @@ function PrMergePanel({ run, branch, worktree, steps }: { run: RunSummary; branc
   const name = info ? `PR #${info.number}` : "the PR";
   const open = info?.state === "OPEN";
   const merge = async () => {
-    if (!info || !confirm(`${MERGE_METHOD_TEXT[how]}: merge ${name} into ${info.baseRefName} on GitHub?`)) return;
+    if (!info || !await confirmAction(`${MERGE_METHOD_TEXT[how]}: merge ${name} into ${info.baseRefName} on GitHub?`, {"title":"Merge pull request?","confirmLabel":"Merge pull request","danger":true})) return;
     setBusy(true);
     try {
       const outcome = await post<{ merged: boolean; already?: boolean; into: string }>(`/api/runs/${run.id}/merge-pr`, { branch, method: how, archiveAfter });
@@ -1407,7 +1408,7 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
       if (!onPhone) showInPanel(started.url);
     } catch (e) {
       if (!(e instanceof ApiError) || e.confirm !== "allowUntrusted") return showToast((e as Error).message, 5000);
-      if (!confirm(`${e.message}\n\nRun it on this computer anyway?`)) return;
+      if (!await confirmAction(`${e.message}\n\nRun it on this computer anyway?`, {"title":"Run repository code locally?","confirmLabel":"Run app","danger":true})) return;
       await post(base + "/serve", { command, allowUntrusted: true }).then(setServer, (err) => showToast(err.message, 5000));
     }
   };
@@ -1532,7 +1533,7 @@ function AwaitingCard({ run }: { run: RunSummary }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const answer = async (decision: "approve" | "revise" | "reject") => {
-    if (decision === "reject" && !confirm("Reject and end the run? Nothing will be built.")) return;
+    if (decision === "reject" && !await confirmAction("Reject and end the run? Nothing will be built.", {"title":"Reject this plan?","confirmLabel":"Reject plan","danger":true})) return;
     setBusy(true);
     try {
       await post(`/api/runs/${run.id}/answer`, { decision, note });
@@ -1842,7 +1843,7 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
   const stick = useRef(true);
   const [shown, setShown] = useState(PAGE);
   const page = step ? data.pages?.get(step.id) : undefined;
-  useEffect(() => { if (step && data.pages && !data.pages.get(step.id)?.loaded) void loadStepTranscript(run.id, step.id); }, [run.id, step?.id, data.pages]);
+  useEffect(() => { if (step && data.pagedTranscript && !data.pages.get(step.id)?.loaded) void loadStepTranscript(run.id, step.id); }, [run.id, step?.id, data.pages, data.pagedTranscript]);
   useEffect(() => setShown(PAGE), [step?.id]);
   useEffect(() => {
     if (stick.current && body.current) body.current.scrollTop = body.current.scrollHeight;
@@ -1876,7 +1877,7 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
             type="button"
             class="btn small show-earlier"
             disabled={shown >= 1000}
-            title={shown >= 1000 ? "Use Earlier events to read more history in bounded pages" : undefined}
+            title={shown >= 1000 ? data.pagedTranscript ? "Use Earlier events to read more history in bounded pages" : "Update the remote server to browse more history in bounded pages" : undefined}
             onClick={() => {
               stick.current = false;
               setShown(Math.min(1000, shown + PAGE * 5));

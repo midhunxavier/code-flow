@@ -1,3 +1,4 @@
+import { confirmAction } from "./confirm-state.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Board, RepoRef } from "../src/collab/model.js";
 import type { SharedAccountState, SharedRole } from "../src/shared-accounts.js";
@@ -7,6 +8,7 @@ import { loadProjects, repo } from "./state.js";
 import { teamServerAddress } from "./collab-state.js";
 import { SecureRemoteSetup, type RemoteInfo } from "./remote-access.js";
 import { selectTeamConnection } from "./team-connections.js";
+import { repositoryChoice } from "./team-repository-choice.js";
 
 const STEPS = ["Project", "Repositories", "Secure access", "Teammates", "Share"];
 const blankRepo = (): RepoRef => ({ key: "app", label: "App", defaultBranch: "main" });
@@ -20,6 +22,7 @@ export function TeamServerWizard({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState(""), [port, setPort] = useState("4318"), [installed, setInstalled] = useState(false);
   const [autostart, setAutostart] = useState<Autostart | null>(null);
   const [startupError, setStartupError] = useState("");
+  const [versionNote, setVersionNote] = useState("");
   const hostName = hosts.find((host) => host.id === target)?.name ?? "Remote server";
   const prefix = `/api/ssh-hosts/${target}/team-server`;
   const refresh = async () => { try { setHosts((await localApi<{ hosts: SetupHost[] }>("/api/ssh-hosts")).hosts); setError(""); } catch (err) { setError((err as Error).message); } };
@@ -42,13 +45,13 @@ export function TeamServerWizard({ onClose }: { onClose: () => void }) {
       }
       const result = await localApi<{ remotePort: number; currentVersion: boolean }>(prefix, { method: "POST", body: JSON.stringify({ remotePort: Number(port) }) });
       setPort(String(result.remotePort)); setInstalled(true);
-      if (!result.currentVersion) throw new Error("This team server runs a different Code Flow version. Stop the team server below, then set it up again to install this version. Saved projects and accounts stay in place.");
+      setVersionNote(result.currentVersion ? "" : "A newer Code Flow version is available. You can edit the current settings, or stop the server and start it again to update. Saved projects and accounts stay in place.");
       setPrepared(target);
       await startup();
     } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   };
   const stop = async () => {
-    if (busy || !confirm(`Stop the team server on ${hostName}? Teammates will lose access until it is started again. Saved projects and accounts stay in place. Automatic startup, if enabled, will still apply at the next reboot.`)) return;
+    if (busy || !await confirmAction(`Stop the team server on ${hostName}? Teammates will lose access until it is started again. Saved projects and accounts stay in place. Automatic startup, if enabled, will still apply at the next reboot.`, {"title":"Stop team server?","confirmLabel":"Stop server","danger":true})) return;
     setBusy(true); setError("");
     try { await localApi(prefix, { method: "DELETE" }); setPrepared(""); setInstalled(false); }
     catch (err) { setError((err as Error).message); } finally { setBusy(false); }
@@ -62,7 +65,7 @@ export function TeamServerWizard({ onClose }: { onClose: () => void }) {
       {target !== "local" ? <>
         <p>Host the team on {hostName}. Setup installs a separate Code Flow server using your SSH connection. Its projects and accounts are separate from the SSH workspace.</p>
         <p class="help">It keeps running when SSH disconnects. After setup, enable automatic startup to bring it back after a reboot on Linux servers with systemd.</p>
-        {prepared !== target ? <><label>Team HTTPS port<input class="field" aria-label="Team HTTPS port" type="number" min={1} max={65535} step={1} disabled={busy} value={port} onInput={(event) => setPort(event.currentTarget.value)} /></label><p class="help">Allow this port in the server’s firewall. HTTPS is configured in the next steps. A running server keeps its existing port.</p><button class="btn primary" disabled={busy || !hosts.some((host) => host.id === target) || !Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535} onClick={() => void prepare()}>{busy ? "Setting up server…" : hosts.find((host) => host.id === target)?.state === "connected" ? "Set up on this server" : "Connect and set up on this server"}</button><button class="btn" disabled={busy} onClick={onClose}>Close setup</button></> : <p role="status">Connected to the team server on {hostName} · port {port}</p>}
+        {prepared !== target ? <><label>Team HTTPS port<input class="field" aria-label="Team HTTPS port" type="number" min={1} max={65535} step={1} disabled={busy} value={port} onInput={(event) => setPort(event.currentTarget.value)} /></label><p class="help">Allow this port in the server’s firewall. HTTPS is configured in the next steps. A running server keeps its existing port.</p><button class="btn primary" disabled={busy || !hosts.some((host) => host.id === target) || !Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535} onClick={() => void prepare()}>{busy ? "Setting up server…" : hosts.find((host) => host.id === target)?.state === "connected" ? "Open or start team server" : "Connect and set up on this server"}</button><button class="btn" disabled={busy} onClick={onClose}>Close setup</button></> : <p role="status">Connected to the team server on {hostName} · port {port}</p>}
         {installed ? <div class="remote-status" aria-label="Automatic startup">
           <h4>Start automatically after reboot</h4>
           <p class="help">Uses a systemd service for your SSH account. Changing this setting leaves the running server in place.</p>
@@ -77,11 +80,12 @@ export function TeamServerWizard({ onClose }: { onClose: () => void }) {
       </> : null}
       {error ? <p class="msg err" role="alert">{error}</p> : null}
     </section>
-    {prepared === target ? <TeamServerSteps key={target} onClose={onClose} prefix={target === "local" ? "" : prefix} hostName={target === "local" ? "this computer" : hostName} onBusy={setChildBusy} /> : null}
+    {versionNote && installed ? <p class="help" role="status">{versionNote}</p> : null}
+    {prepared === target ? <TeamServerSteps key={target} onClose={onClose} prefix={target === "local" ? "" : prefix} workspacePrefix={target === "local" ? "" : `/computer/${encodeURIComponent(target)}`} hostName={target === "local" ? "this computer" : hostName} onBusy={setChildBusy} /> : null}
   </>;
 }
 
-function TeamServerSteps({ onClose, prefix, hostName, onBusy }: { onClose: () => void; prefix: string; hostName: string; onBusy: (busy: boolean) => void }) {
+function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }: { onClose: () => void; prefix: string; workspacePrefix: string; hostName: string; onBusy: (busy: boolean) => void }) {
   // Explicit target; never inherit the browser tab's team or workspace selection.
   const host = <T,>(path: string, body?: object, method = "POST") => localApi<T>(prefix + (path.startsWith("/api/team/") ? `${path}${path.includes("?") ? "&" : "?"}teamConnection=local` : path), body ? { method, body: JSON.stringify(body) } : {});
   const [step, setStep] = useState(0), [busy, setBusy] = useState(false), [error, setError] = useState("");
@@ -89,7 +93,7 @@ function TeamServerSteps({ onClose, prefix, hostName, onBusy }: { onClose: () =>
   const [projects, setProjects] = useState<Project[]>([]), [board, setBoard] = useState<Board | null>(null);
   const [accounts, setAccounts] = useState<SharedAccountState | null>(null), [remote, setRemote] = useState<RemoteInfo | null>(null);
   const [projectId, setProjectId] = useState(""), [projectName, setProjectName] = useState(""), [folder, setFolder] = useState(prefix ? "" : repo.value);
-  const [ownerName, setOwnerName] = useState(""), [rows, setRows] = useState<RepoRef[]>([blankRepo()]);
+  const [ownerName, setOwnerName] = useState(""), [rows, setRows] = useState<(RepoRef & { sourcePath?: string })[]>([blankRepo()]);
   const [person, setPerson] = useState(""), [username, setUsername] = useState(""), [displayName, setDisplayName] = useState(""), [password, setPassword] = useState(""), [role, setRole] = useState<SharedRole>("contributor");
   const [notice, setNotice] = useState("");
   const [transport, setTransport] = useState<"tailscale" | "lan">("tailscale");
@@ -97,6 +101,22 @@ function TeamServerSteps({ onClose, prefix, hostName, onBusy }: { onClose: () =>
   const members = accounts?.users.filter((user) => user.enabled && user.roles[projectId]) ?? [];
   const address = remote?.enabled && remote.lan && !remote.lanError ? teamServerAddress(remote) : undefined;
   const configuredRepos = board?.projects.find((entry) => entry.id === projectId)?.repositories ?? [];
+  const [workspaceProjects, setWorkspaceProjects] = useState<Project[]>([]);
+  const [repositoryError, setRepositoryError] = useState("");
+  const [loadingRepositories, setLoadingRepositories] = useState(false);
+  const knownRepositories = [...new Set([...projects, ...workspaceProjects].flatMap(entry => entry.repos))];
+  const refreshRepositories = async () => {
+    setLoadingRepositories(true); setRepositoryError("");
+    try { setWorkspaceProjects(await localApi<Project[]>(`${workspacePrefix}/api/projects`)); }
+    catch (err) { setRepositoryError(`Could not load repositories from ${hostName}: ${(err as Error).message}`); }
+    finally { setLoadingRepositories(false); }
+  };
+  useEffect(() => { void refreshRepositories(); }, []);
+  const chooseRepository = (index: number, path: string) => {
+    setRows(current => current.map((entry, at) => at !== index ? entry : path
+      ? { ...entry, ...repositoryChoice(path, current.filter((_, other) => other !== index).map(row => row.key)), sourcePath: path, remote: undefined }
+      : { ...entry, sourcePath: undefined }));
+  };
   const ready = !!project && configuredRepos.length > 0 && !!address && members.some((user) => canRun(user.roles[projectId]));
 
   const run = async (action: () => Promise<void>) => {
@@ -159,8 +179,8 @@ function TeamServerSteps({ onClose, prefix, hostName, onBusy }: { onClose: () =>
 
   return <section class="settings-card team-server-wizard" aria-label="Team server setup" aria-busy={busy}>
     <div class="pp-card-head"><h3>Set up team server</h3><button class="btn small" disabled={busy} onClick={onClose}>Close setup</button></div>
-    <p class="help">Host a shared board on {hostName}. Saved steps stay in place if you close setup. Your other team connections keep working.</p>
-    <ol class="team-setup-steps" aria-label="Setup progress">{STEPS.map((label, index) => <li key={label} aria-current={step === index ? "step" : undefined}><span>{index + 1}</span>{label}</li>)}</ol>
+    <p class="help">Edit the team server on {hostName}. Choose a section below. Saved settings stay in place when you close setup.</p>
+    <ol class="team-setup-steps" aria-label="Setup progress">{STEPS.map((label, index) => <li key={label} aria-current={step === index ? "step" : undefined}><button type="button" disabled={busy || !board || (index > 0 && !project)} aria-current={step === index ? "step" : undefined} onClick={() => { if (index === 1 && step !== 1) setRows(configuredRepos.length ? configuredRepos.map(entry => ({ ...entry })) : [blankRepo()]); setStep(index); }}><span>{index + 1}</span>{label}</button></li>)}</ol>
     <h4 ref={heading} tabIndex={-1}>Step {step + 1} of 5: {STEPS[step]}</h4>
     {!board || !accounts || !remote ? <p class="help">{error ? "Setup could not load your current settings." : "Loading your current settings…"}<button class="btn small" disabled={busy} onClick={() => void load()}>Retry loading settings</button></p> : <>
       {step === 0 ? <form onSubmit={(event) => { event.preventDefault(); void next(); }}>
@@ -172,7 +192,15 @@ function TeamServerSteps({ onClose, prefix, hostName, onBusy }: { onClose: () =>
         </fieldset>
       </form> : null}
       {step === 1 ? <form onSubmit={(event) => { event.preventDefault(); void next(); }}><p class="help">Give each repository a shared name. Teammates use these keys to choose their own local clones.</p><fieldset disabled={busy} class="team-setup-fields"><legend class="sr-only">Shared repositories</legend>
-        {rows.map((entry, index) => <div class="team-setup-repo" key={index}>{(["key", "label", "remote", "defaultBranch"] as const).map((field) => <label key={field}>{({ key: "Repository key", label: "Repository label", remote: "Git URL (optional)", defaultBranch: "Default branch" })[field]}<input class="field" required={field === "key"} maxLength={field === "key" ? 64 : field === "label" ? 80 : field === "remote" ? 300 : 100} pattern={field === "key" ? "[a-z][a-z0-9-]{0,63}" : undefined} value={entry[field] ?? ""} onInput={(event) => setRows(rows.map((row, at) => at === index ? { ...row, [field]: event.currentTarget.value } : row))} /></label>)}<button class="btn small" type="button" onClick={() => setRows(rows.filter((_, at) => at !== index))}>Remove repository {index + 1}</button></div>)}
+        <div class="settings-actions"><button class="btn small" type="button" disabled={loadingRepositories} onClick={() => void refreshRepositories()}>{loadingRepositories ? "Loading repositories…" : "Refresh repositories"}</button></div>
+        {repositoryError ? <p class="msg err" role="alert">{repositoryError}</p> : null}
+        {rows.map((entry, index) => <div class="team-setup-repo" key={index}>
+          <label class="team-setup-repo-source">Use an existing repository<select class="field" aria-label={`Existing repository ${index + 1}`} value={entry.sourcePath ?? ""} onChange={event => chooseRepository(index, event.currentTarget.value)}>
+            <option value="">Enter repository details manually</option>
+            {knownRepositories.map(path => <option key={path} value={path} disabled={rows.some((row, at) => at !== index && row.sourcePath === path)}>{path}</option>)}
+          </select></label>
+          <p class="help team-setup-repo-source">{knownRepositories.length ? `Choose a repository from the existing projects on ${hostName}${workspacePrefix ? ", including its SSH workspace" : ""}. This fills the shared key and label; add its Git URL and check the default branch below.` : `No repository folders were found in the projects on ${hostName}. Add the folder to a project on that computer and refresh repositories, or enter the shared details manually.`} Teammates still map the key to their own checkout after connecting.</p>
+          {(["key", "label", "remote", "defaultBranch"] as const).map((field) => <label key={field}>{({ key: "Repository key", label: "Repository label", remote: "Git URL (optional)", defaultBranch: "Default branch" })[field]}<input class="field" required={field === "key"} maxLength={field === "key" ? 64 : field === "label" ? 80 : field === "remote" ? 300 : 100} pattern={field === "key" ? "[a-z][a-z0-9-]{0,63}" : undefined} value={entry[field] ?? ""} onInput={(event) => setRows(rows.map((row, at) => at === index ? { ...row, [field]: event.currentTarget.value } : row))} /></label>)}<button class="btn small" type="button" onClick={() => setRows(rows.filter((_, at) => at !== index))}>Remove repository {index + 1}</button></div>)}
         <div class="settings-actions"><button class="btn" type="button" disabled={rows.length >= 50} onClick={() => setRows([...rows, { key: "", label: "", defaultBranch: "main" }])}>Add repository</button><button class="btn primary" type="submit">Save repositories and continue</button></div>
       </fieldset></form> : null}
       {step === 2 ? <div class="team-setup-fields">

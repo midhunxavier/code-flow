@@ -1,3 +1,4 @@
+import { confirmAction } from "./confirm-state.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { HostControl, newProjectDraft } from "./ssh-projects.js";
 import { useDialog } from "./app.js";
@@ -157,7 +158,7 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
   };
   const remove = async () => {
     if (!project) return;
-    if (!confirm(`Delete the project “${project.name}”? ${inProject.length ? `Its ${plural(inProject.length, "run")} stay, in no project.` : "It has no runs."}`)) return;
+    if (!await confirmAction(`Delete the project “${project.name}”? ${inProject.length ? `Its ${plural(inProject.length, "run")} stay, in no project.` : "It has no runs."}`, {"title":"Delete this project?","confirmLabel":"Delete project","danger":true})) return;
     try {
       await api(`/api/projects/${project.id}`, { method: "DELETE" });
       await loadProjects();

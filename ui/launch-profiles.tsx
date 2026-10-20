@@ -1,3 +1,4 @@
+import { confirmAction } from "./confirm-state.js";
 import { pollVisible } from "./polling.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, ApiError, enc, post, showToast } from "./lib.js";
@@ -38,7 +39,8 @@ export function LaunchProfilesPanel({ runId, worktree }: { runId: string; worktr
       try { session = await post<LaunchSession>(route, body); }
       catch (err) {
         if (!(err instanceof ApiError) || err.confirm !== "allowUntrusted") throw err;
-        if (scope !== generation.current || op !== action.current || !confirm(`${err.message}\n\nStart these repository commands on this computer?`)) return;
+        if (scope !== generation.current || op !== action.current || !await confirmAction(`${err.message}\n\nStart these repository commands on this computer?`, {"title":"Start repository commands?","confirmLabel":"Start commands","danger":true})) return;
+        if (scope !== generation.current || op !== action.current) return;
         session = await post<LaunchSession>(route, { ...body, allowUntrusted: true });
       }
       if (scope !== generation.current || op !== action.current) return;

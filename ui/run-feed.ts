@@ -11,6 +11,7 @@ import type { AgentEvent, RunEvent, RunSummary, Step } from "./types.js";
 
 export interface StepPage { before?: string; loading: boolean; loaded: boolean; historical: boolean; error?: string; request: number }
 export interface RunData {
+  pagedTranscript: boolean;
   cache: TranscriptCache;
   pages: Map<string, StepPage>;
   steps: Map<string, Step>;
@@ -26,7 +27,7 @@ export interface RunData {
   epoch: string;
 }
 
-export const emptyData = (): RunData => ({ cache: new TranscriptCache(), pages: new Map(), steps: new Map(), events: new Map(), built: new Map(), logs: [], seen: new Set(), runSeq: 0, stepSeq: new Map(), epoch: "" });
+export const emptyData = (): RunData => ({ pagedTranscript: true, cache: new TranscriptCache(), pages: new Map(), steps: new Map(), events: new Map(), built: new Map(), logs: [], seen: new Set(), runSeq: 0, stepSeq: new Map(), epoch: "" });
 
 /**
  * One run's events, shared by everything that shows the run (the run view, and the side panel's
@@ -46,6 +47,7 @@ interface RunFeed {
   version: Signal<number>;
   users: number;
   stop?: () => void;
+  legacy?: boolean;
   stepListeners: Set<(step: Step) => void>;
   /** The newest snapshot, shown at the next frame. */
   pending?: RunSummary;
@@ -74,9 +76,26 @@ function feedFor(id: string): RunFeed {
 
 function use(feed: RunFeed) {
   if (feed.users++) return;
+  connectFeed(feed);
+}
+
+function connectFeed(feed: RunFeed) {
   feed.stop = subscribe(
-    `run-page:${feed.id}`,
-    (ev) => receive(feed, ev),
+    `${feed.legacy ? "run" : "run-page"}:${feed.id}`,
+    (ev) => {
+      // Older SSH hosts know "run" but not the bounded "run-page" topic.
+      // Only negotiate on that exact unsupported-topic error, never on a
+      // missing run or a permissions failure.
+      if (!feed.legacy && ev.type === "error" && ev.status === 404 && ev.message === "Nothing to watch called “run-page”") {
+        feed.stop?.();
+        feed.legacy = true;
+        feed.data.current = { ...emptyData(), pagedTranscript: false };
+        feed.lastSeq = 0;
+        if (feed.users) connectFeed(feed);
+        return;
+      }
+      receive(feed, ev);
+    },
     () => (feed.data.current.epoch && feed.lastSeq ? `${feed.data.current.epoch}:${feed.lastSeq}` : undefined),
   );
 }
@@ -112,6 +131,7 @@ function receive(feed: RunFeed, ev: Message) {
       feed.data.current = { ...emptyData(), epoch: ev.epoch };
       feed.lastSeq = 0;
     }
+    feed.data.current.pagedTranscript = !feed.legacy;
     feed.problem.value = "";
     // The run as it is now: it outranks older snapshots in the history that follows. Where this
     // left off stays where the events got to, so a drop mid-history picks up from there.
@@ -173,6 +193,7 @@ function trim(feed: RunFeed, removed: RunEvent[]) {
 /** Each step has a bounded window. Earlier and Latest replace it rather than grow the DOM. */
 export async function loadStepTranscript(id: string, step: string, before?: string) {
   const feed = feedFor(id), data = feed.data.current;
+  if (feed.legacy) return; // Its run stream supplies transcripts; the HTTP paging API is unavailable.
   const old = data.pages.get(step);
   if (old?.loading) return;
   const state: StepPage = { before: old?.before, loading: true, loaded: old?.loaded ?? false, historical: old?.historical ?? false, request: (old?.request ?? 0) + 1 };

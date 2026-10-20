@@ -1,3 +1,4 @@
+import { confirmAction } from "./confirm-state.js";
 import { ProjectTeamsInbox } from "./project-teams.js";
 import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
@@ -222,7 +223,7 @@ export function TriageActions({ run }: { run: RunSummary }) {
   const [calls, setCalls] = useState(run.loop.maxInvocations ?? run.loop.maxSteps);
   const [minutes, setMinutes] = useState(run.loop.maxMinutes);
   const act = async (decision: "approve" | "revise" | "reject", extra: Record<string, unknown> = {}) => {
-    if (decision === "reject" && !confirm("Reject this result? Its worktrees and branches are deleted.")) return;
+    if (decision === "reject" && !await confirmAction("Reject this result? Its worktrees and branches are deleted.", {"title":"Reject this result?","confirmLabel":"Reject result","danger":true})) return;
     setBusy(decision);
     try {
       await post(`/api/runs/${run.id}/triage`, { decision, note, ...(decision === "revise" ? { budget: { maxSteps: calls, maxInvocations: calls, maxMinutes: minutes } } : {}), ...extra });
@@ -321,7 +322,7 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
         ) : null}
         <button
           class="btn small danger"
-          onClick={() => confirm(`Delete “${a.name}”? Its past runs are kept.`) && api(`/api/automations/${a.id}`, { method: "DELETE" }).then(loadAutomations, (e) => showToast(e.message))}
+          onClick={async () => await confirmAction(`Delete “${a.name}”? Its past runs are kept.`, {"title":"Delete automation?","confirmLabel":"Delete automation","danger":true}) && api(`/api/automations/${a.id}`, { method: "DELETE" }).then(loadAutomations, (e) => showToast(e.message))}
         >
           Delete
         </button>
@@ -358,7 +359,7 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
             <button class="btn small" onClick={() => copy(a.token, "Secret copied")}>
               Copy
             </button>
-            <button class="btn small" onClick={() => confirm("Make a new secret? The old one stops working.") && update({ rotateToken: true })}>
+            <button class="btn small" onClick={async () => await confirmAction("Make a new secret? The old one stops working.", {"title":"Replace webhook secret?","confirmLabel":"Replace secret","danger":true}) && update({ rotateToken: true })}>
               New secret
             </button>
           </div>

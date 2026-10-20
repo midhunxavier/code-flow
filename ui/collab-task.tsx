@@ -1,3 +1,4 @@
+import { confirmAction } from "./confirm-state.js";
 import { HostTaskControl } from "./host-execution.js";
 import { TeamConnectionPicker } from "./team-connections.js";
 import type { ComponentChildren } from "preact";
@@ -91,13 +92,13 @@ export function TeamTaskView({ id, shared = false, navigate }: { id: string; sha
             {canExecute ? <>
               {offeredToMe ? <><button type="button" class="btn small primary" disabled={!!busy} onClick={() => setDialog("accept")}>Accept and download</button><button type="button" class="btn small" disabled={!!busy} onClick={() => void respond("decline")}>Decline</button></> : null}
               {!offered && !running && task.status !== "done" ? <button type="button" class="btn small primary" disabled={!!busy} onClick={() => setDialog("start")}>Build with agents</button> : null}
-              {running && local ? <button type="button" class="btn small" disabled={!!busy} onClick={() => { if (confirm("Stop the attempt running on this computer? Its run can be resumed later and its work is kept.")) void link_("/stop", {}, "Stopping…", "Attempt stopped"); }}>Stop</button> : null}
+              {running && local ? <button type="button" class="btn small" disabled={!!busy} onClick={async () => { if (await confirmAction("Stop the attempt running on this computer? Its run can be resumed later and its work is kept.", {"title":"Stop this attempt?","confirmLabel":"Stop attempt","danger":true})) void link_("/stop", {}, "Stopping…", "Attempt stopped"); }}>Stop</button> : null}
               {resumable ? <button type="button" class="btn small" disabled={!!busy} onClick={() => void link_("/resume", {}, "Resuming…", "Attempt resumed")}>Resume</button> : null}
               {!offered && !running ? <button type="button" class="btn small" disabled={!!busy} onClick={() => setDialog("handover")}>Hand over…</button> : null}
             </> : null}
             {attempt?.state === "unknown" && ((isOwner && canEdit) || maintainer) ? <button type="button" class="btn small" disabled={!!busy} onClick={() => setDialog("recover")}>Recover attempt…</button> : null}
             {offered && !canExecute && offeredToMe ? <button type="button" class="btn small" disabled={!!busy} onClick={() => void respond("decline")}>Decline hand-over</button> : null}
-            {offered && (offeredByMe || maintainer) ? <button type="button" class="btn small" disabled={!!busy} onClick={() => { if (confirm("Cancel this hand-over? The task stays with its current owner.")) void respond("cancel"); }}>Cancel hand-over</button> : null}
+            {offered && (offeredByMe || maintainer) ? <button type="button" class="btn small" disabled={!!busy} onClick={async () => { if (await confirmAction("Cancel this hand-over? The task stays with its current owner.", {"title":"Cancel hand-over?","confirmLabel":"Cancel hand-over","danger":true})) void respond("cancel"); }}>Cancel hand-over</button> : null}
             {!task.owner && canEdit && meId ? <button type="button" class="btn small" disabled={!!busy || !!ownerProblem(task, role, meId)} title={ownerProblem(task, role, meId)} onClick={() => void save({ owner: meId }, "Taking the task…")}>Take this task</button> : null}
           </div>
           {offered ? <p class="msg warn" role="status">Hand-over offered to {whoLabel(offered.to, meId)} by {whoLabel(offered.from, meId)} {ago(offered.offeredAt)}{offered.note ? `: ${offered.note}` : ""}</p> : null}
@@ -137,7 +138,7 @@ function TaskHeader({ task, role, meId, members, canEdit, maintainer, busy, save
     </div>
     <div class="page-head-actions">
       <label class="team-status">Status<select class="field" value={task.status} disabled={!canEdit || !!busy} onChange={(event) => { const to = event.currentTarget.value as TaskStatus; if (to === "blocked") { setBlocking(true); return; } void save({ status: to }); }}>{TASK_STATUSES.map((state) => { const problem = state === task.status ? undefined : problemFor(state); return <option key={state} value={state} disabled={!!problem} title={problem}>{STATUS_LABEL[state]}</option>; })}</select></label>
-      {maintainer ? <button type="button" class="btn small danger" disabled={!!busy} onClick={() => { if (confirm("Delete this task, its checkpoints and its discussion? This cannot be undone.")) void act("Deleting…", async () => { await del(`/api/team/tasks/${enc(task.id)}`, { revision: task.revision }); }, () => { showToast("Task deleted"); navigate({ view: "team", project: task.projectId }); }); }}>Delete task</button> : null}
+      {maintainer ? <button type="button" class="btn small danger" disabled={!!busy} onClick={async () => { if (await confirmAction("Delete this task, its checkpoints and its discussion? This cannot be undone.", {"title":"Delete this task?","confirmLabel":"Delete task","danger":true})) void act("Deleting…", async () => { await del(`/api/team/tasks/${enc(task.id)}`, { revision: task.revision }); }, () => { showToast("Task deleted"); navigate({ view: "team", project: task.projectId }); }); }}>Delete task</button> : null}
       {canEdit && doneProblem && task.status !== "done" ? <p class="help">Done is unavailable: {doneProblem}.</p> : null}
       {blocking ? <form class="team-blocker" onSubmit={(event) => { event.preventDefault(); if (blocker.trim()) void save({ status: "blocked", blocker: blocker.trim() }).then((saved) => { if (saved) setBlocking(false); }); }}><label for="tt-blocker">What blocks the task?</label><textarea id="tt-blocker" class="field" rows={2} required maxLength={1000} value={blocker} disabled={!!busy} onInput={(event) => setBlocker(event.currentTarget.value)} /><div class="team-actions"><button type="submit" class="btn small primary" disabled={!!busy || !blocker.trim()}>Mark blocked</button><button type="button" class="btn small" onClick={() => setBlocking(false)}>Cancel</button></div></form> : null}
     </div>
@@ -228,7 +229,7 @@ function CheckpointsCard({ task, latest, meId, canEdit, maintainer, shared, busy
       <div class="team-actions">
         {!shared && canEdit && checkpoint.bundle === "available" ? <button type="button" class="btn small" disabled={!!busy} onClick={() => onFetch(checkpoint)}>Fetch to this computer…</button> : null}
         {canEdit && checkpoint.bundle === "available" ? <a class="btn small" href={apiPath(`/api/team/checkpoints/${enc(checkpoint.id)}/bundle`)} download={`checkpoint-${checkpoint.id.slice(0, 8)}.bundle`}>Download bundle</a> : null}
-        {maintainer && checkpoint.bundle !== "deleted" ? <button type="button" class="btn small danger" disabled={!!busy} onClick={() => { if (confirm("Delete this checkpoint's bundle? Teammates can no longer download or continue from it.")) void act("Deleting…", async () => { await del(`/api/team/checkpoints/${enc(checkpoint.id)}`); }, () => void reload()); }}>Delete</button> : null}
+        {maintainer && checkpoint.bundle !== "deleted" ? <button type="button" class="btn small danger" disabled={!!busy} onClick={async () => { if (await confirmAction("Delete this checkpoint's bundle? Teammates can no longer download or continue from it.", {"title":"Delete checkpoint bundle?","confirmLabel":"Delete bundle","danger":true})) void act("Deleting…", async () => { await del(`/api/team/checkpoints/${enc(checkpoint.id)}`); }, () => void reload()); }}>Delete</button> : null}
       </div>
     </article>)}
   </section>;

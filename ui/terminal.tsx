@@ -1,3 +1,4 @@
+import { confirmAction } from "./confirm-state.js";
 import { effect } from "@preact/signals";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
@@ -83,7 +84,7 @@ export function TerminalTab() {
 
   const close = async (k: string) => {
     const shell = list?.find((x) => x.id === k);
-    if (shell?.busy && !confirm(`Stop ${shell.running ?? "what's running"} in ${placeName(shell.cwd, places)} and close it?`)) return;
+    if (shell?.busy && !await confirmAction(`Stop ${shell.running ?? "what's running"} in ${placeName(shell.cwd, places)} and close it?`, {"title":"Stop and close terminal?","confirmLabel":"Stop and close","danger":true})) return;
     if (!k.startsWith(APP)) await api(`/api/shell/${k}`, { method: "DELETE" }).catch(() => {});
     const rest = open.filter((x) => x !== k);
     // Closing one of the two shown leaves the other on its own: no split, nothing kept for below.

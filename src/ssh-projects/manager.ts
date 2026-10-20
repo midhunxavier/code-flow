@@ -19,6 +19,7 @@ export class SshProjects {
   private sessions = new Map<string, Session>();
   private pending = new Map<string, Promise<Session>>();
   private closed = false;
+  private teamRemoving = new Set<string>();
   private teamSessions = new Map<string, Session>();
   private teamPending = new Map<string, Promise<{ remotePort: number; currentVersion: boolean }>>();
   private file: string;
@@ -88,6 +89,7 @@ export class SshProjects {
   /** Install an independent host. The workspace stays private and keeps running. */
   async setupTeamServer(id: string, body: { remotePort?: unknown }) {
     this.assertBrowse(); await this.load();
+    if (this.teamRemoving.has(id)) throw new HttpError(409, "Wait for team server deletion to finish");
     if (this.closed) throw new HttpError(503, "The local app is shutting down");
     const host = this.hosts.find((item) => item.id === id);
     if (!host) throw new HttpError(404, "SSH connection not found");
@@ -119,6 +121,7 @@ export class SshProjects {
     return pending;
   }
   async teamAutostart(id: string, action: string = "status") {
+    if (this.teamRemoving.has(id)) throw new HttpError(409, "Wait for team server deletion to finish");
     this.assertBrowse();
     if (!["status", "enable", "disable"].includes(action)) throw new HttpError(400, "Choose status, enable or disable for automatic startup");
     if (this.teamPending.has(id)) throw new HttpError(409, "Wait for team server setup to finish");
@@ -130,8 +133,37 @@ export class SshProjects {
     if (!result || typeof result.enabled !== "boolean" || typeof result.supported !== "boolean" || typeof result.message !== "string") throw new HttpError(502, "The server returned an invalid automatic startup status");
     return result;
   }
+  async teamServerStatus(id: string) {
+    this.assertBrowse(); await this.load();
+    if (!this.hosts.some(host => host.id === id)) throw new HttpError(404, "SSH connection not found");
+    const session = this.sessions.get(id);
+    if (!session || session.gateway.error) throw new HttpError(409, "Connect to this server to check its team server");
+    const code = await readFile(new URL("./team-status.mjs", import.meta.url), "utf8");
+    const text = await session.transport.bootstrap(code, "");
+    const result = JSON.parse(text.split(/\r?\n/).find(line => line.startsWith("CODEFLOW_TEAM_STATUS "))?.slice(21) ?? "null");
+    if (!result || !["running", "not-installed", "unavailable"].includes(result.state)) throw new HttpError(502, "Could not read the team server status");
+    return result;
+  }
+  async removeTeamServer(id: string) {
+    this.assertBrowse(); await this.load();
+    if (this.teamPending.has(id)) throw new HttpError(409, "Wait for team server setup to finish");
+    const session = this.sessions.get(id);
+    if (!session || session.gateway.error) throw new HttpError(409, "Connect to this server before deleting its team server");
+    if (this.teamRemoving.has(id)) throw new HttpError(409, "Team server deletion is already in progress");
+    this.teamRemoving.add(id);
+    try {
+      const code = await readFile(new URL("./team-remove.mjs", import.meta.url), "utf8");
+      const text = await session.transport.bootstrap(code + '\nconsole.log("CODEFLOW_TEAM_REMOVED " + JSON.stringify(await removeTeamServer()));', "");
+      const result = JSON.parse(text.split(/\r?\n/).find(line => line.startsWith("CODEFLOW_TEAM_REMOVED "))?.slice(22) ?? "null");
+      if (!result?.removed) throw new HttpError(502, "Team server deletion could not be verified");
+      const previous = this.teamSessions.get(id); this.teamSessions.delete(id);
+      if (previous) { await previous.gateway.close(); await previous.transport.close(); }
+      return { removed: true };
+    } finally { this.teamRemoving.delete(id); }
+  }
   async forwardTeamServer(id: string, req: IncomingMessage, res: ServerResponse, path: string, origin: string) {
     this.assertBrowse();
+    if (this.teamRemoving.has(id)) throw new HttpError(409, "Wait for team server deletion to finish");
     // This is an owner-only setup surface, not a general remote command proxy.
     const url = new URL(path, origin), method = req.method ?? "GET";
     const allowed = method === "GET" && /^\/api\/(projects|accounts|remote|team\/board)$/.test(url.pathname)

@@ -7,6 +7,7 @@ import { effect } from "@preact/signals";
 import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { App, notifyFinished } from "./app.js";
+import { ConfirmationHost } from "./confirm-dialog.js";
 import { SharedDashboard, SharedLogin } from "./shared.js";
 import type { SharedPrincipal } from "../src/shared-accounts.js";
 import { configureStreamSharing, type StreamSharing } from "./stream.js";
@@ -52,7 +53,7 @@ async function boot() {
   try {
     const identity = await localApi<{ kind: "owner"; streamSharing?: StreamSharing } | { kind: "anonymous" } | SharedPrincipal>("/api/auth/self");
     if (identity.kind === "anonymous") { render(<SharedLogin />, root); return; }
-    if (identity.kind === "shared") { render(<SharedDashboard identity={identity} />, root); return; }
+    if (identity.kind === "shared") { render(<><SharedDashboard identity={identity} /><ConfirmationHost /></>, root); return; }
     await loadExecutionHost();
     await initializeTeamConnection();
     const streamIdentity = executionHost.value.kind === "ssh" ? await api<{ streamSharing?: StreamSharing }>("/api/auth/self") : identity;

@@ -30,7 +30,14 @@ export function LiveProgress({ run, steps }: { run: RunSummary; steps: Step[] })
   const status = progressSummary(run, steps);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const change = async (path: string, body: object) => { setBusy(true); setError(""); try { await post(`/api/runs/${run.id}/${path}`, body); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } };
-  return <section class="live-progress" aria-label="Current progress"><div><h3>{status.title}</h3><p>{status.detail.slice(0, 700)}</p></div>{run.status === "running" ? <div class="experience-actions"><button class="btn small" disabled={busy} onClick={() => void change("pause", { paused: !run.pauseRequested })}>{run.pauseRequested ? "Resume dispatch" : "Pause dispatch"}</button><label>Run priority<select class="field" disabled={busy} value={run.priority ?? 0} onChange={e => void change("priority", { priority: Number(e.currentTarget.value) })}><option value={0}>Normal</option><option value={10}>High</option><option value={-10}>Low</option></select></label></div> : null}{error ? <p role="alert">{error}</p> : null}</section>;
+  return <section class={`live-progress ${run.status === "running" && !run.pauseRequested ? "is-running" : ""}`} aria-label="Current progress">
+    <div class="live-progress-copy"><h3><span class="live-progress-dot" aria-hidden="true" />{status.title}</h3><p>{status.detail.slice(0, 700)}{status.detail.length > 700 ? "…" : ""}</p></div>
+    {run.status === "running" ? <div class="live-progress-controls">
+      <button class="btn small" disabled={busy} onClick={() => void change("pause", { paused: !run.pauseRequested })}>{run.pauseRequested ? "Resume dispatch" : "Pause dispatch"}</button>
+      <label>Priority<select class="field" aria-label="Run priority" disabled={busy} value={run.priority ?? 0} onChange={e => void change("priority", { priority: Number(e.currentTarget.value) })}><option value={0}>Normal</option><option value={10}>High</option><option value={-10}>Low</option></select></label>
+    </div> : null}
+    {error ? <p class="live-progress-error" role="alert">{error}</p> : null}
+  </section>;
 }
 async function waitForPreview(run: RunSummary, worktree: string) {
   for (let attempt = 0; attempt < 40; attempt++) {

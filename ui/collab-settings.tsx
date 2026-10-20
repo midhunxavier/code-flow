@@ -1,6 +1,8 @@
+import { confirmAction } from "./confirm-state.js";
 import { TeamTerminalSettings } from "./team-terminals.js";
 import { HostExecutionSettings, HostQueue } from "./host-execution.js";
 import { TeamServerWizard } from "./team-server-wizard.js";
+import { SshTeamServerCard } from "./team-server-status.js";
 import { TeamConnectionPicker, selectTeamConnection } from "./team-connections.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Board, BoardProject, RepoRef, RunnerPublic } from "../src/collab/model.js";
@@ -21,10 +23,14 @@ export function TeamSettings() {
   usePoll(() => { void loadBoard(); void loadTeamLink(); }, 15_000, [teamTick.value]);
   const link = teamLink.value, b = board.value;
   if (setup && host.kind !== "host") return <TeamServerWizard onClose={() => { setSetup(false); void loadBoard(); }} />;
+  if (host.kind === "ssh") return <>
+    <SshTeamServerCard key={host.id} host={host} onManage={() => setSetup(true)} />
+    <section class="settings-card"><h3>SSH workspace · {host.name}</h3><p class="help">The workspace you opened over SSH has its own projects and task board. Manage the shared team server’s projects, accounts and HTTPS in the setup above.</p><a class="btn" href="/#/settings/connections/sharing">Connect your computer to a team</a></section>
+  </>;
   return <>
     {host.kind !== "host" ? <section class="settings-card"><h3>Host a team</h3><p class="help">Set up a shared board on this computer or a connected remote server, with secure access and teammate accounts in one guided flow. Existing team connections stay connected.</p><button class="btn primary" onClick={() => setSetup(true)}>Set up team server</button></section> : null}
     {host.kind === "local" ? <TeamConnectionPicker /> : null}
-    {host.kind === "local" ? <ThisComputerCard link={link} /> : <section class="settings-card"><h3>This computer</h3><p class="help">A team link belongs to the computer whose agents run the work. Connect from the code-flow on your own computer; this workspace runs on {host.kind === "ssh" ? host.name : "a remote server"}.</p><p class="help">Use Set up team server to install a separate team server on a connected SSH machine. The wizard configures its projects, HTTPS and teammate accounts.</p>{host.kind === "ssh" ? <a class="btn" href="/#/settings/connections/sharing">Back to this computer</a> : null}</section>}
+    {host.kind === "local" ? <ThisComputerCard link={link} /> : <section class="settings-card"><h3>This computer</h3><p class="help">A team link belongs to the computer whose agents run the work. Connect from the code-flow on your own computer; this workspace runs on a remote server.</p><p class="help">Use Set up team server to install a separate team server on a connected SSH machine. The wizard configures its projects, HTTPS and teammate accounts.</p></section>}
     {host.kind === "local" ? <RepositoriesCard link={link} b={b} /> : null}
     <TeamServerCard link={link} b={b} />
     {b?.me.userId === "owner" && link && !link.linked ? <><HostExecutionSettings board={b} /><HostQueue board={b} /><TeamTerminalSettings board={b} /></> : null}
@@ -43,7 +49,7 @@ function ThisComputerCard({ link }: { link: TeamLinkInfo | null }) {
     catch (err) { setPassword(""); setError((err as Error).message); } finally { setBusy(false); }
   };
   const disconnect = async () => {
-    if (!link || !confirm(`Disconnect this computer from ${link.hubName || link.url || "the team server"}? Its runner credential is revoked; attempts you ran here stay on the board as they are.`)) return;
+    if (!link || !await confirmAction(`Disconnect this computer from ${link.hubName || link.url || "the team server"}? Its runner credential is revoked; attempts you ran here stay on the board as they are.`, {"title":"Disconnect this computer?","confirmLabel":"Disconnect","danger":true})) return;
     setBusy(true); setError("");
     try { await del("/api/team-link"); showToast("Disconnected"); selectTeamConnection("local"); } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   };
@@ -165,7 +171,7 @@ function RunnersCard({ b }: { b: Board | null }) {
   const load = async (current: () => boolean = () => true) => { try { const data = await api<RunnerPublic[] | { runners?: RunnerPublic[] }>("/api/team/runners"); if (current()) { setRunners(Array.isArray(data) ? data : data.runners ?? []); setError(""); } } catch (err) { if (current()) setError((err as Error).message); } };
   usePoll(load, 15_000, [teamTick.value]);
   const revoke = async (runner: RunnerPublic) => {
-    if (!confirm(`Revoke the runner ${runner.name}? Its computer must connect again to work on the board. Active tasks stay reserved until execution is confirmed stopped.`)) return;
+    if (!await confirmAction(`Revoke the runner ${runner.name}? Its computer must connect again to work on the board. Active tasks stay reserved until execution is confirmed stopped.`, {"title":"Revoke runner access?","confirmLabel":"Revoke access","danger":true})) return;
     setBusy(runner.id); setError("");
     try { await del(`/api/team/runners/${enc(runner.id)}`); showToast("Runner revoked"); await load(); } catch (err) { setError((err as Error).message); } finally { setBusy(""); }
   };

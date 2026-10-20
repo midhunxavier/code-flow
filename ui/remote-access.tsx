@@ -1,3 +1,4 @@
+import { confirmAction } from "./confirm-state.js";
 import { pollVisible } from "./polling.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { TailscaleStatus } from "../src/tailscale.js";
@@ -113,7 +114,7 @@ export function RemoteAccess() {
             {!info.lan ? <a class="btn small" href={url} target="_blank" rel="noreferrer">Open</a> : null}
           </div>)}
           {info.lan ? <p class="help">Open this link on your other device. Connections from this computer are blocked on the remote port.</p> : null}
-          <button class="btn small" disabled={busy} onClick={() => confirm("Make a new link? Old links stop working and all paired devices are signed out.") && void set({ rotate: true })}>New link</button>
+          <button class="btn small" disabled={busy} onClick={async () => await confirmAction("Make a new link? Old links stop working and all paired devices are signed out.", {"title":"Replace access link?","confirmLabel":"Replace link","danger":true}) && void set({ rotate: true })}>New link</button>
         </div>
       </> : null}
     </>}
