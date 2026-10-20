@@ -96,6 +96,24 @@ test("one template library restores complete saved configurations and keeps lega
   assert.equal(await page.getByLabel("Task", { exact: true }).inputValue(), "Review sum");
 });
 
+test("templates wait for repository configuration before restoring check commands", { timeout: 45_000 }, async () => {
+  let release!: () => void;
+  const loading = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/repo-config?*", async request => { await loading; await request.continue(); });
+  try {
+    await page.reload();
+    await page.getByRole("button", { name: "Template library", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Template library", exact: true });
+    await dialog.getByLabel("Library", { exact: true }).selectOption("personal");
+    await dialog.getByLabel("Template", { exact: true }).selectOption({ label: "Roundtrip" });
+    const apply = dialog.getByRole("button", { name: "Use template", exact: true });
+    assert.equal(await apply.isDisabled(), true);
+    release();
+    await apply.click();
+    assert.match(await page.getByLabel("Run configuration summary").innerText(), /node --test/);
+  } finally { release(); await page.unroute("**/api/repo-config?*"); }
+});
+
 test("scheduling shares four purposes and comparisons live in Insights", { timeout: 45_000 }, async () => {
   await page.getByRole("button", { name: "Run actions", exact: true }).click();
   assert.equal(await page.getByRole("menuitem", { name: "Compare setups…", exact: true }).count(), 0);
