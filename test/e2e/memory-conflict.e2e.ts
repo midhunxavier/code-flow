@@ -137,7 +137,7 @@ test("memory analysis publishes canonical source revisions and deletion preview 
   assert.equal((await api<MemoryEntry[]>(endpoint)).length, 2);
   await page.goto(base + "/memory-fixture");
   await page.getByText("Project memory", { exact: true }).click();
-  await page.getByText("Memory health, provenance and onboarding", { exact: true }).click();
+  await page.getByText("Advanced memory tools", { exact: true }).click();
   const panel = page.locator(".memory-analysis");
   await panel.getByText("Repeated wording · 1 pairs", { exact: true }).click();
   assert.match(await panel.innerText(), /Same text, ignoring whitespace/);
@@ -180,7 +180,7 @@ test("memory semantic review compares overlapping policy and normalized settings
   await api(endpoint + "/commands", { op: "create", repo, title: "Cache TTL explicit seconds", body: '```codeflow-claims\n[{"subject":"cache ttl","predicate":"setting","value":300,"unit":"seconds"}]\n```' });
   const report = await api<MemoryAnalysis>(endpoint + "/analysis"); assert.equal(report.claims.findings.filter((finding) => finding.kind === "contradiction").length, 1); assert.equal(report.claims.findings.filter((finding) => finding.kind === "equivalent").length, 1);
   const conflict = report.claims.findings.find((finding) => finding.kind === "contradiction")!; assert.deepEqual(new Set([conflict.a.id, conflict.b.id]), new Set([allow.id, deny.id]));
-  await page.goto(base + "/memory-fixture"); await page.getByText("Project memory", { exact: true }).click(); await page.getByText("Memory health, provenance and onboarding", { exact: true }).click(); const panel = page.locator(".memory-analysis");
+  await page.goto(base + "/memory-fixture"); await page.getByText("Project memory", { exact: true }).click(); await page.getByText("Advanced memory tools", { exact: true }).click(); const panel = page.locator(".memory-analysis");
   await panel.getByText("Semantic claim review · 1 conflicts · 1 equivalent pairs", { exact: true }).click(); const item = panel.getByRole("listitem").filter({ hasText: "Potential contradiction: allow · guest request" }); await item.getByText("Compare claim evidence", { exact: true }).click(); assert.match(await item.innerText(), /Always permit guest requests/); assert.match(await item.innerText(), /Never allow guest requests/);
   const target = item.getByRole("button", { name: "Guest requests permitted", exact: true }); await target.focus(); await page.keyboard.press("Enter"); assert.equal(await page.locator(`#memory-${allow.id}`).evaluate((element) => element === document.activeElement), true, "source navigation restores keyboard focus to the exact entry");
   await panel.getByText("Write explicit semantic facts", { exact: true }).click(); assert.match(await panel.innerText(), /codeflow-claims/); assert.match(await panel.innerText(), /unsupported prose/);

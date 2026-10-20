@@ -93,7 +93,7 @@ export function ScheduleEditor({ automation: a, save }: { automation: Pick<Autom
 }
 
 // ---------------------------------------------------------------- page
-export function AutomationsView({ mode = "all" }: { mode?: "all" | "inbox" | "automations" }) {
+export function AutomationsView({ mode = "all", category }: { mode?: "all" | "inbox" | "automations"; category?: "repeat" | "backlog" }) {
   useEffect(() => {
     void loadAutomations();
     const timer = setInterval(loadAutomations, 15_000);
@@ -113,7 +113,8 @@ export function AutomationsView({ mode = "all" }: { mode?: "all" | "inbox" | "au
     if (grouping === "none") return { id: "all", label: "All attention items" };
     const project = projectFor(run); return { id: project?.id ?? "unassigned", label: project?.name ?? "Without a project" };
   });
-  const list = automations.value.filter((a) => automationInScope(a));
+  const matching = automations.value.filter(a => !category || !a.target && (category === "backlog" ? !!a.sweep : !a.sweep));
+  const list = matching.filter((a) => automationInScope(a));
   const here = activeProject.value ? ` in ${activeProject.value.name}` : scoped ? " without a project" : "";
   return (
     <div class="automations">
@@ -141,19 +142,19 @@ export function AutomationsView({ mode = "all" }: { mode?: "all" | "inbox" | "au
 
       {mode !== "inbox" ? <section class="section auto-card" aria-labelledby="automations-title">
         <h2 class="section-title" id="automations-title">
-          Your automations {list.length ? <span class="n">{list.length}</span> : null}
+          {category === "backlog" ? "Scheduled backlog work" : "Repeating tasks and webhooks"} {list.length ? <span class="n">{list.length}</span> : null}
         </h2>
-        <Elsewhere count={automations.value.length - list.length} what={(n) => `${n} more in other projects`} />
+        <Elsewhere count={matching.length - list.length} what={(n) => `${n} more in other projects`} />
         {list.length ? (
           list.map((a) => <AutomationRow key={a.id} a={a} scoped={scoped} />)
         ) : (
           <p class="help empty">
-            None{here} yet. Set up a run in the composer — task, team, check — and choose <b>Save as automation…</b> next to Start run.
+            None{here} yet. Set up a run in the composer — task, team, check — and choose <b>Schedule → Repeat</b> next to Start run.
           </p>
         )}
       </section> : null}
 
-      <p class="help">To access this workspace from another device, open <a href="#/settings/remote-access">Remote access settings</a>.</p>
+      <p class="help">To access this workspace from another device, open <a href="#/settings/connections/sharing">Remote access settings</a>.</p>
     </div>
   );
 }
@@ -280,7 +281,7 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
   const project = projectLabel(automationProject(a.run), a.run.repo, scoped);
   const update = (patch: object) => post<Automation>(`/api/automations/${a.id}`, patch).then(loadAutomations, (e) => showToast(e.message, 5000));
   const hookUrl = `${location.origin}${a.hookPath}`;
-  if (a.target) return <div class="auto-row"><b>{a.name}</b><p class="help">Standing project team · {a.enabled ? "active" : "paused"} · {a.scheduleText}</p><button class="btn small" onClick={() => { const id = a.run.project; if (id) route.value = { view: "project", id }; }}>Mission, cycles and opportunities</button></div>;
+  if (a.target) return <div class="auto-row"><b>{a.name}</b><p class="help">Project mission · {a.enabled ? "active" : "paused"} · {a.scheduleText}</p><button class="btn small" onClick={() => { const id = a.run.project; if (id) route.value = { view: "project", id }; }}>Mission, cycles and opportunities</button></div>;
   return (
     <div class={`auto-row ${a.enabled ? "" : "off"}`}>
       <div class="ar-head">

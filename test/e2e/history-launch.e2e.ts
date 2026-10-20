@@ -151,7 +151,7 @@ test("workspace starts, inspects and stops a real two-service launch profile", a
 
 test("project conventions save with CAS, restore a previewed version, and explicitly stage guidance for a later commit", async () => {
   await page.goto(`${base}/#/settings`);
-  const tab = page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: "Projects & access", exact: true }); await tab.focus(); await page.keyboard.press("Enter");
+  const tab = page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: "Projects", exact: true }); await tab.focus(); await page.keyboard.press("Enter");
   const panel = page.getByRole("region", { name: "Versioned project conventions" }); const draft = panel.getByLabel("Private conventions draft", { exact: true });
   await draft.waitFor(); await draft.focus(); await page.keyboard.press("Tab"); assert.equal(await panel.getByLabel("Revision note", { exact: true }).evaluate((element) => element === document.activeElement), true, "editor labels and keyboard focus follow the document order");
   await draft.fill("Keep shared project interfaces small and tested."); await panel.getByLabel("Revision note", { exact: true }).fill("Initial shared guidance");
@@ -182,7 +182,7 @@ test("project conventions save with CAS, restore a previewed version, and explic
 
 test("guided onboarding inspects required and optional dependencies through actual read-only probes", async () => {
   await page.goto(base);
-  await page.getByRole("button", { name: "Team mode", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Agent workflow mode", exact: true }).waitFor();
   assert.equal(await page.locator(".provider-setup").count(), 0, "connected providers do not show setup in the composer");
   await page.goto(`${base}/#/settings/agents`);
   await page.getByText("Check this computer", { exact: true }).first().click();
@@ -213,7 +213,7 @@ test("review inbox controls have distinct labels, keyboard order and a bounded m
 
 test("context directories preview committed sources and explicit budgets block actual provider launch while warnings retain input evidence", async () => {
   await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto(base);
-  await page.getByRole("button", { name: "Team mode", exact: true }).click(); await page.getByLabel("Task", { exact: true }).fill("Exercise the explicit context budget before a provider launch.");
+  await page.getByRole("button", { name: "Agent workflow mode", exact: true }).click(); await page.getByLabel("Task", { exact: true }).fill("Exercise the explicit context budget before a provider launch.");
   await page.locator(".taskbox").getByRole("button", { name: "Files", exact: true }).click(); await page.getByRole("button", { name: "Add api to the task", exact: true }).click();
   await page.getByRole("button", { name: "Side panel", exact: true }).click();
   await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click(); await page.getByRole("button", { name: "Preview selected context", exact: true }).click();

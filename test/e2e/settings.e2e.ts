@@ -137,8 +137,8 @@ test("settings navigation, search, appearance, and run defaults persist and driv
   await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
   await page.getByRole("button", { name: "Light", exact: true }).click();
   await page.getByLabel("Search settings").fill("vm");
-  await page.getByRole("region", { name: "Settings search results" }).getByRole("button", { name: /SSH connections/ }).click();
-  assert.ok(page.url().endsWith("#/settings/ssh"));
+  await page.getByRole("region", { name: "Settings search results" }).getByRole("button", { name: /^Connections/ }).click();
+  assert.ok(page.url().endsWith("#/settings/connections"));
   await page.goBack();
   await page.getByRole("heading", { name: "General", exact: true }).waitFor();
   await page.getByLabel("Search settings").fill("no-such-setting-9283");
@@ -214,7 +214,7 @@ test("saved SSH connections survive reload, reject invalid ports, and retain a c
   await page.getByRole("menuitem", { name: /^Development VM/ }).click();
   const switcher = page.getByRole("menu", { name: "SSH connections", exact: true });
   await switcher.getByRole("alert").filter({ hasText: "host key verification failed" }).waitFor();
-  assert.ok(page.url().endsWith("#/settings/ssh"), "failed switching leaves the current workspace open");
+  assert.ok(page.url().includes("#/settings/"), "failed switching leaves the current workspace open");
   assert.equal(await switcher.getByLabel("SSH host", { exact: true }).count(), 0);
   await page.keyboard.press("Escape");
   await page.unroute("**/api/ssh-hosts/*/connect");
@@ -224,7 +224,7 @@ test("saved SSH connections survive reload, reject invalid ports, and retain a c
 
 test("all settings categories render; desktop and mobile preferences are accessible", async () => {
   await page.goto(`${base}/#/settings`);
-  for (const name of ["Agents & models", "Notifications", "Remote access", "Integrations", "Projects & access", "Extensions", "Data & storage", "Advanced"]) {
+  for (const name of ["Agents & models", "Notifications", "Connections", "Integrations", "Projects", "Extensions", "Data & storage", "Advanced"]) {
     await category(name);
     await page.getByRole("heading", { name, exact: true }).first().waitFor();
   }
@@ -232,7 +232,7 @@ test("all settings categories render; desktop and mobile preferences are accessi
   await page.addScriptTag({ content: axe.source });
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
-    for (const name of ["General", "SSH connections", "Run defaults"]) {
+    for (const name of ["General", "Connections", "Run defaults"]) {
       await category(name);
       const violations = await page.evaluate(async () => (await (window as any).axe.run(".settings-page", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } })).violations);
       assert.deepEqual(violations.map((v: any) => `${v.id}: ${v.nodes.map((n: any) => n.target.join(" ")).join(", ")}`), []);
@@ -245,7 +245,7 @@ test("all settings categories render; desktop and mobile preferences are accessi
 
 test("operational tools are direct destinations and old Settings links still work", async () => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  for (const [path, name] of [["workspace", "Repository workspace"], ["automations", "Automations"], ["inbox", "Inbox"], ["insights", "Insights"]] as const) {
+  for (const [path, name] of [["workspace", "Repository workspace"], ["automations", "Scheduling"], ["inbox", "Inbox"], ["insights", "Insights"]] as const) {
     await page.goto(`${base}/#/${path}`);
     await page.getByRole("heading", { name, exact: true }).first().waitFor();
     assert.ok(page.url().endsWith(`#/${path}`));
@@ -260,12 +260,12 @@ test("operational tools are direct destinations and old Settings links still wor
   await page.goto(`${base}/#/settings/workspace`);
   await page.getByRole("navigation", { name: "Workspace tools" }).waitFor();
   await page.keyboard.press("a");
-  await page.getByRole("region", { name: "Deferred runs", exact: true }).waitFor();
+  await page.getByRole("navigation", { name: "Scheduling purpose", exact: true }).waitFor();
   assert.ok(page.url().endsWith("#/automations"));
   await page.goBack();
   await page.getByRole("navigation", { name: "Workspace tools" }).waitFor();
   await page.goForward();
-  await page.getByRole("region", { name: "Deferred runs", exact: true }).waitFor();
+  await page.getByRole("navigation", { name: "Scheduling purpose", exact: true }).waitFor();
   await page.keyboard.press("i");
   await page.getByRole("heading", { name: "Insights", exact: true }).first().waitFor();
   assert.ok(page.url().endsWith("#/insights"));

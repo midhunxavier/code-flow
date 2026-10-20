@@ -1,6 +1,6 @@
 # Local semantic memory review
 
-Project memory's **Semantic claim review** compares supported facts with overlapping applicability. It identifies equivalent claims and potential contradictions with the exact source entry revisions, character offsets, evidence snippets and normalized values. Findings are suggestions for human review. Analysis never selects a winner, changes status, combines text or publishes guidance automatically.
+Project memory → **Advanced memory tools** → **Semantic claim review** compares supported facts with overlapping applicability. It identifies equivalent claims and potential contradictions with the exact source entry revisions, character offsets, evidence snippets and normalized values. Findings are suggestions for human review. Analysis never selects a winner, changes status, combines text or publishes guidance automatically.
 
 The local grammar recognizes standalone policy instructions, including a small documented action vocabulary and policy polarity: “Always permit guest requests” is equivalent to “Do not block guest requests” and conflicts with “Never allow guest requests”. Setting statements normalize numeric dimensions: “Set cache TTL to 5 minutes” equals “Cache time-to-live is 300 seconds”. Numeric constraints conflict only when their intervals are disjoint, including exclusive `<` and `>` boundaries. Overlapping ranges are not treated as contradictions. Time and byte dimensions are never compared with each other or with counts.
 

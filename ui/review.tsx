@@ -1,3 +1,4 @@
+import { ChangeImpact } from "./change-impact.js";
 import { signal } from "@preact/signals";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
@@ -153,6 +154,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
       {runError ? <div class="msg warn review-msg">{runError}</div> : null}
       <div class="review-body">
         <div class="review-files">
+          {worktree && files?.length ? <ChangeImpact folder={worktree.path} paths={files.map(file => file.path)} refreshKey={`${refresh}:${summary?.status}:${summary?.lastCheck?.at}`} /> : null}
           <ReviewCoveragePanel runId={id} branch={branch} refreshKey={`${refresh}:${summary?.status}:${summary?.lastCheck?.at}`} onOpen={setSelected} />
           {files?.map((f) => {
             const n = comments.filter((c) => c.file === f.path).length;

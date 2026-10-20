@@ -127,7 +127,7 @@ export function ProjectView({ id }: { id: string }) {
                     ))
                   : <span class="muted">None yet</span>}
               </dd>
-              <dt>Last team</dt>
+              <dt>Last agent workflow</dt>
               <dd>{team ?? <span class="muted">None yet</span>}</dd>
               <dt>Runs</dt>
               <dd>

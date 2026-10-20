@@ -1,3 +1,4 @@
+import { peopleEnabled } from "./preferences.js";
 import { SETTINGS_SECTIONS } from "./settings-sections.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
@@ -20,10 +21,10 @@ export function CommandPalette() {
     { id: "settings", label: "Settings", detail: "Preferences, agents and remote connections", icon: "sliders", run: () => (route.value = { view: "settings" }) },
     ...SETTINGS_SECTIONS.filter(section => !["workspace", "automations", "insights"].includes(section.id)).map((section): Command => ({ id: `settings:${section.id}`, label: section.label, detail: `Settings · ${section.keywords}`, icon: section.icon, run: () => (route.value = { view: "settings", section: section.id }) })),
     { id: "inbox", label: "Inbox", detail: "Questions, failures and results needing review", icon: "bell", run: () => (route.value = { view: "inbox" }) },
-    { id: "automations", label: "Automations", detail: "Schedules and deferred runs", icon: "clock", run: () => (route.value = { view: "automations" }) },
+    { id: "automations", label: "Scheduling", detail: "Schedules and deferred runs", icon: "clock", run: () => (route.value = { view: "automations" }) },
     { id: "workspace", label: "Repository workspace", detail: "Code, checks and repository tools", icon: "files", run: () => (route.value = { view: "workspace" }) },
     { id: "insights", label: "Insights", detail: "Run results and usage", icon: "chart", run: () => (route.value = { view: "insights" }) },
-    { id: "team", label: "Team board", detail: "Tasks, hand-overs and your team inbox", icon: "people", run: () => (route.value = { view: "team" }) },
+    { id: "team", label: "People board", detail: "Tasks, hand-overs and your team inbox", icon: "people", run: () => (route.value = { view: "team" }) },
     { id: "repo", label: "Choose repository", detail: "Actions", icon: "folder", run: () => (pickerOpen.value = true) },
     { id: "projects", label: "Manage projects", detail: "Actions", icon: "project", run: () => (projectsOpen.value = true) },
     { id: "health", label: "Check provider and Git health", detail: "Actions", icon: "alert", run: () => (healthOpen.value = true) },
@@ -33,7 +34,7 @@ export function CommandPalette() {
     ...[...runs.value.values()].filter((r) => !r.archived).sort((a, b) => b.createdAt - a.createdAt).map((r): Command => ({ id: `run:${r.id}`, label: r.task.split("\n")[0] || r.id, detail: `Run · ${r.status} · ${r.repo}`, shown: `Run · ${STATUS_TEXT[r.status] ?? r.status} · ${baseName(r.repo)}`, status: r.status, run: () => (route.value = { view: "run", id: r.id }) })),
   ];
   const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
-  const results = actions.filter((c) => terms.every((t) => `${c.label} ${c.detail}`.toLowerCase().includes(t))).slice(0, 40);
+  const results = actions.filter((c) => (c.id !== "team" || peopleEnabled.value) && terms.every((t) => `${c.label} ${c.detail}`.toLowerCase().includes(t))).slice(0, 40);
   const selected = Math.min(active, Math.max(0, results.length - 1));
   const choose = (command?: Command) => { if (command) { close(); command.run(); } };
   useEffect(() => { input.current?.focus(); }, []);

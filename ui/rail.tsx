@@ -1,3 +1,4 @@
+import { peopleEnabled } from "./preferences.js";
 import { ComputerProjects, useComputerProjects } from "./connected-projects.js";
 import { useEffect, useState } from "preact/hooks";
 import { inbox } from "./automations.js";
@@ -197,7 +198,7 @@ export function Rail() {
             close();
             post(`/api/runs/${r.id}/archive`, { archived: !r.archived, cleanup: false }).then(() => showToast(r.archived ? "Run unarchived" : "Run archived"), error => showToast(error.message));
           }}>{r.archived ? "Unarchive" : "Archive"}</MenuItem>
-          <MenuItem disabled={r.status === "running" || !!r.projectTeam} sub={r.projectTeam ? "Standing team history is retained. Archive instead." : undefined} onClick={() => { close(); setDeleting(r); }}>Delete…</MenuItem>
+          <MenuItem disabled={r.status === "running" || !!r.projectTeam} sub={r.projectTeam ? "Project mission history is retained. Archive instead." : undefined} onClick={() => { close(); setDeleting(r); }}>Delete…</MenuItem>
         </>}
       </Menu> : null}
       </div>
@@ -367,7 +368,7 @@ export function Rail() {
       </button>
       <div class="rail-destinations" role="group" aria-label="Work navigation">
         <a class="nav-item" href="#/inbox" aria-label={`Inbox${pending ? `, ${pending} need attention` : ""}`} title="Inbox" aria-current={r.view === "inbox" ? "page" : undefined}><Icon name="bell" /><span>Inbox</span>{pending ? <span class="count">{pending}</span> : null}</a>
-        <a class="nav-item" href="#/automations" title="Automations" aria-label="Automations" aria-current={r.view === "automations" ? "page" : undefined}><Icon name="clock" /><span>Automations</span></a>
+        <a class="nav-item" href="#/automations" title="Scheduling" aria-label="Scheduling" aria-current={r.view === "automations" ? "page" : undefined}><Icon name="clock" /><span>Scheduling</span></a>
       </div>
       {collapsed ? <button type="button" class="icon-btn rail-search-button" aria-label="Search runs" title="Search runs (/)" onClick={() => { setRailCollapsed(false); requestAnimationFrame(() => document.getElementById("run-search")?.focus()); }}><Icon name="search" /></button> : null}
       <div class="rail-search">
@@ -401,7 +402,7 @@ export function Rail() {
             <button type="button" class="btn small danger" disabled={bulkBusy || !selectedRuns.length || selectedRuns.some(run => !!run.projectTeam)} onClick={() => setBulkDeleting(selectedRuns)}>Delete…</button>
           </div>
           <span class="help">{bulkBusy ? "Updating runs…" : "Only stopped runs on this computer. Select loaded includes matching runs in folded projects."}</span>
-          {selectedRuns.some(run => !!run.projectTeam) ? <span class="help">Standing team history is retained for recovery and approvals. Archive these runs instead.</span> : null}
+          {selectedRuns.some(run => !!run.projectTeam) ? <span class="help">Project mission history is retained for recovery and approvals. Archive these runs instead.</span> : null}
           {bulkError ? <div class="err" role="alert">{bulkError}</div> : null}
         </> : null}
       </div> : null}
@@ -477,12 +478,12 @@ export function Rail() {
           <Icon name="more" />
         </>}>
           {(close) => <>
-            <MenuItem on={r.view === "team" || r.view === "team-task"} onClick={() => { close(); go({ view: "team" }); }}><Icon name="people" /><span>Team</span>{unread ? <span class="rail-menu-meta" aria-label={`${unread} unread`}>{unread}</span> : null}</MenuItem>
+            {peopleEnabled.value || unread ? <MenuItem on={r.view === "team" || r.view === "team-task"} onClick={() => { close(); go({ view: "team" }); }}><Icon name="people" /><span>People</span>{unread ? <span class="rail-menu-meta" aria-label={`${unread} unread`}>{unread}</span> : null}</MenuItem> : null}
             <MenuItem on={r.view === "settings"} onClick={() => { close(); go({ view: "settings" }); }}><Icon name="sliders" /><span>Settings</span><kbd class="rail-menu-meta">⌘,</kbd></MenuItem>
             <MenuItem sub={`${agents.value.length} providers${agentProblems ? ` · ${agentProblems} need setup` : ""}`} onClick={() => { close(); railOpen.value = false; healthOpen.value = true; }}><Icon name="sparkle" /><span>Agents & usage</span></MenuItem>
             <MenuItem onClick={() => { close(); go({ view: "workspace" }); }}><Icon name="files" /><span>Repository workspace</span></MenuItem>
             <MenuItem onClick={() => { close(); go({ view: "insights" }); }}><Icon name="chart" /><span>Insights</span></MenuItem>
-            <MenuItem onClick={() => { close(); go({ view: "automations" }); }}><Icon name="clock" /><span>Automations</span>{pending ? <span class="rail-menu-meta" aria-label={`${pending} runs need attention`}>{pending}</span> : null}</MenuItem>
+            <MenuItem onClick={() => { close(); go({ view: "automations" }); }}><Icon name="clock" /><span>Scheduling</span>{pending ? <span class="rail-menu-meta" aria-label={`${pending} runs need attention`}>{pending}</span> : null}</MenuItem>
             <MenuItem onClick={() => { close(); go({ view: "settings", section: "notifications" }); }}><Icon name="bell" /><span>Notifications</span></MenuItem>
             <div class="rail-menu-divider" role="separator" />
             <MenuItem on={showFilters} onClick={() => { close(); setRailCollapsed(false); setShowFilters(!showFilters); if (!showFilters) requestAnimationFrame(() => document.querySelector<HTMLButtonElement>("#rail-filters button")?.focus()); }}><Icon name="sliders" /><span>View and filter runs</span></MenuItem>

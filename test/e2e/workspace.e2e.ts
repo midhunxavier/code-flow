@@ -75,9 +75,8 @@ test("workspace editing preserves a conflicting draft, searches definitions, and
   await page.getByLabel("Search code", { exact: true }).fill("sum");
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await page.getByRole("button", { name: /sum\.mjs:1 sum/ }).waitFor();
-  await page.getByRole("button", { name: "Dependencies", exact: true }).click();
-  await page.getByRole("button", { name: "Inspect dependencies", exact: true }).click();
-  await page.getByRole("cell").getByRole("button", { name: "sum.test.mjs", exact: true }).waitFor();
+  await page.getByText("What could this change affect?", { exact: true }).click();
+  await page.locator(".change-impact li").filter({ hasText: "sum.test.mjs" }).first().waitFor();
   await page.goto(`${base}/#/settings/advanced`);
   writeFileSync(join(folder, "data", "server.log"), `old-log-marker\n${"x".repeat(1_000_000)}\ncurrent-log-marker\n`);
   await page.getByRole("button", { name: "Collect diagnostics", exact: true }).click();

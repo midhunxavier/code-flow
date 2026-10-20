@@ -47,24 +47,26 @@ after(async () => {
 const errors: string[] = [];
 let result: any;
 
-test("intent starters preserve drafts and expose the effective configuration", { timeout: 45_000 }, async () => {
+test("template library and workflow selection preserve intentional drafts and expose the effective configuration", { timeout: 45_000 }, async () => {
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(base + "/#/");
-  const intents = page.getByRole("group", { name: "Task intent" });
-  await intents.getByRole("button", { name: "Build a feature" }).click();
+  const choose = async (id: string) => {
+    await page.getByRole("button", { name: "Template library", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Template library", exact: true });
+    await dialog.getByLabel("Template", { exact: true }).selectOption(id);
+    await dialog.getByRole("button", { name: "Use template", exact: true }).click();
+  };
+  await choose("starter-feature");
   const draft = page.locator(".taskbox textarea");
   await draft.fill("Keep this task while changing the workflow");
-  await intents.getByRole("button", { name: "Review code", exact: true }).click();
+  await page.getByLabel("Workflow", { exact: true }).selectOption("council");
   assert.equal(await draft.inputValue(), "Keep this task while changing the workflow");
-  assert.equal(await page.getByLabel("Workflow", { exact: true }).inputValue(), "council");
-  await intents.getByRole("button", { name: "Explore an idea" }).click();
+  await choose("starter-explore");
   assert.equal(await page.getByLabel("Workflow", { exact: true }).inputValue(), "debate");
   const roles = await page.evaluate(() => JSON.parse(localStorage.getItem("roleSel") || "{}"));
-  assert.deepEqual(roles.debate.builder, []);
-  assert.deepEqual(roles.debate.reviewer, []);
-  await intents.getByRole("button", { name: "Fix a bug" }).click();
+  assert.deepEqual(roles.debate.builder, []); assert.deepEqual(roles.debate.reviewer, []);
+  await choose("starter-bug");
   await page.getByLabel("Workflow", { exact: true }).selectOption("tdd");
-  assert.equal(await intents.locator('[aria-pressed="true"]').count(), 0);
   await page.locator(".composer-summary").getByText("Limit", { exact: true }).waitFor();
   await mkdir(join(root, "output/playwright"), { recursive: true });
   await page.screenshot({ path: join(root, "output/playwright/ux-composer.png"), fullPage: true });

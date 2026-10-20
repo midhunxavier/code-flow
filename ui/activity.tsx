@@ -1,5 +1,5 @@
+import { SchedulingView } from "./scheduling.js";
 import { AutomationsView } from "./automations.js";
-import { DeferredRunsPanel } from "./deferred-runs.js";
 import { InsightsView } from "./insights.js";
 import { WorkbenchView } from "./workbench.js";
 import { projects, type Route } from "./state.js";
@@ -9,11 +9,11 @@ export function ActivityView({ current }: { current: Route }) {
   if (current.view !== "inbox" && current.view !== "automations" && current.view !== "workspace" && current.view !== "insights") return null;
   const name = current.view === "workspace" && current.project ? projects.value.find(p => p.id === current.project)?.name : undefined;
   return <div class="activity-page">
-    <header class="page-head"><div class="page-head-text"><h1>{name ? `${name} workspace` : { inbox: "Inbox", automations: "Automations", workspace: "Repository workspace", insights: "Insights" }[current.view]}</h1></div>
+    <header class="page-head"><div class="page-head-text"><h1>{name ? `${name} workspace` : { inbox: "Inbox", automations: "Scheduling", workspace: "Repository workspace", insights: "Insights" }[current.view]}</h1></div>
       {current.view === "workspace" && current.project ? <a class="btn" href={`#/project/${encodeURIComponent(current.project)}`}>Back to project</a> : null}
     </header>
     {current.view === "inbox" ? <AutomationsView mode="inbox" /> : null}
-    {current.view === "automations" ? <><AutomationsView mode="automations" /><DeferredRunsPanel /></> : null}
+    {current.view === "automations" ? <SchedulingView kind={current.kind} /> : null}
     {current.view === "workspace" ? <WorkbenchView projectId={current.project} /> : null}
     {current.view === "insights" ? <InsightsView group={current.group} /> : null}
   </div>;

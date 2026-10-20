@@ -1,5 +1,7 @@
 import { intentDraft, WorkflowRecommendation } from "./experience.js";
 import { journeyDraft } from "./journeys.js";
+import { comparisonDraft } from "./workflow-ui.js";
+import { SCHEDULE_KINDS, type ScheduleKind } from "./scheduling.js";
 import { improveSettings } from "./improve-settings.js";
 import { IMPROVE_NAMES } from "../src/improve-settings.js";
 import { ModelSelect } from "./model-select.js";
@@ -78,7 +80,7 @@ import {
 import { ProjectButton } from "./projects.js";
 import { readProjectDefaults, projectDefaultsVersion } from "./project-defaults.js";
 import { TeamRolloutNotice } from "./team-evaluation.js";
-import { SourceChip, Templates } from "./github.js";
+import { SourceChip } from "./github.js";
 import { SaveAutomationDialog } from "./automations.js";
 import { Icon } from "./icons.js";
 import { Menu, MenuItem, MenuTitle } from "./panel-bits.js";
@@ -116,20 +118,6 @@ export function Composer() {
     if (next) setPattern(next.id);
   };
   const [moreOptions, setMoreOptions] = useState(false);
-  const intent = intentDraft.value;
-  const setIntent = (id: string | null) => { intentDraft.value = id === null ? undefined : id as import("../src/experience.js").TaskIntent; };
-  const intents = [
-    { id: "bug", label: "Fix a bug", pattern: "pipeline", why: "Plan a fix, implement it, then review it against the reported behavior.", prompt: "Fix the following bug:\n\nExpected behavior:\nActual behavior:\nSteps to reproduce:" },
-    { id: "feature", label: "Build a feature", pattern: "pipeline", why: "Plan → Build → Review gives a feature an implementation and an independent review.", prompt: "Build the following feature:\n\nWho it helps:\nExpected behavior:\nAcceptance criteria:" },
-    { id: "review", label: "Review code", pattern: "council", why: "Review council compares independent, read-only reviews and consolidates findings.", prompt: "Review the code for correctness and regressions.\n\nScope or branch to review:\nAreas of concern:" },
-    { id: "explore", label: "Explore an idea", pattern: "debate", why: "Compare proposals and synthesize a design. The builder and reviewer roles are disabled for this design-only workflow.", prompt: "Explore approaches to the following idea without implementing changes:\n\nGoal:\nConstraints:\nTrade-offs to consider:" },
-  ];
-  const chooseIntent = (choice: typeof intents[number]) => {
-    setPattern(choice.pattern); setIntent(choice.id);
-    if (choice.id === "explore") { setRoles("debate", "builder", []); setRoles("debate", "reviewer", []); }
-    if (!task.value.trim()) setTask(choice.prompt);
-    requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".taskbox textarea")?.focus());
-  };
   const selectVerification = async (selected: string) => {
     const request = ++profileRequest.current;
     const current = repo.value;
@@ -164,7 +152,6 @@ export function Composer() {
   const soloSettings = soloAgent && soloAgent !== "auto" ? { ...agentSettings.value[soloAgent], ...roleModels.value[p!.id]?.agent?.[soloAgent] } : {};
   const problem = (remoteWorker ? remoteError || (!remoteAgents ? "Checking remote worker…" : startProblem(p, roles, true, remoteAgents)) : startProblem(p, roles)) || (profileLoading ? "Loading verification profile…" : profileError ? "Verification profile unavailable. Choose another profile in Run options." : "");
 
-  const [saving, setSaving] = useState(false);
   const [scheduling, setScheduling] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [usingTemplate, setUsingTemplate] = useState(false);
@@ -204,7 +191,8 @@ export function Composer() {
       copy: remoteWorker ? [] : repoConfig.value?.config.copy,
     },
   });
-  const [comparing, setComparing] = useState(false);
+  useEffect(() => { comparisonDraft.value = p ? structuredClone(runBody(p)) : null; }, [JSON.stringify(p ? runBody(p) : null)]);
+  const [scheduleKind, setScheduleKind] = useState<ScheduleKind | null>(null);
   const start = async () => {
     if (problem || !p || starting || profileLoading) return;
     if (containerEnabled && !remoteWorker && !containerImage.trim()) { setError("Choose a prebuilt agent image"); return; }
@@ -241,7 +229,7 @@ export function Composer() {
   return (
     <div class={`composer ${single ? "composer-single" : ""}`}>
       <div class="eyebrow">New run</div>
-      <h1>{single ? "What would you like to work on?" : "What should the team build?"}</h1>
+      <h1>{single ? "What would you like to work on?" : "What should the agents build?"}</h1>
       <p class="lede">{single ? "Choose a provider, describe your task, and start the conversation." : "Describe the task, add the files that matter, and pick how your agents work together."}</p>
       <div class="where" role="group" aria-label="Where the run works">
         <ProjectButton composer />
@@ -280,13 +268,9 @@ export function Composer() {
       {externalSource.value ? <div class="banner"><p>External context: {externalSource.value.provider} {externalSource.value.kind} {externalSource.value.key} · {externalSource.value.title}</p><p class="help">This source remains untrusted. The run uses Safe permissions and isolated checks.</p><button class="btn small" onClick={() => { externalSource.value = null; }}>Remove source</button></div> : null}
       {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
       {journeyDraft.value?.repo === repo.value ? <p class="help">Recorded scenario: {journeyDraft.value.title} <button class="btn ghost small" onClick={() => { journeyDraft.value = undefined; }}>Detach scenario</button></p> : null}
-      <div class="intent-starters" role="group" aria-label="Task intent">
-        {intents.filter(choice => patterns.value.some(p => p.id === choice.pattern)).map(choice => <button key={choice.id} type="button" class="btn small" aria-pressed={intent === choice.id && p?.id === choice.pattern} onClick={() => chooseIntent(choice)}>{choice.label}</button>)}
-      </div>
-      {intent && intents.find(choice => choice.id === intent)?.pattern === p?.id ? <p class="intent-explanation" role="status">{intents.find(choice => choice.id === intent)?.why} Your existing task text is kept. You can change the workflow below.</p> : null}
-      {repoInfo.value ? <Templates /> : null}
+      <div class="template-entry"><button class="btn" disabled={!p || !projectsLoaded.value} onClick={() => setUsingTemplate(true)}><Icon name="files" />Template library</button><span class="help">Start from a built-in or saved task and agent workflow.</span></div>
       <TaskBox onStart={start} improve={improve} controls={<>
-        <button type="button" class={`btn ghost team-toggle ${single ? "" : "on"}`} aria-label="Team mode" aria-pressed={!single} title={single ? "Use a team workflow" : "Switch to a single agent"} onClick={toggleTeam}><Icon name="people" /> Team</button>
+        <button type="button" class={`btn ghost team-toggle ${single ? "" : "on"}`} aria-label="Agent workflow mode" aria-pressed={!single} title={single ? "Use an agent workflow" : "Switch to a single agent"} onClick={toggleTeam}><Icon name="people" /> Agent workflow</button>
         {single ? <>
         {soloAgent && soloAgent !== "auto" ? <ChatControls
           agent={soloAgent} providers={remoteAgents}
@@ -299,22 +283,20 @@ export function Composer() {
         /> : <Menu above label="Provider" icon="layers" class="chat-choice" trigger={<><span>{soloAgent === "auto" ? "Auto provider" : "Choose provider"}</span><Icon name="chevron" /></>}>
           {(close) => <>{(remoteAgents ?? agents.value).map((entry) => <MenuItem key={entry.id} disabled={!entry.available} onClick={() => { setRoles(p!.id, "agent", [entry.id]); close(); }}>{entry.displayName}</MenuItem>)}</>}
         </Menu>}
-        </> : <label class="task-workflow"><span>Workflow</span><select class="field" id="workflow-select" aria-label="Workflow" value={p?.id ?? ""} onChange={(event) => { setIntent(null); setPattern(event.currentTarget.value); }}>
+        </> : <label class="task-workflow"><span>Workflow</span><select class="field" id="workflow-select" aria-label="Workflow" value={p?.id ?? ""} onChange={(event) => { setPattern(event.currentTarget.value); }}>
           {patterns.value.filter((entry) => entry.id !== "solo").map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
         </select></label>}
-        {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); requestAnimationFrame(() => { const section = document.querySelector<HTMLDetailsElement>(".advanced-controls"); if (section) { section.open = true; section.querySelector<HTMLElement>("summary")?.focus(); } }); }}>Team setup</button><PermissionMenu permissions={{ trust: externalSource.value ? "safe" : trust.value, tools: !remoteWorker && !containerEnabled && !externalSource.value && toolApprovals }} onPermissions={(value) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some((id) => id === "codex" || id.startsWith("acp:"))} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} /></> : null}
+        {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); requestAnimationFrame(() => { const section = document.querySelector<HTMLDetailsElement>(".advanced-controls"); if (section) { section.open = true; section.querySelector<HTMLElement>("summary")?.focus(); } }); }}>Agent setup</button><PermissionMenu permissions={{ trust: externalSource.value ? "safe" : trust.value, tools: !remoteWorker && !containerEnabled && !externalSource.value && toolApprovals }} onPermissions={(value) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some((id) => id === "codex" || id.startsWith("acp:"))} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} /></> : null}
         <button class="btn primary task-start" disabled={!!problem || starting} onClick={start} title={problem || "Start run (⌘↵)"}>{starting ? "Starting…" : "Start run"}<Icon name="send" /></button>
         <Menu above label="Run actions" icon="more" class="chat-choice">{(close) => <>
           <MenuItem disabled={!p || !projectsLoaded.value} onClick={() => { close(); setUsingTemplate(true); }}><Icon name="files" />Use template…</MenuItem>
           <MenuItem disabled={!p || !projectsLoaded.value || !task.value.trim()} onClick={() => { close(); setSavingTemplate(true); }}><Icon name="files" />Save as template…</MenuItem>
-          <MenuItem disabled={!!problem} onClick={() => { close(); setScheduling(true); }}><Icon name="clock" />Start later…</MenuItem>
-          <MenuItem disabled={!!problem} onClick={() => { close(); setComparing(true); }}><Icon name="compare" />Compare setups…</MenuItem>
-          <MenuItem disabled={!!problem} onClick={() => { close(); setSaving(true); }}><Icon name="clock" />Save as automation…</MenuItem>
+          <MenuItem disabled={!!problem} onClick={() => { close(); setScheduleKind(null); setScheduling(true); }}><Icon name="clock" />Schedule…</MenuItem>
         </>}</Menu>
       </>} />
       <div class="composer-summary" aria-label="Run configuration summary">
         <span><b>Repository</b> {repo.value ? baseName(repo.value) : "Choose repository"} · {baseRef.value || repoInfo.value?.current || "HEAD"}</span>
-        <span><b>{single ? "Agent" : "Team"}</b> {p ? teamSentence(p, roles) : "Choose workflow"}</span>
+        <span><b>{single ? "Agent" : "Agent workflow"}</b> {p ? teamSentence(p, roles) : "Choose workflow"}</span>
         <span><b>Checks</b> {profileLoading ? "Detecting checks…" : verificationProfile ? verificationProfile.checks.map(gate => gate.command).join(" · ") || "No runnable gates" : checkCmd.value.trim() || "Not configured"}</span>
         <span><b>Limit</b> {limits.value.maxSteps} calls · {limits.value.maxMinutes} minutes</span>
         {problem ? <span class="composer-problem" role="status">{problem}</span> : null}
@@ -324,12 +306,12 @@ export function Composer() {
       <WorkflowRecommendation repository={repo.value} intent={journeyDraft.value?.repo === repo.value ? "bug" : intentDraft.value} />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
       <details class="composer-options compact" open={moreOptions} onToggle={(event) => setMoreOptions(event.currentTarget.open)}>
-        <summary>Run options <span>Team, context, checks and limits for this task</span></summary>
+        <summary>Run options <span>Agents, context, checks and limits for this task</span></summary>
       <AcceptanceEditor />
 
       <div class="section">
         {p && !single ? <p class="pattern-why">{teamSentence(p, roles)}</p> : null}
-        {trust.value === "full" ? <p class="full-warn" role="alert"><b>Full access: no sandbox.</b> Agents can run commands and change files outside their worktree with your credentials. Review permissions in Advanced team controls.</p> : null}
+        {trust.value === "full" ? <p class="full-warn" role="alert"><b>Full access: no sandbox.</b> Agents can run commands and change files outside their worktree with your credentials. Review permissions in Advanced agent settings.</p> : null}
         {p && CHECKPOINTS[p.id] && (p.id !== "debate" || roles.builder?.length) ? (
           <label class="checkpoint">
             <input type="checkbox" checked={planApprovalFor(p.id)} onChange={(e) => setApprovePlan(e.currentTarget.checked, p.id)} />
@@ -346,7 +328,7 @@ export function Composer() {
       {/* The optional controls read as one accordion: a card whose rows open in place. */}
       <div class="composer-more">
       <details class="settings advanced-controls" open={store.get("composerAdvanced") === "1"} onToggle={(e) => store.set("composerAdvanced", e.currentTarget.open ? "1" : "0")}>
-        <summary><span class="st">{single ? "Advanced run settings" : "Advanced team controls"}</span><span class="ss">Roles, models, permissions and limits</span></summary>
+        <summary><span class="st">{single ? "Advanced run settings" : "Advanced agent settings"}</span><span class="ss">Roles, models, permissions and limits</span></summary>
         <div class="settings-body">
         <RemoteWorkerSelect value={remoteWorker} onChange={(value) => { improve.stop(); setRemoteWorker(value); }} disabled={starting} />
         {remoteWorker ? <p class="help">Provider availability comes from this worker. Checks and setup run on the application server. Copied workspace files and native interactive approvals are unavailable; use explicitly staged references.</p> : null}
@@ -363,24 +345,18 @@ export function Composer() {
       </div>
       </details>
       {error ? <div class="msg err">{error}</div> : null}
-      {usingTemplate ? <UseTaskTemplateDialog initialScope={libraryScope} onClose={() => setUsingTemplate(false)} onUsed={(scope) => { setLibraryScope(scope); setUsingTemplate(false); }} /> : null}
-      {savingTemplate && p ? <SaveTaskTemplateDialog p={p} initialScope={libraryScope} onClose={() => setSavingTemplate(false)} onSaved={(scope) => { setLibraryScope(scope); setSavingTemplate(false); }} /> : null}
-      {scheduling && p ? <ScheduleRunDialog body={runBody(p)} onClose={() => setScheduling(false)} /> : null}
-      {saving && p ? <SaveAutomationDialog body={runBody(p)} onClose={() => setSaving(false)} /> : null}
-      {comparing && p ? (
-        <CompareDialog
-          base={{ ...runBody(p), approvals: {} }}
-          onClose={() => setComparing(false)}
-          onStarted={(group) => {
-            resetComposer();
-            void refreshRuns();
-            void loadProjects();
-            route.value = { view: "insights", group };
-          }}
-        />
-      ) : null}
+      {usingTemplate ? <UseTaskTemplateDialog initialScope={libraryScope} onConfigured={template => { if (template.config) setToolApprovals(template.config.toolApprovals === true); if (template.runOptions) { const options = template.runOptions; void selectVerification(options.verification); setContainerEnabled(options.container.enabled); setContainerImage(options.container.image); setContainerVolume(options.container.authVolume); } }} onClose={() => setUsingTemplate(false)} onUsed={(scope) => { setLibraryScope(scope); setUsingTemplate(false); }} /> : null}
+      {savingTemplate && p ? <SaveTaskTemplateDialog p={p} runOptions={{ verification: verificationPreset as "" | "lightweight" | "standard" | "thorough", container: { enabled: containerEnabled, image: containerImage, authVolume: containerVolume } }} initialScope={libraryScope} onClose={() => setSavingTemplate(false)} onSaved={(scope) => { setLibraryScope(scope); setSavingTemplate(false); }} /> : null}
+      {scheduling && p && !scheduleKind ? <ScheduleChoiceDialog onClose={() => setScheduling(false)} onChoose={kind => { if (kind === "backlog" || kind === "missions") { setScheduling(false); route.value = { view: "automations", kind }; } else setScheduleKind(kind); }} /> : null}
+      {scheduling && p && scheduleKind === "once" ? <ScheduleRunDialog body={runBody(p)} onClose={() => setScheduling(false)} /> : null}
+      {scheduling && p && scheduleKind === "repeat" ? <SaveAutomationDialog body={runBody(p)} onClose={() => setScheduling(false)} /> : null}
     </div>
   );
+}
+
+function ScheduleChoiceDialog({ onClose, onChoose }: { onClose: () => void; onChoose: (kind: ScheduleKind) => void }) {
+  const ref = useDialog(true, onClose);
+  return <dialog ref={ref} class="picker" aria-labelledby="schedule-choice-title"><div class="picker-inner"><div class="picker-head"><h3 id="schedule-choice-title">Schedule work</h3></div><div class="dialog-body purpose-choices">{SCHEDULE_KINDS.map(item => <button class="settings-result" onClick={() => onChoose(item.id)}><span><strong>{item.label}</strong><span>{item.description}</span></span></button>)}</div><div class="picker-foot"><button class="btn" onClick={onClose}>Cancel</button></div></div></dialog>;
 }
 
 function ScheduleRunDialog({ body, onClose }: { body: Record<string, any>; onClose: () => void }) {
@@ -415,7 +391,7 @@ async function postConfirmed<T>(path: string, body: Record<string, unknown>): Pr
 }
 
 /** Start the same task with several patterns (each with the team you last set for it). */
-function CompareDialog({ base, onClose, onStarted }: { base: Record<string, any>; onClose: () => void; onStarted: (group: string) => void }) {
+export function CompareDialog({ base, onClose, onStarted }: { base: Record<string, any>; onClose: () => void; onStarted: (group: string) => void }) {
   const ref = useDialog(true, onClose);
   const current = pattern.value?.id;
   const [picked, setPicked] = useState<Set<string>>(new Set(current ? [current] : []));

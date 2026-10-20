@@ -1,4 +1,6 @@
 import { browserPerformance } from "./performance.js";
+import { SchedulingView } from "./scheduling.js";
+import { ConnectionsView } from "./connections.js";
 import type { ComponentChildren } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
@@ -7,16 +9,11 @@ import { ModelRow, TRUST } from "./composer.js";
 import { SETTINGS_SECTIONS, searchSettings, type SettingsSection } from "./settings-sections.js";
 import { notificationPermission, canNotify, setDesktopNotifications } from "./preferences.js";
 import { themeChoice, setTheme, type ThemeChoice } from "./theme.js";
-import { executionHost, SshConnections } from "./ssh-projects.js";
-import { RemoteAccess } from "./remote-access.js";
-import { TeamSettings } from "./collab-settings.js";
-import { AutomationsView, inbox } from "./automations.js";
-import { DeferredRunsPanel } from "./deferred-runs.js";
+import { executionHost } from "./ssh-projects.js";
+import { inbox } from "./automations.js";
 import { NotificationsView } from "./notifications.js";
 import { IntegrationsView } from "./integrations.js";
 import { CodeHostsPanel } from "./code-hosts.js";
-import { RemoteWorkersView } from "./remote-workers.js";
-import { SharedAccountsPanel } from "./shared.js";
 import { ConventionsPanel } from "./conventions.js";
 import { FilePolicyPanel } from "./filesystem-policy.js";
 import { ExtensionsPanel } from "./extensions.js";
@@ -70,14 +67,12 @@ export function SettingsView({ section = "general", group }: { section?: Setting
             {section === "general" ? <GeneralSettings /> : null}
             {section === "agents" ? <AgentSettings /> : null}
             {section === "runs" ? <RunSettings /> : null}
-            {section === "ssh" ? <SshConnections /> : null}
-            {section === "remote-access" ? host.kind === "local" ? <RemoteAccess /> : <SettingsCard title="Manage access on your computer"><p>Remote device access is configured in your local workspace.</p>{host.kind === "ssh" ? <a class="btn" href="/#/settings/remote-access">Back to this computer</a> : null}</SettingsCard> : null}
-            {section === "team" ? <TeamSettings /> : null}
+            {section === "connections" ? <ConnectionsView purpose={group} /> : null}
             {section === "notifications" ? <><SettingsCard title="Desktop notifications"><SettingsRow title="Run updates" description="Notify when a run finishes or needs your attention, while you’re away from it."><button class="settings-switch" role="switch" aria-label="Desktop notifications" aria-checked={canNotify()} onClick={() => void setDesktopNotifications(!canNotify())}><span /></button></SettingsRow><p class="help">{"Notification" in window ? notificationPermission.value === "denied" ? "Notifications are blocked. Allow them in your browser’s site permissions to enable this setting." : "This preference is saved in this browser for the current workspace." : "This browser doesn’t support desktop notifications."}</p></SettingsCard><NotificationsView /></> : null}
-            {section === "integrations" ? <><IntegrationsView onImport={(imported) => { externalSource.value = imported; source.value = null; setTask(`Address ${imported.provider} ${imported.kind} ${imported.key}: ${imported.title}`); route.value = { view: "composer" }; }} /><CodeHostsPanel projects={projects.value} /><RemoteWorkersView /></> : null}
+            {section === "integrations" ? <><IntegrationsView onImport={(imported) => { externalSource.value = imported; source.value = null; setTask(`Address ${imported.provider} ${imported.kind} ${imported.key}: ${imported.title}`); route.value = { view: "composer" }; }} /><CodeHostsPanel projects={projects.value} /></> : null}
             {section === "workspace" ? <WorkbenchView /> : null}
             {section === "insights" ? <InsightsView group={group} /> : null}
-            {section === "automations" ? <><AutomationsView /><DeferredRunsPanel /></> : null}
+            {section === "automations" ? <SchedulingView /> : null}
             {section === "projects" ? <ProjectSettings /> : null}
             {section === "extensions" ? <ExtensionsPanel /> : null}
             {section === "data" ? <WorkbenchRetentionPanel /> : null}
@@ -107,7 +102,7 @@ function GeneralSettings() {
       <SettingsRow title="Show archived runs" description="Include archived work in your run list."><button class="settings-switch" role="switch" aria-label="Show archived runs" aria-checked={railView.value.archived} onClick={() => setRailView({ archived: !railView.value.archived })}><span /></button></SettingsRow>
       <SettingsRow title="Keyboard shortcuts" description="Move around your workspace without leaving the keyboard."><button class="btn small" onClick={() => { shortcutsOpen.value = true; }}>View shortcuts</button></SettingsRow>
     </SettingsCard>
-    <div class="settings-callout"><Icon name="terminal" /><div><strong>Take your workspace further</strong><p>Connect a VM and keep your projects and tools on your remote machine.</p><a href="#/settings/ssh">Set up an SSH connection <span aria-hidden="true">→</span></a></div></div>
+    <div class="settings-callout"><Icon name="terminal" /><div><strong>Take your workspace further</strong><p>Connect a VM and keep your projects and tools on your remote machine.</p><a href="#/settings/connections/workspace">Set up an SSH connection <span aria-hidden="true">→</span></a></div></div>
   </>;
 }
 function AgentSettings() {
@@ -149,16 +144,16 @@ function RunSettings() {
       <NumberSetting label="Reported token ceiling" value={limits.value.maxTokens} optional save={(value) => setLimits({ maxTokens: value })} />
       <NumberSetting label="API-equivalent cost ceiling ($)" value={limits.value.maxCostUsd} optional min={0.01} step={0.01} save={(value) => setLimits({ maxCostUsd: value })} />
     </div><p class="help">Usage ceilings depend on provider reports and are checked between operations. API-equivalent cost is not your subscription bill.</p></SettingsCard>
-    <p class="help">Repository setup, checks, branch names, team roles and per-run isolation are available in <a href="#/">New run → Advanced team controls</a>.</p>
+    <p class="help">Repository setup, checks, branch names, team roles and per-run isolation are available in <a href="#/">New run → Advanced agent settings</a>.</p>
   </>;
 }
 function ProjectSettings() {
   const [id, setId] = useState("");
   const project = projects.value.find((p) => p.id === id) ?? projects.value.find((p) => p.repos.includes(repo.value)) ?? projects.value[0];
   return <>
-    <SettingsCard title="Projects"><SettingsRow title="Repositories & teams" description="Create projects, change their repositories and manage saved teams."><button class="btn small" onClick={() => { projectsOpen.value = true; }}>Manage projects</button></SettingsRow></SettingsCard>
+    <SettingsCard title="Projects"><SettingsRow title="Repositories" description="Create projects and change their repositories."><button class="btn small" onClick={() => { projectsOpen.value = true; }}>Manage projects</button></SettingsRow></SettingsCard>
     {project ? <><label class="lbl" for="settings-project">Project</label><select id="settings-project" class="field" value={project.id} onChange={(e) => setId(e.currentTarget.value)}>{projects.value.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select><ProjectRunSettings key={project.id} projectId={project.id} repositories={project.repos} /><ConventionsPanel key={`conventions:${project.id}`} projectId={project.id} repos={project.repos} /><FilePolicyPanel key={`policy:${project.id}`} projectId={project.id} projectName={project.name} /></> : <><p class="help">Create a project to configure its conventions and filesystem access.</p><ProjectRunSettings repositories={repo.value ? [repo.value] : []} /></>}
-    <SharedAccountsPanel projects={projects.value} />
+    <p class="help">Manage people and project access in <a href="#/settings/connections/sharing">Connections → Share access</a>.</p>
   </>;
 }
 function AdvancedSettings() {

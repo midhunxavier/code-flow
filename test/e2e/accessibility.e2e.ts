@@ -38,10 +38,10 @@ test("main screens, workspace tools and dialogs pass automatic accessibility che
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
     for (const [route, name] of [["", "composer"], [`/run/${runId}`, "run result"], ["/settings/workspace", "workspace"]]) { await page.goto(`${base}/#${route}`); await page.locator("main").waitFor(); await page.waitForFunction(() => document.querySelector("main")!.textContent!.trim().length > 10); await audit(`${colorScheme} ${name}`); }
-    const tabs = ["Code", "Dependencies", "Context", "History", "Services", "Coordinated changes", "Filtered tasks"];
+    const tabs = ["Code", "Context", "History", "Services", "Coordinated changes", "Filtered tasks"];
     for (const tab of tabs) { await page.getByRole("navigation", { name: "Workspace tools" }).getByRole("button", { name: tab, exact: true }).click(); await audit(`${colorScheme} workspace ${tab}`); }
     await page.goto(`${base}/#/settings`);
-    for (const category of ["General", "Agents & models", "Run defaults", "Notifications", "SSH connections", "Remote access", "Team", "Integrations", "Projects & access", "Extensions", "Data & storage", "Advanced"]) {
+    for (const category of ["General", "Agents & models", "Run defaults", "Notifications", "Connections", "Integrations", "Projects", "Extensions", "Data & storage", "Advanced"]) {
       await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: category, exact: true }).click();
       await audit(`${colorScheme} settings ${category}`);
     }

@@ -64,7 +64,7 @@ function HostChoices({ close, projectName }: { close: () => void; projectName?: 
       <MenuItem on={!workspaceId} disabled={!!busy} onClick={() => void choose("local", "This computer")} sub={!workspaceId ? "Current" : undefined}>This computer</MenuItem>
       {loading ? <p class="host-feedback" role="status">Loading connections…</p> : hosts.map((host) => <MenuItem key={host.id} on={host.id === workspaceId} disabled={!!busy} onClick={() => void choose(host.id, host.name)} sub={host.id === workspaceId ? "Current" : host.state}>{host.name}</MenuItem>)}
       {!loading && !hosts.length && !error ? <p class="host-feedback help">Save a remote connection in Settings to use it here.</p> : null}
-      <MenuItem disabled={!!busy} onClick={() => { close(); projectsOpen.value = false; projectEdit.value = null; route.value = { view: "settings", section: "ssh" }; }}>Manage connections…</MenuItem>
+      <MenuItem disabled={!!busy} onClick={() => { close(); projectsOpen.value = false; projectEdit.value = null; route.value = { view: "settings", section: "connections", group: "workspace" }; }}>Manage connections…</MenuItem>
     </> : <p class="host-feedback help">Open the app on your computer to manage connections.</p>}
     {busy ? <p class="host-feedback" role="status">{busy}</p> : null}
     {error ? <><p class="host-feedback msg err" role="alert">{error}</p><MenuItem onClick={() => void refresh()}>Refresh connections</MenuItem></> : null}

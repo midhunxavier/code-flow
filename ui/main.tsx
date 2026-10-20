@@ -42,7 +42,7 @@ function BootError({ message, seconds, onRetry }: { message: string; seconds: nu
       <button class="btn primary" disabled={left <= 0} onClick={() => setLeft(0)}>
         Retry now
       </button>
-      {workspaceId ? <a class="btn" href="/#/settings/ssh">Manage connections</a> : null}
+      {workspaceId ? <a class="btn" href="/#/settings/connections/workspace">Manage connections</a> : null}
     </div>
   );
 }

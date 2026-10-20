@@ -1,3 +1,4 @@
+import type { TaskIntent } from "../src/experience.js";
 import type { AgentId, AgentSettings, PatternInfo } from "./types.js";
 import type { RoleValue } from "./roles.js";
 import { validateContextBudget, type ContextBudget } from "../src/context-budget.js";
@@ -13,6 +14,9 @@ export interface PresetConfig {
   approvePlan: boolean;
   toolApprovals?: boolean;
   contextBudget?: ContextBudget;
+  check?: string;
+  setup?: string;
+  baseRef?: string;
 }
 export interface TeamPreset {
   id: string;
@@ -28,6 +32,13 @@ export interface TaskTemplate {
   pattern: string;
   task: string;
   criteria: string[];
+  config?: PresetConfig;
+  runOptions?: TemplateRunOptions;
+  intent?: TaskIntent;
+}
+export interface TemplateRunOptions {
+  verification: "" | "lightweight" | "standard" | "thorough";
+  container: { enabled: boolean; image: string; authVolume: string };
 }
 export interface ComposerLibrary { schemaVersion: 1; presets: TeamPreset[]; templates: TaskTemplate[] }
 
@@ -43,7 +54,8 @@ function settings(value: unknown): AgentSettings {
   const out: AgentSettings = {};
   for (const [id, setting] of Object.entries(value)) {
     if (!provider(id) || !object(setting) || (setting.model !== undefined && !text(setting.model, 256)) || (setting.effort !== undefined && !text(setting.effort, 64))) return fail("A preset contains invalid provider model settings.");
-    out[id] = { ...(setting.model !== undefined ? { model: setting.model as string } : {}), ...(setting.effort !== undefined ? { effort: setting.effort as string } : {}) };
+    if (setting.variants !== undefined && (!Array.isArray(setting.variants) || setting.variants.length > 3 || setting.variants.some(v => !object(v) || !text(v.model, 256) || !v.model.trim() || v.effort !== undefined && !text(v.effort, 64)))) return fail("Invalid model variants.");
+    out[id] = { ...(setting.model !== undefined ? { model: setting.model as string } : {}), ...(setting.effort !== undefined ? { effort: setting.effort as string } : {}), ...(Array.isArray(setting.variants) ? { variants: setting.variants.map(v => ({ model: v.model as string, ...(v.effort !== undefined ? { effort: v.effort as string } : {}) })) } : {}) };
   }
   return out;
 }
@@ -73,8 +85,10 @@ export function validatePresetConfig(value: unknown, patterns: readonly PatternI
   }
   if (!["safe", "standard", "trusted", "full"].includes(String(value.trust)) || typeof value.approvePlan !== "boolean" || !object(value.limits) || !whole(value.limits.maxMinutes, 1, 720) || !whole(value.limits.maxSteps, 1, 200)) return fail("Invalid permissions, approval choice or execution limits.");
   if ((value.limits.maxTokens !== undefined && !whole(value.limits.maxTokens, 1, 1000000000)) || (value.limits.maxCostUsd !== undefined && (typeof value.limits.maxCostUsd !== "number" || !Number.isFinite(value.limits.maxCostUsd) || value.limits.maxCostUsd <= 0 || value.limits.maxCostUsd > 1000000)) || (value.toolApprovals !== undefined && typeof value.toolApprovals !== "boolean")) return fail("Invalid reported usage ceilings or tool approval preference.");
+  for (const field of ["check", "setup", "baseRef"] as const) if (value[field] !== undefined && !text(value[field], 10000)) return fail(`Invalid ${field} setting.`);
+  const commands = Object.fromEntries(["check", "setup", "baseRef"].filter(key => value[key] !== undefined).map(key => [key, value[key]]));
   const contextBudget = validateContextBudget(value.contextBudget);
-  return { pattern: pattern.id, roles, options, agentSettings: settings(value.agentSettings), roleSettings, trust: value.trust as PresetConfig["trust"], limits: { maxMinutes: value.limits.maxMinutes, maxSteps: value.limits.maxSteps, ...(value.limits.maxTokens !== undefined ? { maxTokens: value.limits.maxTokens as number } : {}), ...(value.limits.maxCostUsd !== undefined ? { maxCostUsd: value.limits.maxCostUsd as number } : {}) }, approvePlan: value.approvePlan, ...(value.toolApprovals !== undefined ? { toolApprovals: value.toolApprovals } : {}), ...(contextBudget ? { contextBudget } : {}) };
+  return { ...commands, pattern: pattern.id, roles, options, agentSettings: settings(value.agentSettings), roleSettings, trust: value.trust as PresetConfig["trust"], limits: { maxMinutes: value.limits.maxMinutes, maxSteps: value.limits.maxSteps, ...(value.limits.maxTokens !== undefined ? { maxTokens: value.limits.maxTokens as number } : {}), ...(value.limits.maxCostUsd !== undefined ? { maxCostUsd: value.limits.maxCostUsd as number } : {}) }, approvePlan: value.approvePlan, ...(value.toolApprovals !== undefined ? { toolApprovals: value.toolApprovals } : {}), ...(contextBudget ? { contextBudget } : {}) };
 }
 
 export function templateParameters(template: Pick<TaskTemplate, "task" | "criteria">): string[] {
@@ -100,9 +114,18 @@ export function parseComposerLibrary(value: unknown, patterns: readonly PatternI
   });
   const templates = value.templates.map((t): TaskTemplate => {
     if (!object(t) || !identifier(t.id) || !text(t.name, 80) || !t.name.trim() || !patterns.some((p) => p.id === t.pattern) || !text(t.task, 100000) || !t.task.trim() || !Array.isArray(t.criteria) || t.criteria.length > 100 || t.criteria.some((c) => !text(c, 2000))) return fail("Invalid task template.");
-    const template = { id: t.id, name: t.name.trim(), pattern: t.pattern as string, task: t.task, criteria: t.criteria as string[] };
+    if (t.intent !== undefined && !["bug", "feature", "review", "explore"].includes(String(t.intent))) return fail("Invalid template task intent.");
+    const template = { ...(t.intent ? { intent: t.intent as TaskIntent } : {}), id: t.id, name: t.name.trim(), pattern: t.pattern as string, task: t.task, criteria: t.criteria as string[] };
     if (templateParameters(template).length > 24) return fail("A template can have at most 24 parameters.");
-    return template;
+    const config = t.config === undefined ? undefined : validatePresetConfig(t.config, patterns);
+    if (config && config.pattern !== template.pattern) return fail("Template workflow and agent configuration must match.");
+    let runOptions: TemplateRunOptions | undefined;
+    if (t.runOptions !== undefined) {
+      const options = t.runOptions;
+      if (!object(options) || !["", "lightweight", "standard", "thorough"].includes(String(options.verification)) || !object(options.container) || typeof options.container.enabled !== "boolean" || !text(options.container.image, 500) || !text(options.container.authVolume, 500)) return fail("Invalid template execution settings.");
+      runOptions = { verification: options.verification as TemplateRunOptions["verification"], container: { enabled: options.container.enabled, image: options.container.image, authVolume: options.container.authVolume } };
+    }
+    return { ...template, ...(config ? { config } : {}), ...(runOptions ? { runOptions } : {}) };
   });
   if (new Set(presets.map((p) => p.id)).size !== presets.length || new Set(templates.map((t) => t.id)).size !== templates.length) return fail("Duplicate library identifiers.");
   return { schemaVersion: 1, presets, templates };

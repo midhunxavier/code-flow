@@ -57,7 +57,7 @@ export function TeamServerWizard({ onClose }: { onClose: () => void }) {
     <section class="settings-card" aria-label="Team server location">
       <h3>Where should the team server run?</h3>
       <label>Server<select class="field" aria-label="Server" disabled={busy || childBusy} value={target} onChange={(event) => { setTarget(event.currentTarget.value); setPrepared("local"); setInstalled(false); setAutostart(null); setStartupError(""); setPort("4318"); setError(""); }}><option value="local">This computer</option>{hosts.map((host) => <option key={host.id} value={host.id}>{host.name}{host.state !== "connected" ? " · disconnected" : ""}</option>)}</select></label>
-      <p class="help">Choose this computer or an existing SSH connection. <a href="/#/settings/ssh">Manage SSH connections</a></p>
+      <p class="help">Choose this computer or an existing SSH connection. <a href="/#/settings/connections/workspace">Manage SSH connections</a></p>
       <button class="btn small" disabled={busy || childBusy} onClick={() => void refresh()}>Refresh servers</button>
       {target !== "local" ? <>
         <p>Host the team on {hostName}. Setup installs a separate Code Flow server using your SSH connection. Its projects and accounts are separate from the SSH workspace.</p>

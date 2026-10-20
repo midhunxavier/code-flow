@@ -1,8 +1,10 @@
+import { intentDraft } from "./experience.js";
+import { Templates } from "./github.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { post, showToast, store } from "./lib.js";
 import { acceptanceCriteria, agentSettings, baseRef, catalogs, checkCmd, checkHint, composerOrigins, configChecking, contextPaths, attachments, health, limits, optionsFor, patterns, planApprovalFor, repo, repoConfig, roleModels, rolesFor, setAcceptanceCriteria, setAgentSetting, setApprovePlan, setLimits, setOption, setPattern, setRoleModel, setRoles, setTask, setTrust, setupCmd, target, task, trust } from "./state.js";
-import { fillTemplate, parseComposerLibrary, taskWithCriteria, templateParameters, type ComposerLibrary, type PresetConfig, type TaskTemplate } from "./composer-tools.js";
+import { fillTemplate, parseComposerLibrary, taskWithCriteria, templateParameters, type ComposerLibrary, type PresetConfig, type TaskTemplate, type TemplateRunOptions } from "./composer-tools.js";
 import type { AgentId, PatternInfo } from "./types.js";
 import type { VerificationProfile } from "../src/verification.js";
 import { ContextBudgetControls } from "./context-budget-controls.js";
@@ -65,7 +67,7 @@ export function RepositoryReadiness({ repository = repo.value, setup = setupCmd.
 }
 
 function currentConfig(p: PatternInfo): PresetConfig {
-  return structuredClone({ pattern: p.id, roles: rolesFor(p), options: optionsFor(p), agentSettings: agentSettings.value, roleSettings: roleModels.value[p.id] ?? {}, trust: trust.value, limits: limits.value, approvePlan: planApprovalFor(p.id), toolApprovals: store.get("interactiveApprovals") === "1", contextBudget: contextBudget.value });
+  return structuredClone({ pattern: p.id, roles: rolesFor(p), options: optionsFor(p), agentSettings: agentSettings.value, roleSettings: roleModels.value[p.id] ?? {}, trust: trust.value, limits: limits.value, approvePlan: planApprovalFor(p.id), toolApprovals: store.get("interactiveApprovals") === "1", contextBudget: contextBudget.value, check: checkCmd.value, setup: setupCmd.value, baseRef: baseRef.value });
 }
 function applyPreset(config: PresetConfig, label: string) {
   const p = patterns.value.find((p) => p.id === config.pattern);
@@ -81,6 +83,9 @@ function applyPreset(config: PresetConfig, label: string) {
   for (const [role, providers] of Object.entries(config.roleSettings)) for (const [id, setting] of Object.entries(providers)) setRoleModel(p.id, role, id as AgentId, setting!);
   setTrust(config.trust); setLimits({ ...config.limits, maxTokens: config.limits.maxTokens, maxCostUsd: config.limits.maxCostUsd }); setApprovePlan(config.approvePlan, p.id);
   setContextBudget(config.contextBudget, label);
+  if (config.check !== undefined) checkCmd.value = config.check;
+  if (config.setup !== undefined) setupCmd.value = config.setup;
+  if (config.baseRef !== undefined) baseRef.value = config.baseRef;
   store.set("interactiveApprovals", config.toolApprovals ? "1" : "0");
   composerOrigins.value = { ...composerOrigins.value, pattern: label, roles: label, models: label };
 }
@@ -115,7 +120,8 @@ export function ComposerLibraryEditor({ p, onToolApprovalsChange, libraryKey = "
   };
   const useTemplate = (template: TaskTemplate, values: Record<string, string>) => {
     const filled = fillTemplate(template, values);
-    setPattern(template.pattern); setTask(filled.task); setAcceptanceCriteria(filled.criteria); setFilling(null);
+    if (template.config) { applyPreset(template.config, `Template ${template.name}`); onToolApprovalsChange?.(template.config.toolApprovals === true); } else setPattern(template.pattern);
+    setTask(filled.task); setAcceptanceCriteria(filled.criteria); setFilling(null);
   };
   const exportLibrary = () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(library, null, 2)], { type: "application/json" }));
@@ -123,16 +129,16 @@ export function ComposerLibraryEditor({ p, onToolApprovalsChange, libraryKey = "
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   return <details class="settings composer-library">
-    <summary><span class="st">Saved teams and task templates</span><span class="ss">{library.presets.length} teams · {library.templates.length} templates</span></summary>
+    <summary><span class="st">Advanced library management</span><span class="ss">{library.presets.length} teams · {library.templates.length} templates</span></summary>
     <div class="settings-body">
       <p class="help">Saved in this browser for the selected library. Export a backup to share or move them. Saving captures the current run draft. Teams include permissions, models, workflow options and limits; repository commands remain repository-specific.</p>
-      <div class="settings-grid"><div><label class="lbl" for="saved-preset">Team preset</label><select class="field" id="saved-preset" value={presetId} onChange={(e) => { const item = library.presets.find((p) => p.id === e.currentTarget.value); setPresetId(item?.id ?? ""); setPresetName(item?.name ?? ""); setRevision(""); }}><option value="">New team preset…</option>{library.presets.map((item) => <option value={item.id} key={item.id}>{item.name} · r{item.revision}</option>)}</select></div>
-        <div><label class="lbl" for="preset-name">Team name</label><input id="preset-name" class="field" maxLength={80} value={presetName} onInput={(e) => setPresetName(e.currentTarget.value)} /></div></div>
+      <div class="settings-grid"><div><label class="lbl" for="saved-preset">Saved workflow</label><select class="field" id="saved-preset" value={presetId} onChange={(e) => { const item = library.presets.find((p) => p.id === e.currentTarget.value); setPresetId(item?.id ?? ""); setPresetName(item?.name ?? ""); setRevision(""); }}><option value="">New saved workflow…</option>{library.presets.map((item) => <option value={item.id} key={item.id}>{item.name} · r{item.revision}</option>)}</select></div>
+        <div><label class="lbl" for="preset-name">Workflow name</label><input id="preset-name" class="field" maxLength={80} value={presetName} onInput={(e) => setPresetName(e.currentTarget.value)} /></div></div>
       {selected ? <div><label class="lbl" for="preset-revision">Revision to apply</label><select id="preset-revision" class="field" value={revision} onChange={(e) => setRevision(e.currentTarget.value)}><option value="">Current · r{selected.revision}</option>{[...selected.history].reverse().map((h) => <option value={h.revision} key={h.revision}>r{h.revision} · {new Date(h.updatedAt).toLocaleString()}</option>)}</select><p class="help">Permissions: {(revision ? selected.history.find((h) => String(h.revision) === revision)?.config : selected.config)?.trust}. Up to 10 previous revisions are kept.</p></div> : null}
-      <div class="onboarding-actions"><button class="btn" disabled={!presetName.trim()} onClick={savePreset}>{selected ? "Save new revision" : "Save current team"}</button><button class="btn" disabled={!selected} onClick={() => { if (selected) { const config = revision ? selected.history.find((h) => String(h.revision) === revision)!.config : selected.config; applyPreset(config, `Preset ${selected.name} r${revision || selected.revision}`); onToolApprovalsChange?.(config.toolApprovals === true); } }}>Apply team</button>{selected ? <button class="btn ghost" onClick={() => { if (save({ ...library, presets: library.presets.filter((item) => item.id !== presetId) })) { setPresetId(""); setPresetName(""); } }}>Delete team</button> : null}</div>
+      <div class="onboarding-actions"><button class="btn" disabled={!presetName.trim()} onClick={savePreset}>{selected ? "Save new revision" : "Save current workflow"}</button><button class="btn" disabled={!selected} onClick={() => { if (selected) { const config = revision ? selected.history.find((h) => String(h.revision) === revision)!.config : selected.config; applyPreset(config, `Preset ${selected.name} r${revision || selected.revision}`); onToolApprovalsChange?.(config.toolApprovals === true); } }}>Apply workflow</button>{selected ? <button class="btn ghost" onClick={() => { if (save({ ...library, presets: library.presets.filter((item) => item.id !== presetId) })) { setPresetId(""); setPresetName(""); } }}>Delete workflow</button> : null}</div>
       <div class="settings-grid"><div><label class="lbl" for="saved-template">Task template</label><select class="field" id="saved-template" value={templateId} onChange={(e) => { const item = library.templates.find((t) => t.id === e.currentTarget.value); setTemplateId(item?.id ?? ""); setTemplateName(item?.name ?? ""); }}><option value="">New task template…</option>{library.templates.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></div><div><label class="lbl" for="template-name">Template name</label><input class="field" id="template-name" maxLength={80} value={templateName} onInput={(e) => setTemplateName(e.currentTarget.value)} /></div></div>
       <p class="help">Save the current task, workflow and acceptance criteria. Write parameters such as <code>{"{{component}}"}</code> or <code>{"{{issue}}"}</code> in the task or criteria; you'll be asked to fill each one when applying.</p>
-      <div class="onboarding-actions"><button class="btn" disabled={!templateName.trim() || !task.value.trim()} onClick={() => { const id = templateId || crypto.randomUUID(); if (save({ ...library, templates: [...library.templates.filter((item) => item.id !== id), { id, name: templateName, pattern: p.id, task: task.value, criteria: acceptanceCriteria.value }] })) setTemplateId(id); }}>Save current task as template</button><button class="btn" disabled={!templateId} onClick={() => { const template = library.templates.find((t) => t.id === templateId)!; if (templateParameters(template).length) setFilling(template); else useTemplate(template, {}); }}>Apply template</button>{templateId ? <button class="btn ghost" onClick={() => { if (save({ ...library, templates: library.templates.filter((item) => item.id !== templateId) })) { setTemplateId(""); setTemplateName(""); } }}>Delete template</button> : null}</div>
+      <div class="onboarding-actions"><button class="btn" disabled={!templateName.trim() || !task.value.trim()} onClick={() => { const id = templateId || crypto.randomUUID(); if (save({ ...library, templates: [...library.templates.filter((item) => item.id !== id), { id, name: templateName, pattern: p.id, task: task.value, criteria: acceptanceCriteria.value, config: currentConfig(p) }] })) setTemplateId(id); }}>Save current task as template</button><button class="btn" disabled={!templateId} onClick={() => { const template = library.templates.find((t) => t.id === templateId)!; if (templateParameters(template).length) setFilling(template); else useTemplate(template, {}); }}>Apply template</button>{templateId ? <button class="btn ghost" onClick={() => { if (save({ ...library, templates: library.templates.filter((item) => item.id !== templateId) })) { setTemplateId(""); setTemplateName(""); } }}>Delete template</button> : null}</div>
       <div class="onboarding-actions"><button class="btn" onClick={exportLibrary}>Export library</button><button class="btn" onClick={() => file.current?.click()}>Import library</button></div>
       <input ref={file} type="file" hidden accept=".json,application/json" onChange={async (e) => { const chosen = e.currentTarget.files?.[0]; e.currentTarget.value = ""; if (!chosen) return; try { if (chosen.size > 1024 * 1024) throw new Error("Library files must be under 1 MB."); const imported = parseComposerLibrary(JSON.parse(await chosen.text()), patterns.value); const existing = libraryRef.current; const merge = <T extends { id: string }>(a: T[], b: T[]) => [...a, ...b.map((item) => a.some((old) => old.id === item.id) ? { ...item, id: crypto.randomUUID() } : item)]; if (save({ schemaVersion: 1, presets: merge(existing.presets, imported.presets), templates: merge(existing.templates, imported.templates) })) showToast("Library imported. Existing entries were preserved."); } catch (err) { setError((err as Error).message); } }} />
       {error ? <p class="msg err" role="alert">{error}</p> : null}
@@ -141,7 +147,14 @@ export function ComposerLibraryEditor({ p, onToolApprovalsChange, libraryKey = "
   </details>;
 }
 
-export function UseTaskTemplateDialog({ initialScope, onClose, onUsed }: { initialScope: string; onClose: () => void; onUsed: (scope: string) => void }) {
+export const STARTER_TEMPLATES: TaskTemplate[] = [
+  { id: "starter-bug", intent: "bug", name: "Fix a bug", pattern: "pipeline", task: "Fix the following bug:\n\nExpected behavior:\nActual behavior:\nSteps to reproduce:", criteria: [] },
+  { id: "starter-feature", intent: "feature", name: "Build a feature", pattern: "pipeline", task: "Build the following feature:\n\nWho it helps:\nExpected behavior:\nAcceptance criteria:", criteria: [] },
+  { id: "starter-review", intent: "review", name: "Review code", pattern: "council", task: "Review the code for correctness and regressions.\n\nScope or branch to review:\nAreas of concern:", criteria: [] },
+  { id: "starter-explore", intent: "explore", name: "Explore an idea", pattern: "debate", task: "Explore approaches to the following idea without implementing changes:\n\nGoal:\nConstraints:\nTrade-offs to consider:", criteria: [] },
+];
+
+export function UseTaskTemplateDialog({ initialScope, onClose, onUsed, onConfigured }: { initialScope: string; onClose: () => void; onUsed: (scope: string) => void; onConfigured?: (template: TaskTemplate) => void }) {
   const ref = useDialog(true, onClose);
   const [project] = useState(() => target.value.project);
   const [scope, setScope] = useState(project && initialScope === "project" ? "project" : "personal");
@@ -155,13 +168,17 @@ export function UseTaskTemplateDialog({ initialScope, onClose, onUsed }: { initi
     const read = (key: string) => {
       try {
         const raw = store.get(key);
-        return { templates: parseComposerLibrary(raw === null ? EMPTY_LIBRARY : JSON.parse(raw), patterns.value).templates, error: "" };
-      } catch (error) { return { templates: [] as TaskTemplate[], error: `Could not load templates: ${(error as Error).message}` }; }
+        return { ...parseComposerLibrary(raw === null ? EMPTY_LIBRARY : JSON.parse(raw), patterns.value), error: "" };
+      } catch (error) { return { ...EMPTY_LIBRARY, error: `Could not load templates: ${(error as Error).message}` }; }
     };
-    return { project: project ? read(`composerLibrary:${project.id}`) : { templates: [], error: "" }, personal: read("composerLibrary") };
+    return { project: project ? read(`composerLibrary:${project.id}`) : { ...EMPTY_LIBRARY, error: "" }, personal: read("composerLibrary") };
   });
   const library = scope === "project" ? libraries.project : libraries.personal;
-  const template = library.templates.find((item) => item.id === selected);
+  const starters = STARTER_TEMPLATES.filter(item => patterns.value.some(pattern => pattern.id === item.pattern));
+  const saved = selected.startsWith("saved:") ? library.templates.find(item => `saved:${item.id}` === selected) : undefined;
+  const preset = selected.startsWith("workflow:") ? library.presets.find(item => `workflow:${item.id}` === selected) : undefined;
+  const template: TaskTemplate | undefined = saved ?? (preset ? { id: preset.id, name: preset.name, pattern: preset.config.pattern, task: task.value.trim() || "{{task}}", criteria: [...acceptanceCriteria.value], config: preset.config } : starters.find(item => item.id === selected));
+  const editable = !!saved;
   useEffect(() => { if (editing) editName.current?.focus(); }, [editing?.id]);
   const update = (replacement: TaskTemplate | null) => {
     if (!template) return;
@@ -175,7 +192,7 @@ export function UseTaskTemplateDialog({ initialScope, onClose, onUsed }: { initi
       const serialized = JSON.stringify(next);
       store.set(key, serialized);
       if (store.get(key) !== serialized) throw new Error("The change could not be saved. Check that browser storage is available.");
-      setLibraries({ ...libraries, [scope]: { templates: next.templates, error: "" } });
+      setLibraries({ ...libraries, [scope]: { ...next, error: "" } });
       setEditing(null); setDeleting(false); setValues({}); setError("");
       if (!replacement) setSelected("");
       showToast(replacement ? "Template updated." : "Template deleted.");
@@ -186,18 +203,22 @@ export function UseTaskTemplateDialog({ initialScope, onClose, onUsed }: { initi
   if (template) { try { filled = fillTemplate(template, values); } catch { /* Required placeholders are incomplete. */ } }
   const apply = () => {
     if (!template || !filled || editing || deleting) return;
-    setPattern(template.pattern); setTask(filled.task); setAcceptanceCriteria(filled.criteria);
-    onUsed(scope);
+    if (template.config) applyPreset(template.config, `Template ${template.name}`);
+    else setPattern(template.pattern);
+    if (template.id === "starter-explore") { setRoles("debate", "builder", []); setRoles("debate", "reviewer", []); }
+    intentDraft.value = preset ? intentDraft.value : template.intent;
+    setTask(filled.task); setAcceptanceCriteria(filled.criteria);
+    onConfigured?.(template); onUsed(scope);
   };
   return <dialog class="picker" ref={ref} aria-labelledby="use-task-template-title"><form class="picker-inner" onSubmit={(event) => { event.preventDefault(); if (editing) update({ ...editing, name: editing.name.trim(), criteria: editing.criteria.map((line) => line.trim()).filter(Boolean) }); else apply(); }}>
-    <div class="picker-head"><h3 id="use-task-template-title">Use template</h3></div>
+    <div class="picker-head"><h3 id="use-task-template-title">Template library</h3></div>
     <div class="dialog-body">
       <label class="lbl" for="quick-use-library">Library</label><select id="quick-use-library" class="field" disabled={!!editing || deleting} value={scope} onChange={(event) => { setScope(event.currentTarget.value); setSelected(""); setValues({}); setError(""); }}>{project ? <option value="project">This project · {project.name}</option> : null}<option value="personal">Personal library · all projects</option></select>
-      {library.error ? <p class="msg err" role="alert">{library.error}</p> : library.templates.length ? <>
-        <label class="lbl" for="quick-use-template">Template</label><select id="quick-use-template" class="field" disabled={!!editing || deleting} value={selected} onChange={(event) => { setSelected(event.currentTarget.value); setValues({}); setError(""); }}><option value="">Choose a template…</option>{library.templates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+      {library.error ? <p class="msg err" role="alert">{library.error}</p> : (starters.length || library.templates.length || library.presets.length) ? <>
+        <label class="lbl" for="quick-use-template">Template</label><select id="quick-use-template" class="field" disabled={!!editing || deleting} value={selected} onChange={(event) => { setSelected(event.currentTarget.value); setValues({}); setError(""); }}><option value="">Choose a template…</option><optgroup label="Built-in templates">{starters.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</optgroup><optgroup label="Saved templates">{library.templates.map(item => <option key={item.id} value={`saved:${item.id}`}>{item.name}</option>)}</optgroup>{library.presets.length ? <optgroup label="Saved workflows (keep your task)">{library.presets.map(item => <option key={item.id} value={`workflow:${item.id}`}>{item.name}</option>)}</optgroup> : null}</select>
         {editing ? <>
           <label class="lbl" for="edit-template-name">Template name<input ref={editName} id="edit-template-name" class="field" required maxLength={80} value={editing.name} onInput={(event) => setEditing({ ...editing, name: event.currentTarget.value })} /></label>
-          <label class="lbl" for="edit-template-workflow">Workflow<select id="edit-template-workflow" aria-label="Workflow" class="field" value={editing.pattern} onChange={(event) => setEditing({ ...editing, pattern: event.currentTarget.value })}>{patterns.value.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}</select></label>
+          <label class="lbl" for="edit-template-workflow">Workflow<select id="edit-template-workflow" aria-label="Workflow" class="field" value={editing.pattern} onChange={(event) => setEditing({ ...editing, pattern: event.currentTarget.value, config: event.currentTarget.value === editing.pattern ? editing.config : undefined })}>{patterns.value.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}</select></label>
           <label class="lbl" for="edit-template-task">Template task<textarea id="edit-template-task" aria-label="Template task" class="field" required rows={5} maxLength={100000} value={editing.task} onInput={(event) => setEditing({ ...editing, task: event.currentTarget.value })} /></label>
           <label class="lbl" for="edit-template-criteria">Acceptance criteria<textarea id="edit-template-criteria" aria-label="Acceptance criteria" class="field" rows={3} value={editing.criteria.join("\n")} onInput={(event) => setEditing({ ...editing, criteria: event.currentTarget.value.split("\n") })} /></label>
           <p class="help">One acceptance criterion per line. Keep placeholders such as <code>{"{{component}}"}</code> for reusable prompts.</p>
@@ -205,24 +226,25 @@ export function UseTaskTemplateDialog({ initialScope, onClose, onUsed }: { initi
           <p>Delete “{template.name}” from {scope === "project" ? "this project’s library" : "your personal library"}?</p>
           <div class="settings-actions"><button type="button" class="btn" onClick={() => { setDeleting(false); setError(""); }}>Keep template</button><button type="button" class="btn danger" onClick={() => update(null)}>Delete template</button></div>
         </div> : <>
-          {template ? <div class="settings-actions"><button type="button" class="btn" onClick={() => { setEditing({ ...template, criteria: [...template.criteria] }); setError(""); }}>Edit template</button><button type="button" class="btn danger" onClick={() => { setDeleting(true); setError(""); }}>Delete template…</button></div> : null}
+          {template && editable ? <div class="settings-actions"><button type="button" class="btn" onClick={() => { setEditing({ ...template, criteria: [...template.criteria] }); setError(""); }}>Edit template</button><button type="button" class="btn danger" onClick={() => { setDeleting(true); setError(""); }}>Delete template…</button></div> : null}
           {parameters.map((name) => <label class="lbl" key={name} for={`quick-use-${name}`}>{name}<input class="field" id={`quick-use-${name}`} required maxLength={4000} value={values[name] ?? ""} onInput={(event) => setValues({ ...values, [name]: event.currentTarget.value })} /></label>)}
           {filled ? <details><summary>Preview task</summary><pre class="template-preview" tabIndex={0}>{taskWithCriteria(filled.task, filled.criteria)}</pre></details> : null}
-          <p class="help">Replaces the current task, workflow and acceptance criteria. The run starts when you choose Start run.</p>
+          <p class="help">{template?.config ? `Restores task, workflow, agents, models, checks and permissions (${template.config.trust}).` : "Replaces the task, workflow and acceptance criteria; current agent settings are retained."} Review the settings before choosing Start run.</p>
         </>}
       </> : <p class="help" role="status">No templates in this library yet. Choose “Save as template…” from the chat box menu to create one.</p>}
+      {repo.value && !editing && !deleting ? <Templates only="sources" onChoose={onClose} /> : null}
       {error ? <p class="msg err" role="alert">{error}</p> : null}
     </div>
     <div class="picker-foot">{editing ? <><button type="button" class="btn" onClick={() => { setEditing(null); setError(""); }}>Cancel editing</button><button type="submit" class="btn primary" disabled={!editing.name.trim() || !editing.task.trim()}>Save changes</button></> : <><button type="button" class="btn" onClick={onClose}>Cancel</button><button type="submit" class="btn primary" disabled={!filled || deleting}>Use template</button></>}</div>
   </form></dialog>;
 }
 
-export function SaveTaskTemplateDialog({ p, initialScope, onClose, onSaved }: { p: PatternInfo; initialScope: string; onClose: () => void; onSaved: (scope: string) => void }) {
+export function SaveTaskTemplateDialog({ p, initialScope, onClose, onSaved, runOptions }: { p: PatternInfo; initialScope: string; onClose: () => void; onSaved: (scope: string) => void; runOptions?: TemplateRunOptions }) {
   const ref = useDialog(true, onClose);
   const [name, setName] = useState("");
   const [project] = useState(() => target.value.project);
   const [scope, setScope] = useState(project && initialScope === "project" ? "project" : "personal");
-  const [draft] = useState(() => ({ task: task.value, pattern: p.id, criteria: [...acceptanceCriteria.value] }));
+  const [draft] = useState(() => ({ task: task.value, intent: intentDraft.value, pattern: p.id, criteria: [...acceptanceCriteria.value], config: currentConfig(p), ...(runOptions ? { runOptions: structuredClone(runOptions) } : {}) }));
   const [error, setError] = useState("");
   const save = () => {
     if (!name.trim() || !draft.task.trim()) return;
@@ -245,7 +267,7 @@ export function SaveTaskTemplateDialog({ p, initialScope, onClose, onSaved }: { 
     <div class="dialog-body">
       <label class="lbl" for="quick-template-name">Template name</label><input id="quick-template-name" class="field" maxLength={80} required value={name} onInput={(event) => setName(event.currentTarget.value)} placeholder="e.g. Review a component" />
       <label class="lbl" for="quick-template-library">Save to</label><select id="quick-template-library" class="field" value={scope} onChange={(event) => setScope(event.currentTarget.value)}>{project ? <option value="project">This project · {project.name}</option> : null}<option value="personal">Personal library · all projects</option></select>
-      <p class="help">Saves this task, workflow and acceptance criteria in this browser. Use placeholders such as <code>{"{{component}}"}</code> for reusable prompts.</p>
+      <p class="help">Saves the task, acceptance criteria, workflow, agents, models, permissions, checks and run settings in this browser. Repository selection, remote worker assignments and attached files remain specific to each run. Use placeholders such as <code>{"{{component}}"}</code> for reusable prompts.</p>
       {error ? <p class="msg err" role="alert">{error}</p> : null}
     </div>
     <div class="picker-foot"><button type="button" class="btn" onClick={onClose}>Cancel</button><button type="submit" class="btn primary" disabled={!name.trim() || !draft.task.trim()}>Save template</button></div>

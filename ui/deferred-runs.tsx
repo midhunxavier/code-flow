@@ -9,7 +9,7 @@ const when = (at: number) => new Date(at).toLocaleString();
 const localTime = (at: number) => { const date = new Date(at); return new Date(at - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16); };
 
 /** Explicitly save a launch configuration, or inspect durable queued launches in this scope. */
-export function DeferredRunsPanel({ runRequest, project, repo }: { runRequest?: unknown; project?: string; repo?: string }) {
+export function DeferredRunsPanel({ runRequest, project, repo, unassigned = false }: { runRequest?: unknown; project?: string; repo?: string; unassigned?: boolean }) {
   const [jobs, setJobs] = useState<DeferredRunJob[]>([]);
   const [error, setError] = useState("");
   const [name, setName] = useState("");
@@ -47,7 +47,7 @@ export function DeferredRunsPanel({ runRequest, project, repo }: { runRequest?: 
     catch (problem) { setError((problem as Error).message); }
     finally { setSaving(false); }
   };
-  const scoped = jobs.filter((job) => (!project || job.run.project === project) && (!repo || job.run.repo === repo));
+  const scoped = jobs.filter((job) => (!project || job.run.project === project) && (!unassigned || !job.run.project) && (!repo || job.run.repo === repo));
   return <section class="section deferred-runs" aria-label="Deferred runs">
     <div class="section-title">Deferred runs <span class="count">{scoped.filter((job) => ACTIVE.has(job.status)).length}</span></div>
     <p class="help">Save a run for later, or wait for provider capacity. The queue survives restarts and runs while this application is open. Provider reset times come from reported usage; unknown reset times are rechecked.</p>

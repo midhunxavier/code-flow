@@ -25,7 +25,7 @@ before(async () => {
 after(async () => { await browser?.close(); if (server?.exitCode === null) { server.kill("SIGTERM"); await new Promise<void>((accept) => { const timer = setTimeout(() => { server.kill("SIGKILL"); accept(); }, 5000); server.once("exit", () => { clearTimeout(timer); accept(); }); }); } if (directory) await rm(directory, { recursive: true, force: true }); });
 
 test("composer selects a remote worker, stages references, imports its result and inspects public receipts", { timeout: 60_000 }, async () => {
-  await page.getByRole("button", { name: "Team mode", exact: true }).click(); await page.getByLabel("Task", { exact: true }).fill("WRITE remote browser fixture"); await page.waitForFunction(() => document.querySelector<HTMLInputElement>("#checkCmd")?.value === "true");
+  await page.getByRole("button", { name: "Agent workflow mode", exact: true }).click(); await page.getByLabel("Task", { exact: true }).fill("WRITE remote browser fixture"); await page.waitForFunction(() => document.querySelector<HTMLInputElement>("#checkCmd")?.value === "true");
   await page.locator(".composer-options > summary").click(); await page.locator(".advanced-controls > summary").click(); await page.getByLabel("Agent execution", { exact: true }).selectOption("fixture"); await page.getByLabel("Worker repository mapping", { exact: true }).selectOption("project");
   await page.locator(".taskbox").getByRole("button", { name: "Permissions", exact: true }).click();
   assert.equal(await page.getByRole("menuitem", { name: /^Ask for approval/ }).isDisabled(), true); await page.keyboard.press("Escape");
@@ -37,5 +37,5 @@ test("composer selects a remote worker, stages references, imports its result an
   await page.locator("button.show-work").first().click();
   const panel = page.getByLabel("Remote execution receipt", { exact: true }); await panel.getByRole("button", { name: "Inspect remote receipt", exact: true }).click(); await panel.getByText("Receipt: completed", { exact: true }).waitFor(); assert.equal(await panel.getByRole("button", { name: "Cancel remote execution", exact: true }).count(), 0);
   const invalid = await fetch(base + "/api/runs", { method: "POST", headers, body: JSON.stringify({ repo: fixture.source, task: "WRITE", pattern: "solo", roles: { agent: ["claude"] }, approvals: { tools: true }, loop: { remoteWorker: { workerId: "fixture", repoMapping: "project" } } }) }); assert.equal(invalid.status, 400);
-  await page.goto(base + "/#/settings/integrations"); const worker = page.getByLabel("Worker Fixture worker", { exact: true }); await worker.getByRole("button", { name: "Check worker connection", exact: true }).click(); await worker.getByText("claude: CLI installed", { exact: true }).waitFor(); assert.deepEqual(errors, []);
+  await page.goto(base + "/#/settings/connections/execution"); const worker = page.getByLabel("Worker Fixture worker", { exact: true }); await worker.getByRole("button", { name: "Check worker connection", exact: true }).click(); await worker.getByText("claude: CLI installed", { exact: true }).waitFor(); assert.deepEqual(errors, []);
 });
