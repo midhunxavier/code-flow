@@ -1,3 +1,4 @@
+import { pollVisible } from "./polling.js";
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { localApi, workspaceId, workspaceUrl } from "./lib.js";
@@ -10,7 +11,7 @@ interface Directory { currentComputerId: string; computers: Computer[] }
 export function useComputerProjects() {
   const [directory, setDirectory] = useState<Directory | null>(null);
   const [error, setError] = useState("");
-  const localProjects = projects.value;
+  const localProjects = JSON.stringify(projects.value.map(project => [project.id, project.name, project.repos]));
   useEffect(() => {
     if (executionHost.value.kind === "host") return;
     let active = true, pending = false;
@@ -23,11 +24,9 @@ export function useComputerProjects() {
       } catch { if (active) { setDirectory(null); setError("Connected projects unavailable"); } }
       finally { pending = false; }
     };
-    void refresh();
-    const timer = setInterval(() => void refresh(), 15_000);
-    window.addEventListener("focus", refresh);
-    return () => { active = false; clearInterval(timer); window.removeEventListener("focus", refresh); };
-  }, [localProjects]);
+    const stop = pollVisible(refresh, 15_000);
+    return () => { active = false; stop(); };
+  }, [localProjects, executionHost.value.kind]);
   return { directory, error };
 }
 

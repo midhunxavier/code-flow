@@ -1,3 +1,4 @@
+import { pollVisible } from "./polling.js";
 import { useEffect, useState } from "preact/hooks";
 import type { CoordinatedChange, CoordinationNodeStatus } from "../src/repo-coordination.js";
 import { api, post } from "./lib.js";
@@ -19,7 +20,7 @@ export function CoordinatedChangesPanel({ endpoint = "/api/coordinated-changes" 
   const [targets, setTargets] = useState<Record<string, string>>({}), [receipts, setReceipts] = useState<Record<string, string>>({}), [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
   const selected = projects.find((item) => item.id === project);
   const refresh = async () => { setJobs(await api<CoordinatedChange[]>(endpoint)); };
-  useEffect(() => { let active = true; void Promise.all([api<Project[]>("/api/projects"), api<CoordinatedChange[]>(endpoint)]).then(([projects, jobs]) => { if (active) { setProjects(projects); setJobs(jobs); const first = projects.find((item) => item.repos.length >= 2) ?? projects[0]; if (first) { setProject(first.id); setNodes([empty("repo1", first.repos[0]), empty("repo2", first.repos[1])]); } } }).catch((problem) => { if (active) setError((problem as Error).message); }); const timer = setInterval(() => { void api<CoordinatedChange[]>(endpoint).then((jobs) => { if (active) setJobs(jobs); }).catch((problem) => { if (active) setError((problem as Error).message); }); }, 5000); return () => { active = false; clearInterval(timer); }; }, [endpoint]);
+  useEffect(() => { let active = true; void api<Project[]>("/api/projects").then((projects) => { if (active) { setProjects(projects); const first = projects.find((item) => item.repos.length >= 2) ?? projects[0]; if (first) { setProject(first.id); setNodes([empty("repo1", first.repos[0]), empty("repo2", first.repos[1])]); } } }).catch((problem) => { if (active) setError((problem as Error).message); }); const stop = pollVisible(() => api<CoordinatedChange[]>(endpoint).then((jobs) => { if (active) setJobs(jobs); }).catch((problem) => { if (active) setError((problem as Error).message); }), 5000); return () => { active = false; stop(); }; }, [endpoint]);
   const edit = (nodeId: string, patch: Partial<DraftNode>) => { setOperationId(crypto.randomUUID()); setNodes((previous) => previous.map((node) => node.id === nodeId ? { ...node, ...patch } : node)); };
   const create = async () => {
     if (busy) return; setBusy("create"); setError("");

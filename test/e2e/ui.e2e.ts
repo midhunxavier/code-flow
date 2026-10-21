@@ -287,7 +287,7 @@ test("a check that can't run here: the result is still reviewed, and the inbox a
   const item = page.locator(".inbox-item", { hasText: "E2E: check can't run" });
   await item.waitFor({ timeout: 30_000 });
   await item.locator(".cant-run", { hasText: "nosuchtool-e2e" }).waitFor();
-  assert.match(await item.locator(".ih .help").innerText(), /check couldn't run/);
+  assert.match(await item.locator(".ih .help").innerText(), /checks: blocked/);
 
   await item.locator("a.t").click();
   await page.getByText("⚠ Finished — but the check couldn't run, so nothing was tested").waitFor();

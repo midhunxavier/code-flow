@@ -31,3 +31,22 @@ test("hashed assets negotiate compression and validate without retransmitting co
     await assert.rejects(request({}, "missing-ABCDEF12.js"), /Asset not found/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("the startup import graph excludes xterm while terminal views remain available on demand", async () => {
+  const { build } = await import("esbuild");
+  const result = await build({ entryPoints: ["ui/main.tsx"], outdir: "out", bundle: true, splitting: true, format: "esm", write: false, metafile: true, minify: true, target: "es2022", jsx: "automatic", jsxImportSource: "preact", loader: { ".png": "dataurl" } });
+  const outputs = result.metafile!.outputs;
+  const entry = Object.keys(outputs).find(path => outputs[path]!.entryPoint === "ui/main.tsx")!;
+  const visited = new Set<string>();
+  function visit(path: string) {
+    if (visited.has(path)) return;
+    visited.add(path);
+    for (const dependency of outputs[path]!.imports) if (dependency.kind !== "dynamic-import" && !dependency.external) visit(dependency.path);
+  }
+  visit(entry);
+  const startupInputs = [...visited].flatMap(path => Object.keys(outputs[path]!.inputs));
+  assert.equal(startupInputs.some(path => /@xterm\/|ui\/terminal.tsx/.test(path)), false, "neither the owner nor teammate terminal may pull xterm into startup");
+  assert.ok(Object.values(outputs).some(output => Object.keys(output.inputs).some(path => path.includes("@xterm/xterm"))), "terminal implementation must remain packaged");
+  const startupBytes = [...visited].reduce((sum, path) => sum + outputs[path]!.bytes, 0);
+  assert.ok(startupBytes < 850_000, `Startup JavaScript exceeded the 850 KB budget: ${startupBytes}`);
+});

@@ -1,11 +1,13 @@
 import { confirmAction } from "./confirm-state.js";
+import { checksLabel } from "../src/run-status.js";
+import { pollVisible } from "./polling.js";
 import { ProjectTeamsInbox } from "./project-teams.js";
 import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote } from "./bits.js";
 import { Icon } from "./icons.js";
-import { ago, api, baseName, copy, post, showToast, STATUS_TEXT } from "./lib.js";
+import { ago, api, sharedGet, baseName, copy, post, showToast, STATUS_TEXT } from "./lib.js";
 import { activeProject, ALL, currentProject, inScope, NONE, patterns, projectFor, projects, route, runs, runState, selectProject } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
 import { ProjectButton } from "./projects.js";
@@ -51,7 +53,7 @@ export interface Automation {
 export const automations = signal<Automation[]>([]);
 export async function loadAutomations() {
   try {
-    automations.value = await api<Automation[]>("/api/automations");
+    automations.value = await sharedGet<Automation[]>("/api/automations");
   } catch {
     // keep what we have
   }
@@ -96,9 +98,7 @@ export function ScheduleEditor({ automation: a, save }: { automation: Pick<Autom
 // ---------------------------------------------------------------- page
 export function AutomationsView({ mode = "all", category }: { mode?: "all" | "inbox" | "automations"; category?: "repeat" | "backlog" }) {
   useEffect(() => {
-    void loadAutomations();
-    const timer = setInterval(loadAutomations, 15_000);
-    return () => clearInterval(timer);
+    return pollVisible(loadAutomations, 15_000);
   }, []);
   // The project you're in, as in the sidebar; what's in other projects is a count and a link away.
   const scoped = currentProject.value !== ALL;
@@ -194,7 +194,7 @@ function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
         </a>
         <span class="help">
           {run.trigger ? <><Icon name={run.trigger.via === "sweep" ? "layers" : run.trigger.via === "webhook" ? "globe" : "clock"} class="inline-icon" /> {run.trigger.name} · </> : null}{STATUS_TEXT[run.status] ?? run.status}
-          {run.verdict ? ` · check ${run.verdict}` : run.checkCantRun ? " · check couldn't run" : ""} · {baseName(run.repo)}
+          {` · checks: ${checksLabel(run).toLowerCase()}`} · {baseName(run.repo)}
           {project ? <> · <Icon name="project" class="inline-icon" /> {project.name}</> : null} · {ago(run.createdAt)}
         </span>
       </div>
@@ -383,10 +383,10 @@ function AutomationInspector({ automation: a }: { automation: Automation }) {
   const reloadPreview = () => post<AutomationPreview>(`/api/automations/${a.id}/preview`, { via: "manual" }).then(setPreview);
   useEffect(() => {
     let alive = true;
-    const load = () => Promise.all([api<AutomationEvent[]>(`/api/automations/${a.id}/events`), post<AutomationPreview>(`/api/automations/${a.id}/preview`, { via: "manual" })]).then(([history, dryRun]) => { if (alive) { setEvents(history); setPreview(dryRun); setError(""); } }, (err) => { if (alive) setError((err as Error).message); });
+    const load = () => post<AutomationPreview>(`/api/automations/${a.id}/preview`, { via: "manual" }).then((dryRun) => { if (alive) { setPreview(dryRun); setError(""); } }, (err) => { if (alive) setError((err as Error).message); });
     void load();
-    const timer = setInterval(() => void api<AutomationEvent[]>(`/api/automations/${a.id}/events`).then((history) => { if (alive) setEvents(history); }, () => {}), 15_000);
-    return () => { alive = false; clearInterval(timer); };
+    const stop = pollVisible(() => api<AutomationEvent[]>(`/api/automations/${a.id}/events`).then((history) => { if (alive) setEvents(history); }, () => {}), 15_000);
+    return () => { alive = false; stop(); };
   }, [a.id]);
   const retry = async (event: AutomationEvent) => {
     setBusy(event.id);

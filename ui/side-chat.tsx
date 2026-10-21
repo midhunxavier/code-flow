@@ -432,7 +432,7 @@ function ChatView({ id }: { id: string }) {
             <AgentTag id={agent} />
             <span class={`status-pill ${state}`}>{STATUS_TEXT[run.status] ?? run.status}</span>
             {branch ? <code title="The branch this chat works on">{branch}</code> : null}
-            {state === "failing" ? <span class="note">Check fails</span> : run.verdict === "passed" ? <span class="ok">Check passes</span> : null}
+            {state === "failing" ? <span class="note">Check fails</span> : state === "done" ? <span class="ok">Check passes</span> : state === "unverified" ? <span class="note">Not verified</span> : null}
             <a class="btn ghost small" href={`#/run/${encodeURIComponent(run.id)}`} title="Open this chat as a run, with its branch and result">
               Open
             </a>

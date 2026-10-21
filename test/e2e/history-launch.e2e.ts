@@ -34,6 +34,8 @@ before(async () => {
   for (let index = 0; index < 126; index++) {
     const id = `history-${String(index).padStart(3, "0")}`;
     const run = { id, task: index === 0 ? "Ancient needle task outside the initial history page" : index === 125 ? "Services fixture result" : `Historical fixture ${index}`, pattern: "solo", repo, baseRef: commit, baseLabel: "main", branchPrefix: `codeflow/${id}`, worktreeDir: join(fixture, "worktrees", id), roles: { worker: ["codex"] }, options: {}, context: { paths: [], attachments: [] }, agentSettings: {}, roleSettings: {}, trust: "standard", loop: { check: "", setup: "", maxSteps: 10, maxMinutes: 10 }, usage: { agentSteps: 0, checks: 0 }, status: "done", createdAt: index < 2 ? timestamp - 1000 : timestamp, endedAt: timestamp + 100, seen: index !== 1, archived: false, worktrees: index === 125 ? [{ name: "preview", path: worktree, branch: "" }] : [], steps: [], notes: [], approvals: {}, followUps: [], merges: [], prs: {}, watches: {}, artifacts: [] };
+    if (index === 0) Object.assign(run, { verdict: "passed", roles: { worker: ["claude"] } });
+    if (index === 2) Object.assign(run, { verdict: "passed", checkCantRun: { command: "test", reason: "missing dependency" } });
     writeFileSync(join(home, "runs", `${id}.jsonl`), JSON.stringify({ seq: index + 1, ts: timestamp, runId: id, type: "run", run }) + "\n");
   }
   const transcriptRun = JSON.parse(readFileSync(join(home, "runs/history-124.jsonl"), "utf8")).run;
@@ -44,7 +46,7 @@ before(async () => {
     ...Array.from({ length: 1200 }, (_, index) => JSON.stringify({ seq: 1002 + index, ts: timestamp, runId: transcriptRun.id, type: "agent", stepId: transcriptStep.id, event: { kind: "text", text: `TRANSCRIPT_EVENT_${index + 1}` } })),
   ].join("\n") + "\n");
   const cold = JSON.parse(readFileSync(join(home, "runs/history-000.jsonl"), "utf8")).run;
-  cold.id = "history-cold"; cold.createdAt = timestamp - 2000; cold.archived = true;
+  delete cold.verdict; cold.id = "history-cold"; cold.createdAt = timestamp - 2000; cold.archived = true;
   cold.task = `Archived full detail ${"padding ".repeat(1300)}COLD_TASK_FULL_END`;
   cold.summary = `Detailed archived summary ${"evidence ".repeat(1300)}COLD_SUMMARY_FULL_END`;
   cold.steps = [{ id: "cold-step", kind: "agent", title: "Archived implementation evidence", role: "agent", agent: "claude", mode: "write", status: "done", startedAt: timestamp, endedAt: timestamp + 10, finalText: "COLD_STEP_DETAIL" }];
@@ -78,6 +80,56 @@ test("HTTP cursor pages preserve timestamp ties and bounded SSE keeps older atte
     assert.equal(hello.runs.length, 101); assert.ok(hello.runs.some((run) => run.id === "history-001"), "older unseen result is in attention");
     assert.equal(hello.runs.some((run) => run.id === "history-000"), false, "older ordinary history remains paginated");
   } finally { clearTimeout(timer); abort.abort(); }
+});
+
+test("status filters search all history and project reports do not depend on loaded sidebar pages", async () => {
+  const get = (path: string) => fetch(`${base}${path}`, { headers }).then(response => response.json());
+  const passed = await get("/api/runs?limit=100&status=passed");
+  assert.deepEqual(passed.runs.map((run: { id: string }) => run.id), ["history-000"]);
+  assert.equal(passed.total, 1);
+  const agent = await get("/api/runs?limit=100&agent=claude&status=passed&pattern=solo");
+  assert.equal(agent.total, 1);
+  assert.equal((await get("/api/runs?limit=100&repo=/missing")).total, 0);
+  assert.equal((await fetch(`${base}/api/runs?limit=100&status=invalid`, { headers })).status, 400);
+  const projects = await get("/api/projects");
+  const project = projects.find((item: { repos: string[] }) => item.repos.includes(repo));
+  assert.ok(project);
+  const report = await get(`/api/projects/${project.id}/summary`);
+  assert.equal(report.week.runs, 127); assert.equal(report.week.passed, 1);
+  assert.equal(report.live, 126); assert.equal(report.archived, 1);
+  assert.equal(report.sections.results.runs.length, 8);
+  const more = await get(`/api/runs?limit=100&project=${project.id}&section=results&cursor=${encodeURIComponent(report.sections.results.nextCursor)}`);
+  assert.equal(more.runs.length, 100);
+  assert.equal(new Set([...report.sections.results.runs, ...more.runs].map(run => run.id)).size, 108);
+  await page.goto(`${base}/#/project/${project.id}`);
+  await page.getByText("1 of 127", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Show 100 more", exact: true }).click();
+  await page.getByText("1 of 127", { exact: true }).waitFor();
+  assert.equal((await get(`/api/projects/${project.id}/summary`)).week.runs, 127);
+});
+
+test("insights polling waits for a slow request, pauses hidden and refreshes on return", async () => {
+  const probeContext = await browser.newContext({ storageState: await page.context().storageState() });
+  const probe = await probeContext.newPage();
+  let reads = 0, release!: () => void, started!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const firstStarted = new Promise<void>(resolve => { started = resolve; });
+  try {
+    await probe.clock.install();
+    await probe.route("**/api/stats?*", async route => { reads++; if (reads === 1) { started(); await held; } await route.continue(); });
+    await probe.goto(`${base}/#/insights`);
+    await firstStarted;
+    await probe.clock.fastForward(45_000);
+    assert.equal(reads, 1, "slow polls never overlap");
+    await probe.evaluate(() => { Object.defineProperty(document, "hidden", { configurable: true, value: true }); document.dispatchEvent(new Event("visibilitychange")); });
+    const completed = probe.waitForResponse(response => new URL(response.url()).pathname === "/api/stats");
+    release(); await completed;
+    await probe.clock.fastForward(45_000);
+    assert.equal(reads, 1, "hidden tabs do not poll");
+    const resumed = probe.waitForResponse(response => new URL(response.url()).pathname === "/api/stats");
+    await probe.evaluate(() => { Object.defineProperty(document, "hidden", { configurable: true, value: false }); document.dispatchEvent(new Event("visibilitychange")); });
+    await resumed; assert.equal(reads, 2, "returning to the tab refreshes immediately");
+  } finally { release?.(); await probeContext.close(); }
 });
 
 test("large transcripts page backwards and return to live history with bounded rendered rows", async () => {
@@ -275,6 +327,8 @@ test("filesystem policy enforces scoped app reads/writes and globally blocks exe
     for (const path of ["/stats", "/memory", "/automations", "/deferred-runs", "/coordinated-changes", "/notifications", "/maintenance"]) assert.equal((await request(prefix + path)).status, 403, `unscoped private data ${path}`);
     assert.equal((await request(`${prefix}/file?repo=${encodeURIComponent(repo)}&path=private/credentials.txt`)).status, 403);
     assert.equal((await request(`${prefix}/repo-config?repo=${encodeURIComponent(join(repo, "api"))}`)).status, 403, "subdirectory aliases cannot bypass repository policy");
+    assert.equal((await request(`${prefix}/projects/${project.id}/summary`)).status, 403);
+    assert.equal((await request(`${prefix}/runs?limit=100&status=passed`).then(response => response.json())).total, 0, "filtered totals exclude restricted history");
     assert.equal((await request(`${prefix}/runs/history-125/export?transcript=1`)).status, 403); assert.equal((await request(`${prefix}/runs/history-125/events`)).status, 403);
     for (const path of ["/runs", "/readiness", "/verification", "/shells", "/preview", "/snapshot", "/automations", "/deferred-runs", "/coordinated-changes", "/remote-workers/worker/probe", "/code-hosts/source/preview"]) { const response = await request(prefix + path, { repo: otherRepo, pattern: "solo", task: "A different repository cannot read protected host files", roles: { agent: ["claude"] }, trust: "full", execute: true }); assert.equal(response.status, 409, path); }
   }

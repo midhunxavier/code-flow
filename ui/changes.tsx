@@ -1,3 +1,4 @@
+import { pollVisible } from "./polling.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { changeCommentDrafts, commentDrafts, commentsMessage, FileDiff, lastWriter } from "./review.js";
 import { AgentPicker } from "./run.js";
@@ -32,36 +33,35 @@ export function ChangesTab({ run }: { run: RunSummary }) {
   const moved = `${run.status}|${run.followUps.map((f) => f.status).join()}|${run.artifacts.map((a) => a.stat).join()}|${run.usage?.agentSteps}|${run.lastCheck?.at}`;
   // While the team works, a step's commit doesn't always come with a new snapshot of the run: look
   // again every few seconds while you can see this tab.
-  const watching = run.status === "running" && sideOpen.value && sideTab.value === "changes";
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    if (!watching) return;
-    const timer = setInterval(() => !document.hidden && setTick((t) => t + 1), 10_000);
-    return () => clearInterval(timer);
-  }, [watching]);
+  const shown = sideOpen.value && sideTab.value === "changes";
+  const watching = run.status === "running" && shown;
   // Another branch or view: its files, not the last ones, once they've loaded.
   const view = `${branch}|${last}`;
   const loaded = useRef(view);
   useEffect(() => {
-    if (!branch) return;
+    if (!branch || !shown) return;
     let alive = true;
     setError("");
     if (loaded.current !== view) {
       loaded.current = view;
       setFiles(null);
     }
-    api<DiffFile[]>(`/api/runs/${enc(run.id)}/diff?branch=${enc(branch)}${last ? "&last=1" : ""}`).then(
+    const stop = pollVisible(() => api<DiffFile[]>(`/api/runs/${enc(run.id)}/diff?branch=${enc(branch)}${last ? "&last=1" : ""}`).then(
       (d) => alive && setFiles(d),
       (e) => alive && setError((e as Error).message),
-    );
+    ), watching ? 10_000 : 0);
     return () => {
       alive = false;
+      stop();
     };
-  }, [run.id, branch, last, moved, tick]);
+  }, [run.id, branch, last, moved, watching, shown]);
   // The steps say who last wrote here: comments go to them unless you pick someone else.
   useEffect(() => {
-    api<Run>(`/api/runs/${enc(run.id)}`).then(setFull, () => setFull(null));
-  }, [run.id, run.followUps.length]);
+    if (!shown) return;
+    let alive = true;
+    const stop = pollVisible(() => api<Run>(`/api/runs/${enc(run.id)}`).then(value => { if (alive) setFull(value); }, () => { if (alive) setFull(null); }), 0);
+    return () => { alive = false; stop(); };
+  }, [run.id, run.followUps.length, shown]);
 
   const worktree = run.worktrees.find((w) => w.branch === branch);
   const target: AgentId = agent ?? lastWriter(full, worktree?.name) ?? "claude";

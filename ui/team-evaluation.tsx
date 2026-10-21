@@ -1,3 +1,4 @@
+import { pollVisible } from "./polling.js";
 import { useEffect, useState } from "preact/hooks";
 import type { RolloutAssessment, RolloutStage, TeamEvaluation, TeamRollout } from "../src/team-evaluation.js";
 import { api, duration, fmtSize, pct, post, SHORT } from "./lib.js";
@@ -38,8 +39,8 @@ export function TeamRunMetrics({ runId, running }: { runId: string; running: boo
     if (!opened) return;
     let active = true;
     const load = () => api<TeamEvaluation>(`/api/runs/${encodeURIComponent(runId)}/evaluation`).then((value) => { if (active) { setReport(value); setError(""); } }, (problem: Error) => { if (active) setError(problem.message); });
-    void load(); const timer = running ? setInterval(load, 5000) : undefined;
-    return () => { active = false; clearInterval(timer); };
+    const stop = pollVisible(load, running ? 5000 : 0);
+    return () => { active = false; stop(); };
   }, [runId, running, opened]);
   return <details class="at-section" onToggle={(event) => setOpened(event.currentTarget.open)}><summary>Coordination and recovery measurements</summary>
     {error ? <p class="help">Measurements unavailable: {error}</p> : !report ? <p class="help">Loading measurements…</p> : <>

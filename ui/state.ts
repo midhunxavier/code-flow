@@ -1,3 +1,5 @@
+import { needsYou, matchesHistoryFilter } from "../src/run-status.js";
+export { needsYou, runState, isFlagged } from "../src/run-status.js";
 import { computed, signal } from "@preact/signals";
 import { rerunDraft } from "./rerun-draft.js";
 import { api, sharedGet, ApiError, post, showToast, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
@@ -194,6 +196,7 @@ export async function setRepo(path: string, remember = true) {
   if (request !== repoSelection) return false;
   checkLoading = loadCheck();
   await checkLoading;
+  if (request === repoSelection && runFilter.value.thisRepo) void refreshRuns();
   return request === repoSelection;
 }
 export const recentRepos = () => store.json<string[]>("recentRepos", []);
@@ -788,21 +791,13 @@ export async function loadModels() {
 }
 
 // ---------------------------------------------------------------- runs
-/** A run needs you when it finished and you haven't looked, or it was interrupted. */
-export const needsYou = (r: RunSummary) => !r.archived && (!r.projectTeam || !!r.awaiting || teamAwaitingAnswer(r)) && (!!r.awaiting || teamAwaitingAnswer(r) || (r.status !== "running" && (r.status === "interrupted" || !r.seen)));
-/**
- * A finished run whose result fails its check is a warning, not a success; so is one whose check
- * couldn't run here at all ("unchecked": nobody knows whether it works).
- */
-export const runState = (r: { status: string; verdict?: string; checkCantRun?: unknown }) =>
-  r.status === "done" && r.verdict === "failing" ? "failing" : r.status === "done" && r.checkCantRun ? "unchecked" : r.status;
-
 const deletedRunIds = new Set<string>();
 export function forgetRun(id: string) {
   const fresh = !deletedRunIds.has(id);
+  const removed = runs.value.get(id);
   deletedRunIds.add(id);
   const next = new Map(runs.value); next.delete(id); runs.value = next;
-  if (fresh && historyTotal.value !== null) historyTotal.value = Math.max(0, historyTotal.value - 1);
+  if (fresh && historyTotal.value !== null && (!historyRequestQuery() || removed && matchesFilter(removed))) historyTotal.value = Math.max(0, historyTotal.value - 1);
   if ((route.value.view === "run" || route.value.view === "review") && route.value.id === id) route.value = { view: "composer" };
 }
 export function upsertRun(run: RunSummary) {
@@ -828,6 +823,17 @@ export const historyLoading = signal(false);
 export const historyLoadingMore = signal(false);
 export const historyError = signal("");
 let historyQuery = "";
+const historyMatches = new Set<string>();
+/** A cursor belongs to the entire filter, including the selected repository. */
+export function historyRequestQuery() {
+  const f = runFilter.value, query = new URLSearchParams();
+  if (f.q.trim()) query.set("q", f.q.trim());
+  if (f.status !== "all") query.set("status", f.status);
+  if (f.pattern) query.set("pattern", f.pattern);
+  if (f.agent) query.set("agent", f.agent);
+  if (f.thisRepo && repo.value) query.set("repo", repo.value);
+  return query.toString();
+}
 let historyGeneration = 0;
 let historyPages = 0;
 let historyRefresh = 0;
@@ -835,6 +841,7 @@ let searchTimer: ReturnType<typeof setTimeout> | undefined;
 function prepareHistoryQuery(query: string) {
   if (query === historyQuery) return;
   historyQuery = query;
+  historyMatches.clear();
   historyGeneration++;
   historyPages = 0;
   historyTotal.value = null;
@@ -871,16 +878,17 @@ function applyRunList(list: RunSummary[], fresher: (id: string) => boolean, pres
 
 export async function refreshRuns() {
   const { epoch, seq } = feed;
-  const query = runFilter.value.q.trim();
+  const query = historyRequestQuery();
   prepareHistoryQuery(query);
   const generation = historyGeneration;
   const request = ++historyRefresh;
   historyLoading.value = true;
   try {
-    const page = await api<RunPage | RunSummary[]>(`/api/runs?limit=100${query ? `&q=${encodeURIComponent(query)}` : ""}`);
+    const page = await api<RunPage | RunSummary[]>(`/api/runs?limit=100${query ? `&${query}` : ""}`);
     // The server restarted while this was on its way: the stream's own list is newer.
-    if (feed.epoch !== epoch || generation !== historyGeneration || query !== runFilter.value.q.trim() || request !== historyRefresh) return;
+    if (feed.epoch !== epoch || generation !== historyGeneration || query !== historyRequestQuery() || request !== historyRefresh) return;
     const list = Array.isArray(page) ? page : page.runs;
+    for (const run of list) historyMatches.add(run.id);
     applyRunList(list, (id) => (feed.runSeq.get(id) ?? 0) > seq, true);
     historyTotal.value = Array.isArray(page) ? page.length : page.total;
     if (historyPages <= 1) historyNextCursor.value = Array.isArray(page) ? null : page.nextCursor ?? null;
@@ -894,7 +902,7 @@ export async function refreshRuns() {
 }
 
 export async function loadOlderRuns() {
-  const query = runFilter.value.q.trim();
+  const query = historyRequestQuery();
   prepareHistoryQuery(query);
   const cursor = historyNextCursor.value;
   if (!cursor || historyLoadingMore.value || historyLoading.value) return;
@@ -903,8 +911,9 @@ export async function loadOlderRuns() {
   historyLoadingMore.value = true;
   historyError.value = "";
   try {
-    const page = await api<RunPage>(`/api/runs?limit=100&cursor=${encodeURIComponent(cursor)}${query ? `&q=${encodeURIComponent(query)}` : ""}`);
-    if (generation !== historyGeneration || query !== runFilter.value.q.trim() || feed.epoch !== epoch) return;
+    const page = await api<RunPage>(`/api/runs?limit=100&cursor=${encodeURIComponent(cursor)}${query ? `&${query}` : ""}`);
+    if (generation !== historyGeneration || query !== historyRequestQuery() || feed.epoch !== epoch) return;
+    for (const run of page.runs) historyMatches.add(run.id);
     applyRunList(page.runs, (id) => (feed.runSeq.get(id) ?? 0) > seq, true);
     historyNextCursor.value = page.nextCursor ?? null;
     historyTotal.value = page.total;
@@ -932,44 +941,22 @@ export function setRunFilter(patch: Partial<RunFilter>) {
   runFilter.value = { ...runFilter.value, ...patch };
   const { q: _q, ...kept } = runFilter.value;
   store.set("runFilter", JSON.stringify(kept));
-  if (patch.q !== undefined) {
-    prepareHistoryQuery(runFilter.value.q.trim());
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => void refreshRuns(), 250);
-  }
+  prepareHistoryQuery(historyRequestQuery());
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => void refreshRuns(), 250);
 }
 export const filterActive = computed(() => {
   const f = runFilter.value;
   return !!(f.q.trim() || f.status !== "all" || f.pattern || f.agent || f.thisRepo);
 });
-const flagged = (r: RunSummary) => Object.keys(r.integrity ?? {}).length > 0 || !!r.followUps?.some((f) => f.integrity?.length); // replayed snapshots of older runs have no followUps
 export function matchesFilter(r: RunSummary, f = runFilter.value): boolean {
-  if (f.thisRepo && repo.value && r.repo !== repo.value) return false;
-  if (f.pattern && r.pattern !== f.pattern) return false;
-  if (f.agent && !Object.values(r.roles).some((ids) => ids.includes(f.agent as AgentId))) return false;
-  switch (f.status) {
-    case "attention":
-      if (!needsYou(r)) return false;
-      break;
-    case "running":
-      if (r.status !== "running") return false;
-      break;
-    case "passed":
-      if (!(r.status === "done" && r.verdict !== "failing" && !r.checkCantRun)) return false;
-      break;
-    case "failing":
-      if (!(r.verdict === "failing" || ["failed", "stopped", "interrupted"].includes(r.status))) return false;
-      break;
-    case "flagged":
-      if (!flagged(r)) return false;
-      break;
-  }
+  if (!matchesHistoryFilter(r, { ...f, repo: f.thisRepo ? repo.value : undefined })) return false;
   const q = f.q.trim().toLowerCase();
   if (!q) return true;
+  if (r.cold && f === runFilter.value && historyQuery === historyRequestQuery() && historyMatches.has(r.id)) return true;
   const hay = [r.task, r.id, r.repo, r.pattern, r.branchPrefix, r.source ? `#${r.source.number} ${r.source.title}` : "", r.trigger?.name ?? "", r.group?.label ?? "", r.externalSource?.title ?? ""].join("\n").toLowerCase();
   return q.split(/\s+/).every((word) => hay.includes(word));
 }
-export const isFlagged = flagged;
 
 /**
  * How the sidebar lists runs: under their projects or by status, whether archived runs show,
@@ -1016,7 +1003,7 @@ export function watchAllRuns(notify: (run: RunSummary) => void) {
           // The whole list, in step with the stream: every run in it is as new as this event.
           for (const run of data.runs) feed.runSeq.set(run.id, data.seq);
           applyRunList(data.runs, () => false, !restarted);
-          if (!runFilter.value.q.trim()) {
+          if (!historyRequestQuery()) {
             if (typeof data.total === "number") historyTotal.value = data.total;
             if (historyPages <= 1) historyNextCursor.value = data.nextCursor ?? null;
             historyPages = Math.max(1, historyPages);

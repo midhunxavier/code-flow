@@ -1,3 +1,5 @@
+import { checksLabel } from "../src/run-status.js";
+export { checksLabel } from "../src/run-status.js";
 import type { RunSummary } from "./types.js";
 import { teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
 
@@ -5,18 +7,6 @@ import { teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
 export function executionLabel(run: RunSummary): string {
   if (run.status === "running" && (run.awaiting || teamAwaitingAnswer(run))) return "Waiting for you";
   return { running: "Running", done: "Finished", failed: "Failed", stopped: "Paused", interrupted: "Interrupted", cancelled: "Stopped" }[run.status] ?? run.status;
-}
-
-export function checksLabel(run: RunSummary, checking = false, branch?: string): string {
-  if (checking) return "Running";
-  if (run.status === "running") return "Pending";
-  const checkedBranch = run.verification?.branch ?? run.worktrees.find(tree => tree.name === run.lastCheck?.worktree)?.branch;
-  if (branch && checkedBranch !== branch) return "Not verified for this branch";
-  if (run.checkCantRun) return "Blocked";
-  if (run.verdict === "failing") return "Failed";
-  if (run.verification) return { verified: "Passed", "needs-changes": "Failed", blocked: "Blocked", unchecked: "Unverified" }[run.verification.state];
-  if (run.verdict === "passed") return "Passed";
-  return run.loop.check ? "Not verified" : "Not configured";
 }
 
 export function agentReviewLabel(run: RunSummary, branch?: string): string {

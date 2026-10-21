@@ -1,3 +1,4 @@
+import { runPassed, checksLabel } from "./run-status.js";
 import type { AgentId } from "./adapters/index.js";
 import type { Proof, RunSummary } from "./engine.js";
 
@@ -112,7 +113,7 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
     const cohort = cohorts.get(key) ?? { key, repo: r.repo, pattern: r.pattern, sourceKind, runs: 0, judged: 0, passed: 0, tokens: 0, costUsd: 0, ms: 0 };
     cohorts.set(key, cohort);
     cohort.runs++;
-    if (r.status === "done" && r.verdict) { cohort.judged++; if (r.verdict === "passed") cohort.passed++; }
+    if (r.status === "done" && ["Passed", "Failed"].includes(checksLabel(r))) { cohort.judged++; if (runPassed(r)) cohort.passed++; }
     cohort.tokens += tokensOf(r);
     cohort.costUsd += r.usage.costUsd ?? 0;
     cohort.ms += r.endedAt ? r.endedAt - r.createdAt : 0;
@@ -122,8 +123,8 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
     if (r.status === "done") p.done++;
     if (r.status === "failed") p.failed++;
     if (r.status === "stopped") p.stopped++;
-    if (r.verdict === "passed") p.passed++;
-    if (r.verdict === "failing") p.failing++;
+    if (runPassed(r)) p.passed++;
+    if (checksLabel(r) === "Failed") p.failing++;
     if (r.integrity && Object.keys(r.integrity).length) p.flagged++;
     if (r.facts?.proof === "proven") p.proven++;
     if (r.facts?.proof === "weak") p.weak++;
@@ -149,12 +150,12 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
       a.cacheReadTokens += u.cacheReadTokens;
       a.costUsd += u.costUsd;
       a.ms += u.ms;
-      if (u.writeSteps && r.verdict && r.status === "done") {
+      if (u.writeSteps && r.status === "done" && ["Passed", "Failed"].includes(checksLabel(r))) {
         a.judged++;
-        if (r.verdict === "passed") a.passed++;
+        if (runPassed(r)) a.passed++;
         if (writers === 1) {
           a.attributedJudged++;
-          if (r.verdict === "passed") a.attributedPassed++;
+          if (runPassed(r)) a.attributedPassed++;
         } else a.sharedJudged++;
       }
     }
@@ -182,7 +183,7 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
       pattern: r.pattern,
       roles: r.roles,
       status: r.status,
-      verdict: r.verdict,
+      verdict: runPassed(r) ? "passed" : checksLabel(r) === "Failed" ? "failing" : undefined,
       ms: r.endedAt ? r.endedAt - r.createdAt : undefined,
       steps: r.usage.agentSteps,
       tokens: tokensOf(r),

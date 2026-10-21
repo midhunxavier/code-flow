@@ -1,3 +1,4 @@
+import { runPassed } from "./run-status.js";
 import type { RunSummary, Step } from "./engine.js";
 import { confidenceInterval } from "./stats.js";
 
@@ -11,7 +12,7 @@ const median = (values: number[]) => {
 };
 export function outcomeMetrics(runs: RunSummary[]) {
   const ended = runs.filter(run => run.status !== "running");
-  const verified = ended.filter(run => run.status === "done" && run.verdict === "passed" && (!run.verification || run.verification.state === "verified"));
+  const verified = ended.filter(runPassed);
   const rated = ended.filter(run => run.outcome);
   const reworked = ended.filter(run => run.humanRework?.length);
   return {
@@ -41,5 +42,5 @@ export function progressSummary(run: RunSummary, steps: Step[]) {
   const active = steps.filter(step => step.status === "running" && !step.sideOf);
   if (active.length) return { title: active.every(step => step.kind === "check") ? "Checking the result" : "Work in progress", detail: active.map(step => step.title).join(" · ") };
   if (run.status === "running") return { title: "Preparing the next step", detail: "Waiting for a provider slot, a dependency, or the next workflow action." };
-  return { title: run.verdict === "passed" ? "Checks passed" : "Work has stopped", detail: run.error ?? run.stopReason ?? "Review the result and its recorded evidence." };
+  return { title: runPassed(run) ? "Checks passed" : "Work has stopped", detail: run.error ?? run.stopReason ?? "Review the result and its recorded evidence." };
 }

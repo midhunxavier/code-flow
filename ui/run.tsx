@@ -499,7 +499,8 @@ function ResultCard({ run, steps, onSelectStep, chat }: { run: RunSummary; steps
   const state = runState(run);
   const failedSteps = steps.filter((s) => s.status === "failed");
   const titles: Record<string, string> = {
-    done: run.verdict === "passed" ? "✓ Finished — the check passes" : "Finished — no independent check passed",
+    done: "✓ Finished — the check passes",
+    unverified: "Finished — no independent check passed",
     failing: "⚠ Finished — but the check still fails",
     unchecked: "⚠ Finished — but the check couldn't run, so nothing was tested",
     failed: "✕ Failed",
@@ -507,10 +508,10 @@ function ResultCard({ run, steps, onSelectStep, chat }: { run: RunSummary; steps
     stopped: teamNeedsResume(run) ? "■ Paused with unresolved work — press Resume to continue" : `■ Stopped at the ${run.stopReason ?? "limit"} — work so far is kept below`,
     interrupted: "■ Interrupted — press Resume to continue where it stopped",
   };
-  if (chat) Object.assign(titles, { done: run.verdict === "passed" ? "✓ The check passes" : "", failing: "⚠ The check fails", unchecked: "⚠ The check couldn't run, so nothing was tested" });
+  if (chat) Object.assign(titles, { done: "✓ The check passes", unverified: "No independent check passed", failing: "⚠ The check fails", unchecked: "⚠ The check couldn't run, so nothing was tested" });
   const title = titles[state] ?? run.status;
   return (
-    <div class={`result ${state}${state === "done" && run.verdict !== "passed" ? " unverified" : ""}${chat ? " chat" : ""}`}>
+    <div class={`result ${state}${chat ? " chat" : ""}`}>
       {title ? <div class="rh">{title}</div> : null}
       {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
       <VerificationEvidence run={run} />
