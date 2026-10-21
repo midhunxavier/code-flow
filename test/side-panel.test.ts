@@ -287,9 +287,11 @@ test("/api/shell with pty: a real terminal takes keystrokes, has the size you se
   const pids = ["bg", "fg"].map((k) => Number(shown(seen.events, seen.hello).match(new RegExp(`${k}=(\\d+)`))?.[1]));
   assert.ok(pids.every((p) => p > 1), `found both jobs: ${pids}`);
   let info: any;
-  for (let i = 0; i < 50 && !(info?.busy && info?.running); i++) {
+  // The shell prints fg=$$ before exec replaces it. Wait for the foreground
+  // program itself rather than treating that brief shell process as readiness.
+  for (let i = 0; i < 50 && !(info?.busy && info?.running === "sleep"); i++) {
     info = (await api(`/api/shell/${id}`)).body;
-    if (!(info.busy && info.running)) await new Promise((r) => setTimeout(r, 100));
+    if (!(info.busy && info.running === "sleep")) await new Promise((r) => setTimeout(r, 100));
   }
   assert.equal(info.busy, true, "busy while sleep is in the foreground");
   assert.equal(info.running, "sleep");

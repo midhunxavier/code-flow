@@ -282,6 +282,9 @@ export interface ReviewFinding {
 export interface CheckedReview {
   reviewer: AgentId;
   round: number;
+  /** The reviewed commit; retained findings become historical when a follow-up changes it. */
+  head?: string;
+  stale?: boolean;
   /** The reviewer's own word; approval goes by the findings that block, not by this. */
   verdict: "approve" | "changes_requested";
   findings: ReviewFinding[];
@@ -4278,9 +4281,13 @@ export class RunManager {
     }
     const repo = await repoRoot(input.repo);
     const parent = input.parentRunId ? this.get(input.parentRunId) : undefined;
+    if (input.parentRunId && !parent) throw new RunConflictError("The original run is no longer available; its source restrictions cannot be retained");
     // A PR's own branch is the base; its changes are reviewed against the PR's target.
     const fromGitHub = input.source ? await loadSource(repo, input.source) : undefined;
-    const baseLabel = fromGitHub?.branch ?? (input.baseRef?.trim() || "HEAD");
+    // Refreshing options on the same source (e.g. CI logs) must not move a pinned retry
+    // to a newer PR head. Choosing a different source still selects that source's branch.
+    const sameParentSource = parent?.repo === repo && input.source && parent.source?.kind === input.source.kind && parent.source.number === input.source.number;
+    const baseLabel = sameParentSource && input.baseRef?.trim() ? input.baseRef.trim() : fromGitHub?.branch ?? (input.baseRef?.trim() || "HEAD");
     const baseRef = await resolveCommit(repo, baseLabel).catch(() => {
       throw new Error(`Base branch "${baseLabel}" not found in ${repo}`);
     });
@@ -4758,6 +4765,16 @@ async function runFollowUps(ctx: TeamContext, run: Run, chat = false) {
   if (lastChecked?.checkPassed !== undefined) ctx.setVerdict(lastChecked.checkPassed ? "passed" : "failing");
   // The latest change committed code its check couldn't judge (it couldn't run): an earlier verdict says nothing about it.
   else if (lastChecked) run.verdict = undefined;
+  updateFollowUpSummary(run);
+}
+
+/** Rebuild from the original team result so repeated follow-ups never nest history or duplicate sections. */
+function updateFollowUpSummary(run: Run) {
+  const original = run.patternSummary ??= withoutFollowUps(run.summary ?? "");
+  const outdated = Object.values(run.findings ?? {}).some(review => review.stale);
+  run.summary = outdated
+    ? `**Independent review is outdated.** The result changed after review; inspect the updated changes and checks. The earlier team summary below is historical.\n\n## Historical team summary\n\n${original}`
+    : original;
   // A side chat is mentioned only for a change it committed: a question, or a change that came to nothing, isn't news here.
   const finished = run.followUps.filter((f) => f.status !== "pending" && (!f.side || f.commit));
   if (finished.length) {
@@ -4785,18 +4802,25 @@ async function runFollowUps(ctx: TeamContext, run: Run, chat = false) {
 }
 
 async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
-  if (f.side) return runSideTurn(ctx, run, f, f.side);
   const wt = await ctx.worktree(f.worktree);
+  const review = run.findings?.[wt.branch];
+  const reviewedHead = review?.head ?? await ctx.gitAt(wt).then(at => resolveCommit(at)).catch(() => undefined);
   try {
-    await runFollowUpInWorktree(ctx, run, f, wt);
+    if (f.side) await runSideTurn(ctx, run, f, f.side);
+    else await runFollowUpInWorktree(ctx, run, f, wt);
   } finally {
     // A follow-up is not an independent team review. Even a failed turn can leave edits,
     // and its passing check cannot extend approval of a different integrated commit.
     const verification = run.team?.verification;
-    if (verification && wt.name === "integration") {
+    if (review || verification && wt.name === "integration") {
       const at = await ctx.gitAt(wt).catch(() => undefined);
       const [head, pending] = at ? await Promise.all([resolveCommit(at).catch(() => undefined), uncommittedCount(at).catch(() => undefined)]) : [undefined, undefined];
-      if (head !== verification.head || pending !== 0) {
+      if (review && !review.stale && (head === undefined || head !== reviewedHead || pending !== 0)) {
+        ctx.setFindings(wt, { ...review, stale: true });
+        ctx.setFacts({ approved: false });
+        ctx.log(`The result changed after its independent review. Findings for ${wt.branch} are historical; review the updated result.`, "warn");
+      }
+      if (verification && wt.name === "integration" && (head !== verification.head || pending !== 0)) {
         run.team!.verification = { head: head ?? verification.head, check: "unknown", reviewed: false, approved: false };
         const gap = `${head === undefined || pending === undefined ? "The integrated result could not be confirmed" : "The integrated result changed"} after the team's review. Run the whole team again to verify the updated result.`;
         if (!run.team!.gaps.includes(gap)) run.team!.gaps.push(gap);
@@ -4806,6 +4830,7 @@ async function runFollowUp(ctx: TeamContext, run: Run, f: FollowUp) {
         ctx.publish();
       }
     }
+    updateFollowUpSummary(run);
   }
 }
 

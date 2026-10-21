@@ -1,6 +1,8 @@
 import { confirmAction } from "./confirm-state.js";
 import { intentDraft, LiveProgress, ResultStudio } from "./experience.js";
 import { journeyDraft } from "./journeys.js";
+import { rerunDraft } from "./rerun-draft.js";
+import { setContextBudget } from "./context-budget.js";
 import { nextRunAction, executionLabel } from "./run-experience.js";
 import { RunEvidence, VerificationEvidence } from "./run-evidence.js";
 import { DeleteRunDialog } from "./run-actions.js";
@@ -16,6 +18,16 @@ import { api, ApiError, baseName, copy, duration, enc, fmtCost, fmtSize, fmtToke
 import { loadLocalAttempts, localAttempts } from "./collab-state.js";
 import {
   agents,
+  agentSettings,
+  optionValues,
+  roleModels,
+  baseRef,
+  branchPrefix,
+  externalSource,
+  route,
+  setAcceptanceCriteria,
+  setApprovePlan,
+  setTrust,
   healthOpen,
   attachments,
   checkCmd,
@@ -24,9 +36,9 @@ import {
   markSeen,
   patterns,
   repo,
+  repoInfo,
   runState,
   setLimits,
-  setOption,
   setPattern,
   setRepo,
   setRoles,
@@ -193,7 +205,7 @@ export function RunView({ id }: { id: string }) {
             </div>
             <div class="run-actions">
               {finished ? <Menu label="More run actions" icon="more">{close => <>
-                <MenuItem onClick={() => { close(); editAndRerun(run); }}>Edit &amp; run again</MenuItem>
+                {!run.projectTeam ? <MenuItem onClick={() => { close(); void editAndRerun(run); }}>Edit &amp; run again</MenuItem> : null}
                 <MenuItem onClick={() => { close(); if (run.archived) void post(`/api/runs/${run.id}/archive`, { archived: false }).catch(e => showToast(e.message)); else setArchiving(true); }}>{run.archived ? "Unarchive" : "Archive…"}</MenuItem>
                 {!run.projectTeam ? <MenuItem onClick={() => { close(); setDeleting(true); }}>Delete…</MenuItem> : null}
               </>}</Menu> : null}
@@ -1003,8 +1015,8 @@ function ProofNote({ proof }: { proof: Proof }) {
 function FindingsNote({ review }: { review: CheckedReview }) {
   const blocking = review.findings.filter((f) => f.blocking).length;
   return (
-    <div class={`review-findings${blocking ? " blocking" : ""}`} role="note">
-      <b>{blocking ? `⚠ ${blocking} review finding${blocking === 1 ? " blocks" : "s block"} approval` : "✓ No review finding blocks approval"}</b>
+    <div class={`review-findings${blocking && !review.stale ? " blocking" : ""}`} role="note">
+      <b>{review.stale ? "Review outdated — the result changed after this review" : blocking ? `⚠ ${blocking} review finding${blocking === 1 ? " blocks" : "s block"} approval` : "✓ No review finding blocks approval"}</b>
       <span class="help">
         {" "}
         — <AgentTag id={review.reviewer} /> {review.round > 1 ? `round ${review.round}` : "review"}. High and medium findings block; a high one (a bug) only when its test fails.
@@ -1014,7 +1026,7 @@ function FindingsNote({ review }: { review: CheckedReview }) {
           <li key={i} class={`sev-${f.severity}`}>
             <div>
               <span class={`sev ${f.severity}`}>{f.severity}</span> <code>{f.file || "general"}</code> {f.problem}{" "}
-              {f.blocking ? <span class="badge warn">Blocks</span> : f.severity === "low" ? <span class="help">Suggestion</span> : null}
+              {review.stale ? <span class="help">Historical finding</span> : f.blocking ? <span class="badge warn">Blocks</span> : f.severity === "low" ? <span class="help">Suggestion</span> : null}
             </div>
             {f.fix ? <div class="help">Fix: {f.fix}</div> : null}
             <CheckNote severity={f.severity} check={f.check} />
@@ -2073,22 +2085,44 @@ function ActivityLog({ logs }: { logs: RunData["logs"]; count: number }) {
 }
 
 // ---------------------------------------------------------------- edit & run again
-export function editAndRerun(run: RunSummary) {
+let rerunRequest = 0;
+export async function editAndRerun(run: RunSummary) {
+  if (run.projectTeam) {
+    showToast("Use the project mission's revision controls to revise this result.", 4000);
+    if (run.project) navigate({ view: "project", id: run.project });
+    return;
+  }
+  const request = ++rerunRequest;
+  const origin = route.value;
+  const selection = repoInfo.value;
+  const changing = run.repo !== repo.value;
+  const loaded = changing ? await setRepo(run.repo) : (await checkLoaded(), repo.value === run.repo && repoInfo.value === selection);
+  // Repository discovery must finish before restoring anything, and a late lookup must
+  // never replace a newer repository choice, draft, or navigation.
+  if (!loaded || request !== rerunRequest || route.value !== origin || repo.value !== run.repo) return;
+  rerunDraft.value = structuredClone({ id: run.id, repo: run.repo, loop: run.loop, approvals: run.approvals ?? {}, source: run.source });
   intentDraft.value = run.intent;
   journeyDraft.value = undefined;
+  externalSource.value = null;
+  setAcceptanceCriteria([]);
+  branchPrefix.value = "";
+  baseRef.value = run.baseRef ?? "";
+  setTrust(run.trust ?? "standard");
+  setApprovePlan(run.approvals?.plan === true, run.pattern);
+  agentSettings.value = structuredClone(run.agentSettings ?? {});
+  roleModels.value = { ...roleModels.value, [run.pattern]: structuredClone(run.roleSettings ?? {}) };
+  setContextBudget(run.loop.contextBudget, "Original run");
   setPattern(run.pattern);
   for (const [role, ids] of Object.entries(run.roles)) setRoles(run.pattern, role, ids);
-  const p = patterns.value.find((x) => x.id === run.pattern);
-  if (p) for (const [id, value] of Object.entries(run.options ?? {})) setOption(p, id, value);
+  optionValues.value = { ...optionValues.value, [run.pattern]: structuredClone(run.options ?? {}) };
   setTask(run.task);
-  const restore = () => {
-    contextPaths.value = new Map((run.context?.paths ?? []).map((c) => [c.path, { path: c.path, type: c.type }]));
-    attachments.value = [];
-    if (run.context?.attachments?.length) showToast("Attached files aren't kept — attach them again if needed", 4000);
-    checkCmd.value = run.loop?.check ?? "";
-    setupCmd.value = run.loop?.setup ?? "";
-    setLimits({ maxMinutes: run.loop?.maxMinutes ?? 60, maxSteps: run.loop?.maxSteps ?? 40 });
-    source.value = run.source
+  contextPaths.value = new Map((run.context?.paths ?? []).map((c) => [c.path, { path: c.path, type: c.type }]));
+  attachments.value = [];
+  if (run.context?.attachments?.length) showToast("Attached files aren't kept — attach them again if needed", 4000);
+  checkCmd.value = run.loop?.check ?? "";
+  setupCmd.value = run.loop?.setup ?? "";
+  setLimits({ maxMinutes: run.loop?.maxMinutes ?? 60, maxSteps: run.loop?.maxSteps ?? 40, maxTokens: run.loop.maxTokens, maxCostUsd: run.loop.maxCostUsd });
+  source.value = run.source
       ? {
           kind: run.source.kind,
           number: run.source.number,
@@ -2102,13 +2136,10 @@ export function editAndRerun(run: RunSummary) {
           numbers: run.source.alert?.numbers,
         }
       : null;
-  };
   // Back in the run's project, so the new run goes there too.
   const project = projectFor(run);
   if (project) selectProject(project.id, { defaults: false, repo: false });
   navigate({ view: "composer" });
-  // Once the repo's own "Done when" lookup is done: the run's check and setup win over it.
-  void (run.repo !== repo.value ? setRepo(run.repo).then(checkLoaded) : checkLoaded()).then(restore, restore);
 }
 
 function RecoveryCheckDialog({ run, onClose }: { run: RunSummary; onClose: () => void }) {

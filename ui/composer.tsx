@@ -15,7 +15,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
 import { api, ApiError, baseName, enc, fmtSize, post, readBase64, SHORT, store, useLatest } from "./lib.js";
 import { useDialog } from "./app.js";
-import { AcceptanceEditor, ContextInspector, EffectiveSettings, ProviderSetupPrompt, SaveTaskTemplateDialog, UseTaskTemplateDialog } from "./onboarding.js";
+import { AcceptanceEditor, ContextInspector, EffectiveSettings, ProviderSetupPrompt, RepositoryReadiness, SaveTaskTemplateDialog, UseTaskTemplateDialog } from "./onboarding.js";
+import { rerunDraft, sourceForRerun } from "./rerun-draft.js";
 import { RemoteWorkerSelect, type WorkerChoice } from "./remote-workers.js";
 import type { WorkerCapabilities } from "../src/remote-workers/protocol.js";
 import { DeferredRunsPanel } from "./deferred-runs.js";
@@ -61,6 +62,8 @@ import {
   rolesFor,
   route,
   setAgentSetting,
+  setRunCheck,
+  setRunSetup,
   loadCheck,
   setOption,
   setPattern,
@@ -93,18 +96,20 @@ const MAX_TOTAL = 25 * 1024 * 1024;
 
 // ================================================================= composer
 export function Composer() {
-  const [remoteWorker, setRemoteWorker] = useState<WorkerChoice>();
+  const restored = rerunDraft.value?.repo === repo.value ? rerunDraft.value : null;
+  const defaults = readProjectDefaults(repo.value);
+  const [remoteWorker, setRemoteWorker] = useState<WorkerChoice | undefined>(restored?.loop.remoteWorker);
   const [remoteAgents, setRemoteAgents] = useState<AgentInfo[]>();
   const [remoteError, setRemoteError] = useState("");
   useEffect(() => { let alive = true; setRemoteAgents(undefined); setRemoteError(""); if (remoteWorker) void post<{ capabilities: WorkerCapabilities }>(`/api/remote-workers/${encodeURIComponent(remoteWorker.workerId)}/probe`, { repoMapping: remoteWorker.repoMapping }).then(({ capabilities }) => { if (alive) setRemoteAgents(agents.value.map((agent) => ({ ...agent, available: capabilities.providers.some((provider) => provider.id === agent.id && provider.available) }))); }, (error) => { if (alive) setRemoteError(error.message); }); return () => { alive = false; }; }, [remoteWorker?.workerId, remoteWorker?.repoMapping, agents.value]);
-  const [containerEnabled, setContainerEnabled] = useState(false);
-  const [containerImage, setContainerImage] = useState("");
-  const [containerVolume, setContainerVolume] = useState("");
-  const [verificationProfile, setVerificationProfile] = useState<VerificationProfile | null>(null);
-  const [verificationPreset, setVerificationPreset] = useState("");
-  const [profileLoading, setProfileLoading] = useState(false);
+  const [containerEnabled, setContainerEnabled] = useState(restored ? !!restored.loop.agentContainer : defaults.container.enabled);
+  const [containerImage, setContainerImage] = useState(restored ? restored.loop.agentContainer?.image ?? "" : defaults.container.image);
+  const [containerVolume, setContainerVolume] = useState(restored ? restored.loop.agentContainer?.authVolume ?? "" : defaults.container.authVolume);
+  const [verificationProfile, setVerificationProfile] = useState<VerificationProfile | null>(restored?.loop.verification ?? null);
+  const [verificationPreset, setVerificationPreset] = useState(restored?.loop.verification ? "restored" : "");
+  const [profileLoading, setProfileLoading] = useState(!restored && !!defaults.verification);
   const profileRequest = useRef(0);
-  const [toolApprovals, setToolApprovals] = useState(store.get("interactiveApprovals") === "1");
+  const [toolApprovals, setToolApprovals] = useState(restored ? restored.approvals.tools === true : store.get("interactiveApprovals") === "1");
   const improve = useImprove(remoteWorker ? "Improve uses a local provider. Choose This computer to rewrite this task." : containerEnabled ? "Improve uses a local provider. Turn off Docker isolation to rewrite this task." : "");
   const p = pattern.value;
   const single = p?.id === "solo";
@@ -132,12 +137,23 @@ export function Composer() {
     } finally { if (request === profileRequest.current) setProfileLoading(false); }
   };
   const [profileError, setProfileError] = useState(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const defaults = readProjectDefaults(repo.value);
-    setContainerEnabled(defaults.container.enabled); setContainerImage(defaults.container.image); setContainerVolume(defaults.container.authVolume);
-    setProfileError(false); void selectVerification(defaults.verification);
+    const container = restored ? restored.loop.agentContainer : undefined;
+    setRemoteWorker(restored?.loop.remoteWorker);
+    setToolApprovals(restored ? restored.approvals.tools === true : store.get("interactiveApprovals") === "1");
+    setContainerEnabled(restored ? !!container : defaults.container.enabled);
+    setContainerImage(restored ? container?.image ?? "" : defaults.container.image);
+    setContainerVolume(restored ? container?.authVolume ?? "" : defaults.container.authVolume);
+    setProfileError(false);
+    if (restored) {
+      ++profileRequest.current;
+      setProfileLoading(false);
+      setVerificationPreset(restored.loop.verification ? "restored" : "");
+      setVerificationProfile(restored.loop.verification ?? null);
+    } else void selectVerification(defaults.verification);
     return () => { ++profileRequest.current; };
-  }, [repo.value, projectDefaultsVersion.value]);
+  }, [repo.value, projectDefaultsVersion.value, restored]);
 
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
@@ -162,12 +178,13 @@ export function Composer() {
     journeyId: journeyDraft.value?.repo === repo.value ? journeyDraft.value.id : undefined,
     repo: repo.value,
     project: target.value.project?.id,
+    parentRunId: restored?.id,
     task: taskWithCriteria(task.value, acceptanceCriteria.value),
     pattern: p.id,
     roles,
     options: optionsFor(p),
     baseRef: baseRef.value,
-    source: source.value ? { kind: source.value.kind, number: source.value.number, ciLogs: !!source.value.ciLogs, tool: source.value.tool, numbers: source.value.numbers } : undefined,
+    source: sourceForRerun(source.value, restored?.source),
     branchPrefix: branchPrefix.value.trim(),
     externalSourceId: externalSource.value?.id,
     context: {
@@ -179,6 +196,7 @@ export function Composer() {
     trust: trust.value,
     roleSettings: roleModels.value[p.id] ?? {},
     loop: {
+      ...restored?.loop,
       check: checkCmd.value.trim(),
       setup: setupCmd.value.trim(),
       maxMinutes: limits.value.maxMinutes,
@@ -188,8 +206,8 @@ export function Composer() {
       contextBudget: contextBudget.value,
       verification: verificationProfile,
       remoteWorker,
-      agentContainer: containerEnabled && !remoteWorker ? { image: containerImage.trim(), authVolume: containerVolume.trim() || undefined, network: true } : undefined,
-      copy: remoteWorker ? [] : repoConfig.value?.config.copy,
+      agentContainer: containerEnabled && !remoteWorker ? { ...restored?.loop.agentContainer, image: containerImage.trim(), authVolume: containerVolume.trim() || undefined, network: restored?.loop.agentContainer?.network ?? true } : undefined,
+      copy: remoteWorker ? [] : restored ? restored.loop.copy ?? [] : repoConfig.value?.config.copy,
     },
   });
   // Publish a lightweight snapshot after rendering. Attachment strings are immutable;
@@ -205,9 +223,9 @@ export function Composer() {
     setError("");
     try {
       const { id, project } = await postConfirmed<{ id: string; project?: string }>("/api/runs", { ...runBody(p), remember: true });
-      resetComposer();
-      await Promise.all([afterStart(project), refreshRuns()]);
       route.value = { view: "run", id };
+      resetComposer();
+      void Promise.allSettled([afterStart(project), refreshRuns()]);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -216,6 +234,7 @@ export function Composer() {
   };
   // Fresh composer for the next run; "Edit & run again" brings these back.
   const resetComposer = () => {
+    rerunDraft.value = null;
     store.set("baseRef", baseRef.value);
     setTask("");
     void loadCheck();
@@ -294,7 +313,7 @@ export function Composer() {
         <button class="btn primary task-start" disabled={!!problem || starting} onClick={start} title={problem || "Start run (⌘↵)"}>{starting ? "Starting…" : "Start run"}<Icon name="send" /></button>
         <Menu above label="Run actions" icon="more" class="chat-choice">{(close) => <>
           <MenuItem disabled={!p || !projectsLoaded.value} onClick={() => { close(); setUsingTemplate(true); }}><Icon name="files" />Use template…</MenuItem>
-          <MenuItem disabled={!p || !projectsLoaded.value || !task.value.trim()} onClick={() => { close(); setSavingTemplate(true); }}><Icon name="files" />Save as template…</MenuItem>
+          <MenuItem disabled={!p || !projectsLoaded.value || !task.value.trim() || verificationPreset === "restored"} sub={verificationPreset === "restored" ? "Choose a verification preset before saving a template" : undefined} onClick={() => { close(); setSavingTemplate(true); }}><Icon name="files" />Save as template…</MenuItem>
           <MenuItem disabled={!!problem} onClick={() => { close(); setScheduleKind(null); setScheduling(true); }}><Icon name="clock" />Schedule…</MenuItem>
         </>}</Menu>
       </>} />
@@ -302,7 +321,7 @@ export function Composer() {
         <span><b>Repository</b> {repo.value ? baseName(repo.value) : "Choose repository"} · {baseRef.value || repoInfo.value?.current || "HEAD"}</span>
         <span><b>{single ? "Agent" : "Agent workflow"}</b> {p ? teamSentence(p, roles) : "Choose workflow"}</span>
         <span><b>Checks</b> {profileLoading ? "Detecting checks…" : verificationProfile ? verificationProfile.checks.map(gate => gate.command).join(" · ") || "No runnable gates" : checkCmd.value.trim() || "Not configured"}</span>
-        <span><b>Limit</b> {limits.value.maxSteps} calls · {limits.value.maxMinutes} minutes</span>
+        <span><b>Limit</b> {restored?.loop.maxInvocations ?? limits.value.maxSteps} calls · {limits.value.maxMinutes} minutes</span>
         {problem ? <span class="composer-problem" role="status">{problem}</span> : null}
         {trust.value === "full" ? <span class="warn">Full access · no provider sandbox</span> : null}
         <button class="btn small ghost" onClick={() => setMoreOptions(!moreOptions)} aria-expanded={moreOptions}>Edit run options</button>
@@ -324,9 +343,15 @@ export function Composer() {
         ) : null}
         <div class={`donewhen ${p?.requiresCheck && !checkCmd.value.trim() ? "required" : ""}`}>
           <label class="lbl" for="checkCmd">Done when this passes</label>
-          <div class="dw-row"><span class="dw-prompt">$</span><input class="field" id="checkCmd" placeholder="e.g. npm test" spellcheck={false} autocomplete="off" value={checkCmd.value} onInput={(e) => { checkCmd.value = e.currentTarget.value; checkHint.value = "Override for this run."; }} /></div>
+          <div class="dw-row"><span class="dw-prompt">$</span><input class="field" id="checkCmd" disabled={repoChecking.value} placeholder="e.g. npm test" spellcheck={false} autocomplete="off" value={checkCmd.value} onInput={(e) => { setRunCheck(e.currentTarget.value); checkHint.value = "Override for this run."; }} /></div>
           <div class="help">Override the project check for this run. A run without a passing automated check is unchecked.</div>
         </div>
+        <div class="donewhen">
+          <label class="lbl" for="setupCmd">Worktree setup command</label>
+          <div class="dw-row"><span class="dw-prompt">$</span><input class="field" id="setupCmd" disabled={repoChecking.value} placeholder="e.g. npm ci" spellcheck={false} autocomplete="off" value={setupCmd.value} onInput={(event) => setRunSetup(event.currentTarget.value)} /></div>
+          <div class="help">Runs once in each new worktree before agent work and checks. Override for this run; save reusable defaults in Settings → Projects.</div>
+        </div>
+        {!remoteWorker && !containerEnabled && !verificationProfile ? <RepositoryReadiness pattern={p?.id} roles={roles} /> : null}
       </div>
 
       {/* The optional controls read as one accordion: a card whose rows open in place. */}
@@ -337,14 +362,14 @@ export function Composer() {
         <RemoteWorkerSelect value={remoteWorker} onChange={(value) => { improve.stop(); setRemoteWorker(value); }} disabled={starting} />
         {remoteWorker ? <p class="help">Provider availability comes from this worker. Checks and setup run on the application server. Copied workspace files and native interactive approvals are unavailable; use explicitly staged references.</p> : null}
         {p && !single ? <Team p={p} roles={roles} providers={remoteAgents} remote={!!remoteWorker} /> : null}
-        <div class="section"><label class="lbl" for="verification-profile">Verification gates</label><select class="field" id="verification-profile" value={verificationPreset} disabled={!repo.value} onChange={(event) => void selectVerification(event.currentTarget.value)}><option value="">Single configured check</option><option value="lightweight">Lightweight profile</option><option value="standard">Standard profile</option><option value="thorough">Thorough profile</option></select>{verificationProfile ? <p class="help">Required gates: {verificationProfile.checks.map((gate) => gate.command).join(" · ") || "No runnable gates detected"}. Each gate appears in the run's evidence.</p> : null}</div>
+        <div class="section"><label class="lbl" for="verification-profile">Verification gates</label><select class="field" id="verification-profile" value={verificationPreset} disabled={!repo.value} onChange={(event) => void selectVerification(event.currentTarget.value)}><option value="">Single configured check</option>{verificationPreset === "restored" ? <option value="restored">From original run · {verificationProfile?.name}</option> : null}<option value="lightweight">Lightweight profile</option><option value="standard">Standard profile</option><option value="thorough">Thorough profile</option></select>{verificationProfile ? <p class="help">Required gates: {verificationProfile.checks.map((gate) => gate.command).join(" · ") || "No runnable gates detected"}. Each gate appears in the run's evidence.</p> : null}</div>
       {p ? <Settings p={p} roles={roles} /> : null}
         </div>
       </details>
-      {p ? <EffectiveSettings p={p} verificationProfile={verificationProfile} container={{ enabled: containerEnabled, image: containerImage, authVolume: containerVolume }} /> : null}
+      {p ? <EffectiveSettings p={p} verificationProfile={verificationProfile} container={{ enabled: containerEnabled, image: containerImage, authVolume: containerVolume, network: restored?.loop.agentContainer?.network }} /> : null}
       <ContextInspector />
 
-      <details class="settings agent-isolation"><summary><span class="st">Agent isolation</span><span class="ss">{containerEnabled && !remoteWorker ? `Prebuilt Docker image${containerImage.trim() ? ` · ${containerImage.trim()}` : ""}` : "Off · agents use this computer's CLIs"}</span></summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} disabled={!!remoteWorker} onChange={(event) => { improve.stop(); setContainerEnabled(event.currentTarget.checked); }} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label class="iso-field">Image<input class="field mono" placeholder="Your prepared image:tag" spellcheck={false} value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label class="iso-field">Authentication volume<input class="field mono" spellcheck={false} placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is enabled for inference. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
+      <details class="settings agent-isolation"><summary><span class="st">Agent isolation</span><span class="ss">{containerEnabled && !remoteWorker ? `Prebuilt Docker image${containerImage.trim() ? ` · ${containerImage.trim()}` : ""}` : "Off · agents use this computer's CLIs"}</span></summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} disabled={!!remoteWorker} onChange={(event) => { improve.stop(); setContainerEnabled(event.currentTarget.checked); }} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label class="iso-field">Image<input class="field mono" placeholder="Your prepared image:tag" spellcheck={false} value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label class="iso-field">Authentication volume<input class="field mono" spellcheck={false} placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is {restored?.loop.agentContainer?.network === false ? "disabled by the original run" : "enabled for inference"}. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
 
       </div>
       </details>
@@ -506,7 +531,7 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
     return "";
   }
   const signedOut = health.value?.find((h) => used.has(h.id) && h.installed && h.signedIn === false);
-  if (signedOut) return `${signedOut.name} isn't signed in — open Health in the top bar`;
+  if (signedOut) return `${signedOut.name} isn't signed in — open Settings → Agents & models`;
   return "";
 }
 
@@ -1134,6 +1159,7 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
 
           </div>
           <div class="help">Ceilings use reported usage; they cannot count missing provider data and are checked between operations. API-equivalent cost is not your subscription bill. Work done before a limit is kept on its branch.</div>
+          {rerunDraft.value?.loop.maxInvocations !== undefined ? <p class="help">Original invocation ceiling: {rerunDraft.value.loop.maxInvocations} CLI calls. This ceiling is retained separately from the agent-step limit.</p> : null}
         </div>
         {info ? <div class="help">Each run works in git worktrees under {info.worktreeRoot}/ — your checkout is never touched.</div> : null}
       </div>

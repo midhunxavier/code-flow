@@ -57,7 +57,17 @@ export function ResultStudio({ run }: { run: RunSummary }) {
   useEffect(() => { let alive = true; if (run.journeyId) api<{ journey: Journey }>(`/api/journeys/${run.journeyId}`).then(value => alive && setJourney(value.journey), error => alive && setError(error.message)); return () => { alive = false; }; }, [run.journeyId]);
   if (!tree) return null;
   const tryResult = async () => { setBusy(true); setError(""); try { const app = server?.status === "running" ? server : await post<DevServer>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve`, { command }); setServer(app); await waitForPreview(run, tree.name); pinSide(false); openSide("browser"); rememberSide({ pages: [...(sideMemo.value.pages ?? []).filter(page => page.id !== `result-${tree.name}`), { id: `result-${tree.name}`, url: app.url }], page: `result-${tree.name}` }); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } };
-  const rate = async (decision: "accepted" | "needs-work") => { setBusy(true); setError(""); try { await post(`/api/runs/${run.id}/outcome`, { decision, branch: tree.branch, expectedHead: head }); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } };
+  const rate = async (decision: "accepted" | "needs-work") => {
+    setBusy(true); setError("");
+    try {
+      await post(`/api/runs/${run.id}/outcome`, { decision, branch: tree.branch, expectedHead: head });
+      if (decision === "needs-work" && run.status === "done") {
+        if (run.projectTeam && run.project) navigate({ view: "project", id: run.project });
+        else if (!run.projectTeam) navigate({ view: "review", id: run.id, branch: tree.branch });
+      }
+    } catch (error) { setError((error as Error).message); }
+    finally { setBusy(false); }
+  };
   return <section class="result-studio" aria-label="Try and assess the result"><div class="experience-kicker">YOUR RESULT</div><h3>Try it. Inspect the evidence. Decide.</h3>{choices.length > 1 ? <label>Result branch<select class="field" disabled={busy} value={tree.name} onChange={e => setSelected(e.currentTarget.value)}>{choices.map(choice => <option key={choice.name} value={choice.name}>{choice.name}</option>)}</select></label> : null}
     <p class="help">Checks: {checksLabel(run, false, tree.branch)} · Agent review: {agentReviewLabel(run, tree.branch)} · <code>{head.slice(0, 12) || "Loading commit…"}</code></p>
     <div class="experience-actions"><button class="btn primary" disabled={busy || !command.trim() && server?.status !== "running"} onClick={tryResult}>{busy ? "Working…" : "Try this result"}</button><button class="btn" onClick={() => navigate({ view: "review", id: run.id, branch: tree.branch })}>Inspect changes</button><button class="btn" disabled={busy || !head} onClick={() => void rate("accepted")}>Accept result</button><button class="btn" disabled={busy || !head} onClick={() => void rate("needs-work")}>Needs more work</button></div>

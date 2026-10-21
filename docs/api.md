@@ -23,7 +23,7 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 | Operation | Request | Behavior |
 | --- | --- | --- |
 | `POST /improve-prompt` | `repo`, `text`, optional `mode=quick\|repo`, `agent`, `context`, `source`, `execution=local` | Owner-only local prompt rewrite in a disposable private Git directory; returns `{prompt, summary, agent}` after cleanup. |
-| `POST /readiness` | `repo`, optional `baseRef`, `setup`, `check`, `execute` | Inspection by default; `execute: true` runs commands in a temporary worktree at a pinned commit. |
+| `POST /readiness` | `repo`, optional `baseRef`, `setup`, `check`, `execute`, `pattern`, `roles`, `providers` | Inspection by default; `execute: true` runs commands in a temporary worktree at a pinned commit. Provider scope is described below. |
 | `GET /verification/profile` | `repo`, `preset` query | Detect lightweight, standard or thorough checks. |
 | `POST /verification` | `repo`, `profile` or `preset`, optional `baseRef`, `baseline`, `setup`, `repeats` | Execute bounded required gates on isolated checkouts and return structured evidence plus Markdown. |
 | `GET /workspace/file` | `repo`, `path` query | Load a bounded regular text file and its hash. |
@@ -60,6 +60,10 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 | `GET /remote/devices` | none | List paired device metadata, never session credentials. |
 | `DELETE /remote/devices/:id` | none | Revoke one device immediately. |
 | `GET /diagnostics` | optional `repo` query | Export versions, queue/write health and sanitized recent logs. |
+
+Readiness accepts `roles` as an object of provider IDs (strings or arrays). Concrete assignments must be installed, compatible and not signed out; unused providers are skipped. `providers` alone is an explicit required-provider list. With `roles`, it limits the eligible pool for `auto` assignments; without that limit, Auto considers registered providers. An Auto-team's `roles.pool` contains alternatives and needs at least one usable member (also within `providers`, if supplied), while its coordinator is required. An explicit empty scope fails readiness. Unknown authentication remains a warning. Omitting both `roles` and `providers` preserves the original checks of all installed providers.
+
+Scope IDs must be 1–128 letters, digits, underscores, colons, slashes, periods or hyphens, beginning with a letter or digit. Provider values must be registered IDs or `"auto"`; lists allow at most 128 entries and `roles` allows at most 64 keys. Malformed scope returns HTTP 400. The composer sends its current workflow and assignments and discards displayed or in-flight reports when that selection changes.
 
 Prompt improvement accepts up to 20,000 input/output characters and a 1,000-character
 summary. Context is limited to 50 names of 300 characters; optional source metadata

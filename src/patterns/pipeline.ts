@@ -50,7 +50,9 @@ export const pipelinePattern: Pattern = {
         section(
           "Deliverable",
           "Explore the relevant code, then write an implementation plan: files to change, the approach, " +
-            "edge cases, and how to verify it (tests or commands). Keep it under 400 words.",
+            "edge cases, and how to verify it (tests or commands). Keep it under 400 words. " +
+            "Identify focused verification commands; leave their execution to the implementation and verification stages. " +
+            "Do not run full build or test suites while planning unless the task explicitly requires a baseline before planning.",
         ),
     });
 

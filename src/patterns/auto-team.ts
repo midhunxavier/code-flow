@@ -477,7 +477,7 @@ export const autoTeamPattern: Pattern = {
         if (discovery) {
           findings = reviewed.value.issues.map((issue) => ({ severity: issue.severity === "low" ? "low" : "medium", file: issue.file, problem: issue.problem, fix: issue.fix, check: { status: "unconfirmed", detail: "Discovery evidence reviewed without an executable reproduction" }, blocking: issue.severity !== "low" }));
           if (reviewed.value.verdict !== "approve") state.gaps.push("Discovery report requires changes");
-          ctx.setFindings(integration, { reviewer: reviewer.provider, round, verdict: reviewed.value.verdict, findings, at: Date.now() });
+          ctx.setFindings(integration, { reviewer: reviewer.provider, round, verdict: reviewed.value.verdict, findings, head: await ctx.head(integration), at: Date.now() });
         } else findings = await checkReview(ctx, integration, { label: `Auto team review ${round}`, reviewer: reviewer.provider, round, review: reviewed.value });
         reviewHead = await ctx.head(integration);
         const needsFix = !approves(findings) || !!check && !check.ok || proof?.status === "unproven";

@@ -67,7 +67,7 @@ export async function checkReview(
     const check = checks[i]!;
     return { severity, file: issue.file ?? "", problem: issue.problem, fix: issue.fix ?? "", check, blocking: blocks(severity, check.status) };
   });
-  ctx.setFindings(wt, { reviewer: opts.reviewer, round: opts.round, verdict: opts.review.verdict, findings, at: Date.now() });
+  ctx.setFindings(wt, { reviewer: opts.reviewer, round: opts.round, verdict: opts.review.verdict, findings, head: await ctx.head(wt), at: Date.now() });
   const blocking = findings.filter((f) => f.blocking);
   ctx.log(`${opts.label}: ${opts.review.verdict} (${findings.length} issues${findings.length ? `; ${tally(findings)}` : ""})`);
   // Recurring problems are passed on to later runs; false alarms aren't problems.

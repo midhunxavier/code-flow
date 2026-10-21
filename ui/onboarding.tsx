@@ -3,7 +3,7 @@ import { Templates } from "./github.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { post, showToast, store } from "./lib.js";
-import { acceptanceCriteria, agentSettings, baseRef, catalogs, checkCmd, checkHint, composerOrigins, configChecking, contextPaths, attachments, health, limits, optionsFor, patterns, planApprovalFor, repo, repoChecking, repoConfig, roleModels, rolesFor, setAcceptanceCriteria, setAgentSetting, setApprovePlan, setLimits, setOption, setPattern, setRoleModel, setRoles, setTask, setTrust, setupCmd, target, task, trust } from "./state.js";
+import { acceptanceCriteria, agentSettings, baseRef, catalogs, checkCmd, checkHint, composerOrigins, configChecking, contextPaths, attachments, health, limits, optionsFor, patterns, planApprovalFor, repo, repoChecking, repoConfig, roleModels, rolesFor, setAcceptanceCriteria, setAgentSetting, setApprovePlan, setLimits, setOption, setPattern, setRoleModel, setRoles, setRunCheck, setRunSetup, setTask, setTrust, setupCmd, target, task, trust } from "./state.js";
 import { fillTemplate, parseComposerLibrary, taskWithCriteria, templateParameters, type ComposerLibrary, type PresetConfig, type TaskTemplate, type TemplateRunOptions } from "./composer-tools.js";
 import type { AgentId, PatternInfo } from "./types.js";
 import type { VerificationProfile } from "../src/verification.js";
@@ -33,12 +33,12 @@ export function AcceptanceEditor() {
 }
 
 export interface ReadinessReport { ok: boolean; checkedAt?: number; items: Array<{ id: string; label: string; status: "passed" | "failed" | "warning" | "skipped"; detail?: string }> }
-export function RepositoryReadiness({ repository = repo.value, setup = setupCmd.value, check = checkCmd.value, base = baseRef.value, loading = configChecking.value }: { repository?: string; setup?: string; check?: string; base?: string; loading?: boolean } = {}) {
+export function RepositoryReadiness({ repository = repo.value, setup = setupCmd.value, check = checkCmd.value, base = baseRef.value, loading = configChecking.value, pattern, roles, providers }: { pattern?: string; roles?: Record<string, string | string[]>; providers?: string[]; repository?: string; setup?: string; check?: string; base?: string; loading?: boolean } = {}) {
   const [report, setReport] = useState<ReadinessReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [validated, setValidated] = useState(false);
-  const key = JSON.stringify([repository, base, setup, check]);
+  const key = JSON.stringify([repository, base, setup, check, pattern, roles, providers]);
   const selected = useRef(key);
   selected.current = key;
   const requests = useRef(0);
@@ -48,7 +48,7 @@ export function RepositoryReadiness({ repository = repo.value, setup = setupCmd.
     const selection = key;
     setBusy(true); setError(""); setReport(null);
     try {
-      const result = await post<ReadinessReport>("/api/readiness", { repo: repository, baseRef: base, setup, check, execute });
+      const result = await post<ReadinessReport>("/api/readiness", { repo: repository, baseRef: base, setup, check, execute, pattern, roles, providers });
       if (request !== requests.current || selected.current !== selection) return;
       setReport(result); setValidated(execute);
     } catch (err) {
@@ -69,7 +69,7 @@ export function RepositoryReadiness({ repository = repo.value, setup = setupCmd.
 function currentConfig(p: PatternInfo): PresetConfig {
   return structuredClone({ pattern: p.id, roles: rolesFor(p), options: optionsFor(p), agentSettings: agentSettings.value, roleSettings: roleModels.value[p.id] ?? {}, trust: trust.value, limits: limits.value, approvePlan: planApprovalFor(p.id), toolApprovals: store.get("interactiveApprovals") === "1", contextBudget: contextBudget.value, check: checkCmd.value, setup: setupCmd.value, baseRef: baseRef.value });
 }
-function applyPreset(config: PresetConfig, label: string) {
+export function applyPreset(config: PresetConfig, label: string) {
   const p = patterns.value.find((p) => p.id === config.pattern);
   if (!p) throw new Error("This workflow is no longer available.");
   setPattern(config.pattern);
@@ -83,8 +83,8 @@ function applyPreset(config: PresetConfig, label: string) {
   for (const [role, providers] of Object.entries(config.roleSettings)) for (const [id, setting] of Object.entries(providers)) setRoleModel(p.id, role, id as AgentId, setting!);
   setTrust(config.trust); setLimits({ ...config.limits, maxTokens: config.limits.maxTokens, maxCostUsd: config.limits.maxCostUsd }); setApprovePlan(config.approvePlan, p.id);
   setContextBudget(config.contextBudget, label);
-  if (config.check !== undefined) checkCmd.value = config.check;
-  if (config.setup !== undefined) setupCmd.value = config.setup;
+  if (config.check !== undefined) setRunCheck(config.check);
+  if (config.setup !== undefined) setRunSetup(config.setup);
   if (config.baseRef !== undefined) baseRef.value = config.baseRef;
   store.set("interactiveApprovals", config.toolApprovals ? "1" : "0");
   composerOrigins.value = { ...composerOrigins.value, pattern: label, roles: label, models: label };
@@ -284,7 +284,7 @@ function FillTemplateDialog({ template, onClose, onApply }: { template: TaskTemp
   return <dialog class="picker" ref={ref} aria-labelledby="fill-template-title"><div class="picker-inner"><div class="picker-head"><h3 id="fill-template-title">Apply {template.name}</h3></div><div class="dialog-body">{names.map((name) => <div key={name}><label class="lbl" for={`parameter-${name}`}>{name}</label><input class="field" id={`parameter-${name}`} value={values[name] ?? ""} maxLength={4000} onInput={(e) => setValues({ ...values, [name]: e.currentTarget.value })} /></div>)}{preview ? <details><summary>Preview task</summary><pre class="template-preview" tabIndex={0}>{preview}</pre></details> : null}</div><div class="picker-foot"><span class="ps" /><button class="btn" onClick={onClose}>Cancel</button><button class="btn primary" disabled={!preview} onClick={() => onApply(values)}>Use template</button></div></div></dialog>;
 }
 
-export function EffectiveSettings({ p, verificationProfile, container }: { p: PatternInfo; verificationProfile?: VerificationProfile | null; container?: { enabled: boolean; image: string; authVolume: string } }) {
+export function EffectiveSettings({ p, verificationProfile, container }: { p: PatternInfo; verificationProfile?: VerificationProfile | null; container?: { enabled: boolean; image: string; authVolume: string; network?: boolean } }) {
   const r = repo.value;
   const config = repoConfig.value?.config ?? {};
   const rememberedCheck = r ? store.get(`check:${r}`) : null;
@@ -300,7 +300,7 @@ export function EffectiveSettings({ p, verificationProfile, container }: { p: Pa
     ["Plan approval", planApprovalFor(p.id) ? "Required" : "Automatic", "Per-workflow browser preference / workflow default"],
     ["Tool permissions", store.get("interactiveApprovals") === "1" ? "Ask for supported native requests" : "Decline requests requiring interaction", store.get("interactiveApprovals") !== null ? "Explicit browser preference / selected preset" : "Application default"],
     ["Verification gates", verificationProfile ? `${verificationProfile.name}: ${verificationProfile.checks.map((check) => `${check.id} (${check.required ? "required" : "optional"}) · ${check.command}`).join("; ") || "No runnable gates"}` : "Single configured check", verificationProfile ? `Detected profile${verificationProfile.source ? ` from ${verificationProfile.source}` : ""}; selected for this run` : "Verification command above"],
-    ["Agent container", container?.enabled ? `${container.image || "Image not configured"}${container.authVolume ? ` · authentication volume ${container.authVolume}` : " · no authentication volume"}` : "Host CLI execution", container?.enabled ? "Explicit choice for this run; network enabled" : "Application default"],
+    ["Agent container", container?.enabled ? `${container.image || "Image not configured"}${container.authVolume ? ` · authentication volume ${container.authVolume}` : " · no authentication volume"}` : "Host CLI execution", container?.enabled ? `Explicit choice for this run; network ${container.network === false ? "disabled" : "enabled"}` : "Application default"],
     ["Start branch", baseRef.value || "Current HEAD", baseRef.value ? "Selected branch (remembered)" : "Repository HEAD"],
     ["Limits", `${limits.value.maxMinutes} minutes · ${limits.value.maxSteps} steps${limits.value.maxTokens ? ` · ${limits.value.maxTokens.toLocaleString()} reported tokens` : ""}${limits.value.maxCostUsd ? ` · $${limits.value.maxCostUsd} reported API equivalent` : ""}`, store.get("limits") ? "Browser preferences / selected preset" : "Application defaults"],
     ["Explicit input context budget", contextBudget.value ? `${contextBudget.value.maxPromptBytes ?? "No"} byte ceiling · ${contextBudget.value.maxApproximateTokens ?? "no"} estimated token ceiling · ${contextBudget.value.policy}` : "No configured ceiling", contextBudgetOrigin.value],

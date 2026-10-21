@@ -71,6 +71,11 @@ async function until(cond: () => boolean, ms = 15_000) {
 const start = (manager: Manager, pattern: string, roles: Record<string, any>, extra: Record<string, unknown> = {}) =>
   manager.start({ pattern: findPattern(pattern)!, task: "Make it reliable", repo, roles, options: {}, ...extra });
 
+test("a continuation refuses a missing parent rather than dropping its source restrictions", async () => {
+  const manager = new RunManager(findPattern);
+  await assert.rejects(start(manager, "solo", { agent: ["claude"] }, { parentRunId: "deleted-source-run" }), /original run is no longer available/);
+});
+
 async function runPattern(pattern: string, roles: Record<string, any>, extra: Record<string, unknown> = {}, manager: Manager = new RunManager(findPattern)) {
   const run = await start(manager, pattern, roles, extra);
   return { run: await idle(manager, run), manager };
@@ -373,6 +378,70 @@ test("a follow-up continues a session from a turn that worked; a session that's 
 });
 
 // ---------------------------------------------------------------- lockdown
+test("follow-ups retain approval for answers but mark changed results and failed partial edits as historical", async () => {
+  const manager = new RunManager(findPattern);
+  const local = newRepo();
+  let turn = 0;
+  await withStub("codex", async opts => {
+    turn++;
+    if (turn === 1) writeFileSync(join(opts.cwd, "built.txt"), "original\n");
+    if (turn >= 3 && opts.mode === "write") writeFileSync(join(opts.cwd, "built.txt"), `revision ${turn}\n`);
+    return { ok: turn !== 4, finalText: "Done", sessionId: "writer", ...(turn === 4 ? { error: "Partial failure", errorKind: "other" as const } : {}) };
+  }, async () => {
+    const r = await idle(manager, await start(manager, "pipeline", pipeline, { repo: local }));
+    assert.equal(r.status, "done", r.error);
+    const wt = r.worktrees.find(wt => wt.name === "build")!;
+    type Evidence = NonNullable<Run["findings"]>[string] & { head?: string; stale?: boolean };
+    const evidence = () => r.findings![wt.branch]! as Evidence;
+    const reviewed = evidence();
+    const originalSummary = r.patternSummary!;
+    assert.match(originalSummary, /^\*\*Approved/);
+    assert.equal(reviewed.verdict, "approve");
+    assert.equal(reviewed.head, sh(wt.path, "rev-parse", "HEAD"));
+    const follow = async () => {
+      await manager.followUp(r.id, { kind: "reply", worktree: "build", agent: "codex", message: "Continue" });
+      await idle(manager, r);
+    };
+    await follow();
+    assert.equal(evidence().stale, undefined, "an answer without changes retains review");
+    assert.ok(r.summary!.startsWith(originalSummary), "an unchanged answer retains the current team summary");
+    await follow();
+    assert.equal(evidence().stale, true);
+    assert.equal(evidence().head, reviewed.head, "historical evidence keeps the reviewed commit");
+    assert.equal(r.facts?.approved, false);
+    const historicalSummary = () => {
+      assert.match(r.summary!, /^\*\*Independent review is outdated/);
+      assert.ok(r.summary!.includes(originalSummary), "retain the useful original team report");
+      assert.equal(r.patternSummary, originalSummary, "keep the original team report for replay");
+      assert.equal(r.summary!.split("## Historical team summary").length - 1, 1);
+      assert.equal(r.summary!.split("## Follow-ups").length - 1, 1);
+    };
+    historicalSummary();
+    // A new independent review can supersede history, but a failed writer's partial changes invalidate it too.
+    (r.findings as Record<string, Evidence>)[wt.branch] = { ...reviewed, head: sh(wt.path, "rev-parse", "HEAD") };
+    await follow();
+    assert.equal(r.followUps.at(-1)!.status, "failed");
+    assert.equal(evidence().stale, true);
+    historicalSummary();
+    (r.findings as Record<string, Evidence>)[wt.branch] = { ...reviewed, head: undefined };
+    await follow();
+    assert.equal(evidence().stale, true);
+    assert.equal(evidence().head, undefined, "a legacy review's unknown commit must not be invented from the pre-follow-up HEAD");
+    historicalSummary();
+    (r.findings as Record<string, Evidence>)[wt.branch] = { ...reviewed, head: sh(wt.path, "rev-parse", "HEAD") };
+    const side = async (mode: "ask" | "change") => {
+      await manager.followUp(r.id, { kind: "side", worktree: "build", agent: "codex", message: "Continue", side: { chat: "review-history", title: "Review history", mode } });
+      await idle(manager, r);
+    };
+    await side("ask");
+    assert.equal(evidence().stale, undefined, "a side-chat answer without edits retains review");
+    await side("change");
+    assert.equal(evidence().stale, true, "a side-chat change invalidates independent review too");
+    historicalSummary();
+    assert.match(r.summary!, /made a change from the side chat "Review history"/);
+  });
+});
+
 test("lockdown: a container that allowed network runs an untrusted source's checks without it, and the log says so", async () => {
   const state = join(mkdtempSync(join(tmpdir(), "codeflow-rel-gh-")), "state.json");
   writeFileSync(
