@@ -172,6 +172,8 @@ export async function serve(args) {
   }
 
   const handlers = {
+    "account/read": () => ({ account: { id: "fixture", type: "chatgpt" } }),
+    "model/list": () => ({ data: [{ id: "gpt-a", model: "gpt-a", displayName: "GPT A", isDefault: true, supportedReasoningEfforts: ["low","medium","high","ultra"].map(reasoningEffort=>({reasoningEffort})) }, { id: "gpt-b", model: "gpt-b", displayName: "GPT B", supportedReasoningEfforts: ["low","medium"].map(reasoningEffort=>({reasoningEffort})) }], nextCursor: null }),
     initialize: () => {
       if (process.env.FAKE_CODEX_INIT_CRASH) {
         process.stderr.write(`${process.env.FAKE_CODEX_INIT_CRASH}\n`);

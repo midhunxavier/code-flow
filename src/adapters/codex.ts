@@ -1,3 +1,5 @@
+import { discoverModels } from "./model-discovery.js";
+import { managedPermissionProblem } from "./managed-permissions.js";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -29,6 +31,7 @@ const RECHECK_MS = 10 * 60_000;
 
 export const codexAdapter: AgentAdapter = {
   id: "codex",
+  discoverModels: context => discoverModels("codex", context),
   displayName: "Codex",
   binary: "codex",
   available: () => commandExists("codex"),
@@ -56,6 +59,8 @@ export const codexAdapter: AgentAdapter = {
   },
 
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
+    const permissionProblem = await managedPermissionProblem("codex", opts);
+    if (permissionProblem) return permissionProblem;
     const supportsTools = !opts.agentContainer && opts.teamTools && (await adapterTeamCapabilities("codex")).scopedTools === "tested";
     const teamTools = supportsTools ? await prepareTeamTools(opts.teamTools!) : undefined;
     if (opts.agentContainer) onEvent({ kind: "status", text: `Codex runs in Docker image ${opts.agentContainer.image}. Live team tools are unavailable in containers; use structured outcomes and next-turn replies.` });
@@ -63,8 +68,11 @@ export const codexAdapter: AgentAdapter = {
     try {
     const sandbox = opts.mode === "read" ? "read-only" : opts.trust === "full" ? "danger-full-access" : "workspace-write";
     // Codex sandboxes writes to the worktree unless the run has full access; "trusted" adds network access.
-    const network = opts.mode === "write" && opts.trust === "trusted" ? ["-c", "sandbox_workspace_write.network_access=true"] : [];
-    const teamConfig = [...(teamTools?.codexConfig ?? []), ...(opts.questionProtocol === "structured" ? ["-c", "features.multi_agent=false", "-c", "features.multi_agent_v2=false"] : [])];
+    const network = opts.permissions && sandbox !== "danger-full-access" ? ["-c", `sandbox_workspace_write.network_access=${opts.permissions.commandNetwork === "allowed"}`] : opts.mode === "write" && opts.trust === "trusted" ? ["-c", "sandbox_workspace_write.network_access=true"] : [];
+    const managedSandbox = opts.permissions && sandbox !== "danger-full-access"
+      ? ["-c", "sandbox_workspace_write.writable_roots=[]", ...(opts.permissions.required.includes("workspace-writes") ? ["-c", "sandbox_workspace_write.exclude_slash_tmp=true", "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"] : [])]
+      : [];
+    const teamConfig = [...(teamTools?.codexConfig ?? []), ...(opts.questionProtocol === "structured" || opts.permissions?.nativeDelegation === false ? ["-c", "agents.enabled=false", "-c", "features.multi_agent=false", "-c", "features.multi_agent_v2.enabled=false", "-c", "features.hooks=false"] : [])];
     const transport = codexTransport();
 
     // Only a thread Codex confirms in this turn: a resume that failed must not hand back its id.
@@ -155,7 +163,8 @@ export const codexAdapter: AgentAdapter = {
         effort: opts.effort,
         outputSchema: opts.jsonSchema,
         questionProtocol: opts.questionProtocol,
-        config: [...network, ...teamConfig],
+        config: [...network, ...teamConfig, ...managedSandbox],
+        threadConfig: { ...teamTools?.codexThreadConfig, ...Object.fromEntries([...network, ...teamConfig.filter((_,i)=>!teamTools || i>=teamTools.codexConfig.length), ...managedSandbox].filter(v=>v!=="-c").map(v=>{const split=v.indexOf("="); return [v.slice(0,split),JSON.parse(v.slice(split+1))];})) },
         signal: opts.signal,
         timeoutMs: opts.timeoutMs,
         idleTimeoutMs: opts.idleTimeoutMs,
@@ -182,9 +191,10 @@ export const codexAdapter: AgentAdapter = {
     }
 
     if (!outcome) {
+      if (opts.permissions?.toolApprovals) return { ok: false, finalText: "", error: "This run requires interactive approvals; Codex exec cannot preserve them. Use an available app-server transport.", errorKind: "cli_incompatible" };
       if (opts.interactiveApprovals) onEvent({ kind: "status", text: "Native tool approvals require Codex app-server; this exec turn remains headless." });
       // `-c sandbox_mode=` works for both `exec` and `exec resume` (resume has no -s flag).
-      const common = ["--json", "--skip-git-repo-check", "-c", `sandbox_mode="${sandbox}"`, ...network, ...teamConfig];
+      const common = ["--json", "--skip-git-repo-check", ...(opts.permissions ? ["-c", 'approval_policy="never"'] : []), "-c", `sandbox_mode="${sandbox}"`, ...network, ...teamConfig, ...managedSandbox];
       if (opts.model) common.push("-m", opts.model);
       if (opts.effort) common.push("-c", `model_reasoning_effort="${opts.effort}"`);
       schemaFile = opts.jsonSchema ? await writeSchemaFile(opts.jsonSchema) : undefined;

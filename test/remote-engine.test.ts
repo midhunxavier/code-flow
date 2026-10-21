@@ -20,7 +20,11 @@ test("engine uses worker inventory, imports the exact commit and journals only p
   const f = await fixture(), manager = new RunManager(findPattern, undefined, f.workers); managers.push(manager); let hostCalls = 0;
   const hostRun = adapters.claude.run, hostAvailable = adapters.claude.available; adapters.claude.run = async () => { hostCalls++; throw new Error("host fallback forbidden"); }; adapters.claude.available = async () => false;
   try {
-    manager.recordQuota("claude", "limited", {}); const run = await finished(await manager.start(input(f))); assert.equal(run.status, "done", run.error); assert.equal(hostCalls, 0); assert.equal(manager.quotaForWorker("fixture").claude, undefined); assert.equal(run.lastCheck?.ok, true);
+    manager.recordQuota("claude", "limited", {}); const run = await finished(await manager.start({ ...input(f), permissionRequirements: ["no-external-tools"] })); assert.equal(run.status, "done", run.error); assert.equal(hostCalls, 0);
+    assert.deepEqual(run.permissions?.required, ["no-external-tools"]);
+    const remoteArgs = JSON.parse(readFileSync(f.audit, "utf8").trim().split("\n")[0]!).args as string[];
+    for (const flag of ["--strict-mcp-config", "--no-chrome", "--disallowedTools"]) assert.ok(remoteArgs.includes(flag), `remote launch missing ${flag}`);
+    assert.ok(remoteArgs.some(arg => arg.includes("WebFetch") && arg.includes("Agent"))); assert.equal(manager.quotaForWorker("fixture").claude, undefined); assert.equal(run.lastCheck?.ok, true);
     const step = run.steps.find((step) => step.kind === "agent")!; assert.equal(step.remote?.state, "completed"); assert.equal(step.sessionId, undefined); assert.ok(step.remote?.resultHead); assert.ok(run.summary?.includes("Changes on"));
     const tree = run.worktrees[0]!; assert.equal(git(tree.path, "rev-parse", "HEAD"), step.remote?.resultHead); assert.equal(readFileSync(join(tree.path, "result.txt"), "utf8"), "local exact base\nexplicit staged reference");
     const privateRecord = JSON.parse(readFileSync(join(f.home, "remote-worker-private", `${step.remote!.requestId}.json`), "utf8")); const exported = JSON.stringify({ run, events: await manager.events(run.id) }); assert.equal(exported.includes(privateRecord.capability), false); assert.equal(exported.includes("result.bundle"), false);

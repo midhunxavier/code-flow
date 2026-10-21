@@ -145,6 +145,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   assert.equal(await page.locator("#checkCmd").inputValue(), "npm test", "the check is detected from package.json");
 
   // Describe the task, pick the pipeline, start with the keyboard.
+  await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
   await page.getByLabel("Task", { exact: true }).fill("E2E: make the check pass");
   await page.getByLabel("Task", { exact: true }).press("Meta+Enter");
@@ -177,6 +178,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
 
 test("approve the plan from the UI: ask for changes, then approve", async () => {
   await page.goto(BASE);
+  await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
   await page.locator(".composer-options > summary").click();
   await page.getByText("Let me approve the plan").click();
@@ -195,6 +197,7 @@ test("approve the plan from the UI: ask for changes, then approve", async () => 
 
 test("a message sent while Codex is working reaches its running turn", async () => {
   await page.goto(BASE);
+  await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
   if (!(await page.locator(".composer-options").getAttribute("open"))) await page.locator(".composer-options > summary").click();
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from the last test
@@ -219,7 +222,7 @@ test("a message sent while Codex is working reaches its running turn", async () 
 
 test("start from a PR with a template: the council's findings are ranked, and posting takes your click", async () => {
   await page.goto(BASE);
-  await page.getByRole("button", { name: "Template library", exact: true }).click();
+  await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
   await page.getByRole("button", { name: /Review a PR as a council/ }).click();
   await page.locator(".gh-item", { hasText: "Add feature loop" }).click();
   assert.match(await page.getByLabel("Task", { exact: true }).inputValue(), /^Review pull request #1\./);
@@ -422,6 +425,7 @@ test("insights and run search", async () => {
 
 test("supervisor: the reviewer defaults to a different vendor than the supervisor", async () => {
   await page.goto(BASE);
+  await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
   if (!(await page.locator(".composer-options").getAttribute("open"))) await page.locator(".composer-options > summary").click();
   if (!(await page.locator(".advanced-controls").getAttribute("open"))) await page.locator(".advanced-controls > summary").click();
@@ -456,6 +460,7 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
   await page.locator(".page-head-actions").getByRole("button", { name: "New run", exact: true }).click();
   await page.locator(".where .project-btn", { hasText: "E2E side" }).waitFor(); // explicitly open its draft
 
+  await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
   if (!(await page.locator(".composer-options").getAttribute("open"))) await page.locator(".composer-options > summary").click();
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from earlier tests: the run mustn't wait for approval
@@ -815,7 +820,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
   const fresh = await context.newPage();
   try {
     await fresh.goto(`${BASE}/?token=${TOKEN}`);
-    await fresh.getByLabel("Workflow", { exact: true }).waitFor();
+    await fresh.getByRole("button", { name: "Auto", exact: true }).waitFor();
     assert.equal(await fresh.locator(".advanced-controls").getAttribute("open"), null, "advanced controls start collapsed");
     assert.equal(await fresh.getByRole("button", { name: "Side panel", exact: true }).getAttribute("aria-pressed"), "false", "first run leaves room for the task");
     if (process.env.CODEFLOW_UI_SCREENSHOTS) {
@@ -844,7 +849,8 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.getByRole("button", { name: "Use this folder", exact: true }).click();
     await fresh.getByRole("dialog", { name: "Open repository in a project" }).getByRole("button", { name: /^Open / }).first().click();
     await fresh.waitForFunction(() => (document.querySelector("#checkCmd") as HTMLInputElement | null)?.value === "npm test");
-    await fresh.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+    await openAdvanced(fresh);
+  await fresh.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
     await fresh.getByLabel("Task", { exact: true }).fill("E2E: improve {{component}} in {{package}}");
     // A slower earlier preset must not overwrite the user's newer choice. Starting while a
     // profile is being resolved would silently omit its gates, so execution stays disabled.
@@ -857,8 +863,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
       await route.fulfill({ response });
     });
     try {
-      await fresh.locator(".composer-options > summary").click();
-      await fresh.locator(".advanced-controls > summary").click();
+      await openAdvanced(fresh);
       const profile = fresh.getByLabel("Verification gates", { exact: true });
       const lightResponse = fresh.waitForResponse((response) => new URL(response.url()).pathname === "/api/verification/profile" && new URL(response.url()).searchParams.get("preset") === "lightweight");
       await profile.selectOption("lightweight"); await lightRequested;
@@ -888,7 +893,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.getByRole("button", { name: "Save current workflow", exact: true }).click();
     await fresh.getByLabel("Revision to apply").waitFor();
     await fresh.evaluate(() => { location.hash = "/"; });
-    await fresh.getByRole("button", { name: "Agent workflow mode", exact: true }).click();
+    await fresh.getByRole("button", { name: "Solo", exact: true }).click();
     await openLibrary();
     await fresh.getByLabel("Saved workflow", { exact: true }).selectOption({ label: "E2E saved team · r1" });
     await fresh.getByRole("button", { name: "Save new revision", exact: true }).click();
@@ -925,7 +930,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.keyboard.press("Meta+k");
     await commands.fill("new run");
     await commands.press("Enter");
-    await fresh.getByLabel("Workflow", { exact: true }).waitFor();
+    await fresh.getByRole("button", { name: "Auto", exact: true }).waitFor();
     await fresh.setViewportSize({ width: 390, height: 844 });
     const start = await fresh.getByRole("button", { name: /^Start run/ }).boundingBox();
     assert.ok(start && start.y >= 0 && start.y + start.height <= 844, "primary action is visible on a phone without scrolling");
@@ -1047,16 +1052,15 @@ test("single-agent setup is inline and completed replies show running checks cle
     await box.getByRole("button", { name: "Effort", exact: true }).click();
     await box.getByRole("menuitem", { name: "high", exact: true }).click();
     assert.equal(await fresh.evaluate(() => JSON.parse(localStorage.getItem("agentSettings") || "{}").claude?.model), undefined, "run model choices do not change the provider default in Settings");
-    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).count(), 0);
-    await box.getByRole("button", { name: "Agent workflow mode", exact: true }).click();
-    await box.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
+    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).isVisible(), false);
+    await openAdvanced(fresh);
+    await fresh.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
     assert.equal(await box.locator(".chat-controls").count(), 0);
-    await fresh.getByRole("button", { name: "Agent workflow mode", exact: true }).click();
+    await box.getByRole("button", { name: "Solo", exact: true }).click();
     assert.match(await box.getByRole("button", { name: "Model", exact: true }).innerText(), /Haiku/);
-    await box.getByRole("button", { name: "Agent workflow mode", exact: true }).click();
-    assert.equal(await box.getByLabel("Workflow", { exact: true }).inputValue(), "supervisor", "team toggle remembers the last workflow");
-    await box.getByRole("button", { name: "Agent workflow mode", exact: true }).click();
-    await fresh.locator(".composer-options > summary").click();
+    await box.getByRole("button", { name: "Auto", exact: true }).click();
+    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "auto-team", "Auto returns to a dynamic plan");
+    await box.getByRole("button", { name: "Solo", exact: true }).click();
     await fresh.getByLabel("Done when this passes", { exact: true }).fill('node -e "setTimeout(() => {}, 4000)"');
     await fresh.locator(".composer-options > summary").click();
     await fresh.getByRole("textbox", { name: "Task", exact: true }).fill("Inline single-agent fixture");
@@ -1096,7 +1100,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(await fresh.getByLabel("Default verification profile").inputValue(), "standard");
     assert.equal(await fresh.getByLabel("Default container image").inputValue(), "fixture-image:latest");
     await fresh.evaluate(() => { location.hash = "/"; });
-    await fresh.getByRole("button", { name: "Agent workflow mode", exact: true }).waitFor();
+    await fresh.getByRole("button", { name: "Solo", exact: true }).waitFor();
     assert.equal(await fresh.locator(".composer-options").getAttribute("open"), null);
     assert.equal(await fresh.locator('.composer-library, [aria-label="Default check command"], [aria-label="Default verification profile"]').count(), 0, "project-wide default editors and library management stay in settings");
     assert.equal(await fresh.getByLabel("Worktree setup command", { exact: true }).isVisible(), false, "per-run setup is inside the collapsed run options");
@@ -1530,3 +1534,10 @@ test("Auto team selects all free models into a persistent bounded model pool", a
     assert.deepEqual(saved.variants, [{ model: "paid" }]);
   } finally { await fresh.close(); }
 });
+
+async function openAdvanced(page: Page) {
+  const options = page.locator(".composer-options");
+  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
+  const advanced = page.locator(".advanced-controls");
+  if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
+}

@@ -28,7 +28,7 @@ export async function serveWorker(worker: ProvisionedWorker) {
     if (frame.type === "probe") {
       const repo = frame.repoMapping ? worker.repo(frame.repoMapping) : undefined;
       const exists = async (commit?: string) => !!repo && !!commit && /^[a-f0-9]{40,64}$/i.test(commit) && !(await git(["cat-file", "-e", `${commit}^{commit}`], repo, { timeoutMs: 10_000 })).code;
-      await send({ v: 1, type: "probe", capabilities: await worker.capabilities(frame.containerProfile), hasBase: await exists(frame.baseCommit), hasRepositoryBase: await exists(frame.repositoryBase) }); close(); return;
+      await send({ v: 1, type: "probe", capabilities: await worker.capabilities(frame.containerProfile, frame.discoverModels === true), hasBase: await exists(frame.baseCommit), hasRepositoryBase: await exists(frame.repositoryBase) }); close(); return;
     }
     if (frame.type === "receipt" || frame.type === "cancel") {
       const receipt = frame.type === "receipt" ? await worker.receipt(frame.id, frame.capability) : await worker.cancel(frame.id, frame.capability);

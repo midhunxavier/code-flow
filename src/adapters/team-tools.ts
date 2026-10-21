@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { TEAM_TOOLS, type TeamToolConnection } from "../team-tools.js";
 import { captureOutput } from "./process.js";
 import type { AgentId } from "./types.js";
+import { agyIsolationProblem, AGY_FILE_ONLY_LIMITATION } from "./agy-isolation.js";
 
 export type CapabilityStatus = "tested" | "unsupported" | "unknown";
 export interface AdapterTeamCapabilities {
@@ -30,7 +31,7 @@ const UNKNOWN_CACHE_MS = 2 * 60_000;
 const cache = new Map<string, { at: number; ttl: number; value: Promise<AdapterTeamCapabilities> }>();
 /** Protocol fixtures establish our contract; installed help/config probes establish availability. */
 export function adapterTeamCapabilities(provider: AgentId): Promise<AdapterTeamCapabilities> {
-  const key = `${provider}:${process.env.PATH}:${process.env.FAKE_UNKNOWN_FLAG ?? ""}`;
+  const key = `${provider}:${process.env.PATH}:${process.env.FAKE_UNKNOWN_FLAG ?? ""}:${process.env.FAKE_IGNORE_DELEGATION_FLAGS ?? ""}`;
   const saved = cache.get(key);
   if (saved && Date.now() - saved.at < saved.ttl) return saved.value;
   const entry = { at: Date.now(), ttl: CACHE_MS, value: probe(provider) };
@@ -53,31 +54,35 @@ async function probe(provider: AgentId): Promise<AdapterTeamCapabilities> {
   let sessionResume = supported(flags(provider === "agy" ? "--conversation" : "--resume"));
   let nestedAgentControl: CapabilityStatus = provider === "claude" ? supported(flags("--disallowedTools")) : "unknown";
   let scopedTools: CapabilityStatus = "unknown";
+  let isolatedAgy = false;
   const evidence = ["Adapter protocol and permissions are covered by fake-CLI regression tests; model behavior is evaluated separately."];
   if (provider === "claude") {
     scopedTools = flags("--mcp-config", "--strict-mcp-config", "--allowedTools", "--disallowedTools") ? "tested" : help ? "unsupported" : "unknown";
     evidence.push("Per-turn stdio MCP config and explicit tool allowlist; built-in Agent, Task and team creation are denied for Auto turns.");
   } else if (provider === "codex") {
-    const [execHelp, features] = await Promise.allSettled([captureOutput("codex", ["exec", "--help"], 5_000), captureOutput("codex", ["features", "list"], 5_000)]);
+    const [execHelp, features] = await Promise.allSettled([captureOutput("codex", ["exec", "--help"], 5_000), captureOutput("codex", ["features", "list", "-c", "features.multi_agent=false", "-c", "features.multi_agent_v2.enabled=false"], 5_000)]);
     const execFlags = execHelp.status === "fulfilled" ? execHelp.value : "";
     structuredOutput = supported(execFlags.includes("--output-schema"), !!execFlags);
     sessionResume = supported(/\bresume\b/.test(execFlags), !!execFlags);
-    nestedAgentControl = features.status === "fulfilled" && /^multi_agent\s/m.test(features.value) && /^multi_agent_v2\s/m.test(features.value) ? "tested" : "unknown";
+    nestedAgentControl = features.status === "fulfilled" && ["multi_agent", "multi_agent_v2"].every(key => new RegExp(`^${key}\\s+\\S+\\s+false\\s*$`, "m").test(features.value)) ? "tested" : "unknown";
     try {
       const found = JSON.parse(await captureOutput("codex", ["mcp", "get", "codeflow_capability_probe", "--json", "-c", 'mcp_servers.codeflow_capability_probe={command="node",args=[],enabled_tools=["read_inbox"],tools={read_inbox={approval_mode="approve"}},startup_timeout_sec=5,tool_timeout_sec=10}'], 5_000));
       scopedTools = found.transport?.type === "stdio" && found.enabled_tools?.includes("read_inbox") ? "tested" : "unknown";
     } catch { scopedTools = "unknown"; }
-    evidence.push("Per-turn mcp_servers override is checked with codex mcp get; app-server and exec share the same config. Native multi_agent and multi_agent_v2 are disabled for Auto turns.");
+    evidence.push("Per-turn mcp_servers override is checked with codex mcp get; app-server and exec share the same config. Managed turns also set agents.enabled=false, disable hooks and both multi-agent features. Capability probes advertise support; live execution is separate evidence.");
   } else {
     scopedTools = help && !help.includes("--mcp-config") ? "unsupported" : "unknown";
-    evidence.push("agy exposes persistent MCP management but no verified per-turn config; collaboration uses structured outcomes. Native nested-agent control and usage breakdown are unknown.");
+    isolatedAgy = !await agyIsolationProblem();
+    sessionResume = "unsupported";
+    nestedAgentControl = isolatedAgy ? "tested" : "unknown";
+    evidence.push(isolatedAgy ? AGY_FILE_ONLY_LIMITATION + " macos-file-only-v1 / CLI 1.4.4 has bounded real-provider and kernel fixture evidence; current login entitlement is checked only by execution." : "No verified isolated Antigravity runtime is available. A sandbox help flag cannot establish inherited permissions. Legacy execution remains separate.");
   }
   evidence.push("Provider token events report parent-turn totals; a separate nested-agent token breakdown is not available.");
   return {
     provider, version,
     structuredOutput, sessionResume,
     liveInput: provider === "codex" ? supported(/\bapp-server\b/.test(help)) : "unsupported", scopedTools,
-    sandbox: provider === "claude" ? "unsupported" : help ? "tested" : "unknown",
+    sandbox: provider === "claude" ? "unsupported" : provider === "agy" ? isolatedAgy ? "tested" : "unknown" : help ? "tested" : "unknown",
     nestedAgentControl,
     nestedUsage: "unknown", evidence,
   };
@@ -85,12 +90,13 @@ async function probe(provider: AgentId): Promise<AdapterTeamCapabilities> {
 
 export const TEAM_MCP_NAME = "codeflow_team";
 export const TEAM_TOOL_ALLOWLIST = TEAM_TOOLS.map((tool) => `mcp__${TEAM_MCP_NAME}__${tool.name}`);
-export const TEAM_NESTED_DENYLIST = ["Agent", "Task", "TeamCreate", "TeamDelete", "SendMessage"];
+export const TEAM_NESTED_DENYLIST = ["Agent", "Task", "TeamCreate", "TeamDelete", "SendMessage", "Workflow", "ListAgents", "RemoteTrigger", "CronCreate", "CronDelete", "CronList"];
 
 /** Temporary capability lives outside the worktree and is removed as soon as the CLI exits. */
 export async function prepareTeamTools(connection: TeamToolConnection): Promise<{
   claudeConfig: string;
   codexConfig: string[];
+  codexThreadConfig: Record<string, unknown>;
   cleanup: () => Promise<void>;
 }> {
   const dir = await mkdtemp(join(tmpdir(), "codeflow-member-tools-"));
@@ -106,6 +112,6 @@ export async function prepareTeamTools(connection: TeamToolConnection): Promise<
     // and all other MCP servers retain the CLI's existing policy and sandbox.
     const tools = TEAM_TOOLS.map((tool) => `${tool.name}={approval_mode="approve"}`).join(",");
     const config = `mcp_servers.${TEAM_MCP_NAME}={command=${JSON.stringify(process.execPath)},args=${JSON.stringify(args)},enabled_tools=${JSON.stringify(TEAM_TOOLS.map((tool) => tool.name))},tools={${tools}},startup_timeout_sec=5,tool_timeout_sec=10}`;
-    return { claudeConfig: configPath, codexConfig: ["-c", config], cleanup: () => rm(dir, { recursive: true, force: true }) };
+    return { claudeConfig: configPath, codexConfig: ["-c", config], codexThreadConfig: { [`mcp_servers.${TEAM_MCP_NAME}`]: { command: process.execPath, args, enabled_tools: TEAM_TOOLS.map(tool=>tool.name), tools: Object.fromEntries(TEAM_TOOLS.map(tool=>[tool.name,{approval_mode:"approve"}])), startup_timeout_sec:5, tool_timeout_sec:10 } }, cleanup: () => rm(dir, { recursive: true, force: true }) };
   } catch (error) { await rm(dir, { recursive: true, force: true }); throw error; }
 }

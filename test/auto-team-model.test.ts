@@ -145,3 +145,21 @@ test("selected Auto team model pools constrain workers, reviewers and revisions 
   assert.equal(revisionProblem(r, s, selected), undefined);
   r.addMembers[0]!.model = "paid"; assert.match(revisionProblem(r, s, selected)!, /model settings/);
 });
+
+test("revisions may retain unavailable members but cannot give them new work or relax user pins", () => {
+  const s = state(); s.tasks[0]!.status = "failed"; s.tasks[0]!.attempts = 1;
+  const unavailable = structuredClone(policy);
+  unavailable.inventory.providers[0]!.blockedReason = "native login unavailable";
+  assert.equal(revisionProblem(revision(), s, unavailable), undefined, "a no-op can stop cleanly for login repair");
+  let r = revision(); r.retryTasks = ["api"];
+  assert.match(revisionProblem(r, s, unavailable)!, /cannot receive/);
+  r = revision(); r.addTasks = [{ ...s.tasks[0]!, id: "new", status: "pending" }];
+  assert.match(revisionProblem(r, s, unavailable)!, /cannot receive/);
+  r = revision(); r.addMembers = [{ ...s.members[1]!, id: "another" }];
+  assert.match(revisionProblem(r, s, unavailable)!, /unavailable/);
+  const forbiddenPool = { ...unavailable, pool: ["codex"] as ("codex")[] };
+  assert.match(revisionProblem(revision(), s, forbiddenPool)!, /outside the user's/);
+  const pins = structuredClone(unavailable);
+  pins.inventory.providers[0]!.settingsByRole = { worker: { model: "required-model" } };
+  assert.match(revisionProblem(revision(), s, pins)!, /model settings/);
+});

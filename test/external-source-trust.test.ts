@@ -82,7 +82,7 @@ test("engine imported sources force safe permissions, disable secret copying and
     assert.equal(first.loop.copy, undefined);
     assert.deepEqual(first.loop.container, { image: "node:22", network: false });
     assert.ok(first.worktrees.every((wt) => !existsSync(join(wt.path, ".env.private"))));
-    const next = await idle(await manager.start({ ...body, pattern: findPattern("pipeline")!, roles: body.roles as any, parentRunId: first.id }));
+    const next = await idle(await manager.start({ ...body, pattern: findPattern("pipeline")!, roles: body.roles as any, loop: { ...body.loop, container: first.loop.container }, parentRunId: first.id }));
     assert.equal(next.externalSource?.id, first.externalSource?.id);
     assert.equal(next.trust, "safe");
     assert.match(next.lockdown!, /Continued from locked-down run/);

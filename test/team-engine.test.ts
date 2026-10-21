@@ -90,7 +90,7 @@ test("same-provider members receive only their addressed notes and retain indivi
       ctx.setTeam(state());
       const trees = await Promise.all([ctx.worktree("left"), ctx.worktree("right")]);
       await gate;
-      await ctx.parallel(["left", "right"], (id, i) => ctx.ask({ title: id, role: "worker", agent: "claude", memberId: id, settings: { model: id }, mode: "read", cwd: trees[i]!, prompt: `assignment ${id}` }));
+      await ctx.parallel(["left", "right"], (id, i) => ctx.ask({ title: id, role: "worker", agent: "claude", memberId: id, settings: { model: id === "left" ? "sonnet" : "opus" }, mode: "read", cwd: trees[i]!, prompt: `assignment ${id}` }));
       return "done";
     });
     const manager = new RunManager();
@@ -101,8 +101,8 @@ test("same-provider members receive only their addressed notes and retain indivi
     assert.throws(() => manager.addNote(run.id, "bad", undefined, "missing"), /Unknown team member/);
     release(); await finished(run);
     assert.equal(run.status, "done", run.error);
-    assert.match(received.find((r) => r.model === "left")!.prompt, /only for left/);
-    assert.doesNotMatch(received.find((r) => r.model === "left")!.prompt, /only for right/);
+    assert.match(received.find((r) => r.model === "sonnet")!.prompt, /only for left/);
+    assert.doesNotMatch(received.find((r) => r.model === "sonnet")!.prompt, /only for right/);
     assert.equal(run.usage.byMember?.left?.inputTokens, 3);
     assert.equal(run.usage.byMember?.right?.outputTokens, 2);
     assert.equal(run.team?.metrics.invocations, 2);

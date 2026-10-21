@@ -41,22 +41,16 @@ test("invalid invocations and malformed storage cannot become active or overwrit
   await assert.rejects(broken.load()); await assert.rejects(broken.save(0, connection), /Repair/);
   assert.equal(readFileSync(join(corruptHome, "acp-connections.json"), "utf8"), "broken");
 });
-test("ACP provider executes a real worktree turn through the engine; incompatible profiles and changed resume pins are rejected", async () => {
+test("new engine runs reject ACP when managed delegation cannot be enforced", async () => {
   const store = new AcpConnections(publish, home); await store.load(); await store.save(store.snapshot().revision, connection);
   const repo = mkdtempSync(join(home, "repo-"));
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo }); writeFileSync(join(repo, "README.md"), "fixture\n");
   execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], { cwd: repo });
   const { RunManager } = await import("../src/engine.js"), { findPattern } = await import("../src/patterns/index.js");
-  const manager = new RunManager(findPattern), input = { pattern: findPattern("solo")!, repo, task: "Create the fixture result", roles: { agent: [connection.id] }, options: {}, loop: { setup: "", check: "test -f acp-result.txt", copy: [] }, trust: "full" as const };
+  const manager = new RunManager(findPattern), input = { pattern: findPattern("solo")!, repo, task: "Create the fixture result", roles: { agent: [connection.id] }, options: {}, trust: "full" as const };
   try {
     await assert.rejects(manager.start({ ...input, trust: "standard" }), /Full access/);
-    const run = await manager.start(input);
-    for (let index = 0; index < 300 && run.status === "running"; index++) await new Promise((resolve) => setTimeout(resolve, 25));
-    assert.equal(run.status, "done", run.error); assert.equal(run.verdict, "passed");
-    assert.equal(readFileSync(join(run.worktrees[0]!.path, "acp-result.txt"), "utf8"), "ACP fixture change\n");
-    assert.equal(run.steps.find((step) => step.agent === connection.id)?.sessionId, "session-fixture");
-    assert.equal(run.acpConnections?.length, 1);
-    await store.save(store.snapshot().revision, { ...connection, args: [fixture, "happy"] });
-    await assert.rejects(manager.resume(run.id), /arguments changed/);
+    await assert.rejects(manager.start(input), /native-delegation restriction/);
+    assert.equal(manager.list().length, 0, "provider rejection happens before creating a run");
   } finally { await manager.shutdown(); }
 });

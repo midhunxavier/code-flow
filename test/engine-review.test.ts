@@ -260,7 +260,7 @@ test("a second conflict resolution with the same branch is committed, not replay
 });
 
 // ---------------------------------------------------------------- failed turns that aren't results
-const race = { contestants: ["claude", "codex"], judge: ["agy"] } as Record<string, any>;
+const race = { contestants: ["claude", "codex"], judge: ["claude"] } as Record<string, any>;
 const realCodex = adapters.codex.run.bind(adapters.codex);
 
 test("a contestant whose CLI was signed out isn't journaled as failed; one out of plan usage stops the race for a resume", async () => {
@@ -331,11 +331,9 @@ test("council: a finding a test confirms comes back when the chair drops it, and
       ],
     });
   const manager = new RunManager(findPattern);
-  const run = await withStub(["claude"], reviewer, () =>
-    withStub(["codex"], quiet, () =>
-      withStub(["agy"], chair, async () =>
-        idle(manager, await manager.start({ pattern: findPattern("council")!, task: "Review it", repo, roles: { reviewers: ["claude", "codex"], chair: ["agy"] }, options: {} })),
-      ),
+  const run = await withStub(["claude"], (opts, event) => opts.prompt.includes("chair of a review council") ? chair(opts, event) : reviewer(opts, event), () =>
+    withStub(["codex"], quiet, async () =>
+      idle(manager, await manager.start({ pattern: findPattern("council")!, task: "Review it", repo, roles: { reviewers: ["claude", "codex"], chair: ["claude"] }, options: {} })),
     ),
   );
   assert.equal(run.status, "done", run.error);
@@ -363,11 +361,9 @@ test("council: findings that share a test are still different findings", async (
   const z = { severity: "high", file: "z.txt", problem: "Z races", fix: "Lock it", repro: shared };
   const chair: Stub = async () => json({ verdict: "changes_requested", summary: "One bug.", findings: [{ ...x, raised_by: ["A"] }] });
   const manager = new RunManager(findPattern);
-  const run = await withStub(["claude"], async () => json({ verdict: "changes_requested", issues: [x, y] }), () =>
-    withStub(["codex"], async () => json({ verdict: "changes_requested", issues: [z] }), () =>
-      withStub(["agy"], chair, async () =>
-        idle(manager, await manager.start({ pattern: findPattern("council")!, task: "Review it", repo, roles: { reviewers: ["claude", "codex"], chair: ["agy"] }, options: {} })),
-      ),
+  const run = await withStub(["claude"], async (opts, event) => opts.prompt.includes("chair of a review council") ? chair(opts, event) : json({ verdict: "changes_requested", issues: [x, y] }), () =>
+    withStub(["codex"], async () => json({ verdict: "changes_requested", issues: [z] }), async () =>
+      idle(manager, await manager.start({ pattern: findPattern("council")!, task: "Review it", repo, roles: { reviewers: ["claude", "codex"], chair: ["claude"] }, options: {} })),
     ),
   );
   assert.equal(run.status, "done", run.error);

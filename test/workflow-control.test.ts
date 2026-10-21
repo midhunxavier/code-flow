@@ -112,3 +112,19 @@ test("run timing separates cumulative work from elapsed occupancy and explicit w
   assert.equal(timing.overlaps, true);
   assert.equal(analyzeRunTiming({ createdAt: 0, endedAt: 700, status: "done" }, [step("invalid", 600, 400)], 700).untimedSteps, 1);
 });
+
+test("pending template edits cannot discard instructions, widen paths, or weaken dependency types", () => {
+  const team = teamFixture();
+  team.tasks[1]!.id = "saved-build";
+  team.templateUses = [{ id: "saved", templateId: "feature", version: 1, inputs: [], assignments: [], dependsOn: [], requirements: [], instructions: "" }];
+  for (const edit of [
+    (task: any) => { task.instructions = "Replace the template method"; },
+    (task: any) => { task.paths = ["*"]; },
+    (task: any) => { task.dependencyTypes = { inspect: "completion" }; },
+  ]) {
+    const draft = editableTeamPlan(team); edit(draft.tasks[1]);
+    assert.throws(() => validateTeamPlanEdit(draft, team, policy()), /Template|template/);
+  }
+  const draft = editableTeamPlan(team); draft.tasks[1]!.instructions += "\nKeep keyboard support.";
+  assert.equal(validateTeamPlanEdit(draft, team, policy()).tasks[1]!.instructions, draft.tasks[1]!.instructions);
+});

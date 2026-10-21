@@ -9,6 +9,7 @@ export interface TeamMember {
   model: string;
   effort: string;
   reason: string;
+  assignment?: import("./model-catalog.js").ModelAssignment;
   status?: "idle" | "working" | "waiting" | "done" | "failed" | "retired";
   checkpoint?: string;
   sessionId?: string;
@@ -64,6 +65,7 @@ export interface TeamSubplan {
 }
 
 export interface TeamPlan {
+  templateUses?: import("./team-templates.js").TemplateUse[];
   subplans?: TeamSubplan[];
   requirements: TeamRequirement[];
   members: TeamMember[];
@@ -147,12 +149,14 @@ export interface TeamInventory {
     id: AgentId;
     available: boolean;
     blockedReason?: string;
+    limitations?: string[];
     quotaKnown: boolean;
     model?: string;
     effort?: string;
     settingsByRole?: Partial<Record<TeamMember["role"], { model?: string; effort?: string; variants?: { model: string; effort?: string }[] }>>;
     /** Catalog choices are usable only where the user's settings do not pin a value. */
-    models?: { id: string; efforts?: string[] }[];
+    models?: { id: string; efforts?: string[]; aliases?: string[]; documented?: import("./model-research.js").ModelDocumentation; source?: string; verifiedAt?: number; observations?: { successes: number; failures: number } }[];
+    catalog?: { revision: number; environment: string; defaultModel?: string; state: "current" | "stale" | "unknown" };
     efforts?: string[];
   }[];
   ranking: AgentId[];

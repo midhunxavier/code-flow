@@ -1,19 +1,29 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { AGY_NATIVE_LIMITATION } from "../run-permissions.js";
+import { join } from "node:path";
+import { agyCredentialFailure, inspectAgyAuthLog } from "./agy-auth.js";
 import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, RunOptions, RunResult } from "./types.js";
 import { classifyError, cliErrorLine, resetFromText } from "./errors.js";
 import { captureOutput, commandExists, describeFailure, processErrorKind, startJsonlProcess, stringify, truncate, unknownEvents } from "./process.js";
 import { STEP_TIMEOUT_MS } from "../config.js";
 import { childEnv } from "../env.js";
+import { agyIsolationProblem, agyManagedOptionsProblem, inspectAgyIsolationRuntime, prepareAgyIsolation, discoverIsolatedAgyModels, AGY_FILE_ONLY_LIMITATION, AGY_ISOLATION_VERSION } from "./agy-isolation.js";
 
 /**
  * Google Antigravity CLI via `agy -p --output-format stream-json`.
  * Since 2026-06-18 this, not Gemini CLI, is the CLI that serves Google AI Pro/Ultra plans.
  * Uses the cached login from an interactive `agy` session.
  *
- * Verified against agy 1.3.5. Behaviour that shapes this adapter:
+ * Managed execution uses a fresh, protected, file-only macOS executor and existing Keychain
+ * authentication by default. Explicit agy-native-v1 run authority instead uses the normal
+ * host profile without sandboxing. Both managed modes start fresh portable turns.
+ * Legacy execution behaviour (only when no managed run policy is supplied):
  *  - Headless mode cannot answer approval prompts. A denied tool does not let the agent
  *    carry on: the turn ends with an empty response. So by default every run uses
- *    --dangerously-skip-permissions together with --sandbox, which confines writes to the
- *    cwd (a disposable worktree). Read-only steps are enforced by the engine, which reverts
+ *    --dangerously-skip-permissions together with --sandbox. This is NOT a verified workspace
+ *    boundary: shared permission grants can widen it or permit unsandboxed commands.
+ *    Read-only steps are checked by the engine, which reverts
  *    anything a read step changes. Set CODEFLOW_AGY_SKIP_PERMISSIONS=0 to rely on
  *    permissions.allow in ~/.gemini/antigravity-cli/settings.json instead.
  *    Full access (write steps only) drops --sandbox, so writes aren't confined either.
@@ -37,11 +47,22 @@ function skipPermissions(): boolean {
   return process.env.CODEFLOW_AGY_SKIP_PERMISSIONS !== "0";
 }
 
-export const agyAdapter: AgentAdapter = {
+/** Dependency injection applies only to the isolated executor; native execution requires its own receipt. */
+export function createAgyAdapter(prepare: (opts: RunOptions) => Promise<Awaited<ReturnType<typeof prepareAgyIsolation>>> = async opts =>
+  prepareAgyIsolation(opts.cwd, opts.mode, await inspectAgyIsolationRuntime())): AgentAdapter {
+return {
   id: "agy",
   displayName: "Antigravity CLI",
   binary: "agy",
   available: () => commandExists("agy"),
+  managedAvailability: agyIsolationProblem,
+  managedLimitations: [AGY_FILE_ONLY_LIMITATION],
+  async discoverModels(context) {
+    if (context?.agentContainer) throw new Error("Antigravity container discovery is unverified");
+    if (context?.isolatedAgy) return discoverIsolatedAgyModels();
+    const catalog = await discoverNativeAgyModels();
+    return { ...catalog, efforts: [], models: catalog.models.map(model => ({ ...model, efforts: undefined })), discovery: { source: "agy models", confidence: "reported", verifiedAt: Date.now() } };
+  },
 
   async catalog(): Promise<ModelCatalog> {
     // `agy models` prints "<slug>\t<display name>" per model after a "Fetching…" line.
@@ -55,8 +76,22 @@ export const agyAdapter: AgentAdapter = {
   },
 
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
+    const native = opts.permissions?.implementation === "agy-native-v1";
+    const managed = !!opts.permissions;
+    let nativeScratch: string | undefined;
+    let isolation: Awaited<ReturnType<typeof prepareAgyIsolation>> | undefined;
+    if (opts.permissions) {
+      const problem = native ? agyNativeOptionsProblem(opts) : agyManagedOptionsProblem(opts);
+      if (problem) return { ok: false, finalText: "", errorKind: "cli_incompatible", error: problem };
+      if (opts.resumeSessionId) return { ok: false, finalText: "", errorKind: "session_not_found", error: "Managed Antigravity requires a fresh turn with portable context" };
+      try { if (!native) isolation = await prepare(opts); }
+      catch { return { ok: false, finalText: "", errorKind: "cli_incompatible", error: "Could not establish the verified Antigravity isolation boundary. macOS, CLI 1.4.4 and an existing Keychain login/security cache are required. No permissive fallback was used." }; }
+    }
+    try {
+    if (native) { nativeScratch = await mkdtemp(join(tmpdir(), "codeflow-agy-native-")); onEvent({ kind: "status", text: AGY_NATIVE_LIMITATION }); }
+    if (isolation) onEvent({ kind: "status", text: `${AGY_FILE_ONLY_LIMITATION} Executor: ${AGY_ISOLATION_VERSION}; CLI 1.4.4.` });
     if (opts.agentContainer) onEvent({ kind: "status", text: `Antigravity runs in Docker image ${opts.agentContainer.image}. Team messages and memory are provided at turn boundaries.` });
-    if (opts.teamTools) onEvent({ kind: "status", text: "Antigravity has no verified scoped per-turn tool configuration; team messages and memory are provided at turn boundaries." });
+    if (opts.teamTools) onEvent({ kind: "status", text: "Live MCP collaboration is unavailable in this Antigravity adapter; team messages and memory are provided at turn boundaries." });
     // A NaN or missing timeout must not become "--print-timeout NaNm".
     const timeoutMs = typeof opts.timeoutMs === "number" && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : STEP_TIMEOUT_MS;
     // Prompt as one stream-json message on stdin (-p would need it as an argument).
@@ -65,13 +100,18 @@ export const agyAdapter: AgentAdapter = {
       "--output-format", "stream-json",
       "--print-timeout", `${Math.max(1, Math.ceil(timeoutMs / 60_000))}m`,
     ];
-    const sandboxed = !(opts.mode === "write" && opts.trust === "full");
+    const sandboxed = !native && (!!isolation || !(opts.mode === "write" && opts.trust === "full"));
     if (sandboxed) args.push("--sandbox");
     if (opts.resumeSessionId) args.push("--conversation", opts.resumeSessionId);
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push("--effort", opts.effort);
     if (opts.jsonSchema) args.push("--json-schema", JSON.stringify(opts.jsonSchema));
-    if (skipPermissions()) args.push("--dangerously-skip-permissions");
+    const nativeLog = isolation || nativeScratch ? join(isolation?.paths.scratch ?? nativeScratch!, "native-auth.log") : undefined;
+    if (isolation) args.push("--agent", "codeflow-isolated", "--disable-slash-commands", "--log-file", nativeLog!);
+    else {
+      if (nativeLog) args.push("--log-file", nativeLog);
+      if (native || skipPermissions()) args.push("--dangerously-skip-permissions");
+    }
 
     // Only a conversation agy confirms in this turn: a resume that failed must not hand back its id.
     let sessionId: string | undefined;
@@ -81,6 +121,8 @@ export const agyAdapter: AgentAdapter = {
     /** What agy's result status says went wrong, when it says. */
     let statusKind: ErrorKind | undefined;
     let sawResult = false;
+    let policyDrift = false;
+    let managedDiagnostic = "";
     let structured: unknown;
     const openTools = new Set<string>();
     const unknown = unknownEvents("agy");
@@ -88,20 +130,25 @@ export const agyAdapter: AgentAdapter = {
 
     const proc = startJsonlProcess({
       agentContainer: opts.agentContainer ? { config: opts.agentContainer, mode: opts.mode } : undefined,
-      command: "agy",
-      args,
+      command: isolation?.command ?? "agy",
+      args: [...(isolation?.args ?? []), ...args],
       input: `${JSON.stringify({ event: "user", message: { content: opts.prompt } })}\n`,
-      cwd: opts.cwd,
+      cwd: isolation?.paths.workspace ?? opts.cwd,
       // Without the sandbox the agent's commands use your git config, but never code-flow's own secrets.
-      env: sandboxed ? sandboxGitEnv() : childEnv(),
+      env: isolation?.env ?? (sandboxed ? sandboxGitEnv() : childEnv()),
       signal: opts.signal,
       timeoutMs: timeoutMs + 30_000,
       idleTimeoutMs: opts.idleTimeoutMs,
-      onText: (line) => onEvent({ kind: "status", text: line }),
+      onText: (line) => {
+        // Native login/refresh diagnostics may contain URLs, tokens or account details.
+        if (managed) managedDiagnostic = (managedDiagnostic + "\n" + line).slice(-64000);
+        else onEvent({ kind: "status", text: line });
+      },
       onJson: (msg) => {
+        if (policyDrift) return;
         switch (msg.event) {
           case "init":
-            if (msg.conversation_id) {
+            if (msg.conversation_id && !managed) {
               sessionId = msg.conversation_id;
               onEvent({ kind: "session", sessionId: msg.conversation_id });
             }
@@ -109,9 +156,16 @@ export const agyAdapter: AgentAdapter = {
 
           case "step_update": {
             const step = msg.step_update ?? {};
+            if (isolation && step.step_type === "tool" && step.tool_name && !managedAgyToolAllowed(step.tool_name, opts.mode)) {
+              // Defense against runtime drift, not a substitute for provider/OS enforcement:
+              // the stream can report a call after it began. Never forward its payload.
+              policyDrift = true;
+              proc.kill();
+              return;
+            }
             if (step.text_delta) {
               streamedText += step.text_delta;
-              onEvent({ kind: "text", text: step.text_delta });
+              if (!managed) onEvent({ kind: "text", text: step.text_delta });
             }
             if (!step.text_delta && step.step_type !== "tool" && step.step_type !== "agent_response") {
               // A step code-flow shows nothing of; counted once per step, not per update.
@@ -158,7 +212,7 @@ export const agyAdapter: AgentAdapter = {
             proc.resultSeen();
             const result = msg.result ?? {};
             finalText = result.response ?? streamedText;
-            if (result.conversation_id) sessionId = result.conversation_id;
+            if (result.conversation_id && !managed) sessionId = result.conversation_id;
             if (result.structured_output !== undefined) structured = result.structured_output;
             if (result.status && result.status !== "SUCCESS") {
               const detail = typeof result.error === "string" ? result.error : result.error?.message;
@@ -166,7 +220,7 @@ export const agyAdapter: AgentAdapter = {
               statusKind = agyStatusKind(String(result.status), detail, !!opts.resumeSessionId);
             } else if (!finalText.trim() && result.denied_actions?.length) {
               const denied = result.denied_actions.map((d: any) => d.display_name ?? d.action).join(", ");
-              resultError = `agy stopped after headless mode denied: ${denied}. Allow it in permissions.allow or enable CODEFLOW_AGY_SKIP_PERMISSIONS.`;
+              resultError = isolation ? "Isolated Antigravity denied a tool. Assign this task to a worker with the required tools." : `agy stopped after headless mode denied: ${denied}. Allow it in permissions.allow or enable CODEFLOW_AGY_SKIP_PERMISSIONS.`;
             }
             onEvent({
               kind: "usage",
@@ -187,11 +241,27 @@ export const agyAdapter: AgentAdapter = {
     });
 
     const outcome = await proc.outcome;
+    const authObservation = nativeLog ? await inspectAgyAuthLog(nativeLog) : undefined;
+    // The CLI may complete inference after failing to persist a refreshed token. Surface
+    // this as auth failure before accepting its result, without saving native diagnostics.
+    if (managed && (authObservation?.credentialFailure || authObservation?.interactiveAuthObserved || agyCredentialFailure(outcome.stderr + "\n" + managedDiagnostic))) {
+      resultError = "Native authentication could not be maintained in the recorded execution mode";
+      statusKind = "auth";
+    }
     const drift = unknown.report();
-    if (drift) onEvent({ kind: "status", text: drift });
+    if (drift && !managed) onEvent({ kind: "status", text: drift });
+
+    if (policyDrift) {
+      const error = "Antigravity reported a tool outside its verified file-only policy. The worker was stopped; runtime compatibility must be reverified.";
+      onEvent({ kind: "error", message: error });
+      return { ok: false, finalText: "", errorKind: "cli_incompatible", error };
+    }
 
     // After a successful result, how the process ended (a hang on shutdown, a non-zero exit) doesn't matter.
-    if (sawResult && !resultError && !outcome.aborted) return { ok: true, finalText, sessionId, structured };
+    if (sawResult && !resultError && !outcome.aborted) {
+      if (managed && finalText) onEvent({ kind: "text", text: finalText });
+      return { ok: true, finalText, sessionId, structured };
+    }
 
     const stopped = processErrorKind(outcome);
     if (!sawResult && outcome.exitCode === 0 && !stopped) {
@@ -199,23 +269,45 @@ export const agyAdapter: AgentAdapter = {
         "agy exited without a result event. Some agy versions print nothing when stdout is a pipe; " +
         "update agy, and make sure you have logged in once with an interactive `agy` session.";
     }
-    const error = resultError ?? describeFailure("agy", outcome);
+    let error = resultError ?? describeFailure("agy", outcome);
     // agy's status first, then its own error text: its result's, or its own line on stderr, never
     // the rest of stderr (hooks and MCP servers print there too).
-    const own = resultError ?? cliErrorLine(outcome.stderr);
-    const errorKind: ErrorKind = stopped ?? statusKind ?? classifyError(own);
+    const own = resultError ?? cliErrorLine(outcome.stderr + (managed ? "\n" + managedDiagnostic : ""));
+    const authKind = managed ? managedAgyAuthKind(sawResult ? resultError ?? "" : outcome.stderr + "\n" + managedDiagnostic) ?? (statusKind === "auth" ? "auth" : undefined) : undefined;
+    // A login prompt followed by a watchdog expiry must not trigger transient retries.
+    // Explicit cancellation still wins over any earlier authentication diagnostic.
+    const errorKind: ErrorKind = stopped === "cancelled" ? stopped : authKind ?? stopped ?? statusKind ?? classifyError(own);
+    if (managed) error = native ? `Unrestricted Antigravity failed (${errorKind}). Check the existing login in its normal session, then resume. Code Flow never starts sign-in or changes credentials; native diagnostics are withheld.` : managedAgyFailure(errorKind);
     const resetsAt = errorKind === "usage_limit" ? resetFromText(own) : undefined;
     onEvent({ kind: "error", message: error });
     return {
       ok: false,
-      finalText: finalText || streamedText,
+      finalText: managed ? "" : finalText || streamedText,
       sessionId: errorKind === "session_not_found" ? undefined : sessionId,
       error,
       errorKind,
       ...(resetsAt && { resetsAt }),
     };
+    } finally { await isolation?.cleanup(); if (nativeScratch) await rm(nativeScratch, { recursive: true, force: true }); }
   },
 };
+}
+export const agyAdapter = createAgyAdapter();
+
+export function managedAgyToolAllowed(name: string, mode: "read" | "write"): boolean {
+  // CLI 1.4.4 exposes manage_task for the fresh process's own tasks, but cannot create them.
+  return ["view_file", "list_dir", "manage_task", ...(mode === "write" ? ["write_to_file", "replace_file_content"] : [])].includes(name);
+}
+
+export function managedAgyAuthKind(detail: string): "auth" | undefined {
+  return /authentication (?:failed|timed out)|please (?:sign|log) in|invalid_grant|(?:refresh|access)[ _-]?token.{0,80}(?:expired|revoked|invalid|failed)|(?:failed|unable) to (?:retrieve|refresh).{0,40}token|(?:keyring|keychain).{0,80}(?:locked|denied|unavailable)|interaction (?:is )?not allowed/i.test(detail) || agyCredentialFailure(detail) || classifyError(detail) === "auth" ? "auth" : undefined;
+}
+
+function managedAgyFailure(kind: ErrorKind): string {
+  if (kind === "auth") return "Antigravity could not use or refresh the existing native login. Check or unlock it in Antigravity's normal interactive session, then resume. Code Flow will start a fresh isolated turn; permissions were not widened.";
+  if (kind === "usage_limit" || kind === "rate_limit") return `Isolated Antigravity reached a ${kind === "usage_limit" ? "usage" : "rate"} limit.`;
+  return `Isolated Antigravity failed (${kind}). Native diagnostics were withheld because they can contain authentication data. Check the CLI in its normal interactive session before resuming; no permissive fallback was used.`;
+}
 
 /**
  * agy's result status (gRPC-style codes, e.g. RESOURCE_EXHAUSTED) when it names a kind. Google
@@ -237,4 +329,26 @@ function agyStatusKind(status: string, detail: string | undefined, resuming: boo
   if (/DEADLINE|TIMEOUT/i.test(status)) return "timeout";
   if (/CANCEL/i.test(status)) return "cancelled";
   return undefined;
+}
+
+/** The receipt must explicitly describe unrestricted execution; ordinary Full trust is insufficient. */
+export function agyNativeOptionsProblem(opts: RunOptions): string | undefined {
+  const p = opts.permissions;
+  if (!p || p.provider !== "agy" || p.implementation !== "agy-native-v1" || p.isolation !== "none" || p.nativeDelegation !== true || p.commandNetwork !== "allowed" || p.externalTools !== "provider-configured" || p.trust !== "full" || opts.trust !== "full" || p.mode !== opts.mode || !["read", "write"].includes(p.mode) || !["managed", "none"].includes(p.delegation) || p.toolApprovals !== false || opts.interactiveApprovals || !Array.isArray(p.required) || p.required.length || !Number.isSafeInteger(p.policyRevision) || p.policyRevision < 1 || opts.agentContainer) return "Antigravity options do not match an explicit unrestricted permission receipt";
+}
+
+/** Existing native profile; no token export or sign-in command. Private refresh diagnostics
+ * must be checked before recovery treats a successful model listing as login evidence. */
+async function discoverNativeAgyModels(): Promise<ModelCatalog> {
+  const scratch = await mkdtemp(join(tmpdir(), "codeflow-agy-models-"));
+  try {
+    const log = join(scratch, "native-auth.log");
+    const output = await captureOutput("agy", ["--log-file", log, "models"], 45000);
+    const auth = await inspectAgyAuthLog(log);
+    if (auth.credentialFailure || auth.interactiveAuthObserved || agyCredentialFailure(output) || managedAgyAuthKind(output)) throw new Error("Native login unavailable");
+    const models = output.split("\n").map(line => line.split("\t")).filter(cols => cols.length >= 2 && cols[0]!.trim()).map(([id, label]) => ({ id: id!.trim(), label: label!.trim() }));
+    if (!models.length) throw new Error("No models");
+    return { models, efforts: [], allowCustom: false };
+  } catch { throw new Error("Antigravity model discovery could not verify the existing native login"); }
+  finally { await rm(scratch, { recursive: true, force: true }); }
 }

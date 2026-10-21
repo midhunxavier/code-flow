@@ -1,4 +1,4 @@
-// The opt-in Auto experience, using actual server orchestration and deterministic CLIs.
+// The default dynamic Auto experience, using actual server orchestration and deterministic CLIs.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
@@ -58,9 +58,65 @@ before(async () => {
 
 after(async () => { await browser?.close(); server?.kill("SIGTERM"); });
 
+test("Auto is the fresh default, Solo is direct, and Advanced templates survive reload and version edits", { timeout: 45_000 }, async () => {
+  const context = await browser.newContext();
+  const fresh = await context.newPage();
+  try {
+    await fresh.goto(`${base}/?token=${token}`);
+    const auto = fresh.getByRole("button", { name: "Auto", exact: true });
+    const solo = fresh.getByRole("button", { name: "Solo", exact: true });
+    await auto.waitFor();
+    assert.equal(await auto.getAttribute("aria-pressed"), "true");
+    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).isVisible(), false);
+    await solo.click();
+    await fresh.reload();
+    assert.equal(await solo.getAttribute("aria-pressed"), "true", "explicit mode survives reload");
+    await auto.click();
+    await fresh.getByRole("button", { name: "Advanced", exact: true }).click();
+    const modelPanel = fresh.getByRole("region", { name: "Automatic worker models" });
+    await modelPanel.getByRole("button", { name: "Refresh model catalog" }).waitFor();
+    await modelPanel.getByRole("button", { name: "Refresh model catalog" }).click();
+    await modelPanel.getByText(/claude · current/).waitFor();
+    const catalog = await fetch(`${base}/api/model-catalog`, { headers }).then(r=>r.json()) as any;
+    assert.equal(catalog.allowResearch, false);
+    assert.ok(catalog.providers.find((p:any)=>p.provider==="codex").catalog.models.some((m:any)=>m.id==="gpt-a"));
+    assert.match(catalog.providers.find((p:any)=>p.provider==="agy").blockedReason,/native-delegation/);
+    assert.equal((await fetch(`${base}/api/model-catalog`, {method:"POST",headers:{...headers,"content-type":"application/json"},body:JSON.stringify({permissions:"full"})})).status,400);
+    const library = fresh.getByRole("region", { name: "Reusable team templates" });
+    await library.getByRole("button", { name: "Design a template", exact: true }).click();
+    await library.getByLabel("Name", { exact: true }).fill("Reusable sample strategy");
+    await library.getByRole("checkbox", { name: "Allow Auto to reuse this strategy" }).check();
+    const definition = JSON.parse(await library.getByLabel("Template definition").inputValue());
+    // Keep the catalog local to this fixture so the following run tests stay deterministic.
+    await library.getByRole("checkbox", { name: "Allow Auto to reuse this strategy" }).uncheck();
+    await library.getByRole("button", { name: "Publish template version" }).click();
+    await fresh.getByText("Saved Reusable sample strategy v1", { exact: true }).waitFor();
+    await library.getByRole("button", { name: "Close editor" }).click();
+    await library.getByLabel("task", { exact: true }).fill("Implement sample behavior");
+    await library.getByRole("button", { name: "Use this template" }).click();
+    await fresh.reload();
+    const pinned = await fresh.evaluate(() => JSON.parse(localStorage.getItem("selectedTeamTemplate") || "null"));
+    assert.equal(pinned.template.id, definition.id);
+    assert.equal(pinned.template.version, 1);
+    assert.equal(pinned.inputs.task, "Implement sample behavior");
+    assert.equal(await auto.getAttribute("aria-pressed"), "true");
+    await fresh.getByRole("button", { name: "Advanced", exact: true }).click();
+    await library.getByLabel("Saved templates").selectOption(definition.id);
+    await library.getByRole("button", { name: "Edit new version" }).click();
+    await library.getByLabel("Name", { exact: true }).fill("Revised strategy");
+    await library.getByRole("button", { name: "Publish template version" }).click();
+    await fresh.getByText("Saved Revised strategy v2", { exact: true }).waitFor();
+    const versions = await fetch(`${base}/api/team-templates?history=1`, { headers }).then(r => r.json());
+    assert.deepEqual(versions.templates.filter((t: any) => t.id === definition.id).map((t: any) => t.version), [1, 2]);
+    assert.equal(await fresh.evaluate(() => JSON.parse(localStorage.getItem("selectedTeamTemplate")!).template.version), 1, "editing the library cannot silently update a selected run template");
+    await solo.click();
+    assert.equal(await fresh.evaluate(() => localStorage.getItem("selectedTeamTemplate")), null);
+  } finally { await context.close(); }
+});
+
 test("Auto team approval, addressed question, distinct members, and verified coverage work in the UI", { timeout: 120_000 }, async () => {
-  await page.goto(base);
-  await page.getByLabel("Workflow", { exact: true }).selectOption("auto-team");
+  await page.goto(`${base}/?token=${token}`);
+  await page.getByRole("button", { name: "Auto", exact: true }).click();
   await page.locator(".composer-options > summary").click();
   const approval = page.getByRole("checkbox", { name: /Let me approve the team and plan/ });
   assert.equal(await approval.isChecked(), true, "Auto plans start with approval enabled");
@@ -190,8 +246,8 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   assert.equal(followup.baseRef, run.team!.verification!.head);
   await fetch(`${base}/api/runs/${followupId}/cancel`, { method: "POST", headers });
 
-  await page.goto(base);
-  await page.getByLabel("Workflow", { exact: true }).selectOption("auto-team");
+  await page.goto(`${base}/?token=${token}`);
+  await page.getByRole("button", { name: "Auto", exact: true }).click();
   await page.locator(".composer-options > summary").click();
   await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).uncheck();
   await page.reload();

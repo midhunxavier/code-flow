@@ -27,6 +27,8 @@ export interface AppServerTurn {
   questionProtocol?: "structured";
   /** `-c key=value` overrides for the server, e.g. network access in the workspace sandbox. */
   config: string[];
+  /** Applied again to thread/start and thread/resume, including shared-daemon transports. */
+  threadConfig?: Record<string, unknown>;
   signal?: AbortSignal;
   timeoutMs?: number;
   idleTimeoutMs?: number;
@@ -422,7 +424,7 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     }
     proc.send({ method: "initialized" });
 
-    const threadParams = { cwd: turn.cwd, sandbox: turn.sandbox, approvalPolicy: turn.interactiveApprovals && turn.onApproval ? "on-request" : "never", model: turn.model };
+    const threadParams = { cwd: turn.cwd, sandbox: turn.sandbox, approvalPolicy: turn.interactiveApprovals && turn.onApproval ? "on-request" : "never", model: turn.model, ...(turn.threadConfig ? { config: turn.threadConfig } : {}) };
     let thread: any;
     try {
       thread = turn.resumeThreadId
@@ -504,6 +506,7 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
 /** Normalize only approval kinds whose effect and complete scope can be shown in the UI. */
 function approvalAction(msg: any, item: any, cwd: string, sandbox: AppServerTurn["sandbox"]): AgentApprovalRequest | undefined {
   const params = msg.params ?? {};
+  if ([params.sandboxPermissions, params.sandbox_permissions, item?.sandboxPermissions, item?.sandbox_permissions].some(value => value !== undefined && value !== "use_default") || item?.additionalPermissions) return;
   if (sandbox === "read-only" || params.grantRoot || params.networkApprovalContext || params.additionalPermissions || (params.kind && params.kind !== "command") || (params.environmentId !== undefined && params.environmentId !== null)) return;
   const reason = typeof params.reason === "string" ? params.reason.slice(0, 4_000) : undefined;
   const id = String(msg.id);

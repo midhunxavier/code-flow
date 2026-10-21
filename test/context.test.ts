@@ -78,7 +78,7 @@ async function startRun(extra: Record<string, unknown>) {
     pattern: findPattern("pipeline")!,
     task: "Use the context",
     repo,
-    roles: { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] },
+    roles: { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] },
     options: {},
     ...extra,
   });
@@ -153,14 +153,12 @@ test("model and effort reach each CLI in its own flag format", async () => {
       agentSettings: validateAgentSettings({
         claude: { model: "opus", effort: "high" },
         codex: { model: "gpt-a", effort: "low" },
-        agy: { model: "model-one", effort: "max" },
       }),
     });
     assert.equal(run.status, "done", run.error);
     const calls = readdirSync(recordDir).map((f) => JSON.parse(readFileSync(join(recordDir, f), "utf8")));
     const argsOf = (vendor: string) => calls.find((c) => c.vendor === vendor)!.args.join(" ");
     assert.match(argsOf("claude"), /--model opus --effort high/);
-    assert.match(argsOf("agy"), /--model model-one --effort max/);
     // Codex's app-server takes them as thread and turn parameters.
     const codex = calls.find((c) => c.vendor === "codex")!;
     assert.deepEqual([codex.transport, codex.thread.model, codex.turn.effort], ["app-server", "gpt-a", "low"]);

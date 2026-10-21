@@ -49,7 +49,8 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     await projectDialog.waitFor({ state: "hidden" });
     await page.locator(".page-head-actions").getByRole("button", { name: "New run", exact: true }).click();
     await page.locator(".repo-btn:not(.project-btn) .name", { hasText: "project" }).waitFor();
-    await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+    await openAdvanced(page);
+  await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
     await page.getByLabel("Task", { exact: true }).fill("SSH E2E: work on the server");
     await page.getByRole("button", { name: /^Start run/ }).click();
     await page.locator(".runview .run-head h2", { hasText: "SSH E2E: work on the server" }).waitFor();
@@ -148,3 +149,10 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     await f.cleanup();
   }
 });
+
+async function openAdvanced(page: Page) {
+  const options = page.locator(".composer-options");
+  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
+  const advanced = page.locator(".advanced-controls");
+  if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
+}

@@ -1,3 +1,4 @@
+import { permissionRequirements } from "./run-permissions.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
@@ -16,6 +17,8 @@ import type { SourceInput } from "./github.js";
 export interface DeferredRunRequest {
   repo: string; project?: string; pattern: string; task: string;
   projectSelection?: "explicit";
+  templateRef?: { id: string; version: number; inputs: Record<string, string> };
+  permissionRequirements?: import("./run-permissions.js").PermissionRequirement[];
   roles: Record<string, (AgentId | "auto")[]>; options: Record<string, number | boolean>;
   baseRef?: string; branchPrefix?: string; parentRunId?: string;
   context?: { paths: { path: string }[] };
@@ -75,7 +78,7 @@ const canonical = (value: any): string => JSON.stringify(value, (_key, item) => 
 
 /** A second defense behind server validation: only configuration and source references persist. */
 export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
-  const raw = keys(value, ["repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "branchPrefix", "parentRunId", "context", "agentSettings", "roleSettings", "loop", "trust", "allowUntrusted", "approvals", "source", "externalSourceRef"], "run request");
+  const raw = keys(value, ["templateRef", "permissionRequirements", "repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "branchPrefix", "parentRunId", "context", "agentSettings", "roleSettings", "loop", "trust", "allowUntrusted", "approvals", "source", "externalSourceRef"], "run request");
   const repo = text(raw.repo, 4000, "repository");
   if (!isAbsolute(repo)) throw new Error("Deferred runs need an absolute repository path");
   const roles = record(raw.roles ?? {}, 20, (value) => {
@@ -107,6 +110,12 @@ export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
     loop.container = { image, network: container.network !== false };
   }
   const run: DeferredRunRequest = { repo, pattern: text(raw.pattern, 100, "pattern"), task: text(raw.task, 24_000, "task"), roles, options, loop, trust: "safe", allowUntrusted: false, approvals: { plan: false, tools: false } };
+  if (raw.permissionRequirements !== undefined) run.permissionRequirements = permissionRequirements(raw.permissionRequirements);
+  if (raw.templateRef !== undefined) {
+    const ref = keys(raw.templateRef, ["id", "version", "inputs"], "template reference");
+    if (!/^[a-z][a-z0-9-]{0,39}$/.test(ref.id) || !Number.isSafeInteger(ref.version) || ref.version < 1) throw new Error("Invalid deferred template version");
+    run.templateRef = { id: ref.id, version: ref.version, inputs: record(ref.inputs, 24, v => text(v, 10000, "template input"), "template inputs") };
+  }
   for (const key of ["project", "baseRef", "branchPrefix", "parentRunId"] as const) if (raw[key] !== undefined && raw[key] !== "") run[key] = text(raw[key], key === "project" || key === "parentRunId" ? 240 : 1000, key);
   if (raw.projectSelection !== undefined) {
     if (raw.projectSelection !== "explicit" || !run.project) throw new Error("Choose an explicit project for the deferred run");

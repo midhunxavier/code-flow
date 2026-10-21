@@ -1,4 +1,10 @@
 import { HISTORY_STATUSES, type HistoryStatus, type ProjectSection } from "./run-status.js";
+import { modelCatalogStore } from "./model-catalog.js";
+import { permissionProviderProblem, createRunPermissions as catalogPermissions } from "./run-permissions.js";
+import { inheritRunEnvironment } from "./run-environment.js";
+import { teamTemplateStore } from "./team-template-store.js";
+import { fillTeamTemplate, validateTeamTemplate, type TemplateSelection } from "./team-templates.js";
+import { antigravityExecution, AGY_NATIVE_LIMITATION, type AntigravityExecution, createRunPermissions, narrowerTrust, resolveRunPermissions, permissionRequirements, type PermissionRequirement } from "./run-permissions.js";
 import { TeamTerminals, handleTeamTerminals } from "./collab/terminals.js";
 import { HostExecution, handleHostExecution } from "./collab/host-execution.js";
 import { closeCodeIntelligence, codeIntelligenceHealth } from "./code-intelligence.js";
@@ -45,7 +51,7 @@ import {
 } from "./adapters/index.js";
 import { listTree, readRepoFile, searchFiles } from "./repo-tree.js";
 import { checkGit, doctor } from "./doctor.js";
-import { readRepoConfig } from "./repo-config.js";
+import { readRepoConfig, type Trust } from "./repo-config.js";
 import { openFolder } from "./serve.js";
 import { LaunchProfiles, LaunchProfileError, readLaunchProfiles } from "./launch-profiles.js";
 import { TeamRerunError } from "./team-reruns.js";
@@ -596,13 +602,22 @@ function requestedRoles(pattern: Pattern, input: unknown): Record<string, string
 }
 
 /** Who fills each role; "auto" picks an installed agent whose plan has room (see routing.ts). */
-async function validateRoles(pattern: Pattern, input: unknown, repo?: string, remoteWorker?: LoopSettings["remoteWorker"], requestedTrust?: string): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
+async function validateRoles(pattern: Pattern, input: unknown, repo?: string, remoteWorker?: LoopSettings["remoteWorker"], requestedTrust?: string, policy?: { required: PermissionRequirement[]; container: boolean; tools: boolean; antigravityExecution?: AntigravityExecution }): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
   assertPolicyExecution(await fileAccess.execution(repo ?? ""), "Provider selection");
   const requested = requestedRoles(pattern, input);
   const inventory = remoteWorker ? (await manager.remoteInventory(remoteWorker)).providers : await agentAvailability();
   const installed = new Set(inventory.filter((a) => a.available).map((a) => a.id));
   const trust = requestedTrust ?? (repo ? (await readRepoConfig(repo)).config.trust : undefined);
-  const eligible = new Set([...installed].filter((id) => !id.startsWith("acp:") || trust === "full" && !remoteWorker));
+  const eligible = new Set([...installed].filter((id) => {
+    if (policy) {
+      try {
+        const runPolicy = createRunPermissions((trust ?? "standard") as Trust, policy.tools, pattern.id === "solo", policy.required, policy.antigravityExecution);
+        resolveRunPermissions({ policy: runPolicy, provider: id, mode: "write", currentTrust: runPolicy.trust, currentTools: policy.tools, remote: !!remoteWorker, container: policy.container });
+        return true;
+      } catch { return false; }
+    }
+    return ["auto-team", "solo"].includes(pattern.id) ? id === "claude" || id === "codex" : !id.startsWith("acp:") || trust === "full" && !remoteWorker;
+  }));
   if (pattern.id === "auto-team") {
     const supplied = input && typeof input === "object" ? input as Record<string, unknown> : {};
     if (!Array.isArray(supplied.coordinator)) requested.coordinator = ["auto"];
@@ -830,9 +845,23 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   if (body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.projectTeam !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
   if (body.projectSelection !== undefined && body.projectSelection !== "explicit") throw new HttpError(400, "Unknown project selection mode");
   if (body.projectSelection === "explicit" && (!projects.available || typeof body.project !== "string" || !projects.get(body.project))) throw new HttpError(409, "Choose an available project before starting");
-  const pattern = findPattern(String(body.pattern ?? ""));
+  if (body.templateCatalog !== undefined || body.teamTemplate !== undefined || body.permissions !== undefined) throw new HttpError(400, "Template snapshots and run authority are assigned by the server");
+  let teamTemplate: TemplateSelection | undefined;
+  if (body.templateRef) {
+    const ref = body.templateRef;
+    const template = await attempt(() => teamTemplateStore.resolve(String(ref.id), Number(ref.version), typeof body.project === "string" ? body.project : undefined));
+    if (!ref.inputs || typeof ref.inputs !== "object" || Array.isArray(ref.inputs)) throw new HttpError(400, "Supply template inputs");
+    fillTeamTemplate(template, ref.inputs);
+    if (body.pattern !== (template.workflow ?? "auto-team")) throw new HttpError(400, "Selected template does not match the execution mode");
+    teamTemplate = { template, inputs: ref.inputs };
+  }
+  const pattern = findPattern(String(body.pattern ?? "auto-team"));
   if (!pattern) throw new HttpError(400, "Unknown pattern");
-  const task = String(body.task ?? "").trim();
+  let task = String(body.task ?? "").trim();
+  if (teamTemplate) {
+    const filled = fillTeamTemplate(teamTemplate.template, teamTemplate.inputs);
+    task += `\n\nSelected template: ${filled.name} v${filled.version}\n${filled.task}\n${filled.criteria.map(c => `- ${c}`).join("\n")}`;
+  }
   const repo = String(body.repo ?? "").trim();
   if (!task) throw new HttpError(400, "Describe the task");
   if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
@@ -843,8 +872,16 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
   if (body.intent !== undefined && !taskIntent(body.intent)) throw new HttpError(400, "Choose a supported task type");
   if (body.journeyId !== undefined) { const journey = await attempt(() => journeys.get(String(body.journeyId))); if (journey.repo !== await repoRoot(repo)) throw new HttpError(400, "The scenario belongs to another repository"); }
-  const loop = validateLoop(body.loop);
-  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), loop.remoteWorker, body.trust);
+  const parent = typeof body.parentRunId === "string" ? manager.get(body.parentRunId) : undefined;
+  if (body.parentRunId !== undefined && !parent) throw new HttpError(400, "Parent run not found; cannot inherit its permissions");
+  const inheritedLoop = inheritRunEnvironment(body.loop ?? {}, parent);
+  const loop = validateLoop(inheritedLoop);
+  if (inheritedLoop.agentContainer) loop.agentContainer = await attempt(async () => validateAgentContainer(inheritedLoop.agentContainer));
+  const requiredPermissions = [...new Set([...(parent?.permissions?.required ?? []), ...permissionRequirements(body.permissionRequirements)])];
+  const agyExecution = antigravityExecution(body.antigravityExecution, parent?.permissions);
+  const runTrust = parent?.permissions ? narrowerTrust(narrowerTrust(parent.permissions.trust, parent.trust), body.trust ?? parent.trust) : body.trust;
+  const runTools = parent?.permissions ? parent.permissions.toolApprovals && !!parent.approvals.tools && body.approvals?.tools !== false : body.approvals?.tools === true;
+  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), loop.remoteWorker, runTrust, { required: requiredPermissions, container: !!loop.agentContainer, tools: runTools, antigravityExecution: agyExecution });
   let externalSource = typeof body.externalSourceId === "string" ? await attempt(async () => integrations.resolveSource(body.externalSourceId)) : undefined;
   if (body.externalSourceRef) {
     const ref = body.externalSourceRef;
@@ -853,14 +890,14 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   }
   if (externalSource && body.source) throw new HttpError(400, "Choose one external source for this run");
   if (body.loop?.verification) loop.verification = await attempt(async () => validateVerificationProfile(body.loop.verification));
-  if (body.loop?.agentContainer) loop.agentContainer = await attempt(async () => validateAgentContainer(body.loop.agentContainer));
   if (loop.remoteWorker && (body.approvals?.tools || loop.agentContainer)) throw new HttpError(400, "Remote workers use their provisioned isolation profile and cannot wait for native tool approvals");
-  const container = body.loop?.container;
+  const container = inheritedLoop.container;
   if (container && typeof container.image === "string" && /^[\w./:@-]{1,200}$/.test(container.image)) {
     loop.container = { image: container.image, network: container.network !== false };
   }
   return {
     pattern,
+    teamTemplate,
     task,
     intent: taskIntent(body.intent),
     journeyId: typeof body.journeyId === "string" ? body.journeyId : undefined,
@@ -871,9 +908,11 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
     branchPrefix: body.branchPrefix ? String(body.branchPrefix) : undefined,
     context: body.context && typeof body.context === "object" ? body.context : undefined,
     loop,
-    approvals: { plan: typeof body.approvals?.plan === "boolean" ? body.approvals.plan : pattern.id === "auto-team", tools: body.approvals?.tools === true },
+    approvals: { plan: typeof body.approvals?.plan === "boolean" ? body.approvals.plan : pattern.id === "auto-team", tools: runTools },
     parentRunId: body.parentRunId,
-    trust: ["safe", "standard", "trusted", "full"].includes(body.trust) ? body.trust : undefined,
+    trust: ["safe", "standard", "trusted", "full"].includes(runTrust) ? runTrust : undefined,
+    permissionRequirements: requiredPermissions,
+    antigravityExecution: agyExecution,
     roleSettings: validateRoleSettings(body.roleSettings),
     agentSettings: (() => {
       try {
@@ -905,7 +944,7 @@ async function startFromBody(body: Record<string, any>, extra: { trigger?: Run["
 
 /** The parts of a run request an automation keeps (no attachments: they'd go stale). */
 function automationRun(body: Record<string, any>) {
-  const keep = ["repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
+  const keep = ["templateRef", "permissionRequirements", "repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
   const run: Record<string, any> = Object.fromEntries(keep.filter((k) => body[k] !== undefined).map((k) => [k, body[k]]));
   if (typeof body.externalSourceId === "string") {
     try { const source = integrations.resolveSource(body.externalSourceId); run.externalSourceRef = { integration: source.integration, kind: source.kind, key: source.key }; }
@@ -1737,6 +1776,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (!hub.update(parts[2], body)) throw new HttpError(404, "That stream has closed; open a new one");
     return send(res, 200, { ok: true });
   }
+  if (parts[1] === "team-templates") {
+    const project = url.searchParams.get("project") || undefined;
+    if (project && !projects.list().some(p => p.id === project)) throw new HttpError(404, "Project not found");
+    if (req.method === "GET" && !parts[2]) return send(res, 200, await attempt(() => teamTemplateStore.list(project, url.searchParams.get("history") === "1")));
+    if (req.method === "POST" && parts[2] === "migrate") return send(res, 200, await attempt(async () => teamTemplateStore.migrate(await readJson(req), project)));
+    if (req.method === "POST" && !parts[2]) {
+      const body = await readJson(req);
+      const template = await attempt(async () => validateTeamTemplate(body.template));
+      if (template.project && !projects.list().some(p => p.id === template.project)) throw new HttpError(404, "Project not found");
+      if (template.workflow && !findPattern(template.workflow)) throw new HttpError(400, "Unknown template workflow");
+      return send(res, 201, await attempt(() => teamTemplateStore.save(template, body.expectedVersion)));
+    }
+    throw new HttpError(404, "Unknown team template operation");
+  }
   if (req.method === "GET" && parts[1] === "patterns") return send(res, 200, patterns.map(describePattern));
   if (req.method === "GET" && parts[1] === "fs") {
     const listing = await listDirectories(url.searchParams.get("path") ?? undefined, url.searchParams.get("hidden") === "1")
@@ -2194,6 +2247,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (id && req.method === "DELETE") return send(res, 200, { closed: shells.close(id) });
   }
   if (req.method === "POST" && parts[1] === "improve-prompt" && parts.length === 2) return improveTask(await readJson(req, 256 * 1024), res);
+  if (parts[1] === "model-catalog" && parts.length === 2 && ["GET", "POST"].includes(req.method ?? "")) {
+    const body = req.method === "POST" ? await readJson(req) : { antigravityExecution: url.searchParams.get("antigravityExecution") ?? undefined };
+    const nativeAgy = antigravityExecution(body.antigravityExecution) === "native";
+    if (Object.keys(body).some(k => !["allowResearch", "offline", "antigravityExecution"].includes(k)) || [body.allowResearch, body.offline].some(v => v !== undefined && typeof v !== "boolean")) throw new HttpError(400, "Invalid catalog refresh options");
+    const settings = await modelCatalogStore.settings(body.allowResearch);
+    const providers = await Promise.all((await agentAvailability()).map(async a => ({
+      provider: a.id, available: a.available,
+      blockedReason: a.id === "agy" && nativeAgy ? undefined : permissionProviderProblem(a.id, catalogPermissions("standard", false, false)) ?? (a.available ? await getAdapter(a.id).managedAvailability?.() : undefined),
+      limitations: a.id === "agy" && nativeAgy ? [AGY_NATIVE_LIMITATION] : getAdapter(a.id).managedLimitations,
+      catalog: await modelCatalogStore.get(a.id, { context: a.id === "agy" && !nativeAgy && process.platform === "darwin" ? { isolatedAgy: true } : undefined, force: req.method === "POST", offline: !a.available || body.offline }),
+    })));
+    return send(res, 200, { providers, ...settings, offline: process.env.CODEFLOW_MODEL_NETWORK === "offline" });
+  }
   if (req.method === "GET" && parts[1] === "models") {
     const agents = await agentAvailability();
     const entries = await Promise.all(

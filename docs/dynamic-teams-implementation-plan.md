@@ -1,8 +1,181 @@
 # Dynamic teams, workflows, messaging, and memory
 
-> Engineering record. Status, measurements and decisions below describe the recorded implementation or review. For current usage, start with the [documentation library](README.md).
+> Engineering plan and record. Revision 4 below records the implementation scope and remaining extensions; the revision 3 material that follows records the delivered baseline. For current usage, start with the [documentation library](README.md).
 
-Status: implementation complete, revision 3. P0–P8 are implemented, including the previously conditional asynchronous scheduler and live-tool bridge. Auto remains opt-in under an explicit evaluation/rollout gate. See the [user guide](auto-team.md) and [measured evidence and rollout decision](dynamic-teams-evaluation.md).
+Status: **revision 4 core implemented**, updated 21 October 2026. Dynamic Auto is the fresh-session default, Solo is directly accessible, fixed workflows and versioned templates live in Advanced, and all new runs resolve a shared permission policy at every agent launch. The revision 3 scheduler and live-tool bridge remain the execution foundation. See the [user guide](auto-team.md) and [measured evidence and rollout decision](dynamic-teams-evaluation.md).
+
+## Revision 4 — dynamic Auto, Solo, and reusable templates
+
+This revision supersedes the earlier opt-in product/default decision and the proposal to make template selection the main Auto behavior. It extends the existing dynamic engine; it does not restart P0–P8. Historical measurements and implementation claims below remain unchanged.
+
+### Delivered scope and explicit limits
+
+- Added closed, versioned task-graph/fixed-workflow template definitions, an atomic server library with immutable history, project/personal scope, migration of browser presets, import/export, JSON editing with execution preview, and save-from-run. Auto may compose enabled task graphs; manually selected definitions are mandatory and pinned across recovery.
+- Moved fixed workflows into Advanced without replacing their executors or weakening test-first, race, council, loop, or review behavior. Typed composition of those fixed executors remains a future extension; only validated task graphs are currently Auto-compatible.
+- Added a shared per-launch policy resolver, recorded effective permissions, narrower turn access, provider eligibility checks, explicit user policy revisions, and inherited mandatory restrictions for child runs. All engine-created runs use the policy, including background and collaborative starts; historical saved runs without a policy retain their existing behavior.
+- Controlled launches currently support Claude/Codex. Unsupported provider capabilities fail closed. This is not an identical cross-provider sandbox: filesystem read isolation, general browser/MCP allowlists, and a unified sandbox for setup/check/preview processes remain outside this implementation. Real-provider enforcement acceptance is still required before claiming equivalent isolation; deterministic adapter tests only verify configuration and orchestration.
+- Auto retains its existing independent verification model. Coordinator-only investigations, typed artifact/control-flow composition, automatic template-upgrade proposals, and a visual graph designer remain future extensions. The initial designer uses validated JSON and a readable task preview.
+- The application default is decoupled from historical quality-evaluation results. Existing explicit mode choices and the Auto disable switch remain intact; no evaluation evidence is synthesized by this change.
+
+The D0–D6 entries below describe the full design, including these remaining extensions. They should not be read as a claim that every listed extension or release acceptance probe has been completed.
+
+Initial implementation validation on 21 October 2026: typecheck and production build passed; 29 focused policy/template/adapter/composer checks and 11 browser scenarios passed. The full regression run reported 1,208 passes, eight skips, and two compatibility failures; both failures were corrected and passed in focused reruns. The full suite was not rerun after those fixes. Browser and adapter scenarios use deterministic CLIs, not live-provider sandbox enforcement probes.
+
+### Product decisions
+
+| Surface | Intended behavior |
+|---|---|
+| **Auto — default** | The coordinator investigates the goal, builds an appropriate plan, delegates useful work, and adapts to results. It can start without a template, reuse one, or adapt/combine compatible templates. |
+| **Solo — directly accessible** | One execution agent handles the task; delegation is disabled. Keep it beside Auto in the composer, without opening Advanced. |
+| **Advanced — templates and configuration** | Users choose existing patterns as reusable templates, design their own, edit versions, and configure roles, dependencies, provider/model preferences, and required checks. |
+| **Reasoning and resource controls** | Model effort, concurrency, time, invocation, and spending limits remain separate from execution mode. Do not introduce another Ultra mode in this revision. |
+
+Auto is allowed to use the smallest useful execution plan. An investigation may stay with the coordinator; a small code change may need one implementation worker and the verification required by the run. Do not create multiple implementation workers merely because Auto is selected. Required independent review remains independent; choosing Solo must never silently start a reviewer agent. If a selected policy requires another agent, explain that incompatibility before execution.
+
+Code Flow owns scheduling, workspaces, communication, recovery, permissions, budgets, and verification across providers. The coordinator proposes work and revisions through validated records. Use the existing declarative plan and event scheduler; arbitrary generated orchestration scripts and untracked provider-native teams are outside this revision.
+
+### Current foundations and gaps
+
+| Existing foundation | Revision 4 work |
+|---|---|
+| `src/patterns/auto-team.ts`, `auto-team-model.ts`, `src/teams.ts`, and `src/team-scheduler.ts` already support generated tasks, dependencies, bounded revisions, messaging, and recovery. | Extend this execution path and its contracts. Keep generated tasks usable without any template lookup or match. |
+| `src/patterns/team-strategies.ts` expands three declarative subplans. | Generalize the reusable-strategy contract to versioned templates with explicit inputs, outputs, and preserved guarantees. |
+| Fixed patterns have established execution and verification behavior. | Expose them in Advanced, then share guarded execution primitives so Auto can reuse them without losing those guarantees. |
+| `ui/composer-tools.ts` and `ui/onboarding.tsx` already save personal/project task templates and presets in browser storage. | Add a server-accessible, versioned team-template library and migrate existing entries. Current entries are mainly prompts/settings, not executable team definitions. |
+| `src/engine.ts` passes `params.trust ?? run.trust` to adapters; adapters map those labels differently. | Resolve and validate effective permissions centrally at every launch, including replacements and resumed turns. |
+| `ui/state.ts` defaults to Pipeline; `ui/composer.tsx` remembers a team workflow; evaluation metadata can change the default. | Separate execution-mode preference from template selection and evaluation evidence. Make Auto the application default while preserving explicit user choices. |
+
+### D0 — define run policy and execution contracts
+
+**Outcome:** every execution path derives authority from the run, independently of the selected provider or template.
+
+- Introduce a versioned run-policy record and a common permission resolver at the engine launch boundary. Cover filesystem reads/writes, terminal actions, network access, browser access, MCP tools, approval behavior, execution environment, and delegation where supported. These are separate capabilities: terminal network permission does not automatically grant a browser or connector.
+- Derive effective permissions from the authorized run policy, current project/host restrictions, and any narrower turn access. A coordinator's read-only planning turn must not accidentally make its implementation workers read-only. Conversely, templates, model output, messages, role settings, and provider changes cannot grant additional authority.
+- Treat tool availability separately from permission. Inherit the run's allowed tools where the provider and execution environment support them; route only to eligible providers. Record unsupported or unavailable capabilities explicitly. Do not pass credentials or provider-specific session handles between agents/providers.
+- Have each adapter report the enforcement it can provide. Use existing supported isolation when needed; otherwise reject the affected launch with a concrete explanation. Never interpret matching permission labels as proof of equivalent enforcement. Worktrees alone do not restrict reads, and prompt instructions do not constitute a sandbox.
+- Apply the resolver to planning, workers, review, integration/repair, retries, replacement members, manual templates, and Solo. Audit setup, checks, previews, remote execution, and container paths too: commands outside the native agent sandbox need their own policy enforcement or an explicit run-authorized execution boundary.
+- Persist the policy revision and effective capability summary with each launch. On recovery, retain the authorized policy and revalidate against current restrictions; a revoked permission or weaker replacement provider blocks new affected work. Any explicit user policy change creates a new revision. Reconcile an active process before continuing under changed restrictions.
+- Keep Code Flow as the delegation authority. Disable unmanaged provider-native delegation for controlled runs, including Solo; providers unable to enforce a required delegation restriction are ineligible for that mode.
+
+**Primary code:** `src/engine.ts`, `src/adapters/types.ts`, provider adapters, `src/provider-eligibility.ts`, team-tool grants, execution/container/remote-worker boundaries, and shared policy types.
+
+**Exit evidence:** mixed-provider launches receive the intended effective policy; read-only turns remain narrower; retries and replacements cannot increase access; missing enforcement is surfaced rather than silently downgraded.
+
+### D1 — strengthen dynamic Auto on the existing runtime
+
+**Outcome:** Auto succeeds without a template library and adapts its plan within the run's constraints.
+
+- Keep initial planning and bounded revisions as the core behavior. The coordinator chooses eligible members, tasks, ownership, dependencies, and sequencing from the current goal and observed evidence. Provider/model pins and runtime verification requirements remain authoritative.
+- Preserve task/member/attempt identities and journal accepted revisions before dispatch. Start ready work through the existing scheduler; ask the coordinator for decisions when evidence requires judgment, rather than on every scheduler event.
+- Support the smallest useful plan, including coordinator-only investigations where allowed. Keep independent verification for code changes and reserve its budget before admitting additional work. Make task-kind changes explicit so an investigation cannot become an unauthorized implementation task.
+- Reassign unfinished work through a checkpoint/handover, without transferring a provider's native session to another provider. Validate file ownership, serialize conflicting writers, and bind artifact dependencies to recorded commits.
+- Preserve completed work when replanning. Invalidate only evidence affected by changed inputs/contracts and require fresh checks before reporting success. Bound expansion, repair, retries, and coordination overhead using the existing run limits.
+- Expose the accepted plan, decision rationale, active workers, revisions, blockers, and remaining budget in the run view. Permission changes are runtime/user decisions, never coordinator decisions.
+
+**Primary code:** `src/patterns/auto-team.ts`, `src/patterns/auto-team-model.ts`, `src/teams.ts`, `src/team-scheduler.ts`, `src/workflow-control.ts`, and `ui/team.tsx`.
+
+**Exit evidence:** an empty template catalog does not prevent a small task or a parallel feature task from completing; a worker failure causes a bounded revision and recovery without replaying completed work unnecessarily.
+
+### D2 — versioned templates using the same execution contracts
+
+**Outcome:** users can save reusable team behavior, and the server can validate it before execution.
+
+- Define a shared schema for identity/version, scope, description/applicability, input parameters, role slots, preferred providers/models, tasks/dependencies, ownership, input/output artifacts, required checks, immutable guarantees, and permitted adaptations. Keep the existing starter-prompt catalog distinct from executable team templates.
+- Add a durable server-side store/API for built-in, personal, and project templates, with existing account/project access rules, version-conflict checks, and bounded import/export. Built-ins are immutable; users create their own versions or copies.
+- Normalize a generated plan and an instantiated template into the same validated execution records. Use typed, bounded control primitives for behavior that a simple task DAG cannot express, such as candidate selection and repair loops. Avoid a separate untracked execution engine.
+- Pin the template version, definition snapshot, resolved inputs, expansion, and adaptation patch in each run. Editing or removing a library entry must not change an existing or resumed run.
+- Templates can declare required capabilities and suggested resource limits; they cannot grant permissions, weaken required verification, or enlarge the authorized budget. Exclude credentials, auth-volume bindings, session IDs, old results, private transcripts, and machine-specific workspace paths from reusable definitions.
+- Migrate existing browser libraries idempotently and retain a recoverable copy. Preserve names, task inputs, criteria, role preferences, and supported workflow options. Stop applying saved trust/tool-approval settings or disabling current isolation. Translate unsupported settings into visible migration notes rather than pretending they are enforced.
+- Default user/imported templates to manual use until enabled for Auto. Supply the coordinator only the enabled, accessible, compatible catalog; a template's text is source material, not authority.
+
+**Primary code:** new shared template schema/store/API modules; `src/teams.ts`, `src/server.ts`, `src/shared-access.ts`, `ui/composer-tools.ts`, and `ui/onboarding.tsx`.
+
+**Exit evidence:** a template selected on another client resolves to the same immutable definition; importing or applying a template cannot change the run's permissions; existing browser libraries migrate without duplicate entries or lost originals.
+
+### D3 — convert existing patterns into reusable templates
+
+**Outcome:** familiar workflows remain available in Advanced with their original behavior.
+
+Initially register built-in template definitions that invoke the existing executors. Preserve legacy pattern IDs and replay identities for saved runs, automations, API clients, and extensions. Extract shared execution primitives incrementally; do not reimplement a pattern as a loose sequence of prompts.
+
+| Built-in template | Guarantees that must survive reuse |
+|---|---|
+| Plan / Build / Review | Plan checkpoint, implementation, required checks, independent review, and bounded fixes. |
+| Supervisor / Workers | Decomposition contracts, separate writer workspaces, integration, conflict handling, and final verification. |
+| Test first | Failing baseline evidence, protected tests, implementation, and passing verification. |
+| Iterative loop | Bounded iteration, progress/regression checks, and the existing rollback behavior. |
+| Candidate race | Isolated candidates, anonymized evaluation, deterministic recorded selection inputs, and required checks. |
+| Debate | Recorded proposals/decision, optional implementation, and verification appropriate to the selected behavior. |
+| Review council | Read-only source review, independent findings/reproductions, and evidence-preserving synthesis. |
+
+For Auto composition, each reusable executor needs explicit input/output commits or artifacts, unique operation namespaces, and a scoped result. It shares the parent run's permissions, budgets, cancellation, and history, and cannot overwrite the parent's final verdict or reset counters. Prevent recursive template cycles and bound expansion. Mark Auto compatibility only after these guarantees are tested; Advanced availability alone does not establish composability.
+
+**Primary code:** `src/patterns/index.ts`, existing pattern modules, `src/patterns/team-strategies.ts`, and engine execution-context helpers.
+
+**Exit evidence:** parity fixtures pass for every built-in pattern; each template advertised for Auto composition preserves its guarantees under the parent run's limits and recovery behavior.
+
+### D4 — optional reuse, adaptation, and saving from Auto
+
+**Outcome:** Auto can build fresh, reuse, or combine compatible templates without being required to choose one.
+
+- Give the coordinator a compact eligible catalog with applicability, inputs/outputs, required capabilities, estimated overhead where known, and adaptation limits. Preserve direct task generation as an equally valid path.
+- Accept a versioned template reference, inputs, role assignments, and bounded patch. Resolve and expand it on the server, then validate it alongside generated tasks against the same requirements, permissions, ownership, verification rules, and budgets.
+- Show which work was generated, reused, or adapted and why. Validate composition boundaries explicitly; reject cycles, incompatible artifacts, invalid role assignments, and attempts to remove required checks. An unavailable optional template can lead to a fresh valid plan; an explicitly selected mandatory template produces a visible blocker.
+- Distinguish an in-run adaptation from a library upgrade. Adapting the current plan does not mutate its source template. An agent may propose an improved version with a comparison and supporting evidence; a user saves/publishes it explicitly. Revalidate the new version before enabling it for Auto.
+- Add “Save as template” for a completed run or selected reusable portion. Preview parameterized inputs, roles, steps, and guarantees before saving. Capture the reusable method, not a transcript, one-off findings, secret values, or a promise that future runs will pass.
+
+**Primary code:** coordinator schemas/prompts, template resolution/validation, `src/patterns/team-strategies.ts`, `ui/run.tsx`, `ui/run-actions.tsx`, and template-library UI.
+
+**Exit evidence:** the same task can use a fresh plan, a template, or an adapted template through the same runtime; saved template versions stay unchanged until explicitly published.
+
+### D5 — composer, Advanced, and default migration
+
+**Outcome:** the primary choice is Auto or Solo; reusable patterns and their design controls live in Advanced.
+
+- Replace the main pattern selector with directly accessible Auto and Solo controls. Put template selection and the template designer in Advanced. Keep the active template name visible in the composer summary when one is selected, so a constrained template run is not mistaken for unrestricted dynamic planning.
+- The Advanced designer supports parameters, roles/provider preferences, task dependencies, artifact contracts, required checks, and supported bounded control primitives. Include validation errors and an expanded-plan preview; support editing, version comparison, copying, and import/export using the same server schema.
+- Keep reasoning effort and resource controls separate. Validate each selected provider's supported settings; do not translate an effort label into additional tool authority or assume provider labels have identical meaning.
+- Default fresh/unconfigured sessions to Auto, and make the Auto control explicitly return to dynamic planning without a mandatory template. Preserve existing explicit Solo/project/workflow choices; map saved fixed-pattern choices to their Advanced template. When old storage cannot distinguish an implicit default from an explicit choice, preserve it and make Auto easy to select.
+- Decouple the application default from the historical evaluation stage. Retain measured evidence, diagnostics, and the new-run disable switch; changing the product default must not fabricate a successful quality evaluation. If Auto is disabled or cannot launch under the current policy, explain the reason and offer Solo or a compatible template without silently changing modes.
+- Preserve configured plan approvals, unattended authorization, external-source restrictions, and legacy automation/API behavior. A default change does not authorize spending, tool access, or an extra approval bypass.
+
+**Primary code:** `ui/composer.tsx`, `ui/state.ts`, `ui/onboarding.tsx`, project defaults, run views, `src/team-evaluation.ts`, and API/automation compatibility paths. Update usage documentation only when the behavior ships.
+
+**Exit evidence:** a new user starts in Auto, switches to Solo with one action, and can design/run a template in Advanced; existing saved choices and automations retain their meaning.
+
+### D6 — acceptance and delivery sequence
+
+Implement **D0 → D1 → D2 → D3 → D4 → D5**, adding focused tests with each change. D6 is the release acceptance pass. The template designer and migration work may be developed once D2's schema is stable, but changing the default follows runtime and permission verification. Do not rebuild the scheduler or storage engine merely to support this revision.
+
+| Acceptance scenario | Required evidence |
+|---|---|
+| Fresh install, no templates | Auto generates and completes an appropriate plan; template lookup is optional. |
+| Small task and Solo | Auto avoids unnecessary parallel workers; explicit Solo launches no delegated agents, including hidden native delegation. |
+| Mixed-provider feature | Eligible Claude/Codex or other workers inherit the run policy, use narrower turn access where required, and complete checks and independent review. |
+| Provider replacement | A replacement preserves the run policy; unsupported mandatory enforcement prevents dispatch instead of weakening restrictions. |
+| Template parity and composition | Advanced and Auto use the same tested template semantics; test-first protection, race isolation, loop bounds, and review-only constraints survive adaptation. |
+| Template migration and isolation | Legacy library import is idempotent; permissions/auth bindings are not restored; personal/project access boundaries hold. |
+| Recovery during execution | Recorded plan/template/policy revisions remain pinned; completed results are retained; current revocations stop affected new work. |
+| Adapt and save | An adapted run can create a new template version; the original and all previously started runs remain unchanged. |
+| Compatibility | Saved runs, explicit preferences, automations, extension patterns, remote execution, and the Auto disable switch retain documented behavior. |
+
+Use focused tests in the existing Auto/team scheduler/replay/strategy suites, adapter and approval tests, composer/library tests, and browser flows. Add bounded real-provider checks for enforcement claims; fake-agent tests verify orchestration but cannot establish sandbox equivalence. Run typecheck, relevant tests, the build, and documentation/link checks appropriate to the implementation. Report unavailable provider checks as unverified.
+
+The complete release demonstration starts in default Auto, builds a plan without requiring a template, optionally reuses an enabled template, runs workers across providers under the run policy, recovers from interruption, and delivers verified results. The user can then save the reusable strategy, inspect it in Advanced, or start the next task in Solo.
+
+Critical review fixes (21 October 2026):
+
+- Removed the engine startup opt-out, inherited parent trust/approval ceilings and execution boundaries, and sent the full validated policy to remote workers.
+- Revalidated installed native controls on every launch; rejected unavailable approval transports and strict-boundary/approval combinations. Codex overrides ambient writable roots, temporary write exemptions, approval policy and network settings. Claude explicitly disables Chrome when external tools are forbidden.
+- Serialized follow-up permission mutations, validated recovered policy records, and preserved mandatory requirements across revisions and child runs.
+- Preserved template dependency types and global acceptance criteria; template revisions cannot replace original instructions or widen owned paths.
+- Updated built-in provider defaults to Claude/Codex. New runs using unverified Antigravity, ACP or extension adapters are rejected; legacy adapter-level compatibility remains separately tested.
+
+These checks establish adapter behavior using deterministic CLIs and local capability probes. They do not establish equivalent operating-system enforcement across providers, or disable arbitrary subprocesses launched through an authorized shell.
+
+Review validation: the full regression run passed 1,218 tests with eight skips and no failures. All 11 targeted browser scenarios passed, along with 28 focused inheritance/recovery/template tests. The final adapter and approval refinements passed nine adapter tests and the focused approval test. Typecheck, production build, and diff whitespace checks passed. Live-provider sandbox enforcement was unverified at that checkpoint; the 2026-10-21 report below records the subsequent bounded live probes.
+
+## Revision 3 baseline and historical implementation record
 
 Prepared 17 October 2026 against repository revision `ee246c7`. Revised against [Review 0](dynamic-teams-plan-review-0.md). Phase numbers below supersede the original ordering; the review remains a record of the original proposal.
 
@@ -459,3 +632,49 @@ These are architectural references, not dependencies on a vendor's internal team
 - Supervisor retains its public ID and saved-run behavior through shared decomposition/integration helpers. Other manual patterns retain their established behavior; moving them to Auto is not necessary to complete this plan.
 
 [Documentation library](README.md) · [Development guide](architecture.md)
+
+## Model discovery and worker routing — implemented 2026-10-21
+
+- New Auto executions use a persistent, validated catalog. Existing saved runs without `modelRouting` and other workflows retain legacy model selection.
+- Claude control initialization and Codex app-server model discovery resolve exact IDs, aliases and per-model efforts without an inference prompt. Antigravity `agy models` supplies reported IDs; per-model effort support remains unknown. Remote probes optionally return catalogs from that worker/profile; containers discover in their selected image. Host catalogs never establish remote compatibility.
+- Catalog records separate CLI reports, documented facts, environment identity and bounded measured observations. Immutable discovery snapshots support step provenance. Account changes discard prior observations/documentation. Concurrent cache reads coalesce; observations merge without dropping concurrent records. Invalid proposals fail closed.
+- Optional official-document research uses origin/redirect/size/time limits and a closed schema. No page text becomes an instruction. Research cannot change permissions, establish account access or promote compatibility. Offline mode keeps the last verified evidence; missing information remains unknown.
+- Coordinator identity/settings remain fixed. Worker pool and Advanced role pins constrain model/effort proposals. Every new worker execution checks the accepted model, effort, current environment, inherited run permissions and existing budgets. Recovery preserves decisions and rechecks before execution. Existing bounded member replacement supplies checkpoint-based reassignment without cross-provider session transfer.
+- UI exposes automatic selection, catalog refresh/research opt-in, stale/unknown/unsupported states and per-task/member assignment rationale/provenance. More sophisticated performance ranking is deferred.
+- Validation adds mocked catalog/discovery/research/cache/offline/effort tests, routing/provenance assertions, thread-start/resume policy tests and browser UI/API coverage. Real-provider findings are recorded separately in `docs/worker-permission-verification.md`; mock passing tests are not real-provider certification.
+
+### Native-control gaps found by live verification
+
+Codex 0.162.1 can still expose model-driven v2 delegation when only `features.multi_agent=false` and `features.multi_agent_v2=false` are set. Managed turns now also set `agents.enabled=false`, explicitly disable the structured v2 setting and hooks, and apply overrides to both process and thread start/resume configuration. Managed Codex requires at least the tested CLI version for this control. A resumed session at Ultra effort was probed after the fix.
+
+Claude managed turns explicitly disable workflows, Ultracode and hooks, deny native delegation/scheduling tools, and use strict scoped MCP plus `--no-chrome` when external tools are forbidden. Help capture uses a private regular file because the installed Claude CLI truncated piped help and Antigravity prints help on stderr. Antigravity 1.4.4 remains blocked for managed runs; discovery alone does not establish equivalent permission enforcement.
+
+The Antigravity follow-up tested a real custom-agent tool allowlist with `gemini-3.8-flash-low`. Fixture reads succeeded and omitted terminal/write tools were not called, but this does not establish per-run control over shared permissions, hooks, plugins, browser/MCP or recovery. `init.tools` advertised tools outside the observed model allowlist and cannot attest enforcement. Managed rejection now has one shared diagnostic, and help-only sandbox evidence is marked unknown. Tests cover trust levels, Solo, fresh/resumed turns, container/remote selection and the legacy skip-permissions environment override. Enabling Antigravity requires a verified scoped policy API or a separately designed isolated executor with protected policy and mediation of every tool surface; global settings mutation, prompts and worktree reverts are not acceptable substitutes. See [the verification report](worker-permission-verification.md#antigravity-auto-feasibility-follow-up).
+
+An isolated-execution feasibility prototype now exercises a clean home and protected policy under macOS Seatbelt. Actual fixture tests passed for workspace writes and denials of policy tampering, outside paths, ambient workspace hooks and terminal TCP access. Antigravity 1.4.4 starts under that policy; authenticated discovery/inference does not work in the prototype. A separate clean-home discovery requires sign-in, and the installed Docker daemon was unavailable after a startup attempt. Keep this code in opt-in research probes, with no production eligibility receipt or fallback. Remaining work is a separately authenticated runtime, separated inference/command networking, protected customization mounts, and provider-level forbidden-tool/recovery tests. Full Auto support remains **unimplemented and blocked**, not certified by the OS fixture checks. See [isolated execution findings](worker-permission-verification.md#isolated-execution-investigation).
+
+
+### Antigravity existing-login follow-up (2026-10-21)
+
+The earlier isolated-execution blocker is resolved for a narrow local macOS executor with CLI 1.4.4. It reuses the native Keychain login without exporting credentials, and grants only the OS security metadata/cache-lock access needed by the official CLI/helper. Protected per-turn settings and a file-only custom agent exclude terminal, browser, MCP, hooks and native delegation. Workspace writes remain mode-dependent; authentication/runtime paths are also denied to model file tools. Fresh project records are seeded before configuration is sealed.
+
+Auto inventory exposes this tool limitation; runtime preflight is repeated before launch. Unsupported platforms, remote/container execution, interactive approvals and other CLI versions fail closed. Legacy skip-permissions flags cannot affect managed turns. The coordinator's selected provider/model remains unchanged. Isolated discovery uses a separate catalog environment; assignments retain its provenance, and steps record `macos-file-only-v1`. Native sessions are never retained or transferred; recovery uses portable context and revalidates eligibility. Native `manage_task` bookkeeping may remain available, but delegation tools do not.
+
+Real existing-login discovery returned six candidates. Real file-editing, structured-output and fresh read-only adapter turns succeeded; fixture escape/policy denials, absent hook markers and zero browser requests were observed. A real Auto run with Codex coordinating and Antigravity editing completed with a passed check/review verdict, five completed steps and no failures. Tests cover protected OS profiles, environment scrubbing, forged/unsupported launches, separate catalog caching and mocked Auto dispatch with fresh workers. Full general-purpose Antigravity execution remains outside this implementation: inference networking stays enabled and Code Flow runs checks separately. Other platforms/models/efforts and arbitrary tool-call fuzzing remain unverified. See [the latest verification report](worker-permission-verification.md#existing-login-reuse-and-managed-file-workers).
+
+### Antigravity permission/recovery review (2026-10-21)
+
+Implemented sandboxed version inspection, tracked discovery process groups, nested workspace customization protection, safe native-auth error classification/output, unexpected-tool failure detection, and guaranteed cleanup after initial callback failure. Explicit recovery rechecks login through fresh isolated discovery before clearing signed-out status; cached/offline results cannot clear it. Auto can retain an unavailable idle member without authorizing additional work, allowing bounded workflow stop and later recovery. Deterministic stop/reload/repair/resume tests preserve model pins, recorded provenance, partial checkpoints and inherited permissions. Real existing-login adapter probes passed with the strengthened profile; forced expired-token refresh remains unverified and never triggers an authority-expanding fallback. See [the review evidence and limitations](worker-permission-verification.md#antigravity-permission-and-recovery-review-2026-10-21).
+
+### Non-destructive refresh evidence (2026-10-21)
+
+Added an opt-in native refresh observer that uses ordinary isolated discovery and reports only bounded metadata. Valid-token login reuse is distinct from observed refresh, and credential persistence remains separately unverified. No documented force-refresh interface was found in CLI 1.4.4. Real probes reported six models and an unexpired token, so expired-token renewal remains pending natural expiry. Added detection of native credential-save/fallback failures in managed turns and discovery, including failure despite a successful inference result. No permission widening, credential export, forced expiry, account mutation or logout is used. See [the investigation](worker-permission-verification.md#non-destructive-native-refresh-investigation-2026-10-21).
+
+
+### Explicit native Antigravity execution (implemented)
+
+- Add run authority `antigravityExecution: "native" | "isolated"`, defaulting to isolation when absent. Native is an explicit Advanced opt-in, never a model/template decision. Parent continuations cannot upgrade isolated authority.
+- Resolve native Antigravity to a truthful unrestricted receipt with provider-configured external tools and native delegation. Other providers retain ordinary inherited permissions. Reject incompatible mandatory requirements, Safe/narrowed trust, approvals, remote/container and unattended contexts.
+- Execute against the existing host profile and saved login, without sandbox flags or credential copies. Retain fresh portable turns, tracked process lifecycle and private authentication diagnostics. Keep native and isolated catalog identities separate and recover only with fresh discovery in the recorded mode.
+- Verified a real mixed-provider Auto run: Codex coordinator, native Antigravity file edit and terminal check, independent Codex review, configured checks passed. No new sign-in requested. Native discovery reported six models. Expired-token refresh and browser/MCP/hooks/native-child behavior were not exercised.
+- Deterministic tests cover opt-in receipts, forged/mismatched options, unchanged other-provider permissions, incompatible constraints, parent narrowing, private auth persistence failures, both catalog modes, and recovery with portable work and preserved assignment provenance.

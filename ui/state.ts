@@ -5,6 +5,8 @@ import { contextBudget, contextBudgetOrigin } from "./context-budget.js";
 import { intentDraft, journeyDraft } from "./composer-draft-fields.js";
 import { batch, computed, effect, signal } from "@preact/signals";
 import { legacyDraftProject, projectDestination, ProjectDraftStore } from "./project-context.js";
+import { supportsRunPermissions } from "../src/run-permissions.js";
+import { selectedTeamTemplate } from "./team-template-state.js";
 import { api, sharedGet, ApiError, post, showToast, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
 import { onStreamState, subscribe } from "./stream.js";
@@ -41,7 +43,7 @@ export async function loadTeamRollout() {
   try {
     const rollout = await api<TeamRollout>("/api/team-rollout");
     teamRollout.value = rollout;
-    if (rollout.enabled && rollout.stage === "default" && !store.get("pattern") && patterns.value.some((item) => item.id === "auto-team")) patternId.value = "auto-team";
+    // Evaluation describes evidence; it never changes the selected execution mode.
   } catch { /* The existing app remains usable if optional evaluation metadata cannot load. */ }
 }
 /** The first list of runs has come: until then, a run missing from `runs` may just not be here yet. */
@@ -267,6 +269,7 @@ export function inScope(run: RunSummary, scope = currentProject.value): boolean 
 }
 
 function setCurrentProject(id: string) {
+  if (id !== currentProject.value) selectedTeamTemplate.value = null;
   currentProject.value = id;
   store.set("project", id);
 }
@@ -594,7 +597,7 @@ export const composerOrigins = signal<Record<string, string>>({ pattern: store.g
 export const contextPaths = signal<Map<string, ContextItem>>(new Map());
 export const attachments = signal<Attachment[]>([]);
 export const contextError = signal("");
-export const patternId = signal(store.get("pattern") ?? "pipeline");
+export const patternId = signal(store.get("pattern") ?? "auto-team");
 export const pattern = computed(() => patterns.value.find((p) => p.id === patternId.value) ?? patterns.value[0]);
 /** A role is filled by an agent, or "auto": code-flow picks one whose plan has room. */
 export type { RoleValue } from "./roles.js";
@@ -681,6 +684,7 @@ export function setTask(value: string) {
   store.set("draftTask", value);
 }
 export function setPattern(id: string) {
+  selectedTeamTemplate.value = null;
   patternId.value = id;
   store.set("pattern", id);
   composerOrigins.value = { ...composerOrigins.value, pattern: "This run (remembered)" };
@@ -725,7 +729,7 @@ export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]
   const saved = roleSel.value[p.id] ?? {};
   const eligibleDefaults = agents.value.filter((a) => {
     const diagnostic = health.value?.find(entry => entry.id === a.id);
-    return a.available && diagnostic?.signedIn !== false && diagnostic?.compatible !== false && (!a.id.startsWith("acp:") || trust.value === "full");
+    return a.available && supportsRunPermissions(a.id) && diagnostic?.signedIn !== false && diagnostic?.compatible !== false && (!a.id.startsWith("acp:") || trust.value === "full");
   });
   const eligibleIds = new Set(eligibleDefaults.map(agent => agent.id));
   const firstAvailable = eligibleDefaults[0]?.id;

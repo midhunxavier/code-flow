@@ -169,7 +169,7 @@ test("start from a PR: a review council reviews its changes; posting is your cal
         task: "Review pull request #1: Add feature",
         repo,
         source: { kind: "pr", number: 1 },
-        roles: { reviewers: ["claude", "codex"], chair: ["agy"] },
+        roles: { reviewers: ["claude", "codex"], chair: ["claude"] },
         options: {},
       }),
     );
@@ -217,7 +217,7 @@ test("a review council with a check: reviewers see whether the PR's tests fail w
         task: "Review pull request #1: Add feature",
         repo,
         source: { kind: "pr", number: 1 },
-        roles: { reviewers: ["claude", "codex"], chair: ["agy"] },
+        roles: { reviewers: ["claude", "codex"], chair: ["claude"] },
         options: {},
         // Passes on the PR, fails on main: the check itself needs the change.
         loop: { check: "test -f feature.txt" },

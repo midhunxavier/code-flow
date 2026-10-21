@@ -210,7 +210,7 @@ export class TeamEvaluationStore {
   async rollout(enabled = true): Promise<TeamRollout> {
     const decision = await readFile(join(this.directory, "rollout.json"), "utf8").then((text) => JSON.parse(text) as RolloutDecision, (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
     if (decision && (!["experimental", "beta", "default"].includes(decision.stage) || !Array.isArray(decision.evaluationIds))) throw new Error("Damaged team rollout decision");
-    return { enabled, stage: decision?.stage ?? "experimental", reason: enabled ? decision?.rationale ?? "Opt-in experiment; no promotion decision has been recorded." : "New Auto teams are disabled. Existing teams can still be viewed and resumed.", decision };
+    return { enabled, stage: decision?.stage ?? "experimental", reason: enabled ? decision?.rationale ?? "No evaluation promotion decision has been recorded. The application default is configured separately." : "New Auto teams are disabled. Existing teams can still be viewed and resumed.", decision };
   }
   async decide(input: { stage: RolloutStage; rationale: string; evaluationIds: string[] }): Promise<TeamRollout> {
     if (!["experimental", "beta", "default"].includes(input.stage) || typeof input.rationale !== "string" || !input.rationale.trim() || input.rationale.length > 4000 || !Array.isArray(input.evaluationIds)) throw new Error("Choose a stage, evaluation reports and a written rationale");

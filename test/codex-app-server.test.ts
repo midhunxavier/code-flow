@@ -200,6 +200,8 @@ test("interactive approvals decline unsupported scope and mismatched requests be
   let callbacks = 0;
   const opts = { mode: "write" as const, interactiveApprovals: true, onApproval: async () => { callbacks++; return "approve" as const; } };
   const overrides = [
+    { sandboxPermissions: "require_escalated" }, { sandbox_permissions: "require_escalated" },
+    { sandboxPermissions: "unknown-grant" }, { sandbox_permissions: { network: true } },
     { threadId: "another-thread" }, { turnId: "another-turn" }, { kind: "writeStdin" },
     { cwd: tmpdir() }, { networkApprovalContext: { host: "example.com", protocol: "https" } },
     { additionalPermissions: { network: { enabled: true } } }, { environmentId: "remote-environment" },
@@ -491,4 +493,17 @@ test("without app-server, Codex falls back to codex exec (unless app-server is r
     delete process.env.FAKE_RECORD_DIR;
     delete process.env.CODEFLOW_CODEX_TRANSPORT;
   }
+});
+
+test("managed native controls apply to new and resumed thread config, not only process flags", async () => {
+  const {createRunPermissions,resolveRunPermissions}=await import('../src/run-permissions.js');
+  const dir=mkdtempSync(join(tmpdir(),'codeflow-thread-policy-'));
+  const permissions=resolveRunPermissions({policy:createRunPermissions('standard',false,false,['workspace-writes','no-command-network']),provider:'codex',mode:'write',currentTrust:'standard',currentTools:false});
+  await withEnv({FAKE_RECORD_DIR:dir,CODEFLOW_CODEX_TRANSPORT:'app-server'},async()=>{
+    const first=await turn('Return a short result',{mode:'write',trust:'standard',permissions});assert.equal(first.result.ok,true,first.result.error);
+    const resumed=await turn('Return another short result',{mode:'write',trust:'standard',permissions,resumeSessionId:first.result.sessionId});assert.equal(resumed.result.ok,true,resumed.result.error);
+  });
+  const records=readdirSync(dir).map(f=>JSON.parse(readFileSync(join(dir,f),'utf8')));
+  assert.equal(records.length,2);
+  for(const record of records){assert.equal(record.thread.config['agents.enabled'],false);assert.equal(record.thread.config['features.multi_agent'],false);assert.equal(record.thread.config['features.multi_agent_v2.enabled'],false);assert.equal(record.thread.config['features.hooks'],false);assert.equal(record.thread.config['sandbox_workspace_write.network_access'],false);assert.equal(record.thread.approvalPolicy,'never')}
 });

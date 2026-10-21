@@ -123,7 +123,7 @@ test("Claude and both Codex transports call the scoped MCP bridge, keep sandboxe
         assert.equal(existsSync(record.args[record.args.indexOf("--mcp-config") + 1]), false);
       } else {
         assert.ok(record.args.includes("features.multi_agent=false"));
-        assert.ok(record.args.includes("features.multi_agent_v2=false"));
+        assert.ok(record.args.includes("features.multi_agent_v2.enabled=false"));
         assert.equal(record.args.some((value: string) => value.includes("network_access=true")), false);
         if (transport === "exec") assert.ok(record.args.includes('sandbox_mode="read-only"'));
         else assert.equal(record.thread.sandbox, "read-only");
@@ -138,6 +138,7 @@ test("capability inventory explicitly reports unsupported transports and unknown
   assert.equal(claude.scopedTools, "tested"); assert.equal(codex.scopedTools, "tested"); assert.equal(agy.scopedTools, "unsupported");
   assert.equal(claude.liveInput, "unsupported"); assert.equal(codex.liveInput, "tested");
   assert.equal(claude.sandbox, "unsupported"); assert.equal(agy.nestedAgentControl, "unknown");
+  assert.equal(agy.sandbox, "unknown", "a sandbox help flag does not prove inherited containment");
   assert.ok([claude, codex, agy].every((entry) => entry.nestedUsage === "unknown" && entry.version));
 });
 
@@ -161,7 +162,7 @@ test("older Claude and unsupported agy keep structured turns working without a l
       const events: string[] = [];
       const result = await adapters[provider].run({ prompt: "Inspect only", cwd: fixture, mode: "read", questionProtocol: "structured", teamTools: grant.connection, timeoutMs: 15_000 }, (event) => { if (event.kind === "status") events.push(event.text); });
       assert.equal(result.ok, true, result.error);
-      assert.ok(events.some((event) => /no verified/.test(event)), "unsupported capability is visible instead of silently promised");
+      assert.ok(events.some((event) => /no verified|unavailable/.test(event)), "unsupported capability is visible instead of silently promised");
       delete process.env.FAKE_UNKNOWN_FLAG;
     }
     assert.equal(calls, 0);

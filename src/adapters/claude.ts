@@ -1,3 +1,5 @@
+import { discoverModels } from "./model-discovery.js";
+import { managedPermissionProblem } from "./managed-permissions.js";
 import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, RunOptions, RunResult } from "./types.js";
 import { classifyError, cliErrorLine, resetFromText } from "./errors.js";
 import { commandExists, describeFailure, processErrorKind, startJsonlProcess, stderrTail, stringify, truncate, unknownEvents } from "./process.js";
@@ -63,6 +65,7 @@ function writeTools(trust: RunOptions["trust"] = "standard"): string[] {
 
 export const claudeAdapter: AgentAdapter = {
   id: "claude",
+  discoverModels: context => discoverModels("claude", context),
   displayName: "Claude Code",
   binary: "claude",
   available: () => commandExists("claude"),
@@ -83,6 +86,8 @@ export const claudeAdapter: AgentAdapter = {
   },
 
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
+    const permissionProblem = await managedPermissionProblem("claude", opts);
+    if (permissionProblem) return permissionProblem;
     const supportsTools = !opts.agentContainer && opts.teamTools && (await adapterTeamCapabilities("claude")).scopedTools === "tested";
     const teamTools = supportsTools ? await prepareTeamTools(opts.teamTools!) : undefined;
     if (opts.agentContainer) onEvent({ kind: "status", text: `Claude runs in Docker image ${opts.agentContainer.image}. Live team tools are unavailable in containers; use structured outcomes and next-turn replies.` });
@@ -90,11 +95,14 @@ export const claudeAdapter: AgentAdapter = {
     try {
     // The prompt goes on stdin (no positional argument), so its size isn't limited by argv.
     const args = ["-p", "--output-format", "stream-json", "--verbose"];
+    if (opts.permissions) args.push("--settings", '{"ultracode":false,"disableWorkflows":true,"disableAllHooks":true}');
     if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push("--effort", opts.effort);
     if (opts.jsonSchema) args.push("--json-schema", JSON.stringify(opts.jsonSchema));
     if (teamTools) args.push("--mcp-config", teamTools.claudeConfig, "--strict-mcp-config");
+    else if (opts.permissions?.externalTools === "disabled") args.push("--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config");
+    if (opts.permissions?.externalTools === "disabled") args.push("--no-chrome");
     const collaborationTools = teamTools ? TEAM_TOOL_ALLOWLIST : [];
     // Full access: every tool, without permission checks.
     const full = opts.mode === "write" && opts.trust === "full";
@@ -102,7 +110,7 @@ export const claudeAdapter: AgentAdapter = {
     // Where the shell is limited to an allow-list, the git read commands mustn't write (or read) outside it.
     // With "Bash" allowed outright (Trusted) any command runs anyway.
     const limitedShell = !full && !allowedTools.includes("Bash");
-    const deniedTools = [...(opts.mode === "read" ? ["Edit", "Write", "NotebookEdit"] : []), ...(opts.questionProtocol === "structured" ? TEAM_NESTED_DENYLIST : [])];
+    const deniedTools = [...(opts.mode === "read" ? ["Edit", "Write", "NotebookEdit"] : []), ...(opts.questionProtocol === "structured" || opts.permissions?.nativeDelegation === false ? TEAM_NESTED_DENYLIST : []), ...(opts.permissions?.externalTools === "disabled" ? ["WebSearch", "WebFetch"] : [])];
     // The flag takes several values (`<tools...>`); the git rules go in one of their own.
     const denied = [deniedTools.join(","), limitedShell ? GIT_READ_DENY.join(",") : ""].filter(Boolean);
     if (denied.length) args.push("--disallowedTools", ...denied);

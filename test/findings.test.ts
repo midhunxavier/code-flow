@@ -32,7 +32,7 @@ before(() => {
 beforeEach(() => rmSync(join(process.env.CODEFLOW_HOME!, ".repro-reviewed-once"), { force: true }));
 
 const manager = new RunManager(findPattern);
-const pipeline = { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] };
+const pipeline = { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] };
 
 const settle = (r: Run) =>
   new Promise<Run>((resolve) => {
@@ -109,13 +109,13 @@ test("pipeline: a reviewer's test that fails confirms the bug; the builder gets 
   const r = await withEnv({ FAKE_REPRO: "fails", FAKE_RECORD_DIR: dir }, () => run("pipeline", pipeline, { loop: { check: "node --test" } }));
   assert.equal(r.status, "done", r.error);
   const steps = titles(r);
-  const review = steps.indexOf("Review (round 1) [agy]:done");
+  const review = steps.indexOf("Review (round 1) [claude]:done");
   assert.deepEqual(steps.slice(review, review + 3), [
-    "Review (round 1) [agy]:done",
+    "Review (round 1) [claude]:done",
     "Reviewer's test: Off-by-one in the loop bound:failed",
     "Address review (round 1) [codex]:done",
   ]);
-  assert.equal(steps.at(-1), "Review (round 2) [agy]:done");
+  assert.equal(steps.at(-1), "Review (round 2) [claude]:done");
   assert.match(await log(r), /Review round 1: changes_requested \(1 issues; 1 blocking, 1 confirmed by a failing test\)/);
   assert.match(r.summary!, /Approved, and `node --test` passes/);
   assert.equal(r.facts?.approved, true);
@@ -176,19 +176,19 @@ test("pipeline: a test the check never runs refutes nothing; the finding blocks 
 
 test("debate: a false alarm doesn't send the build back to the builder", async () => {
   const r = await withEnv({ FAKE_REPRO: "passes" }, () =>
-    run("debate", { debaters: ["claude", "codex"], synthesizer: ["claude"], builder: ["codex"], reviewer: ["agy"] }, { loop: { check: "node --test" }, options: { rounds: 0 } }),
+    run("debate", { debaters: ["claude", "codex"], synthesizer: ["claude"], builder: ["codex"], reviewer: ["claude"] }, { loop: { check: "node --test" }, options: { rounds: 0 } }),
   );
   assert.equal(r.status, "done", r.error);
   assert.ok(r.steps.some((s) => s.title.startsWith("Reviewer's test") && s.status === "done"));
   assert.ok(!r.steps.some((s) => s.title === "Address review"));
   assert.equal(r.facts?.approved, true);
-  assert.match(r.summary!, /Review by agy: approved\./);
+  assert.match(r.summary!, /Review by claude: approved\./);
 });
 
 test("supervisor: a confirmed finding goes to the supervisor with how it fails, and the reviewer looks again", async () => {
   const dir = recordDir();
   const r = await withEnv({ FAKE_REPRO: "fails", FAKE_RECORD_DIR: dir }, () =>
-    run("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["agy"] }, { loop: { check: "node --test" } }),
+    run("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["codex"] }, { loop: { check: "node --test" } }),
   );
   assert.equal(r.status, "done", r.error);
   assert.deepEqual(
@@ -198,13 +198,13 @@ test("supervisor: a confirmed finding goes to the supervisor with how it fails, 
   const fix = recorded(dir).find((p) => p.includes("Fix what blocks, run the tests"))!;
   assert.match(fix, /## Confirmed: the reviewer's test fails on your code[\s\S]*off by one: the loop runs once too often/);
   assert.equal(r.facts?.approved, true);
-  assert.match(r.summary!, /agy: approved — 0 issues, 0 blocking/);
+  assert.match(r.summary!, /codex: approved — 0 issues, 0 blocking/);
 });
 
 test("review council: findings rank by severity, then by a confirming test, then by agreement; each reviewer's test runs once", async () => {
   const dir = recordDir();
   const r = await withEnv({ FAKE_REPRO: "council", FAKE_RECORD_DIR: dir }, () =>
-    run("council", { reviewers: ["claude", "codex"], chair: ["agy"] }, { loop: { check: "node --test" } }),
+    run("council", { reviewers: ["claude", "codex"], chair: ["claude"] }, { loop: { check: "node --test" } }),
   );
   assert.equal(r.status, "done", r.error);
   const review = r.review!;
@@ -269,7 +269,7 @@ test("files from an agent are written inside the checkout only, never through a 
 });
 
 test("review council: the verdict goes by what blocks, not by the chair's word", async () => {
-  const council = { reviewers: ["claude", "codex"], chair: ["agy"] };
+  const council = { reviewers: ["claude", "codex"], chair: ["claude"] };
   // The chair approves, but a test confirms one bug and a medium finding stands.
   const approved = await withEnv({ FAKE_REPRO: "council", FAKE_CHAIR_VERDICT: "approve" }, () => run("council", council, { loop: { check: "node --test" } }));
   assert.equal(approved.status, "done", approved.error);

@@ -133,7 +133,7 @@ test("permission modes and per-role models reach each CLI", async () => {
     });
     const calls = recorded(dir);
     const claudeCalls = calls.filter((c) => c.vendor === "claude");
-    const planner = claudeCalls.find((c) => c.args.includes("Edit,Write,NotebookEdit") && c.prompt.includes("planner"))!;
+    const planner = claudeCalls.find((c) => c.args.some(arg => arg.startsWith("Edit,Write,NotebookEdit")) && c.prompt.includes("planner"))!;
     const reviewer = claudeCalls.find((c) => c.prompt.includes("You are the reviewer"))!;
     assert.match(planner.args.join(" "), /--model opus/);
     assert.match(reviewer.args.join(" "), /--model sonnet --effort low/, "the reviewer role overrides the provider default");
@@ -167,9 +167,8 @@ test("permission modes and per-role models reach each CLI", async () => {
 test("full access: every tool and no sandbox in write steps; read steps stay read-only", async () => {
   // Each agent builds once (write) and plans or reviews once (read).
   const teams = [
-    { planner: ["codex"], builder: ["claude"], reviewer: ["agy"] },
-    { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] },
-    { planner: ["codex"], builder: ["agy"], reviewer: ["claude"] },
+    { planner: ["codex"], builder: ["claude"], reviewer: ["codex"] },
+    { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] },
   ];
   const calls: (ReturnType<typeof recorded>[number] & { thread?: { sandbox: string }; token?: string | null })[] = [];
   // No sandbox doesn't mean code-flow's own secrets: the agents still get the filtered environment.
@@ -196,10 +195,8 @@ test("full access: every tool and no sandbox in write steps; read steps stay rea
   assert.match(claudeRead.args.join(" "), /--disallowedTools Edit,Write,NotebookEdit/);
   assert.equal(calls.find((c) => c.vendor === "codex" && write(c))!.thread?.sandbox, "danger-full-access");
   assert.equal(calls.find((c) => c.vendor === "codex" && !write(c))!.thread?.sandbox, "read-only");
-  assert.ok(!calls.find((c) => c.vendor === "agy" && write(c))!.args.includes("--sandbox"));
-  assert.ok(calls.find((c) => c.vendor === "agy" && !write(c))!.args.includes("--sandbox"), "a read step keeps agy's sandbox");
   const started = calls.filter((c) => c.token !== undefined);
-  assert.ok(started.some((c) => c.vendor === "agy" && write(c)));
+  assert.ok(started.some((c) => c.vendor === "claude" && write(c)));
   assert.deepEqual(started.filter((c) => c.token !== null).map((c) => c.vendor), [], "no agent sees CODEFLOW_TOKEN");
 });
 

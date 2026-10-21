@@ -1,3 +1,5 @@
+import { TeamTemplateLibrary } from "./team-template-library.js";
+import { templateFromPlan, type TeamTemplate } from "../src/team-templates.js";
 import { confirmAction } from "./confirm-state.js";
 import { intentDraft, LiveProgress, ResultStudio } from "./experience.js";
 import { journeyDraft } from "./journeys.js";
@@ -84,6 +86,7 @@ export function RunView({ id }: { id: string }) {
   const listed = useRef<string[]>([]);
   const [archiving, setArchiving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [savingStrategy, setSavingStrategy] = useState<TeamTemplate | null>(null);
   const [recovering, setRecovering] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState("");
@@ -206,6 +209,10 @@ export function RunView({ id }: { id: string }) {
             </div>
             <div class="run-actions">
               {finished ? <Menu label="More run actions" icon="more">{close => <>
+                <MenuItem onClick={() => { close(); try {
+                  const common = { id: `strategy-${Date.now().toString(36)}`, name: run.task.split("\n")[0]!.slice(0, 80), scope: run.project ? "project" as const : "personal" as const, ...(run.project ? { project: run.project } : {}) };
+                  setSavingStrategy(run.team ? templateFromPlan(run.team, common) : { schemaVersion: 1, ...common, version: 1, description: "Saved workflow. Parameterize inputs before reuse.", autoEnabled: false, parameters: ["task"], roles: [], tasks: [], contracts: [], workflow: run.pattern, task: "{{task}}", criteria: [] });
+                } catch (e) { showToast((e as Error).message); } }}>Save as team template…</MenuItem>
                 {!run.projectTeam ? <MenuItem disabled={!draftsReady.value || composerLoading.value} onClick={() => { close(); void editAndRerun(run); }}>Edit &amp; run again</MenuItem> : null}
                 <MenuItem onClick={() => { close(); if (run.archived) void post(`/api/runs/${run.id}/archive`, { archived: false }).catch(e => showToast(e.message)); else setArchiving(true); }}>{run.archived ? "Unarchive" : "Archive…"}</MenuItem>
                 {!run.projectTeam ? <MenuItem onClick={() => { close(); setDeleting(true); }}>Delete…</MenuItem> : null}
@@ -228,6 +235,8 @@ export function RunView({ id }: { id: string }) {
 
         <div class="thread">
           <RunEvidence run={run} checking={checking} />
+          {run.teamTemplate || run.team?.templateUses?.length ? <details class="settings"><summary>Template provenance</summary><div class="settings-body">{run.teamTemplate ? <p>Selected: {run.teamTemplate.template.name} v{run.teamTemplate.template.version}</p> : null}{run.team?.templateUses?.map(use => <p key={use.id}>{use.id}: {use.templateId} v{use.version}{use.instructions ? ` · adaptation: ${use.instructions}` : ""}</p>)}<p class="help">Definitions and inputs are pinned to this run. Library edits do not change this execution.</p></div></details> : null}
+          {run.permissions ? <details class="settings"><summary>Run permissions · {run.permissions.trust}{run.permissions.antigravityExecution === "native" ? " · Unrestricted Antigravity" : ""}</summary><div class="settings-body"><p>{run.permissions.antigravityExecution === "native" ? "Unrestricted Antigravity uses the existing login and normal provider settings. Its read-only requests are advisory; terminal, browser, MCP, hooks and native agents are unrestricted by Code Flow, including child usage outside the worker budget. Other providers inherit the run policy." : "Workers inherit this run’s policy. Planning and review turns use narrower access. Native agent delegation is disabled; Code Flow schedules the team."}</p>{[...data.current.steps.values()].filter(step => step.permissions).map(step => <p key={step.id}>{step.title}: {step.permissions!.trust} · {step.permissions!.mode} · {step.permissions!.isolation} · command network {step.permissions!.commandNetwork} · external tools {step.permissions!.externalTools}{step.permissions!.implementation ? <><br /><span class="help">{step.permissions!.implementation}: {step.permissions!.limitations.join(" ")}</span></> : null}</p>)}<p class="help">Worktrees do not restrict reads. External browser/MCP tools retain their provider permissions unless explicitly disabled. Setup, checks and previews use their separately configured execution environment.</p></div></details> : null}
           {next ? <section class={`next-action ${["resume", "provider", "check", "revise"].includes(next.kind) ? "needs-attention" : ""}`} aria-label="Next action">
             <div><h3>{next.title}</h3><p>{next.detail}</p>
               {next.kind === "resume" ? <p class="help">New allowance: {run.loop.maxInvocations ?? run.loop.maxSteps} calls · {run.loop.maxMinutes} minutes. Earlier usage is retained.</p> : null}
@@ -338,6 +347,7 @@ export function RunView({ id }: { id: string }) {
 
       <ConversationBar run={run} steps={steps} chat={chat} />
       {recovering ? <RecoveryCheckDialog run={run} onClose={() => setRecovering(false)} /> : null}
+      {savingStrategy ? <SaveStrategyDialog template={savingStrategy} onClose={() => setSavingStrategy(null)} /> : null}
       {deleting ? <DeleteRunDialog run={run} onClose={() => setDeleting(false)} /> : null}
       {archiving ? <ArchiveDialog run={run} onClose={() => setArchiving(false)} /> : null}
     </div>
@@ -2202,4 +2212,9 @@ function ProviderChatDialog({ run, onClose }: { run: RunSummary; onClose: () => 
     </div>
     <div class="picker-foot"><span class="ps" /><button class="btn" disabled={busy} onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !choices.some((item) => item.id === agent && item.available)} onClick={() => void start()}>{busy ? "Starting…" : "Start new chat"}</button></div>
   </div></dialog>;
+}
+
+function SaveStrategyDialog({ template, onClose }: { template: TeamTemplate; onClose: () => void }) {
+  const ref = useDialog(true, onClose);
+  return <dialog ref={ref} class="picker" aria-labelledby="save-strategy-title"><div class="picker-inner"><div class="picker-head"><h3 id="save-strategy-title">Save reusable team strategy</h3></div><div class="dialog-body"><p>Review and parameterize the instructions below, removing any sensitive or task-specific values. Session handles, result records, and permission grants are excluded.</p><TeamTemplateLibrary initial={template} /></div><div class="picker-foot"><button class="btn" onClick={onClose}>Close</button></div></div></dialog>;
 }

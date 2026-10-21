@@ -40,7 +40,7 @@ test("reply and side chat choices reach the adapter, reset defaults, persist per
     assert.deepEqual(run.agentSettings.codex, { model: "original", effort: "low" });
     await manager.followUp(run.id, { kind: "side", side: { chat: "test", mode: "ask", title: "Read only" }, worktree, agent: "codex", message: "Use defaults", settings: {}, trust: "standard", tools: true });
     await idle(run);
-    assert.equal(calls.at(-1)!.model, undefined); assert.equal(calls.at(-1)!.effort, undefined); assert.equal(calls.at(-1)!.interactiveApprovals, true); assert.equal(calls.at(-1)!.mode, "read");
+    assert.equal(calls.at(-1)!.model, undefined); assert.equal(calls.at(-1)!.effort, undefined); assert.equal(calls.at(-1)!.interactiveApprovals, false); assert.equal(calls.at(-1)!.mode, "read");
     const count = run.followUps.length;
     await assert.rejects(manager.followUp(run.id, { worktree, agent: "codex", message: "Invalid", settings: { model: "--bad flag" } }), /Invalid model/);
     run.lockdown = "Untrusted source";
@@ -105,4 +105,38 @@ test("provider handoff copies visible history and saved files into a fresh sessi
     await assert.rejects(manager.startProviderChat(source.id, { agent: "claude" }), /finish/);
     source.status = "done";
   } finally { adapters.codex.run = original.codex; adapters.claude.run = original.claude; }
+});
+
+test("managed follow-ups journal explicit policy changes and child runs retain required restrictions", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "cf-managed-policy-"));
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo });
+  git("init", "-q", "-b", "main"); writeFileSync(join(repo, "README.md"), "Fixture\n"); git("add", "."); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+  const manager = new RunManager(findPattern), original = adapters.codex.run;
+  const calls: RunOptions[] = [];
+  adapters.codex.run = async options => { calls.push(options); return { ok: true, finalText: "Answered" }; };
+  try {
+    const run = await manager.start({ pattern: findPattern("solo")!, repo, task: "Inspect", roles: { agent: ["codex"] }, options: {}, trust: "standard", permissionRequirements: ["no-command-network"] });
+    await idle(run);
+    assert.equal(run.permissions?.revision, 1);
+    assert.equal(calls.at(-1)?.permissions?.nativeDelegation, false);
+    const worktree = run.worktrees[0]!.name;
+    await assert.rejects(manager.followUp(run.id, { kind: "reply", worktree, agent: "codex", message: "Invalid", trust: "full", settings: { model: "--bad flag" } }), /Invalid model/);
+    assert.equal(run.permissions?.revision, 1); assert.equal(run.trust, "standard");
+    await assert.rejects(manager.followUp(run.id, { kind: "reply", worktree, agent: "codex", message: "Loosen network", trust: "trusted" }), /network restriction/);
+    assert.equal(run.permissions?.revision, 1); assert.equal(run.trust, "standard");
+    await manager.followUp(run.id, { kind: "reply", worktree, agent: "codex", message: "Reduce access", trust: "safe" });
+    await idle(run);
+    assert.equal(run.permissions?.revision, 2); assert.equal(calls.at(-1)?.permissions?.trust, "safe");
+    const child = await manager.start({ parentRunId: run.id, pattern: findPattern("solo")!, repo, task: "Child cannot raise authority", roles: { agent: ["codex"] }, options: {}, trust: "full", approvals: { tools: true } });
+    await idle(child);
+    assert.equal(child.trust, "safe"); assert.equal(child.approvals.tools, false);
+    assert.deepEqual(child.permissions?.required, ["no-command-network"]);
+    const pending = await Promise.allSettled([
+      manager.followUp(run.id, { kind: "reply", worktree, agent: "codex", message: "First", trust: "standard" }),
+      manager.followUp(run.id, { kind: "reply", worktree, agent: "codex", message: "Second", trust: "safe" }),
+    ]);
+    assert.equal(pending.filter(r => r.status === "fulfilled").length, 1, "policy-changing follow-ups are serialized");
+    await idle(run);
+    await assert.rejects(manager.start({ parentRunId: run.id, pattern: findPattern("solo")!, repo, task: "Continue", roles: { agent: ["claude"] }, options: {}, trust: "standard" }), /network restriction/);
+  } finally { adapters.codex.run = original; await manager.shutdown(); }
 });

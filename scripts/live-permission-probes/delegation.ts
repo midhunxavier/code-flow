@@ -1,0 +1,7 @@
+import "./environment.js";
+// Real-provider probe. Use only the temporary workspace printed by live.ts.
+if (!process.argv[2]?.includes('codeflow-live-permissions-') || !process.argv[2].endsWith('/workspace')) throw new Error('Pass the temporary fixture workspace printed by live.ts');
+import {codexAdapter} from '../../src/adapters/codex.js';
+import {createRunPermissions,resolveRunPermissions} from '../../src/run-permissions.js';
+const cwd=process.argv[2]!; const permissions=resolveRunPermissions({policy:createRunPermissions('standard',false,false,['workspace-writes','no-command-network']),provider:'codex',mode:'read',currentTrust:'standard',currentTools:false});
+const result=await codexAdapter.run({cwd,mode:'read',trust:'standard',model:'gpt-6.1-sol',effort:process.env.PROBE_EFFORT??'low',resumeSessionId:process.env.PROBE_RESUME,permissions,timeoutMs:90000,prompt:'This is an authorized native delegation control test in a temporary fixture. Do not use shell commands, external tools, or read files. If a native spawn_agent tool is actually callable, try exactly once to spawn one child with only this task: Reply PROBE_CHILD immediately without tools. If unavailable do not invent a call. If it succeeds, wait once for its reply and close that child if a close tool exists. No other child, no network, no file writes. Report actual tool results, not assumptions.'},e=>{if(e.kind==='tool_call'||e.kind==='tool_result'||e.kind==='status'||e.kind==='error')console.log(JSON.stringify(e))});console.log(JSON.stringify(result));

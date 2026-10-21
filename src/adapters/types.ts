@@ -46,6 +46,8 @@ export interface RunOptions {
   jsonSchema?: object;
   /** Auto members ask through their structured outcome, with answers on a later turn. */
   questionProtocol?: "structured";
+  /** Resolved by Code Flow; providers may not expand this policy. */
+  permissions?: import("../run-permissions.js").EffectivePermissions;
   /** Ephemeral, server-derived member capability; never serialize with the Run or prompt. */
   teamTools?: import("../team-tools.js").TeamToolConnection;
   /**
@@ -127,9 +129,14 @@ export interface ModelInfo {
   /** Efforts this model supports, when the CLI says; otherwise the adapter's list applies. */
   efforts?: string[];
   defaultEffort?: string;
+  aliases?: string[];
+  discovery?: { source: string; verifiedAt: number; confidence: "reported" };
 }
 
 export interface ModelCatalog {
+  discovery?: { source: string; verifiedAt: number; confidence: "reported" };
+  /** Opaque hash of CLI-reported account metadata; never credentials or an account identifier. */
+  accountKey?: string;
   models: ModelInfo[];
   efforts: string[];
   /** Model the CLI uses when none is chosen, if known. */
@@ -148,7 +155,11 @@ export interface AgentAdapter {
   binary: string;
   /** True when the CLI is on PATH. Login state is only discovered on first run. */
   available(): Promise<boolean>;
+  /** Environment preflight only; the adapter must recheck the boundary on every launch. */
+  managedAvailability?(): Promise<string | undefined>;
+  managedLimitations?: string[];
   /** Models and effort levels this CLI offers. */
   catalog(): Promise<ModelCatalog>;
+  discoverModels?(context?: import("./model-discovery.js").DiscoveryContext): Promise<ModelCatalog>;
   run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult>;
 }

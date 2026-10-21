@@ -156,7 +156,7 @@ test("loop: a baseline that can't run ends the run before any agent turn, and wa
 });
 
 test("race: candidates checked at once compare with the base commit only once", async () => {
-  const r = await run("race", { contestants: ["claude", "codex"], judge: ["agy"] }, { loop: { check: "nosuchtool-xyz --run" } });
+  const r = await run("race", { contestants: ["claude", "codex"], judge: ["claude"] }, { loop: { check: "nosuchtool-xyz --run" } });
   assert.equal(r.status, "done", r.error);
   assert.equal(r.steps.filter((s) => s.title === "Check on base commit").length, 1);
   assert.match(r.checkCantRun!.reason, /nosuchtool-xyz: (command )?not found/);

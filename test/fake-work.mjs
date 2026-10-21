@@ -64,7 +64,7 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     const inventoryText = prompt.match(/## Inventory and constraints\n```json\n([\s\S]*?)\n```/);
     const policy = inventoryText ? JSON.parse(inventoryText[1]) : { coordinator: vendor, pool: ["claude", "codex"], inventory: { providers: [] } };
     const eligible = policy.inventory.providers.filter((p) => p.available && !p.blockedReason && (policy.pool.includes(p.id) || p.id === policy.coordinator));
-    const builder = eligible.find((p) => p.id === "claude")?.id ?? eligible[0]?.id ?? vendor;
+    const builder = (prompt.includes("AUTO-AGY-ISOLATED") ? eligible.find((p) => p.id === "agy")?.id : undefined) ?? eligible.find((p) => p.id === "claude")?.id ?? eligible[0]?.id ?? vendor;
     const reviewer = eligible.find((p) => p.id !== builder)?.id ?? builder;
     const makeMember = (id, role, provider) => { const p = eligible.find((p) => p.id === provider); let settings = p?.settingsByRole?.[role] ?? p; if (prompt.includes("AUTO-MODEL-POOL") && id === "builder-two") settings = settings?.variants?.[0] ?? settings; return { id, name: id, role, provider, model: settings?.model ?? "", effort: settings?.effort ?? "", reason: role === "worker" ? "Own a separate component" : role === "reviewer" ? "Independently verify the result" : "Investigate and coordinate" }; };
     const investigation = prompt.includes("AUTO-INVESTIGATION") || prompt.includes("Discover up to three useful improvements");
@@ -77,6 +77,19 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
       tasks.push({ ...tasks[0], id: "slow", title: "Independent slow task", owner: "builder-two", paths: [`${builder}-slow.txt`], instructions: "AUTO-SLOW-TURN" });
     }
     answer = json({ requirements: [{ id: "goal", description: "Implement the requested sample" }], members: [makeMember("coordinator", "coordinator", vendor), makeMember("builder", "worker", builder), ...(same ? [makeMember("builder-two", "worker", builder)] : []), makeMember("verifier", "reviewer", reviewer)], tasks: prompt.includes("AUTO-SUBPLAN") ? [] : tasks.map((task) => ({ ...task, dependencyTypes: [] })), ...(prompt.includes("AUTO-SUBPLAN") ? { subplans: [{ id: "sample", strategy: "investigate-implement", owner: "builder", requirements: ["goal"], acceptance: ["The requested behavior has evidence"], paths: ["*"], dependsOn: [], instructions: "Implement the requested sample" }] } : { subplans: [] }), contracts: ["Each task preserves the accepted dependency artifacts"], rationale: "A small team with independent review" });
+    if (prompt.includes("## Optional reusable templates")) {
+      const value = JSON.parse(answer.match(/```json\n([\s\S]*?)\n```/)[1]); value.templateUses = []; answer = json(value);
+    }
+    if (prompt.includes("AUTO-USE-TEMPLATE")) {
+      const catalogText = prompt.match(/## Optional reusable templates\n```json\n([\s\S]*?)\n```/);
+      const catalog = catalogText ? JSON.parse(catalogText[1]) : [];
+      if (catalog.length) {
+        const source = catalog[0]; const value = JSON.parse(answer.match(/```json\n([\s\S]*?)\n```/)[1]);
+        value.tasks = []; value.subplans = [];
+        value.templateUses = [{ id: "reuse", templateId: source.id, version: source.version, inputs: source.parameters.map(name => ({ name, value: "sample" })), assignments: source.roles.map(role => ({ role, memberId: "builder" })), dependsOn: [], requirements: ["goal"], instructions: "Preserve template criteria" }];
+        answer = json(value);
+      }
+    }
   } else if (prompt.startsWith("PROJECT_TEAM_REPORT")) {
     answer = json({ version: 1, summary: "A small documentation improvement backed by source evidence", candidates: prompt.includes("PT-EMPTY") ? [] : [{ key: "document-empty-input", title: "Clarify empty input", category: "docs", problem: "The input contract needs an example", users: "Developers", proposal: "Add a small example", benefit: "Makes the documented contract easier to apply", evidence: [{ path: "README.md", quote: prompt.includes("PT-INVENTED") ? "invented evidence" : "Empty input is valid." }], paths: ["*"], acceptance: ["The example is present and existing checks pass"], kind: "observed", risk: prompt.includes("PT-HIGH-RISK") ? "high" : "low", alignment: 3, impact: 2, confidence: 3, effort: 1, rationale: "Small, bounded improvement" }] });
   } else if (prompt.includes("AUTO_TEAM_TASK")) {
@@ -98,7 +111,9 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
   } else if (prompt.includes("AUTO_TEAM_REVISION")) {
     const state = JSON.parse(prompt.match(/## Current accepted plan and outcomes\n```json\n([\s\S]*?)\n```/)[1]);
     const handover = prompt.includes("AUTO-HANDOVER") && state.members.some((m) => m.id === "builder" && m.status !== "retired");
-    answer = json({ reason: "Retry failed work within the existing scope", contractRequirements: prompt.includes("AUTO-CONTRACT-CHANGE") ? ["goal"] : [], addTasks: [], reassignments: handover ? [{ taskId: "alpha", memberId: "replacement" }] : [], retryTasks: state.tasks.filter((t) => t.status === "failed" && t.attempts <= state.maxRepairs).map((t) => t.id), contracts: prompt.includes("AUTO-CONTRACT-CHANGE") ? ["Preserve empty input behavior across both components"] : [], answers: [], addMembers: handover ? [{ ...state.members.find((m) => m.id === "builder"), id: "replacement", name: "Replacement", reason: "Take over the blocked assignment" }] : [], retireMembers: handover ? ["builder"] : [] });
+    const inventory = JSON.parse(prompt.match(/## Current provider inventory\n```json\n([\s\S]*?)\n```/)[1]);
+    const ownerAvailable = t => inventory.providers.some(p => p.id === state.members.find(m => m.id === t.owner)?.provider && p.available && !p.blockedReason);
+    answer = json({ reason: "Retry failed work within the existing scope", contractRequirements: prompt.includes("AUTO-CONTRACT-CHANGE") ? ["goal"] : [], addTasks: [], reassignments: handover ? [{ taskId: "alpha", memberId: "replacement" }] : [], retryTasks: state.tasks.filter((t) => t.status === "failed" && t.attempts <= state.maxRepairs && ownerAvailable(t)).map((t) => t.id), contracts: prompt.includes("AUTO-CONTRACT-CHANGE") ? ["Preserve empty input behavior across both components"] : [], answers: [], addMembers: handover ? [{ ...state.members.find((m) => m.id === "builder"), id: "replacement", name: "Replacement", reason: "Take over the blocked assignment" }] : [], retireMembers: handover ? ["builder"] : [] });
   } else if (prompt.includes('"subtasks"')) {
     const conflict = prompt.includes("CONFLICT");
     answer = json({
