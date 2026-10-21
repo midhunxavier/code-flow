@@ -81,3 +81,19 @@ test("elapsed start survives restart, fake-agent launch persists exact claim, an
   assert.equal((await api<DeferredRunJob[]>("/api/deferred-runs")).find((item) => item.id === job.id)!.status, "cancelled");
   assert.equal((await api<Run[]>("/api/runs")).length, 1);
 });
+
+test("deferred launches keep strict project membership after restart and never restore a removed repository", { timeout: 30_000 }, async () => {
+  const selected = (await api("/api/projects", { name: "Strict deferred destination", repos: [repo] })).id;
+  const job = await api<DeferredRunJob>("/api/deferred-runs", { run: { ...request(), project: selected, projectSelection: "explicit" }, notBefore: Date.now() + 60_000 });
+  assert.equal(job.run.projectSelection, "explicit");
+  await api(`/api/projects/${selected}`, { repos: [] });
+  const before = (await api<Run[]>("/api/runs")).length;
+  await stop();
+  const file = join(home, "deferred-runs.json"), saved = JSON.parse(await readFile(file, "utf8"));
+  saved.jobs.find((item: DeferredRunJob) => item.id === job.id).notBefore = Date.now() - 1;
+  await writeFile(file, JSON.stringify(saved)); await start();
+  const failed = await until(() => api<DeferredRunJob[]>("/api/deferred-runs").then(jobs => jobs.find(item => item.id === job.id)!), item => item.status === "failed");
+  assert.match(failed.reason!, /explicit member/);
+  assert.equal((await api<Run[]>("/api/runs")).length, before);
+  assert.deepEqual((await api<any[]>("/api/projects")).find(item => item.id === selected).repos, []);
+});

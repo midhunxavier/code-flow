@@ -46,6 +46,7 @@ export function SweepDialog() {
   const t = sweepPicker.value;
   const ref = useDialog(!!t, () => (sweepPicker.value = null));
   const [list, setList] = useState<SweepList | null>(null);
+  const [destination, setDestination] = useState<{ project?: string; repo: string }>();
   const [error, setError] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState("");
@@ -59,14 +60,19 @@ export function SweepDialog() {
     setError("");
     setFilter("");
     setRepeat(false);
-    if (!repo.value) return setError("Choose a repository first");
-    api<SweepList>(`/api/github/sweep?repo=${enc(repo.value)}&kind=${t.sweep}`).then(
+    const captured = { project: target.value.project?.id, repo: repo.value };
+    setDestination(captured);
+    if (!captured.repo) return setError("Choose a repository first");
+    let active = true;
+    api<SweepList>(`/api/github/sweep?repo=${enc(captured.repo)}&kind=${t.sweep}`).then(
       (l) => {
+        if (!active) return;
         setList(l);
         setPicked(new Set(l.items.filter((i) => i.selected).map((i) => i.key)));
       },
-      (e) => setError(e.message),
+      (e) => { if (active) setError(e.message); },
     );
+    return () => { active = false; };
   }, [t]);
 
   const p = t ? patterns.value.find((x) => x.id === t.pattern) : undefined;
@@ -92,6 +98,7 @@ export function SweepDialog() {
 
   const start = async () => {
     if (!t || !p || problem || !chosen.length || busy) return;
+    if (!destination || destination.project !== target.value.project?.id || destination.repo !== repo.value) { setError("The draft destination changed. Close this backlog and choose it again for the intended project."); return; }
     setBusy(true);
     setError("");
     try {
@@ -101,8 +108,9 @@ export function SweepDialog() {
         max: 5,
         schedule: repeat ? { at } : undefined,
         run: {
-          repo: repo.value,
-          project: target.value.project?.id,
+          repo: destination.repo,
+          project: destination.project,
+          projectSelection: "explicit",
           pattern: p.id,
           roles,
           options: optionsFor(p),
@@ -144,7 +152,7 @@ export function SweepDialog() {
             <h3 id="sweep-title">
               <Icon name="layers" /> {t.name}
             </h3>
-            <div class="help">{t.description}</div>
+            <div class="help">{t.description}</div><p class="help">Project: {destination?.project} · <code>{destination?.repo}</code></p>
             <div class="row">
               <input class="field" placeholder="Filter by number, title, label, severity…" aria-label="Filter" value={filter} onInput={(e) => setFilter(e.currentTarget.value)} />
             </div>

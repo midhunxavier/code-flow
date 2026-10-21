@@ -828,6 +828,8 @@ function validateOptions(pattern: Pattern, input: unknown): Record<string, numbe
 /** Validate a run request (from the composer or an automation) into what the engine starts. */
 async function buildStartInput(body: Record<string, any>): Promise<StartRunInput> {
   if (body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.projectTeam !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
+  if (body.projectSelection !== undefined && body.projectSelection !== "explicit") throw new HttpError(400, "Unknown project selection mode");
+  if (body.projectSelection === "explicit" && (!projects.available || typeof body.project !== "string" || !projects.get(body.project))) throw new HttpError(409, "Choose an available project before starting");
   const pattern = findPattern(String(body.pattern ?? ""));
   if (!pattern) throw new HttpError(400, "Unknown pattern");
   const task = String(body.task ?? "").trim();
@@ -836,6 +838,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
   if (body.parentRunId !== undefined && (typeof body.parentRunId !== "string" || !manager.get(body.parentRunId))) throw new HttpError(409, "The original run is no longer available. Reload before starting a continuation so its source restrictions can be retained.");
   await attempt(async () => assertPolicyExecution(await fileAccess.execution(repo), "Run preparation"));
+  if (body.projectSelection === "explicit" && !projects.get(body.project)?.repos.includes(await repoRoot(repo))) throw new HttpError(409, "This repository is no longer an explicit member of the selected project");
   if (body.externalSource !== undefined || (body.externalSourceId !== undefined && typeof body.externalSourceId !== "string")) throw new HttpError(400, "Import the external source through its configured integration first");
   if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
   if (body.intent !== undefined && !taskIntent(body.intent)) throw new HttpError(400, "Choose a supported task type");
@@ -863,6 +866,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
     journeyId: typeof body.journeyId === "string" ? body.journeyId : undefined,
     repo,
     project: typeof body.project === "string" && body.project ? body.project : undefined,
+    requireProjectRepo: body.projectSelection === "explicit",
     baseRef: body.baseRef ? String(body.baseRef) : undefined,
     branchPrefix: body.branchPrefix ? String(body.branchPrefix) : undefined,
     context: body.context && typeof body.context === "object" ? body.context : undefined,
@@ -901,7 +905,7 @@ async function startFromBody(body: Record<string, any>, extra: { trigger?: Run["
 
 /** The parts of a run request an automation keeps (no attachments: they'd go stale). */
 function automationRun(body: Record<string, any>) {
-  const keep = ["repo", "project", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
+  const keep = ["repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
   const run: Record<string, any> = Object.fromEntries(keep.filter((k) => body[k] !== undefined).map((k) => [k, body[k]]));
   if (typeof body.externalSourceId === "string") {
     try { const source = integrations.resolveSource(body.externalSourceId); run.externalSourceRef = { integration: source.integration, kind: source.kind, key: source.key }; }
@@ -1839,6 +1843,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (id && parts[3] === "summary" && req.method === "GET") {
       const inventory = projects.list();
       return send(res, 200, manager.projectReport(run => projectOf(run, inventory) === id && !fileAccess.restrictedRun(run)));
+    }
+    if (id && parts[3] === "repositories" && parts.length === 4 && req.method === "POST") {
+      const body = await readJson(req);
+      if (typeof body.repo !== "string" || !body.repo.startsWith("/")) throw new HttpError(400, "Choose a repository folder");
+      return send(res, 200, await attempt(async () => (await projects.include(id, await repoRoot(body.repo))).project));
     }
     if (id && parts[3] === "conventions") {
       const project = projects.get(id)!;

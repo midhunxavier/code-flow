@@ -60,7 +60,7 @@ async function openPage(ignoreAbort = false): Promise<Page> {
   }, { repo: repos[0]!, ignoreAbort });
   await page.goto(`${base}/?token=${token}`);
   await page.locator(".composer-options > summary").click();
-  await page.locator(".repo-btn:not(.project-btn) .name", { hasText: "alpha" }).waitFor();
+  await page.waitForFunction(() => document.querySelector<HTMLSelectElement>('[aria-label="Run repository"]')?.value.endsWith("/alpha"));
   await page.waitForFunction(() => !document.querySelector("#checkCmd")?.parentElement?.parentElement?.textContent?.includes("Loading repository configuration"));
   return page;
 }
@@ -85,8 +85,8 @@ async function holdReplies(page: Page) {
   };
 }
 async function chooseRepo(page: Page, path: string) {
-  await page.locator(".repo-btn:not(.project-btn)").click();
-  const dialog = page.getByRole("dialog", { name: "Choose a repository", exact: true });
+  await page.getByRole("button", { name: "Open another repository", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Open repository", exact: true });
   await dialog.waitFor();
   await dialog.locator(".ps").filter({ hasNotText: "Loading…" }).filter({ hasText: /git repository|Open a folder/ }).waitFor();
   // Wait for this navigation, not a repository status retained from the prior opening.
@@ -97,9 +97,9 @@ async function chooseRepo(page: Page, path: string) {
   await page.getByLabel("Folder path").fill(path); await page.getByLabel("Folder path").press("Enter");
   assert.equal((await listing).status(), 200);
   await dialog.getByText("✓ This folder is a git repository").waitFor();
-  await page.getByRole("button", { name: "Use this folder", exact: true }).click();
+  await page.getByRole("button", { name: "Open this repository", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
-  await page.locator(".repo-btn:not(.project-btn) .name", { hasText: path.split("/").pop()! }).waitFor();
+  await page.waitForFunction(path => document.querySelector<HTMLSelectElement>('[aria-label="Run repository"]')?.value === path, path);
   await page.waitForFunction(() => !document.querySelector("#checkCmd")?.parentElement?.parentElement?.textContent?.includes("Loading repository configuration"));
 }
 async function chooseProject(page: Page, name: string) {
@@ -182,7 +182,8 @@ test("newer text, repository, project and context transitions invalidate late Im
     await page.getByRole("button", { name: "Improve", exact: true }).click(); const project = await replies.next();
     await chooseProject(page, "Beta");
     await replies.answer(project, "A failure from the previous project", 3, 500);
-    assert.equal(await area.inputValue(), "Keep this task"); assert.equal(await page.getByText("A failure from the previous project", { exact: true }).count(), 0);
+    await page.locator(".composer-options > summary").click();
+    assert.equal(await area.inputValue(), ""); await area.fill("Keep this task"); assert.equal(await page.getByText("A failure from the previous project", { exact: true }).count(), 0);
 
     await page.getByRole("button", { name: "Improve", exact: true }).click(); const context = await replies.next();
     await page.locator('.taskbox input[type="file"]').setInputFiles({ name: "new-context.txt", mimeType: "text/plain", buffer: Buffer.from("New input") });
@@ -201,7 +202,7 @@ test("newer text, repository, project and context transitions invalidate late Im
     await page.getByRole("button", { name: "Undo", exact: true }).waitFor();
     await chooseProject(page, "Alpha");
     assert.equal(await page.getByRole("button", { name: "Undo", exact: true }).count(), 0, "a completed rewrite cannot restore an earlier project's draft");
-    assert.equal(await area.inputValue(), "Valid rewrite for Beta project");
+    assert.equal(await area.inputValue(), "Keep this task", "Alpha retains its own draft");
   } finally { await page.close(); }
 });
 
@@ -234,21 +235,21 @@ test("folder picker ignores a prior opening's delayed native close event while p
       if (new URL(route.request().url()).searchParams.get("path") === repos[0]) take(route);
       else void route.continue();
     });
-    await page.locator(".repo-btn:not(.project-btn)").click();
+    await page.getByRole("button", { name: "Open another repository", exact: true }).click();
     await page.getByLabel("Folder path").fill(repos[0]!); await page.getByLabel("Folder path").press("Enter");
     const listing = await requested;
     await page.evaluate(() => (window as unknown as { releasePickerClose: () => void }).releasePickerClose());
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    assert.equal(await page.getByRole("dialog", { name: "Choose a repository", exact: true }).isVisible(), true, "a prior controlled close cannot dismiss the new opening");
+    assert.equal(await page.getByRole("dialog", { name: "Open repository", exact: true }).isVisible(), true, "a prior controlled close cannot dismiss the new opening");
     await listing.continue();
     await page.getByText("✓ This folder is a git repository").waitFor();
-    await page.getByRole("button", { name: "Use this folder", exact: true }).click();
-    await page.locator(".repo-btn:not(.project-btn) .name", { hasText: "alpha" }).waitFor();
+    await page.getByRole("button", { name: "Open this repository", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector<HTMLSelectElement>('[aria-label="Run repository"]')?.value.endsWith("/alpha"));
     await page.unroute("**/api/fs?**");
-    await page.locator(".repo-btn:not(.project-btn)").click();
-    await page.getByRole("dialog", { name: "Choose a repository", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Open another repository", exact: true }).click();
+    await page.getByRole("dialog", { name: "Open repository", exact: true }).waitFor();
     await page.keyboard.press("Escape");
-    await page.getByRole("dialog", { name: "Choose a repository", exact: true }).waitFor({ state: "hidden" });
+    await page.getByRole("dialog", { name: "Open repository", exact: true }).waitFor({ state: "hidden" });
   } finally { await page.close(); }
 });
 
@@ -272,7 +273,7 @@ test("Improve respects SSH and Docker selection and its mode menu remains access
       // Start each theme with a fresh document, as a normal page navigation does. Auditing
       // during a browser media-query repaint can mix old foregrounds with new backgrounds.
       await page.emulateMedia({ colorScheme, reducedMotion: "reduce" }); await page.reload();
-      await page.locator(".repo-btn:not(.project-btn) .name", { hasText: "alpha" }).waitFor();
+      await page.waitForFunction(() => document.querySelector<HTMLSelectElement>('[aria-label="Run repository"]')?.value.endsWith("/alpha"));
       await page.getByRole("textbox", { name: "Task", exact: true }).fill("A mobile task");
       await trigger.focus(); await page.keyboard.press("ArrowDown"); await page.getByRole("menu", { name: "Improve mode" }).waitFor();
       await page.addScriptTag({ content: axe.source });

@@ -34,6 +34,8 @@ before(async () => {
   let healthy = false;
   for (let n = 0; n < 150; n++) { healthy = await fetch(`${base}/api/health`, { headers: { authorization: "Bearer simplification-ui-token" } }).then((response) => response.ok, () => false); if (healthy) break; await new Promise((resolve) => setTimeout(resolve, 100)); }
   assert.ok(healthy);
+  const project = await fetch(`${base}/api/projects`, { method: "POST", headers: { authorization: "Bearer simplification-ui-token", "content-type": "application/json" }, body: JSON.stringify({ name: "Simplification fixture", repos: [repo] }) });
+  assert.equal(project.status, 201);
   browser = await chromium.launch({ channel: "chrome", headless: true });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await page.addInitScript((repo) => localStorage.setItem("repo", repo), repo);
@@ -45,7 +47,7 @@ after(async () => { await browser?.close(); server?.kill("SIGTERM"); await new P
 
 
 const errors: string[] = [];
-test("Connections consolidates old bookmarks and makes People optional", { timeout: 45_000 }, async () => {
+test("Connections consolidates old bookmarks and keeps access setup discoverable with an optional Board shortcut", { timeout: 45_000 }, async () => {
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(`${base}/#/settings/ssh`);
   await page.getByRole("navigation", { name: "Connection purpose" }).getByRole("link", { name: "Work on another computer" }).waitFor();
@@ -53,14 +55,14 @@ test("Connections consolidates old bookmarks and makes People optional", { timeo
   await page.getByRole("link", { name: "Delegate execution", exact: true }).click();
   await page.getByRole("heading", { name: /Remote workers/ }).waitFor();
   await page.goto(`${base}/#/settings/team`);
-  const toggle = page.getByLabel("Show People collaboration");
+  const toggle = page.getByLabel("Show Board in the app menu");
   assert.equal(await toggle.isChecked(), false);
   await toggle.check();
-  await page.getByRole("link", { name: "Open People board" }).waitFor();
+  await page.getByRole("link", { name: "Open Board" }).waitFor();
   await page.reload();
   assert.equal(await toggle.isChecked(), true);
   await toggle.uncheck();
-  assert.equal(await page.getByRole("link", { name: "Open People board" }).count(), 0);
+  assert.equal(await page.getByRole("link", { name: "Open Board" }).count(), 1, "navigation preference never hides access setup");
 });
 
 test("one template library restores complete saved configurations and keeps legacy workflows", { timeout: 45_000 }, async () => {
@@ -103,14 +105,16 @@ test("templates wait for repository configuration before restoring check command
   const loading = new Promise<void>(resolve => { release = resolve; });
   await page.route("**/api/repo-config?*", async request => { await loading; await request.continue(); });
   try {
-    await page.reload();
+    const requested = page.waitForRequest("**/api/repo-config?*");
+    await page.reload(); await requested;
+    await page.getByText("Restoring your project draft…", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Template library", exact: true }).count(), 0, "restoring blocks editing a partial draft");
+    release();
     await page.getByRole("button", { name: "Template library", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Template library", exact: true });
     await dialog.getByLabel("Library", { exact: true }).selectOption("personal");
     await dialog.getByLabel("Template", { exact: true }).selectOption({ label: "Roundtrip" });
     const apply = dialog.getByRole("button", { name: "Use template", exact: true });
-    assert.equal(await apply.isDisabled(), true);
-    release();
     await apply.click();
     assert.match(await page.getByLabel("Run configuration summary").innerText(), /node --test/);
   } finally { release(); await page.unroute("**/api/repo-config?*"); }
@@ -202,7 +206,7 @@ test("typing with a large attachment avoids copying its payload and comparisons 
 
 test("the shared browser keeps binary and oversized files in bounded read-only previews", { timeout: 45_000 }, async () => {
   await page.goto(`${base}/#/workspace`);
-  await page.getByRole("navigation", { name: "Workspace tools" }).getByRole("button", { name: "Code", exact: true }).click();
+  await page.getByRole("navigation", { name: "Repository tools" }).getByRole("button", { name: "Code", exact: true }).click();
   const browser = page.locator(".workbench .code-browser");
   for (const path of ["asset.bin", "large.txt"]) {
     await browser.getByLabel("File to edit", { exact: true }).fill(path);

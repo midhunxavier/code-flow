@@ -6,7 +6,7 @@ const SettingsView = lazyView(() => import("./settings.js").then((module) => mod
 import { SETTINGS_SECTIONS } from "./settings-sections.js";
 import { canNotify, setDesktopNotifications } from "./preferences.js";
 import { HostControl, executionHost } from "./ssh-projects.js";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useLayoutEffect, useEffect, useRef, useState } from "preact/hooks";
 import { ApprovalInbox } from "./approval-inbox.js";
 import { Composer } from "./composer.js";
 import { CommandPalette } from "./command-palette.js";
@@ -15,8 +15,9 @@ import { RunView } from "./run.js";
 import { Review } from "./review.js";
 import { GitHubPicker } from "./github.js";
 import { SweepDialog } from "./sweeps.js";
-import { ProjectsDialog } from "./projects.js";
+import { ProjectsDialog, RepositoryChoiceDialog } from "./projects.js";
 import { ProjectView } from "./project.js";
+import { TeamPeopleView } from "./collab-people.js";
 import { TeamBoardView } from "./collab-board.js";
 import { TeamTaskView } from "./collab-task.js";
 import { board as teamBoard, openTask, watchTeam } from "./collab-state.js";
@@ -25,6 +26,13 @@ import { Icon } from "./icons.js";
 import { api, showToast, store, toast } from "./lib.js";
 import { theme, toggleTheme } from "./theme.js";
 import {
+  composerProject,
+  composerLoading,
+  draftsReady,
+  draftError,
+  openComposer,
+  projectPickerPurpose,
+  repositoryChoice,
   pickRepo,
   pickerChoose,
   projectFor,
@@ -134,23 +142,27 @@ function MainApp() {
             ) : route.value.view === "review" ? (
               <Review key={`${route.value.id}:${route.value.branch}`} id={route.value.id} branch={route.value.branch} />
             ) : route.value.view === "project" ? (
-              <ProjectView key={route.value.id} id={route.value.id} />
+              <ProjectView key={route.value.id} {...route.value} />
+            ) : route.value.view === "workspace" && route.value.project ? (
+              <ProjectView key={route.value.project} id={route.value.project} section="repositories" />
             ) : ["inbox", "automations", "workspace", "insights"].includes(route.value.view) ? (
               <ActivityView key={route.value.view === "workspace" ? `workspace:${route.value.project ?? ""}` : route.value.view} current={route.value} />
             ) : route.value.view === "settings" ? (
               <SettingsView section={route.value.section} group={route.value.group} />
             ) : route.value.view === "team" ? (
               <TeamBoardView key="team" project={route.value.project} navigate={navigate} />
+            ) : route.value.view === "team-people" ? (
+              <TeamPeopleView key={route.value.project ?? "all"} project={route.value.project} navigate={navigate} />
             ) : route.value.view === "team-task" ? (
               <TeamTaskView key={route.value.id} id={route.value.id} navigate={navigate} />
             ) : route.value.view === "invalid" ? (
               <div class="composer" role="alert">
                 <h1>This link is invalid</h1>
-                <p class="lede">The address contains an incomplete or invalid URL escape. Your saved work is available from the run list.</p>
+                <p class="lede">The address contains an invalid or unsupported destination. Your saved work is available from the project and run lists.</p>
                 <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>Open new run</button>
               </div>
             ) : (
-              <Composer />
+              !draftsReady.value || composerLoading.value || route.value.view === "composer" && route.value.project !== undefined && route.value.project !== composerProject.value ? <div class="composer" role="status">{draftError.value || "Restoring your project draft…"}</div> : <Composer key={composerProject.value} />
             )}
           </main>
         </div>
@@ -161,6 +173,7 @@ function MainApp() {
       <GitHubPicker />
       <SweepDialog />
       {projectsOpen.value ? <ProjectsDialog /> : null}
+      {repositoryChoice.value ? <RepositoryChoiceDialog key={repositoryChoice.value.repository} /> : null}
       {healthOpen.value ? <HealthDialog /> : null}
       {shortcutsOpen.value ? <ShortcutsDialog /> : null}
       {commandPaletteOpen.value ? <CommandPalette /> : null}
@@ -254,18 +267,16 @@ function Crumbs() {
     );
   } else if (r.view === "project") {
     trail = (
-      <span class="crumb here" aria-current="page">
-        {projects.value.find((p) => p.id === r.id)?.name ?? "Project"}
-      </span>
+      <><a class="crumb" href={`#/project/${encodeURIComponent(r.id)}`} aria-current={!r.section ? "page" : undefined}>{projects.value.find((p) => p.id === r.id)?.name ?? "Project"}</a>{r.section ? <>{sep}<span class="crumb here" aria-current="page">{{ runs: "Runs", repositories: "Repositories", settings: "Project settings", board: "Board", people: "People", automation: "Automation" }[r.section]}</span></> : null}</>
     );
-  } else if (r.view === "team" || r.view === "team-task") {
+  } else if (r.view === "team" || r.view === "team-task" || r.view === "team-people") {
     // The board, or a task under it: its title comes from the open task, else from the board's card.
     const title = r.view === "team-task" ? (openTask.value?.id === r.id ? openTask.value.title : teamBoard.value?.tasks.find((t) => t.id === r.id)?.title ?? "Task") : undefined;
     const projectName = r.view === "team" && r.project ? teamBoard.value?.projects.find((p) => p.id === r.project)?.name : undefined;
     trail = title !== undefined ? (
       <>
         <a class="crumb" href="#/team">
-          People
+          Board
         </a>
         {sep}
         <span class="crumb title here" title={title} aria-current="page">
@@ -275,7 +286,7 @@ function Crumbs() {
     ) : projectName ? (
       <>
         <a class="crumb" href="#/team">
-          People
+          Board
         </a>
         {sep}
         <span class="crumb here" aria-current="page">
@@ -284,11 +295,11 @@ function Crumbs() {
       </>
     ) : (
       <span class="crumb here" aria-current="page">
-        People
+        {r.view === "team-people" ? "People" : "Board"}
       </span>
     );
   } else if (r.view === "inbox" || r.view === "automations" || r.view === "workspace" || r.view === "insights") {
-    trail = <>{r.view === "workspace" && r.project ? <><a class="crumb" href={`#/project/${encodeURIComponent(r.project)}`}>{projects.value.find(p => p.id === r.project)?.name ?? "Project"}</a>{sep}</> : null}<span class="crumb here" aria-current="page">{{ inbox: "Inbox", automations: "Scheduling", workspace: "Repository workspace", insights: "Insights" }[r.view]}</span></>;
+    trail = <>{r.view === "workspace" && r.project ? <><a class="crumb" href={`#/project/${encodeURIComponent(r.project)}`}>{projects.value.find(p => p.id === r.project)?.name ?? "Project"}</a>{sep}</> : null}<span class="crumb here" aria-current="page">{{ inbox: "Inbox", automations: "Scheduling", workspace: "Repositories", insights: "Insights" }[r.view]}</span></>;
   } else if (r.view === "settings") {
     const section = r.section ? SETTINGS_SECTIONS.find((item) => item.id === r.section) : undefined;
     trail = section ? (
@@ -413,9 +424,10 @@ function onShortcut(e: KeyboardEvent) {
       return;
     }
     case "n":
-      return go({ view: "composer" });
+      e.preventDefault(); void openComposer(); return;
     case "p":
       e.preventDefault();
+      projectPickerPurpose.value = route.value.view === "composer" ? "composer" : "filter";
       projectsOpen.value = true;
       return;
     case "i":
@@ -591,7 +603,9 @@ function FolderPicker() {
       const d = await api<DirListing>(`/api/fs?${q}`);
       if (request !== latest.current || !pickerOpen.value) return;
       setDir(d);
-      if (!typed.current) setPath(d.path);
+      // Focus can precede the first input event (select-all/paste). Do not
+      // replace the field during that window, or pasted paths can be appended.
+      if (!typed.current && document.activeElement !== pathInput.current) setPath(d.path);
       setStatus(d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked Git, or type a path");
     } catch (err) {
       if (request !== latest.current || !pickerOpen.value) return;
@@ -599,7 +613,7 @@ function FolderPicker() {
       if (!dir && target) void browse(undefined, showHidden);
     }
   };
-  useEffect(() => {
+  useLayoutEffect(() => {
     // A paste + Enter can precede this effect. Its explicit browse already owns this opening;
     // a delayed default listing must never supersede it (or erase text typed before the effect).
     if (pickerOpen.value && !opened.current) void browse(repo.value || undefined);
@@ -708,7 +722,7 @@ function FolderPicker() {
             const entered = (pathInput.current?.value ?? path).trim();
             if (dir && entered === dir.path && status !== "Loading…") choose(dir.path);
           }}>
-            {adding ? "Add this folder" : "Use this folder"}
+            {adding?.title === "Open repository" ? "Open this repository" : adding ? "Add this folder" : "Use this folder"}
           </button>
         </div>
       </div>

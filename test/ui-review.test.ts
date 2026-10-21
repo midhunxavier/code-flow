@@ -20,6 +20,7 @@ let m: any;
 before(async () => {
   Object.assign(globalThis, {
     window: globalThis,
+    document: { addEventListener() {}, hidden: false },
     innerWidth: 1400,
     addEventListener: () => {},
     removeEventListener: () => {},
@@ -40,7 +41,7 @@ before(async () => {
         `export { latestOnly, safeHref } from "./lib.ts";`,
         `export { editAndRerun } from "./run.tsx";`,
         `export { applyPreset } from "./onboarding.tsx";`,
-        `export { checkCmd, limits, loadCheck, optionValues, patterns, repo, repoInfo, roleSel, route, setupCmd } from "./state.ts";`,
+        `export { initializeProjectDrafts, checkCmd, limits, loadCheck, optionValues, patterns, repo, repoInfo, roleSel, route, setupCmd } from "./state.ts";`,
       ].join("\n"),
       resolveDir: ui,
       loader: "ts",
@@ -143,7 +144,8 @@ test("Edit & run again from another repo: the run's check, setup, limits, team a
   answers["/api/check"] = () => new Promise((resolve) => setTimeout(() => resolve({ command: "npm test", source: "package.json", setup: "npm ci" }), 40));
   assert.notEqual(m.repo.value, "/other");
 
-  const restoring = m.editAndRerun({
+  await m.initializeProjectDrafts();
+  await m.editAndRerun({
     id: "r1",
     repo: "/other",
     task: "Fix the flaky test",
@@ -155,8 +157,7 @@ test("Edit & run again from another repo: the run's check, setup, limits, team a
     worktrees: [],
     artifacts: [],
   });
-  assert.deepEqual(m.route.value, { view: "composer" });
-  await restoring;
+  assert.deepEqual(m.route.value, { view: "composer", project: "" });
 
   assert.ok(asked.some((p) => p.startsWith("/api/check")), "the repo's own lookup ran");
   assert.equal(m.repo.value, "/other");

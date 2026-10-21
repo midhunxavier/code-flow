@@ -42,6 +42,18 @@ test("provider readiness respects actual reset windows and never claims unknown 
   assert.match(deferredProviderReadiness(["claude"], {}, new Set(), now).reason!, /not installed/);
 });
 
+test("deferred requests retain strict project selection across persistence and reject invalid authority", async () => {
+  const run = { ...request(), projectSelection: "explicit" };
+  const { queue, file } = await fixture();
+  await queue.enqueue({ run, notBefore: Date.now() + 60_000 });
+  const restored = new DeferredRuns({ file, ready: async () => ({ ready: true }), launch: async () => ({ runId: "unused" }) });
+  await restored.load();
+  assert.equal((await latest(restored)).run.projectSelection, "explicit");
+  for (const change of [{ project: "" }, { projectSelection: "legacy" }, { requireProjectRepo: true }]) {
+    assert.throws(() => sanitizeDeferredRequest({ ...run, ...change }));
+  }
+});
+
 test("earliest start and provider waits survive reconstruction and launch only when both conditions hold", async () => {
   let now = Date.now(), checks = 0, launches = 0;
   const resetsAt = now + 3000;

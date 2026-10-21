@@ -16,7 +16,7 @@ import { ATTEMPT_LABEL, INBOX_LABEL, STATUS_LABEL, TASK_STATUSES, type Member, t
  * beside them. The owner app and the shared dashboard render the same view; `shared` only hides what
  * needs this computer (the link callout), and `navigate` is whichever router the host page uses.
  */
-export function TeamBoardView({ project, shared = false, navigate }: { project?: string; shared?: boolean; navigate: (to: TeamRoute) => void }) {
+export function TeamBoardView({ project, shared = false, embedded = false, navigate }: { project?: string; shared?: boolean; embedded?: boolean; navigate: (to: TeamRoute) => void }) {
   const [mine, setMine] = useState(false);
   const [status, setStatus] = useState<TaskStatus | "">("");
   const [creating, setCreating] = useState<false | "manual" | "agent">(false);
@@ -27,8 +27,9 @@ export function TeamBoardView({ project, shared = false, navigate }: { project?:
   const host = executionHost.value;
   const ssh = !shared && host.kind === "ssh" ? host : null;
   const b = board.value;
-  const chosen = project && b?.projects.some((entry) => entry.id === project) ? project : undefined;
-  if (!b) return <div class="team-page" aria-busy={!boardLoaded.value}>{!shared && !ssh ? <TeamConnectionPicker /> : null}{boardError.value ? <p class="msg err" role="alert">{boardError.value} <button class="btn small" onClick={() => void loadBoard()}>Retry</button></p> : <p class="help" role="status">Loading the team board…</p>}</div>;
+  const chosen = project;
+  if (!b) return <div class="team-page" aria-busy={!boardLoaded.value}>{!shared && !ssh && !embedded ? <TeamConnectionPicker /> : null}{boardError.value ? <p class="msg err" role="alert">{boardError.value} <button class="btn small" onClick={() => void loadBoard()}>Retry</button></p> : <p class="help" role="status">Loading the team board…</p>}</div>;
+  if (project && !b.projects.some(entry => entry.id === project)) return <div class="team-page"><p role="alert">This project is unavailable on this board. Choose a project you have access to.</p><button class="btn" onClick={() => navigate({ view: "team" })}>All board projects</button></div>;
   const me = b.me.userId;
   const involvesMe = (task: TaskSummary) => task.owner?.userId === me || task.reviewer?.userId === me || task.collaborators.some((who) => who.userId === me) || (task.handoff?.state === "offered" && task.handoff.to.userId === me);
   const projectTasks = b.tasks.filter(task => !chosen || task.projectId === chosen);
@@ -46,13 +47,13 @@ export function TeamBoardView({ project, shared = false, navigate }: { project?:
   };
   const link = teamLink.value;
   return <div class="team-page">
-    {!shared && !ssh ? <TeamConnectionPicker /> : null}
+    {!shared && !ssh && !embedded ? <TeamConnectionPicker /> : null}
     {boardError.value ? <p class="msg err" role="alert">{boardError.value}</p> : null}
     <div class="page-head">
-      <div class="page-head-text"><h1>{ssh ? "Workspace tasks" : "People"}</h1><p>{ssh ? `Tasks, ownership and reviews in the ${ssh.name} workspace.` : chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>
-      <div class="page-head-actions">{canCreate ? <button type="button" class="btn primary" aria-expanded={!!creating} disabled={!!creating} onClick={() => setCreating("manual")}><Icon name="plus" /> New task</button> : null}{canCreate && !shared ? <button type="button" class="btn" disabled={!!creating} onClick={() => setCreating("agent")}>Draft with agent</button> : null}</div>
+      <div class="page-head-text">{embedded ? <h2>Board</h2> : <h1>Board</h1>}<p>{ssh ? `Tasks, ownership and reviews on ${ssh.name}.` : chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>
+      <div class="page-head-actions"><button class="btn" onClick={() => navigate({ view: "team-people", ...(chosen ? { project: chosen } : {}) })}>People</button>{canCreate ? <button type="button" class="btn primary" aria-expanded={!!creating} disabled={!!creating} onClick={() => setCreating("manual")}><Icon name="plus" /> New task</button> : null}{canCreate && !shared ? <button type="button" class="btn" disabled={!!creating} onClick={() => setCreating("agent")}>Draft with agent</button> : null}</div>
     </div>
-    {ssh ? <><SshTeamServerCard key={ssh.id} host={ssh} /><div class="team-board-context"><strong>Viewing the SSH workspace board · {ssh.name}</strong><p>Tasks below belong to this workspace. To use the shared team board, connect your computer with the team address and account from team server setup.</p></div></> : null}
+    {ssh && !embedded ? <><SshTeamServerCard key={ssh.id} host={ssh} /><div class="team-board-context"><strong>Viewing this computer’s board · {ssh.name}</strong><p>Tasks below belong to this computer. To use the shared team board, connect your computer with the team address and account from team server setup.</p></div></> : null}
     {shared ? <TeamTerminalPanel board={b} project={chosen} /> : null}
     {!ssh && (shared || link && !link.linked) ? <HostQueue board={b} project={chosen} /> : null}
     {!shared && !ssh && link && !link.linked && !b.tasks.length ? <div class="settings-callout team-callout"><Icon name="people" /><div><strong>Not connected to a team server</strong><p>Connect this computer in Connections → Share access to work on a shared board, or create tasks here to use this computer as the team server.</p><a href="#/settings/connections/sharing">Open Connections → Share access <span aria-hidden="true">→</span></a></div></div> : null}

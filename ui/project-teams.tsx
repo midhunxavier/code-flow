@@ -32,7 +32,7 @@ export function ProjectTeamsPanel({ projectId, repos }: { projectId: string; rep
   if (error) return <section class="pp-card pp-unavailable" aria-label="Project missions">
     <div class="pp-card-head"><h2>Project missions</h2><span class="badge">Unavailable</span><button class="btn small" disabled={loading} onClick={() => void load()}>{loading ? "Retrying…" : "Retry"}</button></div>
     <div class="pp-unavailable-body" role="alert">
-      <p>{error.status === 404 ? "Project missions aren’t available on this workspace." : "Couldn’t load project missions."}</p>
+      <p>{error.status === 404 ? "Project missions aren’t available on this computer." : "Couldn’t load project missions."}</p>
       <p class="help">{error.status === 404 ? "The connected server doesn’t provide this feature. It may need an update." : error.message}</p>
     </div>
   </section>;
@@ -117,7 +117,7 @@ export function ProjectTeamsInbox({ projectId }: { projectId?: string }) {
   useEffect(() => { let active = true; const load = () => api<Inventory>(`/api/project-teams${projectId ? `?project=${encodeURIComponent(projectId)}` : ""}`).then((data) => { if (active) setTeams(data.teams); }, () => undefined); const stop = pollVisible(load, 15000); return () => { active = false; stop(); }; }, [projectId]);
   const actionable = teams.filter((t) => t.status !== "archived" && (t.opportunities.some((o) => ["proposed", "ready", "blocked"].includes(o.status)) || t.cycles.at(-1)?.status === "unknown"));
   if (!actionable.length) return null;
-  return <section class="pp-card standing-teams"><h2>Project team opportunities</h2>{actionable.map((t) => <article key={t.id}><h3>{t.name}</h3><p>{t.opportunities.filter((o) => o.status === "ready").length} verified drafts · {t.opportunities.filter((o) => o.status === "proposed").length} proposals{t.cycles.at(-1)?.status === "unknown" ? " · launch needs reconciliation" : ""}</p><button class="btn" onClick={() => { route.value = { view: "project", id: t.projectId }; }}>Review opportunities</button></article>)}</section>;
+  return <section class="pp-card standing-teams"><h2>Project team opportunities</h2>{actionable.map((t) => <article key={t.id}><h3>{t.name}</h3><p>{t.opportunities.filter((o) => o.status === "ready").length} verified drafts · {t.opportunities.filter((o) => o.status === "proposed").length} proposals{t.cycles.at(-1)?.status === "unknown" ? " · launch needs reconciliation" : ""}</p><button class="btn" onClick={() => { route.value = { view: "project", id: t.projectId, section: "automation", kind: "missions" }; }}>Review opportunities</button></article>)}</section>;
 }
 
 function ProjectBriefing({ teams }: { teams: ProjectTeam[] }) {

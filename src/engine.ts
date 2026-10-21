@@ -4283,6 +4283,9 @@ export class RunManager {
       throw new Error("Isolation runs checks in a Docker container, but Docker isn't installed or not on PATH");
     }
     const repo = await repoRoot(input.repo);
+    if (input.requireProjectRepo && (!this.projects?.available || !input.project || !this.projects.get(input.project)?.repos.includes(repo))) {
+      throw new Error("The repository is no longer an explicit member of the requested project");
+    }
     const parent = input.parentRunId ? this.get(input.parentRunId) : undefined;
     if (input.parentRunId && !parent) throw new RunConflictError("The original run is no longer available; its source restrictions cannot be retained");
     // A PR's own branch is the base; its changes are reviewed against the PR's target.

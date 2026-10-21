@@ -22,6 +22,8 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 
 | Operation | Request | Behavior |
 | --- | --- | --- |
+| `POST /projects/:id/repositories` | `repo` absolute Git path | Owner-only explicit membership addition; canonicalizes the root and returns the updated project. Existing membership is idempotent; the 50-repository limit applies. |
+| `POST /runs` | Existing run fields; optional `projectSelection: "explicit"` with `project` | Explicit selection requires an existing project and current canonical repository membership. Rejected membership never silently creates or extends a project. Callers omitting the marker retain legacy placement behavior. |
 | `POST /improve-prompt` | `repo`, `text`, optional `mode=quick\|repo`, `agent`, `context`, `source`, `execution=local` | Owner-only local prompt rewrite in a disposable private Git directory; returns `{prompt, summary, agent}` after cleanup. |
 | `POST /readiness` | `repo`, optional `baseRef`, `setup`, `check`, `execute`, `pattern`, `roles`, `providers` | Inspection by default; `execute: true` runs commands in a temporary worktree at a pinned commit. Provider scope is described below. |
 | `GET /verification/profile` | `repo`, `preset` query | Detect lightweight, standard or thorough checks. |

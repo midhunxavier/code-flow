@@ -68,9 +68,9 @@ const fits = (target: Page) => target.evaluate(() => { const main = document.get
 test("the People entry opens a useful empty board with a workflow summary", async () => {
   await page.evaluate(() => localStorage.setItem("peopleEnabled", "1")); await page.reload();
   await page.getByRole("button", { name: "Application menu", exact: true }).click();
-  await page.getByRole("menuitem", { name: "People", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Board", exact: true }).click();
   await page.waitForURL(/#\/team$/);
-  await page.getByRole("heading", { level: 1, name: "People", exact: true }).waitFor();
+  await page.getByRole("heading", { level: 1, name: "Board", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Your board is ready for its first task", exact: true }).waitFor();
   assert.deepEqual(await page.locator(".team-workflow > span").evaluateAll(items => items.map(item => item.firstChild?.textContent)), ["Planned", "Working", "Blocked", "In review", "Done"]);
   assert.equal(await page.locator("section.team-column").count(), 0, "an empty board uses one actionable state instead of empty columns");
@@ -175,8 +175,8 @@ test("a shared contributor signs in, finds the task under Team and comments, wit
   await shared.getByRole("heading", { name: "Sign in to shared projects", exact: true }).waitFor();
   await shared.getByLabel("Username", { exact: true }).fill("casey"); await shared.getByLabel("Password", { exact: true }).fill(password); await shared.getByRole("button", { name: "Sign in", exact: true }).click();
   await shared.getByRole("heading", { name: "Shared project review", exact: true }).waitFor();
-  await shared.getByRole("tab", { name: "People", exact: true }).click();
-  await shared.waitForURL(/#\/team$/); await shared.getByRole("tab", { name: "People", exact: true, selected: true }).waitFor();
+  await shared.getByRole("tab", { name: "Board", exact: true }).click();
+  await shared.waitForURL(/#\/team$/); await shared.getByRole("tab", { name: "Board", exact: true, selected: true }).waitFor();
   const card = shared.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }); await card.waitFor();
   assert.equal(await shared.getByText("Not connected to a team server").count(), 0, "the shared dashboard never talks about this computer's link");
   await card.click();
@@ -241,7 +241,7 @@ test("the rail's Team badge counts the inbox from the first paint, and marking i
   await page.goto(`${base}/#/`); await page.reload(); await page.getByRole("button", { name: "New run", exact: true }).waitFor();
   await page.locator(".rail-menu-count", { hasText: "1" }).waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: "Application menu", exact: true }).click();
-  await page.getByRole("menuitem", { name: /^People 1 unread$/ }).click(); await page.waitForURL(/#\/team$/);
+  await page.getByRole("menuitem", { name: /^Board 1 unread$/ }).click(); await page.waitForURL(/#\/team$/);
   const card = page.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }); await card.waitFor();
   await page.locator(".team-card.needs-you").filter({ hasText: TITLE }).waitFor(); await card.getByText("Needs you", { exact: true }).waitFor();
   await page.getByRole("heading", { name: /^Inbox/ }).getByText("1", { exact: true }).waitFor();
@@ -355,8 +355,8 @@ test("an unknown execution blocks Start until the owner confirms it stopped and 
 test("three shared tabs on Team hold one connection each, so a request from the first still goes through", async () => {
   const extra: Page[] = [];
   try {
-    for (let n = 0; n < 2; n++) { const tab = await sharedContext.newPage(); extra.push(tab); await tab.goto(`${base}/#/team`); await tab.getByRole("tab", { name: "People", exact: true, selected: true }).waitFor(); await tab.getByRole("heading", { level: 1, name: "People", exact: true }).waitFor(); }
-    await shared.getByRole("tab", { name: "People", exact: true, selected: true }).waitFor(); // the first tab is still on the task page
+    for (let n = 0; n < 2; n++) { const tab = await sharedContext.newPage(); extra.push(tab); await tab.goto(`${base}/#/team`); await tab.getByRole("tab", { name: "Board", exact: true, selected: true }).waitFor(); await tab.getByRole("heading", { level: 1, name: "Board", exact: true }).waitFor(); }
+    await shared.getByRole("tab", { name: "Board", exact: true, selected: true }).waitFor(); // the first tab is still on the task page
     // A browser gives one server six connections for all its tabs; with two streams per tab the third tab exhausted them and this fetch never returned.
     const result = await shared.evaluate(async () => { const started = performance.now(), control = new AbortController(), timer = setTimeout(() => control.abort(), 6_000); try { const response = await fetch("/api/team/inbox", { signal: control.signal }); return { status: response.status, ms: Math.round(performance.now() - started) }; } catch (error) { return { status: 0, ms: Math.round(performance.now() - started), error: String(error) }; } finally { clearTimeout(timer); } });
     assert.equal(result.status, 200, `the request from the first Team tab stalled: ${JSON.stringify(result)}`);
@@ -370,7 +370,7 @@ test("a shared dashboard left open asks the server for nothing: no board, task o
   const polls: string[] = []; tab.on("request", (request) => { const path = new URL(request.url()).pathname; if (/^\/api\/team\/(?:board|inbox|tasks\/)/.test(path)) polls.push(`${request.method()} ${path}`); });
   try {
     await tab.clock.install();
-    await tab.goto(`${base}/#/team`); await tab.getByRole("tab", { name: "People", exact: true, selected: true }).waitFor(); await tab.getByRole("region", { name: /^Working|^Planned/ }).first().waitFor(); await tab.getByRole("heading", { name: /^Inbox/ }).waitFor();
+    await tab.goto(`${base}/#/team`); await tab.getByRole("tab", { name: "Board", exact: true, selected: true }).waitFor(); await tab.getByRole("region", { name: /^Working|^Planned/ }).first().waitFor(); await tab.getByRole("heading", { name: /^Inbox/ }).waitFor();
     await tab.clock.runFor(2_000); await sleep(500); polls.length = 0; // the first loads and the reload the stream's hello asks for are done
     await tab.clock.runFor(5 * 60_000); await sleep(500);
     assert.deepEqual(polls, [], "the Team tab reloads on events only; a timer would keep an idle shared session alive for ever");
@@ -570,4 +570,27 @@ test("teammate terminals: separate grant, real PTY typing, reconnect, resize and
   await settings.getByText("No open teammate terminals.", { exact: true }).waitFor(); await settings.getByText("Recent terminal activity", { exact: true }).click();
   await settings.getByText(/Access revoked or repository changed/).waitFor(); await audit(page, "terminal permissions and activity");
   assert.deepEqual(violations, []); assert.deepEqual(errors, []);
+});
+
+test("an empty shared project exposes Board and People without a server clone or owner APIs", async () => {
+  const empty = await api<{ id: string }>("/api/projects", { method: "POST", body: JSON.stringify({ name: "Shared without clone", repos: [] }) });
+  const current = await api<{ revision: number }>("/api/team/board?teamConnection=local");
+  await api(`/api/team/projects/${empty.id}/repositories?teamConnection=local`, { method: "PUT", body: JSON.stringify({ revision: current.revision, repositories: [{ key: "service", label: "Service", remote: "https://example.com/service.git" }] }) });
+  const accounts = await api<{ revision: number }>("/api/accounts");
+  await api("/api/accounts", { method: "POST", body: JSON.stringify({ revision: accounts.revision, username: "empty-project", displayName: "Empty project maintainer", password, roles: { [empty.id]: "maintainer" } }) });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } }); contexts.push(context);
+  const tab = await context.newPage(), requests: string[] = [];
+  tab.on("request", request => requests.push(new URL(request.url()).pathname));
+  await tab.goto(`${base}/#/team/project/${empty.id}`);
+  await tab.getByLabel("Username", { exact: true }).fill("empty-project"); await tab.getByLabel("Password", { exact: true }).fill(password); await tab.getByRole("button", { name: "Sign in", exact: true }).click();
+  await tab.getByRole("heading", { name: "Your board is ready for its first task", exact: true }).waitFor();
+  await tab.getByRole("button", { name: "People", exact: true }).click();
+  await tab.getByRole("region", { name: "Project people", exact: true }).waitFor();
+  await tab.getByRole("group", { name: "Repository keys · Shared without clone", exact: true }).waitFor();
+  assert.equal(await tab.getByLabel("Key", { exact: true }).inputValue(), "service");
+  assert.equal(await tab.getByRole("region", { name: "Shared project accounts", exact: true }).count(), 0);
+  assert.equal(await tab.getByText("Run teammates’ tasks on this computer", { exact: true }).count(), 0);
+  for (const endpoint of ["/api/accounts", "/api/agents", "/api/team-link", "/api/repo-config", "/api/health"]) assert.equal(requests.includes(endpoint), false, endpoint);
+  await audit(tab, "empty shared project people");
+  assert.deepEqual(violations, []);
 });

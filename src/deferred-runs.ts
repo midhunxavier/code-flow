@@ -15,6 +15,7 @@ import type { SourceInput } from "./github.js";
 
 export interface DeferredRunRequest {
   repo: string; project?: string; pattern: string; task: string;
+  projectSelection?: "explicit";
   roles: Record<string, (AgentId | "auto")[]>; options: Record<string, number | boolean>;
   baseRef?: string; branchPrefix?: string; parentRunId?: string;
   context?: { paths: { path: string }[] };
@@ -74,7 +75,7 @@ const canonical = (value: any): string => JSON.stringify(value, (_key, item) => 
 
 /** A second defense behind server validation: only configuration and source references persist. */
 export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
-  const raw = keys(value, ["repo", "project", "pattern", "task", "roles", "options", "baseRef", "branchPrefix", "parentRunId", "context", "agentSettings", "roleSettings", "loop", "trust", "allowUntrusted", "approvals", "source", "externalSourceRef"], "run request");
+  const raw = keys(value, ["repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "branchPrefix", "parentRunId", "context", "agentSettings", "roleSettings", "loop", "trust", "allowUntrusted", "approvals", "source", "externalSourceRef"], "run request");
   const repo = text(raw.repo, 4000, "repository");
   if (!isAbsolute(repo)) throw new Error("Deferred runs need an absolute repository path");
   const roles = record(raw.roles ?? {}, 20, (value) => {
@@ -107,6 +108,10 @@ export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
   }
   const run: DeferredRunRequest = { repo, pattern: text(raw.pattern, 100, "pattern"), task: text(raw.task, 24_000, "task"), roles, options, loop, trust: "safe", allowUntrusted: false, approvals: { plan: false, tools: false } };
   for (const key of ["project", "baseRef", "branchPrefix", "parentRunId"] as const) if (raw[key] !== undefined && raw[key] !== "") run[key] = text(raw[key], key === "project" || key === "parentRunId" ? 240 : 1000, key);
+  if (raw.projectSelection !== undefined) {
+    if (raw.projectSelection !== "explicit" || !run.project) throw new Error("Choose an explicit project for the deferred run");
+    run.projectSelection = "explicit";
+  }
   if (raw.agentSettings !== undefined) run.agentSettings = validateAgentSettings(raw.agentSettings);
   if (raw.roleSettings !== undefined) run.roleSettings = record(raw.roleSettings, 20, (value) => validateAgentSettings(value), "role settings");
   if (raw.context !== undefined) {

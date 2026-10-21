@@ -143,7 +143,7 @@ export function Menu({ label, icon, title, trigger, above = false, align = "star
     document.addEventListener("scroll", position, true);
     return () => { window.removeEventListener("resize", position); document.removeEventListener("scroll", position, true); };
   }, [open, above, align]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
     items()[0]?.focus();
     const away = (e: MouseEvent) => {

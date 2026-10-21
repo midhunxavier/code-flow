@@ -11,7 +11,7 @@ const TermView = lazyView(() => import("./terminal.js").then(module => module.Te
 interface TerminalView { revision: number; available: boolean; grants: (Partial<TerminalGrant> & { projectId: string; allowed?: boolean })[]; sessions: TeamTerminal[]; audit: TerminalAudit[]; idleMinutes: number; maxPerUser: number }
 function useTerminals() {
   const [data, setData] = useState<TerminalView | null>(null), [error, setError] = useState("");
-  const load = async (current: () => boolean = () => true) => { try { const next = await api<TerminalView>("/api/team-terminals"); if (current()) { setData(next); setError(""); } } catch (err) { if (current()) setError((err as Error).message); } };
+  const load = async (current: () => boolean = () => true) => { try { const next = await api<TerminalView>("/api/team-terminals"); if (current()) { setData(next); setError(""); } } catch (err) { if (current()) { setData(null); setError((err as Error).message); } } };
   usePoll(load, 0, [teamTick.value]); return { data, error, setError, load };
 }
 const closeTerminal = (id: string) => api(`/api/team-terminals/${enc(id)}`, { method: "DELETE", headers: { "content-type": "application/json" }, body: "{}" });

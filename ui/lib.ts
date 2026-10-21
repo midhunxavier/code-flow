@@ -2,6 +2,7 @@ import { pollVisible } from "./polling.js";
 import { signal } from "@preact/signals";
 import { useCallback, useEffect, useRef } from "preact/hooks";
 import type { AgentId } from "./types.js";
+import { projectCollaboration } from "./navigation.js";
 
 /** An API error; `confirm` names a choice the server needs from you before it can go ahead. */
 export class ApiError extends Error {
@@ -18,17 +19,29 @@ export class ApiError extends Error {
 export const workspaceId = (window as Window & { __CODEFLOW_WORKSPACE?: string }).__CODEFLOW_WORKSPACE;
 export const workspaceUrl = (id = "local", hash = "#/") => `${id === "local" ? "/" : `/computer/${encodeURIComponent(id)}/`}${hash}`;
 /** A tab's team stays fixed until navigation, including downloads and requests already in flight. */
-export let selectedTeamConnection = new URLSearchParams(location.search).get("team") ?? "";
+export let selectedTeamConnection = projectCollaboration(location.hash) ? "local" : new URLSearchParams(location.search).get("team") ?? "";
+export const collaborationConfigured = signal(false);
+/** Connection identity stays in the URL and survives copying, reloads and browser history. */
+export function collaborationHref(hash: string, connection = selectedTeamConnection || "local") {
+  const url = new URL(location.href); url.searchParams.delete("token"); url.searchParams.set("team", connection); url.hash = hash;
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+/** Switching sources replaces the document, including its requests, cached board and subscriptions. */
+export function ensureCollaborationSource(hash: string): boolean {
+  if (!projectCollaboration(hash) || selectedTeamConnection === "local") return true;
+  location.assign(collaborationHref(hash, "local")); return false;
+}
 export const apiPath = (path: string) => {
-  if (selectedTeamConnection && /^\/api\/team(?:-link)?(?:\/|\?|$)/.test(path)) path += `${path.includes("?") ? "&" : "?"}teamConnection=${encodeURIComponent(selectedTeamConnection)}`;
+  if (selectedTeamConnection && /^\/api\/team(?:-link)?(?:\/|\?|$)/.test(path) && !new URLSearchParams(path.split("?")[1]).has("teamConnection")) path += `${path.includes("?") ? "&" : "?"}teamConnection=${encodeURIComponent(selectedTeamConnection)}`;
   return workspaceId && path.startsWith("/api/") ? `/computer/${workspaceId}${path}` : path;
 };
 /** Resolve the legacy default once, before any team requests or subscriptions, then pin it for this tab. */
 export async function initializeTeamConnection() {
-  if (selectedTeamConnection) return;
+  if (selectedTeamConnection) { const url = new URL(location.href); url.searchParams.set("team", selectedTeamConnection); history.replaceState(history.state, "", url.href); return; }
   try {
     const inventory = await api<{ connections: { id: string; linked: boolean }[] }>("/api/team-link/connections");
     const remotes = inventory.connections.filter((entry) => entry.linked);
+    collaborationConfigured.value = remotes.length > 0;
     selectedTeamConnection = remotes.length === 1 ? remotes[0]!.id : "local";
     const url = new URL(location.href); url.searchParams.set("team", selectedTeamConnection);
     history.replaceState(history.state, "", url.href);

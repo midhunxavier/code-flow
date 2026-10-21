@@ -15,9 +15,9 @@ import { teamAwaitingAnswer } from "./team-state.js";
 import { prioritizedReviewRuns, groupReviewRuns, reviewReason, REVIEW_REASON_LABELS, type ReviewReason } from "../src/review-inbox.js";
 import type { AutomationEvent, AutomationPreview, Schedule } from "../src/automation.js";
 
-/** The project an automation's runs go in: the one it was saved with, or (deleted since) its repo's. */
+/** Keep explicit placement; infer legacy placement only for a uniquely owned repository. */
 export const automationProject = (run: { project?: string; repo: string }) =>
-  projects.value.find((p) => p.id === run.project) ?? projects.value.find((p) => p.repos.includes(run.repo));
+  run.project ? projects.value.find((p) => p.id === run.project) : projects.value.filter((p) => p.repos.includes(run.repo)).length === 1 ? projects.value.find((p) => p.repos.includes(run.repo)) : undefined;
 
 /** Is the automation in what the app is showing? (inScope, for where its runs go.) */
 const automationInScope = (a: Automation, scope = currentProject.value) => {
@@ -96,12 +96,13 @@ export function ScheduleEditor({ automation: a, save }: { automation: Pick<Autom
 }
 
 // ---------------------------------------------------------------- page
-export function AutomationsView({ mode = "all", category }: { mode?: "all" | "inbox" | "automations"; category?: "repeat" | "backlog" }) {
+export function AutomationsView({ mode = "all", category, projectId, showScope = true }: { mode?: "all" | "inbox" | "automations"; category?: "repeat" | "backlog"; projectId?: string; showScope?: boolean }) {
   useEffect(() => {
     return pollVisible(loadAutomations, 15_000);
   }, []);
   // The project you're in, as in the sidebar; what's in other projects is a count and a link away.
-  const scoped = currentProject.value !== ALL;
+  const scope = projectId ?? currentProject.value;
+  const scoped = scope !== ALL;
   const [grouping, setGrouping] = useState("project");
   const [filter, setFilter] = useState("");
   const [query, setQuery] = useState("");
@@ -115,20 +116,21 @@ export function AutomationsView({ mode = "all", category }: { mode?: "all" | "in
     const project = projectFor(run); return { id: project?.id ?? "unassigned", label: project?.name ?? "Without a project" };
   });
   const matching = automations.value.filter(a => !category || !a.target && (category === "backlog" ? !!a.sweep : !a.sweep));
-  const list = matching.filter((a) => automationInScope(a));
-  const here = activeProject.value ? ` in ${activeProject.value.name}` : scoped ? " without a project" : "";
+  const list = matching.filter((a) => automationInScope(a, scope));
+  const project = projects.value.find(p => p.id === scope);
+  const here = project ? ` in ${project.name}` : scoped ? " without a project" : "";
   return (
     <div class="automations">
       {mode !== "automations" ? <ProjectTeamsInbox projectId={currentProject.value !== ALL && currentProject.value !== NONE ? currentProject.value : undefined} /> : null}
-      <div class="page-head">
+      {showScope ? <div class="page-head">
         <div class="ph-text page-head-text">
           <h3>Project scope</h3>
           <p class="lede">
             {mode === "inbox" ? "Questions, blocked work, failed checks and results waiting for your review." : "Schedule work and manage triggers. Results wait in your Inbox; nothing is merged automatically."}
           </p>
         </div>
-        <ProjectButton />
-      </div>
+        {projectId ? <span>{project?.name}</span> : <ProjectButton />}
+      </div> : null}
 
       {/* Each section is a card: its title, then its items as rows. */}
       {mode !== "automations" ? <section class="section auto-card" aria-labelledby="inbox-title">
@@ -145,7 +147,7 @@ export function AutomationsView({ mode = "all", category }: { mode?: "all" | "in
         <h2 class="section-title" id="automations-title">
           {category === "backlog" ? "Scheduled backlog work" : "Repeating tasks and webhooks"} {list.length ? <span class="n">{list.length}</span> : null}
         </h2>
-        <Elsewhere count={matching.length - list.length} what={(n) => `${n} more in other projects`} />
+        {!projectId ? <Elsewhere count={matching.length - list.length} what={(n) => `${n} more in other projects`} /> : null}
         {list.length ? (
           list.map((a) => <AutomationRow key={a.id} a={a} scoped={scoped} />)
         ) : (
@@ -155,7 +157,7 @@ export function AutomationsView({ mode = "all", category }: { mode?: "all" | "in
         )}
       </section> : null}
 
-      <p class="help">To access this workspace from another device, open <a href="#/settings/connections/sharing">Remote access settings</a>.</p>
+      <p class="help">To access this computer from another device, open <a href="#/settings/connections/sharing">Connections → Share access</a>.</p>
     </div>
   );
 }

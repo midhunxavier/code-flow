@@ -127,7 +127,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
     if (!new URL(route.request().url()).searchParams.has("path")) await homeHeld;
     await route.continue();
   });
-  await page.getByRole("button", { name: "Choose repository" }).first().click();
+  await page.getByRole("button", { name: "Open repository", exact: true }).click();
   const path = page.getByLabel("Folder path");
   await path.fill(repo);
   releaseHome();
@@ -135,7 +135,8 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   await path.press("Enter");
   await page.getByText("✓ This folder is a git repository").waitFor();
   await page.unroute(/\/api\/fs\b/);
-  await page.getByRole("button", { name: "Use this folder" }).click();
+  await page.getByRole("button", { name: "Open this repository" }).click();
+  await page.getByRole("button", { name: "Create project", exact: true }).click();
   await page.locator(".repo-btn:not(.project-btn) .name", { hasText: repo.split("/").pop()! }).waitFor();
   // The check is detected after the repo is chosen (two more requests): wait for it, don't race it.
   await page
@@ -310,7 +311,8 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   ];
   writeFileSync(ghState, JSON.stringify(s));
 
-  await page.goto(`${BASE}/#/automations/backlog`);
+  const project = (await fetch(`${BASE}/api/projects`, { headers: bearer }).then(response => response.json())).find((project: { repos: string[] }) => project.repos.includes(realpathSync(repo)));
+  await page.goto(`${BASE}/#/project/${project.id}/automation/backlog`);
   await page.getByRole("button", { name: /Fix open issues/ }).click();
   const dialog = page.locator("dialog.sweep-dialog");
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).waitFor();
@@ -325,7 +327,7 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   await item.waitFor({ state: "detached" });
 
   // The next sweep knows #41 has a run.
-  await page.goto(`${BASE}/#/automations/backlog`);
+  await page.goto(`${BASE}/#/project/${project.id}/automation/backlog`);
   await page.getByRole("button", { name: /Fix open issues/ }).click();
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).getByText("Already has a run").waitFor();
   assert.equal(await dialog.getByRole("checkbox", { name: /fix the greeting/ }).isChecked(), false);
@@ -411,7 +413,10 @@ test("insights and run search", async () => {
   assert.ok(await page.getByRole("table").first().isVisible());
   await page.keyboard.press("/");
   await page.keyboard.type("automated chore");
-  await page.getByText(/1 of \d+ runs/).waitFor();
+  // The history footer can also contain "1 of ... runs loaded" before search
+  // settles. Wait for the actual result and the search-specific count.
+  await page.locator(".rail .run-item", { hasText: "E2E: automated chore" }).waitFor();
+  await page.locator(".rail-hint").filter({ hasText: /^1 of \d+ runs/ }).waitFor();
   assert.equal(await page.locator(".rail .run-item").count(), 1);
 });
 
@@ -432,7 +437,7 @@ test("supervisor: the reviewer defaults to a different vendor than the superviso
   assert.deepEqual(await pressed("Reviewer"), ["Skip"]);
 });
 
-test("projects: the first run made one; the sidebar lists runs under their projects; a run moves back", async () => {
+test("projects: onboarding made one; the sidebar lists runs under their projects; a run moves back", async () => {
   const projects = () => fetch(`${BASE}/api/projects`, { headers: bearer }).then((r) => r.json() as Promise<{ id: string; name: string; repos: string[] }[]>);
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: repo }).toString().trim();
   const [own, ...others] = await projects();
@@ -448,7 +453,8 @@ test("projects: the first run made one; the sidebar lists runs under their proje
   await page.locator("#project-name").fill("E2E side");
   assert.equal(await page.locator(".project-repos .dir").count(), 1, "starts with the repo you're in");
   await page.getByRole("button", { name: "Create project" }).click();
-  await page.locator(".where .project-btn", { hasText: "E2E side" }).waitFor(); // new runs start in it
+  await page.locator(".page-head-actions").getByRole("button", { name: "New run", exact: true }).click();
+  await page.locator(".where .project-btn", { hasText: "E2E side" }).waitFor(); // explicitly open its draft
 
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
   if (!(await page.locator(".composer-options").getAttribute("open"))) await page.locator(".composer-options > summary").click();
@@ -479,10 +485,12 @@ test("projects: the first run made one; the sidebar lists runs under their proje
   await page.getByRole("button", { name: "Cancel" }).click();
   await page.locator("dialog[open]").waitFor({ state: "detached" });
 
-  // Back to every project for the tests that follow: new runs go in their repo's project.
+  // Restore the original project draft for the tests that follow.
   await page.goto(BASE);
   await page.locator(".where .project-btn").click();
-  await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
+  await page.locator(".project-row").filter({ has: page.locator(".pr-main .pr-name", { hasText: own!.name }) }).locator(".pr-main").click();
+  await page.waitForURL(url => url.hash === `#/project/${own!.id}/new`);
+  await page.locator(".where .project-btn", { hasText: own!.name }).waitFor();
 });
 
 test("side panel: chat with one agent, read a file, run a command, keep a note", async () => {
@@ -834,6 +842,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.getByText("✓ This folder is a git repository").waitFor();
     assert.equal(listedPaths.at(-1), repo, "a delayed default listing cannot supersede same-tick explicit navigation");
     await fresh.getByRole("button", { name: "Use this folder", exact: true }).click();
+    await fresh.getByRole("dialog", { name: "Open repository in a project" }).getByRole("button", { name: /^Open / }).first().click();
     await fresh.waitForFunction(() => (document.querySelector("#checkCmd") as HTMLInputElement | null)?.value === "npm test");
     await fresh.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
     await fresh.getByLabel("Task", { exact: true }).fill("E2E: improve {{component}} in {{package}}");
@@ -1019,12 +1028,15 @@ test("chat menu starts another provider with carried-over context", async () => 
 
 test("single-agent setup is inline and completed replies show running checks clearly", async () => {
   const fresh = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const destination = (await fetch(`${BASE}/api/projects`, { headers: bearer }).then(response => response.json())).find((project: any) => project.repos.includes(realpathSync(repo)))
+    ?? await fetch(`${BASE}/api/projects`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Inline agent", repos: [repo] }) }).then(response => response.json());
   try {
-    await fresh.addInitScript((repo) => {
+    await fresh.addInitScript(({ repository: repo, project }) => {
+      localStorage.setItem("project", project);
       localStorage.setItem("repo", repo); localStorage.setItem("pattern", "solo");
       localStorage.setItem("roleSel", JSON.stringify({ solo: { agent: ["claude"] } }));
       localStorage.setItem("roleModels", JSON.stringify({ solo: { agent: { claude: { model: "opus", effort: "low" } } } }));
-    }, repo);
+    }, { repository: repo, project: destination.id });
     await fresh.goto(`${BASE}/?token=${TOKEN}`);
     const box = fresh.locator(".taskbox");
     await box.getByRole("button", { name: "Model", exact: true }).waitFor();
@@ -1126,7 +1138,7 @@ test("chatbox saves templates to the chosen library and makes them immediately r
   const fresh = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const project = await fetch(`${BASE}/api/projects`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Quick templates", repos: [repo] }) }).then((response) => response.json());
   try {
-    await fresh.addInitScript(({ repository, id }) => { localStorage.setItem("repo", repository); localStorage.setItem("project", id); localStorage.setItem("pattern", "solo"); localStorage.setItem("sideOpen", "0"); }, { repository: repo, id: project.id });
+    await fresh.addInitScript(({ repository, id }) => { localStorage.setItem("repo", repository); localStorage.setItem("project", id); localStorage.setItem("composerProject", id); localStorage.setItem("pattern", "solo"); localStorage.setItem("sideOpen", "0"); }, { repository: repo, id: project.id });
     await fresh.goto(`${BASE}/?token=${TOKEN}`);
     const menu = fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true });
     await menu.click();
@@ -1199,7 +1211,7 @@ test("template picker edits and deletes within its library without changing the 
   try {
     await fresh.goto(`${BASE}/?token=${TOKEN}`);
     await fresh.evaluate(({ repository, id }) => {
-      localStorage.setItem("repo", repository); localStorage.setItem("project", id); localStorage.setItem("pattern", "solo"); localStorage.setItem("sideOpen", "0");
+      localStorage.setItem("repo", repository); localStorage.setItem("project", id); localStorage.setItem("composerProject", id); localStorage.setItem("pattern", "solo"); localStorage.setItem("sideOpen", "0");
       const library = { schemaVersion: 1, presets: [], templates: [{ id: "template-one", name: "Review", pattern: "solo", task: "Review {{component}}", criteria: ["Test {{component}}"] }] };
       localStorage.setItem(`composerLibrary:${id}`, JSON.stringify(library)); localStorage.setItem("composerLibrary", JSON.stringify(library));
     }, { repository: repo, id: project.id });
@@ -1228,9 +1240,10 @@ test("template picker edits and deletes within its library without changing the 
     await fresh.route("**/api/projects", async route => { await projectsGate; await route.continue(); });
     try {
       await fresh.reload();
-      await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
-      assert.equal(await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).isDisabled(), true, "the picker waits for project libraries before choosing its scope");
+      await fresh.getByText("Restoring your project draft…", { exact: true }).waitFor();
+      assert.equal(await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).count(), 0, "the draft waits for project libraries before choosing its scope");
     } finally { releaseProjects(); }
+    await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
     await fresh.getByRole("menuitem", { name: "Use template…", exact: true }).click();
     await fresh.unroute("**/api/projects");
     await dialog.getByLabel("Template", { exact: true }).selectOption({ label: "Updated review" });

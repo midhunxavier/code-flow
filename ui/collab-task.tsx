@@ -46,7 +46,7 @@ export function TeamTaskView({ id, shared = false, navigate }: { id: string; sha
   const [dialog, setDialog] = useState<"start" | "handover" | "accept" | "recover" | null>(null);
   const [fetching, setFetching] = useState<Checkpoint | null>(null);
   const begin = useLatest();
-  const load = async () => { const current = begin(); try { const next = await loadTask(id); if (current()) { setTask(next); setError(""); openTask.value = next; } } catch (err) { if (current()) setError((err as Error).message); } };
+  const load = async () => { const current = begin(); try { const next = await loadTask(id); if (current()) { setTask(next); setError(""); openTask.value = next; } } catch (err) { if (current()) { setTask(null); openTask.value = null; setDialog(null); setFetching(null); setError((err as Error).message); } } };
   // The owner app polls as a fallback to its stream; the shared dashboard reloads only on /api/team/events frames (and when its tab is shown again), so an idle shared session can still expire. The liveness clock ticks on its own, without a request.
   usePoll(() => { void load(); void loadBoard(); if (!shared) { void loadTeamLink(); void loadLocalAttempts(); } setNow(Date.now()); }, shared ? 0 : 15_000, [id, teamTick.value, shared]);
   usePoll(() => setNow(Date.now()), 15_000, [], shared);
@@ -54,7 +54,7 @@ export function TeamTaskView({ id, shared = false, navigate }: { id: string; sha
   const act: Act = async (label, work, after) => {
     if (busy) return false; setBusy(label); setError("");
     try { const next = await work(); if (next && typeof next === "object" && "id" in next) { setTask(next); openTask.value = next; } after?.(); return true; }
-    catch (err) { if (err instanceof ApiError && err.status === 409) { showToast("Task changed; reloading", 3000); await load(); } else setError((err as Error).message); return false; }
+    catch (err) { if (err instanceof ApiError && err.status === 409) { showToast("Task changed; reloading", 3000); await load(); } else { if (err instanceof ApiError && [401, 403, 404].includes(err.status)) { setTask(null); openTask.value = null; setDialog(null); setFetching(null); void loadBoard(); } setError((err as Error).message); } return false; }
     finally { setBusy(""); }
   };
   const b = board.value;
@@ -331,7 +331,7 @@ function StartDialog({ task, checkpoint, onClose, onStarted }: { task: Task; che
     <div class="dialog-body">
       <label for="tt-start-repo">Repository path for <code>{task.repository}</code></label>
       <div class="row-inline"><input id="tt-start-repo" class="field mono" value={path} placeholder={mapped || "/absolute/path/to/your/clone"} disabled={busy} onInput={(event) => setPath(event.currentTarget.value)} /><button type="button" class="btn small" disabled={busy || !repo.value} title={repo.value || "Choose a repository in the composer first"} onClick={() => setPath(repo.value)}>Use current repository</button></div>
-      {!mapped && !path ? <p class="help">No folder is mapped for this repository key yet; the path you enter here is used for this attempt (map it for good in Settings → Team).</p> : null}
+      {!mapped && !path ? <p class="help">No folder is mapped for this repository key yet; the path you enter here is used for this attempt (map it for good in Connections → Share access).</p> : null}
       <label for="tt-start-pattern">Workflow</label><select id="tt-start-pattern" class="field" value={patternId} disabled={busy} onChange={(event) => { setPatternId(event.currentTarget.value); setRoles({}); }}>{list.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select>
       {pattern ? <><p class="help">{pattern.summary}</p><fieldset class="team-roles" disabled={busy}><legend>Agents</legend>{pattern.roles.map((role) => role.multiple ? <fieldset class="team-checks" key={role.id}><legend>{role.label}</legend>{sorted.map((agent) => <label class="check" key={agent.id}><input type="checkbox" checked={agentsFor(role).includes(agent.id)} onChange={(event) => setRoles({ ...roles, [role.id]: event.currentTarget.checked ? [...agentsFor(role), agent.id] : agentsFor(role).filter((id) => id !== agent.id) })} />{agent.displayName}</label>)}</fieldset> : <label key={role.id}>{role.label}<select class="field" aria-label={role.label} value={agentsFor(role)[0] ?? ""} onChange={(event) => setRoles({ ...roles, [role.id]: event.currentTarget.value ? [event.currentTarget.value as AgentId] : [] })}>{role.optional ? <option value="">None</option> : null}{sorted.map((agent) => <option key={agent.id} value={agent.id}>{agent.displayName}</option>)}</select></label>)}</fieldset></> : null}
       {!sorted.length ? <p class="msg warn">Install and sign in to an agent on this computer before building.</p> : null}
@@ -395,7 +395,7 @@ function RepoPathDialog({ title, help, action, initial, required = false, onClos
     <div class="dialog-body">
       <label for="tt-path">Repository path</label>
       <div class="row-inline"><input id="tt-path" class="field mono" required={required} value={path} placeholder={initial || "/absolute/path/to/your/clone"} disabled={busy} onInput={(event) => setPath(event.currentTarget.value)} /><button type="button" class="btn small" disabled={busy || !repo.value} title={repo.value || "Choose a repository in the composer first"} onClick={() => setPath(repo.value)}>Use current repository</button></div>
-      {!initial && !required ? <p class="help">Leave empty to use the folder mapped for this repository key in Settings → Team.</p> : null}
+      {!initial && !required ? <p class="help">Leave empty to use the folder mapped for this repository key in Connections → Share access.</p> : null}
       {error ? <p class="msg err" role="alert">{error}</p> : null}
     </div>
     <div class="picker-foot"><span class="ps">{busy ? "Working…" : ""}</span><button type="button" class="btn" disabled={busy} onClick={onClose}>Cancel</button><button type="submit" class="btn primary" disabled={busy || (required && !path.trim())}>{action}</button></div>

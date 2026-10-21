@@ -77,7 +77,7 @@ test("finished work leads to review, commit-scoped coverage and publishing in on
   result = await until(() => api(`/api/runs/${started.id}`), value => value.status !== "running");
   assert.equal(result.status, "done", result.error);
   await page.goto(base + `/#/project/${result.project}`);
-  await page.getByRole("button", { name: /results? in the inbox/ }).click();
+  await page.locator(".rail").getByRole("link", { name: /^Inbox/ }).click();
   await page.waitForURL(url => url.hash === "#/inbox");
   await page.locator(".inbox-item", { hasText: result.task }).locator("a.t").click();
   const next = page.getByRole("region", { name: "Next action" });
@@ -134,7 +134,7 @@ test("failed checks prepare a follow-up and blocked checks continue from saved w
 test("project tools retain repository context and new screens fit mobile and pass accessibility checks", { timeout: 60_000 }, async () => {
   assert.ok(result.project);
   await page.goto(base + `/#/project/${result.project}`);
-  await page.getByRole("link", { name: "Repository tools", exact: true }).click();
+  await page.getByRole("link", { name: "Repositories", exact: true }).click();
   assert.equal(await page.getByLabel("Repository or run worktree").inputValue(), repo);
   await page.reload();
   assert.equal(await page.getByLabel("Repository or run worktree").inputValue(), repo);

@@ -19,6 +19,8 @@ before(async () => {
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
   server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: directory, CODEFLOW_TOKEN: "settings-test", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: "ignore" });
   for (let n = 0; n < 150; n++) { if (await fetch(`${base}/api/health`, { headers: { authorization: "Bearer settings-test" } }).then((res) => res.ok, () => false)) break; await new Promise((resolve) => setTimeout(resolve, 100)); }
+  const project = await fetch(`${base}/api/projects`, { method: "POST", headers: { authorization: "Bearer settings-test", "content-type": "application/json" }, body: JSON.stringify({ name: "Settings fixture", repos: [] }) });
+  assert.equal(project.status, 201);
   browser = await chromium.launch({ channel: "chrome", headless: true });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.on("pageerror", (error) => errors.push(error.message));
@@ -245,7 +247,7 @@ test("all settings categories render; desktop and mobile preferences are accessi
 
 test("operational tools are direct destinations and old Settings links still work", async () => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  for (const [path, name] of [["workspace", "Repository workspace"], ["automations", "Scheduling"], ["inbox", "Inbox"], ["insights", "Insights"]] as const) {
+  for (const [path, name] of [["workspace", "Repository tools"], ["automations", "Scheduling"], ["inbox", "Inbox"], ["insights", "Insights"]] as const) {
     await page.goto(`${base}/#/${path}`);
     await page.getByRole("heading", { name, exact: true }).first().waitFor();
     assert.ok(page.url().endsWith(`#/${path}`));
@@ -258,13 +260,13 @@ test("operational tools are direct destinations and old Settings links still wor
     await match.click();
   }
   await page.goto(`${base}/#/settings/workspace`);
-  await page.getByRole("navigation", { name: "Workspace tools" }).waitFor();
+  await page.getByRole("navigation", { name: "Repository tools" }).waitFor();
   await page.locator("#main-content").focus();
   await page.keyboard.press("a");
   await page.getByRole("navigation", { name: "Scheduling purpose", exact: true }).waitFor();
   assert.ok(page.url().endsWith("#/automations"));
   await page.goBack();
-  await page.getByRole("navigation", { name: "Workspace tools" }).waitFor();
+  await page.getByRole("navigation", { name: "Repository tools" }).waitFor();
   await page.goForward();
   await page.getByRole("navigation", { name: "Scheduling purpose", exact: true }).waitFor();
   await page.locator("#main-content").focus();

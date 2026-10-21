@@ -124,9 +124,13 @@ export function GitHubPicker() {
 }
 
 /** Template chips: pick one, then (if it needs one) an issue or PR. Sweeps open their own list. */
-export function Templates({ only, onChoose }: { only?: "backlog" | "sources"; onChoose?: () => void } = {}) {
+export function Templates({ only, onChoose, prepare, disabled = false }: { only?: "backlog" | "sources"; onChoose?: () => void; prepare?: () => Promise<unknown>; disabled?: boolean } = {}) {
+  const [preparing, setPreparing] = useState(false), [prepareError, setPrepareError] = useState("");
   if (!templates.value.length) return null;
-  const choose = (t: Template) => {
+  const choose = async (t: Template) => {
+    if (preparing || disabled) return;
+    setPreparing(true); setPrepareError("");
+    try { if (await prepare?.() === false) throw new Error("The project draft is not ready. Wait for it to load and try again."); } catch (error) { setPrepareError((error as Error).message); return; } finally { setPreparing(false); }
     onChoose?.();
     if (t.sweep) sweepPicker.value = t;
     else if (t.needs) ghPicker.value = { kind: t.needs, template: t };
@@ -138,10 +142,11 @@ export function Templates({ only, onChoose }: { only?: "backlog" | "sources"; on
     <details class="settings task-starters" open>
       <summary><span class="st">{only === "backlog" ? "Choose backlog items" : "From GitHub"}</span><span class="ss">Issues and pull requests</span></summary>
       <div class="settings-body">
+      {prepareError ? <p role="alert">{prepareError}</p> : null}
       <div class="templates">
         <span class="lbl">Start from</span>
         {single.map((t) => (
-          <button key={t.id} type="button" class="chip-tpl" title={t.description} onClick={() => choose(t)}>
+          <button key={t.id} type="button" class="chip-tpl" title={t.description} disabled={preparing || disabled} onClick={() => void choose(t)}>
             {t.name}
           </button>
         ))}
@@ -150,7 +155,7 @@ export function Templates({ only, onChoose }: { only?: "backlog" | "sources"; on
         <div class="templates">
           <span class="lbl">Sweep</span>
           {sweeps.map((t) => (
-            <button key={t.id} type="button" class="chip-tpl sweep" title={t.description} onClick={() => choose(t)}>
+            <button key={t.id} type="button" class="chip-tpl sweep" title={t.description} disabled={preparing || disabled} onClick={() => void choose(t)}>
               <Icon name="layers" /> {t.name}
             </button>
           ))}

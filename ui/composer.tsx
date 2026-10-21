@@ -24,6 +24,14 @@ import { contextBudget } from "./context-budget.js";
 import { taskWithCriteria } from "./composer-tools.js";
 import {
   agents,
+  composerProject,
+  composerLoading,
+  composerRunOptions,
+  draftError,
+  saveComposerDraft,
+  chooseComposerRepository,
+  projects,
+  repositoryChoice,
   projectsLoaded,
   acceptanceCriteria,
   setAcceptanceCriteria,
@@ -81,7 +89,8 @@ import {
   takeDrafts,
   type RoleValue,
 } from "./state.js";
-import { ProjectButton } from "./projects.js";
+import { ProjectButton, openRepository } from "./projects.js";
+import { computerLabel } from "./ssh-projects.js";
 import { readProjectDefaults, projectDefaultsVersion } from "./project-defaults.js";
 import { TeamRolloutNotice } from "./team-evaluation.js";
 import { SourceChip } from "./github.js";
@@ -97,19 +106,19 @@ const MAX_TOTAL = 25 * 1024 * 1024;
 // ================================================================= composer
 export function Composer() {
   const restored = rerunDraft.value?.repo === repo.value ? rerunDraft.value : null;
-  const defaults = readProjectDefaults(repo.value);
-  const [remoteWorker, setRemoteWorker] = useState<WorkerChoice | undefined>(restored?.loop.remoteWorker);
+  const initialOptions = useRef(composerRunOptions.value);
+  const [remoteWorker, setRemoteWorker] = useState<WorkerChoice | undefined>(initialOptions.current.remoteWorker);
   const [remoteAgents, setRemoteAgents] = useState<AgentInfo[]>();
   const [remoteError, setRemoteError] = useState("");
   useEffect(() => { let alive = true; setRemoteAgents(undefined); setRemoteError(""); if (remoteWorker) void post<{ capabilities: WorkerCapabilities }>(`/api/remote-workers/${encodeURIComponent(remoteWorker.workerId)}/probe`, { repoMapping: remoteWorker.repoMapping }).then(({ capabilities }) => { if (alive) setRemoteAgents(agents.value.map((agent) => ({ ...agent, available: capabilities.providers.some((provider) => provider.id === agent.id && provider.available) }))); }, (error) => { if (alive) setRemoteError(error.message); }); return () => { alive = false; }; }, [remoteWorker?.workerId, remoteWorker?.repoMapping, agents.value]);
-  const [containerEnabled, setContainerEnabled] = useState(restored ? !!restored.loop.agentContainer : defaults.container.enabled);
-  const [containerImage, setContainerImage] = useState(restored ? restored.loop.agentContainer?.image ?? "" : defaults.container.image);
-  const [containerVolume, setContainerVolume] = useState(restored ? restored.loop.agentContainer?.authVolume ?? "" : defaults.container.authVolume);
-  const [verificationProfile, setVerificationProfile] = useState<VerificationProfile | null>(restored?.loop.verification ?? null);
-  const [verificationPreset, setVerificationPreset] = useState(restored?.loop.verification ? "restored" : "");
-  const [profileLoading, setProfileLoading] = useState(!restored && !!defaults.verification);
+  const [containerEnabled, setContainerEnabled] = useState(initialOptions.current.container?.enabled ?? false);
+  const [containerImage, setContainerImage] = useState(initialOptions.current.container?.image ?? "");
+  const [containerVolume, setContainerVolume] = useState(initialOptions.current.container?.authVolume ?? "");
+  const [verificationProfile, setVerificationProfile] = useState<VerificationProfile | null>(initialOptions.current.verificationProfile ?? null);
+  const [verificationPreset, setVerificationPreset] = useState(initialOptions.current.verification ?? "");
+  const [profileLoading, setProfileLoading] = useState(false);
   const profileRequest = useRef(0);
-  const [toolApprovals, setToolApprovals] = useState(restored ? restored.approvals.tools === true : store.get("interactiveApprovals") === "1");
+  const [toolApprovals, setToolApprovals] = useState(initialOptions.current.toolApprovals ?? store.get("interactiveApprovals") === "1");
   const improve = useImprove(remoteWorker ? "Improve uses a local provider. Choose This computer to rewrite this task." : containerEnabled ? "Improve uses a local provider. Turn off Docker isolation to rewrite this task." : "");
   const p = pattern.value;
   const single = p?.id === "solo";
@@ -139,22 +148,23 @@ export function Composer() {
   const [profileError, setProfileError] = useState(false);
   useLayoutEffect(() => {
     const defaults = readProjectDefaults(repo.value);
-    const container = restored ? restored.loop.agentContainer : undefined;
-    setRemoteWorker(restored?.loop.remoteWorker);
-    setToolApprovals(restored ? restored.approvals.tools === true : store.get("interactiveApprovals") === "1");
-    setContainerEnabled(restored ? !!container : defaults.container.enabled);
-    setContainerImage(restored ? container?.image ?? "" : defaults.container.image);
-    setContainerVolume(restored ? container?.authVolume ?? "" : defaults.container.authVolume);
+    const container = initialOptions.current.container ?? defaults.container;
+    setContainerEnabled(container.enabled); setContainerImage(container.image); setContainerVolume(container.authVolume);
+    setRemoteWorker(initialOptions.current.remoteWorker);
+    setToolApprovals(initialOptions.current.toolApprovals ?? store.get("interactiveApprovals") === "1");
     setProfileError(false);
-    if (restored) {
+    if (initialOptions.current.verification === "restored") {
       ++profileRequest.current;
       setProfileLoading(false);
-      setVerificationPreset(restored.loop.verification ? "restored" : "");
-      setVerificationProfile(restored.loop.verification ?? null);
-    } else void selectVerification(defaults.verification);
+      setVerificationPreset("restored");
+      setVerificationProfile(initialOptions.current.verificationProfile ?? null);
+    } else void selectVerification(initialOptions.current.verification ?? defaults.verification);
     return () => { ++profileRequest.current; };
   }, [repo.value, projectDefaultsVersion.value, restored]);
 
+  useLayoutEffect(() => {
+    if (!composerLoading.value) composerRunOptions.value = { remoteWorker, container: { enabled: containerEnabled, image: containerImage, authVolume: containerVolume }, verification: verificationPreset, verificationProfile, toolApprovals };
+  }, [remoteWorker, containerEnabled, containerImage, containerVolume, verificationPreset, verificationProfile, toolApprovals]);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
   // Pins sent from the side panel's Browser: their text joins the task, their snapshots its attachments.
@@ -177,7 +187,8 @@ export function Composer() {
     intent: journeyDraft.value?.repo === repo.value ? "bug" : intentDraft.value,
     journeyId: journeyDraft.value?.repo === repo.value ? journeyDraft.value.id : undefined,
     repo: repo.value,
-    project: target.value.project?.id,
+    project: composerProject.value || undefined,
+    projectSelection: "explicit",
     parentRunId: restored?.id,
     task: taskWithCriteria(task.value, acceptanceCriteria.value),
     pattern: p.id,
@@ -225,7 +236,7 @@ export function Composer() {
       const { id, project } = await postConfirmed<{ id: string; project?: string }>("/api/runs", { ...runBody(p), remember: true });
       route.value = { view: "run", id };
       resetComposer();
-      void Promise.allSettled([afterStart(project), refreshRuns()]);
+      void Promise.allSettled([saveComposerDraft(), afterStart(project), refreshRuns()]);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -249,6 +260,11 @@ export function Composer() {
     intentDraft.value = undefined;
   };
 
+  if (!projects.value.length && !repo.value && !task.value.trim()) return <div class="composer project-welcome">
+    <div class="eyebrow">Your first project</div><h1>What would you like to work on?</h1><p class="lede">Open a repository to start a project, describe a task, and review your agents’ work.</p>
+    <div class="project-welcome-actions"><button class="btn primary" onClick={() => openRepository()}>Open repository</button><a class="btn" href="#/settings/connections/sharing">Join shared project</a></div>
+    <p class="help">Computer: {computerLabel()} · <a href="#/settings/connections/workspace">On another computer</a></p><ProviderSetupPrompt />
+  </div>;
   return (
     <div class={`composer ${single ? "composer-single" : ""}`}>
       <div class="eyebrow">New run</div>
@@ -256,8 +272,12 @@ export function Composer() {
       <p class="lede">{single ? "Choose a provider, describe your task, and start the conversation." : "Describe the task, add the files that matter, and pick how your agents work together."}</p>
       <div class="where" role="group" aria-label="Where the run works">
         <ProjectButton composer />
-        <RepoButton />
+        {target.value.project?.repos.length === 1 && target.value.project.repos[0] === repo.value ? <span class="repo-btn" title={repo.value}><Icon name="folder" /><span class="name">{baseName(repo.value)}</span></span>
+          : target.value.project && target.value.project.repos.length > 1 ? <label class="composer-repository">Repository<select class="field" aria-label="Run repository" value={repo.value} onChange={event => void chooseComposerRepository(event.currentTarget.value)}>{!target.value.project.repos.includes(repo.value) ? <option value="">Choose repository</option> : null}{target.value.project.repos.map(folder => <option value={folder}>{baseName(folder)} · {folder}</option>)}</select></label> : <RepoButton />}
+        <button class="btn small ghost" onClick={() => openRepository(composerProject.value)}>Open another repository</button>
       </div>
+      {draftError.value ? <p class="msg warn" role="alert">{draftError.value} <button class="btn small" onClick={() => void saveComposerDraft()}>Retry saving</button></p> : null}
+      {repo.value && target.value.problem ? <div class="banner"><p>{target.value.problem}</p><button class="btn" onClick={() => { repositoryChoice.value = { repository: repo.value, project: target.value.project?.id }; }}>Choose destination</button></div> : null}
       <ProviderSetupPrompt />
       {!repoInfo.value ? (
         <div class={`banner ${repoError.value ? "bad" : ""}`}>
@@ -318,6 +338,8 @@ export function Composer() {
         </>}</Menu>
       </>} />
       <div class="composer-summary" aria-label="Run configuration summary">
+        <span><b>Computer</b> {computerLabel()}{remoteWorker ? ` · Agent worker: ${remoteWorker.workerId}` : ""}</span>
+        <span><b>Project</b> {target.value.project?.name ?? "Choose project"}</span>
         <span><b>Repository</b> {repo.value ? baseName(repo.value) : "Choose repository"} · {baseRef.value || repoInfo.value?.current || "HEAD"}</span>
         <span><b>{single ? "Agent" : "Agent workflow"}</b> {p ? teamSentence(p, roles) : "Choose workflow"}</span>
         <span><b>Checks</b> {profileLoading ? "Detecting checks…" : verificationProfile ? verificationProfile.checks.map(gate => gate.command).join(" · ") || "No runnable gates" : checkCmd.value.trim() || "Not configured"}</span>
@@ -509,8 +531,10 @@ export function CompareDialog({ base, onClose, onStarted }: { base: Record<strin
 /** Why the run can't start yet ("" when it can); `needsTask: false` for sweeps, whose items bring their tasks. */
 export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true, inventory?: AgentInfo[]): string {
   if (p?.id === "auto-team" && teamRollout.value?.enabled === false) return "New Auto teams are disabled. Existing teams can still be resumed.";
+  if (composerLoading.value) return "Restoring project draft…";
   if (repoChecking.value) return "Checking repository…";
   if (!repo.value) return "Choose a repository first";
+  if (target.value.problem) return target.value.problem;
   if (configChecking.value) return "Loading repository configuration…";
   if (needsTask && !task.value.trim()) return "Describe the task to start";
   if (!p) return "Pick how the agents work together";

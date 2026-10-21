@@ -5,9 +5,11 @@ import { inbox } from "./automations.js";
 import { Icon } from "./icons.js";
 import { Menu, MenuItem } from "./panel-bits.js";
 import { DeleteRunDialog, DeleteRunsDialog } from "./run-actions.js";
-import { ago, baseName, fmtCost, fmtTokens, post, showToast, STATUS_TEXT } from "./lib.js";
+import { collaborationConfigured, ago, baseName, fmtCost, fmtTokens, post, showToast, STATUS_TEXT } from "./lib.js";
 import {
   NONE,
+  draftsReady,
+  composerLoading,
   agents,
   editProject,
   filterActive,
@@ -39,7 +41,7 @@ import {
   runFilter,
   runs,
   runState,
-  selectProject,
+  openComposer,
   setRailView,
   setRunFilter,
   shortcutsOpen,
@@ -141,8 +143,7 @@ export function Rail() {
     railOpen.value = false;
   };
   const newRunIn = (p: Project) => {
-    selectProject(p.id);
-    go({ view: "composer" });
+    void openComposer(p.id);
   };
   const toggle = (key: string) =>
     setRailView({ collapsed: view.collapsed.includes(key) ? view.collapsed.filter((k) => k !== key) : [...view.collapsed, key] });
@@ -207,7 +208,7 @@ export function Rail() {
 
   const actions = (p: Project) => (
     <span class="proj-actions">
-      <button type="button" class="icon-btn" aria-label={`New run in ${p.name}`} title={`New run in ${p.name}`} onClick={() => newRunIn(p)}>
+      <button type="button" class="icon-btn" disabled={!draftsReady.value || composerLoading.value} aria-label={`New run in ${p.name}`} title={`New run in ${p.name}`} onClick={() => newRunIn(p)}>
         <Icon name="plus" />
       </button>
       <button type="button" class="icon-btn" aria-label={`Edit ${p.name}`} title="Rename, repositories, delete" onClick={() => editProject(p.id)}>
@@ -363,7 +364,7 @@ export function Rail() {
           <Icon name="close" />
         </button>
       </div>
-      <button class="btn primary new-run" aria-label="New run" title="New run (n)" onClick={() => go({ view: "composer" })}>
+      <button class="btn primary new-run" disabled={!draftsReady.value || composerLoading.value} aria-label="New run" title="New run (n)" onClick={() => void openComposer()}>
         <Icon name="plus" /> <span>New run</span>
       </button>
       <div class="rail-destinations" role="group" aria-label="Work navigation">
@@ -478,10 +479,10 @@ export function Rail() {
           <Icon name="more" />
         </>}>
           {(close) => <>
-            {peopleEnabled.value || unread ? <MenuItem on={r.view === "team" || r.view === "team-task"} onClick={() => { close(); go({ view: "team" }); }}><Icon name="people" /><span>People</span>{unread ? <span class="rail-menu-meta" aria-label={`${unread} unread`}>{unread}</span> : null}</MenuItem> : null}
+            {peopleEnabled.value || collaborationConfigured.value || unread ? <MenuItem on={r.view === "team" || r.view === "team-task" || r.view === "team-people"} onClick={() => { close(); go({ view: "team" }); }}><Icon name="people" /><span>Board</span>{unread ? <span class="rail-menu-meta" aria-label={`${unread} unread`}>{unread}</span> : null}</MenuItem> : null}
             <MenuItem on={r.view === "settings"} onClick={() => { close(); go({ view: "settings" }); }}><Icon name="sliders" /><span>Settings</span><kbd class="rail-menu-meta">⌘,</kbd></MenuItem>
             <MenuItem sub={`${agents.value.length} providers${agentProblems ? ` · ${agentProblems} need setup` : ""}`} onClick={() => { close(); railOpen.value = false; healthOpen.value = true; }}><Icon name="sparkle" /><span>Agents & usage</span></MenuItem>
-            <MenuItem onClick={() => { close(); go({ view: "workspace" }); }}><Icon name="files" /><span>Repository workspace</span></MenuItem>
+            <MenuItem onClick={() => { close(); go({ view: "workspace" }); }}><Icon name="files" /><span>Repository tools</span></MenuItem>
             <MenuItem onClick={() => { close(); go({ view: "insights" }); }}><Icon name="chart" /><span>Insights</span></MenuItem>
             <MenuItem onClick={() => { close(); go({ view: "automations" }); }}><Icon name="clock" /><span>Scheduling</span>{pending ? <span class="rail-menu-meta" aria-label={`${pending} runs need attention`}>{pending}</span> : null}</MenuItem>
             <MenuItem onClick={() => { close(); go({ view: "settings", section: "notifications" }); }}><Icon name="bell" /><span>Notifications</span></MenuItem>
