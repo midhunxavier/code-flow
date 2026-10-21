@@ -296,13 +296,23 @@ test("Auto team resumes a final-wave user question after replaying the earlier f
   const { run, manager } = await finish("AUTO-USER-QUESTION Implement the sample", { options: { maxWaves: 1 } });
   assert.equal(run.status, "stopped", run.error);
   assert.equal(run.team!.messages.filter((m) => m.kind === "question").length, 1);
-  await manager.resume(run.id);
+  const originalBudget = { ...run.loop }, earlierUsage = run.usage.agentSteps;
+  for (const budget of [{ maxSteps: 201 }, { maxSteps: 3 }, { maxInvocations: 0 }, { maxMinutes: 721 }, { maxMinutes: 0 }]) {
+    await assert.rejects(manager.resume(run.id, budget), /budget|at least four/);
+    assert.deepEqual(run.loop, originalBudget, "invalid resume budgets cannot alter the saved allocation");
+    assert.equal(run.status, "stopped");
+  }
+  await manager.resume(run.id, { maxSteps: 200, maxInvocations: 200, maxMinutes: 240 });
   await waitFor(run, manager, () => !!run.team?.awaitingRequestId || run.status !== "running");
   assert.equal(run.status, "running", run.error);
   await manager.answerTeamQuestion(run.id, run.team!.awaitingRequestId!, "Empty input is valid");
   await waitFor(run, manager, () => run.status !== "running");
   assert.equal(run.status, "done", run.error);
   assert.equal(run.team!.status, "completed", JSON.stringify(run.team!.gaps));
+  assert.equal(run.loop.maxMinutes, 240);
+  assert.equal(run.team!.invocationLimit, 200);
+  assert.equal(run.team!.coordinationLimit, 50);
+  assert.ok(run.usage.agentSteps >= earlierUsage, "extending the allowance preserves lifetime usage");
   assert.equal(run.steps.filter((s) => s.title === "Plan Auto team").length, 1);
   assert.equal(run.steps.filter((s) => s.title.startsWith("Auto task")).length, 2);
   assert.equal(run.steps.filter((s) => s.title.startsWith("Auto team independent review")).length, 2);

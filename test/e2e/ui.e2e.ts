@@ -210,7 +210,11 @@ test("a message sent while Codex is working reaches its running turn", async () 
   await page.locator("main .convo select").selectOption("codex");
   await page.locator("main .convo textarea").fill("Prefer tabs over spaces");
   await page.locator("main .convo textarea").press("Enter");
-  await page.locator(".note-chip", { hasText: "✓ Delivered to codex mid-turn (Implement plan): Prefer tabs over spaces" }).waitFor({ timeout: 10_000 });
+  const delivered = page.locator(".note-history .note-chip", { hasText: "✓ Delivered to codex mid-turn (Implement plan): Prefer tabs over spaces" });
+  await delivered.waitFor({ state: "attached", timeout: 10_000 });
+  assert.equal(await delivered.isVisible(), false, "delivered messages are collapsed by default");
+  await page.locator(".note-history > summary").click();
+  await delivered.waitFor();
   await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
 
   const run = await fetch(`${BASE}/api/runs/${runId}`, { headers: bearer }).then((r) => r.json());
@@ -450,14 +454,20 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
   const rail = page.locator(".rail");
   const group = (name: string) => rail.getByRole("group", { name, exact: true });
   await group(own!.name).locator(".run-item").first().waitFor(); // earlier runs, under the repo's project
-  // The repo you last used comes back after the page loads: a new project starts with it.
+  // A remembered composer repository must not be assigned to a new project automatically.
   await page.locator(".where .repo-btn:not(.project-btn) .name", { hasText: own!.name }).waitFor();
   await rail.getByRole("button", { name: "New project" }).click();
   await page.locator("#project-name").fill("E2E side");
-  assert.equal(await page.locator(".project-repos .dir").count(), 1, "starts with the repo you're in");
+  assert.equal(await page.locator(".project-repos .dir").count(), 0, "new projects start without the previous repository");
   await page.getByRole("button", { name: "Create project" }).click();
+  assert.deepEqual((await projects()).find((project) => project.name === "E2E side")!.repos, [], "creating an empty project does not save the previous repository");
   await page.locator(".page-head-actions").getByRole("button", { name: "New run", exact: true }).click();
   await page.locator(".where .project-btn", { hasText: "E2E side" }).waitFor(); // explicitly open its draft
+  await page.getByRole("button", { name: "Choose repository", exact: true }).first().click();
+  await page.getByLabel("Folder path").fill(root);
+  await page.getByLabel("Folder path").press("Enter");
+  await page.getByText("✓ This folder is a git repository").waitFor();
+  await page.getByRole("button", { name: "Use this folder", exact: true }).click();
 
   await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");

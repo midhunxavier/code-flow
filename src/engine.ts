@@ -659,6 +659,7 @@ type SteeringReceipt = { accepted: boolean | "unknown"; at: number };
 
 function followUpBudget(input: Partial<Pick<LoopSettings, "maxSteps" | "maxInvocations" | "maxMinutes">> | undefined, current: LoopSettings): FollowUp["budget"] {
   if (input === undefined) return undefined;
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Execution budget needs an object with call and minute limits");
   const budget = { maxSteps: input.maxSteps ?? current.maxSteps, maxInvocations: input.maxInvocations ?? input.maxSteps ?? current.maxInvocations ?? current.maxSteps, maxMinutes: input.maxMinutes ?? current.maxMinutes };
   if (!Number.isSafeInteger(budget.maxSteps) || budget.maxSteps < 1 || budget.maxSteps > 200 || !Number.isSafeInteger(budget.maxInvocations) || budget.maxInvocations < 1 || budget.maxInvocations > 200 || !Number.isFinite(budget.maxMinutes) || budget.maxMinutes < 1 || budget.maxMinutes > 720) throw new Error("Follow-up budget needs 1–200 calls and 1–720 minutes");
   return budget;
@@ -2937,6 +2938,7 @@ export class RunManager {
   private readonly startingRepositories = new Map<string, number>();
   private readonly startingWork = new Set<Promise<Run>>();
   private readonly repositoryLeases = new Map<string, { id: string; repo: string; scope: Set<string>; kind: string; owner?: string; at: number }>();
+  private readonly readOnlyExecutionLeases = new Map<string, { id: string; repo: string; kind: string; owner?: string; at: number }>();
   private readonly repositoryLeaseWork = new Map<string, Promise<unknown>>();
   /** Stop was pressed while a resume was starting: it doesn't start. */
   private readonly stoppedWhileStarting = new Set<string>();
@@ -2958,7 +2960,7 @@ export class RunManager {
     // A crash may precede the public receipt snapshot, after the private request claim.
     // Resume reconciles that journaled identity; absence of metadata is not proof of exit.
     const unresolvedRemote = [...this.runs.values()].some((run) => run.steps.some((step) => step.remote ? step.remote.ambiguous || ["accepted", "running", "unknown"].includes(step.remote.state) : run.loop.remoteWorker && (step.kind ?? "agent") === "agent" && ["failed", "stopped", "interrupted"].includes(step.status)));
-    if (this.shuttingDown || this.executionPolicyLease || this.startingRepositories.size || this.starting.size || this.active.size || this.mergeValidating.size || this.repositoryLeases.size || unresolvedRemote || [...this.runs.values()].some((run) => this.busyRun(run))) throw new RunConflictError("Wait for every run, start, validation, workspace edit and unresolved remote receipt before activating filesystem policy");
+    if (this.shuttingDown || this.executionPolicyLease || this.startingRepositories.size || this.starting.size || this.active.size || this.mergeValidating.size || this.repositoryLeases.size || this.readOnlyExecutionLeases.size || unresolvedRemote || [...this.runs.values()].some((run) => this.busyRun(run))) throw new RunConflictError("Wait for every run, start, validation, read-only execution, workspace edit and unresolved remote receipt before activating filesystem policy");
     const lease = { id: `policy-${randomBytes(8).toString("hex")}`, at: Date.now() }; this.executionPolicyLease = lease;
     const work = Promise.resolve().then(operation); this.repositoryLeaseWork.set(lease.id, work);
     try { return await work; } finally { this.repositoryLeaseWork.delete(lease.id); if (this.executionPolicyLease === lease) this.executionPolicyLease = undefined; }
@@ -3316,8 +3318,21 @@ export class RunManager {
     } finally { this.repositoryLeases.delete(id); this.repositoryLeaseWork.delete(id); }
   }
 
+  /** Private snapshot turns can coexist with workspace activity, but must pin execution policy. */
+  async withReadOnlyExecution<T>(repo: string, operation: () => T, metadata: { kind?: string; owner?: string } = {}): Promise<Awaited<T>> {
+    const canonical = await realpath(await repoRoot(repo));
+    if (this.shuttingDown) throw new RunConflictError("code-flow is shutting down");
+    if (this.executionPolicyLease) throw new RunConflictError("Filesystem policy activation holds the global execution lease");
+    const id = `read-${randomBytes(8).toString("hex")}`;
+    this.readOnlyExecutionLeases.set(id, { id, repo: canonical, kind: metadata.kind?.slice(0, 100) || "read-only execution", owner: metadata.owner?.slice(0, 256), at: Date.now() });
+    try {
+      const work = Promise.resolve().then(operation); this.repositoryLeaseWork.set(id, work);
+      return await work;
+    } finally { this.readOnlyExecutionLeases.delete(id); this.repositoryLeaseWork.delete(id); }
+  }
+
   inspectRepositoryActivity() {
-    return { leases: [...this.repositoryLeases.values()].map(({ scope: _scope, ...lease }) => lease), starting: [...this.startingRepositories].map(([repo, count]) => ({ repo, count })), runs: [...this.runs.values()].filter((run) => this.busyRun(run)).map((run) => ({ id: run.id, repo: run.repo, status: run.status, starting: this.starting.has(run.id), validating: this.mergeValidating.has(run.id) })) };
+    return { leases: [...this.repositoryLeases.values()].map(({ scope: _scope, ...lease }) => lease).concat([...this.readOnlyExecutionLeases.values()]), starting: [...this.startingRepositories].map(([repo, count]) => ({ repo, count })), runs: [...this.runs.values()].filter((run) => this.busyRun(run)).map((run) => ({ id: run.id, repo: run.repo, status: run.status, starting: this.starting.has(run.id), validating: this.mergeValidating.has(run.id) })) };
   }
 
   setArchived(id: string, archived: boolean) {
@@ -4561,7 +4576,7 @@ export class RunManager {
    * runs again from the top; every step that already completed is replayed from the journal
    * instantly, and real work resumes at the first unfinished step — with a fresh budget.
    */
-  async resume(id: string): Promise<Run> {
+  async resume(id: string, allocation?: Partial<Pick<LoopSettings, "maxSteps" | "maxInvocations" | "maxMinutes">>): Promise<Run> {
     const run = this.require(id);
     this.managedContinuation(run);
     if (!run) throw new Error("Run not found");
@@ -4572,6 +4587,8 @@ export class RunManager {
     if (!pattern) throw new Error(`Unknown pattern "${run.pattern}"`);
     if (run.pattern === "auto-team" && run.team && run.team.version !== 1) throw new Error("This team uses an unsupported plan version; update code-flow to resume it");
     if (!existsSync(run.repo)) throw new Error(`Repository ${run.repo} no longer exists`);
+    const budget = followUpBudget(allocation, run.loop);
+    if (run.pattern === "auto-team" && budget && Math.min(budget.maxSteps, budget.maxInvocations ?? budget.maxSteps) < 4) throw new Error("Auto team needs at least four invocations");
 
     // Claimed before the first await, so a double click (or a PR watch and you) can't start it twice.
     this.starting.add(id);
@@ -4586,14 +4603,14 @@ export class RunManager {
       // Replay cannot load an earlier plan while an accepted edit is becoming durable.
       await this.teamPlanWrites.get(id)?.catch((error) => { if (!(error instanceof TeamPlanEditError)) throw error; });
       if (this.stoppedWhileStarting.has(id)) return run; // you pressed Stop meanwhile
-      return await this.resumeClaimed(run, pattern);
+      return await this.resumeClaimed(run, pattern, budget);
     } finally {
       this.starting.delete(id);
       this.stoppedWhileStarting.delete(id);
     }
   }
 
-  private async resumeClaimed(run: Run, pattern: Pattern): Promise<Run> {
+  private async resumeClaimed(run: Run, pattern: Pattern, budget?: FollowUp["budget"]): Promise<Run> {
     const id = run.id;
     await waitForRunWrites(id);
     const recoveryStarted = performance.now();
@@ -4633,6 +4650,7 @@ export class RunManager {
     // The pattern already finished: only the follow-ups run. Replaying the whole pattern would
     // redo any step whose code changed since (a code-flow update) for nothing.
     const followUpsOnly = !!run.patternDone;
+    if (budget) Object.assign(run.loop, budget);
     run.status = "running";
     run.error = undefined;
     run.stopReason = undefined;

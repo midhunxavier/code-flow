@@ -1408,6 +1408,8 @@
   .notes { display: flex; gap: 6px; flex-wrap: wrap; }
   .note-chip .n { font-family: var(--sans); } /* what you wrote, not code */
   .note-chip.delivered { opacity: .75; }
+  .note-history .notes { margin-top: 6px; max-height: 180px; overflow-y: auto; }
+  .note-history .note-chip .n { white-space: normal; overflow-wrap: anywhere; }
 
   /* ---------- M4: workspaces ---------- */
   /* a quiet note: OntoLab's subtle banner (sunken, no border, radius 8) */
@@ -3192,6 +3194,10 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 .next-action p { margin: 4px 0 0; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .next-action .help { color: var(--text-2); font-size: 12px; }
 .next-action-buttons { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+.resume-budget { margin-top: 12px; }
+.resume-budget-fields { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.resume-budget-fields label { display: grid; gap: 4px; font-size: 12px; }
+.resume-budget-fields input { width: 120px; }
 .review-overview { flex: none; max-height: 38vh; overflow: auto; padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--panel); }
 .review-overview .run-evidence { margin-bottom: 8px; padding-top: 0; }
 .review-evidence-tools { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }

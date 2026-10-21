@@ -113,7 +113,7 @@ export async function freePort(preferred?: number): Promise<number> {
       });
     });
   if (preferred) {
-    for (let p = preferred; p < preferred + 20; p++) {
+    for (let p = preferred; p < preferred + 20 && p <= 65_535; p++) {
       const ok = await tryPort(p);
       if (ok) return ok;
     }

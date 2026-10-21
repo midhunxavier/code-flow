@@ -79,11 +79,26 @@ test("global execution activation excludes starts, resumes and workspace mutatio
   await assert.rejects(manager.start(input), /global execution lease/);
   await assert.rejects(manager.resume(run.id), /global execution lease/);
   await assert.rejects(manager.withIdleRepository(repo, async () => {}), /global execution lease/);
+  await assert.rejects(manager.withReadOnlyExecution(repo, async () => {}), /global execution lease/);
   await assert.rejects(manager.assertExecutionAllowed(repo), /global execution lease/);
   await assert.rejects(manager.withIdleExecution(async () => {}), /Wait for every run/);
   release.resolve(); await activation; await manager.assertExecutionAllowed(repo);
   await assert.rejects(manager.withIdleExecution(async () => { throw new Error("publication failed"); }), /publication failed/);
   await manager.withIdleExecution(async () => {});
+});
+
+test("read-only execution pins policy, releases on failure, and settles before shutdown", async () => {
+  const { repo, manager } = fixture(), entered = deferred(), release = deferred();
+  await assert.rejects(manager.withReadOnlyExecution(repo, () => { throw new Error("snapshot failed"); }), /snapshot failed/);
+  assert.equal(manager.inspectRepositoryActivity().leases.length, 0);
+  const turn = manager.withReadOnlyExecution(repo, async () => { entered.resolve(); await release.promise; }, { kind: "prompt improvement" });
+  await entered.promise;
+  await assert.rejects(manager.withIdleExecution(async () => {}), /read-only execution/);
+  let stopped = false; const stopping = manager.shutdown().then(() => { stopped = true; });
+  await new Promise((resolve) => setTimeout(resolve, 30)); assert.equal(stopped, false);
+  await assert.rejects(manager.withReadOnlyExecution(repo, async () => {}), /shutting down/);
+  release.resolve(); await turn; await stopping;
+  assert.equal(manager.inspectRepositoryActivity().leases.length, 0);
 });
 
 test("global execution activation cannot race a start awaiting its policy snapshot", async () => {
