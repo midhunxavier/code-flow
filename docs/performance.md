@@ -83,7 +83,8 @@ from workflow completion.
 ## UI and analysis
 
 The UI build produces hashed ESM chunks and a hashed stylesheet. Settings, Terminal,
-Browser and Changes load on demand. Assets have immutable caching, compression,
+Browser and Changes load on demand. Both owner and teammate terminal renderers
+use dynamic imports; a bundle test rejects xterm in the startup import graph. Assets have immutable caching, compression,
 ETags and a bounded server cache. HTML remains revalidated. Old chunks remain on the
 local build directory for already-open tabs; SSH release packages include only the
 current manifest's files. Packaging checks that HTML and manifest belong together.
@@ -95,7 +96,9 @@ This preserves freshness and filesystem checks without rebuilding the service ea
 time. Workers expire after 60 seconds idle and are terminated on cancellation,
 timeout, policy changes and server shutdown. Only one inspection runs at a time.
 
-Shared polling waits for completion before scheduling another request, pauses in
+Approvals use snapshots on the shared SSE connection, with polling only for older
+hosts that do not expose the topic. Inventory, statistics, automation, notification,
+deferred-run and visible diff polling use the common scheduler. Shared polling waits for completion before scheduling another request, pauses in
 hidden tabs and refreshes when visible. Background inventories explicitly opt in to
 sharing concurrent identical GETs; selection-sensitive reads always issue fresh requests.
 Mutations invalidate the request-sharing map. Writes are never automatically retried.

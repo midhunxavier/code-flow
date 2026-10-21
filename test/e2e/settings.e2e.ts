@@ -259,6 +259,7 @@ test("operational tools are direct destinations and old Settings links still wor
   }
   await page.goto(`${base}/#/settings/workspace`);
   await page.getByRole("navigation", { name: "Workspace tools" }).waitFor();
+  await page.locator("#main-content").focus();
   await page.keyboard.press("a");
   await page.getByRole("navigation", { name: "Scheduling purpose", exact: true }).waitFor();
   assert.ok(page.url().endsWith("#/automations"));
@@ -266,6 +267,7 @@ test("operational tools are direct destinations and old Settings links still wor
   await page.getByRole("navigation", { name: "Workspace tools" }).waitFor();
   await page.goForward();
   await page.getByRole("navigation", { name: "Scheduling purpose", exact: true }).waitFor();
+  await page.locator("#main-content").focus();
   await page.keyboard.press("i");
   await page.getByRole("heading", { name: "Insights", exact: true }).first().waitFor();
   assert.ok(page.url().endsWith("#/insights"));

@@ -70,7 +70,7 @@ const statusText = (r: RunSummary) =>
         ? "Check failing"
         : runState(r) === "unchecked"
           ? "Check can't run"
-          : STATUS_TEXT[r.status] ?? r.status;
+          : runState(r) === "unverified" ? "Finished · not verified" : STATUS_TEXT[r.status] ?? r.status;
 const short = (ts: number) => ago(ts).replace(" ago", "").replace("just now", "now");
 
 interface Group {
@@ -464,7 +464,7 @@ export function Rail() {
         {empty ? <div class="rail-empty">{filtering ? "No runs match" : currentComputer ? "No runs in this workspace yet" : "No runs yet — start one on the right"}</div> : null}
       </div>
       <div class="rail-history" role="region" aria-label="Run history pages">
-        <span class="help" role="status">{historyLoading.value ? "Searching history…" : historyTotal.value === null ? "Loading history…" : f.q.trim() ? `${list.length} loaded matches · ${historyTotal.value} in history` : runs.value.size > historyTotal.value ? `${runs.value.size} loaded · ${historyTotal.value} at last refresh` : `${runs.value.size} of ${historyTotal.value} runs loaded`}</span>
+        <span class="help" role="status">{historyLoading.value ? "Searching history…" : historyTotal.value === null ? "Loading history…" : filtering ? `${list.length} loaded matches · ${historyTotal.value} in history` : runs.value.size > historyTotal.value ? `${runs.value.size} loaded · ${historyTotal.value} at last refresh` : `${runs.value.size} of ${historyTotal.value} runs loaded`}</span>
         {historyNextCursor.value ? <button type="button" class="btn small" disabled={historyLoading.value || historyLoadingMore.value} onClick={() => void loadOlderRuns()}>{historyLoadingMore.value ? "Loading…" : "Load older runs"}</button> : null}
         {attentionTruncated.value ? <span class="help" role="status">{attentionTotal.value} running or attention items at last refresh. Older attention is paged; use Load older runs to include more.</span> : null}
         {historyError.value ? <div class="help" role="alert">{historyError.value}<button class="btn small" onClick={() => void refreshRuns()}>Retry history</button></div> : null}

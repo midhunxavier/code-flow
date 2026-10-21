@@ -1,16 +1,17 @@
+import type { ProjectReport, HistoryPage } from "../src/project-report.js";
+import { checksLabel, type ProjectSection } from "../src/run-status.js";
 import { OutcomeMetrics } from "./experience.js";
 import { ScenarioLibrary } from "./journeys.js";
 import { ProjectTeamsPanel } from "./project-teams.js";
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import { automationProject, automations, inbox, loadAutomations } from "./automations.js";
+import { automationProject, automations, loadAutomations } from "./automations.js";
 import { Icon } from "./icons.js";
-import { ago, baseName, fmtCost, STATUS_TEXT } from "./lib.js";
-import { editProject, needsYou, patterns, projectFor, projects, projectsLoaded, route, runs, runState, selectProject, setTask } from "./state.js";
+import { api, enc, usePoll, ago, baseName, fmtCost, STATUS_TEXT } from "./lib.js";
+import { editProject, patterns, projects, projectsLoaded, route, runState, selectProject, setTask } from "./state.js";
 import type { RunSummary } from "./types.js";
 
-const WEEK = 7 * 86_400_000;
-/** Recent results listed before "show all". */
+/** First page of recent project results. */
 const RECENT = 8;
 const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 
@@ -20,7 +21,28 @@ const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ?
  */
 export function ProjectView({ id }: { id: string }) {
   const [text, setText] = useState("");
-  const [all, setAll] = useState(false);
+  const [report, setReport] = useState<ProjectReport | null>(null);
+  const [error, setError] = useState("");
+  const [limits, setLimits] = useState({ waiting: 100, running: 100, results: RECENT });
+  const [loading, setLoading] = useState(false);
+  usePoll(async current => {
+    setLoading(true);
+    try {
+      const next = await api<ProjectReport>(`/api/projects/${enc(id)}/summary`);
+      // Reload only pages the user has requested. Totals always cover the complete history.
+      for (const section of ["waiting", "running", "results"] as const) {
+        let page = next.sections[section];
+        while (current() && page.nextCursor && page.runs.length < limits[section]) {
+          const more = await api<HistoryPage>(`/api/runs?limit=${Math.min(100, limits[section] - page.runs.length)}&project=${enc(id)}&section=${section}&cursor=${enc(page.nextCursor)}`);
+          page = { ...more, runs: [...page.runs, ...more.runs] };
+        }
+        next.sections[section] = page;
+      }
+      if (current()) { setReport(next); setError(""); }
+    } catch (problem) { if (current()) setError((problem as Error).message); }
+    finally { if (current()) setLoading(false); }
+  }, 15_000, [id, limits.waiting, limits.running, limits.results]);
+  const more = (section: ProjectSection) => setLimits(value => ({ ...value, [section]: value[section] + 100 }));
   useEffect(() => void loadAutomations(), []);
   const p = projects.value.find((x) => x.id === id);
   if (!p) {
@@ -30,18 +52,9 @@ export function ProjectView({ id }: { id: string }) {
       </div>
     );
   }
-  const list = [...runs.value.values()].filter((r) => projectFor(r)?.id === id).sort((a, b) => b.createdAt - a.createdAt);
-  const live = list.filter((r) => !r.archived);
-  const waiting = live.filter(needsYou);
-  const running = live.filter((r) => r.status === "running" && !needsYou(r));
-  const results = live.filter((r) => r.status !== "running" && !needsYou(r));
-  const week = list.filter((r) => r.createdAt > Date.now() - WEEK);
-  const passed = week.filter((r) => r.status === "done" && r.verdict === "passed").length;
-  const cost = week.reduce((sum, r) => sum + (r.usage?.costUsd ?? 0), 0);
   const autos = automations.value.filter((a) => automationProject(a.run)?.id === id);
-  const pending = inbox().filter((r) => projectFor(r)?.id === id).length;
+  const pending = report?.pending ?? 0;
   const team = p.defaults ? patterns.value.find((x) => x.id === p.defaults!.pattern)?.name : undefined;
-  const archived = list.length - live.length;
 
   /** The composer, in this project, with what you typed as the task. */
   const start = () => {
@@ -89,9 +102,9 @@ export function ProjectView({ id }: { id: string }) {
       </div>
 
       <div class="ins-cards pp-numbers">
-        <Card label="Runs this week" value={String(week.length)} />
-        <Card label="Checks passed" value={week.length ? `${passed} of ${week.length}` : "–"} />
-        <Card label="API-equivalent" value={cost ? fmtCost(cost) : "–"} hint="Claude's cost, as a measure of size" />
+        <Card label="Runs this week" value={report ? String(report.week.runs) : "–"} />
+        <Card label="Checks passed" value={report?.week.runs ? `${report.week.passed} of ${report.week.runs}` : "–"} />
+        <Card label="API-equivalent" value={report?.week.costUsd ? fmtCost(report.week.costUsd) : "–"} hint="Claude's cost, as a measure of size" />
       </div>
 
       <OutcomeMetrics project={id} />
@@ -100,15 +113,14 @@ export function ProjectView({ id }: { id: string }) {
 
       <div class="pp-layout">
         <div class="pp-main">
-          {waiting.length ? <Section title="Needs you" count={waiting.length} runs={waiting} attention /> : null}
-          {running.length ? <Section title="Running" count={running.length} runs={running} /> : null}
-          <Section
-            title="Recent results"
-            runs={all ? results : results.slice(0, RECENT)}
-            empty="No results yet. Start a run above."
-            more={!all && results.length > RECENT ? () => setAll(true) : undefined}
-            moreCount={results.length - RECENT}
-          />
+          {error ? <p class="msg err" role="alert">{error}</p> : null}
+          {!report ? <p class="help">Loading project history…</p> : (["waiting", "running", "results"] as const).map(section => {
+            const page = report.sections[section];
+            if (section !== "results" && !page.total) return null;
+            return <Section key={section} title={{ waiting: "Needs you", running: "Running", results: "Recent results" }[section]}
+              count={page.total} runs={page.runs} attention={section === "waiting"} empty="No results yet. Start a run above."
+              more={page.nextCursor ? () => more(section) : undefined} moreCount={Math.max(0, page.total - page.runs.length)} loading={loading} />;
+          })}
         </div>
 
         <div class="pp-aside">
@@ -131,8 +143,8 @@ export function ProjectView({ id }: { id: string }) {
               <dd>{team ?? <span class="muted">None yet</span>}</dd>
               <dt>Runs</dt>
               <dd>
-                {plural(live.length, "run")}
-                {archived ? <span class="muted"> · {archived} archived</span> : null}
+                {report ? plural(report.live, "run") : "–"}
+                {report?.archived ? <span class="muted"> · {report.archived} archived</span> : null}
               </dd>
               <dt>Created</dt>
               <dd>{new Date(p.createdAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}</dd>
@@ -180,7 +192,7 @@ function Card({ label, value, hint }: { label: string; value: string; hint?: str
   );
 }
 
-function Section({ title, runs, count, empty, more, moreCount = 0, attention = false }: { title: string; runs: RunSummary[]; count?: number; empty?: string; more?: () => void; moreCount?: number; attention?: boolean }) {
+function Section({ title, runs, count, empty, more, moreCount = 0, attention = false, loading = false }: { title: string; runs: RunSummary[]; count?: number; empty?: string; more?: () => void; moreCount?: number; attention?: boolean; loading?: boolean }) {
   return (
     <section class={`pp-card ${attention ? "attention" : ""}`} aria-label={title}>
       <div class="pp-card-head">
@@ -197,8 +209,8 @@ function Section({ title, runs, count, empty, more, moreCount = 0, attention = f
         <p class="pp-empty">{empty}</p>
       ) : null}
       {more ? (
-        <button type="button" class="pp-more" onClick={more}>
-          Show {moreCount} more
+        <button type="button" class="pp-more" disabled={loading} onClick={more}>
+          Show {Math.min(100, moreCount)} more
         </button>
       ) : null}
     </section>
@@ -215,11 +227,11 @@ function RunRow({ run }: { run: RunSummary }) {
     ? pill("awaiting", "Waiting for you")
     : state === "failing"
       ? pill("failing", "Check fails")
-      : run.status === "done" && run.verdict === "passed"
+      : state === "done"
         ? pill("done", "Check passes")
         : run.status !== "done"
           ? pill(run.status, STATUS_TEXT[run.status] ?? run.status)
-          : null;
+          : pill(state, checksLabel(run));
   return (
     <a class="pp-row" href={`#/run/${encodeURIComponent(run.id)}`} title={run.task}>
       <span class={`dot ${state}`} aria-hidden="true" />

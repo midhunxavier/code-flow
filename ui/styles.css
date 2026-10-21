@@ -755,7 +755,7 @@
   .result .rh { min-height: 44px; padding: 11px 20px; font-size: 14px; font-weight: 600; letter-spacing: 0; line-height: 1.4; display: flex; gap: 8px; align-items: center; }
   .result.done .rh { background: var(--ok-soft); color: var(--ok); }
   /* finished, but no independent check passed: green is for passed, so a neutral strip */
-  .result.done.unverified .rh { background: var(--sunken); color: var(--text-2); }
+  .result.unverified .rh { background: var(--sunken); color: var(--text-2); }
   .result.failed .rh { background: var(--err-soft); color: var(--err); }
   .result.cancelled .rh, .result.stopped .rh, .result.failing .rh, .result.unchecked .rh, .result.interrupted .rh { background: var(--warn-soft); color: var(--warn); }
   .result.cancelled, .result.stopped, .result.failing, .result.unchecked, .result.interrupted { border-color: color-mix(in srgb, var(--warn-dot) 40%, var(--border)); }

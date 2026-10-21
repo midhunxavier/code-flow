@@ -1,3 +1,4 @@
+import { checksLabel } from "./run-status.js";
 import type { ProjectTeam } from "./project-team-model.js";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
@@ -49,7 +50,7 @@ export function notificationEvents(run: RunSummary): { event: NotificationEvent;
   if (run.archived || run.projectTeam) return [];
   const candidates: { event: NotificationEvent; key: string }[] = [];
   if (run.endedAt && ["done", "failed", "stopped", "interrupted"].includes(run.status)) {
-    const failed = run.status !== "done" || run.verdict === "failing" || run.verification?.state === "needs-changes" || run.verification?.state === "blocked";
+    const failed = run.status !== "done" || ["Failed", "Blocked"].includes(checksLabel(run));
     candidates.push({ event: failed ? "failure" : "done", key: `${run.id}:ended:${run.endedAt}` });
   }
   const attention = run.awaiting ? ["approval", run.awaiting.kind, run.awaiting.at] : run.team?.awaitingRequestId ? ["question", run.team.awaitingRequestId] : run.triage?.state === "pending" ? ["triage", run.triage.at] : run.team?.status === "blocked" ? ["blocked", run.team.gaps] : undefined;
@@ -161,7 +162,7 @@ export class Notifications {
     if (!this.loaded || this.stopped) return { queued: 0, dropped: 0 };
     const candidates = notificationEvents(run);
     if (extraAttentionKey && !run.archived && !run.projectTeam) candidates.push({ event: "needs-attention", key: `${run.id}:external-attention:${digest(extraAttentionKey.slice(0, 200))}` });
-    return this.enqueue(candidates, { runId: run.id, project: run.project, pattern: run.pattern, status: run.status, result: run.verification?.state ?? (run.verdict === "passed" ? "verified" : run.verdict === "failing" ? "needs-changes" : run.checkCantRun ? "blocked" : "unchecked"), title: run.task?.split("\n")[0] ?? "Run update" });
+    return this.enqueue(candidates, { runId: run.id, project: run.project, pattern: run.pattern, status: run.status, result: (({ Passed: "verified", Failed: "needs-changes", Blocked: "blocked" } as Record<string, string>)[checksLabel(run)] ?? "unchecked"), title: run.task?.split("\n")[0] ?? "Run update" });
   }
   async observeProjectTeam(team: ProjectTeam) {
     for (const cycle of team.cycles) {

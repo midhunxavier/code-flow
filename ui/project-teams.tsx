@@ -1,3 +1,4 @@
+import { pollVisible } from "./polling.js";
 import { useEffect, useState } from "preact/hooks";
 import { api, post, showToast, ApiError } from "./lib.js";
 import { route, loadModels, agents } from "./state.js";
@@ -113,7 +114,7 @@ function Opportunity({ opportunity: o, busy, decide }: { opportunity: ProjectOpp
 /** Compact owner inbox; detailed evidence stays on the project page. No separate EventSource. */
 export function ProjectTeamsInbox({ projectId }: { projectId?: string }) {
   const [teams, setTeams] = useState<ProjectTeam[]>([]);
-  useEffect(() => { let active = true; const load = () => { void api<Inventory>(`/api/project-teams${projectId ? `?project=${encodeURIComponent(projectId)}` : ""}`).then((data) => { if (active) setTeams(data.teams); }, () => undefined); }; load(); const timer = setInterval(load, 15000); return () => { active = false; clearInterval(timer); }; }, [projectId]);
+  useEffect(() => { let active = true; const load = () => api<Inventory>(`/api/project-teams${projectId ? `?project=${encodeURIComponent(projectId)}` : ""}`).then((data) => { if (active) setTeams(data.teams); }, () => undefined); const stop = pollVisible(load, 15000); return () => { active = false; stop(); }; }, [projectId]);
   const actionable = teams.filter((t) => t.status !== "archived" && (t.opportunities.some((o) => ["proposed", "ready", "blocked"].includes(o.status)) || t.cycles.at(-1)?.status === "unknown"));
   if (!actionable.length) return null;
   return <section class="pp-card standing-teams"><h2>Project team opportunities</h2>{actionable.map((t) => <article key={t.id}><h3>{t.name}</h3><p>{t.opportunities.filter((o) => o.status === "ready").length} verified drafts · {t.opportunities.filter((o) => o.status === "proposed").length} proposals{t.cycles.at(-1)?.status === "unknown" ? " · launch needs reconciliation" : ""}</p><button class="btn" onClick={() => { route.value = { view: "project", id: t.projectId }; }}>Review opportunities</button></article>)}</section>;

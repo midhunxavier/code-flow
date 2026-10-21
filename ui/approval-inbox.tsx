@@ -1,3 +1,5 @@
+import { subscribe } from "./stream.js";
+import { pollVisible } from "./polling.js";
 import { useEffect, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
 import { api, post } from "./lib.js";
@@ -10,17 +12,20 @@ export function ApprovalInbox() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    let current = true, loading = false;
-    const load = async () => {
-      if (loading) return;
-      loading = true;
-      try { const records = await api<ApprovalRecord[]>("/api/approvals"); if (current) setPending(records.filter((record) => record.status === "pending")); }
-      catch { /* The persistent connection indicator handles an unavailable server. */ }
-      finally { loading = false; }
-    };
-    void load();
-    const timer = setInterval(() => void load(), 2000);
-    return () => { current = false; clearInterval(timer); };
+    let current = true;
+    let stopFallback: (() => void) | undefined;
+    const stop = subscribe("approvals", (data: { type: string; records?: ApprovalRecord[]; status?: number }) => {
+      if (!current) return;
+      if (data.type === "snapshot" && data.records) setPending(data.records);
+      // Older connected hosts do not have the topic. Current hosts need no approval timer.
+      if (data.type === "error" && data.status === 404 && !stopFallback) {
+        stopFallback = pollVisible(async () => {
+          const records = await api<ApprovalRecord[]>("/api/approvals");
+          if (current) setPending(records.filter(record => record.status === "pending"));
+        }, 2000);
+      }
+    });
+    return () => { current = false; stop(); stopFallback?.(); };
   }, []);
   const request = pending[0];
   if (!request) return null;

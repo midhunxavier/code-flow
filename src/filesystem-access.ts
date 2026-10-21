@@ -23,7 +23,12 @@ export class FilesystemAccess {
   }
   async forRepo(repo: string, run?: Run | RunSummary) { const policies = await Promise.all(this.projectIds(repo, run).map(async (id) => { const policy = await this.store.get(id); this.cache.set(id, policy); return policy; })); return [...policies, ...((run as Run & { filePolicies?: FilePolicySnapshot[] } | undefined)?.filePolicies ?? [])]; }
   async execution(repo: string, run?: Run) { if (this.activating) throw new FilePolicyError("Filesystem policy is being applied; execution preparation is paused", 409); return [...await this.all(), ...await this.forRepo(repo, run)]; }
-  restrictedRun(run: Run | RunSummary): boolean { return this.projectIds(run.repo, run).some((id) => { const policy = this.cache.get(id); return !!policy && policyIsRestrictive(policy); }) || !!(run as Run & { filePolicies?: FilePolicySnapshot[] }).filePolicies?.some(policyIsRestrictive); }
+  restrictedRun(run: Run | RunSummary): boolean {
+    const pinned = !!(run as Run & { filePolicies?: FilePolicySnapshot[] }).filePolicies?.some(policyIsRestrictive);
+    // Avoid rebuilding repository ownership for every indexed run on unrestricted hosts.
+    if (!this.hasRestrictions()) return pinned;
+    return pinned || this.projectIds(run.repo, run).some(id => { const policy = this.cache.get(id); return !!policy && policyIsRestrictive(policy); });
+  }
   list() { return this.manager.list().filter((run) => !this.restrictedRun(run)); }
   page(input: Parameters<RunManager["page"]>[0] = {}) {
     return this.manager.page({ ...input, ...(this.hasRestrictions() ? { predicate: (run) => !this.restrictedRun(run) && (input.predicate?.(run) ?? true) } : {}) });

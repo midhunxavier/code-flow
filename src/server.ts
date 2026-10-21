@@ -1,3 +1,4 @@
+import { HISTORY_STATUSES, type HistoryStatus, type ProjectSection } from "./run-status.js";
 import { TeamTerminals, handleTeamTerminals } from "./collab/terminals.js";
 import { HostExecution, handleHostExecution } from "./collab/host-execution.js";
 import { closeCodeIntelligence, codeIntelligenceHealth } from "./code-intelligence.js";
@@ -1221,6 +1222,18 @@ projects.onChange(() => teamBroadcast({ type: "resync" }));
  * live events; `after` is the cursor (`<epoch>:<seq>`) of the last event it got before reconnecting.
  */
 const topics: Record<string, TopicSource> = {
+  approvals(_name, _after, deliver) {
+    if (fileAccess.hasRestrictions()) throw new TopicError(403, "Approvals are unavailable under filesystem restrictions");
+    const generation = filesystemFeedRevision;
+    const publish = () => {
+      if (generation === filesystemFeedRevision && !fileAccess.hasRestrictions()) {
+        deliver({ type: "snapshot", records: redactExport(approvals.list().filter(record => record.status === "pending")) });
+      }
+    };
+    const stop = approvals.subscribe(publish);
+    publish();
+    return stop;
+  },
   "project-teams"(projectId, _after, deliver) {
     if (fileAccess.hasRestrictions() || !projects.get(projectId)) throw new TopicError(403, "Standing team scope is unavailable");
     const generation = filesystemFeedRevision;
@@ -1823,6 +1836,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       return send(res, 201, await attempt(() => projects.create({ name: body.name, repos: Array.isArray(body.repos) ? body.repos : [] })));
     }
     if (id && !projects.get(id)) throw new HttpError(404, "Project not found");
+    if (id && parts[3] === "summary" && req.method === "GET") {
+      const inventory = projects.list();
+      return send(res, 200, manager.projectReport(run => projectOf(run, inventory) === id && !fileAccess.restrictedRun(run)));
+    }
     if (id && parts[3] === "conventions") {
       const project = projects.get(id)!;
       if (!parts[4] && req.method === "GET") return send(res, 200, await attempt(() => conventions.get(id)));
@@ -2182,7 +2199,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (parts[1] === "runs") {
     const runId = parts[2];
     if (!runId) {
-      if (req.method === "GET") return send(res, 200, url.searchParams.has("limit") ? await attempt(async () => fileAccess.page({ limit: Number(url.searchParams.get("limit")), cursor: url.searchParams.get("cursor") ?? undefined, before: url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined, query: url.searchParams.get("q") ?? undefined, project: url.searchParams.get("project") ?? undefined })) : fileAccess.list());
+      if (req.method === "GET") {
+        if (!url.searchParams.has("limit")) return send(res, 200, fileAccess.list());
+        const status = url.searchParams.get("status") ?? "all";
+        const section = url.searchParams.get("section") ?? undefined;
+        if (!HISTORY_STATUSES.includes(status as HistoryStatus)) throw new HttpError(400, "Invalid history status");
+        if (section && !["waiting", "running", "results"].includes(section)) throw new HttpError(400, "Invalid project history section");
+        const project = url.searchParams.get("project"), inventory = projects.list();
+        return send(res, 200, await attempt(async () => fileAccess.page({
+          limit: Number(url.searchParams.get("limit")), cursor: url.searchParams.get("cursor") ?? undefined,
+          before: url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined,
+          query: url.searchParams.get("q") ?? undefined, status: status === "all" ? undefined : status as HistoryStatus,
+          section: section as ProjectSection | undefined,
+          pattern: url.searchParams.get("pattern") ?? undefined, agent: url.searchParams.get("agent") ?? undefined, repo: url.searchParams.get("repo") ?? undefined,
+          predicate: project ? run => (projectOf(run, inventory) ?? "none") === project : undefined,
+        })));
+      }
       if (req.method === "POST") {
         const body = await readJson(req);
         const run = await startFromBody(body);

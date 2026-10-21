@@ -1,3 +1,4 @@
+import { pollVisible } from "./polling.js";
 import { useEffect, useState } from "preact/hooks";
 import { api, post, showToast } from "./lib.js";
 import { projects } from "./state.js";
@@ -18,8 +19,8 @@ export function NotificationsView() {
   useEffect(() => {
     let alive = true;
     const load = () => Promise.all([api<Destination[]>("/api/notifications"), api<NotificationDelivery[]>("/api/notifications/deliveries")]).then(([targets, history]) => { if (alive) { setDestinations(targets); setDeliveries(history); setError(""); } }, (err) => { if (alive) setError(err.message); });
-    void load(); const timer = setInterval(() => void load(), 10_000);
-    return () => { alive = false; clearInterval(timer); };
+    const stop = pollVisible(load, 10_000);
+    return () => { alive = false; stop(); };
   }, []);
   const retry = async (delivery: NotificationDelivery) => {
     setBusy(delivery.id);

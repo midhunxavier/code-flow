@@ -79,3 +79,25 @@ test("a server restart drops stale cached history and refreshes an active search
   assert.equal(state.runs.value.get("beta-run")?.task, "beta live new");
   assert.equal(state.historyTotal.value, 1);
 });
+
+test("status, provider and repository filters have independent server cursors and discard late responses", async () => {
+  state.runFilter.value = { q: "", status: "passed", pattern: "solo", agent: "claude", thisRepo: true };
+  state.repoInfo.value = { repo: "/first", worktreeRoot: "/trees", current: "main", branches: [] };
+  const old = state.refreshRuns();
+  const oldRequest = requests.find(entry => !entry.done && entry.url.searchParams.get("repo") === "/first")!;
+  assert.equal(oldRequest.url.searchParams.get("status"), "passed");
+  assert.equal(oldRequest.url.searchParams.get("pattern"), "solo");
+  assert.equal(oldRequest.url.searchParams.get("agent"), "claude");
+  state.repoInfo.value = { ...state.repoInfo.value, repo: "/second" };
+  const fresh = state.refreshRuns();
+  const freshRequest = requests.find(entry => !entry.done && entry.url.searchParams.get("repo") === "/second")!;
+  freshRequest.respond({ runs: [], total: 0 }); await fresh;
+  oldRequest.respond({ runs: [run("wrong-repo")], total: 100, nextCursor: "wrong-cursor" }); await old;
+  assert.equal(state.historyTotal.value, 0);
+  assert.equal(state.historyNextCursor.value, null);
+  assert.equal(state.runs.value.has("wrong-repo"), false);
+  const source = FakeEventSource.instances.at(-1)!;
+  source.send({ type: "hello", epoch: "server-two", seq: 4, total: 999, nextCursor: "unfiltered", runs: [] });
+  assert.equal(state.historyTotal.value, 0, "an unfiltered stream snapshot cannot overwrite filtered totals");
+  assert.equal(state.historyNextCursor.value, null);
+});

@@ -1,7 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, rmSync, readFileSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -152,10 +152,12 @@ test("removing a queued task stays cancelled after a restart", async () => {
   assert.equal(f.starts(), 0); assert.equal(restored.view(owner).jobs[0]!.state, "cancelled");
 });
 
-test("a storage directory failure disables the queue and cancels running work", async () => {
+test("a queue storage failure disables the queue and cancels running work", async () => {
   const f = await fixture(); await f.configure(); const t = await f.task(); await f.q.enqueue(f.alice, t.id, { revision: t.revision }); await f.q.tick();
   const runId = f.q.view(owner).jobs[0]!.runId!;
-  rmSync(f.options.dir!, { recursive: true, force: true }); writeFileSync(f.options.dir!, "unavailable storage");
+  // Block the queue's atomic file replacement without racing unrelated attempt-log writes.
+  const file = join(f.options.dir!, "queue.json");
+  renameSync(file, `${file}.unavailable`); mkdirSync(file);
   await assert.rejects(f.configure()); assert.throws(() => f.q.view(owner), status(503)); assert.equal(f.runs.get(runId)!.status, "cancelled");
 });
 

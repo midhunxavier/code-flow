@@ -1,4 +1,5 @@
 import { confirmAction } from "./confirm-state.js";
+import { pollVisible } from "./polling.js";
 import { OutcomeMetrics } from "./experience.js";
 import { comparisonDraft } from "./workflow-ui.js";
 import { CompareDialog, startProblem } from "./composer.js";
@@ -51,11 +52,10 @@ export function InsightsView({ group }: { group?: string }) {
         (s) => alive && (setStats(s), setError("")),
         (e) => alive && setError((e as Error).message),
       );
-    void load();
-    const timer = setInterval(load, 15_000);
+    const stop = pollVisible(load, 15_000);
     return () => {
       alive = false;
-      clearInterval(timer);
+      stop();
     };
   }, [scope, period, repo.value, currentProject.value]);
 
@@ -153,7 +153,7 @@ export function InsightsView({ group }: { group?: string }) {
                                 </div>
                               </td>
                               <td>
-                                <span class={`status-pill ${state}`}>{state === "failing" ? "Check failing" : state === "unchecked" ? "Check can't run" : r.verdict === "passed" ? "Passed" : STATUS_TEXT[r.status] ?? r.status}</span>
+                                <span class={`status-pill ${state}`}>{state === "failing" ? "Check failing" : state === "unchecked" ? "Check can't run" : state === "done" ? "Passed" : state === "unverified" ? "Not verified" : STATUS_TEXT[r.status] ?? r.status}</span>
                               </td>
                               <td class={`num ${best("ms") ? "best" : ""}`}>{r.ms !== undefined ? duration(r.ms) : "…"}</td>
                               <td class={`num ${best("steps") ? "best" : ""}`}>{r.steps}</td>

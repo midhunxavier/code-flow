@@ -4,7 +4,9 @@ import type { TeamTerminal, TerminalAudit, TerminalGrant } from "../src/collab/t
 import { api, apiPath, enc, post, usePoll } from "./lib.js";
 import { put, teamTick } from "./collab-state.js";
 import { roleAtLeast } from "./shared-roles.js";
-import { TermView, type TerminalTransport } from "./terminal.js";
+import type { TerminalTransport } from "./terminal.js";
+import { lazyView } from "./lazy-view.js";
+const TermView = lazyView(() => import("./terminal.js").then(module => module.TermView));
 
 interface TerminalView { revision: number; available: boolean; grants: (Partial<TerminalGrant> & { projectId: string; allowed?: boolean })[]; sessions: TeamTerminal[]; audit: TerminalAudit[]; idleMinutes: number; maxPerUser: number }
 function useTerminals() {

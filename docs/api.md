@@ -112,9 +112,26 @@ accepted by run creation.
 With `limit=1..100`, it returns `{runs, total, nextCursor?, nextBefore?}`. Pass the
 opaque `nextCursor` as `cursor` on the next request; cursors preserve ties for
 runs created in the same millisecond. Optional `q` filters all indexed run
-metadata and `project` selects a project. The legacy `before` timestamp is
+metadata and `project` selects a project (including legacy repository-based membership).
+`status=all|attention|running|passed|failing|flagged`, `pattern`, `agent`, and
+`repo` filter the complete authorized index before totals and pagination. Passed
+requires completed execution and passing verification; blocked or unverified
+results are excluded. `section=waiting|running|results` selects a non-archived
+project-page section. The legacy `before` timestamp is
 supported but can omit timestamp ties; prefer `cursor`. Keep filters consistent
-between pages. Invalid cursors and page sizes return 400.
+between pages. Invalid cursors, status/section values and page sizes return 400.
+
+`GET /projects/:id/summary` returns `{live, archived, pending, week, sections}`.
+`week` contains `{runs, passed, costUsd}` for the last seven days, including
+archived history. `sections` contains cursor pages for `waiting`, `running` and
+`results`, with complete totals. Fetch additional section pages through `/runs`.
+These totals never depend on which sidebar pages a browser has loaded.
+
+The shared `/stream` connection accepts the `approvals` topic. It sends a
+`{type: "snapshot", records: [...]}` frame initially and whenever pending tool
+approvals change. Reconnects receive a fresh snapshot; approval decisions still
+use the single-action POST endpoint. Older hosts without this topic use the
+client's visibility-aware polling fallback.
 
 `GET /events?limit=1..100` is the bounded SSE run feed. Its initial `hello`
 contains the recent page, every running run and at most 100 older attention

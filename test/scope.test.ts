@@ -358,5 +358,5 @@ test("notifications: a run's review page counts as looking at the run", () => {
   m.notifyFinished(finished);
   m.route.value = { view: "composer" };
   m.notifyFinished(finished);
-  assert.deepEqual(notified, ["code-flow: run finished", "code-flow: run finished"]);
+  assert.deepEqual(notified, ["code-flow: run finished, with passing checks", "code-flow: run finished, with passing checks"]);
 });

@@ -129,20 +129,20 @@ test("a run view with a side chat, two terminals and a second tab still gets its
   await side.locator("#side-pane-terminal .term-pane").nth(1).waitFor();
   assert.equal(await side.locator("#side-pane-terminal .term-pane").count(), 2);
   assert.equal(await fetchFrom(page, "/api/health"), 200, "one tab on its own gets through");
-  // One stream for the window: the run list, the Team inbox, the run, and the two terminals on it.
-  await streamsAre({ streams: 1, subscriptions: 5 }, "a window's one stream");
+  // One stream for the window: the run list, approvals, the Team inbox, the run, and the two terminals on it.
+  await streamsAre({ streams: 1, subscriptions: 6 }, "a window's one stream");
 
   // Behind another tab the terminals aren't watched; the side chat shares the run view's subscription.
   await side.getByRole("tab", { name: "Chat" }).click();
-  await streamsAre({ streams: 1, subscriptions: 3 }, "terminals dropped, the run shared");
+  await streamsAre({ streams: 1, subscriptions: 4 }, "terminals dropped, the run shared");
   await side.getByRole("tab", { name: "Terminal" }).click();
-  await streamsAre({ streams: 1, subscriptions: 5 }, "terminals watched again");
+  await streamsAre({ streams: 1, subscriptions: 6 }, "terminals watched again");
 
   // A closed panel watches nothing; opened again, it does.
   await page.getByRole("button", { name: "Side panel", exact: true }).click();
-  await streamsAre({ streams: 1, subscriptions: 3 }, "the run list, Team inbox and the run view's run");
+  await streamsAre({ streams: 1, subscriptions: 4 }, "the run list, approvals, Team inbox and the run view's run");
   await page.getByRole("button", { name: "Side panel", exact: true }).click();
-  await streamsAre({ streams: 1, subscriptions: 5 }, "the panel's terminals again");
+  await streamsAre({ streams: 1, subscriptions: 6 }, "the panel's terminals again");
 
   // A second tab on the same run: the first tab's stream carries its topics too.
   const second = await context.newPage();
@@ -152,7 +152,7 @@ test("a run view with a side chat, two terminals and a second tab still gets its
   assert.equal(await fetchFrom(second, "/api/health"), 200, "the second tab's requests go through");
   await second.locator(".runview .run-head h2", { hasText: "E2E: a run for the connections" }).waitFor({ timeout: 5_000 });
   // It opens with the panel as you left it (on the Terminal tab, the same two shells).
-  await streamsAre({ streams: 1, subscriptions: 10 }, "one stream for both tabs");
+  await streamsAre({ streams: 1, subscriptions: 12 }, "one stream for both tabs");
 
   // Keystrokes still reach a terminal (drawn afresh after it was hidden), and its output comes back.
   const pane = side.locator("#side-pane-terminal .term-pane").first();
@@ -177,14 +177,14 @@ test("a run view with a side chat, two terminals and a second tab still gets its
   // A tab that goes away stops being watched at once, even one that crashed without a word.
   const third = await context.newPage();
   await third.goto(`${BASE}/#/run/${created.id}`);
-  await streamsAre({ streams: 1, subscriptions: 15 }, "a third tab, on the same stream");
+  await streamsAre({ streams: 1, subscriptions: 18 }, "a third tab, on the same stream");
   const cdp = await context.newCDPSession(third);
   void cdp.send("Page.crash").catch(() => {}); // never answered: the page is gone
-  await streamsAre({ streams: 1, subscriptions: 10 }, "the crashed tab's topics dropped");
+  await streamsAre({ streams: 1, subscriptions: 12 }, "the crashed tab's topics dropped");
 
   // The tab holding the stream closes: the other one opens it, and keeps hearing about the run.
   await page.close();
-  await streamsAre({ streams: 1, subscriptions: 5 }, "the second tab's stream: its run list, Team inbox, its run, its terminals");
+  await streamsAre({ streams: 1, subscriptions: 6 }, "the second tab's stream: its run list, approvals, Team inbox, its run, its terminals");
   await api(`/api/runs/${created.id}/archive`, { archived: false });
   await second.getByRole("button", { name: "More run actions" }).click();
   await second.getByRole("menuitem", { name: "Archive…" }).waitFor({ timeout: 5_000 });
@@ -200,7 +200,7 @@ test("owner stream sharing stays private across shared-account sign-in and uses 
   assert.ok(created.users?.some((user: { username: string }) => user.username === "stream-viewer"), created.error);
   const ownerPage = await context.newPage();
   await ownerPage.goto(`${BASE}/?token=${TOKEN}`); await ownerPage.getByRole("button", { name: "New run", exact: true }).waitFor();
-  await streamsAre({ streams: 1, subscriptions: 2 }, "the owner watches its one private stream");
+  await streamsAre({ streams: 1, subscriptions: 3 }, "the owner watches its one private stream");
   const before = await ownerPage.evaluate(async () => (await fetch("/api/auth/self")).json());
   assert.match(before.streamSharing.channelKey, /^[a-f0-9]{64}$/); assert.match(before.streamSharing.lockId, /^[a-f0-9]{32}$/);
   const locks = await ownerPage.evaluate(async () => (await navigator.locks.query()).held?.map((lock) => lock.name ?? "") ?? []);
@@ -227,12 +227,12 @@ test("owner stream sharing stays private across shared-account sign-in and uses 
   // Owner recovery creates a different private group. Public forged subscriptions cannot join it.
   const recovered = await context.newPage(); await recovered.goto(`${BASE}/?token=${TOKEN}`); await recovered.getByRole("button", { name: "New run", exact: true }).waitFor();
   const after = await recovered.evaluate(async () => (await fetch("/api/auth/self")).json()); assert.notEqual(after.streamSharing.channelKey, before.streamSharing.channelKey); assert.notEqual(after.streamSharing.lockId, before.streamSharing.lockId);
-  await streamsAre({ streams: 1, subscriptions: 2 }, "a recovered owner group has no forged subscriber");
+  await streamsAre({ streams: 1, subscriptions: 3 }, "a recovered owner group has no forged subscriber");
   await sharedPage.evaluate(() => { for (const channel of (window as unknown as { publicChannels: BroadcastChannel[] }).publicChannels) channel.postMessage({ kind: "subs", window: "unprivileged", subs: [[71, "runs", undefined]] }); });
   // This round trip follows the forged messages and creates a real owner-feed update.
   const list = await api("/api/runs"); const run = Array.isArray(list) ? list[0] : list.runs[0]; assert.ok(run?.id);
   await api(`/api/runs/${run.id}/archive`, { archived: false });
-  await streamsAre({ streams: 1, subscriptions: 2 }, "public/lock-derived broker names cannot add subscriptions");
+  await streamsAre({ streams: 1, subscriptions: 3 }, "public/lock-derived broker names cannot add subscriptions");
   assert.deepEqual(await sharedPage.evaluate(() => (window as unknown as { received: unknown[] }).received), [], "a shared document receives no owner stream messages");
   await recovered.close(); await ownerPage.close(); await sharedPage.close(); await streamsAre({ streams: 0, subscriptions: 0 }, "every owner broker was released");
 });

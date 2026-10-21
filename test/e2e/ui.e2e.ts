@@ -287,7 +287,7 @@ test("a check that can't run here: the result is still reviewed, and the inbox a
   const item = page.locator(".inbox-item", { hasText: "E2E: check can't run" });
   await item.waitFor({ timeout: 30_000 });
   await item.locator(".cant-run", { hasText: "nosuchtool-e2e" }).waitFor();
-  assert.match(await item.locator(".ih .help").innerText(), /check couldn't run/);
+  assert.match(await item.locator(".ih .help").innerText(), /checks: blocked/);
 
   await item.locator("a.t").click();
   await page.getByText("⚠ Finished — but the check couldn't run, so nothing was tested").waitFor();
@@ -612,8 +612,19 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
   const diff = (last: boolean) => api(`/api/runs/${created.id}/diff?branch=${encodeURIComponent(result.branch)}${last ? "&last=1" : ""}`);
   const [all, lastStep] = [await diff(false), await diff(true)];
   assert.ok(lastStep.length > 0 && lastStep.length < all.length, `the side chat's commit is the last step: ${lastStep.length} of ${all.length}`);
+  // A successful refresh clears a transient error without remounting the Changes pane.
+  const diffRoute = `**/api/runs/${created.id}/diff?*`;
+  await page.route(diffRoute, route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Temporary diff failure" }) }));
   await side.getByRole("tab", { name: "Changes" }).click();
+  await side.locator(".changes .msg.err", { hasText: "Temporary diff failure" }).waitFor();
+  await page.unroute(diffRoute);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, value: true }); document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "hidden", { configurable: true, value: false }); document.dispatchEvent(new Event("visibilitychange"));
+    delete (document as unknown as { hidden?: boolean }).hidden;
+  });
   await side.locator(".changes-sum", { hasText: new RegExp(`^${all.length} files? ·`) }).waitFor();
+  await side.locator(".changes .msg.err").waitFor({ state: "detached" });
   await side.getByRole("button", { name: "Last step" }).click();
   await side.locator(".changes-sum", { hasText: new RegExp(`^${lastStep.length} files? ·.*in the last step`) }).waitFor();
   assert.deepEqual(await side.locator(".changes .rf .fp").allInnerTexts(), lastStep.map((f: { path: string }) => f.path));

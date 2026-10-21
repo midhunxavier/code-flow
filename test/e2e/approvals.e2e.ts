@@ -17,6 +17,7 @@ let browser: Browser;
 let page: Page;
 let base: string;
 let repo: string;
+let browserApprovalReads = 0;
 
 async function api<T = any>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(base + path, { headers, ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }) });
@@ -65,6 +66,7 @@ before(async () => {
   }
   browser = await chromium.launch({ channel: "chrome", headless: true });
   page = await browser.newPage();
+  page.on("request", request => { if (request.method() === "GET" && new URL(request.url()).pathname === "/api/approvals") browserApprovalReads++; });
   await page.addInitScript((path) => { localStorage.setItem("repo", path); localStorage.setItem("sideOpen", "0"); }, repo);
   await page.goto(base);
 });
@@ -88,6 +90,9 @@ test("a live opt-in run receives a one-action inbox and an old approval cannot b
   const inbox = page.getByRole("alert", { name: "Tool approval required" });
   await inbox.waitFor();
   assert.match(await inbox.innerText(), /rm -rf build/);
+  await page.reload();
+  await inbox.waitFor(); // Reconnecting receives a fresh pending snapshot.
+  assert.equal(browserApprovalReads, 0, "live approvals arrive without HTTP polling");
   await inbox.getByRole("button", { name: "Approve once", exact: true }).click();
   await inbox.waitFor({ state: "detached" });
   const finished = await until(() => api<Run>(`/api/runs/${run.id}`), (value) => value.status !== "running");

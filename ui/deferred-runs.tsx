@@ -1,3 +1,4 @@
+import { pollVisible } from "./polling.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { AgentId } from "../src/adapters/types.js";
 import type { DeferredRunJob, DeferredRunStatus } from "../src/deferred-runs.js";
@@ -32,8 +33,8 @@ export function DeferredRunsPanel({ runRequest, project, repo, unassigned = fals
       catch (problem) { if (alive) setError((problem as Error).message); }
       finally { pending = false; }
     };
-    void poll(); const timer = setInterval(poll, 5000);
-    return () => { alive = false; controller.abort(); clearInterval(timer); };
+    const stop = pollVisible(poll, 5000);
+    return () => { alive = false; controller.abort(); stop(); };
   }, [refresh]);
   const enqueue = async () => {
     if (!runRequest || saving) return;

@@ -1,3 +1,5 @@
+import { projectReport } from "./project-report.js";
+import { matchesHistoryFilter, needsYou, type HistoryFilter } from "./run-status.js";
 import { PersistenceTracker } from "./persistence-status.js";
 import { RunIndex, runSearchText, historyOffset } from "./run-history.js";
 import { chatHandoffContext } from "./chat-handoff.js";
@@ -2842,6 +2844,7 @@ export class RunManager {
   private readonly runIndex = new RunIndex();
   readonly persistence = new PersistenceTracker();
   relatedRuns(repo: string) { return this.runIndex.related(repo); }
+  projectReport(predicate: (run: RunSummary) => boolean) { return projectReport(this.runIndex.values().filter(predicate)); }
   get historyRevision() { return this.runIndex.revision; }
   get runningCount() { return this.runIndex.values().filter((run) => run.status === "running").length; }
   private readonly deletedRuns = new Set<string>();
@@ -3068,18 +3071,18 @@ export class RunManager {
     const limit = input.limit ?? 100; if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Attention page size must be between 1 and 100");
     const cursor = input.cursor ? decodeRunCursor(input.cursor) : undefined;
     const candidates = this.runIndex.values().filter((run) => !input.predicate || input.predicate(run)), running = candidates.filter((run) => run.status === "running");
-    const attention = candidates.filter((run) => run.status !== "running" && !run.archived && (!run.seen || run.status === "interrupted" || !!run.awaiting || !!run.team?.awaitingRequestId || run.triage?.state === "pending"));
+    const attention = candidates.filter((run) => run.status !== "running" && needsYou(run));
     const remaining = attention.filter((run) => !cursor || afterRunCursor(run, cursor)), selected = remaining.slice(0, limit), truncated = remaining.length > limit;
     return { runs: structuredClone([...running, ...selected]), total: running.length + attention.length, running: running.length, truncated, nextCursor: truncated ? encodeRunCursor(selected.at(-1)!) : undefined };
   }
 
-  page(input: { limit?: number; before?: number; cursor?: string; query?: string; project?: string; predicate?: (run: RunSummary) => boolean } = {}) {
+  page(input: HistoryFilter & { limit?: number; before?: number; cursor?: string; query?: string; project?: string; predicate?: (run: RunSummary) => boolean } = {}) {
     if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)) throw new Error("History page size must be between 1 and 100");
     if (input.before !== undefined && (!Number.isSafeInteger(input.before) || input.before < 0)) throw new Error("Invalid history timestamp");
     const cursor = input.cursor === undefined ? undefined : decodeRunCursor(input.cursor);
     const limit = input.limit ?? 50;
     const words = input.query?.trim().toLowerCase().split(/\s+/).filter(Boolean) ?? [];
-    const matches = input.predicate || input.project || words.length ? this.runIndex.values().filter((run) => { if (input.predicate && !input.predicate(run) || input.project && run.project !== input.project) return false; return this.runIndex.matches(run.id, words); }) : this.runIndex.values();
+    const matches = input.predicate || input.project || words.length || input.status || input.pattern || input.agent || input.repo || input.section ? this.runIndex.values().filter((run) => { if (input.predicate && !input.predicate(run) || input.project && run.project !== input.project) return false; return matchesHistoryFilter(run, input) && this.runIndex.matches(run.id, words); }) : this.runIndex.values();
     const offset = historyOffset(matches, cursor, input.before), selected = matches.slice(offset, offset + limit), more = offset + limit < matches.length;
     return { runs: structuredClone(selected), total: matches.length, nextCursor: more ? encodeRunCursor(selected.at(-1)!) : undefined, nextBefore: more ? selected.at(-1)?.createdAt : undefined };
   }

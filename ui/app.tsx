@@ -1,3 +1,4 @@
+import { checksLabel } from "../src/run-status.js";
 import { ActivityView } from "./activity.js";
 import { ConfirmationHost } from "./confirm-dialog.js";
 import { lazyView } from "./lazy-view.js";
@@ -57,7 +58,7 @@ import {
   type SideTab,
 } from "./state.js";
 import type { DirListing, RunSummary } from "./types.js";
-import { teamNeedsResume } from "./team-state.js";
+import { teamNeedsResume, teamAwaitingAnswer } from "./team-state.js";
 
 export function App() {
   return <>{route.value.view === "side" ? <PoppedSide tab={route.value.tab} /> : <MainApp />}<ConfirmationHost /></>;
@@ -340,7 +341,7 @@ export function notifyFinished(run: RunSummary) {
   if (route.value.view === "side") return; // a popped-out panel: the main window says it
   const viewing = (route.value.view === "run" || route.value.view === "review") && route.value.id === run.id;
   const verbs: Record<string, string> = {
-    done: run.verdict === "failing" ? "finished, but its check fails" : run.checkCantRun ? "finished, but its check couldn't run" : "finished",
+    done: checksLabel(run) === "Failed" ? "finished, but its check fails" : checksLabel(run) === "Blocked" ? "finished, but its check couldn't run" : checksLabel(run) === "Passed" ? "finished, with passing checks" : "finished, without passing verification",
     failed: "failed",
     stopped: teamNeedsResume(run) ? "has unresolved work" : "stopped at a limit",
     interrupted: "was interrupted",
@@ -348,7 +349,7 @@ export function notifyFinished(run: RunSummary) {
   const watch = run.status !== "running" && !run.awaiting ? watchNeedingYou(run) : undefined;
   const title = run.awaiting
     ? `code-flow: ${run.awaiting.title.toLowerCase()}`
-    : run.team?.awaitingRequestId ? "code-flow: your team needs an answer" : watch
+    : teamAwaitingAnswer(run) ? "code-flow: your team needs an answer" : watch
       ? `code-flow: PR needs you — ${watch.detail}`
       : `code-flow: run ${verbs[run.status] ?? run.status}`;
   announcement.value = `${title.replace(/^code-flow: /, "")}: ${run.task.split("\n")[0]!.slice(0, 120)}`;
