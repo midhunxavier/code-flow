@@ -65,6 +65,7 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     assert.ok(run.repo.endsWith("/remote/project"));
     await page.getByRole("button", { name: "SSH connections", exact: true }).click();
     await page.getByRole("menuitem", { name: /^This computer/ }).click();
+    await page.waitForURL(url => url.pathname === "/");
     await page.getByRole("button", { name: "SSH connections", exact: true }).filter({ hasText: "This computer" }).waitFor();
     assert.equal(new URL(page.url()).origin, base);
     assert.deepEqual((await page.evaluate(async () => (await fetch("/api/projects")).json())).map((p: any) => p.id).sort(), [localProject.id, secondLocalProject.id].sort(), "remote projects never enter local project storage");
@@ -72,9 +73,12 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     await page.getByRole("menuitem", { name: /^Linux development/ }).waitFor();
     assert.equal(await page.getByLabel("SSH host", { exact: true }).count(), 0, "the quick switcher has no setup form");
     await page.getByRole("menuitem", { name: /^Linux development/ }).click();
+    await page.waitForURL(url => url.pathname === remotePath);
     await page.getByRole("button", { name: "SSH connections", exact: true }).filter({ hasText: "Linux development" }).waitFor();
     assert.equal(page.context().pages().length, 1, "switching stays in the same tab");
-    assert.equal((await page.evaluate(async () => (await fetch(`${location.pathname}api/projects`)).json()))[0].name, "Remote web app");
+    const restoredProjects = await page.evaluate(async () => { const response = await fetch(`${location.pathname}api/projects`); return { status: response.status, body: await response.json() }; });
+    assert.equal(restoredProjects.status, 200, JSON.stringify(restoredProjects.body));
+    assert.deepEqual(restoredProjects.body.map((project: { name: string }) => project.name), ["Remote web app"]);
     await page.setViewportSize({ width: 1440, height: 1000 });
     const localGroup = page.getByRole("group", { name: "This computer projects", exact: true });
     await localGroup.getByRole("link", { name: "Remote web app", exact: true }).waitFor();

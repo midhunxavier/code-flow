@@ -111,6 +111,8 @@ test("status filters search all history and project reports do not depend on loa
 test("insights polling waits for a slow request, pauses hidden and refreshes on return", async () => {
   const probeContext = await browser.newContext({ storageState: await page.context().storageState() });
   const probe = await probeContext.newPage();
+  // Keep the scope stable: restoring a saved repo/project legitimately replaces the poller.
+  await probe.addInitScript(() => { localStorage.removeItem("repo"); localStorage.removeItem("project"); });
   let reads = 0, release!: () => void, started!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   const firstStarted = new Promise<void>(resolve => { started = resolve; });
