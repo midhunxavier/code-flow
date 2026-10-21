@@ -105,7 +105,7 @@ async function chooseRepo(page: Page, path: string) {
 async function chooseProject(page: Page, name: string) {
   await page.locator(".composer .project-btn").click();
   await page.getByRole("dialog", { name: "Projects", exact: true }).getByRole("button", { name: new RegExp(`^${name} project`) }).click();
-  await page.locator(".composer .project-btn .name", { hasText: `${name} project` }).waitFor();
+  await page.locator(".composer .project-btn .name", { hasText: `${name} project` }).waitFor().catch(async error => { throw new Error(`${error.message}\n${page.url()}\n${(await page.locator("body").innerText()).slice(-10000)}`); });
 }
 
 test("Improve and Undo preserve criteria and attachments; modes support keyboard focus and a real local provider", async () => {
