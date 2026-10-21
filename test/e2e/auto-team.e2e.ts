@@ -118,6 +118,31 @@ test("Auto is the fresh default, Solo is direct, and Advanced templates survive 
   } finally { await context.close(); }
 });
 
+test("Resume budget can be extended before continuing saved work", { timeout: 60_000 }, async () => {
+  const started = await fetch(`${base}/api/runs`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ repo, pattern: "pipeline", task: "Implement the sample", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["codex"] }, options: {}, loop: { maxSteps: 1, maxMinutes: 60 } }) });
+  assert.equal(started.status, 201); const { id } = await started.json() as { id: string };
+  await page.goto(`${base}/?token=${token}#/run/${id}`);
+  const budget = page.getByRole("group", { name: "Resume budget", exact: true });
+  await budget.waitFor({ timeout: 30_000 });
+  assert.equal(await budget.getByLabel("Resume maximum calls").inputValue(), "1");
+  await budget.getByLabel("Resume maximum calls").fill("0");
+  const resume = page.getByRole("button", { name: "Extend budget & resume", exact: true });
+  assert.equal(await resume.isDisabled(), true);
+  await budget.getByRole("button", { name: "Use extended budget", exact: true }).click();
+  assert.equal(await budget.getByLabel("Resume maximum calls").inputValue(), "200");
+  assert.equal(await budget.getByLabel("Resume maximum minutes").inputValue(), "240");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await budget.evaluate((element) => element.scrollWidth <= element.clientWidth), true, "budget controls fit on mobile");
+  const response = page.waitForResponse(`${base}/api/runs/${id}/resume`);
+  await resume.click();
+  const resumed = await response; assert.equal(resumed.status(), 200, await resumed.text());
+  assert.deepEqual(resumed.request().postDataJSON(), { budget: { maxSteps: 200, maxInvocations: 200, maxMinutes: 240 } });
+  const saved = await fetch(`${base}/api/runs/${id}`, { headers }).then((result) => result.json()) as Run;
+  assert.equal(saved.loop.maxSteps, 200); assert.equal(saved.loop.maxInvocations, 200); assert.equal(saved.loop.maxMinutes, 240);
+  assert.ok(saved.usage.agentSteps >= 1, "previous usage is retained");
+  await page.setViewportSize({ width: 1280, height: 960 });
+});
+
 test("Auto team approval, addressed question, distinct members, and verified coverage work in the UI", { timeout: 120_000 }, async () => {
   await page.goto(`${base}/?token=${token}`);
   await page.getByRole("button", { name: "Auto", exact: true }).click();

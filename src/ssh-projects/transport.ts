@@ -54,16 +54,26 @@ export class SshTransport {
     if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname)) throw new Error("SSH forwards only remote loopback addresses");
     const host = hostname.includes(":") ? "[::1]" : hostname;
     const child = this.start(["-W", `${host}:${port}`]);
-    const stream = Duplex.from({ readable: child.stdout!, writable: child.stdin! });
+    // SSH can close stdin before its buffered stdout has drained. Duplex.from would treat
+    // that writable close as a premature end and discard a valid HTTP response on Linux.
+    const stream = new Duplex({
+      read() { child.stdout!.resume(); },
+      write(chunk, encoding, callback) { child.stdin!.write(chunk, encoding, callback); },
+      final(callback) { child.stdin!.end(callback); },
+      destroy(error, callback) {
+        child.stdin!.destroy(); child.stdout!.destroy(); child.kill(); callback(error);
+      },
+    });
+    child.stdout!.on("data", (chunk) => { if (!stream.push(chunk)) child.stdout!.pause(); });
+    child.stdout!.on("end", () => stream.push(null));
+    child.stdout!.on("error", (error) => stream.destroy(error));
     // HTTP removes its listeners after a response; later disconnects still close both pipes.
     stream.on("error", () => undefined);
     child.stdin!.on("error", () => undefined);
-    child.stdout!.on("error", () => undefined);
     let stderr = "";
     child.stderr!.on("data", (data) => { stderr = (stderr + data).slice(-2048); });
     child.once("error", (error) => stream.destroy(error));
     child.once("close", (code) => { if (code) stream.destroy(new Error(`SSH connection failed: ${stderr.trim() || `exit ${code}`}`)); });
-    stream.once("close", () => { child.kill(); });
     return stream;
   }
   async close() {

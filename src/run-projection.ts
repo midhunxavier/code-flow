@@ -2,8 +2,10 @@ import { join } from "node:path";
 import { worktreeRoot } from "./git.js";
 import type { LoopSettings, Run, RunEvent, RunSummary, Step } from "./engine.js";
 import { RunLogReader, type RunPatch } from "./run-log.js";
+import { DEFAULT_EXECUTION_BUDGET } from "./execution-budget.js";
 
-export const DEFAULT_LOOP: LoopSettings = { maxMinutes: 60, maxSteps: 40, checkTimeoutMin: 10 };
+export const DEFAULT_LOOP: LoopSettings = { ...DEFAULT_EXECUTION_BUDGET, checkTimeoutMin: 10 };
+const LEGACY_LOOP: LoopSettings = { maxMinutes: 60, maxSteps: 40, checkTimeoutMin: 10 };
 
 /** Incremental recovery retains only the latest run and each step, never provider transcripts. */
 export class RunProjection {
@@ -36,7 +38,7 @@ function rebuildSnapshot(snapshot: RunSummary | undefined, steps: Map<string, St
     ...legacy,
     context: legacy.context ?? { paths: [], attachments: [] },
     agentSettings: legacy.agentSettings ?? {},
-    loop: { ...DEFAULT_LOOP, ...(legacy.loop ?? {}) },
+    loop: { ...LEGACY_LOOP, ...(legacy.loop ?? {}) },
     usage: legacy.usage ?? { agentSteps: 0, checks: 0 },
     // Runs saved before patternDone existed: a finished run's pattern finished.
     patternDone: legacy.patternDone ?? (legacy.status === "done" ? true : undefined),

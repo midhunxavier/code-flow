@@ -53,6 +53,7 @@ import { listTree, readRepoFile, searchFiles } from "./repo-tree.js";
 import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig, type Trust } from "./repo-config.js";
 import { openFolder } from "./serve.js";
+import { inspectFramePolicy } from "./frame-policy.js";
 import { LaunchProfiles, LaunchProfileError, readLaunchProfiles } from "./launch-profiles.js";
 import { TeamRerunError } from "./team-reruns.js";
 import { ConventionsStore, ConventionsError } from "./conventions.js";
@@ -680,7 +681,7 @@ async function improveTask(body: any, res: ServerResponse) {
   // Closing the request (Stop in the composer, or leaving the page) stops the turn.
   improving++; improvingControllers.add(stop);
   try {
-    return await attempt(() => manager.withIdleRepository(request.repo, async () => {
+    return await attempt(() => manager.withReadOnlyExecution(request.repo, async () => {
       await manager.assertExecutionAllowed(request.repo, undefined, "Prompt improvement");
       stop.signal.throwIfAborted();
       const installed = new Set((await agentAvailability()).filter((a) => a.available && IMPROVE_AGENTS.includes(a.id as ImproveAgent)).map((a) => a.id));
@@ -2178,8 +2179,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (await handleJourneys(req, res, url, parts)) return;
   if (parts[1] === "preview" && req.method === "POST") {
     const body = await readJson(req);
+    if (parts[2] === "status") {
+      const target = previewTarget(String(body.url ?? ""));
+      const registered = typeof body.runId === "string" && manager.get(body.runId) && manager.devServers.list().some(server => server.key.startsWith(`${body.runId}/`) && server.status === "running" && server.port === target?.port);
+      return send(res, 200, { ready: !!registered && await attempt(() => previews.ready(String(body.url ?? ""))) });
+    }
     // On the host name this page was opened with (checkOrigin allows only code-flow's own), so the app is same-site with it.
     return send(res, 200, await attempt(() => previews.show(String(body.url ?? ""), req.headers.host)));
+  }
+  if (parts[1] === "frame-policy" && req.method === "POST") {
+    const body = await readJson(req, 8192);
+    const scheme = (req.socket as typeof req.socket & { encrypted?: boolean }).encrypted === true ? "https" : "http";
+    return send(res, 200, await attempt(() => inspectFramePolicy(String(body.url ?? ""), `${scheme}://${req.headers.host}`)));
   }
   // Snapshot mode: a screenshot of any page, in a headless Chrome of its own (src/snapshot.ts). It
   // keeps away from this computer, except a local app at the address the Browser's preview takes
@@ -2411,7 +2422,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (req.method === "POST" && parts[3] === "cancel") return send(res, 200, { cancelled: manager.cancel(run.id) });
     if (req.method === "POST" && parts[3] === "resume") {
-      await manager.resume(run.id).catch((err: Error) => {
+      const body = req.headers["content-length"] && req.headers["content-length"] !== "0" || req.headers["transfer-encoding"] ? await readJson(req) : {};
+      await manager.resume(run.id, body.budget).catch((err: Error) => {
         throw new HttpError(400, err.message);
       });
       return send(res, 200, { resumed: true });
@@ -2482,13 +2494,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
           const command = (typeof body.command === "string" && body.command.trim()) || run.app?.command;
           if (!command) throw new HttpError(400, 'Say how to run the app (e.g. "npm run dev"), or add "run" to .codeflow/config.json');
           if (/[\r\n]/.test(command)) throw new HttpError(400, "The command must be a single line");
+          if (body.port !== undefined && (!Number.isInteger(body.port) || body.port < 1 || body.port > 65_535 || [PORT, REMOTE_PORT].includes(body.port))) throw new HttpError(400, "Choose a valid app port other than code-flow's ports");
           // A locked-down run's code is an outsider's, and the app runs on this machine, never in
           // Docker: the same confirmation its checks would need.
           if (run.lockdown && body.allowUntrusted !== true) {
             throw Object.assign(new HttpError(409, `${run.lockdown}. Run app starts that code on this machine, outside any sandbox or container.`), { confirm: "allowUntrusted" });
           }
           manager.noteActivity(); // the app is the repo's code running on this machine
-          return send(res, 200, await manager.devServers.start(key, wt.path, command, run.app?.port));
+          return send(res, 200, await manager.devServers.start(key, wt.path, command, body.port ?? run.app?.port));
         }
       }
     }

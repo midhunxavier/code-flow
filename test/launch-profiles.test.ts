@@ -4,10 +4,11 @@ import { mkdtempSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
 
 process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-launch-module-"));
 const { LaunchProfiles, launchDirectory, readLaunchProfiles, validateLaunchProfiles } = await import("../src/launch-profiles.js");
-const { DevServers } = await import("../src/serve.js");
+const { DevServers, freePort } = await import("../src/serve.js");
 type Profile = import("../src/launch-profiles.js").LaunchProfile;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const command = `${quote(process.execPath)} service.mjs`;
@@ -33,6 +34,17 @@ async function fixture(t: { after: (fn: () => unknown) => void }) {
   return { root, launches, servers };
 }
 async function eventually(check: () => Promise<boolean> | boolean) { for (let attempt = 0; attempt < 50; attempt++) { if (await check()) return; await new Promise((resolve) => setTimeout(resolve, 30)); } assert.fail("condition did not become true"); }
+
+test("a busy maximum app port falls back to an allocated port within the TCP range", async (t) => {
+  const occupied = createServer();
+  const listening = await new Promise<boolean>((resolve, reject) => {
+    occupied.once("error", (error: NodeJS.ErrnoException) => error.code === "EADDRINUSE" ? resolve(false) : reject(error));
+    occupied.listen(65_535, "127.0.0.1", () => resolve(true));
+  });
+  if (listening) t.after(() => new Promise<void>(resolve => occupied.close(() => resolve())));
+  const port = await freePort(65_535);
+  assert.ok(port > 0 && port < 65_535);
+});
 
 test("launch configurations validate bounds, safe paths, dependency DAGs and generated environment before commands run", () => {
   assert.equal(profile([service("api"), service("web", { dependsOn: ["api"], env: { API_ENDPOINT: "${API_URL}/v1" } })]).services.length, 2);

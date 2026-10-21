@@ -70,7 +70,9 @@ Deleting a memory erases its stored body, removes it from retrieval, and retains
 
 ## Budgets, restart, and resume
 
-The run's maximum steps is also Auto team's actual CLI invocation ceiling; an explicit smaller `maxInvocations` lowers that ceiling for planning and scheduling too. Provider retries and schema repairs count. At most `min(4, floor(limit / 4))` invocations may be coordination calls, and the runtime reserves a turn for independent review when admitting work. At least four invocations are required for a new team. These are bounds on authorized invocations, not a claim that coordination will always be 25% of actual usage.
+The run's maximum steps is also Auto team's actual CLI invocation ceiling; an explicit smaller `maxInvocations` lowers that ceiling for planning and scheduling too. Provider retries and schema repairs count. Up to one quarter of the invocation allowance may be coordinator calls, and the runtime reserves a turn for independent review when admitting work. New runs default to 200 calls over 240 minutes, allowing up to 50 coordinator calls. At least four invocations are required for a new team. These are bounds on authorized invocations, not a claim that coordination will always be 25% of actual usage.
+
+When a run stops, edit **Maximum calls** and **Maximum minutes** before resuming, or choose **Use extended budget** for 200 calls and 240 minutes. Resume grants a fresh allocation, reuses completed results and worktrees, and retains lifetime usage. Saved runs keep their existing limits until you explicitly change them.
 
 The team view reports lifetime invocations, coordination share, questions, blocked turns, and revisions. Provider-reported tokens and API-equivalent cost remain unknown where the provider does not report them; cost is not a subscription bill.
 

@@ -141,7 +141,7 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
   // The form replaces the list inside an open dialog, so autofocus alone wouldn't reach it.
   const nameField = useRef<HTMLInputElement>(null);
   useEffect(() => nameField.current?.focus(), []);
-  const [repos, setRepos] = useState<string[]>(project?.repos ?? (draft ? [] : repo.value ? [repo.value] : []));
+  const [repos, setRepos] = useState<string[]>(project?.repos ?? []);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const inProject = project ? [...runs.value.values()].filter((r) => projectFor(r)?.id === project.id) : [];

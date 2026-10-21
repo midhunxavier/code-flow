@@ -1,6 +1,8 @@
 import { TeamTemplateLibrary } from "./team-template-library.js";
 import { templateFromPlan, type TeamTemplate } from "../src/team-templates.js";
 import { confirmAction } from "./confirm-state.js";
+import { DEFAULT_EXECUTION_BUDGET, coordinatorInvocationLimit } from "../src/execution-budget.js";
+import { localAppUrls } from "../src/local-app-url.js";
 import { intentDraft, LiveProgress, ResultStudio } from "./experience.js";
 import { journeyDraft } from "./journeys.js";
 import { rerunDraft } from "./rerun-draft.js";
@@ -53,6 +55,7 @@ import {
   navigate,
   openSideChat,
   openSide,
+  openBrowserPage,
   chatDrafts,
   takeDrafts,
   rememberSide,
@@ -69,6 +72,7 @@ import { followupMinimumCalls, teamAwaitingAnswer, teamNeedsResume } from "./tea
 import type { AgentEvent, AgentId, Artifact, Attachment, CheckedReview, FindingCheck, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
+const openedAppTurns = new Set<string>();
 const modelNote = (run: RunSummary | null, id?: AgentId, settings?: ChatSettings) => {
   const value = settings ?? (id ? run?.agentSettings?.[id] : undefined);
   return [value?.model, value?.effort].filter(Boolean).join(" · ");
@@ -90,6 +94,7 @@ export function RunView({ id }: { id: string }) {
   const [recovering, setRecovering] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [resumeBudget, setResumeBudget] = useState<{ id: string; maxSteps: number; maxMinutes: number } | null>(null);
   const { run, problem, data, persistence } = useRunStream(id, (step) => {
     // A side chat's turn isn't in the timeline: following it would close the step you're watching.
     if (follow.current && step.status === "running" && !sideWork(step)) setSelected(step.id);
@@ -167,15 +172,18 @@ export function RunView({ id }: { id: string }) {
   const chat = !!p?.chat;
 
   const next = nextRunAction(run);
+  const allocation = resumeBudget?.id === run.id ? resumeBudget : { id: run.id, maxSteps: Math.min(run.loop.maxSteps, run.loop.maxInvocations ?? run.loop.maxSteps), maxMinutes: run.loop.maxMinutes };
+  const minimumCalls = run.pattern === "auto-team" ? 4 : 1;
+  const allocationValid = Number.isSafeInteger(allocation.maxSteps) && allocation.maxSteps >= minimumCalls && allocation.maxSteps <= 200 && Number.isFinite(allocation.maxMinutes) && allocation.maxMinutes >= 1 && allocation.maxMinutes <= 720;
   const focusSection = (id: string) => {
     const section = document.getElementById(id);
     section?.scrollIntoView({ block: "center", behavior: "smooth" });
     (section?.querySelector<HTMLElement>("textarea, button, summary") ?? section)?.focus({ preventScroll: true });
   };
   const resume = async () => {
-    if (actionBusy) return;
+    if (actionBusy || !allocationValid) return;
     setActionBusy(true); setActionError("");
-    try { await post(`/api/runs/${run.id}/resume`); }
+    try { await post(`/api/runs/${run.id}/resume`, { budget: { maxSteps: allocation.maxSteps, maxInvocations: allocation.maxSteps, maxMinutes: allocation.maxMinutes } }); }
     catch (error) { setActionError((error as Error).message); }
     finally { setActionBusy(false); }
   };
@@ -239,11 +247,19 @@ export function RunView({ id }: { id: string }) {
           {run.permissions ? <details class="settings"><summary>Run permissions · {run.permissions.trust}{run.permissions.antigravityExecution === "native" ? " · Unrestricted Antigravity" : ""}</summary><div class="settings-body"><p>{run.permissions.antigravityExecution === "native" ? "Unrestricted Antigravity uses the existing login and normal provider settings. Its read-only requests are advisory; terminal, browser, MCP, hooks and native agents are unrestricted by Code Flow, including child usage outside the worker budget. Other providers inherit the run policy." : "Workers inherit this run’s policy. Planning and review turns use narrower access. Native agent delegation is disabled; Code Flow schedules the team."}</p>{[...data.current.steps.values()].filter(step => step.permissions).map(step => <p key={step.id}>{step.title}: {step.permissions!.trust} · {step.permissions!.mode} · {step.permissions!.isolation} · command network {step.permissions!.commandNetwork} · external tools {step.permissions!.externalTools}{step.permissions!.implementation ? <><br /><span class="help">{step.permissions!.implementation}: {step.permissions!.limitations.join(" ")}</span></> : null}</p>)}<p class="help">Worktrees do not restrict reads. External browser/MCP tools retain their provider permissions unless explicitly disabled. Setup, checks and previews use their separately configured execution environment.</p></div></details> : null}
           {next ? <section class={`next-action ${["resume", "provider", "check", "revise"].includes(next.kind) ? "needs-attention" : ""}`} aria-label="Next action">
             <div><h3>{next.title}</h3><p>{next.detail}</p>
-              {next.kind === "resume" ? <p class="help">New allowance: {run.loop.maxInvocations ?? run.loop.maxSteps} calls · {run.loop.maxMinutes} minutes. Earlier usage is retained.</p> : null}
+              {next.kind === "resume" ? <div class="resume-budget" role="group" aria-label="Resume budget">
+                <div class="resume-budget-fields">
+                  <label>Maximum calls<input class="field" aria-label="Resume maximum calls" type="number" min={minimumCalls} max={200} value={allocation.maxSteps} disabled={actionBusy} onInput={(event) => setResumeBudget({ ...allocation, maxSteps: Number(event.currentTarget.value) })} /></label>
+                  <label>Maximum minutes<input class="field" aria-label="Resume maximum minutes" type="number" min={1} max={720} value={allocation.maxMinutes} disabled={actionBusy} onInput={(event) => setResumeBudget({ ...allocation, maxMinutes: Number(event.currentTarget.value) })} /></label>
+                  <button class="btn small" disabled={actionBusy} onClick={() => setResumeBudget({ id: run.id, ...DEFAULT_EXECUTION_BUDGET })}>Use extended budget</button>
+                </div>
+                <p class="help">New allowance: {allocation.maxSteps} calls · {allocation.maxMinutes} minutes.{run.team ? ` Up to ${coordinatorInvocationLimit(allocation.maxSteps)} coordinator calls.` : ""} Earlier usage is retained.</p>
+                {!allocationValid ? <p class="msg err" role="alert">Choose {minimumCalls}–200 calls and 1–720 minutes.</p> : null}
+              </div> : null}
               {finished && run.worktrees.length ? <p class="help">Saved work: {run.worktrees.length} {run.worktrees.length === 1 ? "worktree" : "worktrees"}. Branches and files are kept.</p> : null}
             </div>
-            <div class="next-action-buttons"><button class="btn primary" disabled={actionBusy} onClick={act}>{actionBusy ? "Resuming…" : next.label}</button>
-              {next.kind === "provider" ? <button class="btn" disabled={actionBusy} onClick={() => void resume()}>Resume after reconnecting</button> : null}
+            <div class="next-action-buttons"><button class="btn primary" disabled={actionBusy || next.kind === "resume" && !allocationValid} onClick={act}>{actionBusy ? "Resuming…" : next.label}</button>
+              {next.kind === "provider" ? <button class="btn" disabled={actionBusy || !allocationValid} onClick={() => void resume()}>Resume after reconnecting</button> : null}
             </div>
           </section> : null}
           {actionError ? <p class="msg err" role="alert">{actionError}</p> : null}
@@ -656,9 +672,31 @@ export function FollowUpBadges({ f, run }: { f: FollowUp; run?: RunSummary }) {
 export function TurnBody({ run, step, data, answer }: { run: RunSummary; step: Step; data: RunData; answer?: string }) {
   const [open, setOpen] = useState(false);
   const version = data.events.get(step.id)?.length ?? 0;
+  const text = answer ?? (step.status === "done" ? step.finalText : step.error ?? step.finalText);
+  const latestTurn = [...data.steps.values()].filter(value => (value.kind ?? "agent") === "agent" && !sideWork(value)).sort((a, b) => a.startedAt - b.startedAt).at(-1)?.id;
+  useEffect(() => {
+    const identity = `${run.id}:${step.id}:${step.endedAt}`;
+    if (onPhone || step.id !== latestTurn || step.status !== "done" || !text || openedAppTurns.has(identity)) return;
+    const urls = localAppUrls(text, location.href);
+    if (!urls.length) return;
+    const stop = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = Date.now() + 15_000;
+    const check = async () => {
+      for (const url of urls) {
+        if (stop.signal.aborted || openedAppTurns.has(identity)) return;
+        const result = await api<{ ready: boolean }>("/api/preview/status", { method: "POST", body: JSON.stringify({ url, runId: run.id }), signal: stop.signal }).catch(() => null);
+        if (stop.signal.aborted || openedAppTurns.has(identity)) return;
+        if (result?.ready) { openedAppTurns.add(identity); openBrowserPage(url, run.id); return; }
+      }
+      if (!stop.signal.aborted && Date.now() < deadline) timer = setTimeout(() => void check(), 1000);
+      else openedAppTurns.add(identity);
+    };
+    void check();
+    return () => { stop.abort(); clearTimeout(timer); };
+  }, [run.id, step.id, step.status, step.endedAt, text, latestTurn]);
   if (step.status === "running") return <Transcript run={run} step={step} data={data} version={version} />;
   const tools = itemsFor(data, step).filter((i) => i.kind === "tool").length;
-  const text = answer ?? (step.status === "done" ? step.finalText : step.error ?? step.finalText);
   return (
     <div class="turn-body">
       <button type="button" class="show-work" aria-expanded={open} onClick={() => setOpen(!open)}>
@@ -1408,12 +1446,7 @@ const existsHint = (run: RunSummary) => !run.archived; // archived runs may have
 /** Try a result: open its worktree in your tools, or run the app from it. */
 /** An app a run started, as a page of the side panel's Browser (for the run the panel shows). */
 function showInPanel(url: string) {
-  const memo = sideMemo.value;
-  const pages = memo.pages ?? [];
-  const existing = pages.find((p) => p.url === url);
-  const id = existing?.id ?? `p${Date.now().toString(36)}`;
-  rememberSide({ pages: existing ? pages : [...pages, { id, url }], page: id });
-  openSide("browser");
+  openBrowserPage(url);
 }
 
 function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }) {
@@ -1770,6 +1803,22 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
   // In a chat, what you said is already in the thread; only what's still on its way shows here.
   const liveSteps = new Set(steps.filter((s) => s.status === "running").map((s) => s.id));
   const shownNotes = (run.notes ?? []).filter((n) => !chat || n.status === "queued" || (n.deliveredTo && liveSteps.has(n.deliveredTo.stepId) && !n.followUp));
+  const pendingNotes = shownNotes.filter((note) => note.status !== "delivered");
+  const sentNotes = shownNotes.filter((note) => note.status === "delivered");
+  const noteChip = (n: Note) => (
+    <span key={n.id} class={`chip-ctx note-chip ${n.status}`} title={n.text}>
+      <span class="n">
+        {n.followUp
+          ? "✓ Sent as your next message"
+          : n.requestId ? "✓ Answered the team's question" : n.status === "delivered"
+            ? `✓ Delivered to ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.deliveredTo?.agent ?? "the team"}${noteStep(n, steps)}`
+            : chat
+              ? "Sent when this turn ends"
+              : `Queued for ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.agent ?? "next agent"}`}
+        : {n.text}
+      </span>
+    </span>
+  );
 
   return (
     <div class="convo">
@@ -1777,24 +1826,11 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
         {handoffOpen ? <ProviderChatDialog run={run} onClose={() => setHandoffOpen(false)} /> : null}
         {!budgetValid ? <p class="msg err" role="alert">Send is off until the budget below allows {minimumCalls}–200 calls and 1–720 minutes.</p> : null}
         {!running || run.team ? <details class="followup-budget"><summary>{running ? "Goal revision budget" : "New execution budget"} · {followupSteps} calls · {followupMinutes} min</summary><div class="at-row"><label>Maximum calls<input class="field" aria-label="Follow-up maximum calls" type="number" min={minimumCalls} max={200} value={followupSteps} onInput={(event) => setFollowupSteps(Number(event.currentTarget.value))} /></label><label>Maximum minutes<input class="field" aria-label="Follow-up maximum minutes" type="number" min={1} max={720} value={followupMinutes} onInput={(event) => setFollowupMinutes(Number(event.currentTarget.value))} /></label></div><p class="help">{sideOnly ? "A reply queued behind a side chat joins the running execution's allowance; this budget applies when a reply starts a new execution. " : "This is a new allocation. "}The result branch, project memory and applicable context are retained. Earlier spend remains in lifetime usage.</p>{!budgetValid ? <p class="msg err">Choose {minimumCalls}–200 calls and 1–720 minutes.</p> : null}</details> : null}
-        {running && shownNotes.length ? (
-          <div class="notes">
-            {shownNotes.map((n) => (
-              <span key={n.id} class={`chip-ctx note-chip ${n.status}`} title={n.text}>
-                <span class="n">
-                  {n.followUp
-                    ? "✓ Sent as your next message"
-                    : n.requestId ? "✓ Answered the team's question" : n.status === "delivered"
-                      ? `✓ Delivered to ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.deliveredTo?.agent ?? "the team"}${noteStep(n, steps)}`
-                      : chat
-                        ? "Sent when this turn ends"
-                        : `Queued for ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.agent ?? "next agent"}`}
-                  : {n.text}
-                </span>
-              </span>
-            ))}
-          </div>
-        ) : null}
+        {running && sentNotes.length ? <details key={run.id} class="activity note-history">
+          <summary>Sent messages ({sentNotes.length})</summary>
+          <div class="notes">{sentNotes.map(noteChip)}</div>
+        </details> : null}
+        {running && pendingNotes.length ? <div class="notes">{pendingNotes.map(noteChip)}</div> : null}
         <DraftImages images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
         <div class="chatbox">
           <textarea

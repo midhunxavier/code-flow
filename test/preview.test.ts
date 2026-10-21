@@ -98,6 +98,15 @@ before(async () => {
   port = Number(new URL(proxy.origin).port);
 });
 
+test("local app readiness checks distinguish a live app from a stopped listener and reject code-flow", async () => {
+  assert.equal(await previews.ready(`http://127.0.0.1:${appPort}`), true);
+  await assert.rejects(previews.ready("http://localhost:40999"), /other than code-flow/);
+  await assert.rejects(previews.ready("https://example.com"), /local HTTP app/);
+  const probe = createServer();
+  const unused = await new Promise<number>(resolve => probe.listen(0, "127.0.0.1", () => { const port = (probe.address() as AddressInfo).port; probe.close(() => resolve(port)); }));
+  assert.equal(await previews.ready(`http://127.0.0.1:${unused}`), false);
+});
+
 after(() => {
   previews.closeAll();
   app.closeAllConnections();
