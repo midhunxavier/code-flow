@@ -259,17 +259,17 @@ test("pipeline fixes a failing check before any review", async () => {
 
 test("race: a candidate that fails the check can't win", async () => {
   // The fake judge always picks B; here only A (Claude) passes the check.
-  const one = await run("race", { contestants: ["claude", "codex"], judge: ["agy"] }, { loop: { check: "ls claude-*.txt" } });
+  const one = await run("race", { contestants: ["claude", "codex"], judge: ["claude"] }, { loop: { check: "ls claude-*.txt" } });
   assert.equal(one.status, "done", one.error);
   assert.match(one.summary!, /Winner: Candidate A — claude/);
   assert.equal(one.verdict, "passed");
   assert.match(await log(one), /Passing the check: A \(only these can win\)/);
   assert.ok(!one.steps.some((s) => s.title === "Judge candidates"), "no judge needed when only one passes");
 
-  // Two pass (Claude, Antigravity) and one fails (Codex): the judge only chooses between passing ones.
+  // Two independent Claude candidates pass and one fails (Codex): the judge only chooses between passing ones.
   const two = await run(
     "race",
-    { contestants: ["claude", "codex", "agy"], judge: ["agy"] },
+    { contestants: ["claude", "codex", "claude"], judge: ["claude"] },
     { loop: { check: "ls claude-*.txt agy-*.txt 2>/dev/null | grep -q ." } },
   );
   assert.equal(two.status, "done", two.error);

@@ -44,6 +44,30 @@ async function finish(task: string, extra: Record<string, unknown> = {}) {
   const item = await start(task, extra); await waitFor(item.run, item.manager, () => item.run.status !== "running"); return item;
 }
 
+test("Auto composes a pinned template and workers inherit the run policy across providers", async () => {
+  const { teamTemplateStore } = await import("../src/team-template-store.js");
+  const template: import("../src/team-templates.js").TeamTemplate = { schemaVersion: 1, id: "engine-template", version: 1, name: "Implementation", description: "Reusable implementation", scope: "personal", autoEnabled: false, parameters: ["task"], roles: ["builder"], task: "{{task}}", criteria: [], contracts: ["Preserve existing behavior"], tasks: [{ id: "change", title: "Implement", role: "builder", kind: "implementation", instructions: "Implement {{task}}", dependsOn: [], paths: ["*"], acceptance: ["Behavior is tested"] }] };
+  await teamTemplateStore.save(template, 0);
+  const { manager, run } = await start("AUTO-USE-TEMPLATE Implement the sample", { teamTemplate: { template, inputs: { task: "sample" } }, approvals: { plan: true }, trust: "standard" });
+  await waitFor(run, manager, () => !!run.awaiting || run.status !== "running");
+  assert.equal(run.team?.tasks[0]?.id, "reuse-change", run.error);
+  await teamTemplateStore.save({ ...template, version: 2, tasks: [{ ...template.tasks[0]!, instructions: "Changed after launch" }] }, 1);
+  manager.cancel(run.id);
+  await waitFor(run, manager, () => run.status !== "running");
+  await manager.resume(run.id);
+  await waitFor(run, manager, () => !!run.awaiting || run.status !== "running");
+  assert.equal(run.teamTemplate?.template.version, 1);
+  assert.match(run.team!.tasks[0]!.instructions, /Implement sample/);
+  assert.ok(!run.team!.tasks[0]!.instructions.includes("Changed after launch"));
+  await manager.answer(run.id, { decision: "approve" });
+  await waitFor(run, manager, () => run.status !== "running");
+  assert.equal(run.status, "done", run.error);
+  const calls = run.steps.filter(s => s.kind === "agent");
+  assert.ok(calls.some(s => s.agent === "claude") && calls.some(s => s.agent === "codex"));
+  assert.ok(calls.every(s => s.permissions?.trust === "standard" && s.permissions.nativeDelegation === false));
+  assert.ok(calls.some(s => s.mode === "write") && calls.some(s => s.mode === "read"));
+});
+
 test("Auto team creates independent members, runs dependency waves, and verifies the final head", async () => {
   const { run } = await finish("AUTO-SAME-PROVIDER Implement the sample");
   assert.equal(run.status, "done", run.error);
@@ -56,10 +80,130 @@ test("Auto team creates independent members, runs dependency waves, and verifies
   const workerSteps = run.steps.filter((s) => s.taskId && s.kind === "agent");
   assert.notEqual(workerSteps[0]?.sessionId, workerSteps[1]?.sessionId);
   assert.deepEqual(workerSteps.map((s) => s.memberId), ["builder", "builder-two"]);
+  assert.equal(run.modelRouting?.version,1);
+  for (const step of workerSteps) { assert.ok(step.modelAssignment?.model); assert.ok(step.modelAssignment!.catalogRevision>0); assert.match(step.modelAssignment!.environment,/^[a-f0-9]{64}$/); }
+  const {modelCatalogStore}=await import('../src/model-catalog.js');
+  const selected=workerSteps[0]!.modelAssignment!;
+  const catalog=await modelCatalogStore.read(selected.provider,selected.environment);
+  assert.ok(catalog!.models.find(m=>m.id===selected.model)!.observations.some(o=>o.runId===run.id));
   assert.equal(run.team!.verification!.head, execFileSync("git", ["rev-parse", run.artifacts[0]!.branch], { cwd: run.repo }).toString().trim());
   const files = execFileSync("git", ["ls-tree", "--name-only", run.artifacts[0]!.branch], { cwd: run.repo }).toString();
   assert.match(files, /claude-alpha.txt/); assert.match(files, /claude-beta.txt/);
   assert.equal(run.team!.metrics.coordinatorInvocations, 1);
+});
+
+for (const native of [false, true]) test(`Auto routes to ${native ? "native" : "isolated"} Antigravity with recorded catalog provenance and fresh worker turns`, { skip: !native && process.platform !== "darwin" }, async () => {
+  const { agyAdapter } = await import("../src/adapters/agy.js");
+  const original = { run: agyAdapter.run, discoverModels: agyAdapter.discoverModels, managedAvailability: agyAdapter.managedAvailability };
+  const calls: import("../src/adapters/types.js").RunOptions[] = [];
+  agyAdapter.managedAvailability = async () => native ? "isolation deliberately unavailable" : undefined;
+  agyAdapter.discoverModels = async context => {
+    assert.equal(context?.isolatedAgy, native ? undefined : true);
+    return { models: [{ id: "agy-isolated-fixture", label: "Fixture" }], defaultModel: "agy-isolated-fixture", efforts: [], allowCustom: false, discovery: { source: "isolated fixture", confidence: "reported", verifiedAt: Date.now() } };
+  };
+  agyAdapter.run = async opts => {
+    calls.push(opts);
+    assert.equal(opts.resumeSessionId, undefined);
+    assert.equal(opts.permissions?.isolation, native ? "none" : "os-sandbox");
+    assert.equal(opts.permissions?.externalTools, native ? "provider-configured" : "disabled");
+    assert.equal(opts.permissions?.commandNetwork, native ? "allowed" : "denied");
+    assert.equal(opts.permissions?.nativeDelegation, native);
+    assert.equal(opts.model, "agy-isolated-fixture");
+    assert.ok(!opts.effort, "unknown effort support must remain unset");
+    const { task, member } = JSON.parse(opts.prompt.match(/## Assignment JSON\n```json\n([\s\S]*?)\n```/)![1]!);
+    writeFileSync(join(opts.cwd, `agy-${task.id}.txt`), `${task.id} implementation\n`);
+    return { ok: true, finalText: "", structured: { taskId: task.id, memberId: member.id, status: "submitted", checkpoint: `Completed ${task.id}`, handover: `Portable output for ${task.id}`, artifacts: [`agy-${task.id}.txt`], unresolvedRequirements: [], questions: [], replies: [], findings: [] } };
+  };
+  try {
+    const { modelCatalogStore } = await import("../src/model-catalog.js");
+    await modelCatalogStore.get("agy", { context: native ? {} : { isolatedAgy: true }, force: true });
+    const { run } = await finish("AUTO-AGY-ISOLATED AUTO-DEPENDENCIES Implement the sample", { antigravityExecution: native ? "native" : "isolated", roles: { coordinator: ["claude"], pool: ["agy", "claude"] } });
+    assert.equal(run.status, "done", run.error);
+    assert.ok(run.steps.filter(s => s.agent === "claude").every(s => s.permissions?.trust === "standard" && s.permissions.nativeDelegation === false));
+    assert.equal(calls.length, 2);
+    assert.equal(run.team?.members.find(m => m.role === "coordinator")?.provider, "claude");
+    const { modelEnvironment } = await import("../src/model-catalog.js");
+    const steps = run.steps.filter(s => s.agent === "agy");
+    assert.equal(steps.length, 2);
+    for (const step of steps) {
+      assert.equal(step.sessionId, undefined);
+      assert.equal(step.permissions?.implementation, native ? "agy-native-v1" : "macos-file-only-v1");
+      assert.equal(step.modelAssignment?.environment, modelEnvironment(native ? {} : { isolatedAgy: true }));
+      assert.ok(step.modelAssignment!.catalogRevision > 0);
+    }
+  } finally { Object.assign(agyAdapter, original); }
+});
+
+for (const native of [false, true]) test(`Antigravity ${native ? "native" : "isolated"} auth recovery preserves pins, policy and checkpoints`, { skip: !native && process.platform !== "darwin" }, async () => {
+  const { agyAdapter } = await import("../src/adapters/agy.js");
+  const { modelCatalogStore } = await import("../src/model-catalog.js");
+  const original = { run: agyAdapter.run, discoverModels: agyAdapter.discoverModels, managedAvailability: agyAdapter.managedAvailability };
+  let repaired = false, discoveryFails = false, discoveries = 0;
+  const calls: import("../src/adapters/types.js").RunOptions[] = [];
+  agyAdapter.managedAvailability = async () => native ? "isolation deliberately unavailable" : undefined;
+  agyAdapter.discoverModels = async context => {
+    discoveries++;
+    assert.equal(context?.isolatedAgy, native ? undefined : true);
+    if (discoveryFails) throw new Error("SYNTHETIC_AUTH_DIAGNOSTIC");
+    return { models: [{ id: "agy-isolated-fixture", label: "Fixture" }], defaultModel: "agy-isolated-fixture", efforts: [], allowCustom: false, discovery: { source: "isolated fixture", confidence: "reported", verifiedAt: Date.now() } };
+  };
+  agyAdapter.run = async opts => {
+    calls.push(opts);
+    assert.equal(opts.resumeSessionId, undefined);
+    assert.equal(opts.model, "agy-isolated-fixture");
+    assert.ok(!opts.effort);
+    const { task, member } = JSON.parse(opts.prompt.match(/## Assignment JSON\n```json\n([\s\S]*?)\n```/)![1]!);
+    const artifact = `agy-${task.id}.txt`;
+    if (!repaired) {
+      writeFileSync(join(opts.cwd, artifact), "Portable partial work\n");
+      return { ok: false, finalText: "", errorKind: "auth", error: "Antigravity could not refresh the existing native login. Check or unlock it, then resume." };
+    }
+    assert.equal(readFileSync(join(opts.cwd, artifact), "utf8"), "Portable partial work\n");
+    writeFileSync(join(opts.cwd, artifact), "Completed from checkpoint\n");
+    return { ok: true, finalText: "", structured: { taskId: task.id, memberId: member.id, status: "submitted", checkpoint: "Recovered from files", handover: "Portable completed output", artifacts: [artifact], unresolvedRequirements: [], questions: [], replies: [], findings: [] } };
+  };
+  let manager: InstanceType<typeof RunManager> | undefined;
+  try {
+    await modelCatalogStore.get("agy", { context: native ? {} : { isolatedAgy: true }, force: true });
+    const first = await finish("AUTO-AGY-ISOLATED Implement the sample", { antigravityExecution: native ? "native" : "isolated", roles: { coordinator: ["claude"], pool: ["agy", "claude"] }, roleSettings: { pool: { agy: { model: "agy-isolated-fixture" } } } });
+    assert.equal(first.run.status, "stopped", first.run.error);
+    assert.equal(first.manager.quota.agy?.status, "signed_out");
+    const recorded = JSON.stringify(first.run.steps.filter(s => s.agent === "agy").map(s => [s.permissions, s.modelAssignment]));
+    const failedCalls = calls.length;
+    assert.equal(failedCalls, 1, "auth failure must not loop native refresh attempts");
+    assert.match(first.run.steps.find(s => s.agent === "agy")!.error!, /unlock/);
+    await first.manager.shutdown(); await flushWrites();
+    manager = new RunManager(findPattern); await manager.load();
+    const recovered = manager.get(first.run.id)!;
+    discoveryFails = true;
+    await assert.rejects(manager.resume(recovered.id), /could not be reverified in the recorded execution mode/);
+    assert.equal(calls.length, failedCalls, "a stale cached catalog cannot clear an auth failure");
+    assert.equal(manager.quota.agy?.status, "signed_out");
+    const previousNetwork = process.env.CODEFLOW_MODEL_NETWORK;
+    process.env.CODEFLOW_MODEL_NETWORK = "offline";
+    try {
+      const beforeOffline = discoveries;
+      await assert.rejects(manager.resume(recovered.id), /could not be reverified in the recorded execution mode/);
+      assert.equal(discoveries, beforeOffline);
+      assert.equal(manager.quota.agy?.status, "signed_out");
+      assert.equal(calls.length, failedCalls);
+    } finally {
+      if (previousNetwork === undefined) delete process.env.CODEFLOW_MODEL_NETWORK;
+      else process.env.CODEFLOW_MODEL_NETWORK = previousNetwork;
+    }
+    discoveryFails = false; repaired = true;
+    const before = discoveries;
+    await manager.resume(recovered.id);
+    await waitFor(recovered, manager, () => recovered.status !== "running");
+    assert.ok(discoveries > before, "resume requires fresh discovery after login repair");
+    assert.equal(recovered.status, "done", recovered.error);
+    assert.equal(manager.quota.agy?.status, "allowed");
+    assert.equal(calls.length, failedCalls + 1);
+    assert.deepEqual(calls.at(-1)!.permissions, calls[0]!.permissions);
+    assert.equal(JSON.stringify(recovered.steps.filter(s => s.agent === "agy").slice(0, failedCalls).map(s => [s.permissions, s.modelAssignment])), recorded);
+    assert.ok(recovered.steps.filter(s => s.agent === "agy").every(s => !s.sessionId));
+    assert.equal(recovered.steps.filter(s => s.title === "Plan Auto team").length, 1);
+  } finally { Object.assign(agyAdapter, original); await manager?.shutdown(); }
 });
 
 test("Auto team yields addressed questions and resumes the same task session with the answer", async () => {

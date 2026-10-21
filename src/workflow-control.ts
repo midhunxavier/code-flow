@@ -45,6 +45,17 @@ export function validateTeamPlanEdit(value: unknown, team: TeamState, policy: Te
   });
   if (!boundedText(value.rationale, 4000, true)) throw new TeamPlanEditError("Rationale must be text of at most 4,000 characters.");
   const plan: TeamPlan = { requirements: structuredClone(team.requirements), members: structuredClone(team.members), tasks, contracts: strings(value.contracts, 24, 8000, "Shared contracts"), rationale: value.rationale };
+  if (team.templateUses?.length) {
+    for (const original of team.tasks.filter(task => team.templateUses!.some(use => task.id.startsWith(`${use.id}-`)))) {
+      const edited = tasks.find(task => task.id === original.id);
+      if (!edited || edited.kind !== original.kind || !original.acceptance.every(item => edited.acceptance.includes(item)) || !original.dependsOn.every(item => edited.dependsOn.includes(item)) || !original.requirements.every(item => edited.requirements.includes(item))) throw new TeamPlanEditError("Template tasks, dependencies and required checks must be preserved. Create a new template version to change its guarantees.");
+      if (edited.instructions !== original.instructions && !edited.instructions.startsWith(original.instructions + "\n")) throw new TeamPlanEditError("Template instructions can only be extended. Publish a new template version to replace them.");
+      if (edited.paths.some(path => !original.paths.some(base => base === "*" || path === base || path.startsWith(base + "/")))) throw new TeamPlanEditError("Template file ownership cannot be broadened");
+      if (original.dependsOn.some(id => (edited.dependencyTypes?.[id] ?? "completion") !== (original.dependencyTypes?.[id] ?? "completion"))) throw new TeamPlanEditError("Preserve template dependency types");
+    }
+    if (!team.contracts.every(contract => plan.contracts.includes(contract))) throw new TeamPlanEditError("Preserve template contracts");
+    plan.templateUses = structuredClone(team.templateUses);
+  }
   const problem = planProblem(plan, policy);
   if (problem) throw new TeamPlanEditError(problem);
   return plan;

@@ -64,7 +64,7 @@ async function recording<T>(fn: () => Promise<T>): Promise<{ result: T; prompts:
 test("pipeline: plan → build → review with a requested-changes round", async () => {
   process.env.FAKE_REVIEW_FAIL_ONCE = "1";
   try {
-    const run = await runPattern("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] });
+    const run = await runPattern("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] });
     assert.equal(run.status, "done", run.error);
     assert.deepEqual(
       run.steps.map((s) => s.title),
@@ -88,19 +88,19 @@ test("pipeline: the reviewer judges the change against the task, with the plan a
 });
 
 test("race: contestants in parallel, judge picks anonymized winner", async () => {
-  const run = await runPattern("race", { contestants: ["claude", "codex"], judge: ["agy"] });
+  const run = await runPattern("race", { contestants: ["claude", "codex"], judge: ["claude"] });
   assert.equal(run.status, "done", run.error);
   assert.match(run.summary!, /Winner: Candidate B — codex/);
   assert.equal(run.artifacts.length, 2);
 });
 
 test("debate: proposals, critique, synthesis, build", async () => {
-  const run = await runPattern("debate", { debaters: ["claude", "codex"], synthesizer: ["claude"], builder: ["agy"] }, "Design it", {
+  const run = await runPattern("debate", { debaters: ["claude", "codex"], synthesizer: ["claude"], builder: ["claude"] }, "Design it", {
     rounds: 1,
   });
   assert.equal(run.status, "done", run.error);
   assert.equal(run.steps.filter((s) => s.role === "debaters").length, 4);
-  assert.ok(branchFiles(run.artifacts[0]!.branch).some((f) => f.startsWith("agy-")));
+  assert.ok(branchFiles(run.artifacts[0]!.branch).some((f) => f.startsWith("claude-")));
 });
 
 test("debate: proposals are anonymous, and the build is reviewed again after its fixes", async () => {
@@ -109,7 +109,7 @@ test("debate: proposals are anonymous, and the build is reviewed again after its
   let recorded;
   try {
     recorded = await recording(() =>
-      runPattern("debate", { debaters: ["claude", "codex"], synthesizer: ["claude"], builder: ["agy"], reviewer: ["codex"] }, "Design it", { rounds: 1 }),
+      runPattern("debate", { debaters: ["claude", "codex"], synthesizer: ["claude"], builder: ["claude"], reviewer: ["codex"] }, "Design it", { rounds: 1 }),
     );
   } finally {
     delete process.env.FAKE_REVIEW_FAIL_ONCE;
@@ -189,11 +189,11 @@ test("a failing agent fails the pipeline but not a race", async () => {
 });
 
 test("changes made by a read-only step are reverted", async () => {
-  const run = await runPattern("pipeline", { planner: ["agy"], builder: ["codex"], reviewer: ["claude"] }, "SNEAKY task");
+  const run = await runPattern("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, "SNEAKY task");
   assert.equal(run.status, "done", run.error);
   // The read-only planner wrote sneaky.txt and had it reverted (the write-mode builder may write it legitimately later).
   const logs = (await lastManager!.events(run.id)).map((e) => (e.type === "log" ? e.text : "")).join("\n");
-  assert.match(logs, /Plan \(agy\) modified files in read-only mode; changes were reverted/);
+  assert.match(logs, /Plan \(claude\) modified files in read-only mode; changes were reverted/);
 });
 
 test("agy: a denied tool with no answer is reported as a failure", async () => {

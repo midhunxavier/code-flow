@@ -199,7 +199,7 @@ test("loop: a pass the last round gets only by deleting the failing test doesn't
 });
 
 test("race: nothing the judge can see names a vendor — not even the commit messages", async () => {
-  const { run } = await runPattern("race", { contestants: ["claude", "codex"], judge: ["agy"] });
+  const { run } = await runPattern("race", { contestants: ["claude", "codex"], judge: ["claude"] });
   assert.equal(run.status, "done", run.error);
   const subjects = sh(repo, "log", "--all", "--format=%s").split("\n").filter((s) => /candidate/i.test(s));
   assert.ok(subjects.length >= 2);
@@ -282,7 +282,7 @@ test("supervisor: every worker gets the contracts, and a separate reviewer check
   process.env.FAKE_RECORD_DIR = dir;
   let run: Run;
   try {
-    ({ run } = await runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["agy"] }));
+    ({ run } = await runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["codex"] }));
   } finally {
     delete process.env.FAKE_RECORD_DIR;
   }
@@ -292,7 +292,7 @@ test("supervisor: every worker gets the contracts, and a separate reviewer check
   assert.equal(workers.length, 2);
   assert.ok(workers.every((p) => p.prompt.includes("Contracts every part follows") && p.prompt.includes("Each part writes its own file")));
   const review = run.steps.find((s) => s.title === "Integration review")!;
-  assert.deepEqual([review.agent, review.role], ["agy", "reviewer"]);
+  assert.deepEqual([review.agent, review.role], ["codex", "reviewer"]);
 });
 
 test("supervisor: a worker that changes nothing is reported as no changes, isn't merged, counts as a failed step, and the reviewer is told", async () => {
@@ -301,7 +301,7 @@ test("supervisor: a worker that changes nothing is reported as no changes, isn't
   process.env.FAKE_NOOP_VENDOR = "codex";
   let result: { run: Run; manager: Manager };
   try {
-    result = await runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["agy"] });
+    result = await runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["codex"] });
   } finally {
     delete process.env.FAKE_RECORD_DIR;
     delete process.env.FAKE_NOOP_VENDOR;
@@ -319,7 +319,7 @@ test("supervisor: a worker that changes nothing is reported as no changes, isn't
   assert.match(await logs(manager, run), /Nothing to merge from "Beta part": codex made no changes/);
   const review = readdirSync(dir)
     .map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as { vendor: string; prompt: string })
-    .find((p) => p.vendor === "agy" && p.prompt.includes('"verdict": "approve" | "changes_requested"'))!;
+    .find((p) => p.vendor === "codex" && p.prompt.includes('"verdict": "approve" | "changes_requested"'))!;
   assert.match(review.prompt, /The subtasks that produced work have been merged/);
   assert.match(review.prompt, /## Subtasks missing from the integration\n[^#]*- Beta part → codex: no changes/);
 });

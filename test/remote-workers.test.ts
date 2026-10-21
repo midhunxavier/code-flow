@@ -101,3 +101,11 @@ test("worker container inventory probes the configured image without host CLI av
   try { const worker = new ProvisionedWorker(await loadWorkerConfig(f.configFile)); assert.equal((await worker.capabilities()).providers[0]!.available, false); assert.equal((await worker.capabilities("isolated")).providers[0]!.available, true); await assert.rejects(worker.capabilities("missing"), /explicit worker-local/); const calls: string[][] = readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line)); assert.equal(calls.length, 2); assert.ok(calls[0]!.includes("--network=none")); assert.ok(calls[0]!.includes("--pull=never")); assert.ok(calls[0]!.includes("--read-only")); assert.ok(calls[0]!.includes("claude")); assert.equal(calls[0]!.includes("--mount"), false); assert.deepEqual(calls[1]!.slice(0, 2), ["rm", "-f"]); }
   finally { adapters.claude.available = previous; process.env.PATH = path; }
 });
+
+test("remote request policies retain all required capabilities and reject truncated records", () => {
+  const policy = { version: 1, revision: 3, trust: "safe", toolApprovals: false, delegation: "managed", required: ["no-command-network", "workspace-writes"] };
+  const request = { id: "a".repeat(32), capability: "b".repeat(64), scope: { runId: "r", stepId: "s", threadId: "t" }, repoMapping: "project", baseCommit: "c".repeat(40), agent: "codex", mode: "write", prompt: "request", trust: "safe", timeoutMs: 1000, context: [], managedPermissions: policy };
+  assert.deepEqual(validateWorkerRequest(request).managedPermissions, policy);
+  assert.throws(() => validateWorkerRequest({ ...request, managedPermissions: { revision: 3, externalTools: "disabled" } }), /permission policy/);
+  assert.throws(() => validateWorkerRequest({ ...request, managedPermissions: { ...policy, required: ["unknown"] } }), /permission policy/);
+});

@@ -67,7 +67,7 @@ test("Connections consolidates old bookmarks and keeps access setup discoverable
 
 test("one template library restores complete saved configurations and keeps legacy workflows", { timeout: 45_000 }, async () => {
   await page.goto(`${base}/#/`);
-  await page.getByRole("button", { name: "Template library", exact: true }).click();
+  await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
   let dialog = page.getByRole("dialog", { name: "Template library", exact: true });
   await dialog.getByLabel("Template", { exact: true }).selectOption("starter-explore");
   await dialog.getByRole("button", { name: "Use template", exact: true }).click();
@@ -77,13 +77,13 @@ test("one template library restores complete saved configurations and keeps lega
     const config = { pattern: "solo", roles: { agent: ["codex"] }, options: {}, agentSettings: { codex: { model: "gpt-5" } }, roleSettings: {}, trust: "safe", limits: { maxMinutes: 23, maxSteps: 17 }, approvePlan: false, toolApprovals: true, check: "node --test", setup: "", baseRef: "main" };
     localStorage.setItem("composerLibrary", JSON.stringify({ schemaVersion: 1, presets: [{ id: "legacy", name: "Old workflow", revision: 1, updatedAt: 1, config, history: [] }], templates: [{ id: "complete", name: "Full task", pattern: "solo", task: "Review {{component}}", criteria: ["Keep behavior"], config, runOptions: { verification: "", container: { enabled: false, image: "", authVolume: "" } } }] }));
   });
-  await page.getByRole("button", { name: "Template library", exact: true }).click();
+  await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
   await dialog.getByLabel("Library", { exact: true }).selectOption("personal");
   await dialog.getByLabel("Template", { exact: true }).selectOption("saved:complete");
   await dialog.getByLabel("component", { exact: true }).fill("sum");
   await dialog.getByRole("button", { name: "Use template", exact: true }).click();
   assert.equal(await page.getByLabel("Task", { exact: true }).inputValue(), "Review sum");
-  assert.match(await page.getByLabel("Run configuration summary").innerText(), /17 calls · 23 minutes/);
+  assert.doesNotMatch(await page.getByLabel("Run configuration summary").innerText(), /17 calls · 23 minutes/, "templates keep the run budget");
   await page.getByRole("button", { name: "Run actions", exact: true }).click();
   await page.getByRole("menuitem", { name: "Save as template…", exact: true }).click();
   const save = page.getByRole("dialog", { name: "Save as template", exact: true });
@@ -92,9 +92,9 @@ test("one template library restores complete saved configurations and keeps lega
   await save.getByRole("button", { name: "Save template", exact: true }).click();
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("composerLibrary")!).templates.find((item: any) => item.name === "Roundtrip"));
   assert.equal(stored.config.agentSettings.codex.model, "gpt-5");
-  assert.equal(stored.config.check, "node --test"); assert.equal(stored.config.toolApprovals, true);
+  assert.equal(stored.config.check, "node --test"); assert.equal(stored.config.toolApprovals, false, "template grants are not restored");
   assert.deepEqual(stored.runOptions.container, { enabled: false, image: "", authVolume: "" });
-  await page.getByRole("button", { name: "Template library", exact: true }).click();
+  await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
   await dialog.getByLabel("Template", { exact: true }).selectOption("workflow:legacy");
   await dialog.getByRole("button", { name: "Use template", exact: true }).click();
   assert.equal(await page.getByLabel("Task", { exact: true }).inputValue(), "Review sum");
@@ -108,9 +108,9 @@ test("templates wait for repository configuration before restoring check command
     const requested = page.waitForRequest("**/api/repo-config?*");
     await page.reload(); await requested;
     await page.getByText("Restoring your project draft…", { exact: true }).waitFor();
-    assert.equal(await page.getByRole("button", { name: "Template library", exact: true }).count(), 0, "restoring blocks editing a partial draft");
+    assert.equal(await page.getByRole("button", { name: "Browser task library", exact: true }).count(), 0, "restoring blocks editing a partial draft");
     release();
-    await page.getByRole("button", { name: "Template library", exact: true }).click();
+    await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Template library", exact: true });
     await dialog.getByLabel("Library", { exact: true }).selectOption("personal");
     await dialog.getByLabel("Template", { exact: true }).selectOption({ label: "Roundtrip" });
@@ -228,7 +228,7 @@ test("revised hubs and template picker fit phones and have no serious accessibil
   for (const route of ["#/automations/once", "#/automations/repeat", "#/automations/backlog", "#/settings/connections/workspace", "#/settings/connections/sharing", "#/"]) {
     await page.goto(`${base}/${route}`);
     await page.locator("#main-content").waitFor();
-    if (route === "#/") await page.getByRole("button", { name: "Template library", exact: true }).click();
+    if (route === "#/") { await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click(); }
     await page.addScriptTag({ content: axe.source });
     const result = await page.evaluate(async () => (window as any).axe.run(document, { runOnly: ["wcag2a", "wcag2aa", "wcag21aa"] }));
     assert.deepEqual(result.violations.filter((item: any) => ["serious", "critical"].includes(item.impact)).map((item: any) => ({ id: item.id, targets: item.nodes.map((node: any) => node.target) })), [], route);
@@ -236,3 +236,10 @@ test("revised hubs and template picker fit phones and have no serious accessibil
   }
   assert.deepEqual(errors, []);
 });
+
+async function openAdvanced(page: Page) {
+  const options = page.locator(".composer-options");
+  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
+  const advanced = page.locator(".advanced-controls");
+  if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
+}

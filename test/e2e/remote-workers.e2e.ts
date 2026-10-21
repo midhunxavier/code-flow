@@ -26,7 +26,7 @@ before(async () => {
 after(async () => { await browser?.close(); if (server?.exitCode === null) { server.kill("SIGTERM"); await new Promise<void>((accept) => { const timer = setTimeout(() => { server.kill("SIGKILL"); accept(); }, 5000); server.once("exit", () => { clearTimeout(timer); accept(); }); }); } if (directory) await rm(directory, { recursive: true, force: true }); });
 
 test("composer selects a remote worker, stages references, imports its result and inspects public receipts", { timeout: 60_000 }, async () => {
-  await page.getByRole("button", { name: "Agent workflow mode", exact: true }).click(); await page.getByLabel("Task", { exact: true }).fill("WRITE remote browser fixture"); await page.waitForFunction(() => document.querySelector<HTMLInputElement>("#checkCmd")?.value === "true");
+  await page.getByRole("button", { name: "Solo", exact: true }).click(); await page.getByLabel("Task", { exact: true }).fill("WRITE remote browser fixture"); await page.waitForFunction(() => document.querySelector<HTMLInputElement>("#checkCmd")?.value === "true");
   await page.locator(".composer-options > summary").click(); await page.locator(".advanced-controls > summary").click(); await page.getByLabel("Agent execution", { exact: true }).selectOption("fixture"); await page.getByLabel("Worker repository mapping", { exact: true }).selectOption("project");
   await page.locator(".taskbox").getByRole("button", { name: "Permissions", exact: true }).click();
   assert.equal(await page.getByRole("menuitem", { name: /^Ask for approval/ }).isDisabled(), true); await page.keyboard.press("Escape");

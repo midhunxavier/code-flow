@@ -51,7 +51,7 @@ test("template library and workflow selection preserve intentional drafts and ex
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(base + "/#/");
   const choose = async (id: string) => {
-    await page.getByRole("button", { name: "Template library", exact: true }).click();
+    await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Template library", exact: true });
     await dialog.getByLabel("Template", { exact: true }).selectOption(id);
     await dialog.getByRole("button", { name: "Use template", exact: true }).click();
@@ -59,6 +59,7 @@ test("template library and workflow selection preserve intentional drafts and ex
   await choose("starter-feature");
   const draft = page.locator(".taskbox textarea");
   await draft.fill("Keep this task while changing the workflow");
+  await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("council");
   assert.equal(await draft.inputValue(), "Keep this task while changing the workflow");
   await choose("starter-explore");
@@ -66,6 +67,7 @@ test("template library and workflow selection preserve intentional drafts and ex
   const roles = await page.evaluate(() => JSON.parse(localStorage.getItem("roleSel") || "{}"));
   assert.deepEqual(roles.debate.builder, []); assert.deepEqual(roles.debate.reviewer, []);
   await choose("starter-bug");
+  await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("tdd");
   await page.locator(".composer-summary").getByText("Limit", { exact: true }).waitFor();
   await mkdir(join(root, "output/playwright"), { recursive: true });
@@ -157,3 +159,10 @@ test("project tools retain repository context and new screens fit mobile and pas
   await page.screenshot({ path: join(root, "output/playwright/ux-review-mobile.png"), fullPage: true });
   assert.deepEqual(errors, []);
 });
+
+async function openAdvanced(page: Page) {
+  const options = page.locator(".composer-options");
+  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
+  const advanced = page.locator(".advanced-controls");
+  if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
+}

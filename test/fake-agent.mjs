@@ -15,6 +15,16 @@ if (args[0] === "--version") {
   process.exit(0);
 }
 
+if (vendor === "claude" && args.includes("--input-format") && args.includes("--tools") && args[args.indexOf("--tools") + 1] === "") {
+  const {createInterface} = await import("node:readline");
+  for await (const line of createInterface({input:process.stdin})) {
+    const msg=JSON.parse(line); if(msg.type!=="control_request")continue;
+    const models=process.env.FAKE_DISCOVERY_MODELS ? JSON.parse(process.env.FAKE_DISCOVERY_MODELS) : ["sonnet","opus","haiku","fable"].map(value=>({value,resolvedModel:value,displayName:value,supportsEffort:true,supportedEffortLevels:["low","medium","high","xhigh","max"]}));
+    process.stdout.write(JSON.stringify({type:"control_response",response:{subtype:"success",request_id:msg.request_id,response:{models:[{...models[0],value:"default"},...models],account:{id:"fixture"}}}})+"\n");
+  }
+  process.exit(0);
+}
+
 // --help lists the flags and subcommands code-flow passes. FAKE_UNKNOWN_FLAG is one this CLI
 // doesn't have (an older or newer version): it's left out of --help and rejected when passed.
 const unknownFlag = process.env.FAKE_UNKNOWN_FLAG;
@@ -37,7 +47,7 @@ if (vendor === "codex" && args[0] === "mcp" && args[1] === "get") {
   process.exit(0);
 }
 if (vendor === "codex" && args[0] === "features" && args[1] === "list") {
-  process.stdout.write("multi_agent stable true\nmulti_agent_v2 stable false\n");
+  process.stdout.write(process.env.FAKE_IGNORE_DELEGATION_FLAGS ? "multi_agent stable true\nmulti_agent_v2 stable true\n" : "multi_agent stable false\nmulti_agent_v2 stable false\n");
   process.exit(0);
 }
 if (vendor === "claude" && args[0] === "auth" && args[1] === "status") {
@@ -69,7 +79,9 @@ if (vendor === "codex" && args[0] === "debug" && args[1] === "models") {
   }));
   process.exit(0);
 }
-if (vendor === "agy" && args[0] === "models") {
+// Antigravity accepts global flags before its subcommand; native discovery uses a private log.
+const agyCommandArgs = args.filter((arg, index) => arg !== "--log-file" && args[index - 1] !== "--log-file");
+if (vendor === "agy" && agyCommandArgs[0] === "models") {
   // FAKE_AGY_MODELS_FAIL: "network" (Google unreachable) or "signed-out".
   if (process.env.FAKE_AGY_MODELS_FAIL === "network") {
     process.stderr.write("Error: request to https://cloudcode-pa.googleapis.com failed: getaddrinfo ENOTFOUND cloudcode-pa.googleapis.com\n");
@@ -242,8 +254,10 @@ Options:
   --json-schema <schema>                            JSON Schema for structured output validation
   --permission-mode <mode>                          Permission mode to use for the session
   --allowedTools, --allowed-tools <tools...>        Tools to allow
+  --settings <file-or-json>                        Per-turn settings
   --disallowedTools, --disallowed-tools <tools...>  Tools to deny
   --mcp-config <configs...>                        Per-turn MCP configuration
+  --no-chrome                                     Disable browser integration
   --strict-mcp-config                             Use only the supplied MCP configuration
   -v, --version                                     Output the version number
   -h, --help                                        Display help for command

@@ -1,12 +1,32 @@
 # Auto team
 
-Choose Auto team in the composer and describe the outcome. Inspect members, task dependencies, file ownership and acceptance criteria before approving the proposed plan.
+Auto is the default for a fresh composer. Describe the outcome, or choose Solo beside it to work with one agent. Inspect members, task dependencies, file ownership and acceptance criteria before approving the proposed plan.
 
 ## Review the proposed team
 
 Choose **Auto team**, describe the goal, and select the providers code-flow may use. A coordinator inspects the repository and proposes individual members, tasks, dependencies, file ownership, and acceptance criteria. You can approve, revise, or reject that plan before workers start. Planning itself uses a CLI invocation. Approval defaults on; an explicitly saved preference or automation policy still applies.
 
-Auto team is available unless disabled with `CODEFLOW_AUTO_TEAM_ENABLED=false`. Whether it is initially selected follows the measured rollout state and your saved workflow preference. Existing manual patterns remain available. It uses the same official CLI adapters, worktrees, checks, permissions, review/shipping actions, and subscription logins as other runs.
+Auto team is available unless disabled with `CODEFLOW_AUTO_TEAM_ENABLED=false`. Existing saved workflow and project choices are preserved. The default is independent of the historical evaluation stage. Existing manual patterns are available under Advanced as built-in workflow templates. It uses the same official CLI adapters, worktrees, checks, permissions, review/shipping actions, and subscription logins as other runs.
+
+## Reusable templates in Advanced
+
+Open **Advanced** to choose a built-in workflow, design a task graph, import/export definitions, or publish a new immutable template version. Templates can be personal or scoped to a project. Use **Import browser library** to migrate existing presets without deleting the browser originals; role/model preferences and workflow options survive, while permission grants, credentials, host bindings, and budgets do not.
+
+Auto generates plans without needing a template. It may also reuse enabled task graphs, assign their roles, combine instances, and append task-specific instructions. The runtime preserves dependencies, acceptance criteria, and shared contracts, then applies normal plan validation and independent verification. Up to six enabled definitions of 16,000 characters each are offered per run, in ID order. Fixed workflows such as test-first, races, and councils keep their existing executors in Advanced; they are not advertised as composable Auto task graphs.
+
+A manually selected template is mandatory. Its exact version and inputs are pinned to the run and survive cancellation/recovery; editing the library does not change an active run. The run menu's **Save as team template…** opens an editable preview. Review task-specific instructions and replace them with parameters before publishing. Saving does not enable Auto reuse automatically.
+
+## Run permissions across providers
+
+All new runs use one versioned permission policy, including background jobs and collaborative launches. Every planning, worker, review, repair, retry, and follow-up launch resolves that policy against current restrictions and the selected provider. Read-only planning does not reduce implementation workers to read-only access. Templates and agent messages cannot grant permissions; only an explicit user change creates a new policy revision. Child runs inherit the parent’s current trust ceiling, approval preference, mandatory restrictions, and container or remote execution environment. A child cannot increase its parent’s permissions or remove its execution boundary. Historical saved runs without a policy retain their legacy behavior.
+
+Claude and Codex receive their native permission settings, with provider-native delegation disabled. Matching trust labels do not imply identical isolation: Codex uses its provider sandbox, while Claude's local tool rules are not an operating-system filesystem boundary. Advanced can require an agent workspace write boundary, denied agent-command network access, or disabled external tools. Unsupported combinations fail before launch or replacement dispatch. The run view records the effective settings for each turn. By default, Antigravity uses the local macOS file-only executor with verified CLI 1.4.4 and an existing native Keychain login. It uses protected fresh settings, has no terminal/browser/MCP/native delegation, and never resumes native sessions. Advanced also offers explicit unrestricted native Antigravity on the local host; see below. Remote/container Antigravity, ACP and extension adapters remain blocked. Claude/Codex controls are probed again at each launch, in the selected container when applicable. Unknown or missing controls stop execution.
+
+Remote workers receive and validate the complete policy, including all mandatory requirements; remote/container profiles that cannot prove a requested boundary are rejected. Required interactive approvals need the local Codex app-server and an approval handler; they cannot silently fall back to exec or combine with mandatory sandbox boundaries that approval could relax.
+
+Claude’s external-tool restriction supplies a strict MCP configuration, disables Chrome integration, and denies WebSearch/WebFetch; Code Flow’s scoped team bridge remains available. Codex managed turns override ambient approval settings, additional writable roots, and command-network settings. A mandatory workspace write boundary also removes temporary-directory write exemptions. Native-delegation controls disable provider agent tools; they are not process-level isolation from programs invoked through an authorized shell.
+
+These requirements describe agent execution. Browser/MCP authorization is separate from terminal network access. Setup commands, checks, and previews use their separately configured execution environment. Worktrees do not restrict file reads. No common per-tool browser/MCP allowlist or cross-provider filesystem-read sandbox is provided by this revision.
 
 ## How work proceeds
 
@@ -26,7 +46,7 @@ The next scheduling boundary delivers an existing answer or runs a short read-on
 
 You can also send a note to an individual member. Codex app-server can receive user notes during a turn; other transports receive them on the next turn. Native permission requests remain denied under the existing adapter policy. Auto members use the structured question protocol for missing information.
 
-Claude and Codex members also receive scoped collaboration tools when their installed CLI supports the configuration. They can send messages, ask/reply, read their inbox, publish findings, save notes, or propose project memory during a turn. Calls acknowledge durable acceptance promptly; the scheduler applies commands at recorded boundaries. A blocked member still ends its turn to release the process slot. Each turn may make at most 256 collaboration tool calls (messages, questions, memory reads and writes together); after that, calls fail and the member finishes with its structured outcome. Antigravity and unsupported configurations retain structured outcomes.
+Claude and Codex members also receive scoped collaboration tools when their installed CLI supports the configuration. They can send messages, ask/reply, read their inbox, publish findings, save notes, or propose project memory during a turn. Calls acknowledge durable acceptance promptly; the scheduler applies commands at recorded boundaries. A blocked member still ends its turn to release the process slot. Each turn may make at most 256 collaboration tool calls (messages, questions, memory reads and writes together); after that, calls fail and the member finishes with its structured outcome. New controlled runs support Claude, Codex and isolated Antigravity. Explicit unrestricted Antigravity is an exception to the native-delegation restriction; other adapters remain rejected. Older saved runs retain their recorded execution behavior.
 
 Question and wait state are one logical journal transaction. Duplicate operation IDs do not duplicate messages. Expired deadlines, unavailable recipients and cyclic waits route to the coordinator within the existing budget. Reassigned or retired attempts cannot overwrite current work. Knowledge dependencies can use evidence-bearing replies; artifact dependencies require integrated code, and completion dependencies require the upstream task to finish.
 
@@ -68,13 +88,13 @@ After completion, **Whole team · new run** plans and verifies your follow-up ag
 
 | Capability in code-flow | Claude Code | Codex | Antigravity |
 |---|---|---|---|
-| Structured outcomes and session continuation | Supported | Supported | Supported |
+| Structured outcomes and session continuation | Supported | Supported | Structured outcomes; fresh turns with portable context |
 | Addressed questions at turn boundaries | Supported | Supported | Supported |
 | User notes during a running turn | Next turn | App-server steering; next-turn fallback with exec | Next turn |
-| Native permission requests | Existing allowlist policy | Declined | Existing sandbox/permission policy |
+| Native permission requests | Existing allowlist policy | Declined | Protected file-only policy; no interactive approvals |
 | Agent-accessible collaboration tools | Scoped per-turn MCP and allowlist; `--strict-mcp-config`, so your own and the repository's MCP servers are not loaded in these turns | Scoped per-turn MCP, app-server and exec | Structured-outcome fallback |
 
-The capabilities panel distinguishes tested, unsupported and unknown behavior using adapter protocol fixtures and installed CLI probes. Probe results are kept for ten minutes; an unknown result (a CLI missing or not signed in, or a probe that timed out) is kept for two, so a turn never waits on more than one probe per window. Model behavior is measured separately. Native Claude and Codex agent-spawning tools are disabled for scoped team turns so code-flow retains ownership of the roster. Antigravity nested-agent controls and separate vendor-native token accounting remain unknown.
+The capabilities panel distinguishes tested, unsupported and unknown behavior using adapter protocol fixtures and installed CLI probes. Inventory probe results are kept for ten minutes; an unknown result (a CLI missing or not signed in, or a probe that timed out) is kept for two, while managed launch controls are checked afresh before each turn. Model behavior is measured separately. Native Claude and Codex agent-spawning tools are disabled for scoped team turns so code-flow retains ownership of the roster. Default Antigravity uses a protected file-tool allowlist and macOS process/filesystem restrictions; native delegation is excluded. The explicit unrestricted option does not enforce these restrictions. Its built-in local task bookkeeping tool can remain visible. Separate vendor-native token accounting remains unknown.
 
 The live bridge binds a random loopback port and issues an expiring credential for one active member attempt. Credentials are stored in temporary files with mode 0600 and removed when the turn exits; they are absent from prompts, command-line arguments, run records and logs. The path of the credential file is on the command line, and every CLI on this machine runs as your user: a member that can run shell commands could read another member's credential while that turn is starting. The bridge client deletes the file as soon as it has read it, which narrows the window to process start; this is isolation between members and the application's own token, not between members. The engine derives identity and provenance. A read-only reviewer can communicate without receiving source-write permissions; sandbox/network restrictions are not relaxed to enable collaboration.
 
@@ -93,3 +113,29 @@ The evaluation runner also accepts `--register-home /absolute/codeflow-home` to 
 ---
 
 [Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)
+
+## Automatic worker models
+
+New Auto runs discover candidates through the connected CLI: Claude's stream-control initialization, Codex app-server `model/list`, and Antigravity `agy models`. The coordinator keeps the provider, model and effort selected by the user, including existing CLI defaults. Workers and reviewers use automatic selection unless their Advanced pool/model/effort settings pin or restrict them. Global coordinator defaults do not silently pin workers.
+
+Advanced → Automatic worker selection shows cached model IDs, exact effort support, stale/unknown states and refresh. Official-document research is opt-in. Local catalog previews do not establish remote/container availability: those environments discover their own models when a run starts. Antigravity worker discovery runs inside the same macOS executor with a separate catalog identity. Its model listings do not establish per-model inference or effort support. Auto sees the file-only limitation and rejects unsupported execution environments. Every launch rechecks the CLI version and creates a clean protected profile. See [permission verification](worker-permission-verification.md#existing-login-reuse-and-managed-file-workers).
+
+Catalogs live under `CODEFLOW_HOME/model-catalogs`, partitioned by provider and execution environment. Discovery has a ten-minute cache; failed refreshes retain previous evidence. `CODEFLOW_MODEL_NETWORK=offline` disables discovery and documentation fetches and uses cached entries. This switch does not disable provider inference or the run's separately configured tools. Documentation research uses official origins, bounded downloads and a closed schema, with a seven-day attempt cache. Web text cannot grant permissions or prove account access. Unknown context, pricing, capabilities and effort support remain unknown; an explicit empty effort list means no effort control.
+
+CLI-reported availability, advertised compatibility, documented facts and measured run observations are distinct. A listed model is a candidate, not a guarantee that a paid inference call will succeed. Exact accepted worker choices, rationale, environment and catalog revision/source are saved with the step; discovery revisions have immutable snapshots. Recovery reuses recorded choices and rechecks eligibility before another execution. Failed members can be replaced within existing revision/invocation limits using portable checkpoints; native sessions stay with their provider/member.
+
+The first version uses existing routing and budget checks, not a learned performance ranker. Costs and token limits retain their existing provider-reporting limitations; unknown pricing cannot supply an exact prospective cost guarantee. Run observations are diagnostic evidence, not benchmark scores or authority to enable a model. Public documentation only augments CLI-reported IDs; it does not make a public-only model eligible.
+
+See [the live permission verification report](worker-permission-verification.md) for tested versions, native-control fixes and remaining boundaries.
+
+If an isolated Antigravity worker cannot use or refresh its native login, check or unlock the login in Antigravity's normal interactive session and select **Resume**. Code Flow verifies it again through isolated model discovery before clearing the signed-out cooldown. Cached models or offline discovery cannot establish login access. Recovery keeps the recorded assignment and portable work, then starts a fresh restricted worker; it never imports a native conversation or widens permissions to refresh credentials. Native authentication diagnostics are withheld from run history.
+
+### Unrestricted Antigravity with an existing login
+
+Enable **Advanced → Antigravity execution → Use unrestricted Antigravity with my existing login** for a new local attended run. This explicitly grants Antigravity full native access using the existing host HOME, login and provider configuration. It skips the isolated profile and vendor sandbox and uses the CLI's permission-skip flag. It requires a valid saved login; it does not provide anonymous access or guarantee that the provider will never require reauthentication.
+
+Terminal, browser, MCP, hooks and native agents follow the native provider configuration. Code Flow cannot enforce workspace boundaries or read-only access in this mode. Native agent usage is outside Code Flow's worker budget. The selection is visible in Advanced, run details, coordinator inventory and each step's permission receipt (`agy-native-v1`). Claude and Codex keep the ordinary run policy.
+
+The option is rejected with mandatory permission requirements, Safe mode, narrowed turn trust, interactive tool approvals, remote/container workers or unattended/locked-down execution. Templates and model choices cannot enable it. A continuation inherits the parent's choice and may narrow it to isolated execution, but cannot upgrade an isolated parent. Existing saved runs stay isolated; there is no automatic fallback on authentication or sandbox errors.
+
+Native model discovery uses the existing profile, with a catalog identity distinct from isolated discovery. Both modes keep portable checkpoints and start fresh managed turns without native session reuse. Recovery after an authentication failure requires a fresh successful discovery in the recorded mode; cached/offline results cannot clear the failure. Private authentication diagnostics are checked for observed persistence failures and deleted without entering run history. Actual expired-token refresh remains unverified unless observed during normal provider operation.

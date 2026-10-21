@@ -23,7 +23,7 @@ export const pipelinePattern: Pattern = {
   roles: [
     { id: "planner", label: "Planner", description: "Reads the code, writes the implementation plan", default: ["claude"] },
     { id: "builder", label: "Builder", description: "Implements the plan and applies review fixes", default: ["codex"] },
-    { id: "reviewer", label: "Reviewer", description: "Reviews the diff against the task, ideally a vendor other than the planner", default: ["agy"] },
+    { id: "reviewer", label: "Reviewer", description: "Reviews the diff against the task, ideally a vendor other than the planner", default: ["codex"] },
   ],
   options: [
     { id: "maxRounds", label: "Max review rounds", type: "number", default: 2, min: 1, max: 5 },

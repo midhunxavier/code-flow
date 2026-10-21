@@ -117,7 +117,7 @@ test("parallel: when a branch fails outside its agent turn, the others are stopp
   const manager = new RunManager(findPattern);
   const started = Date.now();
   const run = await withEnv({ FAKE_SLEEP_VENDOR: "codex", FAKE_SLEEP_MS: "30000" }, async () => {
-    const r = await start(manager, "race", { contestants: ["claude", "codex"], judge: ["agy"] }, { loop: { setup } });
+    const r = await start(manager, "race", { contestants: ["claude", "codex"], judge: ["claude"] }, { loop: { setup } });
     await until(() => r.steps.some((s) => s.title === "Candidate B" && s.status === "running"));
     writeFileSync(signal, "1");
     return idle(manager, r);
@@ -505,7 +505,7 @@ test("supervisor: subtasks beyond the maximum go to the last worker instead of b
       "claude",
       async (opts, onEvent, original) =>
         opts.prompt.includes('"subtasks"') ? { ok: true, finalText: "```json\n" + JSON.stringify(split) + "\n```", structured: split, sessionId: "sup-1" } : original(opts, onEvent),
-      () => runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["agy"] }, { options: { maxSubtasks: 2 } }),
+      () => runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["claude"] }, { options: { maxSubtasks: 2 } }),
     ),
   );
   assert.equal(run.status, "done", run.error);

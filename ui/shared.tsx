@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { apiPath, api, enc, post } from "./lib.js";
 import { SHARED_ROLES, SHARED_ROLE_HELP, roleAtLeast, roleLabel } from "./shared-roles.js";
 import { Icon } from "./icons.js";
@@ -50,7 +50,7 @@ interface SharedPage { runs: SharedRun[]; total: number; nextCursor?: string }
 const teamRouteOf = (hash = location.hash): TeamRoute | undefined => { const parsed = parseRouteHash(hash); return parsed.view === "team" || parsed.view === "team-task" || parsed.view === "team-people" ? parsed : undefined; };
 export function SharedDashboard({ identity, onSignOut = reload }: { identity: SharedPrincipal; onSignOut?: () => void }) {
   const [team, setTeam] = useState<TeamRoute | undefined>(() => teamRouteOf());
-  useEffect(() => { const onHash = () => setTeam(teamRouteOf()); window.addEventListener("hashchange", onHash); return () => window.removeEventListener("hashchange", onHash); }, []);
+  useLayoutEffect(() => { const onHash = () => setTeam(teamRouteOf()); window.addEventListener("hashchange", onHash); onHash(); return () => window.removeEventListener("hashchange", onHash); }, []);
   const go = (to: TeamRoute | undefined) => { const hash = to ? hashFor(to) : "#/"; if (location.hash === hash) setTeam(to); else location.hash = hash; };
   // The bell's count: read once with the page (which signed the session in anyway), then kept live by the Team tab's event
   // stream. No timer asks the server for it: every request renews a shared session, and a dashboard left open must still

@@ -14,6 +14,11 @@ const subplans = array(obj({ id: { type: "string", pattern: "^[a-z][a-z0-9-]{0,2
 export const LEGACY_TEAM_PLAN_SCHEMA = obj({ requirements: array(obj({ id: identifier, description: str })), members: array(member), tasks: array(legacyTask), contracts: strings, rationale: str });
 /** Every wire object is closed and every property required, as strict Codex output requires. */
 export const TEAM_PLAN_SCHEMA = obj({ ...LEGACY_TEAM_PLAN_SCHEMA.properties, tasks: array(task), subplans });
+export const TEMPLATE_TEAM_PLAN_SCHEMA = obj({ ...TEAM_PLAN_SCHEMA.properties, templateUses: array(obj({
+  id: { type: "string", pattern: "^[a-z][a-z0-9-]{0,11}$" }, templateId: identifier, version: { type: "integer", minimum: 1 },
+  inputs: array(obj({ name: str, value: str })), assignments: array(obj({ role: str, memberId: identifier })),
+  dependsOn: strings, requirements: strings, instructions: str,
+})) });
 const reply = obj({ requestId: str, body: str, evidence: strings });
 export const TASK_OUTCOME_SCHEMA = obj({
   taskId: str, memberId: str, status: { type: "string", enum: ["submitted", "needs_info", "failed"] }, checkpoint: str, handover: str,
@@ -55,7 +60,7 @@ export function overlaps(a: TeamTask, b: TeamTask): boolean {
 }
 
 /** Schema handles types; this validates the permissions and graph before any dispatch. */
-export function planProblem(plan: TeamPlan, policy: TeamPolicy): string | undefined {
+export function planProblem(plan: TeamPlan, policy: TeamPolicy, retainedMembers: ReadonlySet<string> = new Set()): string | undefined {
   if (!plan.requirements.length || !plan.tasks.length) return "include requirements and at least one task";
   if (plan.requirements.length > 48 || plan.contracts.length > 24 || plan.rationale.length > 4_000) return "requirements, contracts, and rationale must fit the bounded plan";
   const activeMembers = plan.members.filter((m) => m.status !== "retired");
@@ -75,11 +80,16 @@ export function planProblem(plan: TeamPlan, policy: TeamPolicy): string | undefi
   for (const m of activeMembers) {
     if (m.id === "user") return "user is reserved for authenticated user replies";
     if (m.role !== "coordinator" && !policy.pool.includes(m.provider)) return `${m.id} chose a provider outside the user's worker/reviewer pool`;
-    const provider = available.find((p) => p.id === m.provider);
+    // A revision can retain an idle member whose login/quota became unavailable. This
+    // does not admit it to new work; dispatch and revised assignments are checked separately.
+    const provider = available.find((p) => p.id === m.provider) ?? (retainedMembers.has(m.id) ? policy.inventory.providers.find(p => p.id === m.provider) : undefined);
     if (!provider) return `${m.id} chose unavailable, exhausted, or unauthorized provider ${m.provider}`;
     if (!nonempty(m.name) || m.name.length > 120 || !nonempty(m.reason) || m.reason.length > 2_000) return "every member needs a bounded name and composition reason";
     const settings = provider.settingsByRole?.[m.role] ?? provider;
-    const model = provider.models?.find((model) => model.id === m.model);
+    const model = provider.models?.find((model) => model.id === (m.model || provider.catalog?.defaultModel) || model.aliases?.includes(m.model));
+    if (provider.catalog && !model) return `${m.id} chose a model whose availability in this environment is unknown`;
+    if (provider.catalog && m.effort && !model?.efforts?.includes(m.effort)) return `${m.id} chose an unsupported effort for this exact model`;
+    if (m.role === "coordinator" && (m.model !== (settings.model ?? "") || m.effort !== (settings.effort ?? ""))) return "The coordinator model settings and effort must remain unchanged";
     const variants = m.role !== "coordinator" && "variants" in settings ? settings.variants : undefined;
     // A selected pool is an allowlist of model/effort pairs, not permission to use every catalog model.
     const choices = variants?.length ? [settings, ...variants] : [settings];
@@ -186,5 +196,15 @@ export function revisionProblem(revision: TeamRevision, state: TeamState, policy
   if (revision.contractRequirements?.some((id) => !state.requirements.some((r) => r.id === id))) return "contract changes may only invalidate known requirements";
   if (revision.contracts.some((c) => !nonempty(c))) return "contracts cannot be empty";
   const plan = { ...state, contracts: [...state.contracts, ...revision.contracts.filter((contract) => !state.contracts.includes(contract))], members: state.members.map((m) => revision.retireMembers.includes(m.id) ? { ...m, status: "retired" as const } : m).concat(revision.addMembers), tasks: state.tasks.map((t) => ({ ...t, owner: revision.reassignments.find((r) => r.taskId === t.id)?.memberId ?? t.owner })).concat(revision.addTasks) };
-  return planProblem(plan, policy);
+  const admittedOwners = new Set([
+    ...revision.addTasks.map(t => t.owner),
+    ...revision.reassignments.map(r => r.memberId),
+    ...revision.retryTasks.map(id => plan.tasks.find(t => t.id === id)!.owner),
+  ]);
+  for (const id of admittedOwners) {
+    const member = plan.members.find(m => m.id === id);
+    const provider = member && policy.inventory.providers.find(p => p.id === member.provider);
+    if (!provider?.available || provider.blockedReason) return `${id} cannot receive new or retried work while its provider is unavailable`;
+  }
+  return planProblem(plan, policy, new Set(state.members.map(m => m.id)));
 }

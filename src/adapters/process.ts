@@ -446,12 +446,29 @@ export function lineSplitter(maxBytes: number, onLine: (line: string) => void, o
 
 /** Run a short command and return its stdout (used for model listings). */
 export function captureOutput(command: string, args: string[], timeoutMs = 30_000): Promise<string> {
+  if (args.includes("--help")) return captureHelp(command, args, timeoutMs);
   return new Promise((resolve, reject) => {
     execFile(command, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, env: childEnv() }, (err, stdout, stderr) => {
       if (err) reject(new Error(`${command} ${args.join(" ")} failed: ${stderr.toString().trim() || err.message}`));
       else resolve(stdout.toString());
     });
   });
+}
+
+/** Some vendor CLIs exit before flushing pipe stdout; a private regular file preserves full help. */
+async function captureHelp(command: string, args: string[], timeoutMs: number): Promise<string> {
+  const fs = await import("node:fs/promises");
+  const dir = await fs.mkdtemp(join((await import("node:os")).tmpdir(), "codeflow-cli-help-"));
+  const path = join(dir, "help.txt");
+  const file = await fs.open(path, "wx", 0o600);
+  try {
+    await new Promise<void>((resolve,reject)=> {
+      const child=spawn(command,args,{env:childEnv(),stdio:["ignore",file.fd,file.fd],timeout:timeoutMs,killSignal:"SIGKILL"});
+      child.on("error",reject);child.on("close",code=>code===0?resolve():reject(new Error(`${command} help failed: process stopped (${code})`)));
+    });
+    if ((await file.stat()).size>2_000_000) throw new Error("CLI help exceeds limit");
+    return await fs.readFile(path,"utf8");
+  } finally { await file.close();await fs.rm(dir,{recursive:true,force:true}); }
 }
 
 export async function commandExists(binary: string): Promise<boolean> {

@@ -193,7 +193,7 @@ test("loop until green: a failing baseline proves the fix without an extra run",
 
 test("pipeline: the builder is asked once for a test that fails without the change, and the reviewer sees the proof", async () => {
   const dir = mkdtempSync(join(tmpdir(), "codeflow-proof-record-"));
-  const r = await withEnv({ FAKE_RECORD_DIR: dir }, () => run("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] }, { loop: { check: "node --test" } }));
+  const r = await withEnv({ FAKE_RECORD_DIR: dir }, () => run("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, { loop: { check: "node --test" } }));
   assert.equal(r.status, "done", r.error);
   assert.deepEqual(titles(r), [
     "Plan [claude]:done",
@@ -203,7 +203,7 @@ test("pipeline: the builder is asked once for a test that fails without the chan
     "Add a test that fails without the change [codex]:done",
     "Check:done",
     "Proof: tests without the change:done",
-    "Review (round 1) [agy]:done",
+    "Review (round 1) [claude]:done",
   ]);
   assert.equal(proofOf(r)?.status, "proven");
   assert.equal(r.facts?.proof, "proven");
@@ -215,7 +215,7 @@ test("pipeline: the builder is asked once for a test that fails without the chan
 
 test("pipeline: a test that never passes is undone, so asking for a proof doesn't cost a green result", async () => {
   const r = await withEnv({ FAKE_PROOF_BREAKS: "1" }, () =>
-    run("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] }, { loop: { check: "node --test" }, options: { checkFixes: 1 } }),
+    run("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, { loop: { check: "node --test" }, options: { checkFixes: 1 } }),
   );
   assert.equal(r.status, "done", r.error);
   assert.equal(r.verdict, "passed");
@@ -230,7 +230,7 @@ test("pipeline: a test that never passes is undone, so asking for a proof doesn'
     "Check:failed",
     "Check:done",
     "Proof: tests without the change:failed",
-    "Review (round 1) [agy]:done",
+    "Review (round 1) [claude]:done",
   ]);
   assert.match(await log(r), /The check fails since Codex added its test, and fixing didn't help; undoing that/);
   assert.ok(!filesOn(r.artifacts[0]!.branch).some((f) => f.startsWith("proof-")), "the broken test is gone");
@@ -248,7 +248,7 @@ test("test-first: tests that pass before anything is implemented go back to the 
 test("race: each passing candidate is proven, and the judge sees it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "codeflow-proof-record-"));
   const r = await withEnv({ FAKE_RECORD_DIR: dir }, () =>
-    run("race", { contestants: ["claude", "codex"], judge: ["agy"] }, { loop: { check: "ls *-*.txt 2>/dev/null | grep -q ." } }),
+    run("race", { contestants: ["claude", "codex"], judge: ["claude"] }, { loop: { check: "ls *-*.txt 2>/dev/null | grep -q ." } }),
   );
   assert.equal(r.status, "done", r.error);
   assert.equal(titles(r).filter((t) => t.startsWith("Proof: tests without the change")).length, 2);
@@ -309,14 +309,14 @@ test("a package the change adds is installed on the base code too, so its absenc
 
 test('"prove": false in .codeflow/config.json turns proofs off', async () => {
   const off = newRepo({ ".codeflow/config.json": JSON.stringify({ prove: false }) });
-  const r = await run("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] }, { loop: { check: "node --test" } }, off);
+  const r = await run("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, { loop: { check: "node --test" } }, off);
   assert.equal(r.status, "done", r.error);
   assert.ok(!r.steps.some((s) => s.title.startsWith("Proof") || s.title.startsWith("Add a test")));
   assert.equal(r.proofs, undefined);
 });
 
 test("setup runs once in the proof checkout, which is removed when the run ends", async () => {
-  const r = await run("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] }, { loop: { check: "node --test", setup: "true" } });
+  const r = await run("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, { loop: { check: "node --test", setup: "true" } });
   assert.equal(r.status, "done", r.error);
   assert.deepEqual(r.steps.filter((s) => s.kind === "setup").map((s) => s.title), ["Setup build", "Setup proof checkout"]);
   await new Promise((resolve) => setTimeout(resolve, 200));

@@ -28,7 +28,7 @@ export const councilPattern: Pattern = {
   description:
     "Use to review a pull request or a branch before merging: different models catch different problems, code-flow runs the tests reviewers show bugs with, and the worst confirmed problems rank first. Read-only — nothing is changed.",
   roles: [
-    { id: "reviewers", label: "Reviewers", description: "Each reviews the changes on its own, read-only", multiple: true, default: ["claude", "codex", "agy"] },
+    { id: "reviewers", label: "Reviewers", description: "Each reviews the changes on its own, read-only", multiple: true, default: ["claude", "codex"] },
     { id: "chair", label: "Chair", description: "Merges the reviews into one, noting where reviewers agree", default: ["claude"] },
   ],
   options: [],

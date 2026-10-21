@@ -77,7 +77,7 @@ test("a garbled answer gets one retry, which can succeed", async () => {
 });
 
 test("judging: a panel votes; a judge that also competes gets a warning", async () => {
-  const panel = await runPattern("race", { contestants: ["claude", "codex"], judge: ["agy", "claude"] });
+  const panel = await runPattern("race", { contestants: ["claude", "codex"], judge: ["codex", "claude"] });
   assert.equal(panel.status, "done", panel.error);
   assert.deepEqual(agentTitles(panel).filter((t) => t.startsWith("Judge")).sort(), ["Judge 1", "Judge 2"]);
   assert.match(await logs(panel), /Votes: B=2/);

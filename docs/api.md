@@ -520,3 +520,17 @@ The endpoint is owner-only on the main listener, subject to the existing origin 
 ---
 
 [Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)
+
+
+## Auto model catalog
+
+`GET /api/model-catalog` returns provider discovery catalogs, managed-provider eligibility, `allowResearch` and offline status. It uses the cached catalog and performs bounded CLI discovery when missing or stale. `POST /api/model-catalog` explicitly refreshes; its closed body accepts optional booleans `allowResearch` and `offline`. Research is disabled by default. `CODEFLOW_MODEL_NETWORK=offline` prevents new discovery/research while retaining cached evidence.
+
+Each catalog identifies its provider/environment/revision and separates reported model/effort availability, documented facts and run observations. It contains no authentication credentials. The existing `/api/models` endpoint retains its legacy behavior. Remote/container discovery happens in the selected execution environment, independently of this local preview. New Auto steps persist `modelAssignment` (provider, exact ID, effort, rationale, catalog revision/source and environment). Advanced worker `roleSettings.pool` pins are checked again at dispatch and on recovery; global coordinator defaults do not pin workers.
+
+
+### Antigravity execution authority
+
+New run requests accept `antigravityExecution: "isolated" | "native"`. Omission defaults to isolation, or inherits the parent's recorded choice for continuations. `"native"` explicitly opts into unrestricted host execution using the existing login and configuration; it leaves Claude/Codex permissions unchanged. An isolated parent cannot be upgraded by a child. Native mode rejects mandatory permission requirements, Safe/narrowed trust, tool approvals, remote/container and unattended/locked-down runs. It is not a template setting and is persisted in the run policy and step receipt.
+
+`GET /api/model-catalog?antigravityExecution=native` and the POST refresh body's `antigravityExecution` choose native catalog discovery for previews; they do not grant execution authority. Default previews use isolated discovery. Both modes have distinct cache identities. Native execution records advisory read-only requests, unrestricted terminal access, provider-configured browser/MCP/hooks/native agents, and native child usage outside Code Flow's budget.

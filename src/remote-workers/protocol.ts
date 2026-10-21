@@ -1,3 +1,4 @@
+import { validateRunPermissions, type RunPermissionPolicy } from "../run-permissions.js";
 import type { AgentEvent, AgentId, RunOptions, RunResult } from "../adapters/types.js";
 
 export const WORKER_PROTOCOL = 1;
@@ -24,6 +25,7 @@ export interface WorkerRequest {
   repoMapping: string; baseCommit: string; agent: AgentId; mode: "read" | "write";
   prompt: string; model?: string; effort?: string; trust: NonNullable<RunOptions["trust"]>;
   timeoutMs: number; idleTimeoutMs?: number; jsonSchema?: object; questionProtocol?: "structured";
+  managedPermissions?: RunPermissionPolicy;
   containerProfile?: string;
   source?: { size: number; sha256: string; ref: string };
   context: ContextFile[];
@@ -31,9 +33,9 @@ export interface WorkerRequest {
 export interface WorkerArtifact { requestId: string; baseCommit: string; head: string; size: number; sha256: string; ref: string }
 export type ReceiptState = "accepted" | "running" | "completed" | "failed" | "cancelled" | "unknown";
 export interface WorkerReceipt { version: 1; requestId: string; state: ReceiptState; fingerprint?: string; createdAt?: number; updatedAt?: number; heartbeatAt?: number; result?: RunResult; artifact?: WorkerArtifact; reason?: string }
-export interface WorkerCapabilities { protocol: 1; providers: { id: AgentId; available: boolean }[]; repoMappings: string[]; containerProfiles: string[]; resumeSessions: false; liveTeamTools: false; interactiveApprovals: false; stagedContext: true; maximumBundleBytes: number; maximumContextBytes: number }
+export interface WorkerCapabilities { protocol: 1; providers: { id: AgentId; available: boolean; modelCatalog?: import("../adapters/types.js").ModelCatalog }[]; repoMappings: string[]; containerProfiles: string[]; resumeSessions: false; liveTeamTools: false; interactiveApprovals: false; stagedContext: true; maximumBundleBytes: number; maximumContextBytes: number }
 export type ClientFrame =
-  | { v: 1; type: "probe"; repoMapping?: string; baseCommit?: string; repositoryBase?: string; containerProfile?: string }
+  | { v: 1; type: "probe"; discoverModels?: boolean; repoMapping?: string; baseCommit?: string; repositoryBase?: string; containerProfile?: string }
   | { v: 1; type: "begin"; request: WorkerRequest }
   | { v: 1; type: "source" | "context"; id: string; capability: string; path?: string; offset: number; data: string }
   | { v: 1; type: "execute" | "receipt" | "cancel"; id: string; capability: string; downloadArtifact?: boolean };
@@ -65,7 +67,10 @@ export function validateWorkerRequest(value: unknown): WorkerRequest {
   if (value.containerProfile !== undefined && !/^[a-z][a-z0-9-]{0,63}$/.test(String(value.containerProfile)) || value.questionProtocol !== undefined && value.questionProtocol !== "structured") throw new RemoteWorkerError("Invalid worker-local execution profile");
   if (!Array.isArray(value.context) || value.context.length > 100 || value.context.some((file) => !object(file) || !contextPath(file.path) || typeof file.size !== "number" || !Number.isSafeInteger(file.size) || file.size < 0 || file.size > 8 * 1024 * 1024 || typeof file.sha256 !== "string" || !DIGEST.test(file.sha256)) || (value.context as ContextFile[]).reduce((total, file) => total + file.size, 0) > MAX_CONTEXT_BYTES || new Set((value.context as ContextFile[]).map((file) => file.path)).size !== value.context.length) throw new RemoteWorkerError("Remote context must contain at most 100 bounded regular reference files");
   if (value.source !== undefined && (!object(value.source) || !Number.isSafeInteger(value.source.size) || (value.source.size as number) < 1 || (value.source.size as number) > MAX_BUNDLE_BYTES || !DIGEST.test(String(value.source.sha256)) || value.source.ref !== `refs/codeflow/transfers/${value.id}`)) throw new RemoteWorkerError("Invalid source bundle manifest");
-  const allowed = ["id", "capability", "scope", "repoMapping", "baseCommit", "agent", "mode", "prompt", "model", "effort", "trust", "timeoutMs", "idleTimeoutMs", "jsonSchema", "questionProtocol", "containerProfile", "source", "context"];
+  if (value.managedPermissions !== undefined) {
+    try { validateRunPermissions(value.managedPermissions); } catch { throw new RemoteWorkerError("Invalid managed permission policy"); }
+  }
+  const allowed = ["managedPermissions", "id", "capability", "scope", "repoMapping", "baseCommit", "agent", "mode", "prompt", "model", "effort", "trust", "timeoutMs", "idleTimeoutMs", "jsonSchema", "questionProtocol", "containerProfile", "source", "context"];
   if (Object.keys(value).some((key) => !allowed.includes(key))) throw new RemoteWorkerError("Remote requests cannot forward arbitrary environment, callbacks, session handles or paths");
   return structuredClone(value) as unknown as WorkerRequest;
 }

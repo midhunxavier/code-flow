@@ -522,7 +522,13 @@ test("Improve holds repository and policy leases during a delayed turn, and expl
     const path = `/api/workspace/file?repo=${encodeURIComponent(repo)}&path=README.md`, original = await api(instance, path); assert.equal(original.status, 200);
     turn = fetch(`${instance.base}/api/improve-prompt`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ text: "SNEAKY Improve lease fixture", repo, agent: "claude", mode: "repo" }), signal: stop.signal }).then(async (response) => ({ status: response.status, body: await response.json() }));
     void turn.catch(() => undefined);
-    await waitFor(() => readdirSync(records).length > 0 && existsSync(join(JSON.parse(readFileSync(join(records, readdirSync(records)[0]!), "utf8")).cwd, "sneaky.txt")));
+    await waitFor(() => {
+      const name = readdirSync(records)[0];
+      if (!name) return false;
+      // A fixture record can appear before its synchronous write finishes in the child.
+      try { return existsSync(join(JSON.parse(readFileSync(join(records, name), "utf8")).cwd, "sneaky.txt")); }
+      catch (error) { if (error instanceof SyntaxError) return false; throw error; }
+    });
     const calls = readdirSync(records).map((name) => JSON.parse(readFileSync(join(records, name), "utf8"))); assert.equal(calls.length, 1); assert.equal(calls[0].vendor, "claude"); assert.match(calls[0].prompt, /Rewrite the task below/);
     const activity = (await api(instance, "/api/health")).body.activity; assert.ok(activity.leases.some((lease: { kind: string; repo: string }) => lease.kind === "prompt improvement" && lease.repo === realpathSync(repo)), "the delayed provider turn holds the canonical repository lease");
     const edit = await api(instance, "/api/workspace/file", { repo, path: "README.md", text: "Must not overwrite\n", expectedHash: original.body.hash }); assert.equal(edit.status, 409, JSON.stringify(edit.body)); assert.match(edit.body.error, /prompt improvement/);

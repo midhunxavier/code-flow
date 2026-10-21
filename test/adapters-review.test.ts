@@ -202,3 +202,92 @@ test("Codex: a finished turn whose answer came in a form code-flow doesn't know 
     assert.ok(statuses.some((s) => /^codex emitted \d+ events? code-flow doesn't know/.test(s) && unknown.test(s)), `${transport}: ${statuses.join("\n")}`);
   }
 });
+
+test("managed policies reach native CLI flags for Solo and worker turns", async () => {
+  const { createRunPermissions, resolveRunPermissions } = await import("../src/run-permissions.js");
+  const dir = tmp("managed-flags");
+  for (const provider of ["claude", "codex"] as const) {
+    const policy = createRunPermissions("standard", false, true, provider === "claude" ? ["no-external-tools"] : ["workspace-writes", "no-command-network"]);
+    const permissions = resolveRunPermissions({ policy, provider, mode: "write", currentTrust: "standard", currentTools: false });
+    const { result } = await withEnv({ FAKE_RECORD_DIR: dir, CODEFLOW_CODEX_TRANSPORT: "exec" }, () => turn(provider, { mode: "write", trust: "standard", permissions, timeoutMs: 5000 }));
+    assert.equal(result.ok, true, result.error);
+  }
+  const calls = recorded(dir);
+  const claude = calls.find(c => c.agent === "claude" || c.args?.includes("--strict-mcp-config"));
+  assert.ok(claude, JSON.stringify(calls));
+  assert.ok(claude.args.includes("--strict-mcp-config"));
+  assert.ok(claude.args.includes("--no-chrome"));
+  const settings=JSON.parse(claude.args[claude.args.indexOf("--settings")+1]);
+  assert.equal(settings.disableWorkflows,true);assert.equal(settings.ultracode,false);assert.equal(settings.disableAllHooks,true);
+  assert.ok(claude.args.some((a: string) => a.includes("Agent") && a.includes("Task")));
+  const codex = calls.find(c => c.args?.includes("features.multi_agent=false"));
+  assert.ok(codex, JSON.stringify(calls));
+  assert.ok(codex.args.includes("sandbox_workspace_write.network_access=false"));
+  assert.ok(codex.args.includes("sandbox_workspace_write.writable_roots=[]"));
+  assert.ok(codex.args.includes("sandbox_workspace_write.exclude_slash_tmp=true"));
+  assert.ok(codex.args.includes("sandbox_workspace_write.exclude_tmpdir_env_var=true"));
+  assert.ok(codex.args.includes('approval_policy="never"'));
+});
+
+test("managed launches fail closed when native controls disappear or approval transport is unavailable", async () => {
+  const { createRunPermissions, resolveRunPermissions } = await import("../src/run-permissions.js");
+  const dir = tmp("permission-rejections");
+  const effective = (provider: "claude" | "codex", tools = false) => resolveRunPermissions({ policy: createRunPermissions("standard", tools, true), provider, mode: "write", currentTrust: "standard", currentTools: tools });
+  await withEnv({ FAKE_RECORD_DIR: dir, FAKE_IGNORE_DELEGATION_FLAGS: "1" }, async () => {
+    const result = await turn("codex", { mode: "write", trust: "standard", permissions: effective("codex") });
+    assert.equal(result.result.ok, false); assert.match(result.result.error!, /native-delegation controls/);
+  });
+  await withEnv({ FAKE_RECORD_DIR: dir, FAKE_UNKNOWN_FLAG: "--disallowedTools" }, async () => {
+    const result = await turn("claude", { mode: "write", trust: "standard", permissions: effective("claude") });
+    assert.equal(result.result.ok, false); assert.match(result.result.error!, /native-delegation controls/);
+  });
+  await withEnv({ FAKE_RECORD_DIR: dir, CODEFLOW_CODEX_TRANSPORT: "exec" }, async () => {
+    const result = await turn("codex", { mode: "write", trust: "standard", permissions: effective("codex", true), interactiveApprovals: true, onApproval: async () => "approve" });
+    assert.equal(result.result.ok, false); assert.match(result.result.error!, /interactive approvals/);
+  });
+  const mismatch = await turn("claude", { mode: "write", trust: "full", permissions: effective("claude") });
+  assert.equal(mismatch.result.ok, false); assert.match(mismatch.result.error!, /do not match/);
+  assert.equal(recorded(dir).length, 0, "failed controls never invoke a model turn");
+});
+
+test("Antigravity rejects forged permission receipts before invoking any CLI", async () => {
+  const { createRunPermissions, resolveRunPermissions } = await import("../src/run-permissions.js");
+  const dir = tmp("agy-permission-rejections");
+  await withEnv({ FAKE_RECORD_DIR: dir, CODEFLOW_AGY_SKIP_PERMISSIONS: "1" }, async () => {
+    for (const trust of ["safe", "standard", "trusted", "full"] as const) for (const mode of ["read", "write"] as const) {
+      // Simulate a stale/forged provider assignment reaching the adapter directly.
+      const permissions = { ...resolveRunPermissions({ policy: createRunPermissions(trust, false, false), provider: "claude", mode, currentTrust: trust, currentTools: false }), provider: "agy" as const };
+      for (const extra of [{}, { resumeSessionId: "fixture-session" }, { agentContainer: { image: "fixture", network: false } }]) {
+        const { result, events } = await turn("agy", { trust, mode, permissions, ...extra });
+        assert.equal(result.ok, false);
+        assert.equal(result.errorKind, "cli_incompatible");
+        assert.match(result.error!, /do not match the isolated run permission policy/);
+        assert.equal(result.sessionId, undefined);
+        assert.deepEqual(events, []);
+      }
+    }
+  });
+  assert.deepEqual(recorded(dir), [], "no inference or settings mutation occurs, even with the legacy bypass enabled");
+});
+
+test("Antigravity isolated recovery requests portable context without launching or transferring a session", async () => {
+  const dir = tmp("agy-fresh-recovery");
+  await withEnv({ FAKE_RECORD_DIR: dir }, async () => {
+    const permissions: any = { provider: "agy", trust: "standard", mode: "read", nativeDelegation: false, isolation: "os-sandbox", implementation: "macos-file-only-v1", commandNetwork: "denied", externalTools: "disabled", toolApprovals: false };
+    const { result, events } = await turn("agy", { trust: "standard", mode: "read", permissions, resumeSessionId: "old-session" });
+    assert.equal(result.errorKind, "session_not_found");
+    assert.equal(result.sessionId, undefined); assert.deepEqual(events, []);
+  });
+  assert.deepEqual(recorded(dir), []);
+});
+
+test("an unverified Antigravity version cannot fall back to legacy permissions", async () => {
+  const dir = tmp("agy-runtime-rejection");
+  await withEnv({ FAKE_RECORD_DIR: dir, CODEFLOW_AGY_SKIP_PERMISSIONS: "1" }, async () => {
+    const permissions: any = { provider: "agy", trust: "standard", mode: "read", nativeDelegation: false, isolation: "os-sandbox", implementation: "macos-file-only-v1", commandNetwork: "denied", externalTools: "disabled", toolApprovals: false };
+    const { result } = await turn("agy", { trust: "standard", mode: "read", permissions });
+    assert.equal(result.errorKind, "cli_incompatible");
+    assert.match(result.error!, /No permissive fallback/);
+  });
+  assert.deepEqual(recorded(dir), [], "the fake CLI version is unverified; no inference launch may occur");
+});

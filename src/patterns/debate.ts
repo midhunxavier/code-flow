@@ -29,7 +29,7 @@ export const debatePattern: Pattern = {
       multiple: true,
       default: ["claude", "codex"],
     },
-    { id: "synthesizer", label: "Synthesizer", description: "Merges the debate into one plan, ideally a vendor that isn't debating", default: ["agy"] },
+    { id: "synthesizer", label: "Synthesizer", description: "Merges the debate into one plan, ideally a vendor that isn't debating", default: ["claude"] },
     {
       id: "builder",
       label: "Builder",

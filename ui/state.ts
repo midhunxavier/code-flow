@@ -5,6 +5,8 @@ import { contextBudget, contextBudgetOrigin } from "./context-budget.js";
 import { intentDraft, journeyDraft } from "./composer-draft-fields.js";
 import { batch, computed, effect, signal } from "@preact/signals";
 import { legacyDraftProject, projectDestination, ProjectDraftStore } from "./project-context.js";
+import { supportsRunPermissions } from "../src/run-permissions.js";
+import { selectedTeamTemplate } from "./team-template-state.js";
 import { api, sharedGet, ApiError, post, showToast, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
 import { onStreamState, subscribe } from "./stream.js";
@@ -41,7 +43,7 @@ export async function loadTeamRollout() {
   try {
     const rollout = await api<TeamRollout>("/api/team-rollout");
     teamRollout.value = rollout;
-    if (rollout.enabled && rollout.stage === "default" && !store.get("pattern") && patterns.value.some((item) => item.id === "auto-team")) patternId.value = "auto-team";
+    // Evaluation describes evidence; it never changes the selected execution mode.
   } catch { /* The existing app remains usable if optional evaluation metadata cannot load. */ }
 }
 /** The first list of runs has come: until then, a run missing from `runs` may just not be here yet. */
@@ -232,6 +234,8 @@ export const composerRunOptions = signal<{
   verification?: string;
   verificationProfile?: import("../src/verification.js").VerificationProfile | null;
   toolApprovals?: boolean;
+  antigravityExecution?: import("../src/run-permissions.js").AntigravityExecution;
+  permissionRequirements?: import("../src/run-permissions.js").PermissionRequirement[];
 }>({});
 export const projectsOpen = signal(false);
 /** The Projects dialog opens straight on this project's editor ("new" for a new one), not on the list. */
@@ -594,7 +598,7 @@ export const composerOrigins = signal<Record<string, string>>({ pattern: store.g
 export const contextPaths = signal<Map<string, ContextItem>>(new Map());
 export const attachments = signal<Attachment[]>([]);
 export const contextError = signal("");
-export const patternId = signal(store.get("pattern") ?? "pipeline");
+export const patternId = signal(store.get("pattern") ?? "auto-team");
 export const pattern = computed(() => patterns.value.find((p) => p.id === patternId.value) ?? patterns.value[0]);
 /** A role is filled by an agent, or "auto": code-flow picks one whose plan has room. */
 export type { RoleValue } from "./roles.js";
@@ -637,6 +641,7 @@ export interface Health {
   fix?: string;
   /** false: the CLI's --help lacks a flag code-flow passes, so steps will fail on it. */
   compatible?: boolean;
+  managedCompatible?: boolean;
   missing?: string[];
   warnings?: string[];
 }
@@ -681,6 +686,7 @@ export function setTask(value: string) {
   store.set("draftTask", value);
 }
 export function setPattern(id: string) {
+  selectedTeamTemplate.value = null;
   patternId.value = id;
   store.set("pattern", id);
   composerOrigins.value = { ...composerOrigins.value, pattern: "This run (remembered)" };
@@ -725,7 +731,7 @@ export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]
   const saved = roleSel.value[p.id] ?? {};
   const eligibleDefaults = agents.value.filter((a) => {
     const diagnostic = health.value?.find(entry => entry.id === a.id);
-    return a.available && diagnostic?.signedIn !== false && diagnostic?.compatible !== false && (!a.id.startsWith("acp:") || trust.value === "full");
+    return a.available && supportsRunPermissions(a.id) && (a.id !== "agy" || composerRunOptions.value.antigravityExecution === "native" || diagnostic?.managedCompatible === true) && diagnostic?.signedIn !== false && diagnostic?.compatible !== false && (!a.id.startsWith("acp:") || trust.value === "full");
   });
   const eligibleIds = new Set(eligibleDefaults.map(agent => agent.id));
   const firstAvailable = eligibleDefaults[0]?.id;
@@ -1120,6 +1126,7 @@ function composerSnapshot() {
     roles: roleSel.value, models: roleModels.value, settings: agentSettings.value, options: optionValues.value,
     base: baseRef.value, branch: branchPrefix.value, check: checkCmd.value, setup: setupCmd.value,
     limits: limits.value, trust: trust.value, approvals: approvalChoices.value, origins: composerOrigins.value,
+    selectedTemplate: selectedTeamTemplate.value,
     source: source.value, externalSource: externalSource.value, runOptions: composerRunOptions.value, rerun: rerunDraft.value,
   };
 }
@@ -1154,6 +1161,7 @@ function restoreComposer(snapshot: ComposerSnapshot) {
     checkCmd.value = snapshot.check; setupCmd.value = snapshot.setup;
     limits.value = snapshot.limits; trust.value = snapshot.trust; approvalChoices.value = snapshot.approvals;
     composerOrigins.value = snapshot.origins; source.value = snapshot.source; externalSource.value = snapshot.externalSource;
+    selectedTeamTemplate.value = snapshot.selectedTemplate ?? null;
     composerRunOptions.value = snapshot.runOptions ?? {};
     rerunDraft.value = snapshot.rerun ?? null;
   });
@@ -1199,14 +1207,14 @@ async function switchComposer(next: string, options: { repository?: string; carr
         task.value = ""; acceptanceCriteria.value = []; attachments.value = []; contextPaths.value = new Map();
         source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
         roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
-        patternId.value = store.get("pattern") ?? "pipeline"; agentSettings.value = store.json("agentSettings", {});
+        patternId.value = store.get("pattern") ?? "auto-team"; agentSettings.value = store.json("agentSettings", {});
         optionValues.value = {}; limits.value = store.json("limits", { maxMinutes: 60, maxSteps: 40 });
-        approvalChoices.value = store.json("approvePlanByPattern", {}); composerRunOptions.value = {}; rerunDraft.value = null;
+        approvalChoices.value = store.json("approvePlanByPattern", {}); selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
         if (project?.defaults) applyDefaults(project.defaults);
       }
       if (saved && repository !== saved.repository) {
         contextPaths.value = new Map(); source.value = null; externalSource.value = null; baseRef.value = ""; journeyDraft.value = undefined;
-        checkCmd.value = detectedCheck; setupCmd.value = detectedSetup; trust.value = detectedTrust; composerRunOptions.value = {}; rerunDraft.value = null;
+        checkCmd.value = detectedCheck; setupCmd.value = detectedSetup; trust.value = detectedTrust; selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
       }
       composerProject.value = next;
       store.set("composerProject", next);

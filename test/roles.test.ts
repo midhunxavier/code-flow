@@ -30,9 +30,9 @@ test("pipeline: the reviewer defaults to a vendor other than the planner's", () 
   assert.deepEqual(independentRoles("pipeline", fallback, {}, ["claude"]).reviewer, ["claude"]);
 });
 
-test("debate: the synthesizer defaults to a vendor that isn't debating", () => {
+test("debate: independent routing prefers another vendor when eligible", () => {
   const debate = defaults("debate");
-  assert.ok(!debate.debaters!.includes(debate.synthesizer![0]!), "the pattern's default synthesizer isn't a debater");
+  assert.ok(["claude", "codex"].includes(debate.synthesizer![0]!), "the default supports managed permissions");
   const roles = { debaters: ["claude" as const, "codex" as const], synthesizer: ["claude" as const] };
   assert.deepEqual(independentRoles("debate", roles, {}, [...ALL]).synthesizer, ["agy"]);
   assert.deepEqual(independentRoles("debate", roles, {}, ["claude", "codex"]).synthesizer, ["claude"], "every vendor debates: the log warns instead");

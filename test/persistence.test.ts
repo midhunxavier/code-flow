@@ -114,10 +114,10 @@ test("a run that crashed (no clean shutdown) loads as interrupted", async () => 
 });
 
 test("parallel race steps replay; only the unfinished judge runs again", async () => {
-  process.env.FAKE_SLEEP_VENDOR = "agy";
+  process.env.FAKE_SLEEP_VENDOR = "claude";
   process.env.FAKE_SLEEP_MS = "5000";
   const a = new RunManager(findPattern);
-  const run = await start(a, "race", { contestants: ["claude", "codex"], judge: ["agy"] });
+  const run = await start(a, "race", { contestants: ["claude", "codex"], judge: ["claude"] });
   await until(() => run.steps.some((s) => s.title === "Judge candidates" && s.status === "running"));
   await a.shutdown();
   delete process.env.FAKE_SLEEP_VENDOR;

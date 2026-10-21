@@ -35,7 +35,7 @@ export const racePattern: Pattern = {
       label: "Judge",
       description: "Compares the results blind; pick several for a majority vote, ideally vendors that aren't competing",
       multiple: true,
-      default: ["agy"],
+      default: ["claude"],
     },
   ],
   options: [],

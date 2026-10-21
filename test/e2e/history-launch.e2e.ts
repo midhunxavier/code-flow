@@ -236,7 +236,7 @@ test("project conventions save with CAS, restore a previewed version, and explic
 
 test("guided onboarding inspects required and optional dependencies through actual read-only probes", async () => {
   await page.goto(base);
-  await page.getByRole("button", { name: "Agent workflow mode", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Solo", exact: true }).waitFor();
   assert.equal(await page.locator(".provider-setup").count(), 0, "connected providers do not show setup in the composer");
   await page.goto(`${base}/#/settings/agents`);
   await page.getByText("Check this computer", { exact: true }).first().click();
@@ -267,7 +267,7 @@ test("review inbox controls have distinct labels, keyboard order and a bounded m
 
 test("context directories preview committed sources and explicit budgets block actual provider launch while warnings retain input evidence", async () => {
   await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto(base);
-  await page.getByRole("button", { name: "Agent workflow mode", exact: true }).click(); await page.getByLabel("Task", { exact: true }).fill("Exercise the explicit context budget before a provider launch.");
+  await page.getByRole("button", { name: "Solo", exact: true }).click(); await page.getByLabel("Task", { exact: true }).fill("Exercise the explicit context budget before a provider launch.");
   await page.locator(".taskbox").getByRole("button", { name: "Files", exact: true }).click(); await page.getByRole("button", { name: "Add api to the task", exact: true }).click();
   await page.getByRole("button", { name: "Side panel", exact: true }).click();
   await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click(); await page.getByRole("button", { name: "Preview selected context", exact: true }).click();
@@ -323,7 +323,21 @@ test("filesystem policy enforces scoped app reads/writes and globally blocks exe
   await fetch(`${base}/api/projects`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ name: "Other repository", repos: [otherRepo] }) });
   const bootReady = Promise.all(["/api/models", "/api/doctor", "/api/doctor/git"].map((path) => page.waitForResponse((response) => new URL(response.url()).pathname === path)));
   await page.goto(`${base}/?policy-check=1#/settings/projects`); await bootReady; await page.getByLabel("Project", { exact: true }).selectOption(project.id); const panel = page.getByRole("region", { name: "Project filesystem policy", exact: true });
-  await panel.getByLabel("Read deny paths", { exact: true }).fill("private"); await panel.getByLabel("Write allow paths", { exact: true }).fill("api"); const applying = page.waitForResponse((response) => response.url().endsWith("/filesystem-policy") && response.request().method() === "PUT"); await panel.getByRole("button", { name: "Stop execution and apply policy", exact: true }).click(); const applied = await applying; assert.equal(applied.status(), 200, await applied.text()); await panel.getByRole("status").getByText("Filesystem policy revision 1 applied.", { exact: true }).waitFor();
+  await panel.getByLabel("Read deny paths", { exact: true }).fill("private"); await panel.getByLabel("Write allow paths", { exact: true }).fill("api");
+  // Discovery or repository reads can still hold a policy lease after boot responses.
+  // The application correctly refuses to change authority until those reads finish.
+  let applied: import("playwright-core").Response | undefined;
+  for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
+    const applying = page.waitForResponse((response) => response.url().endsWith("/filesystem-policy") && response.request().method() === "PUT");
+    await panel.getByRole("button", { name: "Stop execution and apply policy", exact: true }).click();
+    applied = await applying;
+    if (applied.status() === 200) break;
+    assert.equal(applied.status(), 409, await applied.text());
+    assert.match(await applied.text(), /Wait for active application operations/);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(applied?.status(), 200, await applied?.text());
+  await panel.getByRole("status").getByText("Filesystem policy revision 1 applied.", { exact: true }).waitFor();
   const request = (path: string, body?: unknown, method = "POST") => fetch(base + path, { headers: { ...headers, "content-type": "application/json" }, ...(body !== undefined ? { method, body: JSON.stringify(body) } : {}) });
   for (const prefix of ["/api", "/api/v1"]) {
     for (const path of ["/stats", "/memory", "/automations", "/deferred-runs", "/coordinated-changes", "/notifications", "/maintenance"]) assert.equal((await request(prefix + path)).status, 403, `unscoped private data ${path}`);

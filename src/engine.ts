@@ -1,5 +1,10 @@
 import { projectReport } from "./project-report.js";
 import { matchesHistoryFilter, needsYou, type HistoryFilter } from "./run-status.js";
+import { modelCatalogStore, modelEnvironment, resolveModelAssignment, assignmentProblem, workerConstraintProblem, type CapabilityCatalog, type ModelAssignment } from "./model-catalog.js";
+import { inheritRunEnvironment } from "./run-environment.js";
+import { teamTemplateStore } from "./team-template-store.js";
+import { validateTeamTemplate, type TeamTemplate, type TemplateSelection } from "./team-templates.js";
+import { antigravityExecution, AGY_NATIVE_LIMITATION, type AntigravityExecution, createRunPermissions, validateRunPermissions, narrowerTrust, resolveRunPermissions, type RunPermissionPolicy, type EffectivePermissions, type PermissionRequirement } from "./run-permissions.js";
 import { PersistenceTracker } from "./persistence-status.js";
 import { RunIndex, runSearchText, historyOffset } from "./run-history.js";
 import { chatHandoffContext } from "./chat-handoff.js";
@@ -144,6 +149,8 @@ const STAGE_DIR = ".context";
 export type Status = "running" | "done" | "failed" | "cancelled" | "stopped" | "interrupted";
 
 export interface Step {
+  permissions?: EffectivePermissions;
+  modelAssignment?: ModelAssignment;
   id: string;
   /** An agent turn, or a command code-flow ran itself (the check, or worktree setup). */
   kind: "agent" | "check" | "setup";
@@ -337,6 +344,10 @@ export interface Artifact {
 }
 
 export interface Run {
+  templateCatalog?: TeamTemplate[];
+  teamTemplate?: TemplateSelection;
+  permissions?: RunPermissionPolicy;
+  modelRouting?: { version: 1 };
   taskPriorities?: Record<string, number>;
   intent?: import("./experience.js").TaskIntent;
   journeyId?: string;
@@ -713,6 +724,7 @@ export interface Pattern {
 }
 
 export interface AskParams {
+  modelAssignment?: ModelAssignment;
   /** Engine-assigned durable ask occurrence; callers cannot override its scoped identity. */
   remoteIdentity?: string;
   title: string;
@@ -1095,27 +1107,60 @@ export class TeamContext {
    * observations: availability and quota are read again, while the catalogs (a CLI call per
    * provider, and a network fetch for agy) are reused rather than probed at every event.
    */
+  async capabilityCatalog(provider: AgentId): Promise<CapabilityCatalog> {
+    const remote = this.run.loop.remoteWorker;
+    const context = { agentContainer: this.run.loop.agentContainer, ...(provider === "agy" && this.run.permissions && this.run.permissions.antigravityExecution !== "native" && !remote && !this.run.loop.agentContainer ? { isolatedAgy: true } : {}), ...(this.run.loop.agentContainer ? { cwd: this.run.repo } : {}) };
+    if (remote) {
+      if (process.env.CODEFLOW_MODEL_NETWORK === "offline") return modelCatalogStore.get(provider, { environment:modelEnvironment({},JSON.stringify(remote)), offline:true });
+      const capability = (await this.manager.remoteInventory(remote, true)).providers.find(p => p.id === provider)?.modelCatalog;
+      return modelCatalogStore.get(provider, { environment: modelEnvironment({}, JSON.stringify(remote)), ...(capability ? { reported: capability } : { offline: true }) });
+    }
+    return modelCatalogStore.get(provider, { context });
+  }
+
   async teamInventory(previous?: TeamInventory): Promise<TeamInventory> {
     const remote = this.run.loop.remoteWorker;
     const availability = remote ? (await this.manager.remoteInventory(remote)).providers : await agentAvailability();
     const catalogs = await Promise.all(availability.map(async ({ id, available }) => {
       if (!available) return undefined;
+      if (this.run.modelRouting) {
+        const catalog = await this.capabilityCatalog(id);
+        const configured = [this.run.agentSettings[id], this.run.roleSettings.coordinator?.[id], this.run.roleSettings.pool?.[id]];
+        const pinned = configured.flatMap(s=>s ? [s.model,...(s.variants??[]).map(v=>v.model)] : []).filter((v):v is string=>!!v);
+        const eligible = catalog.models.filter(m=>m.availability === "reported");
+        const required = eligible.filter(m=>m.id===catalog.defaultModel || pinned.some(pin=>m.id===pin || m.aliases.includes(pin)));
+        const compact = [...required,...eligible.filter(m=>!required.includes(m)).slice(0,Math.max(0,80-required.length))];
+        return { models: compact.map(m => ({ id:m.id, aliases:m.aliases, efforts:m.efforts ?? undefined, source:m.source, verifiedAt:m.verifiedAt, documented:m.documented, observations:{ successes:m.observations.filter(o=>o.ok).length, failures:m.observations.filter(o=>!o.ok).length } })), efforts: [], capability: { revision:catalog.revision, environment:catalog.environment, defaultModel:catalog.defaultModel, state:catalog.state } };
+      }
       const known = previous?.providers.find((p) => p.id === id);
       if (known?.models) return { models: known.models, efforts: known.efforts };
       if (remote) return undefined;
       try { return await agentCatalog(id); } catch { return undefined; }
     }));
+    const permissionProblem = (provider: AgentId) => {
+      if (!this.run.permissions) return undefined;
+      try {
+        resolveRunPermissions({ policy: this.run.permissions, provider, mode: "write", currentTrust: this.run.trust, currentTools: !!this.run.approvals.tools, remote: !!remote, container: !!this.run.loop.agentContainer, unattended: !!this.run.trigger || !!this.run.lockdown });
+        return undefined;
+      } catch (error) { return (error as Error).message; }
+    };
+    const runtimeProblems = await Promise.all(availability.map(async ({ id, available }) => {
+      if (!available || !this.run.permissions || permissionProblem(id)) return undefined;
+      return id === "agy" && this.run.permissions.antigravityExecution === "native" ? undefined : getAdapter(id).managedAvailability?.();
+    }));
     return {
       at: Date.now(),
       providers: availability.map(({ id, available }, index) => ({
-        id, available, blockedReason: exhausted(id, this.manager.quotaForWorker(remote?.workerId)), quotaKnown: !!this.manager.quotaForWorker(remote?.workerId)[id],
+        id, available, blockedReason: permissionProblem(id) ?? runtimeProblems[index] ?? exhausted(id, this.manager.quotaForWorker(remote?.workerId)), quotaKnown: !!this.manager.quotaForWorker(remote?.workerId)[id],
+        limitations: this.run.permissions ? id === "agy" && this.run.permissions.antigravityExecution === "native" ? [AGY_NATIVE_LIMITATION] : getAdapter(id).managedLimitations : undefined,
         models: catalogs[index]?.models,
         efforts: catalogs[index]?.efforts,
+        catalog: catalogs[index] && "capability" in catalogs[index]! ? catalogs[index]!.capability : undefined,
         ...this.run.agentSettings[id],
         settingsByRole: {
           coordinator: { ...this.run.agentSettings[id], ...this.run.roleSettings.coordinator?.[id] },
-          worker: { ...this.run.agentSettings[id], ...this.run.roleSettings.pool?.[id] },
-          reviewer: { ...this.run.agentSettings[id], ...this.run.roleSettings.pool?.[id] },
+          worker: { ...(!this.run.modelRouting ? this.run.agentSettings[id] : {}), ...this.run.roleSettings.pool?.[id] },
+          reviewer: { ...(!this.run.modelRouting ? this.run.agentSettings[id] : {}), ...this.run.roleSettings.pool?.[id] },
         },
       })),
       ranking: rankAgents(this.manager.list(), this.run.repo).order,
@@ -2264,6 +2309,15 @@ export class TeamContext {
     const identity = `${params.role}|${params.agent}|${params.cwd.name}|${params.identity ?? params.title}`;
     params = { ...params, remoteIdentity: `${identity}#${(this.counters.get(`ask:${identity}`) ?? 0) + 1}` };
     const outcome = await this.remember("ask", identity, async () => {
+      if (this.run.modelRouting && params.memberId && !params.coordination) {
+        const member = this.run.team?.members.find(m=>m.id===params.memberId);
+        const requestedModel = params.settings?.model ?? this.run.roleSettings[params.role]?.[params.agent]?.model ?? this.run.agentSettings[params.agent]?.model ?? "";
+        const requestedEffort = params.settings?.effort ?? this.run.roleSettings[params.role]?.[params.agent]?.effort ?? this.run.agentSettings[params.agent]?.effort ?? "";
+        const choice = await this.remember("model-choice", params.remoteIdentity!, async () => resolveModelAssignment(await this.capabilityCatalog(params.agent), requestedModel, requestedEffort, member?.reason ?? "User-selected coordinator"));
+        params = { ...params, modelAssignment: choice, ...(params.coordination ? {} : { settings: { model: choice.model, effort: choice.effort } }) };
+        if (member) member.assignment = choice;
+      }
+
 
       const member = params.memberId;
       const workspace = params.cwd.path;
@@ -2281,6 +2335,11 @@ export class TeamContext {
         if (session) this.activeSessions.delete(session);
       }
     }, undefined, keep);
+    if (params.memberId && this.run.modelRouting) {
+      const member=this.run.team?.members.find(m=>m.id===params.memberId);
+      const assignment=this.run.steps.find(s=>s.id===outcome.stepId)?.modelAssignment;
+      if (member && assignment) member.assignment=assignment;
+    }
     if (outcome.remote?.resultHead && !outcome.remote.ambiguous) this.remoteCommits.set(params.cwd.name, outcome.remote.resultHead);
     return outcome;
 
@@ -2364,7 +2423,7 @@ export class TeamContext {
     if (usageLimit) this.manager.recordLimit(params.agent, result.resetsAt, this.run.loop.remoteWorker?.workerId);
     if (kind === "auth") {
       this.manager.recordQuota(params.agent, "signed_out", {}, this.run.loop.remoteWorker?.workerId);
-      result = { ...result, error: this.run.loop.remoteWorker ? `${getAdapter(params.agent).displayName} isn't signed in on the selected worker. Sign in in that machine's terminal, then start a fresh invocation. (${firstLine(result.error)})` : `${getAdapter(params.agent).displayName} isn't signed in. Sign in to it in a terminal, then resume the run. (${firstLine(result.error)})` };
+      if (params.agent !== "agy" || !this.run.permissions) result = { ...result, error: this.run.loop.remoteWorker ? `${getAdapter(params.agent).displayName} isn't signed in on the selected worker. Sign in in that machine's terminal, then start a fresh invocation. (${firstLine(result.error)})` : `${getAdapter(params.agent).displayName} isn't signed in. Sign in to it in a terminal, then resume the run. (${firstLine(result.error)})` };
     }
 
     step.endedAt = Date.now();
@@ -2497,10 +2556,21 @@ export class TeamContext {
     for (let retries = 0; ; ) {
       await this.manager.assertExecutionAllowed(this.run.repo, this.run, "agent invocation");
       await assertWorktree(this.run.repo, params.cwd);
-      if (this.run.projectTeam) { const reason = providerEligibility(params.agent, { trust: params.trust ?? this.run.trust, unattended: true, projectTeam: true }); if (reason) throw new Error(reason); }
+      const effective = this.run.permissions ? resolveRunPermissions({ policy: this.run.permissions, provider: params.agent, mode: params.mode, currentTrust: this.run.trust, turnTrust: params.trust, currentTools: this.run.approvals.tools === true, tools: params.tools, container: !!this.run.loop.agentContainer, remote: !!remote, unattended: !!this.run.trigger || !!this.run.lockdown }) : undefined;
+      const turnTrust = effective?.trust ?? (params.trust ?? this.run.trust);
+      step.permissions = effective;
+      if (params.modelAssignment) {
+        if (params.modelAssignment.provider !== params.agent) throw new Error("Recorded model assignment provider mismatch");
+        const current = await this.capabilityCatalog(params.agent);
+        if (current.environment !== params.modelAssignment.environment) throw new Error("Model execution environment changed; request a new assignment");
+        const problem = assignmentProblem(current, params.modelAssignment.model, params.modelAssignment.effort) ?? workerConstraintProblem(current, params.modelAssignment, this.run.roles[params.role], this.run.roleSettings[params.role]?.[params.agent]);
+        if (problem) throw new Error(problem);
+        step.modelAssignment = params.modelAssignment;
+      }
+      if (this.run.projectTeam) { const reason = providerEligibility(params.agent, { trust: turnTrust, unattended: true, projectTeam: true }); if (reason) throw new Error(reason); }
       assertExtensionBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
       assertAcpBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
-      if (params.agent.startsWith("acp:") && (this.run.loop.agentContainer || this.run.loop.remoteWorker || (params.trust ?? this.run.trust) !== "full")) throw new Error("ACP connections require Full access on the current host; SSH workers and containers are unavailable");
+      if (params.agent.startsWith("acp:") && (this.run.loop.agentContainer || this.run.loop.remoteWorker || (turnTrust) !== "full")) throw new Error("ACP connections require Full access on the current host; SSH workers and containers are unavailable");
       if (params.agent.startsWith("plugin:") && (this.run.loop.agentContainer || this.run.loop.remoteWorker || this.run.approvals.tools)) throw new Error("Extension providers support local dispatch only; container, SSH and native approval profiles are unavailable");
       this.checkCancelled();
       const assembledPrompt = this.notesFor(step.id) + prompt;
@@ -2511,7 +2581,7 @@ export class TeamContext {
       }
       this.manager.emit(this.run, { type: "step", step: { ...step } });
       if (step.contextInput.exceeded) this.log(`${step.title}: explicit invocation context exceeds its warning budget (${step.contextInput.bytes.toLocaleString()} bytes, approximately ${step.contextInput.approximateTokens.toLocaleString()} tokens). Hidden provider history and later file reads are excluded.`, "warn");
-      const remoteSignature = remote ? createHash("sha256").update(JSON.stringify({ agent: params.agent, mode: params.mode, prompt: assembledPrompt, schema: params.schema, settings: params.settings, roleSettings: this.run.roleSettings[params.role], settingsByAgent: this.run.agentSettings[params.agent], trust: params.trust ?? this.run.trust })).digest("hex") : undefined;
+      const remoteSignature = remote ? createHash("sha256").update(JSON.stringify({ agent: params.agent, mode: params.mode, prompt: assembledPrompt, schema: params.schema, settings: params.settings, roleSettings: this.run.roleSettings[params.role], settingsByAgent: this.run.agentSettings[params.agent], trust: turnTrust })).digest("hex") : undefined;
       const launch = remote ? await this.remember("remote-launch", params.remoteIdentity!, async () => ({ id: randomBytes(16).toString("hex"), stepId: step.id, threadId: params.memberId ?? this.sideTurn ?? params.role, baseCommit: await resolveCommit(await this.gitAt(params.cwd)), signature: remoteSignature! })) : undefined;
       if (launch && launch.signature !== remoteSignature) throw new Error("The scoped remote invocation inputs changed. Inspect its prior receipt, then intentionally start a new run with the changed instructions.");
       const recoveringRemote = !!remote && !!launch && !!await this.manager.remoteWorkers?.hasRequest(remote.workerId, launch.id);
@@ -2556,6 +2626,7 @@ export class TeamContext {
       let result: RunResult;
       try {
         const agentOptions: import("./adapters/types.js").RunOptions = {
+          permissions: effective,
           prompt: assembledPrompt,
           cwd: params.cwd.path,
           mode: params.mode,
@@ -2566,13 +2637,13 @@ export class TeamContext {
           questionProtocol: params.memberId ? "structured" : undefined,
           teamTools: grant?.connection,
           agentContainer: this.run.loop.agentContainer,
-          interactiveApprovals: !remote && !this.run.loop.agentContainer && (params.tools ?? this.run.approvals.tools) === true && !this.run.trigger && !this.run.lockdown,
+          interactiveApprovals: effective?.toolApprovals ?? (!remote && !this.run.loop.agentContainer && (params.tools ?? this.run.approvals.tools) === true && !this.run.trigger && !this.run.lockdown),
           onApproval: params.agent.startsWith("plugin:") ? undefined : async (request: import("./adapters/types.js").AgentApprovalRequest, signal: AbortSignal) => {
             this.pauseClock();
             try { return await approvals.request(this.run.id, step.id, request, signal); }
             finally { this.resumeClock(); }
           },
-          trust: params.trust ?? this.run.trust,
+          trust: turnTrust,
           signal: this.signal,
           timeoutMs: STEP_TIMEOUT_MS,
           idleTimeoutMs: STEP_IDLE_MS,
@@ -2600,6 +2671,7 @@ export class TeamContext {
           result = await getAdapter(params.agent).run(agentOptions, onEvent);
         }
       } finally { activeTurn = false; grant?.revoke(); approvals.cancelStep(this.run.id, step.id); }
+      if (params.modelAssignment && !recoveringRemote) await modelCatalogStore.observe(params.modelAssignment, { runId:this.run.id, at:Date.now(), ok:result.ok, effort:params.modelAssignment.effort, durationMs:Math.max(0,Date.now()-step.startedAt), ...(result.errorKind ? {errorKind:result.errorKind} : {}) }).catch(()=>{});
       if (remote || result.ok || this.signal.aborted) return result;
       const kind = failureKind(result, !!resume);
       if (kind === "session_not_found" && resume && !freshSession) {
@@ -2781,6 +2853,9 @@ function knowledgePrompt(run: Run): string {
 // ---------------------------------------------------------------------------
 
 export interface StartRunInput {
+  teamTemplate?: TemplateSelection;
+  permissionRequirements?: PermissionRequirement[];
+  antigravityExecution?: AntigravityExecution;
   intent?: import("./experience.js").TaskIntent;
   journeyId?: string;
   projectTeam?: ProjectTeamRun;
@@ -3198,8 +3273,9 @@ export class RunManager {
   }
 
   /** Running, or claimed by a resume that's about to start it. */
+  private readonly followUpClaims = new Set<string>();
   private busyRun(run: Run): boolean {
-    return run.status === "running" || this.starting.has(run.id) || this.mergeValidating.has(run.id);
+    return this.followUpClaims.has(run.id) || run.status === "running" || this.starting.has(run.id) || this.mergeValidating.has(run.id);
   }
 
   isRepositoryIdle(repo: string): boolean {
@@ -3410,7 +3486,9 @@ export class RunManager {
   ) {
     const run = this.require(id);
     this.managedContinuation(run);
+    if (this.followUpClaims.has(id)) throw new RunConflictError("Another follow-up is being prepared for this run");
     const release = this.holdColdMutation(run);
+    this.followUpClaims.add(id);
     try {
       await this.assertExecutionAllowed(run.repo, run, "follow-up dispatch");
       const kind = input.kind ?? "comments";
@@ -3441,6 +3519,16 @@ export class RunManager {
       queue = waits();
       if (!queue && (run.status !== "done" || this.starting.has(id))) throw new Error("Follow-ups can be sent once the run has finished");
       const message = (input.message?.trim() ?? "") + (files.length ? `\n\nAttached, in this worktree (not committed): ${files.map((f) => `\`${f}\``).join(", ")}` : "");
+      if (run.permissions) {
+        const changed = input.trust !== undefined && input.trust !== run.trust || input.tools !== undefined && input.tools !== !!run.approvals.tools;
+        if (changed && run.status === "running") throw new Error("Wait for active work to finish before changing the run's permissions");
+        const next = { ...run.permissions, revision: run.permissions.revision + (changed ? 1 : 0), trust: input.trust ?? run.trust, toolApprovals: input.tools ?? !!run.approvals.tools };
+        resolveRunPermissions({ policy: next, provider: input.agent, mode: kind === "side" && input.side?.mode === "ask" ? "read" : "write", currentTrust: next.trust, currentTools: next.toolApprovals, remote: !!run.loop.remoteWorker, container: !!run.loop.agentContainer, unattended: !!run.trigger || !!run.lockdown });
+        if (changed) {
+          await journalEntry(run.id, `run-permissions:${next.revision}`, next);
+          run.permissions = next; run.trust = next.trust; run.approvals.tools = next.toolApprovals;
+        }
+      }
       run.followUps.push({
         id: `f${run.followUps.length + 1}`, budget,
         kind,
@@ -3467,8 +3555,9 @@ export class RunManager {
         this.emitRun(run);
         return run;
       }
+      this.followUpClaims.delete(id);
       return await this.resume(id);
-    } finally { release(); }
+    } finally { this.followUpClaims.delete(id); release(); }
   }
 
   private readonly providerHandoffs = new Map<string, { signature: string; promise: Promise<Run> }>();
@@ -3886,11 +3975,11 @@ export class RunManager {
   private readonly remoteQuota = new Map<string, RunManager["quota"]>();
   private readonly remoteProbes = new Map<string, { at: number; value: Awaited<ReturnType<RemoteWorkers["probe"]>> }>();
   quotaForWorker(workerId?: string): RunManager["quota"] { if (!workerId) return this.quota; let quota = this.remoteQuota.get(workerId); if (!quota) { quota = {}; this.remoteQuota.set(workerId, quota); } return quota; }
-  async remoteInventory(selection: NonNullable<LoopSettings["remoteWorker"]>) {
+  async remoteInventory(selection: NonNullable<LoopSettings["remoteWorker"]>, discoverModels = false) {
     if (!this.remoteWorkers || !selection || typeof selection.workerId !== "string" || typeof selection.repoMapping !== "string" || Object.keys(selection).some((key) => !["workerId", "repoMapping"].includes(key)) || !this.remoteWorkers.list().some((worker) => worker.id === selection.workerId && worker.repoMappings.includes(selection.repoMapping))) throw new Error("Choose an explicitly registered remote worker and repository mapping");
-    const key = `${selection.workerId}/${selection.repoMapping}`, cached = this.remoteProbes.get(key);
+    const key = `${selection.workerId}/${selection.repoMapping}/${discoverModels}`, cached = this.remoteProbes.get(key);
     if (cached && Date.now() - cached.at < 30_000) return cached.value.capabilities;
-    const value = await this.remoteWorkers.probe(selection.workerId, { repoMapping: selection.repoMapping }); if (!value.capabilities.repoMappings.includes(selection.repoMapping)) throw new Error("Repository mapping is unavailable on the remote worker"); this.remoteProbes.set(key, { at: Date.now(), value }); return value.capabilities;
+    const value = await this.remoteWorkers.probe(selection.workerId, { repoMapping: selection.repoMapping, ...(discoverModels ? { discoverModels: true } : {}) }); if (!value.capabilities.repoMappings.includes(selection.repoMapping)) throw new Error("Repository mapping is unavailable on the remote worker"); this.remoteProbes.set(key, { at: Date.now(), value }); return value.capabilities;
   }
   async inspectRemoteStep(id: string, stepId: string, options: { cancel?: boolean } = {}) {
     const run = this.require(id), step = run.steps.find((item) => item.id === stepId); if (!step?.remote || !this.remoteWorkers) throw new Error("This step has no owned remote worker request");
@@ -4002,7 +4091,8 @@ export class RunManager {
     const plan = validateTeamPlanEdit(input, team, teamPlanPolicy(team, run));
     const write = (async () => {
       const key = `team-plan-edit:${awaiting.teamPlanRound}`;
-      const journal = await loadJournal(id, { strict: true });
+      if (run.permissions) run.permissions = validateRunPermissions(run.permissions);
+    const journal = await loadJournal(id, { strict: true });
       const previous = journal.get(key) as { editCount?: number } | undefined;
       const revision = team.revision + 1;
       await journalEntry(id, key, { version: 1, revision, editCount: (previous?.editCount ?? 0) + 1, plan: editableTeamPlan({ ...team, ...plan }), at: Date.now() });
@@ -4022,6 +4112,7 @@ export class RunManager {
 
   async waitForTeamAnswer(id: string, requestId: string, signal: AbortSignal): Promise<string> {
     const run = this.require(id);
+    if (run.permissions) run.permissions = validateRunPermissions(run.permissions);
     const journal = await loadJournal(id, { strict: true });
     const saved = journal.get(`team-user-answer:${requestId}`) as Note | undefined;
     const existing = saved ?? run.notes.find((n) => n.requestId === requestId);
@@ -4054,7 +4145,8 @@ export class RunManager {
       return result;
     }
     const write = (async () => {
-      const journal = await loadJournal(id, { strict: true });
+      if (run.permissions) run.permissions = validateRunPermissions(run.permissions);
+    const journal = await loadJournal(id, { strict: true });
       const saved = journal.get(`team-user-answer:${requestId}`) as Note | undefined;
       if (saved) {
         if (saved.text !== text.trim()) throw new Error("This question already has a different answer");
@@ -4242,9 +4334,11 @@ export class RunManager {
       if (await resolveCommit(parent.repo, `refs/heads/${input.teamRerun.integrationBranch}`) !== input.teamRerun.baseCommit) throw new TeamRerunError("The source integration branch moved before the child could start", 409);
     }
     if (input.pattern.id === "auto-team" && !autoTeamEnabled()) throw new Error("New Auto team runs are disabled; saved teams remain viewable and resumable");
+    const parent = input.parentRunId ? this.get(input.parentRunId) : undefined;
+    if (input.parentRunId && !parent) throw new RunConflictError("The original run is no longer available; its source restrictions cannot be retained");
     // .codeflow/config.json supplies defaults; anything the request sets explicitly wins.
     const { config } = await readRepoConfig(await repoRoot(input.repo).catch(() => input.repo));
-    const given = input.loop ?? {};
+    const given = inheritRunEnvironment(input.loop ?? {}, parent);
     const loop: LoopSettings = {
       ...DEFAULT_LOOP,
       ...Object.fromEntries(
@@ -4286,8 +4380,6 @@ export class RunManager {
     if (input.requireProjectRepo && (!this.projects?.available || !input.project || !this.projects.get(input.project)?.repos.includes(repo))) {
       throw new Error("The repository is no longer an explicit member of the requested project");
     }
-    const parent = input.parentRunId ? this.get(input.parentRunId) : undefined;
-    if (input.parentRunId && !parent) throw new RunConflictError("The original run is no longer available; its source restrictions cannot be retained");
     // A PR's own branch is the base; its changes are reviewed against the PR's target.
     const fromGitHub = input.source ? await loadSource(repo, input.source) : undefined;
     // Refreshing options on the same source (e.g. CI logs) must not move a pinned retry
@@ -4312,7 +4404,9 @@ export class RunManager {
     // its code (a fork's PR) runs when the check does. Lock the run down: Safe mode, no .env
     // files copied in, and checks in a container without network — or on this machine only if
     // you said so.
-    let trust: Trust = input.trust ?? config.trust ?? "standard";
+    let trust: Trust = parent?.permissions
+      ? narrowerTrust(narrowerTrust(validateRunPermissions(parent.permissions).trust, parent.trust), input.trust ?? parent.trust)
+      : input.trust ?? config.trust ?? "standard";
     let lockdown: string | undefined;
     let lockdownOnHost: boolean | undefined;
     if (externalSource || source?.trusted === false || parent?.lockdown) {
@@ -4339,6 +4433,14 @@ export class RunManager {
     const fullCapped = trust === "full" && !!input.trigger;
     if (fullCapped) trust = "trusted";
     if (acpConnections.length && (trust !== "full" || loop.agentContainer || loop.remoteWorker)) throw new Error("ACP connections require Full access on the current host. SSH workers, containers, lockdown and automated triggers are unavailable.");
+    const inheritedTools = parent?.permissions ? parent.permissions.toolApprovals && !!parent.approvals.tools && input.approvals?.tools !== false : input.approvals?.tools === true;
+    const requiredPermissions = [...new Set([...(parent?.permissions?.required ?? []), ...(input.permissionRequirements ?? [])])];
+    const runPermissions = createRunPermissions(trust, !input.trigger && !lockdown && inheritedTools, input.pattern.id === "solo", requiredPermissions, antigravityExecution(input.antigravityExecution, parent?.permissions));
+    if (runPermissions.antigravityExecution === "native") resolveRunPermissions({ policy: runPermissions, provider: "agy", mode: "write", currentTrust: trust, currentTools: inheritedTools, remote: !!loop.remoteWorker, container: !!loop.agentContainer, unattended: !!input.trigger || !!lockdown });
+    if (runPermissions) {
+      const initialProviders = input.pattern.id === "auto-team" ? input.roles.coordinator ?? [] : Object.values(input.roles).flat();
+      for (const provider of initialProviders) resolveRunPermissions({ policy: runPermissions, provider, mode: input.pattern.id === "auto-team" ? "read" : "write", currentTrust: trust, currentTools: runPermissions.toolApprovals, remote: !!loop.remoteWorker, container: !!loop.agentContainer, unattended: !!input.trigger || !!lockdown });
+    }
     // An untrusted PR's branch can rewrite AGENTS.md too: read conventions from where it started.
     const conventions = parent?.lockdown ? parent.conventions ?? "" : await readConventions(repo, lockdown && reviewBase ? reviewBase : baseRef).catch(() => "");
     const learn = config.learn !== false;
@@ -4371,6 +4473,8 @@ export class RunManager {
       acpConnections,
       projectTeam: input.projectTeam ? structuredClone(input.projectTeam) : undefined,
       pattern: input.pattern.id,
+      templateCatalog: input.pattern.id === "auto-team" ? (await teamTemplateStore.list(placed?.project.id)).templates.filter(t => t.autoEnabled && !t.workflow && JSON.stringify(t).length <= 16000).sort((a, b) => a.id.localeCompare(b.id)).slice(0, 6).map(t => structuredClone(t)) : undefined,
+      teamTemplate: input.teamTemplate ? { template: validateTeamTemplate(input.teamTemplate.template), inputs: { ...input.teamTemplate.inputs } } : undefined,
       task: input.task,
       intent: input.intent,
       journeyId: input.journeyId,
@@ -4386,6 +4490,8 @@ export class RunManager {
       agentSettings: { ...(config.models ?? {}), ...(input.agentSettings ?? {}) },
       roleSettings: input.roleSettings ?? {},
       trust,
+      permissions: runPermissions,
+      ...(input.pattern.id === "auto-team" ? { modelRouting: { version: 1 as const } } : {}),
       lockdown,
       lockdownOnHost,
       conventions: conventions || undefined,
@@ -4402,7 +4508,7 @@ export class RunManager {
       followUps: [],
       notes: [],
       // Nobody is watching an automation: it doesn't pause; you triage the result instead.
-      approvals: input.trigger ? {} : input.approvals ?? (input.pattern.id === "auto-team" ? { plan: true } : {}),
+      approvals: input.trigger ? {} : { ...(input.approvals ?? (input.pattern.id === "auto-team" ? { plan: true } : {})), ...(runPermissions ? { tools: runPermissions.toolApprovals } : {}) },
       trigger: input.trigger,
       parentRunId: input.parentRunId,
       teamRerun: input.teamRerun ? structuredClone(input.teamRerun) : undefined,
@@ -4491,10 +4597,17 @@ export class RunManager {
     const id = run.id;
     await waitForRunWrites(id);
     const recoveryStarted = performance.now();
-    const journal = await loadJournal(id, { strict: run.pattern === "auto-team" });
+    if (run.permissions) run.permissions = validateRunPermissions(run.permissions);
+    const journal = await loadJournal(id, { strict: run.pattern === "auto-team" || !!run.permissions });
+    for (const [key, value] of journal) {
+      if (!key.startsWith("run-permissions:")) continue;
+      const policy = validateRunPermissions(value);
+      if (key !== `run-permissions:${policy.revision}`) throw new Error("Invalid recorded run permission revision");
+      if (!run.permissions || policy.revision > run.permissions.revision) { run.permissions = policy; run.trust = policy.trust; run.approvals.tools = policy.toolApprovals; }
+    }
     if (run.pattern === "auto-team") run.recovery = { bytes: await stat(join(RUNS_DIR, `${id}.journal.jsonl`)).then((info) => info.size, () => 0), records: journal.size, durationMs: performance.now() - recoveryStarted, kind: "journal-load" };
     // Stop pressed while the log and journal were read: Stop already said yes, so the run doesn't
-    // start, and stays as it was (nothing below awaits before the run is started).
+    // start, and stays as it was. The native-login probe below repeats this check after awaiting.
     if (this.stoppedWhileStarting.has(id)) {
       return run;
     }
@@ -4504,6 +4617,17 @@ export class RunManager {
         const note = value as Note;
         if (note && typeof note.id === "string" && !run.notes.some((n) => n.id === note.id)) run.notes.push(note);
       }
+    }
+    // Explicit recovery may follow a repaired or unlocked native login. A cached catalog or
+    // version check is not evidence of authentication: require fresh discovery in the recorded execution mode
+    // before clearing the cooldown. Recovery never changes the run’s permission mode.
+    if (run.permissions && !run.loop.remoteWorker && !run.loop.agentContainer && Object.values(run.roles).some(providers => providers.includes("agy")) && this.quota.agy?.status === "signed_out") {
+      resolveRunPermissions({ policy: run.permissions, provider: "agy", mode: "write", currentTrust: run.trust, currentTools: !!run.approvals.tools });
+      const startedAt = Date.now();
+      const catalog = await modelCatalogStore.get("agy", { context: run.permissions.antigravityExecution === "native" ? {} : { isolatedAgy: true }, force: true });
+      if (catalog.state !== "current" || catalog.issue || catalog.discoveredAt < startedAt) throw new Error("Antigravity's existing native login could not be reverified in the recorded execution mode. Check or unlock it in the normal Antigravity session, then resume. Cached models do not establish login access.");
+      if (this.stoppedWhileStarting.has(id)) return run;
+      this.recordQuota("agy", "allowed", {});
     }
     requeueNotes(run);
     // The pattern already finished: only the follow-ups run. Replaying the whole pattern would

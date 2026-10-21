@@ -133,7 +133,7 @@ test("permission modes and per-role models reach each CLI", async () => {
     });
     const calls = recorded(dir);
     const claudeCalls = calls.filter((c) => c.vendor === "claude");
-    const planner = claudeCalls.find((c) => c.args.includes("Edit,Write,NotebookEdit") && c.prompt.includes("planner"))!;
+    const planner = claudeCalls.find((c) => c.args.some(arg => arg.startsWith("Edit,Write,NotebookEdit")) && c.prompt.includes("planner"))!;
     const reviewer = claudeCalls.find((c) => c.prompt.includes("You are the reviewer"))!;
     assert.match(planner.args.join(" "), /--model opus/);
     assert.match(reviewer.args.join(" "), /--model sonnet --effort low/, "the reviewer role overrides the provider default");
@@ -167,9 +167,8 @@ test("permission modes and per-role models reach each CLI", async () => {
 test("full access: every tool and no sandbox in write steps; read steps stay read-only", async () => {
   // Each agent builds once (write) and plans or reviews once (read).
   const teams = [
-    { planner: ["codex"], builder: ["claude"], reviewer: ["agy"] },
-    { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] },
-    { planner: ["codex"], builder: ["agy"], reviewer: ["claude"] },
+    { planner: ["codex"], builder: ["claude"], reviewer: ["codex"] },
+    { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] },
   ];
   const calls: (ReturnType<typeof recorded>[number] & { thread?: { sandbox: string }; token?: string | null })[] = [];
   // No sandbox doesn't mean code-flow's own secrets: the agents still get the filtered environment.
@@ -196,10 +195,8 @@ test("full access: every tool and no sandbox in write steps; read steps stay rea
   assert.match(claudeRead.args.join(" "), /--disallowedTools Edit,Write,NotebookEdit/);
   assert.equal(calls.find((c) => c.vendor === "codex" && write(c))!.thread?.sandbox, "danger-full-access");
   assert.equal(calls.find((c) => c.vendor === "codex" && !write(c))!.thread?.sandbox, "read-only");
-  assert.ok(!calls.find((c) => c.vendor === "agy" && write(c))!.args.includes("--sandbox"));
-  assert.ok(calls.find((c) => c.vendor === "agy" && !write(c))!.args.includes("--sandbox"), "a read step keeps agy's sandbox");
   const started = calls.filter((c) => c.token !== undefined);
-  assert.ok(started.some((c) => c.vendor === "agy" && write(c)));
+  assert.ok(started.some((c) => c.vendor === "claude" && write(c)));
   assert.deepEqual(started.filter((c) => c.token !== null).map((c) => c.vendor), [], "no agent sees CODEFLOW_TOKEN");
 });
 
@@ -254,20 +251,22 @@ test("doctor: installed, version, signed in — and how to fix it", async () => 
   }
 });
 
-test("run app: a worktree's dev server on a free port, then stopped", async () => {
+test("run app: a worktree's dev server on a free port, then stopped", async (t) => {
   const run = await runPattern(pipelineRoles, { loop: { check: "" } });
   const key = `${run.id}/build`;
   const server = await manager.devServers.start(
     key,
     run.worktrees[0]!.path,
-    `node -e "require('http').createServer((q, r) => r.end('hello from ' + process.cwd().split('/').pop())).listen(process.env.PORT)"`,
-    5173,
+    `node -e "require('http').createServer((q, r) => r.end('hello from ' + process.cwd().split('/').pop())).listen(process.env.PORT, '127.0.0.1')"`,
+    undefined,
   );
-  // 5173 is preferred, but another port when it (and the ones after it) are busy.
+  t.after(() => manager.devServers.stop(key));
+  const url = server.url.replace("localhost", "127.0.0.1");
+  // An ephemeral port keeps the fixture separate from running development servers.
   assert.ok(server.port > 0 && server.port < 65_536);
   let body = "";
   for (let i = 0; i < 50 && !body; i++) {
-    body = await fetch(server.url).then((r) => r.text(), () => "");
+    body = await fetch(url, { signal: AbortSignal.timeout(1000) }).then((r) => r.text(), () => "");
     if (!body) await new Promise((r) => setTimeout(r, 100));
   }
   assert.equal(body, "hello from build");
@@ -275,7 +274,7 @@ test("run app: a worktree's dev server on a free port, then stopped", async () =
   // Stopping takes as long as the process group takes to exit: poll, with a generous deadline.
   let state = "up";
   for (const deadline = Date.now() + 10_000; state === "up" && Date.now() < deadline; ) {
-    state = await fetch(server.url).then(() => "up", () => "down");
+    state = await fetch(url, { signal: AbortSignal.timeout(1000) }).then(() => "up", () => "down");
     if (state === "up") await new Promise((r) => setTimeout(r, 100));
   }
   assert.equal(state, "down");

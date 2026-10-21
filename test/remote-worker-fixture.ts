@@ -18,9 +18,10 @@ export async function remoteWorkerFixture(root: string) {
   const audit = join(folder, "audit.jsonl");
   const agent = join(bin, "claude"); writeFileSync(agent, `#!${process.execPath}
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+if (process.argv.includes('--help')) { console.log('--settings --no-chrome --disallowedTools --allowedTools --mcp-config --strict-mcp-config --json-schema --resume'); process.exit(0); }
 if (process.argv.includes('--version')) { console.log('2.1.300'); process.exit(0); }
 let prompt=''; for await (const data of process.stdin) prompt+=data;
-appendFileSync(${JSON.stringify(audit)},JSON.stringify({pid:process.pid,ppid:process.ppid,cwd:process.cwd(),prompt,hostSecret:process.env.HOST_PRIVATE_SECRET,codeflowToken:process.env.CODEFLOW_TOKEN})+'\\n');
+appendFileSync(${JSON.stringify(audit)},JSON.stringify({pid:process.pid,ppid:process.ppid,cwd:process.cwd(),args:process.argv.slice(2),prompt,hostSecret:process.env.HOST_PRIVATE_SECRET,codeflowToken:process.env.CODEFLOW_TOKEN})+'\\n');
 console.log(JSON.stringify({type:'system',subtype:'init',session_id:'remote-session-never-returned'}));
 if (prompt.includes('SLOW')) { console.log(JSON.stringify({type:'assistant',message:{content:[{type:'text',text:'worker started'}]}})); await new Promise(r=>setTimeout(r,3000)); }
 if (prompt.includes('WRITE')) writeFileSync('result.txt',readFileSync('local.txt','utf8')+readFileSync(existsSync('.codeflow-context/reference.txt')?'.codeflow-context/reference.txt':'.codeflow-context/attachments/reference.txt','utf8'));

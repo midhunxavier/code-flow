@@ -1,3 +1,4 @@
+import { resolveRunPermissions } from "../run-permissions.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
@@ -48,9 +49,9 @@ export class ProvisionedWorker {
     try { return await invoke(["run", "--rm", "--pull=never", "--name", name, "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--entrypoint", getAdapter(id).binary, container.image, "--version"], 10_000); }
     finally { await invoke(["rm", "-f", name], 5_000); }
   }
-  async capabilities(containerProfile?: string): Promise<WorkerCapabilities> {
+  async capabilities(containerProfile?: string, discoverModels = false): Promise<WorkerCapabilities> {
     if (containerProfile !== undefined && (!/^[a-z][a-z0-9-]{0,63}$/.test(containerProfile) || !Object.hasOwn(this.config.containers, containerProfile))) throw new RemoteWorkerError("Choose an explicit worker-local container profile");
-    return { protocol: 1, providers: await Promise.all(this.config.providers.map(async (id) => ({ id, available: await this.providerAvailable(id, containerProfile) }))), repoMappings: Object.keys(this.config.repos), containerProfiles: Object.keys(this.config.containers), resumeSessions: false, liveTeamTools: false, interactiveApprovals: false, stagedContext: true, maximumBundleBytes: 64 * 1024 * 1024, maximumContextBytes: 16 * 1024 * 1024 };
+    return { protocol: 1, providers: await Promise.all(this.config.providers.map(async (id) => ({ id, available: await this.providerAvailable(id, containerProfile), modelCatalog: discoverModels ? await getAdapter(id).discoverModels?.({cwd:this.config.root, agentContainer:containerProfile?this.config.containers[containerProfile]:undefined}).catch(()=>undefined) : undefined }))), repoMappings: Object.keys(this.config.repos), containerProfiles: Object.keys(this.config.containers), resumeSessions: false, liveTeamTools: false, interactiveApprovals: false, stagedContext: true, maximumBundleBytes: 64 * 1024 * 1024, maximumContextBytes: 16 * 1024 * 1024 };
   }
   repo(id: string) { const path = Object.hasOwn(this.config.repos, id) ? this.config.repos[id] : undefined; if (!path) throw new RemoteWorkerError("Choose an explicitly provisioned worker repository mapping"); return path; }
   private directory(id: string) { if (!REQUEST_ID.test(id)) throw new RemoteWorkerError("Invalid worker request identity"); return join(this.config.root, "requests", id); }
@@ -134,7 +135,8 @@ export class ProvisionedWorker {
       const integrity = await verificationIntegrity(checkout, controller.signal);
       saved.state = "running"; saved.updatedAt = Date.now(); await this.save(saved); heartbeat(this.publicReceipt(saved));
       if (controller.signal.aborted || await lstat(join(folder, "cancel")).then(() => true, () => false)) { controller.abort(); throw new RemoteWorkerError("Remote execution was cancelled before invoking its provider"); }
-      result = await getAdapter(request.agent).run({ cwd: checkout, prompt: request.prompt, mode: request.mode, model: request.model, effort: request.effort, trust: request.trust, timeoutMs: request.timeoutMs, idleTimeoutMs: request.idleTimeoutMs, signal: controller.signal, jsonSchema: request.jsonSchema, questionProtocol: request.questionProtocol, ...(request.containerProfile ? { agentContainer: this.config.containers[request.containerProfile] } : {}) }, (event) => {
+      const permissions = request.managedPermissions ? resolveRunPermissions({ policy: request.managedPermissions, provider: request.agent, mode: request.mode, currentTrust: request.trust, currentTools: request.managedPermissions.toolApprovals, unattended: true, container: !!request.containerProfile }) : undefined;
+      result = await getAdapter(request.agent).run({ permissions, cwd: checkout, prompt: request.prompt, mode: request.mode, model: request.model, effort: request.effort, trust: permissions?.trust ?? request.trust, interactiveApprovals: permissions?.toolApprovals ?? false, timeoutMs: request.timeoutMs, idleTimeoutMs: request.idleTimeoutMs, signal: controller.signal, jsonSchema: request.jsonSchema, questionProtocol: request.questionProtocol, ...(request.containerProfile ? { agentContainer: this.config.containers[request.containerProfile] } : {}) }, (event) => {
         if (event.kind === "session") return; // Worker sessions cannot be resumed across request-scoped worktrees.
         const data = redactExport(event), bytes = Buffer.byteLength(JSON.stringify(data)); eventsBytes += bytes;
         if (bytes > 256 * 1024 || eventsBytes > MAX_EVENTS_BYTES) { controller.abort(); return; } emit(data);

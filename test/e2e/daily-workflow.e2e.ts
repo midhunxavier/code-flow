@@ -50,6 +50,8 @@ before(async () => {
     ["retry-container", { agentContainer: { image: "prepared-agent:v1", authVolume: "original-login", network: false, memoryMb: 512, cpus: 2 } }],
     ["retry-untrusted", {}],
     ["retry-pr", {}],
+    ["retry-native", {}],
+    ["retry-required", {}],
   ] as const) {
     const timestamp = Date.now() - 1000;
     const run = { id, repo, pattern: "solo", task: `Restore ${id}`, baseRef: git("rev-parse", "HEAD"), baseLabel: "main", branchPrefix: `codeflow/${id}`, worktreeDir: join(directory, id), roles: { agent: ["claude"] }, options: {}, context: { paths: [], attachments: [] }, agentSettings: {}, roleSettings: {}, trust: "safe", loop: { ...loop, check: "", setup: "", maxSteps: 4, maxMinutes: 1, checkTimeoutMin: 1 }, usage: { agentSteps: 0, checks: 0 }, status: "done", createdAt: timestamp, endedAt: timestamp + 100, seen: true, worktrees: [], steps: [], notes: [], approvals: {}, followUps: [], merges: [], prs: {}, watches: {}, artifacts: [] };
@@ -57,7 +59,7 @@ before(async () => {
       lockdown: "Imported issue is untrusted external context", lockdownOnHost: true,
       externalSource: { id: "original-import", integration: "fixture", provider: "linear", kind: "issue", key: "CF-1", title: "Imported issue", body: "Keep the imported request attributable.", importedAt: timestamp, expiresAt: timestamp + 3600000, trusted: false, untrusted: true },
     } : id === "retry-pr" ? { source: { kind: "pr", number: 99, title: "Retry source options", url: "https://github.com/o/r/pull/99", body: "Source context", headRefName: "retry-source", baseRefName: "main", trusted: true, author: "owner", association: "OWNER" } } : {};
-    await writeFile(join(history, `${id}.jsonl`), JSON.stringify({ seq: 1, ts: timestamp, runId: id, type: "run", run: { ...run, ...source } }) + "\n");
+    await writeFile(join(history, `${id}.jsonl`), JSON.stringify({ seq: 1, ts: timestamp, runId: id, type: "run", run: { ...run, ...source, ...(["retry-native", "retry-required"].includes(id) ? { trust: "standard", permissions: { version: 1, revision: 1, trust: "standard", toolApprovals: false, delegation: "none", required: id === "retry-required" ? ["no-external-tools"] : [], ...(id === "retry-native" ? { antigravityExecution: "native" } : {}) } } : {}) } }) + "\n");
   }
   const port = await new Promise<number>(resolve => {
     const probe = createServer().listen(0, "127.0.0.1", () => {
@@ -416,4 +418,19 @@ test("editing a retry waits for project drafts to initialize", { timeout: 45_000
     await probe.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
     assert.equal(await probe.getByRole("textbox", { name: "Task", exact: true }).inputValue(), "Restore retry-container");
   } finally { release(); await probe.close(); }
+});
+
+
+test("editable retries restore the recorded Antigravity exception and mandatory boundaries", { timeout: 30000 }, async () => {
+  page.setDefaultTimeout(5000);
+  for (const id of ["retry-native", "retry-required"]) {
+    await page.goto(base + `/#/run/${id}`);
+    await page.getByRole("button", { name: "More run actions" }).click();
+    await page.getByRole("menuitem", { name: "Edit & run again" }).click();
+    await page.getByLabel("Task", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Edit run options", exact: true }).click();
+    if (!await page.getByRole("checkbox", { name: "Use unrestricted Antigravity with my existing login" }).isVisible()) await page.locator(".advanced-controls > summary").click();
+    assert.equal(await page.getByRole("checkbox", { name: "Use unrestricted Antigravity with my existing login" }).isChecked(), id === "retry-native");
+    assert.equal(await page.getByRole("checkbox", { name: "Disable external browser and MCP tools" }).isChecked(), id === "retry-required");
+  }
 });
