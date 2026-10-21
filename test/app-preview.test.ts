@@ -21,6 +21,8 @@ test("external frame restrictions distinguish blocked embedding from allowed fra
   assert.match(embeddingBlocked({ "content-security-policy": "frame-ancestors *, frame-ancestors 'self'" }, page, parent)!, /frame-ancestors/, "combined CSP headers enforce every policy");
   assert.equal(embeddingBlocked({ "content-security-policy": "frame-ancestors *; frame-ancestors 'none'" }, page, parent), undefined, "the first duplicate directive wins within a policy");
   assert.match(embeddingBlocked({ "x-frame-options": "SAMEORIGIN, SAMEORIGIN" }, page, parent)!, /SAMEORIGIN/);
+  assert.equal(embeddingBlocked({ "content-security-policy": "frame-ancestors https:" }, page, "https://localhost:4318"), undefined);
+  assert.match(embeddingBlocked({ "content-security-policy": "frame-ancestors http:" }, page, "https://localhost:4318")!, /frame-ancestors/);
   assert.equal(embeddingBlocked({}, page, parent), undefined);
 });
 

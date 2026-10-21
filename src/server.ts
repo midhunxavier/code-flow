@@ -2179,13 +2179,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (await handleJourneys(req, res, url, parts)) return;
   if (parts[1] === "preview" && req.method === "POST") {
     const body = await readJson(req);
-    if (parts[2] === "status") return send(res, 200, { ready: await attempt(() => previews.ready(String(body.url ?? ""))) });
+    if (parts[2] === "status") {
+      const target = previewTarget(String(body.url ?? ""));
+      const registered = typeof body.runId === "string" && manager.get(body.runId) && manager.devServers.list().some(server => server.key.startsWith(`${body.runId}/`) && server.status === "running" && server.port === target?.port);
+      return send(res, 200, { ready: !!registered && await attempt(() => previews.ready(String(body.url ?? ""))) });
+    }
     // On the host name this page was opened with (checkOrigin allows only code-flow's own), so the app is same-site with it.
     return send(res, 200, await attempt(() => previews.show(String(body.url ?? ""), req.headers.host)));
   }
   if (parts[1] === "frame-policy" && req.method === "POST") {
     const body = await readJson(req, 8192);
-    return send(res, 200, await attempt(() => inspectFramePolicy(String(body.url ?? ""), `http://${req.headers.host}`)));
+    const scheme = (req.socket as typeof req.socket & { encrypted?: boolean }).encrypted === true ? "https" : "http";
+    return send(res, 200, await attempt(() => inspectFramePolicy(String(body.url ?? ""), `${scheme}://${req.headers.host}`)));
   }
   // Snapshot mode: a screenshot of any page, in a headless Chrome of its own (src/snapshot.ts). It
   // keeps away from this computer, except a local app at the address the Browser's preview takes

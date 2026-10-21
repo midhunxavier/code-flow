@@ -468,6 +468,8 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
   await page.getByLabel("Folder path").press("Enter");
   await page.getByText("✓ This folder is a git repository").waitFor();
   await page.getByRole("button", { name: "Use this folder", exact: true }).click();
+  await page.getByRole("dialog", { name: "Open repository in a project" }).getByRole("button", { name: "Add to E2E side", exact: true }).click();
+  assert.deepEqual((await projects()).find((project) => project.name === "E2E side")!.repos, [root], "repository membership changes only after adding it explicitly");
 
   await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");

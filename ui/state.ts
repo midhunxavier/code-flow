@@ -1221,7 +1221,7 @@ async function switchComposer(next: string, options: { repository?: string; carr
         source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
         roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
         patternId.value = store.get("pattern") ?? "auto-team"; agentSettings.value = store.json("agentSettings", {});
-        optionValues.value = {}; limits.value = store.json("limits", { maxMinutes: 60, maxSteps: 40 });
+        optionValues.value = {}; limits.value = store.json("limits", DEFAULT_EXECUTION_BUDGET);
         approvalChoices.value = store.json("approvePlanByPattern", {}); selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
         if (project?.defaults) applyDefaults(project.defaults);
       }

@@ -685,7 +685,7 @@ export function TurnBody({ run, step, data, answer }: { run: RunSummary; step: S
     const check = async () => {
       for (const url of urls) {
         if (stop.signal.aborted || openedAppTurns.has(identity)) return;
-        const result = await api<{ ready: boolean }>("/api/preview/status", { method: "POST", body: JSON.stringify({ url }), signal: stop.signal }).catch(() => null);
+        const result = await api<{ ready: boolean }>("/api/preview/status", { method: "POST", body: JSON.stringify({ url, runId: run.id }), signal: stop.signal }).catch(() => null);
         if (stop.signal.aborted || openedAppTurns.has(identity)) return;
         if (result?.ready) { openedAppTurns.add(identity); openBrowserPage(url, run.id); return; }
       }
