@@ -133,8 +133,43 @@ test("project composer launches into its recorded project and history supports r
   await page.goto(base + `/#/project/${projectB}/runs`);
   await page.getByRole("region", { name: "Run history", exact: true }).getByRole("link", { name: /Beta draft/ }).waitFor();
   await page.getByLabel("Include archived runs").check();
+  const launched = await api(`/api/runs/${result.id}`);
+  for (const query of [result.id, repoB, launched.pattern, "draft Beta"]) {
+    const searched = page.waitForResponse(response => { const url = new URL(response.url()); return url.pathname === "/api/runs" && url.searchParams.get("project") === projectB && url.searchParams.get("q") === query; });
+    await page.getByLabel("Search this project's runs").fill(query);
+    await searched;
+    await page.getByRole("region", { name: "Run history", exact: true }).getByRole("link", { name: /Beta draft/ }).waitFor();
+  }
   await page.getByLabel("Search this project's runs").fill("does not exist");
   await page.getByText("No runs match this view.", { exact: true }).waitFor();
+});
+
+test("recurring runs retain explicit membership and reject revoked destinations at save and launch", { timeout: 30_000 }, async () => {
+  const project = (await api("/api/projects", { name: "Scheduled membership", repos: [repoA] })).id;
+  const run = { project, projectSelection: "explicit", repo: repoA, pattern: "solo", task: "Must retain membership", roles: { agent: ["claude"] }, loop: { check: "true" } };
+  const saved = await api("/api/automations", { name: "Strict scheduled run", enabled: false, schedule: { every: 60 }, run });
+  assert.equal(saved.run.projectSelection, "explicit");
+  await api(`/api/projects/${project}`, { repos: [] });
+  const before = (await api("/api/runs")).length;
+  for (const [path, body] of [["/api/automations", { name: "Stale selection", schedule: { every: 60 }, run }], [`/api/automations/${saved.id}`, { run }], [`/api/automations/${saved.id}/run`, {}]] as const) {
+    const response = await fetch(base + path, { method: "POST", headers, body: JSON.stringify(body) });
+    assert.equal(response.status, 409); assert.match(await response.text(), /explicit member/);
+  }
+  assert.equal((await api("/api/runs")).length, before);
+  assert.deepEqual((await api("/api/projects")).find((item: any) => item.id === project).repos, []);
+});
+
+test("a browser that denies IndexedDB can still open, save and reload a project draft", { timeout: 30_000 }, async () => {
+  const context = await browser.newContext();
+  try {
+    await context.addInitScript(() => { Object.defineProperty(window, "indexedDB", { value: { open() { throw new DOMException("Storage denied", "SecurityError"); } } }); });
+    const tab = await context.newPage();
+    await tab.goto(base + `/?token=project-navigation-test#/project/${projectB}/new`);
+    await tab.getByLabel("Task", { exact: true }).fill("Draft saved through fallback storage");
+    await tab.reload();
+    await tab.getByLabel("Task", { exact: true }).waitFor();
+    assert.equal(await tab.getByLabel("Task", { exact: true }).inputValue(), "Draft saved through fallback storage");
+  } finally { await context.close(); }
 });
 
 test("project pages fit narrow screens, expose accessible navigation and have no runtime errors", { timeout: 45_000 }, async () => {

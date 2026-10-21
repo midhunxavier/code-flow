@@ -61,7 +61,9 @@ test("childEnv never launches cwd Git or provider impostors through inherited or
       else process.env.PATH = `${trusted}:/usr/bin:/bin`;
       const extra = via === "extra" ? { PATH: path } : {};
       assert.equal(childEnv(extra).PATH, "/usr/bin:/bin", `${via} PATH=${String(path)}`);
-      const result = await git(["--version"], cwd, { env: extra, timeoutMs: 5000 });
+      // System Git can cold-start slowly on a loaded macOS runner. This test
+      // verifies executable lookup; timeout behavior has its own test below.
+      const result = await git(["--version"], cwd, { env: extra, timeoutMs: 30_000 });
       assert.equal(result.code, 0, result.stderr); assert.match(result.stdout, /^git version /);
       const absent = spawnSync(provider, [], { cwd, env: childEnv(extra), encoding: "utf8" });
       assert.equal((absent.error as NodeJS.ErrnoException | undefined)?.code, "ENOENT", "fallback never searches cwd or its relative tool directory");

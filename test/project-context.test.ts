@@ -57,3 +57,28 @@ test("storage failure is reported while retaining a recoverable in-tab draft", a
   await drafts.write("a", { task: "keep me" });
   assert.deepEqual(drafts.unsavedKeys, []);
 });
+
+test("denied and blocked IndexedDB opens restore and save drafts through localStorage", async () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "indexedDB");
+  try {
+    for (const failure of ["throw", "error", "blocked"]) {
+      const values = new Map([["local:a", JSON.stringify({ task: "saved before reload" })]]);
+      const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } } as Storage;
+      Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: { open() {
+        if (failure === "throw") throw new Error("Storage denied");
+        const request: any = { error: new Error("Storage denied") };
+        queueMicrotask(() => failure === "blocked" ? request.onblocked() : request.onerror());
+        return request;
+      } } });
+      const drafts = new ProjectDraftStore<{ task: string }>("local:", storage);
+      assert.deepEqual(await drafts.read("a"), { task: "saved before reload" }, failure);
+      await Promise.all([drafts.write("a", { task: "first edit" }), drafts.write("a", { task: "last edit" })]);
+      const reloaded = new ProjectDraftStore<{ task: string }>("local:", storage);
+      assert.deepEqual(await reloaded.read("a"), { task: "last edit" }, failure);
+      assert.deepEqual(drafts.unsavedKeys, []);
+    }
+  } finally {
+    if (original) Object.defineProperty(globalThis, "indexedDB", original);
+    else Reflect.deleteProperty(globalThis, "indexedDB");
+  }
+});

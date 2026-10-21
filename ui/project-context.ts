@@ -23,7 +23,7 @@ export function legacyDraftProject(projects: Project[], preferred: string, repos
 
 /** IndexedDB accommodates attachments that exceed localStorage's quota. Writes are ordered. */
 export class ProjectDraftStore<T> {
-  private database?: Promise<IDBDatabase>;
+  private database?: Promise<IDBDatabase | undefined>;
   private connection?: IDBDatabase;
   private writes: Promise<unknown> = Promise.resolve();
   private memory = new Map<string, T>();
@@ -31,25 +31,26 @@ export class ProjectDraftStore<T> {
   get unsavedKeys(): string[] { return [...this.failures]; }
   constructor(private readonly prefix: string, private readonly fallback: Storage | undefined = globalThis.localStorage) {}
 
-  private open(): Promise<IDBDatabase> {
-    return this.database ??= new Promise((resolve, reject) => {
+  private open(): Promise<IDBDatabase | undefined> {
+    return this.database ??= new Promise<IDBDatabase>((resolve, reject) => {
+      let blocked = false;
       const request = indexedDB.open("codeflow-project-drafts", 1);
       request.onupgradeneeded = () => request.result.createObjectStore("drafts");
-      request.onsuccess = () => { this.connection = request.result; resolve(request.result); };
+      request.onsuccess = () => { if (blocked) { request.result.close(); return; } this.connection = request.result; resolve(request.result); };
       request.onerror = () => reject(request.error);
-      request.onblocked = () => reject(new Error("Close older Code Flow tabs to restore drafts."));
-    });
+      request.onblocked = () => { blocked = true; reject(new Error("Close older Code Flow tabs to restore drafts.")); };
+    }).catch(() => undefined); // Storage policies can expose IndexedDB while denying open().
   }
 
   async read(key: string): Promise<T | undefined> {
     await this.writes.catch(() => undefined);
     const id = this.prefix + key;
     if (this.memory.has(id)) return structuredClone(this.memory.get(id)!);
-    if (typeof indexedDB === "undefined") {
+    const db = typeof indexedDB === "undefined" ? undefined : await this.open();
+    if (!db) {
       const value = this.fallback?.getItem(id);
       return value ? JSON.parse(value) as T : undefined;
     }
-    const db = await this.open();
     return new Promise((resolve, reject) => {
       const tx = db.transaction("drafts", "readonly");
       const request = tx.objectStore("drafts").get(id);
@@ -63,14 +64,14 @@ export class ProjectDraftStore<T> {
     const snapshot = structuredClone(value);
     this.memory.set(id, snapshot);
     const persist = async () => {
-      if (typeof indexedDB === "undefined") {
+      // Once opened, begin the transaction in the input event itself. Chaining
+      // behind earlier completion callbacks can lose the final edit on reload.
+      const db = typeof indexedDB === "undefined" ? undefined : this.connection ?? await this.open();
+      if (!db) {
         if (!this.fallback) throw new Error("Draft storage is unavailable.");
         this.fallback.setItem(id, JSON.stringify(snapshot));
         return;
       }
-      // Once opened, begin the transaction in the input event itself. Chaining
-      // behind earlier completion callbacks can lose the final edit on reload.
-      const db = this.connection ?? await this.open();
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction("drafts", "readwrite");
         tx.objectStore("drafts").put(snapshot, id);

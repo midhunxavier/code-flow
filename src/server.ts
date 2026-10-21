@@ -838,6 +838,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
   if (body.parentRunId !== undefined && (typeof body.parentRunId !== "string" || !manager.get(body.parentRunId))) throw new HttpError(409, "The original run is no longer available. Reload before starting a continuation so its source restrictions can be retained.");
   await attempt(async () => assertPolicyExecution(await fileAccess.execution(repo), "Run preparation"));
+  if (body.projectSelection === "explicit" && !projects.get(body.project)?.repos.includes(await repoRoot(repo))) throw new HttpError(409, "This repository is no longer an explicit member of the selected project");
   if (body.externalSource !== undefined || (body.externalSourceId !== undefined && typeof body.externalSourceId !== "string")) throw new HttpError(400, "Import the external source through its configured integration first");
   if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
   if (body.intent !== undefined && !taskIntent(body.intent)) throw new HttpError(400, "Choose a supported task type");
@@ -904,7 +905,7 @@ async function startFromBody(body: Record<string, any>, extra: { trigger?: Run["
 
 /** The parts of a run request an automation keeps (no attachments: they'd go stale). */
 function automationRun(body: Record<string, any>) {
-  const keep = ["repo", "project", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
+  const keep = ["repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
   const run: Record<string, any> = Object.fromEntries(keep.filter((k) => body[k] !== undefined).map((k) => [k, body[k]]));
   if (typeof body.externalSourceId === "string") {
     try { const source = integrations.resolveSource(body.externalSourceId); run.externalSourceRef = { integration: source.integration, kind: source.kind, key: source.key }; }

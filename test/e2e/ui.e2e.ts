@@ -413,7 +413,10 @@ test("insights and run search", async () => {
   assert.ok(await page.getByRole("table").first().isVisible());
   await page.keyboard.press("/");
   await page.keyboard.type("automated chore");
-  await page.getByText(/1 of \d+ runs/).waitFor();
+  // The history footer can also contain "1 of ... runs loaded" before search
+  // settles. Wait for the actual result and the search-specific count.
+  await page.locator(".rail .run-item", { hasText: "E2E: automated chore" }).waitFor();
+  await page.locator(".rail-hint").filter({ hasText: /^1 of \d+ runs/ }).waitFor();
   assert.equal(await page.locator(".rail .run-item").count(), 1);
 });
 

@@ -1,4 +1,5 @@
 import type { ProjectReport, HistoryPage } from "../src/project-report.js";
+import { runSearchText } from "../src/run-history.js";
 import { checksLabel, type ProjectSection as HistorySection } from "../src/run-status.js";
 import { SchedulingView } from "./scheduling.js";
 import { TeamBoardView } from "./collab-board.js";
@@ -120,6 +121,7 @@ function Card({ label, value, hint }: { label: string; value: string; hint?: str
 function ProjectRuns({ projectId }: { projectId: string }) {
   const [query, setQuery] = useState(""), [archived, setArchived] = useState(false);
   const [history, setHistory] = useState<RunSummary[]>([]), [cursor, setCursor] = useState<string | null>(null);
+  const [historyQuery, setHistoryQuery] = useState<string | null>(null);
   const [loading, setLoading] = useState(false), [error, setError] = useState("");
   const generation = useRef(0);
   const read = async (next?: string) => {
@@ -130,14 +132,19 @@ function ProjectRuns({ projectId }: { projectId: string }) {
       if (next) params.set("cursor", next);
       const page = await api<{ runs: RunSummary[]; nextCursor?: string }>(`/api/runs?${params}`);
       if (current !== generation.current) return;
-      setHistory(previous => next ? [...previous, ...page.runs] : page.runs); setCursor(page.nextCursor ?? null);
+      setHistory(previous => next ? [...previous, ...page.runs] : page.runs); setHistoryQuery(query.trim()); setCursor(page.nextCursor ?? null);
     } catch (error) { if (current === generation.current) setError((error as Error).message); }
     finally { if (current === generation.current) setLoading(false); }
   };
   useEffect(() => { const timer = setTimeout(() => void read(), 150); return () => { clearTimeout(timer); generation.current++; }; }, [projectId, query]);
   const merged = new Map(history.map(run => [run.id, runs.value.get(run.id) ?? run]));
   for (const run of runs.value.values()) if (projectFor(run)?.id === projectId) merged.set(run.id, run);
-  const list = [...merged.values()].filter(run => projectFor(run)?.id === projectId && !run.deleted && (archived || !run.archived) && (!query.trim() || run.task.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))).sort((a,b) => b.createdAt - a.createdAt);
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  // Cold summaries can omit text the server searched in the full run. Retain
+  // those matches only for the query that actually returned this page.
+  const serverMatches = new Set(historyQuery === query.trim() ? history.map(run => run.id) : []);
+  const list = [...merged.values()].filter(run => projectFor(run)?.id === projectId && !run.deleted && (archived || !run.archived) &&
+    (run.cold && serverMatches.has(run.id) || words.every(word => runSearchText(run).includes(word)))).sort((a,b) => b.createdAt - a.createdAt);
   return <section aria-label="Project run history"><div class="project-history-controls"><label>Search this project's runs<input class="field" type="search" value={query} onInput={event => setQuery(event.currentTarget.value)} /></label><label class="check"><input type="checkbox" checked={archived} onChange={event => setArchived(event.currentTarget.checked)} />Include archived runs</label></div>
     {error ? <p class="msg err" role="alert">{error} <button class="btn small" onClick={() => void read()}>Retry</button></p> : null}
     <Section title="Run history" count={list.length} runs={list} empty={loading ? "Loading runs…" : "No runs match this view."} />
