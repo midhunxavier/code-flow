@@ -2,6 +2,25 @@
 
 Code Flow brings coding CLIs into one workspace for planning, implementation, review and verification. Start with a small task, follow the evidence, and decide when the result is ready to ship.
 
+## Try the preview
+
+Start Code Flow locally and open it in your browser:
+
+```bash
+npx @midhunxavier/code-flow@preview
+```
+
+Use **Node.js 22.13+**, **Git 2.38+** and a supported coding CLI installed and signed in. Runs on macOS, Linux and Windows through **WSL2**. Keep the terminal open while you work; **Ctrl+C** stops the app.
+
+Prefer a macOS app? Download **0.1.0-preview.1**:
+
+- [Download for Apple Silicon (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-arm64-unnotarized.dmg)
+- [Download for Intel Mac](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-x64-unnotarized.dmg)
+
+Requires **macOS 13+**. Node is included; Git and a signed-in coding CLI are still required. The DMGs are **unnotarized preview builds** and macOS may block them; use npm if blocked.
+
+[Installation and setup](getting-started.md#install-and-run) · [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.1)
+
 <div class="cards">
 <a href="getting-started.md"><strong>Start your first run ↗</strong><span>Install the app, connect a CLI and take a task from prompt to review.</span></a>
 <a href="patterns.md"><strong>Choose a workflow ↗</strong><span>Plan and build, test first, compare candidates or ask a team to investigate.</span></a>
