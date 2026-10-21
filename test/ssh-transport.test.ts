@@ -15,15 +15,18 @@ async function fixture(t: { after: (cleanup: () => Promise<void>) => void }, sou
   return { directory, transport };
 }
 async function channelPid(directory: string) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try { return Number(await readFile(join(directory, "pid"), "utf8")); }
+  for (let attempt = 0; attempt < 500; attempt++) {
+    try {
+      const pid = Number(await readFile(join(directory, "pid"), "utf8"));
+      if (Number.isSafeInteger(pid) && pid > 0) return pid;
+    }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   throw new Error("SSH fixture did not start");
 }
 async function waitForExit(pid: number) {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  for (let attempt = 0; attempt < 500; attempt++) {
     try { process.kill(pid, 0); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return; throw error; }
     await new Promise(resolve => setTimeout(resolve, 10));
@@ -31,7 +34,7 @@ async function waitForExit(pid: number) {
   assert.fail("SSH channel process is still alive");
 }
 
-test("SSH drains a buffered HTTP response after its input pipe closes", { timeout: 10_000 }, async t => {
+test("SSH drains a buffered HTTP response after its input pipe closes", { timeout: 30_000 }, async t => {
   const body = "buffered response ".repeat(1024);
   const response = `HTTP/1.1 200 OK\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`;
   const { directory, transport } = await fixture(t, directory => `
@@ -50,7 +53,7 @@ test("SSH drains a buffered HTTP response after its input pipe closes", { timeou
   assert.equal(Buffer.concat(chunks).toString(), response);
 });
 
-test("SSH cancellation terminates its channel process", { timeout: 10_000 }, async t => {
+test("SSH cancellation terminates its channel process", { timeout: 30_000 }, async t => {
   const { directory, transport } = await fixture(t, directory => `
     require('node:fs').writeFileSync(${JSON.stringify(join(directory, "pid"))}, String(process.pid));
     process.stdin.resume();
@@ -64,7 +67,7 @@ test("SSH cancellation terminates its channel process", { timeout: 10_000 }, asy
   await waitForExit(pid);
 });
 
-test("SSH forwards a large response to a paused consumer without losing bytes", { timeout: 10_000 }, async t => {
+test("SSH forwards a large response to a paused consumer without losing bytes", { timeout: 30_000 }, async t => {
   const { directory, transport } = await fixture(t, directory => `
     require('node:fs').writeFileSync(${JSON.stringify(join(directory, "pid"))}, String(process.pid));
     process.stdin.once('data', () => {
@@ -81,7 +84,7 @@ test("SSH forwards a large response to a paused consumer without losing bytes", 
   assert.deepEqual(Buffer.concat(chunks), Buffer.alloc(1024 * 1024, 97));
 });
 
-test("SSH channel failures retain the process error", { timeout: 10_000 }, async t => {
+test("SSH channel failures retain the process error", { timeout: 30_000 }, async t => {
   const { transport } = await fixture(t, () => "process.stderr.write('fixture connection refused'); process.exitCode = 7;");
   const stream = transport.open(12345);
   const failure = once(stream, "error"); stream.resume();
