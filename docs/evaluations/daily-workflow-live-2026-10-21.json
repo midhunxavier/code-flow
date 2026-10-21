@@ -401,6 +401,13 @@
       },
       "typecheck": "passed",
       "fullCIRequiredBeforeMerge": true
+    },
+    "autoTeamBrowserSynchronization": {
+      "issue": "The team Finished badge is published before the overall run completes artifact persistence, so an immediate done assertion raced in CI.",
+      "fix": "Wait for completed-run actions before reading and asserting the final run status; preserve all verification and coverage assertions.",
+      "browserTests": 3,
+      "passed": 3,
+      "productionSourceChanged": false
     }
   }
 }

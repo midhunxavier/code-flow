@@ -104,6 +104,8 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   await page.getByPlaceholder("Your answer…").fill("Empty input is valid; add a test.");
   await page.getByRole("button", { name: "Send answer", exact: true }).click();
   await page.locator(".auto-team .at-head .badge").getByText("Finished", { exact: true }).waitFor({ timeout: 40_000 }).catch(async (error: Error) => { const run = await read(); throw new Error(`${error.message}\n${JSON.stringify({ status: run.status, error: run.error, gaps: run.team?.gaps, verification: run.team?.verification })}`); });
+  // Team verification finishes before the engine records its artifacts and ends the run.
+  await page.getByRole("button", { name: "More run actions", exact: true }).waitFor({ timeout: 30_000 });
   const run = await read();
   assert.equal(run.status, "done", run.error);
   assert.equal(run.team?.verification?.approved, true, JSON.stringify(run.team?.gaps));
