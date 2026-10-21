@@ -460,6 +460,7 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
   await page.locator("#project-name").fill("E2E side");
   assert.equal(await page.locator(".project-repos .dir").count(), 0, "new projects start without the previous repository");
   await page.getByRole("button", { name: "Create project" }).click();
+  await page.getByRole("dialog", { name: "New project", exact: true }).waitFor({ state: "hidden" });
   assert.deepEqual((await projects()).find((project) => project.name === "E2E side")!.repos, [], "creating an empty project does not save the previous repository");
   await page.locator(".page-head-actions").getByRole("button", { name: "New run", exact: true }).click();
   await page.locator(".where .project-btn", { hasText: "E2E side" }).waitFor(); // explicitly open its draft
