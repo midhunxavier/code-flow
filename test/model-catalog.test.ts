@@ -97,7 +97,7 @@ test('official research rejects authority and untrusted origins; unrelated facts
     assert.equal(calls, 1);
     assert.deepEqual(results, []);
 });
-test('real discovery protocol parsing with mocked CLIs retains exact IDs and aliases', async () => {
+test('real discovery protocol parsing with mocked CLIs retains exact IDs and aliases', { timeout: 10_000 }, async () => {
     const original = process.env.PATH;
     process.env.PATH = `${fileURLToPath(new URL('./fake-bin', import.meta.url))}:${original}`;
     try {
@@ -109,6 +109,10 @@ test('real discovery protocol parsing with mocked CLIs retains exact IDs and ali
             assert.ok(catalog.defaultModel);
             assert.ok(!JSON.stringify(catalog).includes('"account"'));
         }
+        const { getAdapter } = await import('../src/adapters/index.js');
+        const native = await getAdapter('agy').discoverModels!({});
+        assert.deepEqual(native.models.map(model => model.id), ['model-one', 'model-two']);
+        assert.equal(native.discovery?.source, 'agy models');
     }
     finally {
         process.env.PATH = original;

@@ -79,7 +79,9 @@ if (vendor === "codex" && args[0] === "debug" && args[1] === "models") {
   }));
   process.exit(0);
 }
-if (vendor === "agy" && args[0] === "models") {
+// Antigravity accepts global flags before its subcommand; native discovery uses a private log.
+const agyCommandArgs = args.filter((arg, index) => arg !== "--log-file" && args[index - 1] !== "--log-file");
+if (vendor === "agy" && agyCommandArgs[0] === "models") {
   // FAKE_AGY_MODELS_FAIL: "network" (Google unreachable) or "signed-out".
   if (process.env.FAKE_AGY_MODELS_FAIL === "network") {
     process.stderr.write("Error: request to https://cloudcode-pa.googleapis.com failed: getaddrinfo ENOTFOUND cloudcode-pa.googleapis.com\n");
