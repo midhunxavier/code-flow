@@ -80,7 +80,7 @@ test("Auto is the fresh default, Solo is direct, and Advanced templates survive 
     const catalog = await fetch(`${base}/api/model-catalog`, { headers }).then(r=>r.json()) as any;
     assert.equal(catalog.allowResearch, false);
     assert.ok(catalog.providers.find((p:any)=>p.provider==="codex").catalog.models.some((m:any)=>m.id==="gpt-a"));
-    assert.match(catalog.providers.find((p:any)=>p.provider==="agy").blockedReason,/native-delegation/);
+    assert.match(catalog.providers.find((p:any)=>p.provider==="agy").blockedReason,/macOS/);
     assert.equal((await fetch(`${base}/api/model-catalog`, {method:"POST",headers:{...headers,"content-type":"application/json"},body:JSON.stringify({permissions:"full"})})).status,400);
     const library = fresh.getByRole("region", { name: "Reusable team templates" });
     await library.getByRole("button", { name: "Design a template", exact: true }).click();

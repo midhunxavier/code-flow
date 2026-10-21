@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { fillTeamTemplate, validateTeamTemplate, templatePreferences, type TeamTemplate } from "../src/team-templates.js";
 import { api, post, showToast, store } from "./lib.js";
-import { currentProject, patterns, setAcceptanceCriteria, setPattern, setTask, task, setRoles, setOption, setAgentSetting, setRoleModel, pattern, rolesFor, optionsFor, agentSettings, roleModels } from "./state.js";
+import { composerProject, patterns, setAcceptanceCriteria, setPattern, setTask, task, setRoles, setOption, setAgentSetting, setRoleModel, pattern, rolesFor, optionsFor, agentSettings, roleModels } from "./state.js";
 import type { AgentId } from "./types.js";
 import { selectedTeamTemplate } from "./team-template-state.js";
 
@@ -14,7 +14,7 @@ function download(template: TeamTemplate) {
 }
 /** The same definition is edited, previewed, saved, imported, and instantiated. */
 export function TeamTemplateLibrary({ initial }: { initial?: TeamTemplate }) {
-  const project = currentProject.value && currentProject.value !== "none" ? currentProject.value : undefined;
+  const project = initial?.project ?? (composerProject.value || undefined);
   const query = project ? `?project=${encodeURIComponent(project)}` : "";
   const [templates, setTemplates] = useState<TeamTemplate[]>([]);
   const [selected, setSelected] = useState<TeamTemplate | null>(initial ?? null);

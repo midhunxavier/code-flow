@@ -234,6 +234,8 @@ export const composerRunOptions = signal<{
   verification?: string;
   verificationProfile?: import("../src/verification.js").VerificationProfile | null;
   toolApprovals?: boolean;
+  antigravityExecution?: import("../src/run-permissions.js").AntigravityExecution;
+  permissionRequirements?: import("../src/run-permissions.js").PermissionRequirement[];
 }>({});
 export const projectsOpen = signal(false);
 /** The Projects dialog opens straight on this project's editor ("new" for a new one), not on the list. */
@@ -269,7 +271,6 @@ export function inScope(run: RunSummary, scope = currentProject.value): boolean 
 }
 
 function setCurrentProject(id: string) {
-  if (id !== currentProject.value) selectedTeamTemplate.value = null;
   currentProject.value = id;
   store.set("project", id);
 }
@@ -1124,6 +1125,7 @@ function composerSnapshot() {
     roles: roleSel.value, models: roleModels.value, settings: agentSettings.value, options: optionValues.value,
     base: baseRef.value, branch: branchPrefix.value, check: checkCmd.value, setup: setupCmd.value,
     limits: limits.value, trust: trust.value, approvals: approvalChoices.value, origins: composerOrigins.value,
+    selectedTemplate: selectedTeamTemplate.value,
     source: source.value, externalSource: externalSource.value, runOptions: composerRunOptions.value, rerun: rerunDraft.value,
   };
 }
@@ -1158,6 +1160,7 @@ function restoreComposer(snapshot: ComposerSnapshot) {
     checkCmd.value = snapshot.check; setupCmd.value = snapshot.setup;
     limits.value = snapshot.limits; trust.value = snapshot.trust; approvalChoices.value = snapshot.approvals;
     composerOrigins.value = snapshot.origins; source.value = snapshot.source; externalSource.value = snapshot.externalSource;
+    selectedTeamTemplate.value = snapshot.selectedTemplate ?? null;
     composerRunOptions.value = snapshot.runOptions ?? {};
     rerunDraft.value = snapshot.rerun ?? null;
   });
@@ -1203,14 +1206,14 @@ async function switchComposer(next: string, options: { repository?: string; carr
         task.value = ""; acceptanceCriteria.value = []; attachments.value = []; contextPaths.value = new Map();
         source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
         roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
-        patternId.value = store.get("pattern") ?? "pipeline"; agentSettings.value = store.json("agentSettings", {});
+        patternId.value = store.get("pattern") ?? "auto-team"; agentSettings.value = store.json("agentSettings", {});
         optionValues.value = {}; limits.value = store.json("limits", { maxMinutes: 60, maxSteps: 40 });
-        approvalChoices.value = store.json("approvePlanByPattern", {}); composerRunOptions.value = {}; rerunDraft.value = null;
+        approvalChoices.value = store.json("approvePlanByPattern", {}); selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
         if (project?.defaults) applyDefaults(project.defaults);
       }
       if (saved && repository !== saved.repository) {
         contextPaths.value = new Map(); source.value = null; externalSource.value = null; baseRef.value = ""; journeyDraft.value = undefined;
-        checkCmd.value = detectedCheck; setupCmd.value = detectedSetup; trust.value = detectedTrust; composerRunOptions.value = {}; rerunDraft.value = null;
+        checkCmd.value = detectedCheck; setupCmd.value = detectedSetup; trust.value = detectedTrust; selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
       }
       composerProject.value = next;
       store.set("composerProject", next);

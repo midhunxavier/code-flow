@@ -125,7 +125,7 @@ test("explicit membership blocks stale launches and adding a repository is a del
 test("project composer launches into its recorded project and history supports review", { timeout: 60_000 }, async () => {
   await projectNewRun(projectB);
   assert.equal(await page.getByLabel("Task", { exact: true }).inputValue(), "Beta draft");
-  await page.getByRole("button", { name: "Agent workflow mode" }).click();
+  await page.getByRole("button", { name: "Solo", exact: true }).click();
   const started = page.waitForResponse(response => response.url().endsWith("/api/runs") && response.request().method() === "POST" && response.status() === 201);
   await page.getByRole("button", { name: "Start run", exact: true }).click();
   const result = await (await started).json(); assert.equal(result.project, projectB);

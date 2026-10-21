@@ -122,8 +122,8 @@ export function Composer() {
   const [verificationPreset, setVerificationPreset] = useState(initialOptions.current.verification ?? "");
   const [profileLoading, setProfileLoading] = useState(false);
   const profileRequest = useRef(0);
-  const [nativeAntigravity, setNativeAntigravity] = useState(false);
-  const [permissionRequirements, setPermissionRequirements] = useState<PermissionRequirement[]>([]);
+  const [nativeAntigravity, setNativeAntigravity] = useState(initialOptions.current.antigravityExecution === "native");
+  const [permissionRequirements, setPermissionRequirements] = useState<PermissionRequirement[]>(initialOptions.current.permissionRequirements ?? []);
   const [toolApprovals, setToolApprovals] = useState(initialOptions.current.toolApprovals ?? store.get("interactiveApprovals") === "1");
   const improve = useImprove(remoteWorker ? "Improve uses a local provider. Choose This computer to rewrite this task." : containerEnabled ? "Improve uses a local provider. Turn off Docker isolation to rewrite this task." : "");
   const p = pattern.value;
@@ -159,8 +159,8 @@ export function Composer() {
   }, [repo.value, projectDefaultsVersion.value, restored]);
 
   useLayoutEffect(() => {
-    if (!composerLoading.value) composerRunOptions.value = { remoteWorker, container: { enabled: containerEnabled, image: containerImage, authVolume: containerVolume }, verification: verificationPreset, verificationProfile, toolApprovals };
-  }, [remoteWorker, containerEnabled, containerImage, containerVolume, verificationPreset, verificationProfile, toolApprovals]);
+    if (!composerLoading.value) composerRunOptions.value = { remoteWorker, container: { enabled: containerEnabled, image: containerImage, authVolume: containerVolume }, verification: verificationPreset, verificationProfile, toolApprovals, antigravityExecution: nativeAntigravity ? "native" : "isolated", permissionRequirements };
+  }, [remoteWorker, containerEnabled, containerImage, containerVolume, verificationPreset, verificationProfile, toolApprovals, nativeAntigravity, permissionRequirements]);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
   // Pins sent from the side panel's Browser: their text joins the task, their snapshots its attachments.
