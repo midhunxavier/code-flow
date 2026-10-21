@@ -7,6 +7,7 @@ Object.defineProperty(globalThis, "window", { configurable: true, value: { inner
 Object.defineProperty(globalThis, "location", { configurable: true, value: { hostname: "localhost", hash: "", origin: "http://localhost" } });
 Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value) } });
 const state = await import("../ui/state.js");
+const { rerunDraft } = await import("../ui/rerun-draft.js");
 // Keep these regressions executable on the old composer, which edited signals directly.
 const draftState = state as typeof state & { setRunCheck?: (value: string) => void; setRunSetup?: (value: string) => void };
 const editCheck = (value: string) => draftState.setRunCheck ? draftState.setRunCheck(value) : (state.checkCmd.value = value);
@@ -26,7 +27,49 @@ const response = async (path: string, repo: string, body: unknown, status = 200)
   }
   assert.fail(`No pending ${path} request for ${repo}`);
 };
-beforeEach(() => { values.clear(); requests.length = 0; state.repoInfo.value = null; state.repoConfig.value = null; state.checkCmd.value = ""; state.setupCmd.value = ""; });
+beforeEach(() => { values.clear(); requests.length = 0; rerunDraft.value = null; state.repoInfo.value = null; state.repoConfig.value = null; state.checkCmd.value = ""; state.setupCmd.value = ""; });
+
+test("reselecting a retry repository through an alias preserves its pinned draft throughout discovery", async () => {
+  state.repoInfo.value = info("/a");
+  const retry = { id: "original", repo: "/a", approvals: {}, loop: { remoteWorker: { workerId: "worker", repoMapping: "mapped" } } } as NonNullable<typeof rerunDraft.value>;
+  rerunDraft.value = retry;
+  state.baseRef.value = "a".repeat(40);
+  state.checkCmd.value = "run-only-check";
+  state.setupCmd.value = "";
+  state.trust.value = "safe";
+  state.contextPaths.value = new Map([["spec.txt", { path: "spec.txt", type: "file" }]]);
+  const selected = state.setRepo("/alias-a");
+  assert.equal(state.repo.value, "/a");
+  assert.equal(state.repoChecking.value, true);
+  assert.equal(rerunDraft.value, retry);
+  await response("/api/branches", "/alias-a", info("/a"));
+  assert.equal(await selected, true);
+  assert.equal(rerunDraft.value, retry);
+  assert.equal(state.baseRef.value, "a".repeat(40), "pinned commits need not appear in the branch list");
+  assert.deepEqual([state.checkCmd.value, state.setupCmd.value, state.trust.value], ["run-only-check", "", "safe"]);
+  assert.equal(state.contextPaths.value.has("spec.txt"), true);
+  assert.equal(requests.some(request => request.url.pathname === "/api/repo-config"), false, "retry commands are not replaced by rediscovery");
+});
+
+test("retry metadata survives a failed lookup and clears only after a different repository resolves", async () => {
+  state.repoInfo.value = info("/a");
+  const retry = { id: "original", repo: "/a", approvals: {}, loop: {} } as NonNullable<typeof rerunDraft.value>;
+  rerunDraft.value = retry;
+  state.checkCmd.value = "original-check";
+  const failed = state.setRepo("/missing");
+  await response("/api/branches", "/missing", { error: "Missing folder" }, 400);
+  assert.equal(await failed, false);
+  assert.equal(rerunDraft.value, retry);
+  assert.equal(state.repo.value, "/a");
+  assert.equal(state.checkCmd.value, "original-check");
+  const changed = state.setRepo("/b");
+  assert.equal(rerunDraft.value, retry);
+  await response("/api/branches", "/b", info("/b"));
+  assert.equal(rerunDraft.value, null);
+  await response("/api/repo-config", "/b", { found: true, config: { check: "new-check", setup: "new-setup" } });
+  await changed;
+  assert.deepEqual([state.repo.value, state.checkCmd.value, state.setupCmd.value], ["/b", "new-check", "new-setup"]);
+});
 
 test("late repository lookup cannot undo the most recent repository choice", async () => {
   const a = state.setRepo("/a");

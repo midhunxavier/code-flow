@@ -49,13 +49,14 @@ before(async () => {
     ["retry-remote", { remoteWorker: { workerId: "missing-worker", repoMapping: "original-repository" } }],
     ["retry-container", { agentContainer: { image: "prepared-agent:v1", authVolume: "original-login", network: false, memoryMb: 512, cpus: 2 } }],
     ["retry-untrusted", {}],
+    ["retry-pr", {}],
   ] as const) {
     const timestamp = Date.now() - 1000;
     const run = { id, repo, pattern: "solo", task: `Restore ${id}`, baseRef: git("rev-parse", "HEAD"), baseLabel: "main", branchPrefix: `codeflow/${id}`, worktreeDir: join(directory, id), roles: { agent: ["claude"] }, options: {}, context: { paths: [], attachments: [] }, agentSettings: {}, roleSettings: {}, trust: "safe", loop: { ...loop, check: "", setup: "", maxSteps: 4, maxMinutes: 1, checkTimeoutMin: 1 }, usage: { agentSteps: 0, checks: 0 }, status: "done", createdAt: timestamp, endedAt: timestamp + 100, seen: true, worktrees: [], steps: [], notes: [], approvals: {}, followUps: [], merges: [], prs: {}, watches: {}, artifacts: [] };
     const source = id === "retry-untrusted" ? {
       lockdown: "Imported issue is untrusted external context", lockdownOnHost: true,
       externalSource: { id: "original-import", integration: "fixture", provider: "linear", kind: "issue", key: "CF-1", title: "Imported issue", body: "Keep the imported request attributable.", importedAt: timestamp, expiresAt: timestamp + 3600000, trusted: false, untrusted: true },
-    } : {};
+    } : id === "retry-pr" ? { source: { kind: "pr", number: 99, title: "Retry source options", url: "https://github.com/o/r/pull/99", body: "Source context", headRefName: "retry-source", baseRefName: "main", trusted: true, author: "owner", association: "OWNER" } } : {};
     await writeFile(join(history, `${id}.jsonl`), JSON.stringify({ seq: 1, ts: timestamp, runId: id, type: "run", run: { ...run, ...source } }) + "\n");
   }
   const port = await new Promise<number>(resolve => {
@@ -239,6 +240,12 @@ test("retry retains container isolation and never falls back from an unavailable
     await page.getByRole("button", { name: "Edit run options", exact: true }).click();
   };
   await edit("retry-container");
+  await page.locator(".repo-btn:not(.project-btn)").click();
+  const picker = page.getByRole("dialog");
+  await picker.getByLabel("Folder path", { exact: true }).fill(repo + "/.");
+  await picker.getByRole("button", { name: "Go", exact: true }).click();
+  await picker.getByRole("button", { name: "Use this folder", exact: true }).click();
+  await picker.waitFor({ state: "hidden" });
   await page.locator(".agent-isolation > summary").click();
   assert.equal(await page.getByLabel("Run agents in a prebuilt Docker image").isChecked(), true);
   assert.equal(await page.getByLabel("Image", { exact: true }).inputValue(), "prepared-agent:v1");
@@ -258,6 +265,36 @@ test("retry retains container isolation and never falls back from an unavailable
   assert.equal(await page.getByLabel("Agent execution", { exact: true }).inputValue(), "missing-worker");
   await until(() => page.getByRole("button", { name: "Start run", exact: true }).isDisabled(), value => value);
   assert.match(await page.locator(".composer-summary").innerText(), /worker/i);
+  assert.deepEqual(errors, []);
+});
+
+test("retry source option edits refresh CI context while retaining the pinned PR commit", { timeout: 60_000 }, async () => {
+  const original = await api("/api/runs/retry-pr");
+  const github = JSON.parse(await readFile(ghState, "utf8"));
+  github.prs[99] = { number: 99, title: "Retry source options", body: "Source context", url: "https://github.com/o/r/pull/99", headRefName: "retry-source", baseRefName: "main", author: { login: "owner" }, authorAssociation: "OWNER", isDraft: false, isCrossRepository: false, state: "OPEN" };
+  await writeFile(ghState, JSON.stringify(github));
+  const advanced = git("-c", "user.name=test", "-c", "user.email=test@test", "commit-tree", git("rev-parse", `${original.baseRef}^{tree}`), "-p", original.baseRef, "-m", "New PR head after the original run");
+  assert.notEqual(advanced, original.baseRef);
+  git("push", "-q", "origin", `${advanced}:refs/heads/retry-source`, `${advanced}:refs/pull/99/head`);
+  const rerun = async (sourceRun: Run, ciLogs: boolean) => {
+    await page.goto(base + `/#/run/${sourceRun.id}`);
+    await page.getByRole("button", { name: "More run actions", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
+    await page.waitForURL(url => url.hash === "#/");
+    await page.getByRole("checkbox", { name: "CI logs", exact: true }).setChecked(ciLogs);
+    const response = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && response.request().method() === "POST");
+    await page.getByRole("button", { name: "Start run", exact: true }).click();
+    const started = await response;
+    assert.equal(started.status(), 201, await started.text());
+    const saved = await finished((await started.json()).id);
+    assert.equal(saved.status, "done", saved.error);
+    assert.equal(saved.baseRef, original.baseRef, "refreshing CI context must not follow a newer PR head");
+    assert.equal(saved.parentRunId, sourceRun.id);
+    assert.equal(!!saved.source?.ci, ciLogs);
+    return saved;
+  };
+  const included = await rerun(original, true);
+  await rerun(included, false);
   assert.deepEqual(errors, []);
 });
 

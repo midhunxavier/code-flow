@@ -4284,7 +4284,10 @@ export class RunManager {
     if (input.parentRunId && !parent) throw new RunConflictError("The original run is no longer available; its source restrictions cannot be retained");
     // A PR's own branch is the base; its changes are reviewed against the PR's target.
     const fromGitHub = input.source ? await loadSource(repo, input.source) : undefined;
-    const baseLabel = fromGitHub?.branch ?? (input.baseRef?.trim() || "HEAD");
+    // Refreshing options on the same source (e.g. CI logs) must not move a pinned retry
+    // to a newer PR head. Choosing a different source still selects that source's branch.
+    const sameParentSource = parent?.repo === repo && input.source && parent.source?.kind === input.source.kind && parent.source.number === input.source.number;
+    const baseLabel = sameParentSource && input.baseRef?.trim() ? input.baseRef.trim() : fromGitHub?.branch ?? (input.baseRef?.trim() || "HEAD");
     const baseRef = await resolveCommit(repo, baseLabel).catch(() => {
       throw new Error(`Base branch "${baseLabel}" not found in ${repo}`);
     });

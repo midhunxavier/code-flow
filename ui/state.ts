@@ -151,33 +151,43 @@ let checkLoading: Promise<void> = Promise.resolve();
 export const checkLoaded = () => checkLoading;
 
 export async function setRepo(path: string, remember = true) {
-  rerunDraft.value = null;
   path = path.trim();
+  const retained = path && rerunDraft.value?.repo === repo.value ? rerunDraft.value : null;
   const request = ++repoSelection;
   ++configRequest;
-  repoInfo.value = null;
-  repoConfig.value = null;
-  setupCmd.value = "";
-  checkCmd.value = "";
-  checkHint.value = "";
-  trust.value = (["safe", "standard", "trusted", "full"].includes(store.get("trust") ?? "") ? store.get("trust") : "standard") as Trust;
-  contextPaths.value = new Map();
+  const clearSelection = () => {
+    rerunDraft.value = null;
+    repoInfo.value = null;
+    repoConfig.value = null;
+    setupCmd.value = "";
+    checkCmd.value = "";
+    checkHint.value = "";
+    trust.value = (["safe", "standard", "trusted", "full"].includes(store.get("trust") ?? "") ? store.get("trust") : "standard") as Trust;
+    contextPaths.value = new Map();
+  };
+  // A picker path may be an alias of the current repository. Keep retry settings until
+  // canonical discovery confirms a different selection; Start remains disabled meanwhile.
+  if (!retained) clearSelection();
   configChecking.value = false;
   repoChecking.value = true;
   repoError.value = "";
   try {
     const info = await api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(path)}`);
     if (request !== repoSelection) return false;
+    const sameRetry = retained && info.repo === retained.repo && rerunDraft.value?.repo === info.repo;
+    if (retained && !sameRetry) clearSelection();
     repoInfo.value = info;
-    if (baseRef.value && !info.branches.some((branch) => branch.name === baseRef.value)) baseRef.value = "";
+    if (!sameRetry && baseRef.value && !info.branches.some((branch) => branch.name === baseRef.value)) baseRef.value = "";
     if (remember) {
       store.set("repo", info.repo);
       store.set("recentRepos", JSON.stringify([info.repo, ...recentRepos().filter((p) => p !== info.repo)].slice(0, 8)));
     }
+    if (sameRetry) return true;
   } catch (err) {
     if (request !== repoSelection) return false;
-    repoInfo.value = null;
+    if (!retained) repoInfo.value = null;
     repoError.value = path ? repoProblem(path.split("/").pop() || path, err) : "";
+    if (retained) return false;
   } finally {
     if (request === repoSelection) repoChecking.value = false;
   }

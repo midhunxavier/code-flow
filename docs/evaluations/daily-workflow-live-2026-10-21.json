@@ -35,7 +35,8 @@
     "fakeAgentsUsedForLiveRun": false,
     "externalPushOrPullRequest": false,
     "originalWorktreeSourceMatchesLiveResult": true,
-    "sourceFilesCompared": 26
+    "sourceFilesCompared": 26,
+    "sourceMatchScope": "26 files at completion of the self-hosted run. Post-run review corrections below were validated separately."
   },
   "roles": {
     "planner": [
@@ -376,13 +377,30 @@
       "tests": 1224,
       "passed": 1216,
       "failed": 0,
-      "skipped": 8
+      "skipped": 8,
+      "revision": "69cadcdbfef6d3db3b2fb4ff70d1746df9da6fdf"
     },
     "browserCompatibilityRegression": {
       "test": "project defaults stay repository-scoped and a run creates its worktree from the selected branch",
       "before": "Reproduced the outdated assertion locally: it required the newly introduced per-run setup control to be absent.",
       "after": "Passed with stronger assertions that per-run setup is inside run options, preserves the saved project setup, and reaches the launched run.",
       "productionSourceChanged": false
+    },
+    "automatedReviewCorrections": {
+      "sourceOptions": "CI-log inclusion changes in either direction and alert-tool/number changes refresh source context. Refreshing options for the same PR retains the selected pinned commit even after the remote PR advances.",
+      "repositoryReselection": "Canonical discovery preserves active retry settings, commands, context and pinned commits when the selected folder resolves to the same repository, and clears them only after confirming a different repository. Failed discovery preserves the existing draft.",
+      "focusedTests": {
+        "tests": 62,
+        "passed": 62,
+        "failed": 0
+      },
+      "dailyBrowserSuite": {
+        "tests": 10,
+        "passed": 10,
+        "failed": 0
+      },
+      "typecheck": "passed",
+      "fullCIRequiredBeforeMerge": true
     }
   }
 }

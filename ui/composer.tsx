@@ -16,7 +16,7 @@ import { AgentTag } from "./bits.js";
 import { api, ApiError, baseName, enc, fmtSize, post, readBase64, SHORT, store, useLatest } from "./lib.js";
 import { useDialog } from "./app.js";
 import { AcceptanceEditor, ContextInspector, EffectiveSettings, ProviderSetupPrompt, RepositoryReadiness, SaveTaskTemplateDialog, UseTaskTemplateDialog } from "./onboarding.js";
-import { rerunDraft } from "./rerun-draft.js";
+import { rerunDraft, sourceForRerun } from "./rerun-draft.js";
 import { RemoteWorkerSelect, type WorkerChoice } from "./remote-workers.js";
 import type { WorkerCapabilities } from "../src/remote-workers/protocol.js";
 import { DeferredRunsPanel } from "./deferred-runs.js";
@@ -184,7 +184,7 @@ export function Composer() {
     roles,
     options: optionsFor(p),
     baseRef: baseRef.value,
-    source: source.value && !(restored?.source?.kind === source.value.kind && restored.source.number === source.value.number) ? { kind: source.value.kind, number: source.value.number, ciLogs: !!source.value.ciLogs, tool: source.value.tool, numbers: source.value.numbers } : undefined,
+    source: sourceForRerun(source.value, restored?.source),
     branchPrefix: branchPrefix.value.trim(),
     externalSourceId: externalSource.value?.id,
     context: {
