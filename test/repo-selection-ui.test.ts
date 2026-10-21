@@ -219,6 +219,13 @@ test("default and independent role selection excludes known unhealthy providers 
     { id: "planner", default: ["claude"] }, { id: "builder", default: ["codex"] }, { id: "reviewer", default: ["agy"] },
   ] } as import("../ui/types.js").PatternInfo;
   state.roleSel.value = {};
+  assert.equal(Object.values(state.rolesFor(workflow)).flat().includes("agy"), false, "unverified managed Antigravity is excluded from automatic defaults");
+  state.health.value![2]!.managedCompatible = true;
+  assert.equal(Object.values(state.rolesFor(workflow)).flat().includes("agy"), true);
+  state.health.value![2]!.managedCompatible = false;
+  state.composerRunOptions.value = { antigravityExecution: "native" };
+  assert.equal(Object.values(state.rolesFor(workflow)).flat().includes("agy"), true, "explicit unrestricted authority permits native defaults");
+  state.composerRunOptions.value = {};
   assert.equal(Object.values(state.rolesFor(workflow)).flat().includes("claude"), false);
   state.setRoles("pipeline", "planner", ["agy"]);
   assert.equal(Object.values(state.rolesFor(workflow)).flat().includes("claude"), false, "independent review must not pick a signed-out third vendor");

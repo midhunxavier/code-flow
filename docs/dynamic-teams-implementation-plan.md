@@ -678,3 +678,7 @@ Added an opt-in native refresh observer that uses ordinary isolated discovery an
 - Execute against the existing host profile and saved login, without sandbox flags or credential copies. Retain fresh portable turns, tracked process lifecycle and private authentication diagnostics. Keep native and isolated catalog identities separate and recover only with fresh discovery in the recorded mode.
 - Verified a real mixed-provider Auto run: Codex coordinator, native Antigravity file edit and terminal check, independent Codex review, configured checks passed. No new sign-in requested. Native discovery reported six models. Expired-token refresh and browser/MCP/hooks/native-child behavior were not exercised.
 - Deterministic tests cover opt-in receipts, forged/mismatched options, unchanged other-provider permissions, incompatible constraints, parent narrowing, private auth persistence failures, both catalog modes, and recovery with portable work and preserved assignment provenance.
+
+### Main integration verification
+
+Automatic role defaults now require verified Antigravity managed-runtime availability, separately from CLI flag compatibility. Unsupported isolated reviewers are rejected before a local run starts; explicit native opt-in retains its separate eligibility. Remote execution uses the remote inventory and dispatch checks rather than host runtime evidence. Auto’s free-model picker uses the same discovered catalog as its model controls. Editable retries and project drafts preserve recorded permission requirements and the explicit Antigravity mode.

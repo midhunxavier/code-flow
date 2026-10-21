@@ -251,20 +251,22 @@ test("doctor: installed, version, signed in — and how to fix it", async () => 
   }
 });
 
-test("run app: a worktree's dev server on a free port, then stopped", async () => {
+test("run app: a worktree's dev server on a free port, then stopped", async (t) => {
   const run = await runPattern(pipelineRoles, { loop: { check: "" } });
   const key = `${run.id}/build`;
   const server = await manager.devServers.start(
     key,
     run.worktrees[0]!.path,
-    `node -e "require('http').createServer((q, r) => r.end('hello from ' + process.cwd().split('/').pop())).listen(process.env.PORT)"`,
-    5173,
+    `node -e "require('http').createServer((q, r) => r.end('hello from ' + process.cwd().split('/').pop())).listen(process.env.PORT, '127.0.0.1')"`,
+    undefined,
   );
-  // 5173 is preferred, but another port when it (and the ones after it) are busy.
+  t.after(() => manager.devServers.stop(key));
+  const url = server.url.replace("localhost", "127.0.0.1");
+  // An ephemeral port keeps the fixture separate from running development servers.
   assert.ok(server.port > 0 && server.port < 65_536);
   let body = "";
   for (let i = 0; i < 50 && !body; i++) {
-    body = await fetch(server.url).then((r) => r.text(), () => "");
+    body = await fetch(url, { signal: AbortSignal.timeout(1000) }).then((r) => r.text(), () => "");
     if (!body) await new Promise((r) => setTimeout(r, 100));
   }
   assert.equal(body, "hello from build");
@@ -272,7 +274,7 @@ test("run app: a worktree's dev server on a free port, then stopped", async () =
   // Stopping takes as long as the process group takes to exit: poll, with a generous deadline.
   let state = "up";
   for (const deadline = Date.now() + 10_000; state === "up" && Date.now() < deadline; ) {
-    state = await fetch(server.url).then(() => "up", () => "down");
+    state = await fetch(url, { signal: AbortSignal.timeout(1000) }).then(() => "up", () => "down");
     if (state === "up") await new Promise((r) => setTimeout(r, 100));
   }
   assert.equal(state, "down");

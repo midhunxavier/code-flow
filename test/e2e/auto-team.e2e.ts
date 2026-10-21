@@ -79,6 +79,10 @@ test("Auto is the fresh default, Solo is direct, and Advanced templates survive 
     await modelPanel.getByText(/claude · current/).waitFor();
     const catalog = await fetch(`${base}/api/model-catalog`, { headers }).then(r=>r.json()) as any;
     assert.equal(catalog.allowResearch, false);
+    const health = await fetch(`${base}/api/doctor`, { headers }).then(r => r.json());
+    assert.equal(health.find((agent: { id: string }) => agent.id === "agy").managedCompatible, false);
+    const unsupported = await fetch(`${base}/api/runs`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ repo, pattern: "pipeline", task: "Reject unsupported reviewer", roles: { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] }, options: {} }) });
+    assert.equal(unsupported.status, 400, "reject incompatible explicit reviewers before starting work");
     assert.ok(catalog.providers.find((p:any)=>p.provider==="codex").catalog.models.some((m:any)=>m.id==="gpt-a"));
     assert.match(catalog.providers.find((p:any)=>p.provider==="agy").blockedReason,/macOS/);
     assert.equal((await fetch(`${base}/api/model-catalog`, {method:"POST",headers:{...headers,"content-type":"application/json"},body:JSON.stringify({permissions:"full"})})).status,400);

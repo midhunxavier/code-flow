@@ -27,6 +27,8 @@ export interface HealthEntry {
    * steps that use the missing ones will fail with an unknown option. Undefined: not checked.
    */
   compatible?: boolean;
+  /** Verified default managed executor availability, separate from legacy CLI flags. */
+  managedCompatible?: boolean;
   /** The flags and subcommands code-flow needs that this CLI doesn't list. */
   missing?: string[];
   /** Problems worth knowing that don't make the CLI unusable (and the incompatibility, worded). */
@@ -117,7 +119,11 @@ export interface GitHealth {
 }
 
 export async function doctor(quota: Partial<Record<AgentId, HealthEntry["quota"]>>): Promise<HealthEntry[]> {
-  return Promise.all(AGENT_IDS.map((id) => check(id, quota[id])));
+  return Promise.all(AGENT_IDS.map(async (id) => {
+    const entry = await check(id, quota[id]);
+    if (id === "agy" && entry.installed) entry.managedCompatible = !await getAdapter(id).managedAvailability?.();
+    return entry;
+  }));
 }
 
 /** git itself: code-flow's worktrees, commits and merges all need it, and merges need 2.38+. */

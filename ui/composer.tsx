@@ -943,7 +943,7 @@ function Team({ p, roles, providers, remote }: { p: PatternInfo; roles: Record<s
         const selected = roles[role.id] ?? [];
         const multipleModels = role.multiple;
         const freeProviders = remote ? [] : (providers ?? agents.value).filter(a => a.available && supportsRunPermissions(a.id)).flatMap(a => {
-          const catalog = catalogs.value[a.id];
+          const catalog = p.id === "auto-team" ? discoveredCatalogs.value[a.id] : catalogs.value[a.id];
           const free = catalog && !("error" in catalog) ? catalog.models.filter(isFreeModel) : [];
           return free.length ? [{ agent: a.id, models: free }] : [];
         });

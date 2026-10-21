@@ -180,7 +180,6 @@ test("approve the plan from the UI: ask for changes, then approve", async () => 
   await page.goto(BASE);
   await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
-  await page.locator(".composer-options > summary").click();
   await page.getByText("Let me approve the plan").click();
   await page.getByLabel("Task", { exact: true }).fill("E2E: checkpoint");
   await page.getByRole("button", { name: /^Start run/ }).click();
@@ -199,7 +198,7 @@ test("a message sent while Codex is working reaches its running turn", async () 
   await page.goto(BASE);
   await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
-  if (!(await page.locator(".composer-options").getAttribute("open"))) await page.locator(".composer-options > summary").click();
+  if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click();
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from the last test
   // The fake Codex keeps this turn open until a message is steered into it.
   await page.getByLabel("Task", { exact: true }).fill("E2E: steer WAIT-FOR-STEER");
@@ -427,8 +426,8 @@ test("supervisor: the reviewer defaults to a different vendor than the superviso
   await page.goto(BASE);
   await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
-  if (!(await page.locator(".composer-options").getAttribute("open"))) await page.locator(".composer-options > summary").click();
-  if (!(await page.locator(".advanced-controls").getAttribute("open"))) await page.locator(".advanced-controls > summary").click();
+  if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click();
+  if (await page.locator(".advanced-controls").getAttribute("open") === null) await page.locator(".advanced-controls > summary").click();
   const role = (label: string) => page.locator(".role").filter({ has: page.locator(".rl", { hasText: new RegExp(`^${label}`) }) });
   const pressed = async (label: string) =>
     (await role(label).locator(".pill[aria-pressed=true]").allInnerTexts()).map((t) => t.replace(/^✓\s*/, "").trim());
@@ -462,7 +461,7 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
 
   await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
-  if (!(await page.locator(".composer-options").getAttribute("open"))) await page.locator(".composer-options > summary").click();
+  if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click();
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from earlier tests: the run mustn't wait for approval
   await page.getByLabel("Task", { exact: true }).fill("E2E: in the side project");
   await page.getByRole("button", { name: /^Start run/ }).click();
@@ -609,7 +608,7 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
   run = await api(`/api/runs/${created.id}`);
   const ask = run.followUps.find((f: { message: string }) => f.message === "E2E: what did this run change?");
   assert.deepEqual([ask.kind, ask.side.mode, ask.worktree], ["side", "ask", run.worktrees.find((w: { path: string }) => w.path === result.path).name]);
-  assert.equal(await page.locator(".runview").getByText("E2E: what did this run change?").count(), 0, "a side chat isn't in the run's thread");
+  assert.equal(await page.locator(".runview .steps").getByText("E2E: what did this run change?").count(), 0, "a side chat isn't in the run's thread");
   assert.match(await chats.first().innerText(), /E2E: what did this run change\?/);
 
   // Change: committed on the run's branch; the run's thread gets a line about it.
@@ -1502,9 +1501,10 @@ test("Auto team selects all free models into a persistent bounded model pool", a
       localStorage.setItem("repo", repository); localStorage.setItem("pattern", "auto-team"); localStorage.setItem("sideOpen", "0"); localStorage.setItem("theme", "dark");
       localStorage.setItem("roleSel", JSON.stringify({ "auto-team": { pool: ["claude"], coordinator: ["codex"] } }));
     }, repo);
-    await fresh.route("**/api/models", async route => {
+    await fresh.route("**/api/model-catalog?*", async route => {
       const response = await route.fetch(); const catalogs = await response.json();
-      catalogs.claude.models = [{ id: "paid", label: "Paid model" }, { id: "first-free", label: "First (free)" }, { id: "second-free", label: "Second (free)" }];
+      const catalog = catalogs.providers.find((provider: { provider: string }) => provider.provider === "claude").catalog;
+      catalog.models = [{ id: "paid", label: "Paid model" }, { id: "first-free", label: "First (free)" }, { id: "second-free", label: "Second (free)" }].map(model => ({ ...catalog.models[0], ...model }));
       await route.fulfill({ response, json: catalogs });
     });
     await fresh.goto(`${BASE}/?token=${TOKEN}`);
@@ -1513,7 +1513,7 @@ test("Auto team selects all free models into a persistent bounded model pool", a
     const role = fresh.locator(".role").filter({ has: fresh.locator(".rl", { hasText: /^Available providers/ }) });
     const model = role.getByLabel("Claude Code model for the available providers", { exact: true });
     await model.click();
-    assert.deepEqual(await fresh.getByRole("listbox").locator(".model-option-name").allTextContents(), ["Default model", "First (free)", "Second (free)", "Paid model"]);
+    assert.deepEqual(await fresh.getByRole("listbox").locator(".model-option-name").allTextContents(), ["Automatic · coordinator chooses", "First (free)", "Second (free)", "Paid model"]);
     await fresh.getByRole("combobox", { name: /^Search / }).press("Escape");
     await role.getByRole("button", { name: "Select all free", exact: true }).click();
     assert.equal((await model.textContent())?.trim(), "First (free)");

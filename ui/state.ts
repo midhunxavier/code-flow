@@ -641,6 +641,7 @@ export interface Health {
   fix?: string;
   /** false: the CLI's --help lacks a flag code-flow passes, so steps will fail on it. */
   compatible?: boolean;
+  managedCompatible?: boolean;
   missing?: string[];
   warnings?: string[];
 }
@@ -730,7 +731,7 @@ export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]
   const saved = roleSel.value[p.id] ?? {};
   const eligibleDefaults = agents.value.filter((a) => {
     const diagnostic = health.value?.find(entry => entry.id === a.id);
-    return a.available && supportsRunPermissions(a.id) && diagnostic?.signedIn !== false && diagnostic?.compatible !== false && (!a.id.startsWith("acp:") || trust.value === "full");
+    return a.available && supportsRunPermissions(a.id) && (a.id !== "agy" || composerRunOptions.value.antigravityExecution === "native" || diagnostic?.managedCompatible === true) && diagnostic?.signedIn !== false && diagnostic?.compatible !== false && (!a.id.startsWith("acp:") || trust.value === "full");
   });
   const eligibleIds = new Set(eligibleDefaults.map(agent => agent.id));
   const firstAvailable = eligibleDefaults[0]?.id;

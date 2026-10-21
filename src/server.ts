@@ -607,8 +607,10 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string, re
   const requested = requestedRoles(pattern, input);
   const inventory = remoteWorker ? (await manager.remoteInventory(remoteWorker)).providers : await agentAvailability();
   const installed = new Set(inventory.filter((a) => a.available).map((a) => a.id));
+  const runtimeProblems = new Map(await Promise.all([...installed].map(async id => [id, !remoteWorker && policy && id === "agy" && policy.antigravityExecution !== "native" ? await getAdapter(id).managedAvailability?.() : undefined] as const)));
   const trust = requestedTrust ?? (repo ? (await readRepoConfig(repo)).config.trust : undefined);
   const eligible = new Set([...installed].filter((id) => {
+    if (runtimeProblems.get(id)) return false;
     if (policy) {
       try {
         const runPolicy = createRunPermissions((trust ?? "standard") as Trust, policy.tools, pattern.id === "solo", policy.required, policy.antigravityExecution);
@@ -637,6 +639,7 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string, re
   }
   if (pattern.id === "auto-team" && !roles.pool?.some((agent) => installed.has(agent))) throw new HttpError(400, "Select at least one available provider for the worker pool");
   for (const agent of needed) {
+    if (runtimeProblems.get(agent)) throw new HttpError(400, runtimeProblems.get(agent)!);
     if (!installed.has(agent)) {
       throw new HttpError(400, `${getAdapter(agent).displayName} (\`${getAdapter(agent).binary}\`) is not installed or not on PATH`);
     }
