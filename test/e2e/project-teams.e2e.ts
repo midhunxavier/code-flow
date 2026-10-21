@@ -19,7 +19,7 @@ const api = async (path: string, body?: unknown) => {
 };
 async function startServer() {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("CODEFLOW_")));
-  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...env, PORT: String(port), CODEFLOW_REMOTE_PORT: String(await freePort()), CODEFLOW_HOME: join(home, "data"), CODEFLOW_TOKEN: token, CODEFLOW_SCHEDULER_TICK_MS: "250", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...env, PORT: String(port), CODEFLOW_REMOTE_PORT: String(await freePort()), CODEFLOW_HOME: join(home, "data"), CODEFLOW_TOKEN: token, CODEFLOW_SCHEDULER_TICK_MS: "250", FAKE_DISCOVERY_MODELS: JSON.stringify(["sonnet", "standing-free"].map(value => ({ value, resolvedModel: value, displayName: value, supportsEffort: true, supportedEffortLevels: ["low", "high"] }))), PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
   server.stdout?.resume();
   server.stderr?.on("data", (data) => errors.push(String(data)));
   let ready = false;

@@ -2116,6 +2116,8 @@ export async function editAndRerun(run: RunSummary) {
     verification: run.loop.verification ? "restored" : "",
     verificationProfile: run.loop.verification ?? null,
     toolApprovals: run.approvals?.tools === true,
+    antigravityExecution: run.permissions?.antigravityExecution,
+    permissionRequirements: [...(run.permissions?.required ?? [])],
   };
   intentDraft.value = run.intent;
   journeyDraft.value = undefined;
