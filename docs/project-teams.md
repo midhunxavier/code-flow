@@ -8,7 +8,7 @@ A project mission connects an owner mission to one repository. Existing Automati
 
 ## Create a mission
 
-1. Open a project and click **Enable project missions** in its Project missions section. The choice applies immediately to every project on this host and is saved across restarts; no startup flag is required. Auto team must also be permitted by the host (`CODEFLOW_AUTO_TEAM_ENABLED` defaults to enabled).
+1. Open **Project → More → Automation → Pursue a mission** and click **Enable project missions**. The choice applies immediately to every project on this host and is saved across restarts; no startup flag is required. Auto team must also be permitted by the host (`CODEFLOW_AUTO_TEAM_ENABLED` defaults to enabled).
 2. Open a project that explicitly contains the repository. Select **Create a mission**.
 3. Enter its mission, intended users, priorities, exclusions and named local base branch. Select a coordinator and worker/reviewer providers. Claude, Codex and Antigravity are eligible when installed; ACP and extension providers are currently excluded from unattended project missions.
 4. Choose **Build within scope** and supply a required check command, or choose proposals only. Set allowed paths, categories and change limits. Models and reasoning use the existing provider catalog.
@@ -34,7 +34,7 @@ There is one active cycle per repository, at most two unresolved implementation 
 
 ## Review and feedback
 
-The project page contains the full opportunity cards, cycle history, selection reasons, budgets and links to existing run diffs/checks. The review inbox contains compact links to actionable project missions.
+Project → Automation → Pursue a mission contains the full opportunity cards, cycle history, selection reasons, budgets and links to existing run diffs/checks. Project Overview and the global Inbox contain compact links to actionable mission opportunities. Their approval and evidence requirements stay the same.
 
 - **Build proposal** allocates a bounded whole Auto team. High-risk, unsupported or stale work requires a revised mission or an ordinary owner-directed task.
 - **Request revision** records feedback and launches a fresh bounded whole team from the pinned base, with the previous result referenced as evidence. It does not silently continue a single writer or refresh the old run's allowance.

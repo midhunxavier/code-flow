@@ -248,7 +248,9 @@ test("disconnect, reconnect and address changes never fall back to Wi-Fi; restar
   await start();
   const restarted = await api("/api/remote?refresh=1");
   assert.equal(restarted.transport, "tailscale"); assert.equal(restarted.tailscaleUrl, changed.tailscaleUrl);
-  assert.equal((await responseFrom(paired, "/api/runs")).status, 200, "paired devices survive restarts");
+  // The open tab reloads when its stream reconnects. Check the same browser session
+  // without racing that navigation's JavaScript execution context.
+  assert.equal((await paired.request.get(new URL("/api/runs", restarted.tailscaleUrl).href)).status(), 200, "paired devices survive restarts");
   const unpaired = await phone();
   assert.equal((await unpaired.goto(restarted.tailscaleUrl))!.status(), 403, "expired links cannot pair new devices");
   await owner.goto(`${base}/?team=local#/settings/remote-access`);
@@ -351,7 +353,7 @@ test("the team wizard reuses HTTPS and existing project access, and shares only 
   await setStatus(connected()); await api("/api/remote?refresh=1");
   await api("/api/remote", { enabled: true, lan: true, transport: "tailscale" });
   await owner.goto(`${base}/?team=local#/settings/team`);
-  await owner.getByLabel("Show People collaboration").check();
+  await owner.getByLabel("Show Board in the app menu").check();
   await owner.getByRole("button", { name: "Set up team server", exact: true }).click();
   const wizard = owner.getByRole("region", { name: "Team server setup", exact: true });
   await wizard.getByLabel("Your name on the team", { exact: true }).fill("Team host");

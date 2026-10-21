@@ -1,4 +1,3 @@
-import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
 import type { outcomeMetrics, TaskIntent, workflowRecommendations } from "../src/experience.js";
 import { progressSummary } from "../src/experience.js";
@@ -9,7 +8,7 @@ import { ScenarioEvidence } from "./journeys.js";
 import type { Journey } from "../src/journeys.js";
 import { checksLabel, agentReviewLabel } from "./run-experience.js";
 
-export const intentDraft = signal<TaskIntent | undefined>();
+export { intentDraft } from "./composer-draft-fields.js";
 type Experience = { metrics: ReturnType<typeof outcomeMetrics>; recommendations: ReturnType<typeof workflowRecommendations> };
 export function OutcomeMetrics({ repository, project }: { repository?: string; project?: string }) {
   const [data, setData] = useState<Experience>(), [error, setError] = useState("");

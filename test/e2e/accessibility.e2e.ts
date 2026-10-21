@@ -39,7 +39,7 @@ test("main screens, workspace tools and dialogs pass automatic accessibility che
     await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
     for (const [route, name] of [["", "composer"], [`/run/${runId}`, "run result"], ["/settings/workspace", "workspace"]]) { await page.goto(`${base}/#${route}`); await page.locator("main").waitFor(); await page.waitForFunction(() => document.querySelector("main")!.textContent!.trim().length > 10); await audit(`${colorScheme} ${name}`); }
     const tabs = ["Code", "Context", "History", "Services", "Coordinated changes", "Filtered tasks"];
-    for (const tab of tabs) { await page.getByRole("navigation", { name: "Workspace tools" }).getByRole("button", { name: tab, exact: true }).click(); await audit(`${colorScheme} workspace ${tab}`); }
+    for (const tab of tabs) { await page.getByRole("navigation", { name: "Repository tools" }).getByRole("button", { name: tab, exact: true }).click(); await audit(`${colorScheme} workspace ${tab}`); }
     await page.goto(`${base}/#/settings`);
     for (const category of ["General", "Agents & models", "Run defaults", "Notifications", "Connections", "Integrations", "Projects", "Extensions", "Data & storage", "Advanced"]) {
       await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: category, exact: true }).click();
@@ -49,10 +49,10 @@ test("main screens, workspace tools and dialogs pass automatic accessibility che
     for (const tab of ["Files", "Notes", "Chat"]) { await page.getByRole("tab", { name: tab, exact: true }).click(); await page.getByRole("tabpanel").waitFor(); await audit(`${colorScheme} side panel ${tab}`); }
     await page.getByRole("button", { name: "Close side panel", exact: true }).click();
     await page.getByRole("button", { name: "Open command palette", exact: true }).click(); await page.getByRole("dialog").waitFor(); await audit(`${colorScheme} command palette`); await page.keyboard.press("Escape");
-    await page.goto(`${base}/#/`); await page.locator(".repo-btn:not(.project-btn)").click(); await page.getByRole("dialog").waitFor(); await audit(`${colorScheme} folder picker`); await page.keyboard.press("Escape");
+    await page.goto(`${base}/#/`); await page.getByRole("button", { name: "Open another repository", exact: true }).click(); await page.getByRole("dialog").waitFor(); await audit(`${colorScheme} folder picker`); await page.keyboard.press("Escape");
   }
   await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${base}/#/`); await page.locator("main").waitFor(); await audit("mobile composer"); await page.goto(`${base}/#/settings/workspace`); await page.getByRole("heading", { name: "Inspect, verify, and recover" }).waitFor(); await audit("mobile workspace");
-  await page.getByLabel("Workspace tool", { exact: true }).selectOption("code");
+  await page.getByLabel("Repository tool", { exact: true }).selectOption("code");
   const editor = page.locator(".workbench .code-browser");
   await editor.getByLabel("File to edit", { exact: true }).fill("README.md");
   await editor.getByRole("button", { name: "Open file", exact: true }).click();
@@ -60,7 +60,7 @@ test("main screens, workspace tools and dialogs pass automatic accessibility che
   await editor.locator(".change-impact > summary").click();
   await editor.getByText("Additional scan evidence", { exact: true }).waitFor();
   await audit("mobile contextual architecture tool");
-  await page.getByLabel("Workspace tool", { exact: true }).selectOption("verification");
+  await page.getByLabel("Repository tool", { exact: true }).selectOption("verification");
   await page.screenshot({ path: join(root, "output/playwright/accessibility-mobile.png"), fullPage: true });
   const failures = findings.filter((item) => item.violations.length); assert.deepEqual(failures, [], JSON.stringify(failures.map((item) => ({ screen: item.screen, violations: item.violations })), null, 2));
 });

@@ -68,7 +68,7 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
     catalogs.claude.models = [{ id: "standing-free", label: "Standing model (free)", efforts: ["low", "high"] }];
     await route.fulfill({ response, json: catalogs });
   });
-  await page.goto(`${base}/?token=${token}#/project/${id}`);
+  await page.goto(`${base}/?token=${token}#/project/${id}/automation/missions`);
   assert.equal((await api("/api/project-teams/settings")).body.enabled, false);
   await page.getByRole("button", { name: "Enable project missions", exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Create a mission", exact: true }).isEnabled(), false);
@@ -111,7 +111,7 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   assert.match((await deletion.json()).error, /Standing project teams retain/);
   await page.getByRole("button", { name: "Approve this commit" }).click();
   await page.getByText("Approved. Open the result to publish a PR or merge using the existing review controls.").waitFor();
-  const tab = await context.newPage(); await tab.goto(`${base}/#/project/${id}`); await tab.getByRole("button", { name: "Preview next cycle" }).waitFor();
+  const tab = await context.newPage(); await tab.goto(`${base}/#/project/${id}/automation/missions`); await tab.getByRole("button", { name: "Preview next cycle" }).waitFor();
   const health = await api("/api/health"); assert.equal(health.body.streams.streams, 1, "project team subscriptions reuse the shared transport");
   await page.getByRole("button", { name: "Disable project missions", exact: true }).click();
   await tab.getByRole("button", { name: "Enable project missions", exact: true }).waitFor();

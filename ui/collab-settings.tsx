@@ -131,7 +131,7 @@ function TeamServerCard({ link, b }: { link: TeamLinkInfo | null; b: Board | nul
 }
 
 /** The repository keys of one project: short names teammates map to their own clones. */
-function RepoKeysEditor({ project, revision }: { project: BoardProject; revision: number }) {
+export function RepoKeysEditor({ project, revision }: { project: BoardProject; revision: number }) {
   const [rows, setRows] = useState<RepoRef[]>(project.repositories.map((ref) => ({ ...ref })));
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const saved = JSON.stringify(project.repositories), dirty = JSON.stringify(rows) !== saved;

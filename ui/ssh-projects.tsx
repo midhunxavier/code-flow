@@ -29,10 +29,10 @@ export function readConnectionIntent() {
   newProjectDraft.value = { name }; projectEdit.value = "new"; projectsOpen.value = true;
   return true;
 }
-const hostLabel = () => executionHost.value.kind === "ssh" ? executionHost.value.name : executionHost.value.kind === "host" ? "Remote server" : "This computer";
+export const computerLabel = () => executionHost.value.kind === "ssh" ? executionHost.value.name : executionHost.value.kind === "host" ? "Remote server" : "This computer";
 
 export function HostControl({ projectName }: { projectName?: string }) {
-  return <Menu label={projectName === undefined ? "SSH connections" : "Project computer"} icon="chevron" class="host-switcher" trigger={<><span>{hostLabel()}</span><Icon name="chevron" /></>}>
+  return <Menu label={projectName === undefined ? "SSH connections" : "Project computer"} icon="chevron" class="host-switcher" trigger={<><span>{computerLabel()}</span><Icon name="chevron" /></>}>
     {(close) => <HostChoices close={close} projectName={projectName} />}
   </Menu>;
 }

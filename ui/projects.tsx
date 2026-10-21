@@ -6,6 +6,14 @@ import { Icon } from "./icons.js";
 import { api, baseName, post, showToast } from "./lib.js";
 import {
   ALL,
+  composerProject,
+  composerLoading,
+  openComposer,
+  chooseComposerRepository,
+  projectPickerPurpose,
+  repositoryChoice,
+  pickRepo,
+  route,
   NONE,
   activeProject,
   currentProject,
@@ -21,7 +29,6 @@ import {
   repo,
   runs,
   selectProject,
-  target,
 } from "./state.js";
 import type { Project, RepoInfo, RunSummary } from "./types.js";
 
@@ -36,10 +43,10 @@ const Tail = ({ text }: { text: string }) => <span class="pr-path">{`\u200E${tex
  * goes in (the repo's own, while you haven't picked one); on Insights and Automations, what they show.
  */
 export function ProjectButton({ composer = false }: { composer?: boolean }) {
-  const p = activeProject.value;
-  const label = composer ? (p ?? target.value.project)?.name ?? "New project" : p ? p.name : currentProject.value === NONE ? "No project" : "All projects";
+  const p = composer ? projects.value.find(item => item.id === composerProject.value) : activeProject.value;
+  const label = composer ? p?.name ?? "Choose project" : p ? p.name : currentProject.value === NONE ? "Unassigned" : "All projects";
   return (
-    <button type="button" class="repo-btn project-btn" title="Projects: switch, create or edit (p)" onClick={() => (projectsOpen.value = true)}>
+    <button type="button" class="repo-btn project-btn" disabled={composerLoading.value} title={composer ? "Choose the project's saved draft" : "Filter projects"} onClick={() => { projectPickerPurpose.value = composer ? "composer" : "filter"; projectsOpen.value = true; }}>
       <Icon name="project" />
       <span class="name">{label}</span>
       <Icon name="chevron" class="caret" />
@@ -63,13 +70,14 @@ export function ProjectsDialog() {
     const list = all.filter((r) => inScope(r, scope));
     return { runs: list.filter((r) => !r.archived).length, archived: list.filter((r) => r.archived).length, waiting: list.filter(needsYou).length };
   };
-  const choose = (id: string) => {
-    selectProject(id);
+  const choose = async (id: string) => {
+    if (projectPickerPurpose.value === "composer") await openComposer(id);
+    else selectProject(id);
     close();
   };
   const row = (id: string, name: string, detail: string, p?: Project) => {
     const c = counts(id);
-    const on = currentProject.value === id;
+    const on = (projectPickerPurpose.value === "composer" ? composerProject.value : currentProject.value) === id;
     return (
       <div key={id || "all"} class={`project-row ${on ? "on" : ""}`} role="listitem">
         <button type="button" class="pr-main" aria-current={on ? "true" : undefined} onClick={() => choose(id)}>
@@ -104,15 +112,15 @@ export function ProjectsDialog() {
           <>
             <div class="picker-head">
               <h3 id="projects-title">Projects</h3>
-              <div class="help">A project groups the runs in its repositories. New runs start in the project you pick, and Insights and Automations show it.</div>
+              <div class="help">{projectPickerPurpose.value === "composer" ? "Open a project's saved draft. Each project keeps its own task and run options." : "Choose which projects these lists show. Your saved run draft keeps its own destination."}</div>
             </div>
             <div class="picker-list" role="list">
-              {row(ALL, "All projects", "new runs go in their repository's project")}
+              {row(ALL, projectPickerPurpose.value === "composer" ? "Unassigned draft" : "All projects", projectPickerPurpose.value === "composer" ? "Recover a draft that needs a destination" : "show all projects on this computer")}
               {byName(projects.value).map((p) => row(p.id, p.name, reposText(p), p))}
-              {orphans.runs || orphans.archived ? row(NONE, "No project", "runs whose project was deleted") : null}
+              {projectPickerPurpose.value !== "composer" && (orphans.runs || orphans.archived) ? row(NONE, "Unassigned", "runs whose project was deleted") : null}
             </div>
             <div class="picker-foot">
-              <span class="ps">{projects.value.length ? null : "Your first run in a repository makes a project for it."}</span>
+              <span class="ps">{projects.value.length ? null : "Open a repository to create your first project."}</span>
               <button class="btn" type="button" onClick={() => setEditing("new")}>
                 <Icon name="plus" /> New project
               </button>
@@ -147,7 +155,8 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
       const saved = await post<Project>(project ? `/api/projects/${project.id}` : "/api/projects", { name, repos });
       await loadProjects();
       if (project) return onDone();
-      selectProject(saved.id);
+      if (projectPickerPurpose.value === "composer") await openComposer(saved.id);
+      else route.value = { view: "project", id: saved.id };
       onCreated();
       showToast(`Created the project ${saved.name}`);
     } catch (err) {
@@ -219,7 +228,7 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
                 </button>
               </div>
             ))}
-            {!repos.length ? <div class="help">None yet: the first run you start in this project adds its repository.</div> : null}
+            {!repos.length ? <div class="help">Add a repository before starting a run. You can also keep an empty project for shared work.</div> : null}
           </div>
           <button type="button" class="btn ghost small add-repo" onClick={addRepo}>
             <Icon name="plus" /> Add repository…
@@ -327,28 +336,43 @@ function MoveDialog({ run, onClose }: { run: RunSummary; onClose: () => void }) 
   );
 }
 
-/** In the composer: where the run goes, when that isn't simply the project you're in. */
-export function ProjectNote() {
-  const t = target.value;
-  const r = repo.value;
-  if (!r) return null;
-  const note = t.creates ? (
-    <>
-      No project holds <b>{baseName(r)}</b> yet: starting the run makes one named after it.
-    </>
-  ) : t.adds ? (
-    <>
-      Starting adds <b>{baseName(r)}</b> to the project <b>{t.project!.name}</b>.
-    </>
-  ) : !activeProject.value && t.project ? (
-    <>
-      Goes in the project <b>{t.project.name}</b>.
-    </>
-  ) : null;
-  return note ? (
-    <div class="config-note project-note">
-      <Icon name="project" />
-      <span>{note}</span>
+/** The same folder browser serves onboarding and explicit project membership changes. */
+export function openRepository(project?: string) {
+  pickerChoose.value = { title: "Open repository", choose: path => { void pickRepo(path, project ?? ""); } };
+  pickerOpen.value = true;
+}
+
+export function RepositoryChoiceDialog() {
+  const choice = repositoryChoice.value!;
+  const [name, setName] = useState(baseName(choice.repository).slice(0, 60));
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const close = () => { if (!busy) repositoryChoice.value = null; };
+  const ref = useDialog(true, close);
+  const current = projects.value.find(item => item.id === choice.project);
+  const matches = projects.value.filter(item => item.repos.includes(choice.repository));
+  const choose = async (id?: string, add = false) => {
+    if (busy) return;
+    setBusy(true); setError("");
+    try {
+      let project = id;
+      if (add && id) await post(`/api/projects/${encodeURIComponent(id)}/repositories`, { repo: choice.repository });
+      if (!project) project = (await post<Project>("/api/projects", { name: name.trim(), repos: [choice.repository] })).id;
+      await loadProjects();
+      if (!await openComposer(project, { repository: choice.repository, carryUnassigned: true })) throw new Error("The project draft could not be opened. Try again.");
+      await chooseComposerRepository(choice.repository);
+      repositoryChoice.value = null;
+    } catch (error) { setError((error as Error).message); }
+    finally { setBusy(false); }
+  };
+  return <dialog class="picker small-dialog" ref={ref} aria-labelledby="repository-project-title">
+    <div class="picker-inner"><div class="picker-head"><h3 id="repository-project-title">Open repository in a project</h3><p class="help"><code>{choice.repository}</code></p></div>
+      <div class="dialog-body">
+        {matches.length ? <div class="project-destinations"><p>Choose an existing project:</p>{matches.map(project => <button class="btn" disabled={busy} onClick={() => void choose(project.id)}>Open {project.name}</button>)}</div> : null}
+        {current && !current.repos.includes(choice.repository) ? <div class="project-destinations"><button class="btn" disabled={busy} onClick={() => void choose(current.id, true)}>Add to {current.name}</button><p class="help">This repository becomes part of the project. Existing project access rules apply.</p></div> : null}
+        <label class="lbl" for="repository-project-name">New project name</label><input id="repository-project-name" class="field" maxLength={60} value={name} disabled={busy} onInput={event => setName(event.currentTarget.value)} />
+        <p class="help">The project keeps its own draft and run history. No agent starts until you select Start run.</p>
+        {error ? <p class="msg err" role="alert">{error}</p> : null}
+      </div><div class="picker-foot"><button class="btn" disabled={busy} onClick={close}>Cancel</button><button class="btn primary" disabled={busy || !name.trim()} onClick={() => void choose()}>{busy ? "Opening…" : "Create project"}</button></div>
     </div>
-  ) : null;
+  </dialog>;
 }

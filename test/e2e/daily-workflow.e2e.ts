@@ -210,7 +210,7 @@ test("edit and run again preserves pinned inputs, provider settings, permissions
   await page.goto(base + `/#/run/${original.id}`);
   await page.getByRole("button", { name: "More run actions", exact: true }).click();
   await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
-  await page.waitForURL(url => url.hash === "#/");
+  await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
   await page.locator(".composer-summary").getByText(saved.baseRef, { exact: false }).waitFor();
   await page.getByRole("button", { name: "Edit run options", exact: true }).click();
   await page.locator(".advanced-controls > summary").click();
@@ -236,15 +236,15 @@ test("retry retains container isolation and never falls back from an unavailable
     await page.goto(base + `/#/run/${id}`);
     await page.getByRole("button", { name: "More run actions", exact: true }).click();
     await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
-    await page.waitForURL(url => url.hash === "#/");
+    await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
     await page.getByRole("button", { name: "Edit run options", exact: true }).click();
   };
   await edit("retry-container");
-  await page.locator(".repo-btn:not(.project-btn)").click();
+  await page.getByRole("button", { name: "Open another repository", exact: true }).click();
   const picker = page.getByRole("dialog");
   await picker.getByLabel("Folder path", { exact: true }).fill(repo + "/.");
   await picker.getByRole("button", { name: "Go", exact: true }).click();
-  await picker.getByRole("button", { name: "Use this folder", exact: true }).click();
+  await picker.getByRole("button", { name: "Open this repository", exact: true }).click();
   await picker.waitFor({ state: "hidden" });
   await page.locator(".agent-isolation > summary").click();
   assert.equal(await page.getByLabel("Run agents in a prebuilt Docker image").isChecked(), true);
@@ -280,7 +280,7 @@ test("retry source option edits refresh CI context while retaining the pinned PR
     await page.goto(base + `/#/run/${sourceRun.id}`);
     await page.getByRole("button", { name: "More run actions", exact: true }).click();
     await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
-    await page.waitForURL(url => url.hash === "#/");
+    await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
     await page.getByRole("checkbox", { name: "CI logs", exact: true }).setChecked(ciLogs);
     const response = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && response.request().method() === "POST");
     await page.getByRole("button", { name: "Start run", exact: true }).click();
@@ -302,7 +302,7 @@ test("retry preserves imported context and its source restrictions through the o
   await page.goto(base + "/#/run/retry-untrusted");
   await page.getByRole("button", { name: "More run actions", exact: true }).click();
   await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
-  await page.waitForURL(url => url.hash === "#/");
+  await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
   const started = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && response.request().method() === "POST");
   await page.getByRole("button", { name: "Start run", exact: true }).click();
   const response = await started;
@@ -345,7 +345,8 @@ test("deleting the original run while editing a retry cannot discard imported-so
   await page.goto(base + "/#/run/retry-untrusted");
   await page.getByRole("button", { name: "More run actions", exact: true }).click();
   await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
-  await page.waitForURL(url => url.hash === "#/");
+  await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
+  const draftHash = new URL(page.url()).hash;
   const removed = await fetch(base + "/api/runs/retry-untrusted", { method: "DELETE", headers });
   assert.equal(removed.status, 200);
   const started = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && response.request().method() === "POST");
@@ -353,7 +354,7 @@ test("deleting the original run while editing a retry cannot discard imported-so
   assert.equal((await started).status(), 409);
   await page.getByText(/The original run is no longer available/).waitFor();
   assert.equal(await page.locator(".taskbox textarea").inputValue(), "Restore retry-untrusted");
-  assert.equal(new URL(page.url()).hash, "#/");
+  assert.equal(new URL(page.url()).hash, draftHash);
   assert.deepEqual(errors, []);
 });
 
@@ -397,4 +398,22 @@ test("readiness follows provider assignments and discards an older in-flight rep
     await readiness.getByText("Repository and base", { exact: true }).waitFor();
     assert.match(await readiness.locator("li", { hasText: "Claude Code" }).innerText(), /Skipped/);
   } finally { release?.(); await isolated.close(); }
+});
+
+test("editing a retry waits for project drafts to initialize", { timeout: 45_000 }, async () => {
+  const probe = await browser.newPage();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await probe.addInitScript(path => { localStorage.setItem("repo", path); localStorage.setItem("sideOpen", "0"); }, repo);
+    await probe.route("**/api/projects", async route => { await held; await route.continue(); });
+    await probe.goto(base + "/?token=daily-workflow-e2e#/run/retry-container");
+    await probe.getByRole("button", { name: "More run actions", exact: true }).click();
+    const edit = probe.getByRole("menuitem", { name: "Edit & run again", exact: true });
+    assert.equal(await edit.isDisabled(), true, "repository and project drafts must be ready before restoring a retry");
+    release();
+    await edit.click();
+    await probe.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
+    assert.equal(await probe.getByRole("textbox", { name: "Task", exact: true }).inputValue(), "Restore retry-container");
+  } finally { release(); await probe.close(); }
 });

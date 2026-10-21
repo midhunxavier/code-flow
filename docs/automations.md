@@ -1,6 +1,9 @@
 # Automations and away mode
 
-Open Scheduling → Repeat for recurring work, Inbox for results that need attention, and Scheduling → Run once later for a single task that should start later. Keep the application running when a scheduled task is due.
+Open Project → More → Automation → Repeat for recurring work, Inbox for results that need attention, and Automation → Run once later for a single task that should start later. Keep the application running when a scheduled task is due.
+
+
+![Project Automation keeps scheduled work and repository selection in the project (demo data)](images/project-automation-light.png)
 
 ## Choose the right trigger
 
@@ -12,7 +15,9 @@ Open **Scheduling** from the sidebar or press **a** to manage recurring tasks, d
 
 An automation's runs start in the [project](runs.md#projects) you were in when you saved it (from *All projects*, in its repository's project). If that project is deleted later, they start in the repository's project. Turning it off and on, or making a new webhook secret, keeps its project.
 
-**Scheduling → Repeat** follows the project you're in (the project button next to its title picks it). It lists that project's automations. Inbox lists the results waiting for you. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The **Inbox** count in the sidebar counts attention items across projects, so nothing waiting for you is out of sight.
+**Project → Automation** always lists that project’s saved work, regardless of the sidebar filter or composer draft. Choose its repository here before configuring a task or opening backlog items. Run once later and Repeat open the canonical project composer to describe the task; choosing backlog items restores that project’s saved agent workflow without leaving Automation. Multi-repository projects require a visible choice. Saved schedules for other repositories in the same project stay discoverable.
+
+Global **Scheduling → Repeat** uses the project filter beside its title. Inbox lists the results waiting for you. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The **Inbox** count in the sidebar counts attention items across projects, so nothing waiting for you is out of sight.
 
 ## When it runs
 

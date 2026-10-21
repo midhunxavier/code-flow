@@ -97,7 +97,7 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
           <div class="help">{message.createdAt ? new Date(message.createdAt).toLocaleTimeString() : ""}{message.delivery ? ` · ${message.delivery.status === "steered" ? "delivered during a turn" : message.delivery.status === "steering" ? "sent during a turn, acknowledgement pending" : message.delivery.status === "context" ? "included in member context" : "queued for the next turn"}` : ""}{message.originalRecipient ? ` · routed from ${name(message.originalRecipient)}` : ""}{message.deadlineAt && message.status === "open" ? ` · answer due ${new Date(message.deadlineAt).toLocaleTimeString()}` : ""}</div>
           </div>
           {message.evidence.length ? <details><summary>Evidence</summary><ul>{message.evidence.map((item, i) => <li key={i}>{item}</li>)}</ul></details> : null}
-          {message.kind === "question" && message.recipient === "user" && message.status === "open" ? (teamAwaitingAnswer(run) && team.awaitingRequestId === message.id ? <p class="help">Answer it in the card under the run header.</p> : <QuestionReply run={run} message={message} />) : null}
+          {message.kind === "question" && message.recipient === "user" && message.status === "open" ? (teamAwaitingAnswer(run) && team.awaitingRequestId === message.id ? <p class="help">Answer it in the card under the run header.</p> : <QuestionReply key={message.id} run={run} message={message} />) : null}
         </article>)}
       </div></div> : null}
       {team.strategyInstances?.length ? <details class="at-section"><summary>Reusable workflow steps</summary><ul>{team.strategyInstances.map((strategy) => <li key={strategy.id}>{strategy.strategy} · revision {strategy.revision} · {strategy.taskIds.map((id) => team.tasks.find((task) => task.id === id)?.title ?? id).join(" → ")}</li>)}</ul></details> : null}
@@ -258,12 +258,16 @@ export function TeamQuestionCard({ run }: { run: RunSummary }) {
   return <section class="awaiting-card team-question" aria-label="The team needs your answer">
     <div class="aw-head"><span class="status-pill awaiting">Waiting for you</span><b>The team needs your answer</b><span class="help">{sender?.name ?? message.sender}{task ? ` · ${task.title}` : ""}</span></div>
     <div class="aw-body"><Markdown text={message.body} /></div>
-    <div class="aw-actions"><QuestionReply run={run} message={message} /></div>
+    <div class="aw-actions"><QuestionReply key={message.id} run={run} message={message} /></div>
   </section>;
 }
 
+// A question moves from the discussion to the attention card when the scheduler
+// finishes independent work. Preserve an answer already being typed across that remount.
+const answerDrafts = new Map<string, string>();
 export function QuestionReply({ run, message, prefix = "team-answer" }: { run: RunSummary; message: TeamMessage; prefix?: string }) {
-  const [text, setText] = useState("");
+  const key = `${run.id}/${message.id}`;
+  const [text, setText] = useState(() => answerDrafts.get(key) ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [sent, setSent] = useState(false);
@@ -271,14 +275,14 @@ export function QuestionReply({ run, message, prefix = "team-answer" }: { run: R
     if (!text.trim() || busy || sent) return;
     setBusy(true);
     setError("");
-    try { await post<Note>(`/api/runs/${run.id}/notes`, { requestId: message.id, text }); setSent(true); }
+    try { await post<Note>(`/api/runs/${run.id}/notes`, { requestId: message.id, text }); answerDrafts.delete(key); setSent(true); }
     catch (err) { setError((err as Error).message); }
     finally { setBusy(false); }
   };
   if (sent) return <p class="help" role="status">Answer sent.</p>;
   if (run.status !== "running") return <p class="help">Press Resume in the header to continue the run, then answer here.</p>;
   const field = `${prefix}-${message.id}`;
-  return <div class="at-reply"><label class="lbl" for={field}>Your answer</label><textarea class="field" id={field} placeholder="Your answer…" rows={2} value={text} onInput={(event) => setText(event.currentTarget.value)} /><button class="btn primary small" disabled={!text.trim() || busy} onClick={answer}>{busy ? "Sending…" : "Send answer"}</button>{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
+  return <div class="at-reply"><label class="lbl" for={field}>Your answer</label><textarea class="field" id={field} placeholder="Your answer…" rows={2} value={text} onInput={(event) => { const value = event.currentTarget.value; setText(value); if (value) answerDrafts.set(key, value); else answerDrafts.delete(key); if (answerDrafts.size > 100) answerDrafts.delete(answerDrafts.keys().next().value!); }} /><button class="btn primary small" disabled={!text.trim() || busy} onClick={answer}>{busy ? "Sending…" : "Send answer"}</button>{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
 }
 
 /** Task selection ties ownership, dependencies and the user's next decision together. */

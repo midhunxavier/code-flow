@@ -47,6 +47,7 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     await projectDialog.getByRole("button", { name: "Remove project", exact: true }).waitFor();
     await projectDialog.getByRole("button", { name: "Create project", exact: true }).click();
     await projectDialog.waitFor({ state: "hidden" });
+    await page.locator(".page-head-actions").getByRole("button", { name: "New run", exact: true }).click();
     await page.locator(".repo-btn:not(.project-btn) .name", { hasText: "project" }).waitFor();
     await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
     await page.getByLabel("Task", { exact: true }).fill("SSH E2E: work on the server");
@@ -86,6 +87,7 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     assert.equal(directory.computers.length, 2);
     const sidebarOrder = () => page!.locator(".computer-projects").evaluateAll((groups) => groups.map((group) => ({ computer: group.getAttribute("data-computer-id"), projects: [...group.querySelectorAll(".proj-head .pn, .connected-project-link > span")].map((name) => name.textContent) })));
     const expectedOrder = [{ computer: "local", projects: ["Another local project", "Remote web app"] }, { computer: computerId, projects: ["Remote web app"] }];
+    await page.locator(`.computer-projects[data-computer-id="${computerId}"] .proj-head .pn`).filter({ hasText: "Remote web app" }).waitFor();
     assert.deepEqual(await sidebarOrder(), expectedOrder, "the remote workspace keeps local projects first");
     assert.ok(directory.computers.every((host: any) => host.projects.every((p: any) => Object.keys(p).sort().join() === "id,name")), "only project names and IDs cross workspace boundaries");
     await localGroup.getByRole("link", { name: "Remote web app", exact: true }).click();

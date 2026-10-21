@@ -8,6 +8,7 @@ import type { VerificationProfile, VerificationReport } from "../src/verificatio
 import type { RevertPreview } from "../src/checkpoint-review.js";
 import type { CheckpointHunks } from "../src/workspace-changes.js";
 import { CodeBrowser } from "./code-browser.js";
+import type { RepositoryTool } from "./navigation.js";
 
 type Tab = "verification" | "code" | "context" | "history" | "services" | "coordination" | "filtered-tasks";
 const TOOL_GROUPS: readonly { label: string; tools: readonly (readonly [Tab, string])[] }[] = [
@@ -25,11 +26,14 @@ export function downloadArtifact(name: string, contents: string, type = "applica
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function WorkbenchView({ projectId }: { projectId?: string }) {
+export function WorkbenchView({ projectId, initialFolder, initialTool, onNavigate }: { projectId?: string; initialFolder?: string; initialTool?: RepositoryTool; onNavigate?: (folder: string, tool: RepositoryTool) => void }) {
   const project = projects.value.find(item => item.id === projectId);
   const repositories = projectId ? project?.repos ?? [] : repo.value ? [repo.value] : [];
-  const [tab, setTab] = useState<Tab>("verification");
-  const [folder, setFolder] = useState(repositories[0] ?? "");
+  const [tab, updateTab] = useState<Tab>(initialTool ?? "verification");
+  const [folder, updateFolder] = useState(initialFolder ?? repositories[0] ?? "");
+  const setTab = (value: Tab) => { updateTab(value); onNavigate?.(folder, value); };
+  const setFolder = (value: string) => { updateFolder(value); onNavigate?.(value, tab); };
+  useEffect(() => { updateTab(initialTool ?? "verification"); }, [initialTool]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [profile, setProfile] = useState<VerificationProfile | null>(null);
@@ -50,19 +54,20 @@ export function WorkbenchView({ projectId }: { projectId?: string }) {
   const [hunks, setHunks] = useState<CheckpointHunks | null>(null);
   const [chosenHunks, setChosenHunks] = useState<string[]>([]);
   const [taskProjectId, setTaskProjectId] = useState("");
-  const availableRuns = [...runs.value.values()].filter((run) => repositories.includes(run.repo));
+  const availableRuns = [...runs.value.values()].filter((run) => repositories.includes(run.repo) && (!projectId || run.project === projectId || !run.project));
   const selectedRun = availableRuns.find((run) => run.worktrees.some((tree) => tree.path === folder));
   const selectedTree = selectedRun?.worktrees.find((tree) => tree.path === folder);
-  const taskProject = projects.value.find((project) => project.id === taskProjectId) ?? projects.value.find((project) => project.repos.includes(selectedRun?.repo ?? folder)) ?? projects.value[0];
+  const taskProject = project ?? projects.value.find((project) => project.id === taskProjectId) ?? projects.value.find((project) => project.repos.includes(selectedRun?.repo ?? folder));
   const runAction = async (path: string, body: unknown) => perform(async () => { await post(path, body); showToast("Updated"); });
   const perform = async (action: () => Promise<void>) => {
     if (busy) return;
     setBusy(true); setError("");
     try { await action(); } catch (error) { setError((error as Error).message); } finally { setBusy(false); }
   };
-  useLayoutEffect(() => { if (!folder && repositories[0]) setFolder(repositories[0]); }, [repositories.join("\0"), folder]);
+  useLayoutEffect(() => { if (!initialFolder && !folder && repositories[0]) updateFolder(repositories[0]); }, [repositories.join("\0"), folder]);
   useEffect(() => { setReport(null); setProfile(null); setHistory(null); setContext(null); setComparison(null); setRevertPreview(null); setHunks(null); setError(""); }, [folder]);
   if (projectId && !project) return <p role="status">{projectsLoaded.value ? "This project no longer exists." : "Loading project…"}</p>;
+  if (projectId && folder && !repositories.includes(folder) && !selectedTree) return <p class="msg warn" role="status">This repository or run worktree is unavailable in this project. Choose a repository above.</p>;
   return <div class="workbench">
     <header class="page-head"><div class="page-head-text"><h3>Inspect, verify, and recover</h3>
       <p>Check the repository, inspect code and context, and manage results with evidence.</p></div></header>
@@ -71,10 +76,10 @@ export function WorkbenchView({ projectId }: { projectId?: string }) {
       {repositories.length ? repositories.map(repository => <option key={repository} value={repository}>{repository}</option>) : <option value="">Choose a repository in New run</option>}
       {availableRuns.flatMap((run) => run.worktrees.map((tree) => <option key={`${run.id}/${tree.name}`} value={tree.path}>{(run.task.split("\n")[0] || "(no task)").slice(0, 50)} · {tree.name}</option>))}
     </select></div>
-    <div class="wb-mobile-tool"><label class="lbl" for="wb-tool">Workspace tool</label><select id="wb-tool" class="field" value={tab} disabled={busy} onChange={(event) => setTab(event.currentTarget.value as Tab)}>{TOOL_GROUPS.map((group) => <optgroup key={group.label} label={group.label}>{group.tools.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</optgroup>)}</select></div>
+    <div class="wb-mobile-tool"><label class="lbl" for="wb-tool">Repository tool</label><select id="wb-tool" class="field" value={tab} disabled={busy} onChange={(event) => setTab(event.currentTarget.value as Tab)}>{TOOL_GROUPS.map((group) => <optgroup key={group.label} label={group.label}>{group.tools.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</optgroup>)}</select></div>
     <div class="wb-layout">
     {/* OntoLab's sidebar nav: the tools in their groups, the open one selected */}
-    <nav class="wb-tabs" aria-label="Workspace tools">{TOOL_GROUPS.map((group, n) => <div class="wb-group" role="group" aria-labelledby={`wb-group-${n}`} key={group.label}><div class="wb-group-label" id={`wb-group-${n}`}>{group.label}</div>{group.tools.map(([id, label]) => <button key={id} type="button" class="wb-tab" aria-current={tab === id ? "page" : undefined} onClick={() => setTab(id)}>{label}</button>)}</div>)}</nav>
+    <nav class="wb-tabs" aria-label="Repository tools">{TOOL_GROUPS.map((group, n) => <div class="wb-group" role="group" aria-labelledby={`wb-group-${n}`} key={group.label}><div class="wb-group-label" id={`wb-group-${n}`}>{group.label}</div>{group.tools.map(([id, label]) => <button key={id} type="button" class="wb-tab" aria-current={tab === id ? "page" : undefined} onClick={() => setTab(id)}>{label}</button>)}</div>)}</nav>
     <div class="wb-main">
     {!folder && tab !== "coordination" && tab !== "filtered-tasks" ? <p class="help wb-note">Choose a repository in New run first.</p> : null}
     {error ? <div class="msg err" role="alert">{error}</div> : null}
@@ -102,7 +107,7 @@ export function WorkbenchView({ projectId }: { projectId?: string }) {
     </section> : null}
     {tab === "history" && history ? <section class="wb-card" aria-label="Full checkpoint comparison"><h2>Compare and revert commits</h2><p class="help">Compare every changed file between the selected checkpoint and the observed current HEAD. Reverting computes the inverse of one non-merge commit on a disposable checkout, then stages that reviewed change in a clean, idle owned worktree. Commit it yourself to record the revert.</p><div class="wb-row"><button class="btn" disabled={busy || !checkpoint} onClick={() => perform(async () => setComparison(await post("/api/workspace/compare-checkpoint", { repo:folder,from:checkpoint,to:history.head })))}>Compare selected checkpoint to HEAD</button>{selectedRun ? <button class="btn" disabled={busy || selectedRun.status === "running" || !checkpoint} onClick={() => perform(async () => { setRevertPreview(null); setRevertPreview(await post("/api/workspace/preview-revert", { repo:folder,runId:selectedRun.id,commit:checkpoint,expectedHead:history.head })); })}>Preview inverse commit</button> : null}</div>{comparison ? <><p class="help">{comparison.from.slice(0,12)} → {comparison.to.slice(0,12)} · {comparison.files.length} changed paths{comparison.truncated ? " · preview truncated" : ""}</p>{comparison.stat.trim() ? <pre>{comparison.stat}</pre> : null}<details><summary>Full commit patch</summary><pre>{comparison.patch || "No changes between these commits."}</pre></details></> : null}{revertPreview && selectedRun ? <div class="at-notice" aria-label="Reviewed commit revert"><h4>Revert: {revertPreview.subject}</h4><p class="help">Commit {revertPreview.commit.slice(0,12)} · current HEAD {revertPreview.head.slice(0,12)}. Review the entire inverse patch before applying it. Conflicting reversions leave this worktree unchanged.</p>{revertPreview.stat.trim() ? <pre>{revertPreview.stat}</pre> : null}<details open><summary>Inverse patch to stage</summary><pre>{revertPreview.patch}</pre></details><button class="btn primary" disabled={busy || selectedRun.status === "running"} onClick={() => perform(async () => { await post("/api/workspace/apply-revert", { repo:folder,runId:selectedRun.id,commit:revertPreview.commit,expectedHead:revertPreview.head,fingerprint:revertPreview.fingerprint }); setRevertPreview(null); showToast("Inverse change staged. Review and commit it to record the revert.",6000); })}>Stage reviewed inverse change</button></div> : null}</section> : null}
     {tab === "history" && history && selectedRun ? <section class="wb-card"><h2>Apply selected hunks</h2><p class="help">Compare one existing text file against the selected checkpoint. Selected hunks remain unstaged for review; the run worktree must be clean and idle.</p><div class="wb-row"><input class="field" aria-label="File for checkpoint hunks" value={hunkPath} placeholder="Repository-relative file" onInput={(event) => setHunkPath(event.currentTarget.value)} /><button class="btn" disabled={busy || selectedRun.status === "running" || !hunkPath.trim()} onClick={() => perform(async () => { setHunks(await post("/api/workspace/checkpoint-hunks", { repo: folder, runId: selectedRun.id, source: checkpoint, path: hunkPath.trim() })); setChosenHunks([]); })}>Compare hunks</button></div>{hunks ? <><p>{hunks.hunks.length} hunks · {hunks.source.slice(0, 12)}</p>{hunks.hunks.map((hunk) => <details key={hunk.id}><summary><label><input type="checkbox" checked={chosenHunks.includes(hunk.id)} onChange={(event) => setChosenHunks(event.currentTarget.checked ? [...chosenHunks, hunk.id] : chosenHunks.filter((id) => id !== hunk.id))} /> {hunk.header}</label></summary><pre>{hunk.patch}</pre></details>)}<button class="btn" disabled={busy || !chosenHunks.length || selectedRun.status === "running"} onClick={() => perform(async () => { await post("/api/workspace/apply-hunks", { repo: folder, runId: selectedRun.id, source: hunks.source, path: hunks.path, expectedHead: hunks.head, hunks: chosenHunks }); setHunks(null); showToast("Selected hunks applied; review the unstaged changes"); })}>Apply chosen hunks</button></> : null}</section> : null}
-    {tab === "filtered-tasks" ? <><div class="wb-scope"><label class="lbl" for="filtered-tasks-project">Filtered tasks project</label><select class="field" id="filtered-tasks-project" value={taskProject?.id ?? ""} onChange={(event) => setTaskProjectId(event.currentTarget.value)}>{projects.value.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></div>{taskProject ? <><p class="help wb-note">Manage project filesystem rules in <a href="#/settings/projects">Settings → Projects &amp; access</a>.</p><FilteredTasksPanel key={taskProject.id} projectId={taskProject.id} repos={taskProject.repos} /></> : <p class="help wb-note">Create a project in <a href="#/settings/projects">Settings</a> first.</p>}</> : null}
+    {tab === "filtered-tasks" ? <><div class="wb-scope"><label class="lbl" for="filtered-tasks-project">Filtered tasks project</label><select class="field" id="filtered-tasks-project" disabled={!!projectId} value={taskProject?.id ?? ""} onChange={(event) => setTaskProjectId(event.currentTarget.value)}>{projects.value.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></div>{taskProject ? <><p class="help wb-note">Manage project filesystem rules in <a href="#/settings/projects">Settings → Projects &amp; access</a>.</p><FilteredTasksPanel key={taskProject.id} projectId={taskProject.id} repos={taskProject.repos} /></> : <p class="help wb-note">Create a project in <a href="#/settings/projects">Settings</a> first.</p>}</> : null}
     {tab === "coordination" ? <CoordinatedChangesPanel /> : null}
     {tab === "services" ? selectedRun && selectedTree ? <LaunchProfilesPanel key={`${selectedRun.id}/${selectedTree.name}`} runId={selectedRun.id} worktree={selectedTree.name} /> : <p class="help wb-note">Select a run worktree to preview and launch its configured services.</p> : null}
     </div></div>

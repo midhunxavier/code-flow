@@ -1,7 +1,7 @@
 import { signal } from "@preact/signals";
 import type { SharedRole } from "../src/shared-accounts.js";
 import type { Attempt, AttemptState, Board, Checkpoint, InboxItem, InboxKind, RunnerPublic, Task, TaskStatus, Who } from "../src/collab/model.js";
-import { apiPath, api, ago as agoText, enc, latestOnly, selectedTeamConnection } from "./lib.js";
+import { apiPath, api, ago as agoText, enc, latestOnly, selectedTeamConnection, collaborationConfigured } from "./lib.js";
 import { roleAtLeast } from "./shared-roles.js";
 import { subscribe } from "./stream.js";
 
@@ -15,7 +15,7 @@ import { subscribe } from "./stream.js";
  */
 
 /** The two pages, as the owner app's Route union and the shared dashboard's own hash route both carry them. */
-export type TeamRoute = { view: "team"; project?: string } | { view: "team-task"; id: string };
+export type TeamRoute = { view: "team"; project?: string } | { view: "team-people"; project?: string } | { view: "team-task"; id: string };
 /** GET /api/team-link: this computer's link to a hub (`linked: false` means this instance is its own team server). */
 export interface TeamLinkInfo { linked: boolean; url?: string; user?: { userId: string; username: string; displayName: string }; hubName?: string; machineName?: string; mappings: Record<string, Record<string, string>>; defaults?: { pattern?: string; roles?: Record<string, string[]>; trust?: string }; runner?: RunnerPublic; lastSync?: number; error?: string }
 /** GET /api/team-link/attempts: the runner's own record of an attempt it executes here, which links a task to its run page. */
@@ -44,19 +44,19 @@ const boardRequest = latestOnly();
 /** The whole board: the pages filter by project themselves, so the project chips always know every project the viewer may see. */
 export async function loadBoard(): Promise<Board | null> {
   const current = boardRequest();
-  try { const next = await api<Board>("/api/team/board"); if (!current()) return board.value; board.value = next; boardError.value = ""; inboxUnread.value = next.inboxUnread; return next; }
-  catch (error) { if (current()) boardError.value = (error as Error).message; return board.value; }
+  try { const next = await api<Board>("/api/team/board"); if (!current()) return board.value; board.value = next; if (next.tasks.length || next.projects.some(project => project.repositories.length > 0 || project.members.some(member => member.userId !== "owner"))) collaborationConfigured.value = true; boardError.value = ""; inboxUnread.value = next.inboxUnread; return next; }
+  catch (error) { if (current()) { board.value = null; openTask.value = null; inboxUnread.value = 0; boardError.value = (error as Error).message; } return null; }
   finally { if (current()) boardLoaded.value = true; }
 }
 export const loadTask = (id: string) => api<Task>(`/api/team/tasks/${enc(id)}`);
 export async function loadTeamLink(): Promise<TeamLinkInfo | null> {
-  try { teamLink.value = await api<TeamLinkInfo>("/api/team-link"); teamLinkError.value = ""; }
+  try { teamLink.value = await api<TeamLinkInfo>("/api/team-link"); if (teamLink.value.linked) collaborationConfigured.value = true; teamLinkError.value = ""; }
   catch (error) { teamLink.value = null; teamLinkError.value = (error as Error).message; }
   return teamLink.value;
 }
 /** Best effort: the link API is owner-only and may be absent on a remote host, and then the "Open run" link simply stays hidden. */
 export async function loadLocalAttempts(): Promise<void> {
-  try { const data = await api<LocalAttempt[] | { attempts?: LocalAttempt[] }>("/api/team-link/attempts"); localAttempts.value = Array.isArray(data) ? data : data.attempts ?? []; } catch { /* see above */ }
+  try { const data = await api<LocalAttempt[] | { attempts?: LocalAttempt[] }>("/api/team-link/attempts"); localAttempts.value = Array.isArray(data) ? data : data.attempts ?? []; } catch { localAttempts.value = []; }
 }
 export async function loadInbox(): Promise<InboxPage> { const page = await api<InboxPage>("/api/team/inbox"); inboxUnread.value = page.unread; return page; }
 export async function markRead(ids: string[] | "all"): Promise<number> { const result = await api<{ unread: number }>("/api/team/inbox/read", { method: "POST", body: JSON.stringify(ids === "all" ? { all: true } : { ids }) }); inboxUnread.value = result.unread; return result.unread; }
@@ -77,12 +77,20 @@ type TeamEvent = { type?: string; unread?: number } | null;
 export function applyTeamEvent(data: TeamEvent): void {
   if (data?.type === "error") return; // the server declined the topic (nothing to show: the pages still poll)
   if (typeof data?.unread === "number" && data.unread >= 0) inboxUnread.value = data.unread;
-  else if (data?.type === "hello") void loadInbox().catch(() => undefined);
+  else if (data?.type === "hello") { void loadInbox().catch(() => undefined); void loadBoard(); }
   bumpTeam();
 }
 let watching: (() => void) | undefined;
 /** The owner app: the server's `team` stream topic (the local hub's events, or the hub's relayed through the link). Called once; the subscription lives as long as the page. */
-export function watchTeam(): void { if (watching) return; watching = subscribe(selectedTeamConnection ? `team:${selectedTeamConnection}` : "team", (data: TeamEvent) => applyTeamEvent(data)); }
+export function watchTeam(): void {
+  if (watching) return;
+  void loadTeamLink();
+  // A tab pinned to its own board must still expose other saved connections.
+  void api<{ connections: { linked: boolean }[] }>("/api/team-link/connections").then(inventory => {
+    if (inventory.connections.some(connection => connection.linked)) collaborationConfigured.value = true;
+  }).catch(() => undefined);
+  watching = subscribe(selectedTeamConnection ? `team:${selectedTeamConnection}` : "team", (data: TeamEvent) => applyTeamEvent(data));
+}
 /** How long a shared Team tab waits before reopening a stream the browser gave up on (an HTTP error: the session ended, or the per-account cap of 4 streams). */
 export const TEAM_EVENTS_RETRY_MS = 30_000;
 /**

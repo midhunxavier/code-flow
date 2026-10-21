@@ -13,7 +13,7 @@ interface QueueView {
 const active = (job: HostJob) => ["queued", "starting", "running", "stopping"].includes(job.state);
 function useQueue() {
   const [data, setData] = useState<QueueView | null>(null), [error, setError] = useState("");
-  const load = async (current: () => boolean = () => true) => { try { const next = await api<QueueView>("/api/host-execution"); if (current()) { setData(next); setError(""); } } catch (err) { if (current()) setError((err as Error).message); } };
+  const load = async (current: () => boolean = () => true) => { try { const next = await api<QueueView>("/api/host-execution"); if (current()) { setData(next); setError(""); } } catch (err) { if (current()) { setData(null); setError((err as Error).message); } } };
   // Team events wake this view. An idle shared page does not poll and renew its session.
   usePoll(load, 0, [teamTick.value]);
   return { data, error, setError, load };

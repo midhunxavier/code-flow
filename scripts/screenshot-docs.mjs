@@ -156,6 +156,18 @@ try {
       .waitFor({ state: "hidden" });
     await page.locator(".task-start:not([disabled])").waitFor();
     await capture(`composer-${theme}`);
+    await page.goto(base + `/#/project/${run.project}`);
+    await page.getByRole("navigation", { name: "Project navigation" }).waitFor();
+    await page.getByRole("heading", { name: "Recent results", exact: true }).waitFor();
+    await page.locator(".connection-status.connected").waitFor();
+    await page.locator(".page-head-actions .primary:not([disabled])").waitFor();
+    await capture(`project-${theme}`);
+    await page.goto(base + `/#/project/${run.project}/automation/repeat`);
+    await page.getByLabel("Automation repository").waitFor();
+    await page.locator(".connection-status.connected").waitFor();
+    await page.getByRole("button", { name: "Configure a repeating task", exact: true }).waitFor();
+    await page.waitForFunction(() => ![...document.querySelectorAll("button")].find(button => button.textContent === "Configure a repeating task")?.disabled);
+    await capture(`project-automation-${theme}`);
     await page.goto(base + `/#/run/${run.id}`);
     await page.getByRole("region", { name: "Next action" }).waitFor();
     await page.getByText(/Loading commit/).waitFor({ state: "hidden" });

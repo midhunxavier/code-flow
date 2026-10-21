@@ -828,6 +828,8 @@ function validateOptions(pattern: Pattern, input: unknown): Record<string, numbe
 /** Validate a run request (from the composer or an automation) into what the engine starts. */
 async function buildStartInput(body: Record<string, any>): Promise<StartRunInput> {
   if (body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.projectTeam !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
+  if (body.projectSelection !== undefined && body.projectSelection !== "explicit") throw new HttpError(400, "Unknown project selection mode");
+  if (body.projectSelection === "explicit" && (!projects.available || typeof body.project !== "string" || !projects.get(body.project))) throw new HttpError(409, "Choose an available project before starting");
   const pattern = findPattern(String(body.pattern ?? ""));
   if (!pattern) throw new HttpError(400, "Unknown pattern");
   const task = String(body.task ?? "").trim();
@@ -863,6 +865,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
     journeyId: typeof body.journeyId === "string" ? body.journeyId : undefined,
     repo,
     project: typeof body.project === "string" && body.project ? body.project : undefined,
+    requireProjectRepo: body.projectSelection === "explicit",
     baseRef: body.baseRef ? String(body.baseRef) : undefined,
     branchPrefix: body.branchPrefix ? String(body.branchPrefix) : undefined,
     context: body.context && typeof body.context === "object" ? body.context : undefined,
@@ -1839,6 +1842,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (id && parts[3] === "summary" && req.method === "GET") {
       const inventory = projects.list();
       return send(res, 200, manager.projectReport(run => projectOf(run, inventory) === id && !fileAccess.restrictedRun(run)));
+    }
+    if (id && parts[3] === "repositories" && parts.length === 4 && req.method === "POST") {
+      const body = await readJson(req);
+      if (typeof body.repo !== "string" || !body.repo.startsWith("/")) throw new HttpError(400, "Choose a repository folder");
+      return send(res, 200, await attempt(async () => (await projects.include(id, await repoRoot(body.repo))).project));
     }
     if (id && parts[3] === "conventions") {
       const project = projects.get(id)!;

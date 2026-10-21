@@ -13,8 +13,8 @@ import { SharedDashboard, SharedLogin } from "./shared.js";
 import type { SharedPrincipal } from "../src/shared-accounts.js";
 import { configureStreamSharing, type StreamSharing } from "./stream.js";
 import logo from "./brand/vibesboard-mark.png";
-import { api, localApi, workspaceId, initializeTeamConnection, showToast, store, SHORT } from "./lib.js";
-import { agents, hashFor, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, pickerOpen, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
+import { api, localApi, workspaceId, initializeTeamConnection, ensureCollaborationSource, showToast, store, SHORT } from "./lib.js";
+import { agents, composerProject, composerLoading, draftsReady, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
 // The tab icon: the vibesboard mark, like the top bar.
 const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/png", href: logo });
@@ -69,10 +69,11 @@ async function boot() {
   for (const agent of agentList) SHORT[agent.id as keyof typeof SHORT] = agent.displayName;
   patterns.value = patternList;
   void loadTeamRollout();
-  const connectionIntent = readConnectionIntent();
+  readConnectionIntent();
   route.value = routeFromHash();
   effect(() => {
     const hash = hashFor(route.value);
+    if (!ensureCollaborationSource(hash)) return;
     // pushState navigation does not emit hashchange; discard actions from the old view.
     untracked(cancelConfirmations);
     // Opened at a bare `/` (the startup link lands there), the composer needs no "#/" of its own:
@@ -83,8 +84,16 @@ async function boot() {
       else history.pushState(null, "", hash);
     }
   });
-  window.addEventListener("popstate", () => (route.value = routeFromHash()));
-  window.addEventListener("hashchange", () => (route.value = routeFromHash()));
+  const readRoute = () => { if (ensureCollaborationSource(location.hash)) route.value = routeFromHash(); };
+  window.addEventListener("popstate", readRoute);
+  window.addEventListener("hashchange", readRoute);
+  effect(() => {
+    const destination = route.value;
+    if (!draftsReady.value || destination.view !== "composer" || destination.project === undefined) return;
+    untracked(() => {
+      if (destination.project !== composerProject.value || composerLoading.value) void openComposer(destination.project, { stay: true });
+    });
+  });
   render(<App />, root);
   shellReady();
   listenForHandOffs();
@@ -94,10 +103,11 @@ async function boot() {
     (t) => (templates.value = t),
     (err) => showToast(`Couldn't load the templates: ${(err as Error).message}`, 5000),
   );
+  const inventory = Promise.all([refreshRuns(), loadProjects()]);
   const saved = store.get("repo");
-  if (saved) void setRepo(saved, false);
-  else if (!connectionIntent && executionHost.value.kind === "ssh" && route.value.view === "composer") pickerOpen.value = true;
-  await Promise.all([refreshRuns(), loadProjects()]);
+  if (saved) await setRepo(saved, false);
+  await inventory;
+  await initializeProjectDrafts();
   watchAllRuns(notifyFinished);
   // A safety net if the event stream drops; projects change when a run starts in a new repo.
   pollVisible(() => Promise.all([refreshRuns(), loadProjects()]), 30_000);

@@ -3,11 +3,12 @@ import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
 import { journeyAction, journeyPrompt, journeySpec, type Journey, type JourneyAction, type JourneyReplay } from "../src/journeys.js";
 import { api, enc, post, showToast } from "./lib.js";
-import { attachments, navigate, repo, setPattern, setRepo, setTask } from "./state.js";
+import { attachments, navigate, repo, route, projects, composerProject, openComposer, setPattern, setTask } from "./state.js";
 
 import { intentDraft } from "./experience.js";
 
-export const journeyDraft = signal<Journey | undefined>();
+import { journeyDraft } from "./composer-draft-fields.js";
+export { journeyDraft } from "./composer-draft-fields.js";
 export const recording = signal<{ page: string; url: string; width: number; actions: JourneyAction[]; active: boolean; warning?: string } | undefined>();
 export function recordAction(page: string, data: unknown) {
   const current = recording.value;
@@ -21,13 +22,17 @@ export function recordAction(page: string, data: unknown) {
   } catch (error) { recording.value = { ...current, warning: (error as Error).message }; }
 }
 export async function fixJourney(journey: Journey) {
-  await setRepo(journey.repo);
+  const view = route.value;
+  const viewed = view.view === "project" ? view.id : view.view === "workspace" ? view.project : undefined;
+  const matches = projects.value.filter(project => project.repos.includes(journey.repo));
+  const destination = matches.find(project => project.id === viewed) ?? matches.find(project => project.id === composerProject.value) ?? (matches.length === 1 ? matches[0] : undefined);
+  if (!await openComposer(destination?.id ?? "", { repository: journey.repo })) return;
   journeyDraft.value = journey;
   intentDraft.value = "bug";
   setPattern("pipeline"); setTask(journeyPrompt(journey));
   const text = journeySpec(journey), bytes = new TextEncoder().encode(text);
   attachments.value = [...attachments.value.filter(a => a.name !== "browser-scenario.spec.ts"), { name: "browser-scenario.spec.ts", size: bytes.length, data: btoa(Array.from(bytes, b => String.fromCharCode(b)).join("")) }];
-  navigate({ view: "composer" });
+  navigate({ view: "composer", project: destination?.id ?? "" });
 }
 export function downloadSpec(journey: Journey) {
   const url = URL.createObjectURL(new Blob([journeySpec(journey)], { type: "text/plain" }));

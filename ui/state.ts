@@ -1,7 +1,10 @@
 import { needsYou, matchesHistoryFilter } from "../src/run-status.js";
 export { needsYou, runState, isFlagged } from "../src/run-status.js";
-import { computed, signal } from "@preact/signals";
 import { rerunDraft } from "./rerun-draft.js";
+import { contextBudget, contextBudgetOrigin } from "./context-budget.js";
+import { intentDraft, journeyDraft } from "./composer-draft-fields.js";
+import { batch, computed, effect, signal } from "@preact/signals";
+import { legacyDraftProject, projectDestination, ProjectDraftStore } from "./project-context.js";
 import { api, sharedGet, ApiError, post, showToast, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
 import { onStreamState, subscribe } from "./stream.js";
@@ -145,6 +148,7 @@ export const repoError = signal("");
 export const repoChecking = signal(false);
 export const configChecking = signal(false);
 export const repo = computed(() => repoInfo.value?.repo ?? "");
+export const requestedRepository = signal(store.get("repo") ?? "");
 let repoSelection = 0;
 let configRequest = 0;
 
@@ -155,6 +159,7 @@ export const checkLoaded = () => checkLoading;
 export async function setRepo(path: string, remember = true) {
   path = path.trim();
   const retained = path && rerunDraft.value?.repo === repo.value ? rerunDraft.value : null;
+  requestedRepository.value = path;
   const request = ++repoSelection;
   ++configRequest;
   const clearSelection = () => {
@@ -173,12 +178,14 @@ export async function setRepo(path: string, remember = true) {
   configChecking.value = false;
   repoChecking.value = true;
   repoError.value = "";
+  if (!path) { repoChecking.value = false; return true; }
   try {
     const info = await api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(path)}`);
     if (request !== repoSelection) return false;
     const sameRetry = retained && info.repo === retained.repo && rerunDraft.value?.repo === info.repo;
     if (retained && !sameRetry) clearSelection();
     repoInfo.value = info;
+    requestedRepository.value = info.repo;
     if (!sameRetry && baseRef.value && !info.branches.some((branch) => branch.name === baseRef.value)) baseRef.value = "";
     if (remember) {
       store.set("repo", info.repo);
@@ -212,10 +219,25 @@ export const projects = signal<Project[]>([]);
 export const projectsLoaded = signal(false);
 export const currentProject = signal(store.get("project") ?? ALL);
 export const activeProject = computed(() => projects.value.find((p) => p.id === currentProject.value));
+/** The draft's destination is independent of global list filters and the page being viewed. */
+export const composerProject = signal(store.get("composerProject") ?? "");
+export const composerLoading = signal(false);
+export const draftsReady = signal(false);
+export const draftError = signal("");
+export const projectPickerPurpose = signal<"filter" | "composer">("filter");
+export const repositoryChoice = signal<{ repository: string; project?: string } | null>(null);
+export const composerRunOptions = signal<{
+  remoteWorker?: import("./remote-workers.js").WorkerChoice;
+  container?: { enabled: boolean; image: string; authVolume: string };
+  verification?: string;
+  verificationProfile?: import("../src/verification.js").VerificationProfile | null;
+  toolApprovals?: boolean;
+}>({});
 export const projectsOpen = signal(false);
 /** The Projects dialog opens straight on this project's editor ("new" for a new one), not on the list. */
 export const projectEdit = signal<string | null>(null);
 export function editProject(id: string) {
+  projectPickerPurpose.value = "filter";
   projectEdit.value = id;
   projectsOpen.value = true;
 }
@@ -255,15 +277,13 @@ function setCurrentProject(id: string) {
  */
 export function selectProject(id: string, opts: { defaults?: boolean; repo?: boolean } = {}) {
   setCurrentProject(id);
-  const p = projects.value.find((x) => x.id === id);
-  if (!p) return;
-  if (opts.defaults !== false && p.defaults) applyDefaults(p.defaults);
-  if (opts.repo !== false && p.repos.length && !p.repos.includes(repo.value)) void setRepo(lastRepo(p));
 }
 
 function lastRepo(p: Project): string {
+  const remembered = store.get(`projectRepo:${p.id}`);
+  if (remembered && p.repos.includes(remembered)) return remembered;
   const latest = [...runs.value.values()].filter((r) => p.repos.includes(r.repo) && projectFor(r)?.id === p.id).sort((a, b) => b.createdAt - a.createdAt)[0];
-  return latest?.repo ?? p.repos[0]!;
+  return latest?.repo ?? p.repos[0] ?? "";
 }
 
 function applyDefaults(d: ProjectDefaults) {
@@ -279,25 +299,31 @@ function applyDefaults(d: ProjectDefaults) {
   composerOrigins.value = { ...composerOrigins.value, pattern: "Project defaults", roles: "Project defaults", models: "Project defaults" };
 }
 
-/** You picked a repo: if the project you're in doesn't hold it, show the repo's own project (or every run, if none holds it yet). */
-export async function pickRepo(path: string) {
-  if (!(await setRepo(path))) return;
-  const p = activeProject.value;
-  const r = repo.value;
-  if (!r || !p || !p.repos.length || p.repos.includes(r)) return;
-  const own = projects.value.find((x) => x.repos.includes(r));
-  if (own) selectProject(own.id);
-  else setCurrentProject(ALL);
+/** Opening a repository requires a deliberate destination when membership is ambiguous or absent. */
+let repositoryPick = 0;
+export async function pickRepo(path: string, project = composerProject.value) {
+  const request = ++repositoryPick;
+  try {
+    const info = await api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(path)}`);
+    if (request !== repositoryPick) return;
+    const p = projects.value.find(item => item.id === project);
+    if (p?.repos.includes(info.repo)) {
+      if (composerProject.value !== p.id && !await openComposer(p.id)) return;
+      await chooseComposerRepository(info.repo);
+      route.value = { view: "composer", project: p.id };
+      return;
+    }
+    const matches = projects.value.filter(item => item.repos.includes(info.repo));
+    if (!project && matches.length === 1) return void await openComposer(matches[0]!.id, { repository: info.repo, carryUnassigned: true });
+    repositoryChoice.value = { repository: info.repo, project: p?.id };
+  } catch (error) { if (request === repositoryPick) showToast(repoProblem(path, error), 6000); }
 }
 
-/**
- * Where the next run goes: the project you're in, else the repo's. `adds`: the repo joins that
- * project when the run starts; `creates`: no project holds the repo yet, so starting makes one.
- */
+/** The explicit destination of the saved composer draft; never inferred from a list filter. */
 export const target = computed(() => {
   const r = repo.value;
-  const p = activeProject.value ?? projects.value.find((x) => x.repos.includes(r));
-  return { project: p, adds: !!p && !!r && !p.repos.includes(r), creates: !p && !!r };
+  const destination = projectDestination(projects.value, composerProject.value, r);
+  return { ...destination, adds: !!destination.project && !!r && !destination.project.repos.includes(r), creates: !destination.project && !!r };
 });
 
 /** A run started: its project may be new, or have a new repo. Keep showing the project it went in. */
@@ -337,7 +363,7 @@ const sidePin = signal<SidePin | null>(store.json<SidePin | null>("sidePin", nul
 
 const runScope = (run: RunSummary, pinned = false): SideScope => ({ key: `run:${run.id}`, kind: "run", run, project: projectFor(run), repo: run.repo, pinned });
 function projectScope(project: Project | undefined, repo: string, pinned = false): SideScope {
-  const r = repo || project?.repos[0] || "";
+  const r = repo;
   return { key: project ? `project:${project.id}` : r ? `repo:${r}` : "none", kind: "project", project, repo: r, pinned };
 }
 /** A run's or project's scope by its key alone, for while the list it's in is on its way. */
@@ -354,7 +380,12 @@ const followed = computed<SideScope>(() => {
   if (r.view === "project" || r.view === "workspace" && r.project) {
     // A project's page: its repository you're working in, else the one its latest run used.
     const p = projects.value.find((x) => x.id === (r.view === "project" ? r.id : r.project));
-    if (p) return projectScope(p, p.repos.includes(repo.value) ? repo.value : p.repos.length ? lastRepo(p) : "");
+    if (p) {
+      const chosen = r.view === "project" ? r.repository : undefined;
+      const worktree = chosen && [...runs.value.values()].some(run => projectFor(run)?.id === p.id && p.repos.includes(run.repo) && run.worktrees.some(tree => tree.path === chosen));
+      return projectScope(p, chosen ? p.repos.includes(chosen) || worktree ? chosen : "" : lastRepo(p));
+    }
+    return waitingScope(`project:${r.view === "project" ? r.id : r.project}`, false);
   }
   if (r.view === "run" || r.view === "review") {
     const run = runs.value.get(r.id);
@@ -1079,3 +1110,155 @@ export function applyTemplate(t: Template, pick?: SourcePick) {
 }
 
 export const markSeen = (id: string) => post(`/api/runs/${id}/seen`).catch(() => {});
+
+// ---------------------------------------------------------------- project drafts
+function composerSnapshot() {
+  return {
+    contextBudget: contextBudget.value, contextBudgetOrigin: contextBudgetOrigin.value, intent: intentDraft.value, journey: journeyDraft.value,
+    version: 1 as const, repository: requestedRepository.value, task: task.value, acceptance: acceptanceCriteria.value,
+    paths: [...contextPaths.value.entries()], attachments: attachments.value, pattern: patternId.value,
+    roles: roleSel.value, models: roleModels.value, settings: agentSettings.value, options: optionValues.value,
+    base: baseRef.value, branch: branchPrefix.value, check: checkCmd.value, setup: setupCmd.value,
+    limits: limits.value, trust: trust.value, approvals: approvalChoices.value, origins: composerOrigins.value,
+    source: source.value, externalSource: externalSource.value, runOptions: composerRunOptions.value, rerun: rerunDraft.value,
+  };
+}
+type ComposerSnapshot = ReturnType<typeof composerSnapshot>;
+const draftStore = new ProjectDraftStore<ComposerSnapshot>(workspaceKey("project-draft-v1:"));
+let composerSwitch = 0;
+let composerWork: Promise<boolean> = Promise.resolve(true);
+let draftWatching = false;
+
+function unsavedDraftWarning() {
+  const names = draftStore.unsavedKeys.map(id => projects.value.find(project => project.id === id)?.name ?? (id || "Unassigned draft"));
+  return names.length ? `Not saved: ${names.join(", ")}. Keep this tab open, return to the draft and retry saving.` : "";
+}
+
+export async function saveComposerDraft() {
+  if (!draftsReady.value || composerLoading.value) return;
+  try {
+    await draftStore.write(composerProject.value, composerSnapshot());
+    draftError.value = unsavedDraftWarning();
+  } catch { draftError.value = "This draft is kept in this tab, but could not be saved. Keep the tab open and retry saving."; }
+}
+
+function restoreComposer(snapshot: ComposerSnapshot) {
+  batch(() => {
+    contextBudget.value = snapshot.contextBudget; contextBudgetOrigin.value = snapshot.contextBudgetOrigin ?? "Application default";
+    intentDraft.value = snapshot.intent; journeyDraft.value = snapshot.journey;
+    task.value = snapshot.task; acceptanceCriteria.value = snapshot.acceptance;
+    contextPaths.value = new Map(snapshot.paths); attachments.value = snapshot.attachments;
+    patternId.value = snapshot.pattern; roleSel.value = snapshot.roles; roleModels.value = snapshot.models;
+    agentSettings.value = snapshot.settings; optionValues.value = snapshot.options;
+    baseRef.value = snapshot.base; branchPrefix.value = snapshot.branch;
+    checkCmd.value = snapshot.check; setupCmd.value = snapshot.setup;
+    limits.value = snapshot.limits; trust.value = snapshot.trust; approvalChoices.value = snapshot.approvals;
+    composerOrigins.value = snapshot.origins; source.value = snapshot.source; externalSource.value = snapshot.externalSource;
+    composerRunOptions.value = snapshot.runOptions ?? {};
+    rerunDraft.value = snapshot.rerun ?? null;
+  });
+}
+
+/** Switch only the draft destination. Viewing a project or filtering lists never calls this. */
+export function openComposer(id?: string, options: { repository?: string; carryUnassigned?: boolean; stay?: boolean } = {}): Promise<boolean> {
+  const r = route.value;
+  const next = id ?? (r.view === "project" ? r.id : r.view === "workspace" && r.project ? r.project : composerProject.value);
+  const request = ++composerSwitch;
+  // Complete an in-flight restore before taking another snapshot. Only the most
+  // recent queued selection runs, and older requests cannot rewrite navigation.
+  const work = composerWork.then(() => request === composerSwitch ? switchComposer(next, options, request) : false);
+  composerWork = work.catch(() => false);
+  return work;
+}
+
+async function switchComposer(next: string, options: { repository?: string; carryUnassigned?: boolean; stay?: boolean }, request: number): Promise<boolean> {
+  if (!draftsReady.value) return false;
+  const project = projects.value.find(item => item.id === next);
+  if (next === composerProject.value && !options.repository) {
+    if (!options.stay) route.value = { view: "composer", project: next };
+    return true;
+  }
+  const before = composerSnapshot();
+  const carried = !composerProject.value && options.carryUnassigned ? before : undefined;
+  const saving = saveComposerDraft();
+  composerLoading.value = true;
+  await saving;
+  try {
+    const stored = await draftStore.read(next);
+    if (stored && stored.version !== 1) throw new Error("This draft uses an unsupported format. It has been retained.");
+    const saved = stored ?? carried;
+    const repository = options.repository ?? saved?.repository ?? (project ? lastRepo(project) : "");
+    // Retry metadata belongs to the saved project draft, even when two projects share a repository.
+    rerunDraft.value = null;
+    await setRepo(repository);
+    const detectedCheck = checkCmd.value, detectedSetup = setupCmd.value, detectedTrust = trust.value;
+    batch(() => {
+      if (saved) restoreComposer(saved);
+      else {
+        intentDraft.value = undefined; journeyDraft.value = undefined; contextBudget.value = undefined; contextBudgetOrigin.value = "Application default";
+        task.value = ""; acceptanceCriteria.value = []; attachments.value = []; contextPaths.value = new Map();
+        source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
+        roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
+        patternId.value = store.get("pattern") ?? "pipeline"; agentSettings.value = store.json("agentSettings", {});
+        optionValues.value = {}; limits.value = store.json("limits", { maxMinutes: 60, maxSteps: 40 });
+        approvalChoices.value = store.json("approvePlanByPattern", {}); composerRunOptions.value = {}; rerunDraft.value = null;
+        if (project?.defaults) applyDefaults(project.defaults);
+      }
+      if (saved && repository !== saved.repository) {
+        contextPaths.value = new Map(); source.value = null; externalSource.value = null; baseRef.value = ""; journeyDraft.value = undefined;
+        checkCmd.value = detectedCheck; setupCmd.value = detectedSetup; trust.value = detectedTrust; composerRunOptions.value = {}; rerunDraft.value = null;
+      }
+      composerProject.value = next;
+      store.set("composerProject", next);
+    });
+    if (project && project.repos.includes(repository)) store.set(`projectRepo:${next}`, repository);
+    if (!options.stay && request === composerSwitch) route.value = { view: "composer", project: next };
+    return true;
+  } catch (error) {
+    draftError.value = `Could not open the draft: ${(error as Error).message}`;
+    return false;
+  } finally { composerLoading.value = false; }
+}
+
+export function chooseComposerRepository(repository: string): Promise<boolean> {
+  if (repository === repo.value && !composerLoading.value) return Promise.resolve(true);
+  if (!projects.value.find(item => item.id === composerProject.value)?.repos.includes(repository)) return Promise.resolve(false);
+  return openComposer(composerProject.value, { repository, stay: true });
+}
+
+export async function initializeProjectDrafts() {
+  if (draftWatching) return;
+  composerLoading.value = true;
+  try {
+    let id = store.get("composerProject") ?? "";
+    if (store.get("projectDraftVersion") !== "1") {
+      const legacy = composerSnapshot();
+      legacy.repository = repoInfo.value?.repo ?? requestedRepository.value;
+      id = legacyDraftProject(projects.value, store.get("project") ?? "", legacy.repository);
+      await draftStore.write("legacy-backup", legacy);
+      await draftStore.write(id, legacy);
+      store.set("composerProject", id);
+      store.set("projectDraftVersion", "1");
+    }
+    const saved = await draftStore.read(id);
+    if (saved && saved.version !== 1) throw new Error("Saved draft format is unavailable.");
+    composerProject.value = id;
+    const repository = saved?.repository ?? store.get("repo") ?? "";
+    if ((repoInfo.value?.repo ?? "") !== repository) await setRepo(repository, false);
+    if (saved) restoreComposer(saved);
+    draftsReady.value = true;
+    draftWatching = true;
+  } catch (error) {
+    draftError.value = `Could not restore saved drafts: ${(error as Error).message}. Reload to retry.`;
+  } finally { composerLoading.value = false; }
+  if (!draftWatching) return;
+  effect(() => {
+    if (composerLoading.value) return;
+    const snapshot = composerSnapshot(), id = composerProject.value;
+    // Start persistence in the input turn: a debounce can lose an attachment or edit
+    // when the next action reloads or leaves the page.
+    void draftStore.write(id, snapshot).then(() => { draftError.value = unsavedDraftWarning(); }, () => { draftError.value = unsavedDraftWarning(); });
+  });
+  window.addEventListener("pagehide", () => { void saveComposerDraft(); });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) void saveComposerDraft(); });
+}

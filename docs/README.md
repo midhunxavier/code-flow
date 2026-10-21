@@ -11,7 +11,7 @@ Code Flow brings coding CLIs into one workspace for planning, implementation, re
 
 ## From task to reviewed result
 
-1. **Describe the outcome.** Choose a repository and add the context the agents need.
+1. **Open a project.** Choose Open repository, confirm its project, then describe the outcome and add context.
 2. **Choose the team.** Assign roles yourself or review a proposed Auto-team plan.
 3. **Follow the work.** Answer questions, inspect changes and watch the checks.
 4. **Review and ship.** Read the evidence before merging or opening a pull request.
@@ -64,9 +64,12 @@ Code Flow brings coding CLIs into one workspace for planning, implementation, re
 These documents record implementation decisions and evidence at a particular point in time. Use the guides above for current product instructions.
 
 - [Application improvement program](application-improvements.md)
+- [Project navigation review and implementation plan](project-first-navigation-plan.md) (proposed)
 - [Dynamic-team evaluation](dynamic-teams-evaluation.md) and [implementation plan](dynamic-teams-implementation-plan.md)
 - [Implementation review](dynamic-teams-implementation-review-1.md) and [original plan review](dynamic-teams-plan-review-0.md)
 - [Standing-team implementation plan](project-teams-implementation-plan.md)
 - [Measured performance](performance-results.md)
 
 [Project README](../README.md) · [Getting started](getting-started.md)
+
+Project collaboration lives in **More → Board** and **More → People**. Scheduled tasks, backlogs and missions live in **More → Automation**; configured Board and Automation tabs stay visible. Global Inbox and Scheduling cover the current computer.

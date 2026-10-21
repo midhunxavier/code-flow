@@ -31,7 +31,6 @@ import {
   healthOpen,
   attachments,
   checkCmd,
-  checkLoaded,
   contextPaths,
   markSeen,
   patterns,
@@ -40,13 +39,15 @@ import {
   runState,
   setLimits,
   setPattern,
-  setRepo,
   setRoles,
   setTask,
   setupCmd,
   source,
   projectFor,
-  selectProject,
+  openComposer,
+  composerRunOptions,
+  composerLoading,
+  draftsReady,
   navigate,
   openSideChat,
   openSide,
@@ -205,7 +206,7 @@ export function RunView({ id }: { id: string }) {
             </div>
             <div class="run-actions">
               {finished ? <Menu label="More run actions" icon="more">{close => <>
-                {!run.projectTeam ? <MenuItem onClick={() => { close(); void editAndRerun(run); }}>Edit &amp; run again</MenuItem> : null}
+                {!run.projectTeam ? <MenuItem disabled={!draftsReady.value || composerLoading.value} onClick={() => { close(); void editAndRerun(run); }}>Edit &amp; run again</MenuItem> : null}
                 <MenuItem onClick={() => { close(); if (run.archived) void post(`/api/runs/${run.id}/archive`, { archived: false }).catch(e => showToast(e.message)); else setArchiving(true); }}>{run.archived ? "Unarchive" : "Archive…"}</MenuItem>
                 {!run.projectTeam ? <MenuItem onClick={() => { close(); setDeleting(true); }}>Delete…</MenuItem> : null}
               </>}</Menu> : null}
@@ -2090,18 +2091,22 @@ let rerunRequest = 0;
 export async function editAndRerun(run: RunSummary) {
   if (run.projectTeam) {
     showToast("Use the project mission's revision controls to revise this result.", 4000);
-    if (run.project) navigate({ view: "project", id: run.project });
+    if (run.project) navigate({ view: "project", id: run.project, section: "automation", kind: "missions" });
     return;
   }
   const request = ++rerunRequest;
   const origin = route.value;
-  const selection = repoInfo.value;
-  const changing = run.repo !== repo.value;
-  const loaded = changing ? await setRepo(run.repo) : (await checkLoaded(), repo.value === run.repo && repoInfo.value === selection);
-  // Repository discovery must finish before restoring anything, and a late lookup must
-  // never replace a newer repository choice, draft, or navigation.
-  if (!loaded || request !== rerunRequest || route.value !== origin || repo.value !== run.repo) return;
+  const destination = projectFor(run);
+  if (!await openComposer(destination?.id ?? "", { repository: run.repo, stay: true })) return;
+  if (request !== rerunRequest || route.value !== origin || repo.value !== run.repo) return;
   rerunDraft.value = structuredClone({ id: run.id, repo: run.repo, loop: run.loop, approvals: run.approvals ?? {}, source: run.source });
+  composerRunOptions.value = {
+    remoteWorker: run.loop.remoteWorker,
+    container: { enabled: !!run.loop.agentContainer, image: run.loop.agentContainer?.image ?? "", authVolume: run.loop.agentContainer?.authVolume ?? "" },
+    verification: run.loop.verification ? "restored" : "",
+    verificationProfile: run.loop.verification ?? null,
+    toolApprovals: run.approvals?.tools === true,
+  };
   intentDraft.value = run.intent;
   journeyDraft.value = undefined;
   externalSource.value = null;
@@ -2138,9 +2143,7 @@ export async function editAndRerun(run: RunSummary) {
         }
       : null;
   // Back in the run's project, so the new run goes there too.
-  const project = projectFor(run);
-  if (project) selectProject(project.id, { defaults: false, repo: false });
-  navigate({ view: "composer" });
+  navigate({ view: "composer", project: destination?.id ?? "" });
 }
 
 function RecoveryCheckDialog({ run, onClose }: { run: RunSummary; onClose: () => void }) {

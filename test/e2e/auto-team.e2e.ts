@@ -46,6 +46,8 @@ before(async () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert.ok(healthy, "test server started");
+  const project = await fetch(`${base}/api/projects`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ name: "Auto team", repos: [repo] }) });
+  assert.equal(project.status, 201);
   browser = await chromium.launch({ channel: "chrome", headless: true });
   page = await browser.newPage({ viewport: { width: 1280, height: 960 } });
   await page.addInitScript((path) => {
@@ -98,10 +100,11 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   await page.locator(".note-chip", { hasText: "Queued for builder-two" }).waitFor();
   await page.getByRole("button", { name: "✓ Approve", exact: true }).click();
   await page.getByPlaceholder("Your answer…").waitFor({ timeout: 30_000 });
-  // The question is published before the scheduler finishes independent work and
-  // marks the run as awaiting user input. Wait for that later sidebar snapshot.
-  await page.locator(".rail .run-item.active").getByText("Waiting for you").first().waitFor({ state: "attached", timeout: 30_000 });
+  // Start typing before the scheduler moves the question into the attention card.
   await page.getByPlaceholder("Your answer…").fill("Empty input is valid; add a test.");
+  await page.locator(".rail .run-item.active").getByText("Waiting for you").first().waitFor({ state: "attached", timeout: 30_000 });
+  await page.locator("#run-question textarea").waitFor();
+  assert.equal(await page.locator("#run-question textarea").inputValue(), "Empty input is valid; add a test.", "moving the question preserves the answer draft");
   await page.getByRole("button", { name: "Send answer", exact: true }).click();
   await page.locator(".auto-team .at-head .badge").getByText("Finished", { exact: true }).waitFor({ timeout: 40_000 }).catch(async (error: Error) => { const run = await read(); throw new Error(`${error.message}\n${JSON.stringify({ status: run.status, error: run.error, gaps: run.team?.gaps, verification: run.team?.verification })}`); });
   // Team verification finishes before the engine records its artifacts and ends the run.

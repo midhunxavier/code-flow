@@ -41,7 +41,7 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`${base}/?token=${token}`);
     await page.goto(`${base}/?team=local#/settings/team`);
-    await page.getByLabel("Show People collaboration").check();
+    await page.getByLabel("Show Board in the app menu").check();
     await page.getByRole("button", { name: "Set up team server", exact: true }).click();
     await page.getByLabel("Server", { exact: true }).selectOption(connection.id);
     await page.getByLabel("Team HTTPS port", { exact: true }).fill(String(teamPort));
@@ -192,7 +192,7 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     service.kill("SIGTERM"); await exited;
     assert.ok(await fetch(`http://127.0.0.1:${booted.port}/api/health`, { headers: { authorization: `Bearer ${booted.token}` } }).then(() => false, () => true), "stopping the supervisor stops its child");
     await page.goto(`${base}/computer/${connection.id}/#/team`);
-    await page.getByRole("heading", { name: "Workspace tasks", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Board", exact: true }).waitFor();
     await page.getByRole("heading", { name: "Your board is ready for its first task", exact: true }).waitFor();
     assert.equal(await page.getByText("Unknown team link operation", { exact: true }).count(), 0);
     assert.equal(await page.getByRole("heading", { name: "Host queue", exact: true }).count(), 0);
@@ -207,7 +207,7 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     await page.screenshot({ path: "/tmp/code-flow-team-board-mobile.png", fullPage: true, animations: "disabled" });
     await page.setViewportSize({ width: 1440, height: 1100 });
     await page.goto(`${base}/computer/${connection.id}/#/settings/connections/sharing`);
-    await page.getByLabel("Show People collaboration").check();
+    await page.getByLabel("Show Board in the app menu").check();
     const statusCard = page.getByRole("region", { name: "Team server on Connected VM", exact: true });
     await statusCard.getByText("Not responding", { exact: true }).waitFor();
     await statusCard.getByRole("button", { name: "Delete team server", exact: true }).click();

@@ -201,7 +201,10 @@ export class Projects {
     return this.change(() => {
       const p = this.require(id);
       const added = !p.repos.includes(repo);
-      if (added) p.repos.push(repo);
+      if (added) {
+        if (p.repos.length >= MAX_REPOS) throw new Error(`A project holds at most ${MAX_REPOS} repositories`);
+        p.repos.push(repo);
+      }
       return { project: copy(p), added };
     });
   }
