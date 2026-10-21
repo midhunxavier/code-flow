@@ -10,6 +10,10 @@ Take a small, well-defined task from your own repository to a reviewed result. T
 
 ## Install and run
 
+Use the [installation guide](installation.md) for the one-command npm launcher, macOS app download, Homebrew and Windows through WSL2. Those channels become available when the preview is published.
+
+### Install from source
+
 ```bash
 git clone https://github.com/midhunxavier/code-flow.git
 cd code-flow

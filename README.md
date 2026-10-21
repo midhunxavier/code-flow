@@ -23,6 +23,10 @@
 
 ## Quickstart
 
+The preview adds a one-command launcher: **`npx code-flow@preview`**. It starts Code Flow locally and opens your browser. npm and download commands become available when the preview is published; see [installation options](docs/installation.md) for macOS, Linux, Windows through WSL2, npm, Homebrew and the macOS DMG. [Preview downloads](https://github.com/midhunxavier/code-flow/releases).
+
+To run from source today:
+
 Install **Node.js 22.13+**, **Git 2.38+**, and at least one supported CLI: `claude`, `codex` or `agy`. Sign in through the CLI before starting. Additional [ACP agents](docs/acp-agents.md) can be connected in Settings.
 
 ```bash
@@ -109,6 +113,8 @@ npm run typecheck
 npm test
 npm run test:e2e     # browser acceptance tests; requires Chrome
 ```
+
+To prepare the npm preview and macOS DMG, see the [release guide](docs/releasing.md).
 
 The [development guide](docs/architecture.md) covers the source layout, adapter and workflow contracts, and tests. Engineering plans and evaluation records are grouped separately in the docs library.
 

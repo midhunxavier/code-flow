@@ -11,6 +11,8 @@ Code Flow brings coding CLIs into one workspace for planning, implementation, re
 
 ## From task to reviewed result
 
+Start with the [preview installation options](installation.md): npm, macOS download, Linux and Windows through WSL2.
+
 1. **Open a project.** Choose Open repository, confirm its project, then describe the outcome and add context.
 2. **Choose the team.** Assign roles yourself or review a proposed Auto-team plan.
 3. **Follow the work.** Answer questions, inspect changes and watch the checks.

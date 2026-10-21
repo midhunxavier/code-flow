@@ -1,6 +1,7 @@
 {
   "Get started": [
     "README",
+    "installation",
     "getting-started",
     "patterns",
     "acp-agents",
@@ -55,7 +56,8 @@
     "accessibility",
     "performance",
     "run-storage",
-    "documentation"
+    "documentation",
+    "releasing"
   ],
   "Engineering records": [
     "application-improvements",
