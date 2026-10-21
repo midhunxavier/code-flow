@@ -367,5 +367,22 @@
     "The live workflow used local execution. SSH, containers and external PR publication are outside this live run.",
     "Antigravity planning and review took several minutes. The cancelled initial planning turn, its resume, and timings are retained above. The updated planning prompt was covered by pattern tests; latency improvement was not claimed from a new live planning run.",
     "Final revisions correctly invalidate the initial independent approval; the final local merge was owner-reviewed and verified, without claiming a new independent review."
-  ]
+  ],
+  "preMergeValidation": {
+    "productionBuild": "passed",
+    "typecheck": "passed",
+    "fullUnitSuite": {
+      "command": "npm test",
+      "tests": 1224,
+      "passed": 1216,
+      "failed": 0,
+      "skipped": 8
+    },
+    "browserCompatibilityRegression": {
+      "test": "project defaults stay repository-scoped and a run creates its worktree from the selected branch",
+      "before": "Reproduced the outdated assertion locally: it required the newly introduced per-run setup control to be absent.",
+      "after": "Passed with stronger assertions that per-run setup is inside run options, preserves the saved project setup, and reaches the launched run.",
+      "productionSourceChanged": false
+    }
+  }
 }

@@ -1075,7 +1075,8 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     await fresh.evaluate(() => { location.hash = "/"; });
     await fresh.getByRole("button", { name: "Agent workflow mode", exact: true }).waitFor();
     assert.equal(await fresh.locator(".composer-options").getAttribute("open"), null);
-    assert.equal(await fresh.locator(".readiness, .composer-library, #setupCmd").count(), 0, "project setup and library management are absent from the run view");
+    assert.equal(await fresh.locator('.composer-library, [aria-label="Default check command"], [aria-label="Default verification profile"]').count(), 0, "project-wide default editors and library management stay in settings");
+    assert.equal(await fresh.getByLabel("Worktree setup command", { exact: true }).isVisible(), false, "per-run setup is inside the collapsed run options");
     await fresh.locator(".taskbox").getByLabel("Start from branch", { exact: true }).selectOption("origin/feature");
     await fresh.locator(".composer-options > summary").click();
     await fresh.locator(".advanced-controls > summary").click();
@@ -1084,6 +1085,9 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     await fresh.locator(".agent-isolation > summary").click();
     assert.equal(await fresh.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image" }).isChecked(), true);
     await fresh.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image" }).uncheck();
+    assert.equal(await fresh.getByLabel("Worktree setup command", { exact: true }).inputValue(), "node -e \"process.exit(0)\"");
+    await fresh.getByLabel("Worktree setup command", { exact: true }).fill("node -e \"process.exit(0); /* setup override */\"");
+    assert.equal(await fresh.evaluate((path) => localStorage.getItem(`setup:${path}`), realpathSync(repo)), "node -e \"process.exit(0)\"", "setup overrides do not overwrite the project default");
     await fresh.getByLabel("Done when this passes", { exact: true }).fill("node -e \"process.exit(0); /* run override */\"");
     assert.equal(await fresh.evaluate((path) => localStorage.getItem(`check:${path}`), realpathSync(repo)), "node -e \"process.exit(0)\"", "run overrides do not overwrite the project default");
     await fresh.getByLabel("Task", { exact: true }).fill("Verify selected branch and project defaults");
@@ -1100,7 +1104,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(run.baseRef, branchCommit);
     assert.equal(run.baseLabel, "origin/feature");
     assert.match(run.loop.check, /run override/);
-    assert.equal(run.loop.setup, "node -e \"process.exit(0)\"");
+    assert.equal(run.loop.setup, "node -e \"process.exit(0); /* setup override */\"");
     assert.equal(run.loop.agentContainer, undefined);
     assert.ok(!run.loop.verification);
     await fresh.getByRole("button", { name: "More run actions", exact: true }).waitFor({ timeout: 30000 });
