@@ -1,4 +1,5 @@
 import { needsYou, matchesHistoryFilter } from "../src/run-status.js";
+import { DEFAULT_EXECUTION_BUDGET } from "../src/execution-budget.js";
 export { needsYou, runState, isFlagged } from "../src/run-status.js";
 import { rerunDraft } from "./rerun-draft.js";
 import { contextBudget, contextBudgetOrigin } from "./context-budget.js";
@@ -452,6 +453,18 @@ export function openSideChat(runId: string, chat: string) {
   openSide("chat");
 }
 
+/** Open links in the Browser belonging to the run that supplied them. */
+export function openBrowserPage(url: string, runId?: string) {
+  const key = runId ? `run:${runId}` : sideScope.value.key;
+  const memo = sideMemory.value[key];
+  const pages = memo?.pages ?? (memo?.url ? [{ id: "p0", url: memo.url }] : []);
+  const existing = pages.find(page => { try { return new URL(page.url).href === new URL(url).href; } catch { return page.url === url; } });
+  const id = existing?.id ?? `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  rememberSide({ pages: existing ? pages : [...pages, { id, url }], page: id, tab: "browser" }, key);
+  if (runId && sideScope.value.key !== key) setPin(followed.value.key === key ? null : { kind: "run", id: runId });
+  openSide("browser");
+}
+
 /** What the panel remembers per scope, so going back to a run brings back its panel. */
 export interface SideMemory {
   tab?: SideTab;
@@ -610,7 +623,7 @@ export const branchPrefix = signal("");
 export const checkCmd = signal("");
 export const checkHint = signal("");
 export const setupCmd = signal("");
-export const limits = signal(store.json<{ maxMinutes: number; maxSteps: number; maxTokens?: number; maxCostUsd?: number }>("limits", { maxMinutes: 60, maxSteps: 40 }));
+export const limits = signal(store.json<{ maxMinutes: number; maxSteps: number; maxTokens?: number; maxCostUsd?: number }>("limits", DEFAULT_EXECUTION_BUDGET));
 export type Trust = "safe" | "standard" | "trusted" | "full";
 export const trust = signal<Trust>((store.get("trust") as Trust) || "standard");
 export function setTrust(value: Trust) {
@@ -1208,7 +1221,7 @@ async function switchComposer(next: string, options: { repository?: string; carr
         source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
         roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
         patternId.value = store.get("pattern") ?? "auto-team"; agentSettings.value = store.json("agentSettings", {});
-        optionValues.value = {}; limits.value = store.json("limits", { maxMinutes: 60, maxSteps: 40 });
+        optionValues.value = {}; limits.value = store.json("limits", DEFAULT_EXECUTION_BUDGET);
         approvalChoices.value = store.json("approvePlanByPattern", {}); selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
         if (project?.defaults) applyDefaults(project.defaults);
       }

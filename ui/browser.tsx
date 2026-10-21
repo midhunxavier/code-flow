@@ -79,6 +79,8 @@ interface PageState {
   ready?: boolean;
   /** Why they don't, when they don't. */
   why?: string;
+  blockedFrame?: string;
+  autoSnapshotUrl?: string;
   /** Snapshot mode: the latest snapshot, whether it's shown instead of the live page, and how taking one went. */
   snap?: Snap;
   showSnap?: boolean;
@@ -222,6 +224,11 @@ export function BrowserTab() {
     }
     return true;
   };
+  useEffect(() => {
+    if (!active?.url || !state?.blockedFrame || state.autoSnapshotUrl === active.url || state.showSnap || state.snapping) return;
+    setPage(key, page => ({ ...page, autoSnapshotUrl: active.url }));
+    void snapshot(false);
+  }, [key, active?.url, state?.blockedFrame]);
   const here = state?.at ?? active?.url;
   // The Snapshot button: back to the live page; the snapshot of this page again (or the one on its
   // way); or a new one, and if you'd rather keep the boxes on the one you have, that one.
@@ -317,6 +324,10 @@ export function BrowserTab() {
           onSnapshot={toggleSnapshot}
         />
       ) : null}
+      {state?.blockedFrame ? <div class="msg browse-note" role="status">
+        This site blocks embedded browsing ({state.blockedFrame}). {state.showSnap ? "Showing a signed-out snapshot. " : "Use Snapshot to view it here. "}
+        <a href={active?.url} target="_blank" rel="noreferrer">Open the interactive site in a new tab</a>
+      </div> : null}
       {active?.url ? <JourneyRecorder key={key} pageKey={key} url={here || active.url} repository={s.repo} width={device === "phone" ? 390 : device === "tablet" ? 768 : 1280} ready={canAnnotate} toggle={active => { setMode("off"); overlays.get(key)?.({ type: "recording", active }); }} /> : null}
       <div class={`browse ${second ? "compare" : ""}`} ref={area}>
         {!active || !active.url ? (
@@ -415,10 +426,16 @@ function PageFrame({ pageKey, url, device, mode, onModeOff, hidden = false }: { 
   useEffect(() => {
     let alive = true;
     setProblem("");
-    setPage(pageKey, (p) => ({ ...p, ready: false, why: local ? "Waiting for the page" : "Annotating works on apps on this computer (localhost)" }));
+    setPage(pageKey, (p) => ({ ...p, ready: false, blockedFrame: undefined, why: local ? "Waiting for the page" : "Annotating works on apps on this computer (localhost)" }));
     if (!local) {
       setPage(pageKey, (p) => ({ ...p, preview: false }));
-      return setView({ src: url });
+      setView({ src: url });
+      if (/^https?:\/\//i.test(url) && !LOCAL.test(url)) {
+        post<{ blocked: boolean; reason?: string }>("/api/frame-policy", { url }).then(result => {
+          if (alive && result.blocked) setPage(pageKey, page => ({ ...page, blockedFrame: result.reason ?? "the site's framing policy" }));
+        }, () => {});
+      }
+      return () => { alive = false; };
     }
     post<{ url: string; origin: string }>("/api/preview", { url }).then(
       (p) => {

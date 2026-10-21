@@ -2,7 +2,7 @@
 
 Start Code Flow with one command, then work in your browser. You do not need to clone Code Flow or add it to your project. The preview uses your installed coding CLIs and their existing logins.
 
-**Preview availability:** the commands below target the `preview` npm channel and preview downloads. They become available when the maintainer publishes the release. If a channel is not published yet, use the [source installation](getting-started.md#install-from-source) or the exact tarball command in the [preview release notes](https://github.com/midhunxavier/code-flow/releases).
+**0.1.0-preview.1 is available now.** Use the `preview` npm channel below or download the macOS app. See the [preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.1).
 
 ## Choose an installation method
 
@@ -44,7 +44,10 @@ codeflow</code></pre>
 
 ## macOS app download
 
-Prefer an app you can open from Applications? Choose a DMG from the [preview downloads](https://github.com/midhunxavier/code-flow/releases).
+Prefer an app you can open from Applications? Download **0.1.0-preview.1** for your Mac:
+
+- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-arm64-unnotarized.dmg)
+- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-x64-unnotarized.dmg)
 
 1. Choose **arm64** for Apple Silicon, or **x64** for an Intel Mac. macOS 13 or later is required.
 2. Open the DMG and drag **Code Flow** to **Applications**.

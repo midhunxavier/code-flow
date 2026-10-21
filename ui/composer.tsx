@@ -3,6 +3,7 @@ import { supportsRunPermissions, type PermissionRequirement } from "../src/run-p
 import { TeamTemplateLibrary } from "./team-template-library.js";
 import { selectedTeamTemplate } from "./team-template-state.js";
 import { confirmAction } from "./confirm-state.js";
+import { DEFAULT_EXECUTION_BUDGET } from "../src/execution-budget.js";
 import { intentDraft, WorkflowRecommendation } from "./experience.js";
 import { journeyDraft } from "./journeys.js";
 import { comparisonDraft } from "./workflow-ui.js";
@@ -249,7 +250,7 @@ export function Composer() {
     store.set("baseRef", baseRef.value);
     setTask("");
     void loadCheck();
-    limits.value = store.json("limits", { maxMinutes: 60, maxSteps: 40 });
+    limits.value = store.json("limits", DEFAULT_EXECUTION_BUDGET);
     setAcceptanceCriteria([]);
     branchPrefix.value = "";
     source.value = null;
@@ -1187,13 +1188,13 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
               <label class="lbl" for="maxMinutes">
                 Minutes
               </label>
-              <input class="field" type="number" id="maxMinutes" min={1} max={720} value={String(limits.value.maxMinutes)} onInput={(e) => setLimits({ maxMinutes: Number(e.currentTarget.value) || 60 })} />
+              <input class="field" type="number" id="maxMinutes" min={1} max={720} value={String(limits.value.maxMinutes)} onInput={(e) => setLimits({ maxMinutes: Number(e.currentTarget.value) || DEFAULT_EXECUTION_BUDGET.maxMinutes })} />
             </div>
             <div>
               <label class="lbl" for="maxSteps">
                 Agent steps
               </label>
-              <input class="field" type="number" id="maxSteps" min={1} max={200} value={String(limits.value.maxSteps)} onInput={(e) => setLimits({ maxSteps: Number(e.currentTarget.value) || 40 })} />
+              <input class="field" type="number" id="maxSteps" min={1} max={200} value={String(limits.value.maxSteps)} onInput={(e) => setLimits({ maxSteps: Number(e.currentTarget.value) || DEFAULT_EXECUTION_BUDGET.maxSteps })} />
             </div>
             <div><label class="lbl" for="maxTokens">Reported token ceiling</label><input class="field" id="maxTokens" type="number" min={1} placeholder="Optional" value={limits.value.maxTokens ?? ""} onInput={(event) => setLimits({ maxTokens: Number(event.currentTarget.value) || undefined })} /></div>
             <div><label class="lbl" for="maxCostUsd">Reported API-equivalent ceiling ($)</label><input class="field" id="maxCostUsd" type="number" min={0.001} step={0.01} placeholder="Optional" value={limits.value.maxCostUsd ?? ""} onInput={(event) => setLimits({ maxCostUsd: Number(event.currentTarget.value) || undefined })} /></div>

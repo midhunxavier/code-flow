@@ -8,26 +8,37 @@
   Use your installed CLIs and existing logins, with work you can inspect before shipping.
 </p>
 <p align="center">
-  <a href="#quickstart">Quickstart</a> ·
+  <a href="#try-the-preview">Try the preview</a> ·
   <a href="https://midhunxavier.github.io/code-flow/">Documentation</a> ·
   <a href="docs/patterns.md">Workflows</a> ·
   <a href="docs/security.md">Security</a>
 </p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/run-dark.png">
-  <img src="docs/images/run-light.png" alt="Code Flow run with the task, agent activity, verification evidence and review actions. Captured from the local app using demo agents." width="100%">
-</picture>
-
-*Screenshots show the current local app with deterministic demo agents. They do not represent real provider output or a production verification result.*
-
 ## Quickstart
 
-The preview adds a one-command launcher: **`npx @midhunxavier/code-flow@preview`**. It starts Code Flow locally and opens your browser. npm and download commands become available when the preview is published; see [installation options](docs/installation.md) for macOS, Linux, Windows through WSL2, npm, Homebrew and the macOS DMG. [Preview downloads](https://github.com/midhunxavier/code-flow/releases).
+### Try the preview
 
-To run from source today:
+Run Code Flow locally and open it in your browser with one command:
 
-Install **Node.js 22.13+**, **Git 2.38+**, and at least one supported CLI: `claude`, `codex` or `agy`. Sign in through the CLI before starting. Additional [ACP agents](docs/acp-agents.md) can be connected in Settings.
+```bash
+npx @midhunxavier/code-flow@preview
+```
+
+Requires **Node.js 22.13+**, **Git 2.38+**, and at least one supported CLI: `claude`, `codex` or `agy`, installed and signed in. Works on macOS, Linux and Windows through **WSL2**. Keep the terminal open while you work; press **Ctrl+C** to stop.
+
+Prefer a macOS app? Download **0.1.0-preview.1** for your Mac:
+
+| Apple Silicon (M1 or later) | Intel |
+| --- | --- |
+| [Download Apple Silicon DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-arm64-unnotarized.dmg) | [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-x64-unnotarized.dmg) |
+
+Requires **macOS 13+**. Open the DMG, drag **Code Flow** to **Applications**, then open it to launch the browser app. Node is bundled; Git and a signed-in agent CLI are still required. These DMGs are **unnotarized preview builds** and macOS may block them; use npm if blocked.
+
+[Preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.1) · [Installation and first-run guide](docs/getting-started.md)
+
+### Run from source
+
+With Node.js, Git and a signed-in agent CLI installed:
 
 ```bash
 git clone https://github.com/midhunxavier/code-flow.git
@@ -46,6 +57,13 @@ Open [localhost:4317](http://localhost:4317), or use the owner link printed in t
 Results live on branches such as `codeflow/<run>/build` in separate Git worktrees. The [first-run guide](docs/getting-started.md) explains context, permissions and model settings.
 
 **Inbox** and **Scheduling** are in the sidebar. **New run → Template library** groups task starters and saved configurations. Open **Repository tools** from a project; use **Settings → Connections** for remote work and sharing.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/run-dark.png">
+  <img src="docs/images/run-light.png" alt="Code Flow run with the task, agent activity, verification evidence and review actions. Captured from the local app using demo agents." width="100%">
+</picture>
+
+*Screenshots show the current local app with deterministic demo agents. They do not represent real provider output or a production verification result.*
 
 ## A workspace for the whole task
 
@@ -113,8 +131,6 @@ npm run typecheck
 npm test
 npm run test:e2e     # browser acceptance tests; requires Chrome
 ```
-
-To prepare the npm preview and macOS DMG, see the [release guide](docs/releasing.md).
 
 The [development guide](docs/architecture.md) covers the source layout, adapter and workflow contracts, and tests. Engineering plans and evaluation records are grouped separately in the docs library.
 

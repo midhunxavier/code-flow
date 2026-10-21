@@ -1,5 +1,6 @@
 import { expandTemplateUses, type TeamTemplate } from "../team-templates.js";
 import { DISCOVERY_REPORT_SCHEMA, digest, validateReport, type DiscoveryReport } from "../project-team-model.js";
+import { coordinatorInvocationLimit } from "../execution-budget.js";
 import { managedPlanProblem, managedRevisionProblem, assertProjectTeamChanges } from "../project-team-policy.js";
 import type { AgentId } from "../adapters/index.js";
 import { projectTeamRerunPlan, retainedBaselinePrompt, validateTeamRerunSeed } from "../team-reruns.js";
@@ -101,7 +102,7 @@ export const autoTeamPattern: Pattern = {
     const previousMetrics = ctx.run.team?.metrics;
     const state: TeamState = {
       version: 1, revision: 0, scheduler: eventDriven ? "event" : "waves", wave: 0, status: "planning", requirements: [], members: [], tasks: [], contracts: [], rationale: "",
-      invocationLimit, coordinationLimit: Math.min(4, Math.floor(invocationLimit / 4)), maxWaves: clamp(ctx.option("maxWaves", 4), 1, 12), maxRepairs: clamp(ctx.option("maxRepairs", 2), 0, 4), inventory,
+      invocationLimit, coordinationLimit: coordinatorInvocationLimit(invocationLimit), maxWaves: clamp(ctx.option("maxWaves", 4), 1, 12), maxRepairs: clamp(ctx.option("maxRepairs", 2), 0, 4), inventory,
       messages: [], contextManifests: [], metrics: { invocations: previousMetrics?.invocations ?? 0, coordinatorInvocations: previousMetrics?.coordinatorInvocations ?? 0, questionCount: 0, blockedTurns: 0, revisions: 0 }, gaps: [],
     };
     const publish = () => ctx.setTeam(state);
