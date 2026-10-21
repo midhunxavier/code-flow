@@ -16,22 +16,22 @@ Start Code Flow with one command, then work in your browser. You do not need to 
 <section id="install-unix" role="tabpanel" aria-labelledby="install-tab-unix" tabindex="0">
 <h3>Try it with one command</h3>
 <p>Install Node.js 22.13+ and Git 2.38+, then run:</p>
-<pre><code class="language-sh">npx code-flow@preview</code></pre>
+<pre><code class="language-sh">npx @midhunxavier/code-flow@preview</code></pre>
 <p>Code Flow starts locally and opens its sign-in link in your default browser. Keep the terminal open while you work. Press <strong>Ctrl+C</strong> to stop the server.</p>
 </section>
 <section id="install-windows" role="tabpanel" aria-labelledby="install-tab-windows" tabindex="0">
 <h3>Use Windows Subsystem for Linux</h3>
 <p>This preview runs inside <strong>WSL2</strong>. Install Node.js 22.13+, Git 2.38+ and your agent CLIs inside WSL, sign in there, and keep your repository in the Linux filesystem. In your WSL terminal, run:</p>
-<pre><code class="language-sh">npx code-flow@preview</code></pre>
+<pre><code class="language-sh">npx @midhunxavier/code-flow@preview</code></pre>
 <p>The launcher tries to open your Windows browser. If it cannot, copy the local sign-in link from the terminal. Native PowerShell and Command Prompt execution are not supported in this preview.</p>
 </section>
 <section id="install-npm" role="tabpanel" aria-labelledby="install-tab-npm" tabindex="0">
 <h3>Install for regular use</h3>
 <p>With Node.js 22.13+ and Git 2.38+ installed on macOS, Linux or inside WSL2:</p>
-<pre><code class="language-sh">npm install -g code-flow@preview
+<pre><code class="language-sh">npm install -g @midhunxavier/code-flow@preview
 codeflow</code></pre>
 <p>To update, run the same install command again. To remove the launcher:</p>
-<pre><code class="language-sh">npm uninstall -g code-flow</code></pre>
+<pre><code class="language-sh">npm uninstall -g @midhunxavier/code-flow</code></pre>
 </section>
 <section id="install-homebrew" role="tabpanel" aria-labelledby="install-tab-homebrew" tabindex="0">
 <h3>Install with Homebrew</h3>

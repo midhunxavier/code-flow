@@ -31,7 +31,7 @@ test("the packed npm install runs outside the checkout, opens its authenticated 
     assert.ok(packed.files.some((file) => file.path === "dist/remote-host.json"));
     assert.ok(!packed.files.some((file) => /(?:node_modules\/|test\/|\.ts$|\.env$)/.test(file.path)));
     execFileSync("npm", ["install", "--prefix", install, "--ignore-scripts", "--no-audit", "--no-fund", join(directory, packed.filename)], { cwd: directory, stdio: "pipe" });
-    const installed = join(install, "node_modules/code-flow");
+    const installed = join(install, "node_modules", pkg.name);
     const bin = join(install, "node_modules/.bin/codeflow");
     assert.equal(execFileSync(bin, ["--version"], { cwd: directory, encoding: "utf8" }).trim(), pkg.version);
     assert.match(execFileSync(bin, ["--help"], { cwd: directory, encoding: "utf8" }), /--no-open/);

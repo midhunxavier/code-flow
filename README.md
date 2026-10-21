@@ -23,7 +23,7 @@
 
 ## Quickstart
 
-The preview adds a one-command launcher: **`npx code-flow@preview`**. It starts Code Flow locally and opens your browser. npm and download commands become available when the preview is published; see [installation options](docs/installation.md) for macOS, Linux, Windows through WSL2, npm, Homebrew and the macOS DMG. [Preview downloads](https://github.com/midhunxavier/code-flow/releases).
+The preview adds a one-command launcher: **`npx @midhunxavier/code-flow@preview`**. It starts Code Flow locally and opens your browser. npm and download commands become available when the preview is published; see [installation options](docs/installation.md) for macOS, Linux, Windows through WSL2, npm, Homebrew and the macOS DMG. [Preview downloads](https://github.com/midhunxavier/code-flow/releases).
 
 To run from source today:
 

@@ -27,15 +27,17 @@ The **Preview release** GitHub workflow builds and tests the tarball on macOS an
 
 ## npm preview channel
 
-Authenticate to the npm account that owns `code-flow`. On first publication, confirm the package name is available and that you are publishing from the intended account. Then publish the tested tarball:
+The published package is scoped as `@midhunxavier/code-flow` because npm rejected the unscoped name as too similar to the existing `codeflow` package. The installed commands remain `codeflow` and `code-flow`.
+
+Authenticate to the npm account that owns `@midhunxavier/code-flow`. On first publication, confirm the package name is available and that you are publishing from the intended account. Then publish the tested tarball:
 
 ```sh
 npm whoami
-npm publish output/releases/code-flow-0.1.0-preview.1.tgz --tag preview --access public
-npm view code-flow@preview version
+npm publish output/releases/midhunxavier-code-flow-0.1.0-preview.1.tgz --tag preview --access public
+npm view @midhunxavier/code-flow@preview version
 ```
 
-Use the actual version's filename when publishing subsequent previews. Never publish this preview with the `latest` tag. The staged package also sets `publishConfig.tag` to `preview`. Test `npx code-flow@preview` from a clean directory after registry publication.
+Use the actual version's filename when publishing subsequent previews. Never publish this preview with the `latest` tag. The staged package also sets `publishConfig.tag` to `preview`. Test `npx @midhunxavier/code-flow@preview` from a clean directory after registry publication.
 
 ## macOS DMG
 
