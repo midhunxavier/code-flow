@@ -1,0 +1,371 @@
+{
+  "date": "2026-10-21",
+  "runId": "2610210522-28473ed5",
+  "sourceRevision": "d82a2e1f744b325e015a49674dd4d0a1e9746b90",
+  "initialSnapshotRevision": "2ef78c6c5c7832d201c47bb8312627fe8b0aa67d",
+  "finalResultRevision": "9d137abf1a0ba8f58eb480aa47379dd77f0fd469",
+  "environment": {
+    "platform": "macOS arm64",
+    "node": "22.14.0",
+    "git": "2.39.5",
+    "providers": [
+      {
+        "id": "codex",
+        "version": "0.162.1",
+        "signedInAtStart": true
+      },
+      {
+        "id": "agy",
+        "version": "1.4.3",
+        "signedInAtStart": true
+      },
+      {
+        "id": "claude",
+        "version": "2.1.303",
+        "signedInAtStart": false,
+        "liveInferenceExercised": false
+      }
+    ]
+  },
+  "isolation": {
+    "repository": "Independent local clone of Code Flow including the starting worktree changes",
+    "origin": "Separate local bare repository",
+    "agentWorktrees": "Outside the repository",
+    "agentsUsedRealSubscriptions": true,
+    "fakeAgentsUsedForLiveRun": false,
+    "externalPushOrPullRequest": false,
+    "originalWorktreeSourceMatchesLiveResult": true,
+    "sourceFilesCompared": 26
+  },
+  "roles": {
+    "planner": [
+      "agy"
+    ],
+    "builder": [
+      "codex"
+    ],
+    "reviewer": [
+      "agy"
+    ]
+  },
+  "roleSettings": {
+    "planner": {
+      "agy": {
+        "model": "gemini-3.8-flash-high"
+      }
+    },
+    "reviewer": {
+      "agy": {
+        "model": "gemini-3.8-flash-high"
+      }
+    },
+    "builder": {
+      "codex": {
+        "model": "gpt-6.1-sol",
+        "effort": "medium"
+      }
+    }
+  },
+  "loop": {
+    "setup": "npm ci",
+    "check": "npm run typecheck && node --import tsx --test test/readiness.test.ts test/repo-selection-ui.test.ts test/ui-review.test.ts",
+    "maxSteps": 12,
+    "maxMinutes": 20
+  },
+  "stages": [
+    {
+      "id": "s1",
+      "title": "Setup build",
+      "status": "done",
+      "elapsedSeconds": 1
+    },
+    {
+      "id": "s2",
+      "title": "Plan",
+      "status": "cancelled",
+      "agent": "agy",
+      "elapsedSeconds": 461
+    },
+    {
+      "id": "s3",
+      "title": "Plan",
+      "status": "done",
+      "agent": "agy",
+      "elapsedSeconds": 394
+    },
+    {
+      "id": "s4",
+      "title": "Implement plan",
+      "status": "done",
+      "agent": "codex",
+      "elapsedSeconds": 304
+    },
+    {
+      "id": "s5",
+      "title": "Check",
+      "status": "done",
+      "elapsedSeconds": 17
+    },
+    {
+      "id": "s6",
+      "title": "Setup proof checkout",
+      "status": "done",
+      "elapsedSeconds": 1
+    },
+    {
+      "id": "s7",
+      "title": "Proof: tests without the change",
+      "status": "done",
+      "elapsedSeconds": 17
+    },
+    {
+      "id": "s8",
+      "title": "Review (round 1)",
+      "status": "done",
+      "agent": "agy",
+      "elapsedSeconds": 450
+    },
+    {
+      "id": "s9",
+      "title": "Address review comments",
+      "status": "done",
+      "agent": "codex",
+      "elapsedSeconds": 31
+    },
+    {
+      "id": "s10",
+      "title": "Check after follow-up f1",
+      "status": "done",
+      "elapsedSeconds": 15
+    },
+    {
+      "id": "s11",
+      "title": "Setup proof checkout",
+      "status": "done",
+      "elapsedSeconds": 1
+    },
+    {
+      "id": "s12",
+      "title": "Proof: tests without the change",
+      "status": "done",
+      "elapsedSeconds": 15
+    },
+    {
+      "id": "s13",
+      "title": "Address review comments",
+      "status": "done",
+      "agent": "codex",
+      "elapsedSeconds": 254
+    },
+    {
+      "id": "s14",
+      "title": "Check after follow-up f2",
+      "status": "done",
+      "elapsedSeconds": 43
+    },
+    {
+      "id": "s15",
+      "title": "Setup proof checkout",
+      "status": "done",
+      "elapsedSeconds": 3
+    },
+    {
+      "id": "s16",
+      "title": "Proof: tests without the change",
+      "status": "done",
+      "elapsedSeconds": 64
+    },
+    {
+      "id": "s17",
+      "title": "Address review comments",
+      "status": "done",
+      "agent": "codex",
+      "elapsedSeconds": 77
+    },
+    {
+      "id": "s18",
+      "title": "Check after follow-up f3",
+      "status": "done",
+      "elapsedSeconds": 27
+    },
+    {
+      "id": "s19",
+      "title": "Setup proof checkout",
+      "status": "done",
+      "elapsedSeconds": 3
+    },
+    {
+      "id": "s20",
+      "title": "Proof: tests without the change",
+      "status": "done",
+      "elapsedSeconds": 33
+    }
+  ],
+  "liveAssertions": [
+    "Repository and project commands configured through the actual UI",
+    "Unused signed-out Claude reproduced the readiness failure before the fix",
+    "Initial planning turn stopped through UI; queued instructions delivered after resume; setup and worktree reused",
+    "Actual plan approval checkpoint approved through UI",
+    "Codex implemented readiness on Code Flow source; owner-run check passed",
+    "Code Flow copied the regression onto the baseline and recorded assertion failures, rather than an import-only failure",
+    "Independent Antigravity review approved the initial readiness implementation with no findings",
+    "Needs more work opened branch review and automatically selected the loaded Codex writer",
+    "Three checked follow-ups reused the original Codex writer session, including across two server restarts",
+    "Real changed follow-up reproduced stale approval before the fix; fixed state records approved=false and Review outdated",
+    "Final summary explicitly marks independent review outdated and preserves earlier approval as historical",
+    "Actual composer validated npm ci and focused tests in a disposable pinned worktree",
+    "Actual Auto readiness cannot escape a pool restricted to signed-out Claude and succeeds with a permitted Codex alternative",
+    "Edit and run again restored the original pinned snapshot, setup and check without dispatching another run",
+    "Run app built and launched the real Code Flow result; its composer readiness passed in a separate authenticated browser",
+    "Native merge validation passed against dogfood-base; native local merge succeeded with worktree preserved",
+    "Accept result recorded the final commit while independent agent review remained outdated",
+    "PR preparation loaded its target and publication action; no GitHub publication performed"
+  ],
+  "readiness": {
+    "before": {
+      "ok": false,
+      "failed": [
+        "agent-claude"
+      ]
+    },
+    "after": {
+      "ok": true,
+      "providers": [
+        {
+          "id": "agent-claude",
+          "status": "skipped"
+        },
+        {
+          "id": "agent-codex",
+          "status": "passed"
+        },
+        {
+          "id": "agent-agy",
+          "status": "passed"
+        }
+      ]
+    },
+    "scopeProbes": [
+      {
+        "name": "selected signed-out provider",
+        "ok": false,
+        "failures": [
+          "agent-claude"
+        ]
+      },
+      {
+        "name": "Auto restricted to signed-out provider",
+        "ok": false,
+        "failures": [
+          "available-agent"
+        ]
+      },
+      {
+        "name": "Auto with usable permitted alternative",
+        "ok": true,
+        "failures": []
+      }
+    ]
+  },
+  "initialIndependentReview": {
+    "head": "61593fbb30fb75a72e76ad8fb8692fbb98ab1fa3",
+    "reviewer": "agy",
+    "verdict": "approve",
+    "findings": 0,
+    "failToPass": "proven"
+  },
+  "followUps": [
+    {
+      "id": "f1",
+      "agent": "codex",
+      "status": "done",
+      "checkPassed": true,
+      "commit": "c69d21c795da00d655f390f79a897b4650a29826",
+      "restoredOriginalWriterSession": true
+    },
+    {
+      "id": "f2",
+      "agent": "codex",
+      "status": "done",
+      "checkPassed": true,
+      "commit": "05d08904ad6b16caf9cd02d473d35afe38c6ea16",
+      "restoredOriginalWriterSession": true
+    },
+    {
+      "id": "f3",
+      "agent": "codex",
+      "status": "done",
+      "checkPassed": true,
+      "commit": "9d137abf1a0ba8f58eb480aa47379dd77f0fd469",
+      "restoredOriginalWriterSession": true
+    }
+  ],
+  "finalEvidence": {
+    "status": "done",
+    "checks": "passed",
+    "proof": "proven",
+    "independentReview": "outdated after revision; no renewed independent approval claimed",
+    "approved": false,
+    "ownerOutcome": {
+      "decision": "accepted",
+      "branch": "codeflow/2610210522-28473ed5/build",
+      "head": "9d137abf1a0ba8f58eb480aa47379dd77f0fd469",
+      "at": 1792562754301
+    },
+    "merges": [
+      {
+        "branch": "codeflow/2610210522-28473ed5/build",
+        "into": "dogfood-base",
+        "commit": "3c90a8202ca7c9e685f887cae5dc3f3da476c4bc",
+        "at": 1792562724841
+      }
+    ]
+  },
+  "fixes": [
+    "Readiness scoped to selected workflow/provider requirements and permitted Auto pool, with validated API input and report invalidation",
+    "Healthy default and independent provider assignments exclude known signed-out/incompatible providers while preserving explicit selections",
+    "Per-run worktree setup input; late discovery cannot overwrite manual or preset command overrides, including intentional blanks",
+    "Planning prompt leaves broad verification to implementation and verification stages",
+    "Follow-up changes, failed partial edits and side-chat changes invalidate independent approval; summaries preserve clearly historical findings",
+    "Regression fixtures and temporary-directory cleanup corrected after full-suite failures"
+  ],
+  "validation": {
+    "productionBuild": "passed",
+    "typecheck": "passed",
+    "finalFocusedTests": {
+      "tests": 30,
+      "passed": 30,
+      "failed": 0
+    },
+    "finalEngineFile": {
+      "tests": 27,
+      "passed": 27,
+      "failed": 0
+    },
+    "finalDailyBrowserSuite": {
+      "tests": 9,
+      "passed": 9,
+      "failed": 0,
+      "agents": "Deterministic fake CLIs for browser regressions; separate from the real live run above"
+    },
+    "fullSuite": {
+      "tests": 1224,
+      "passed": 1215,
+      "failed": 1,
+      "skipped": 8,
+      "remainingFailure": "Regression fixture reserved turn 5 for a read-only side chat; adding the legacy-review case changed that turn. Real Codex corrected the fixture to write only in write mode, preserving all assertions. The entire 27-test engine file then passed.",
+      "earlierFailure": "An earlier full suite hit an ENOTEMPTY temporary-directory cleanup race. Bounded cleanup retries were added and both affected tests passed."
+    },
+    "patternTests": {
+      "tests": 18,
+      "passed": 18
+    },
+    "diffCheck": "passed"
+  },
+  "limits": [
+    "Claude inference was not exercised because Claude Code was signed out. Its unavailable-selection behavior was exercised against the real health report.",
+    "The live workflow used local execution. SSH, containers and external PR publication are outside this live run.",
+    "Antigravity planning and review took several minutes. The cancelled initial planning turn, its resume, and timings are retained above. The updated planning prompt was covered by pattern tests; latency improvement was not claimed from a new live planning run.",
+    "Final revisions correctly invalidate the initial independent approval; the final local merge was owner-reviewed and verified, without claiming a new independent review."
+  ]
+}

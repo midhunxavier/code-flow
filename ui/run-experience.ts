@@ -23,6 +23,7 @@ export function agentReviewLabel(run: RunSummary, branch?: string): string {
   if (run.status === "running") return "Pending";
   const selected = branch ?? run.artifacts[0]?.branch;
   const findings = selected ? run.findings?.[selected] : undefined;
+  if (findings?.stale) return "Review outdated";
   if (findings) return findings.findings.some(finding => finding.blocking) ? "Changes requested" : findings.verdict === "approve" ? "Approved" : "No blocking findings";
   if (branch && branch !== run.artifacts[0]?.branch) return "Not recorded for this branch";
   if (run.review) return run.review.verdict === "approve" ? "Approved" : "Changes requested";

@@ -96,10 +96,10 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   const target: AgentId = agent ?? defaultAgent ?? "claude";
   const file = files?.find((f) => f.path === selected);
   const totals = files?.reduce((t, f) => ({ add: t.add + f.additions, del: t.del + f.deletions }), { add: 0, del: 0 });
-  const canSend = summary?.status === "done" && !!worktree && (comments.length > 0 || general.trim().length > 0);
+  const canSend = summary?.status === "done" && !summary.projectTeam && !!worktree && !!(agent ?? defaultAgent) && (comments.length > 0 || general.trim().length > 0);
 
   const send = async () => {
-    if (!worktree) return;
+    if (!worktree || !canSend || sending) return;
     setSending(true);
     const message = commentsMessage(comments, general);
     try {
@@ -132,9 +132,11 @@ export function Review({ id, branch }: { id: string; branch: string }) {
         </div>
         {/* one group, so the agent and the button wrap together */}
         <div class="review-send">
-          {summary?.status === "done" ? (
+          {summary?.projectTeam ? (
+            <a class="btn" href={`#/project/${summary.project}`}>Use mission revision controls</a>
+          ) : summary?.status === "done" ? (
             <>
-              <span class="review-to">Send to</span>
+              <span class="review-to">{agent || defaultAgent ? "Send to" : run || runError ? "Choose an agent" : "Loading recipient…"}</span>
               <AgentPicker value={target} onChange={setAgent} />
               <button class="btn primary" disabled={!canSend || sending} onClick={send}>
                 {sending ? "Sending…" : `Send ${comments.length || ""} comment${comments.length === 1 ? "" : "s"}`.replace("  ", " ")}
@@ -152,6 +154,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
       </div> : null}
       {error ? <div class="msg err review-msg">{error}</div> : null}
       {runError ? <div class="msg warn review-msg">{runError}</div> : null}
+      {summary?.outcome?.decision === "needs-work" && summary.outcome.branch === branch ? <p class="help review-msg">Describe what needs to change in the overall comment or on individual lines, then send your comments to start a revision on this branch.</p> : null}
       <div class="review-body">
         <div class="review-files">
           {worktree && files?.length ? <ChangeImpact folder={worktree.path} paths={files.map(file => file.path)} refreshKey={`${refresh}:${summary?.status}:${summary?.lastCheck?.at}`} /> : null}

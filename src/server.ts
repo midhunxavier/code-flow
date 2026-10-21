@@ -833,6 +833,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   const repo = String(body.repo ?? "").trim();
   if (!task) throw new HttpError(400, "Describe the task");
   if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
+  if (body.parentRunId !== undefined && (typeof body.parentRunId !== "string" || !manager.get(body.parentRunId))) throw new HttpError(409, "The original run is no longer available. Reload before starting a continuation so its source restrictions can be retained.");
   await attempt(async () => assertPolicyExecution(await fileAccess.execution(repo), "Run preparation"));
   if (body.externalSource !== undefined || (body.externalSourceId !== undefined && typeof body.externalSourceId !== "string")) throw new HttpError(400, "Import the external source through its configured integration first");
   if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
@@ -866,7 +867,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
     context: body.context && typeof body.context === "object" ? body.context : undefined,
     loop,
     approvals: { plan: typeof body.approvals?.plan === "boolean" ? body.approvals.plan : pattern.id === "auto-team", tools: body.approvals?.tools === true },
-    parentRunId: typeof body.parentRunId === "string" && manager.get(body.parentRunId) ? body.parentRunId : undefined,
+    parentRunId: body.parentRunId,
     trust: ["safe", "standard", "trusted", "full"].includes(body.trust) ? body.trust : undefined,
     roleSettings: validateRoleSettings(body.roleSettings),
     agentSettings: (() => {

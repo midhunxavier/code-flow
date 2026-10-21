@@ -24,6 +24,8 @@ The next-action card explains what happened and what is retained. **Retry unfini
 
 **Request a fix** prepares an editable follow-up without sending it. **Fix check command** opens a continuation dialog: choose the saved result branch and correct setup/check commands. Starting it creates a child run with the same team and permissions and a single configured check. Original history and evidence remain available.
 
+Independent agent review applies to the reviewed commit. When a follow-up changes that result, **Review outdated** keeps the earlier findings as history. Inspect the updated changes and checks before accepting or publishing them; a passing follow-up check does not renew independent approval.
+
 ## Talking to a run
 
 [Auto teams](auto-team.md) add individual member targeting and structured questions. Questions addressed to you pause the workflow and appear in **Needs you**; answering saves the reply before work resumes. The team panel exposes tasks, dependencies, messages, coverage, checkpoints, context references and coordination usage. Its project-memory panel supports revision-aware edits, acceptance and deletion. A stopped Auto team with unresolved gaps resumes its existing workflow with a fresh bounded allocation.

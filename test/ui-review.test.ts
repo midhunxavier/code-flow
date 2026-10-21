@@ -39,7 +39,8 @@ before(async () => {
         `export { markdownNodes } from "./bits.tsx";`,
         `export { latestOnly, safeHref } from "./lib.ts";`,
         `export { editAndRerun } from "./run.tsx";`,
-        `export { checkCmd, limits, optionValues, patterns, repo, roleSel, route, setupCmd } from "./state.ts";`,
+        `export { applyPreset } from "./onboarding.tsx";`,
+        `export { checkCmd, limits, loadCheck, optionValues, patterns, repo, repoInfo, roleSel, route, setupCmd } from "./state.ts";`,
       ].join("\n"),
       resolveDir: ui,
       loader: "ts",
@@ -142,7 +143,7 @@ test("Edit & run again from another repo: the run's check, setup, limits, team a
   answers["/api/check"] = () => new Promise((resolve) => setTimeout(() => resolve({ command: "npm test", source: "package.json", setup: "npm ci" }), 40));
   assert.notEqual(m.repo.value, "/other");
 
-  m.editAndRerun({
+  const restoring = m.editAndRerun({
     id: "r1",
     repo: "/other",
     task: "Fix the flaky test",
@@ -155,17 +156,41 @@ test("Edit & run again from another repo: the run's check, setup, limits, team a
     artifacts: [],
   });
   assert.deepEqual(m.route.value, { view: "composer" });
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await restoring;
 
   assert.ok(asked.some((p) => p.startsWith("/api/check")), "the repo's own lookup ran");
   assert.equal(m.repo.value, "/other");
   assert.equal(m.checkCmd.value, "make check");
   assert.equal(m.setupCmd.value, "make deps");
-  assert.deepEqual(m.limits.value, { maxMinutes: 30, maxSteps: 12 });
+  assert.equal(m.limits.value.maxMinutes, 30);
+  assert.equal(m.limits.value.maxSteps, 12);
+  assert.equal(m.limits.value.maxTokens, undefined);
+  assert.equal(m.limits.value.maxCostUsd, undefined);
   // Through the setters: remembered like a choice made in the composer.
   assert.deepEqual(JSON.parse(storage.get("limits")!), { maxMinutes: 30, maxSteps: 12 });
   assert.deepEqual(JSON.parse(storage.get("roleSel")!).pipeline.builder, ["codex"]);
   assert.equal(m.roleSel.value.pipeline.builder[0], "codex");
   assert.equal(m.optionValues.value.pipeline.rounds, 3);
   assert.equal(storage.get("draftTask"), "Fix the flaky test");
+});
+
+
+test("preset command overrides survive late repository configuration without changing saved defaults", async () => {
+  storage.clear();
+  m.patterns.value = [{ id: "pipeline", roles: [{ id: "planner", default: ["agy"] }, { id: "builder", default: ["codex"] }], options: [] }];
+  m.repoInfo.value = { repo: "/preset", current: "main", branches: [] };
+  let respond!: (value: unknown) => void;
+  answers["/api/repo-config"] = () => new Promise(resolve => { respond = resolve; });
+  const loading = m.loadCheck();
+  m.applyPreset({
+    pattern: "pipeline", roles: { planner: ["agy"], builder: ["codex"] }, options: {},
+    agentSettings: {}, roleSettings: {}, trust: "standard", limits: { maxMinutes: 30, maxSteps: 12 },
+    approvePlan: false, check: "", setup: "",
+  }, "Saved preset");
+  respond({ config: { check: "repo-test", setup: "repo-setup" }, found: true });
+  await loading;
+  assert.equal(m.checkCmd.value, "", "the preset's intentional blank check wins");
+  assert.equal(m.setupCmd.value, "", "the preset's intentional blank setup wins");
+  assert.equal(storage.get(`check:${m.repo.value}`), undefined);
+  assert.equal(storage.get(`setup:${m.repo.value}`), undefined);
 });

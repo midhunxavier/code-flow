@@ -1,3 +1,4 @@
+import { isAgentId } from "./adapters/index.js";
 import type { IncomingMessage } from "node:http";
 import { open, readFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
@@ -53,8 +54,14 @@ export async function handleWorkspaceApi(req: IncomingMessage, url: URL, parts: 
   };
   if (parts[1] === "v1" && parts[2] === "capabilities" && req.method === "GET") return { status: 200, body: { version: 1, features: ["readiness", "verification", "file-editing", "code-search", "dependencies", "checkpoints", "diagnostics", "run-export", "cursor-history", "shared-projects", "ssh-projects", "ssh-workers", "coordinated-changes", "code-hosts", "github-review-threads", "filesystem-policies", "filtered-tasks", "provider-workflow-extensions", "team-collaboration"], authentication: "Bearer CODEFLOW_TOKEN", api: "/api", docs: "docs/api.md" } };
   if (parts[1] === "readiness" && req.method === "POST") {
+    const boundedId = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_:/.-]{0,127}$/.test(value);
+    const provider = (value: unknown) => boundedId(value) && (value === "auto" || isAgentId(value));
+    const providerList = (value: unknown) => Array.isArray(value) && value.length <= 128 && value.every(provider);
+    if (body.pattern !== undefined && !boundedId(body.pattern)) throw new HttpError(400, "Invalid workflow pattern");
+    if (body.providers !== undefined && !providerList(body.providers)) throw new HttpError(400, "Invalid readiness providers");
+    if (body.roles !== undefined && (!body.roles || typeof body.roles !== "object" || Array.isArray(body.roles) || Object.keys(body.roles).length > 64 || !Object.entries(body.roles).every(([role, value]) => boundedId(role) && (typeof value === "string" ? provider(value) : providerList(value))))) throw new HttpError(400, "Invalid readiness roles");
     if (body.execute === true) manager.noteActivity();
-    return { status: 200, body: await inspectReadiness({ repo: owned?.run.repo ?? requireRepo(), baseRef: await resolveCommit(await readRepo(), typeof body.baseRef === "string" && body.baseRef ? body.baseRef : "HEAD"), setup: boundedCommand(body.setup), check: boundedCommand(body.check), execute: body.execute === true, signal }) };
+    return { status: 200, body: await inspectReadiness({ repo: owned?.run.repo ?? requireRepo(), baseRef: await resolveCommit(await readRepo(), typeof body.baseRef === "string" && body.baseRef ? body.baseRef : "HEAD"), setup: boundedCommand(body.setup), check: boundedCommand(body.check), pattern: body.pattern, roles: body.roles, providers: body.providers, execute: body.execute === true, signal }) };
   }
   if (parts[1] === "verification") {
     if (req.method === "GET" && parts[2] === "profile") return { status: 200, body: await detectVerificationProfile(requireRepo(), (url.searchParams.get("preset") || "standard") as VerificationPreset) };

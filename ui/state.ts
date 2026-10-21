@@ -1,4 +1,5 @@
 import { computed, signal } from "@preact/signals";
+import { rerunDraft } from "./rerun-draft.js";
 import { api, sharedGet, ApiError, post, showToast, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
 import { onStreamState, subscribe } from "./stream.js";
@@ -150,6 +151,7 @@ let checkLoading: Promise<void> = Promise.resolve();
 export const checkLoaded = () => checkLoading;
 
 export async function setRepo(path: string, remember = true) {
+  rerunDraft.value = null;
   path = path.trim();
   const request = ++repoSelection;
   ++configRequest;
@@ -649,12 +651,23 @@ export function setAgentSetting(id: AgentId, patch: { model?: string; effort?: s
   store.set("agentSettings", JSON.stringify(agentSettings.value));
   composerOrigins.value = { ...composerOrigins.value, models: "This run (remembered)" };
 }
-export function setCheck(value: string) {
+let checkEdit = 0;
+let setupEdit = 0;
+/** Override only this draft, including an intentional blank, during repository discovery. */
+export function setRunCheck(value: string) {
+  checkEdit++;
   checkCmd.value = value;
+}
+export function setRunSetup(value: string) {
+  setupEdit++;
+  setupCmd.value = value;
+}
+export function setCheck(value: string) {
+  setRunCheck(value);
   if (repo.value) store.set(`check:${repo.value}`, value);
 }
 export function setSetup(value: string) {
-  setupCmd.value = value;
+  setRunSetup(value);
   if (repo.value) store.set(`setup:${repo.value}`, value);
 }
 export function setLimits(patch: Partial<{ maxMinutes: number; maxSteps: number; maxTokens?: number; maxCostUsd?: number }>) {
@@ -666,11 +679,15 @@ export function setLimits(patch: Partial<{ maxMinutes: number; maxSteps: number;
 export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]> {
   if (!p) return {};
   const saved = roleSel.value[p.id] ?? {};
-  const eligibleDefaults = agents.value.filter((a) => a.available && (!a.id.startsWith("acp:") || trust.value === "full"));
+  const eligibleDefaults = agents.value.filter((a) => {
+    const diagnostic = health.value?.find(entry => entry.id === a.id);
+    return a.available && diagnostic?.signedIn !== false && diagnostic?.compatible !== false && (!a.id.startsWith("acp:") || trust.value === "full");
+  });
+  const eligibleIds = new Set(eligibleDefaults.map(agent => agent.id));
   const firstAvailable = eligibleDefaults[0]?.id;
   const roles: Record<string, RoleValue[]> = {};
   for (const role of p.roles) {
-    let ids = (saved[role.id] ?? role.default).filter((id) => id === "auto" || available(id));
+    let ids = (saved[role.id] ?? role.default).filter((id) => id === "auto" || (saved[role.id] ? available(id) : eligibleIds.has(id)));
     if (p.id === "auto-team" && role.id === "coordinator" && !saved[role.id]) ids = ["auto"];
     if (!role.multiple) ids = ids.slice(0, 1);
     if (!ids.length && !role.optional && !saved[role.id] && firstAvailable) ids = [firstAvailable];
@@ -690,10 +707,17 @@ export function setOption(p: PatternInfo, id: string, value: number | boolean) {
 }
 
 /** "Done when" check: remembered per repo; auto-detected until you edit it. */
-export async function loadCheck() {
+export function loadCheck(): Promise<void> {
+  checkLoading = loadRepoCheck();
+  return checkLoading;
+}
+
+async function loadRepoCheck() {
   const r = repo.value;
   const request = ++configRequest;
   const selection = repoSelection;
+  const checkVersion = checkEdit;
+  const setupVersion = setupEdit;
   const current = () => request === configRequest && selection === repoSelection && repo.value === r;
   configChecking.value = !!r;
   repoConfig.value = null;
@@ -712,19 +736,21 @@ export async function loadCheck() {
   if (!current()) return;
   repoConfig.value = result;
   const config = repoConfig.value?.config ?? {};
-  if (store.get(`setup:${r}`) === null && !setupCmd.value && config.setup) setupCmd.value = config.setup;
+  if (setupVersion === setupEdit && store.get(`setup:${r}`) === null && !setupCmd.value && config.setup) setupCmd.value = config.setup;
   if (config.trust && !store.get("trust")) trust.value = config.trust;
   const saved = store.get(`check:${r}`);
   // A detected setup (`uv sync`, `poetry install`) fills an empty setup you haven't edited.
-  const detectSetup = !setupCmd.value && store.get(`setup:${r}`) === null;
+  const detectSetup = setupVersion === setupEdit && !setupCmd.value && store.get(`setup:${r}`) === null;
   if (saved !== null || config.check) {
-    checkCmd.value = saved ?? config.check!;
-    checkHint.value = saved !== null ? "" : "From .codeflow/config.json.";
+    if (checkVersion === checkEdit) {
+      checkCmd.value = saved ?? config.check!;
+      checkHint.value = saved !== null ? "" : "From .codeflow/config.json.";
+    }
     if (!detectSetup) {
       configChecking.value = false;
       return;
     }
-  } else {
+  } else if (checkVersion === checkEdit) {
     checkCmd.value = "";
   }
   try {
@@ -732,12 +758,12 @@ export async function loadCheck() {
     if (!current()) return;
     // A late result fills only fields nobody touched during the lookup: it must neither replace
     // what you typed meanwhile nor land in the input while you are typing into it.
-    if (detectSetup && d.setup && !setupCmd.value && store.get(`setup:${r}`) === null) setupCmd.value = d.setup;
-    if (saved !== null || config.check || store.get(`check:${r}`) !== null || checkCmd.value) return;
+    if (detectSetup && setupVersion === setupEdit && d.setup && !setupCmd.value && store.get(`setup:${r}`) === null) setupCmd.value = d.setup;
+    if (checkVersion !== checkEdit || saved !== null || config.check || store.get(`check:${r}`) !== null || checkCmd.value) return;
     checkCmd.value = d.command ?? "";
     checkHint.value = d.command ? `Detected from ${d.source}${d.setup ? `; each worktree is set up with “${d.setup}” (Settings)` : ""}.` : "No test command found in this repo.";
   } catch {
-    if (current() && saved === null && !config.check) checkHint.value = "";
+    if (current() && checkVersion === checkEdit && saved === null && !config.check) checkHint.value = "";
   } finally {
     if (current()) configChecking.value = false;
   }

@@ -23,7 +23,8 @@ const manager = new RunManager(findPattern, new Projects());
 after(async () => {
   await manager.shutdown();
   await flushWrites();
-  await Promise.all([home, repo, records].map((path) => rm(path, { recursive: true, force: true })));
+  // A stopped child can persist its final process-group state during asynchronous removal.
+  await Promise.all([home, repo, records].map((path) => rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })));
 });
 
 test("Auto planning and work reuse accepted project knowledge without unapproved or cross-project content", async () => {

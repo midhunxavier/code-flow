@@ -40,3 +40,9 @@ test("recovery actions preserve the distinction between configuration, code fail
   assert.equal(nextRunAction(run({ artifacts: [], worktrees: [] })), null);
   assert.equal(nextRunAction(run({ supersededBy: "new-run" })), null);
 });
+
+test("historical agent approval never labels a revised result approved", () => {
+  const revised = run({ findings: { result: { reviewer: "agy", round: 1, verdict: "approve", findings: [], at: 1, head: "old", stale: true } } as RunSummary["findings"] });
+  assert.equal(agentReviewLabel(revised, "result"), "Review outdated");
+  assert.equal(agentReviewLabel({ ...revised, status: "running" }, "result"), "Pending");
+});
