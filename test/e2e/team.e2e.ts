@@ -208,12 +208,19 @@ test("a signed-in maintainer can cancel task deletion in the app modal", async (
   const context = await browser.newContext(); contexts.push(context);
   const maintainer = await context.newPage();
   maintainer.on("pageerror", error => errors.push(`maintainer: ${error.message}`));
+  // Navigate as soon as the dashboard renders, before deferred effects can subscribe.
+  await maintainer.addInitScript((id) => {
+    const observer = new MutationObserver(() => {
+      if (![...document.querySelectorAll("h1")].some(heading => heading.textContent === "Shared project review")) return;
+      observer.disconnect(); location.hash = `#/team/task/${id}`;
+    });
+    observer.observe(document, { childList: true, subtree: true });
+  }, taskId);
   await maintainer.goto(base);
   await maintainer.getByLabel("Username", { exact: true }).fill("morgan");
   await maintainer.getByLabel("Password", { exact: true }).fill(password);
   await maintainer.getByRole("button", { name: "Sign in", exact: true }).click();
-  await maintainer.getByRole("heading", { name: "Shared project review", exact: true }).waitFor();
-  await maintainer.goto(`${base}/#/team/task/${taskId}`);
+  await maintainer.waitForURL(`**/#/team/task/${taskId}`);
   await maintainer.getByRole("button", { name: "Delete task", exact: true }).click();
   const dialog = maintainer.getByRole("dialog");
   await dialog.waitFor();

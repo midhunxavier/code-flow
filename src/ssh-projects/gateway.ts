@@ -38,10 +38,17 @@ export class SshGateway {
     })().finally(() => { this.restoring = undefined; });
   }
   async ensureConnected() {
+    if (this.restoring) return this.restoring;
+    const probedTransport = this.transport;
     try { await this.json(this.probe); }
-    catch { await this.restore(); }
+    catch {
+      // A delayed probe of an old transport must not tear down its replacement.
+      if (this.transport === probedTransport) await this.restore();
+    }
+    if (this.restoring) await this.restoring;
   }
   async forward(req: IncomingMessage, res: ServerResponse, path: string, origin: string, body?: object) {
+    if (this.restoring) await this.restoring;
     if (this.closed) throw new HttpError(410, "This computer was disconnected");
     if (!path.startsWith("/api/")) throw new HttpError(404, "Unknown remote operation");
     this.origins.add(origin);
@@ -73,6 +80,7 @@ export class SshGateway {
       incoming.on("error", () => res.destroy());
     });
     up.on("error", () => {
+      if (res.destroyed) return; // Navigation cancelled this request; the transport may still be healthy.
       this.error = "Connection interrupted. Reconnect this computer; your work remains there.";
       if (res.headersSent) res.destroy(); else send(res, 502, { error: this.error });
     });

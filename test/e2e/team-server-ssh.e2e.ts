@@ -101,6 +101,8 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     await wizard.getByRole("button", { name: "Remove repository 2", exact: true }).click();
     await wizard.screenshot({ path: "/tmp/code-flow-repository-picker.png", animations: "disabled" });
     await page.setViewportSize({ width: 390, height: 844 });
+    // Responsive layout and the sidebar transition settle after the resize event.
+    await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth, undefined, { timeout: 5000 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await wizard.screenshot({ path: "/tmp/code-flow-repository-picker-mobile.png", animations: "disabled" });
     await page.setViewportSize({ width: 1440, height: 1100 });
@@ -142,6 +144,8 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     await mkdir(join(root, "output/playwright"), { recursive: true });
     await page.screenshot({ path: join(root, "output/playwright/team-server-ssh.png"), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
+    // Responsive layout and the sidebar transition settle after the resize event.
+    await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth, undefined, { timeout: 5000 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await page.addScriptTag({ content: axe.source });
     const audit = await page.evaluate(async () => (window as any).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } }));
@@ -203,6 +207,8 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     await page.getByRole("button", { name: "Clear filters", exact: true }).click();
     await page.screenshot({ path: "/tmp/code-flow-team-board.png", fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
+    // Responsive layout and the sidebar transition settle after the resize event.
+    await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth, undefined, { timeout: 5000 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await page.screenshot({ path: "/tmp/code-flow-team-board-mobile.png", fullPage: true, animations: "disabled" });
     await page.setViewportSize({ width: 1440, height: 1100 });
