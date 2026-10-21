@@ -129,6 +129,7 @@ export function Composer() {
   const p = pattern.value;
   const single = p?.id === "solo";
   const [moreOptions, setMoreOptions] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(() => store.get("composerAdvanced") === "1");
   const selectVerification = async (selected: string) => {
     const request = ++profileRequest.current;
     const current = repo.value;
@@ -328,7 +329,7 @@ export function Composer() {
           {(close) => <>{(remoteAgents ?? agents.value).map((entry) => <MenuItem key={entry.id} disabled={!entry.available || !supportsRunPermissions(entry.id)} onClick={() => { setRoles(p!.id, "agent", [entry.id]); close(); }}>{entry.displayName}</MenuItem>)}</>}
         </Menu>}
         </> : <span class="help">{selectedTeamTemplate.value ? `Template: ${selectedTeamTemplate.value.template.name} v${selectedTeamTemplate.value.template.version}` : p?.id === "auto-team" ? "Plans and delegates dynamically" : `Template: ${p?.name}`}</span>}
-        {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); requestAnimationFrame(() => { const section = document.querySelector<HTMLDetailsElement>(".advanced-controls"); if (section) { section.open = true; section.querySelector<HTMLElement>("summary")?.focus(); } }); }}>Advanced</button><PermissionMenu permissions={{ trust: externalSource.value ? "safe" : trust.value, tools: !remoteWorker && !containerEnabled && !externalSource.value && toolApprovals }} onPermissions={(value) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some((id) => id === "codex" || id.startsWith("acp:"))} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} /></> : null}
+        {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); setAdvancedOpen(true); store.set("composerAdvanced", "1"); }}>Advanced</button><PermissionMenu permissions={{ trust: externalSource.value ? "safe" : trust.value, tools: !remoteWorker && !containerEnabled && !externalSource.value && toolApprovals }} onPermissions={(value) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some((id) => id === "codex" || id.startsWith("acp:"))} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} /></> : null}
         <button class="btn primary task-start" disabled={!!problem || starting} onClick={start} title={problem || "Start run (⌘↵)"}>{starting ? "Starting…" : "Start run"}<Icon name="send" /></button>
         <Menu above label="Run actions" icon="more" class="chat-choice">{(close) => <>
           <MenuItem disabled={!p || !projectsLoaded.value} onClick={() => { close(); setUsingTemplate(true); }}><Icon name="files" />Use template…</MenuItem>
@@ -377,7 +378,7 @@ export function Composer() {
 
       {/* The optional controls read as one accordion: a card whose rows open in place. */}
       <div class="composer-more">
-      <details class="settings advanced-controls" open={store.get("composerAdvanced") === "1"} onToggle={(e) => store.set("composerAdvanced", e.currentTarget.open ? "1" : "0")}>
+      <details class="settings advanced-controls" open={advancedOpen} onToggle={(e) => { setAdvancedOpen(e.currentTarget.open); store.set("composerAdvanced", e.currentTarget.open ? "1" : "0"); }}>
         <summary><span class="st">Advanced{nativeAntigravity ? " · Unrestricted Antigravity" : ""}</span><span class="ss">Templates, roles, models, permissions and limits</span></summary>
         <div class="settings-body">
         <label class="lbl" for="workflow-select">Built-in workflow templates</label>

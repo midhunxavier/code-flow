@@ -323,7 +323,21 @@ test("filesystem policy enforces scoped app reads/writes and globally blocks exe
   await fetch(`${base}/api/projects`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ name: "Other repository", repos: [otherRepo] }) });
   const bootReady = Promise.all(["/api/models", "/api/doctor", "/api/doctor/git"].map((path) => page.waitForResponse((response) => new URL(response.url()).pathname === path)));
   await page.goto(`${base}/?policy-check=1#/settings/projects`); await bootReady; await page.getByLabel("Project", { exact: true }).selectOption(project.id); const panel = page.getByRole("region", { name: "Project filesystem policy", exact: true });
-  await panel.getByLabel("Read deny paths", { exact: true }).fill("private"); await panel.getByLabel("Write allow paths", { exact: true }).fill("api"); const applying = page.waitForResponse((response) => response.url().endsWith("/filesystem-policy") && response.request().method() === "PUT"); await panel.getByRole("button", { name: "Stop execution and apply policy", exact: true }).click(); const applied = await applying; assert.equal(applied.status(), 200, await applied.text()); await panel.getByRole("status").getByText("Filesystem policy revision 1 applied.", { exact: true }).waitFor();
+  await panel.getByLabel("Read deny paths", { exact: true }).fill("private"); await panel.getByLabel("Write allow paths", { exact: true }).fill("api");
+  // Discovery or repository reads can still hold a policy lease after boot responses.
+  // The application correctly refuses to change authority until those reads finish.
+  let applied: import("playwright-core").Response | undefined;
+  for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
+    const applying = page.waitForResponse((response) => response.url().endsWith("/filesystem-policy") && response.request().method() === "PUT");
+    await panel.getByRole("button", { name: "Stop execution and apply policy", exact: true }).click();
+    applied = await applying;
+    if (applied.status() === 200) break;
+    assert.equal(applied.status(), 409, await applied.text());
+    assert.match(await applied.text(), /Wait for active application operations/);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(applied?.status(), 200, await applied?.text());
+  await panel.getByRole("status").getByText("Filesystem policy revision 1 applied.", { exact: true }).waitFor();
   const request = (path: string, body?: unknown, method = "POST") => fetch(base + path, { headers: { ...headers, "content-type": "application/json" }, ...(body !== undefined ? { method, body: JSON.stringify(body) } : {}) });
   for (const prefix of ["/api", "/api/v1"]) {
     for (const path of ["/stats", "/memory", "/automations", "/deferred-runs", "/coordinated-changes", "/notifications", "/maintenance"]) assert.equal((await request(prefix + path)).status, 403, `unscoped private data ${path}`);
