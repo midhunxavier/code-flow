@@ -47,7 +47,7 @@ export function ChangesTab({ run }: { run: RunSummary }) {
       setFiles(null);
     }
     const stop = pollVisible(() => api<DiffFile[]>(`/api/runs/${enc(run.id)}/diff?branch=${enc(branch)}${last ? "&last=1" : ""}`).then(
-      (d) => alive && setFiles(d),
+      (d) => { if (alive) { setFiles(d); setError(""); } },
       (e) => alive && setError((e as Error).message),
     ), watching ? 10_000 : 0);
     return () => {

@@ -612,8 +612,19 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
   const diff = (last: boolean) => api(`/api/runs/${created.id}/diff?branch=${encodeURIComponent(result.branch)}${last ? "&last=1" : ""}`);
   const [all, lastStep] = [await diff(false), await diff(true)];
   assert.ok(lastStep.length > 0 && lastStep.length < all.length, `the side chat's commit is the last step: ${lastStep.length} of ${all.length}`);
+  // A successful refresh clears a transient error without remounting the Changes pane.
+  const diffRoute = `**/api/runs/${created.id}/diff?*`;
+  await page.route(diffRoute, route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Temporary diff failure" }) }));
   await side.getByRole("tab", { name: "Changes" }).click();
+  await side.locator(".changes .msg.err", { hasText: "Temporary diff failure" }).waitFor();
+  await page.unroute(diffRoute);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, value: true }); document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "hidden", { configurable: true, value: false }); document.dispatchEvent(new Event("visibilitychange"));
+    delete (document as unknown as { hidden?: boolean }).hidden;
+  });
   await side.locator(".changes-sum", { hasText: new RegExp(`^${all.length} files? ·`) }).waitFor();
+  await side.locator(".changes .msg.err").waitFor({ state: "detached" });
   await side.getByRole("button", { name: "Last step" }).click();
   await side.locator(".changes-sum", { hasText: new RegExp(`^${lastStep.length} files? ·.*in the last step`) }).waitFor();
   assert.deepEqual(await side.locator(".changes .rf .fp").allInnerTexts(), lastStep.map((f: { path: string }) => f.path));
