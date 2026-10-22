@@ -173,8 +173,8 @@ test("desktop notification preferences are reachable from the app menu and survi
   await page.context().grantPermissions(["notifications"]);
   await page.goto(`${base}/`);
   await page.reload();
-  await page.getByRole("button", { name: "New run", exact: true }).waitFor();
-  await page.keyboard.press("Control+,");
+  await page.getByRole("button", { name: "Application menu", exact: true }).click();
+  await page.getByRole("menuitem", { name: /^Settings/ }).click();
   await category("Notifications");
   const toggle = page.getByRole("switch", { name: "Desktop notifications", exact: true });
   assert.equal(await toggle.getAttribute("aria-checked"), "true");

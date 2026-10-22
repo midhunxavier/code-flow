@@ -102,6 +102,8 @@ export function receiveBrowserOverlay(pageKey: string, m: any) {
 export function LiveBrowserTools({pageKey,url,width,send}: {pageKey:string;url:string;width:number;send:(message:Record<string,unknown>)=>Promise<unknown>}) {
   const [mode,setMode]=useState<"off"|"pick"|"box">("off");
   const [showConsole,setShowConsole]=useState(false);
+  // Enqueue mode changes in the click handler, before a fast click on the live page.
+  const changeMode = (next: "off" | "pick" | "box") => { setMode(next); void send({type:"mode",mode:next}).catch(()=>{}); };
   const state=pageState(pageKey), errors=state.console.filter(line=>line.level!=="warn").length;
   const sendRef=useRef(send);sendRef.current=send;
   useEffect(()=>{
@@ -113,7 +115,7 @@ export function LiveBrowserTools({pageKey,url,width,send}: {pageKey:string;url:s
   useEffect(()=>{void send({type:"pins",pins:livePins(state.pins)}).catch(()=>{});},[state.pins]);
   const s=sideScope.value;
   return <>
-    <div class="browse-tools live-annotation-tools"><button class="btn ghost small" aria-pressed={mode==="pick"} disabled={!state.ready} onClick={()=>setMode(mode==="pick"?"off":"pick")}>Pick</button><button class="btn ghost small" aria-pressed={mode==="box"} disabled={!state.ready} onClick={()=>setMode(mode==="box"?"off":"box")}>Box</button><button class="btn ghost small" aria-pressed={showConsole} onClick={()=>setShowConsole(!showConsole)}>Console{errors?` · ${errors}`:""}</button></div>
+    <div class="browse-tools live-annotation-tools"><button class="btn ghost small" aria-pressed={mode==="pick"} disabled={!state.ready} onClick={()=>changeMode(mode==="pick"?"off":"pick")}>Pick</button><button class="btn ghost small" aria-pressed={mode==="box"} disabled={!state.ready} onClick={()=>changeMode(mode==="box"?"off":"box")}>Box</button><button class="btn ghost small" aria-pressed={showConsole} onClick={()=>setShowConsole(!showConsole)}>Console{errors?` · ${errors}`:""}</button></div>
     <JourneyRecorder key={pageKey} pageKey={pageKey} url={url} repository={s.repo} width={width} ready={state.ready===true} toggle={active=>{setMode("off");return send({type:"recording",active});}} />
     {showConsole ? <ConsoleDrawer pageKey={pageKey} lines={state.console} />:null}
   </>;

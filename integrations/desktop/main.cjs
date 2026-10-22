@@ -12,7 +12,7 @@ if (process.env.CODEFLOW_DESKTOP_DATA) app.setPath('userData', process.env.CODEF
 const runtime = join(__dirname, 'backend');
 const node = join(__dirname, 'node/bin/node');
 const home = process.env.CODEFLOW_HOME || join(homedir(), '.codeflow');
-let backend, window, origin, ownerURL, quitting = false, exitApproved = false, ready;
+let backend, window, origin, ownerURL, quitting = false, exitApproved = false, checkingQuit = false, ready;
 const token = process.env.CODEFLOW_TOKEN || randomBytes(32).toString('hex');
 const freePort = () => new Promise((resolve, reject) => {
   const server = createServer(); server.on('error', reject);
@@ -90,18 +90,26 @@ async function startBackend() {
   await ready;
 }
 async function quit() {
-  if (quitting) return;
+  if (quitting || checkingQuit) return;
+  checkingQuit = true;
   if (!exitApproved && origin && backend) {
     try {
-      const response = await fetch(`${origin}/api/runs?limit=1000`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000) });
-      const payload = await response.json(), runs = Array.isArray(payload) ? payload : payload.runs ?? [];
+      const response = await fetch(`${origin}/api/runs`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000) });
+      if (!response.ok) throw new Error("Could not inspect running agents");
+      const runs = await response.json();
+      if (!Array.isArray(runs)) throw new Error("Invalid running-agent response");
       if (runs.some(run => run.status === 'running')) {
         const answer = await dialog.showMessageBox(window, { type: 'question', message: 'Agents are still working', detail: 'Keep Code Flow running to let them finish. Quitting saves their progress so you can resume later.', buttons: ['Keep running', 'Quit and save progress'], defaultId: 0, cancelId: 0, noLink: true });
-        if (answer.response !== 1) return;
+        if (answer.response !== 1) { checkingQuit = false; return; }
       }
-    } catch { /* Service may already be stopping. */ }
+    } catch {
+      if (backend) {
+        const answer = await dialog.showMessageBox(window, { type: 'question', message: 'Could not check whether agents are working', detail: 'Keep Code Flow running, or quit and save progress for later.', buttons: ['Keep running', 'Quit and save progress'], defaultId: 0, cancelId: 0, noLink: true });
+        if (answer.response !== 1) { checkingQuit = false; return; }
+      }
+    }
   }
-  quitting = true;
+  quitting = true; checkingQuit = false;
   if (backend) {
     const child = backend;
     await new Promise(resolve => { const timer = setTimeout(() => { child.kill('SIGTERM'); resolve(); }, 12000); child.once('exit', () => { clearTimeout(timer); resolve(); }); if (child.connected) child.disconnect(); else child.kill('SIGTERM'); });

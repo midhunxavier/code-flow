@@ -810,7 +810,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
       <TaskTeamActivity run={run} turns={turns} />
     </>;
   };
-  const correctionBubble = (note: Note) => <div key={note.id} class="team-question-history">{note.question ? <div class="msg-agent"><div class="help">{note.question.sender} asked</div><Markdown text={note.question.body} /></div> : null}<div class="msg-you"><div class="bubble"><Markdown text={note.text} /><div class="help" role="status">{note.control ? "Stopped · work saved. Resume when you’re ready." : note.teamDelivery?.state === "applied" ? note.teamDelivery.taskIds?.length ? `Updated ${note.teamDelivery.taskIds.join(", ")}` : "Added to the team request" : note.teamDelivery?.state === "not_applied" ? "Saved for your agent" : "Received · updating the team…"}</div></div></div></div>;
+  const correctionBubble = (note: Note) => <div key={note.id} class="team-question-history">{note.question ? <div class="msg-agent"><div class="help">{note.question.sender} asked</div><Markdown text={note.question.body} /></div> : null}<div class="msg-you"><div class="bubble"><Markdown text={note.text} /><div class="help" role="status">{note.control ? "Stopped · work saved. Resume when you’re ready." : note.teamDelivery?.state === "applied" ? note.requestId ? "Answer sent" : note.teamDelivery.taskIds?.length ? `Updated ${note.teamDelivery.taskIds.join(", ")}` : "Added to the team request" : note.teamDelivery?.state === "not_applied" ? "Saved for your agent" : "Received · updating the team…"}</div></div></div></div>;
   return (
     <>
       {!turns.length && !followUps.length ? <>{corrections().map(correctionBubble)}{teamActivity()}</> : null}

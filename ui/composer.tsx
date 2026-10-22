@@ -133,8 +133,9 @@ export function Composer() {
   const p = pattern.value;
   const single = p?.id === "solo";
   useEffect(() => {
-    if (initialOptions.current.toolApprovals === undefined && store.get("interactiveApprovals") === null) setToolApprovals(single && ["claude", "codex"].includes(rolesFor(p).agent?.[0] ?? ""));
-  }, [single, rolesFor(p).agent?.[0]]);
+    if (trust.value === "safe") setToolApprovals(false);
+    else if (initialOptions.current.toolApprovals === undefined && store.get("interactiveApprovals") === null) setToolApprovals(single && ["claude", "codex"].includes(rolesFor(p).agent?.[0] ?? ""));
+  }, [single, rolesFor(p).agent?.[0], trust.value]);
   const [moreOptions, setMoreOptions] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(() => store.get("composerAdvanced") === "1");
   const selectVerification = async (selected: string) => {
