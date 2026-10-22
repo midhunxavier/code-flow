@@ -5,16 +5,16 @@ import { readFile, writeFile } from "node:fs/promises";
 const [command = "help", ...args] = process.argv.slice(2);
 const usage = `code-flow client
 
-  codeflow status
-  codeflow runs [search]
-  codeflow run request.json
-  codeflow readiness /absolute/repo [--execute]
-  codeflow verify /absolute/repo [profile.json]
-  codeflow pause RUN_ID
-  codeflow continue RUN_ID
-  codeflow resume RUN_ID
-  codeflow export RUN_ID [output.json]
-  codeflow diagnostics [output.json]
+  codeflow client status
+  codeflow client runs [search]
+  codeflow client run request.json
+  codeflow client readiness /absolute/repo [--execute]
+  codeflow client verify /absolute/repo [profile.json]
+  codeflow client pause RUN_ID
+  codeflow client continue RUN_ID
+  codeflow client resume RUN_ID
+  codeflow client export RUN_ID [output.json]
+  codeflow client diagnostics [output.json]
 
 Set CODEFLOW_URL (default http://127.0.0.1:4317) and CODEFLOW_TOKEN to the
 server's explicit Bearer token. Commands use the versioned /api/v1 routes.
