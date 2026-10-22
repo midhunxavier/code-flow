@@ -49,6 +49,26 @@ button:disabled {
 [hidden] {
   display: none !important;
 }
+.install-picker {
+  margin: 20px 0 28px;
+  padding: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+}
+.install-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.install-tabs [aria-selected="true"] {
+  background: var(--ink);
+  color: var(--on-ink);
+  border-color: var(--ink);
+}
+.install-picker [role="tabpanel"] { padding-top: 4px; }
 .sr-only {
   position: absolute;
   width: 1px;

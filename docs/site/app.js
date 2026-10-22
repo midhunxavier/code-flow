@@ -44,6 +44,31 @@ if (activeLink)
   $("#sidebar").scrollTop = Math.max(0, activeLink.offsetTop - 220);
 for (const button of document.querySelectorAll("[data-close]"))
   button.onclick = () => document.getElementById(button.dataset.close).close();
+// Keep every method readable without JavaScript, then progressively enhance to tabs.
+for (const picker of document.querySelectorAll("[data-install-picker]")) {
+  const tabs = [...picker.querySelectorAll('[role="tab"]')];
+  const activate = (tab, focus = false) => {
+    for (const candidate of tabs) {
+      const selected = candidate === tab;
+      candidate.setAttribute("aria-selected", String(selected));
+      candidate.tabIndex = selected ? 0 : -1;
+      document.getElementById(candidate.getAttribute("aria-controls")).hidden = !selected;
+    }
+    if (focus) tab.focus();
+  };
+  for (const [index, tab] of tabs.entries()) {
+    tab.onclick = () => activate(tab);
+    tab.onkeydown = (event) => {
+      let next;
+      if (event.key === "ArrowRight") next = tabs[(index + 1) % tabs.length];
+      if (event.key === "ArrowLeft") next = tabs[(index + tabs.length - 1) % tabs.length];
+      if (event.key === "Home") next = tabs[0];
+      if (event.key === "End") next = tabs.at(-1);
+      if (next) { event.preventDefault(); activate(next, true); }
+    };
+  }
+  activate(tabs[0]);
+}
 for (const pre of document.querySelectorAll("pre")) {
   const button = document.createElement("button");
   button.className = "copy-code";

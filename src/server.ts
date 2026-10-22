@@ -2663,6 +2663,10 @@ const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("local"
   const runs = manager.list();
   console.log(`code-flow running at http://localhost:${PORT}  (${runs.length} runs loaded from ${CODEFLOW_HOME})`);
   console.log(`  Open http://localhost:${PORT}/?token=${auth.token}  (the first browser to open code-flow signs in without it)`);
+  // The installed launcher opens the owner link only after this listener is ready.
+  // Send it over a private parent/child channel; never persist the session token.
+  if (process.env.CODEFLOW_LAUNCHER === "1" && process.connected)
+    process.send?.({ type: "codeflow-ready", url: `http://localhost:${PORT}/?token=${auth.token}` });
   for (const a of agents) console.log(`  ${a.available ? "✓" : "✗"} ${a.displayName} (${a.binary})`);
   const gitHealth = await checkGit();
   if (!gitHealth.ok) {
@@ -2814,3 +2818,4 @@ async function stop(reason: string, code = 0) {
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   process.on(signal, () => void stop(signal));
 }
+if (process.env.CODEFLOW_LAUNCHER === "1") process.on("disconnect", () => void stop("launcher disconnected"));

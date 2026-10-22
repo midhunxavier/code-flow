@@ -1,0 +1,133 @@
+name: Preview release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Committed release ref to build
+        required: true
+        default: main
+      tag:
+        description: Preview tag matching package.json (for example v0.1.0-preview.1)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Validate preview tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; const p = JSON.parse(fs.readFileSync("package.json")); if (!/^\d+\.\d+\.\d+-preview\.\d+$/.test(p.version) || process.env.RELEASE_TAG !== `v${p.version}`) process.exit(1);'
+          git config --global user.name "Code Flow release tests"
+          git config --global user.email "release-tests@code-flow.invalid"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run release:prepare
+      - run: npm run test:package
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: npm-preview
+          path: output/releases/
+
+  macos:
+    needs: package
+    runs-on: macos-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Configure signing when all credentials are supplied
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [[ -z "$CERTIFICATE$CERTIFICATE_PASSWORD$SIGN_IDENTITY$APPLE_ID$APPLE_TEAM_ID$APPLE_APP_PASSWORD" ]]; then
+            echo "Building an unnotarized developer preview."
+            exit 0
+          fi
+          test -n "$CERTIFICATE" && test -n "$CERTIFICATE_PASSWORD" && test -n "$SIGN_IDENTITY" && test -n "$APPLE_ID" && test -n "$APPLE_TEAM_ID" && test -n "$APPLE_APP_PASSWORD"
+          KEYCHAIN="$RUNNER_TEMP/code-flow.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          xcrun notarytool store-credentials code-flow-notary --keychain "$KEYCHAIN" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+          echo "CODEFLOW_SIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "CODEFLOW_NOTARY_PROFILE=code-flow-notary" >> "$GITHUB_ENV"
+      - run: npm run package:macos -- ${{ matrix.arch }}
+      - run: npm run test:macos
+        env:
+          CODEFLOW_MACOS_ARCH: ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-preview-${{ matrix.arch }}
+          path: output/releases/*
+      - name: Remove temporary signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/code-flow.keychain-db" || true
+          rm -f "$RUNNER_TEMP/certificate.p12"
+
+  draft:
+    needs: [package, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: output/releases
+          merge-multiple: true
+      - name: Create reviewable draft prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          test ! -z "$RELEASE_TAG"
+          gh release create "$RELEASE_TAG" --target "$(git rev-parse HEAD)" --draft --prerelease --title "Code Flow $RELEASE_TAG" --notes-file output/releases/preview-notes.md
+          gh release upload "$RELEASE_TAG" output/releases/*.tgz output/releases/*.sha256 output/releases/*.dmg output/releases/Formula/code-flow.rb
