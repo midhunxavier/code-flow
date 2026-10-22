@@ -7,19 +7,19 @@ Code Flow brings coding CLIs into one workspace for planning, implementation, re
 Start Code Flow locally and open it in your browser:
 
 ```bash
-npx @midhunxavier/code-flow@preview
+npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/midhunxavier-code-flow-0.1.0-preview.2.tgz codeflow
 ```
 
 Use **Node.js 22.13+**, **Git 2.38+** and a supported coding CLI installed and signed in. Runs on macOS, Linux and Windows through **WSL2**. Keep the terminal open while you work; **Ctrl+C** stops the app.
 
-Prefer a macOS app? Download **0.1.0-preview.1**:
+Prefer a macOS app? Download **0.1.0-preview.2**:
 
-- [Download for Apple Silicon (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-arm64-unnotarized.dmg)
-- [Download for Intel Mac](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-x64-unnotarized.dmg)
+- [Download for Apple Silicon (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/code-flow-0.1.0-preview.2-macos-arm64-unnotarized.dmg)
+- [Download for Intel Mac](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/code-flow-0.1.0-preview.2-macos-x64-unnotarized.dmg)
 
-Requires **macOS 13+**. Node is included; Git and a signed-in coding CLI are still required. The DMGs are **unnotarized preview builds** and macOS may block them; use npm if blocked.
+Requires **macOS 13+**. The app opens its own window and keeps agents running when you close it. Node is included; Git, a signed-in coding CLI and Chrome or Edge for the shared browser are still required. The DMGs are **unnotarized preview builds** and macOS may block them; use npm if blocked.
 
-[Installation and setup](getting-started.md#install-and-run) · [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.1)
+[Installation and setup](getting-started.md#install-and-run) · [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.2)
 
 <div class="cards">
 <a href="getting-started.md"><strong>Start your first run ↗</strong><span>Install the app, connect a CLI and take a task from prompt to review.</span></a>

@@ -33,7 +33,7 @@ Authenticate to the npm account that owns `@midhunxavier/code-flow`. On first pu
 
 ```sh
 npm whoami
-npm publish output/releases/midhunxavier-code-flow-0.1.0-preview.1.tgz --tag preview --access public
+npm publish output/releases/midhunxavier-code-flow-0.1.0-preview.2.tgz --tag preview --access public
 npm view @midhunxavier/code-flow@preview version
 ```
 

@@ -15,7 +15,7 @@ Take a small, well-defined task from your own repository to a reviewed result. T
 On macOS, Linux or inside Windows **WSL2**, run:
 
 ```bash
-npx @midhunxavier/code-flow@preview
+npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/midhunxavier-code-flow-0.1.0-preview.2.tgz codeflow
 ```
 
 The launcher starts Code Flow locally and opens your default browser with its sign-in link. Keep the terminal open while you work; press **Ctrl+C** to stop. If the browser does not open, copy the sign-in link printed in the terminal. Keep that link private.

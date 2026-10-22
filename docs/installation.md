@@ -1,8 +1,8 @@
 # Install Code Flow preview
 
-Start Code Flow with one command, then work in your browser. You do not need to clone Code Flow or add it to your project. The preview uses your installed coding CLIs and their existing logins.
+Open the macOS desktop app, or start the local browser app with one command. You do not need to clone Code Flow or add it to your project. The preview uses your installed coding CLIs and their existing logins.
 
-**0.1.0-preview.1 is available now.** Use the `preview` npm channel below or download the macOS app. See the [preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.1).
+**Desktop preview 0.1.0-preview.2.** Download the macOS app or use the exact release package below. The npm `preview` channel is published separately and may be older. See the [preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.2).
 
 ## Choose an installation method
 
@@ -16,7 +16,7 @@ Start Code Flow with one command, then work in your browser. You do not need to 
 <section id="install-unix" role="tabpanel" aria-labelledby="install-tab-unix" tabindex="0">
 <h3>Try it with one command</h3>
 <p>Install Node.js 22.13+ and Git 2.38+, then run:</p>
-<pre><code class="language-sh">npx @midhunxavier/code-flow@preview</code></pre>
+<pre><code class="language-sh">npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/midhunxavier-code-flow-0.1.0-preview.2.tgz codeflow</code></pre>
 <p>Code Flow starts locally and opens its sign-in link in your default browser. Keep the terminal open while you work. Press <strong>Ctrl+C</strong> to stop the server.</p>
 </section>
 <section id="install-windows" role="tabpanel" aria-labelledby="install-tab-windows" tabindex="0">
@@ -44,17 +44,17 @@ codeflow</code></pre>
 
 ## macOS app download
 
-Prefer an app you can open from Applications? Download **0.1.0-preview.1** for your Mac:
+Prefer an app you can open from Applications? Download **0.1.0-preview.2** for your Mac:
 
-- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-arm64-unnotarized.dmg)
-- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-x64-unnotarized.dmg)
+- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/code-flow-0.1.0-preview.2-macos-arm64-unnotarized.dmg)
+- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/code-flow-0.1.0-preview.2-macos-x64-unnotarized.dmg)
 
 1. Choose **arm64** for Apple Silicon, or **x64** for an Intel Mac. macOS 13 or later is required.
 2. Open the DMG and drag **Code Flow** to **Applications**.
-3. Open Code Flow. Its menu bar launcher starts the local app and opens your browser.
-4. Use **Code Flow → Open Code Flow** to reopen the browser, or **Quit Code Flow** to stop it.
+3. Open Code Flow in its own desktop window. Closing or reloading the window keeps agents running.
+4. Click its Dock icon or use **Code Flow → Show Code Flow** to return. Use **Code Flow → Quit** to stop; it asks before interrupting active agents.
 
-Node is included in the app. You still need Git 2.38+ and a signed-in supported agent CLI. Install those before your first run. Quit Code Flow before replacing the app with a newer download. Do not run the npm and macOS launchers together against the same data directory.
+Node is included in the app. You still need Git 2.38+, a signed-in supported agent CLI and Chrome or Edge for the shared browser. Install those before your first run. Quit Code Flow before replacing the app with a newer download. Do not run the npm and macOS launchers together against the same data directory.
 
 Files named **unnotarized** are developer preview builds. macOS may block them. For ordinary installation, use npm until a signed and notarized DMG is available.
 
