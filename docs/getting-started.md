@@ -23,6 +23,17 @@ The first browser that opens code-flow is signed in automatically. That stays po
 
 The session token exists only in the server's memory, so the agents code-flow runs can't use its API, even sandboxed ones with network access. A restart starts a new session. If the browser asks you to sign in, use the new owner link printed by that server.
 
+## Development
+
+For working on Code Flow itself, use either command after `npm ci`:
+
+```bash
+npm run dev       # deterministic demo agents; no real provider work
+npm run dev:real  # installed real CLIs; sign in to each CLI first
+```
+
+Both modes use http://localhost:4318 and `.codeflow-dev` as their home directory, rebuild the UI and restart the server on source changes. For real-agent mode, install the CLIs you intend to use and run each interactively to sign in before starting. The normal `npm start` workflow above uses http://localhost:4317.
+
 ## Your first run
 
 ![The composer: a task and its workflow, Plan → Build → Review, with the check that decides when it's done (demo data)](images/composer-light.png)

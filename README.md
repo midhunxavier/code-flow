@@ -104,11 +104,14 @@ See [publishing and maintaining the docs](docs/documentation.md) for repository 
 ## Development
 
 ```bash
-npm run dev          # localhost:4318, fake agents, no provider quota
+npm run dev          # deterministic demo agents; no real provider work
+npm run dev:real     # installed real CLIs; sign in to each CLI first
 npm run typecheck
 npm test
 npm run test:e2e     # browser acceptance tests; requires Chrome
 ```
+
+Both development modes use http://localhost:4318 and `.codeflow-dev` as their home directory. They rebuild the UI and restart the server on source changes.
 
 The [development guide](docs/architecture.md) covers the source layout, adapter and workflow contracts, and tests. Engineering plans and evaluation records are grouped separately in the docs library.
 
