@@ -253,6 +253,7 @@ test("managed PR merges require a current approval after publication", async (t)
       team = await f.service.decide(team.id, o.id, { operationId: "approve", revision: team.revision, opportunityRevision: o.revision, action: "approve" });
       const url = await f.manager.pullRequest(o.result!.runId, { branch: o.result!.branch, into: "main" });
       const number = url.split("/").pop()!;
+      team = f.store.get(team.id); // Accounting may have settled while publication awaited I/O.
       if (change === "reject") team = await f.service.decide(team.id, o.id, { operationId: "reject", revision: team.revision, opportunityRevision: team.opportunities[0]!.revision, action: "reject", note: "Do not ship this" });
       if (change === "mission") team = await f.service.update(team.id, { operationId: "change-mission", revision: team.revision, mission: mission({ mission: "Prioritize another problem" }) });
       if (change === "archive") team = await f.service.update(team.id, { operationId: "archive", revision: team.revision, status: "archived" });

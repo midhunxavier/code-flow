@@ -270,7 +270,7 @@ export class ProjectTeams {
   }
   private async reconcileUsage(team: ProjectTeam) {
     for (const cycle of team.cycles) for (const launch of cycle.launches) {
-      if (launch.usage || !launch.runId) continue;
+      if (ACTIVE_CYCLES.includes(cycle.status) || launch.usage || !launch.runId) continue;
       const run = this.options.manager.get(launch.runId), ref = run?.projectTeam;
       if (!run || !ref || digest([run.repo, run.project, run.baseRef, ref.teamId, ref.cycleId, ref.claimId, ref.inputHash, ref.phase, ref.attempt]) !== digest([team.repo, team.projectId, cycle.baseCommit, team.id, cycle.id, launch.claimId, launch.inputHash, launch.phase, launch.attempt])) continue;
       const usage = await (this.options.persistUsage ?? persistProjectTeamUsage)(run, launch);
@@ -285,6 +285,8 @@ export class ProjectTeams {
   }
   private async settle(t: ProjectTeam, cycleId: string, run: Run) {
     const c = t.cycles.find((c) => c.id === cycleId)!;
+    const launch = c.launches.find(item => item.claimId === run.projectTeam!.claimId)!;
+    const usage = await (this.options.persistUsage ?? persistProjectTeamUsage)(run, launch);
     let reason: string | undefined, result: ProjectOpportunity["result"], candidates: ProjectOpportunity[] = [];
     if (run.projectTeam!.phase === "discovery") {
       const r = run.projectDiscovery;
@@ -302,6 +304,7 @@ export class ProjectTeams {
     await this.store.change(t.id, undefined, undefined, (t) => {
       const cycle = t.cycles.find((c) => c.id === cycleId)!, l = cycle.launches.find((l) => l.claimId === run.projectTeam!.claimId)!;
       if (l.state === "settled") return;
+      if (usage) l.usage ??= usage;
       l.state = "settled"; l.usedCalls = l.usage?.calls ?? (run.status === "done" ? Math.min(l.calls, Math.max(run.team?.metrics.invocations ?? l.calls, 0)) : l.calls);
       if (reason) { finish(cycle, "blocked", reason); if (cycle.opportunityId) { const o = t.opportunities.find((o) => o.id === cycle.opportunityId)!; o.status = "blocked"; o.reason = reason; } return; }
       if (run.projectTeam!.phase === "discovery") { cycle.report = run.projectDiscovery; cycle.summary = run.projectDiscovery!.report.summary; t.opportunities.push(...candidates.slice(0, Math.max(0, PT_LIMITS.open - openOpportunities(t)))); cycle.status = "selecting"; }
