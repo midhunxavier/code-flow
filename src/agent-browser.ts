@@ -198,15 +198,17 @@ export class AgentBrowser {
       const profile = join(CODEFLOW_HOME, "agent-browsers", this.id);
       await mkdir(profile, { recursive: true, mode: 0o700 });
       await rm(join(profile, "DevToolsActivePort"), { force: true });
-      const child = spawn(executable, [`--user-data-dir=${profile}`, "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", "--no-first-run", "--no-default-browser-check", "--disable-background-networking", ...(process.env.CODEFLOW_BROWSER_VISIBLE === "1" ? [] : ["--headless=new"]), "about:blank"], { stdio: "ignore" });
+      const child = spawn(executable, [`--user-data-dir=${profile}`, "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", "--no-first-run", "--no-default-browser-check", "--disable-background-networking", ...(process.env.CODEFLOW_BROWSER_VISIBLE === "1" ? [] : ["--headless=new"]), "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
       this.child = child;
+      let diagnostics = "";
+      child.stderr.on("data", chunk => { diagnostics = (diagnostics + String(chunk)).slice(-4000); });
       let failure: Error | undefined;
       child.on("error", error => { failure = error; });
       child.on("exit", () => { if (this.child !== child) return; this.cdp?.close(); this.cdp = undefined; this.session = undefined; this.target = undefined; this.refs.clear(); if(!this.disposed)void this.close().catch(()=>{}); });
-      const deadline = Date.now() + 15_000;
+      const deadline = Date.now() + 30_000;
       while (Date.now() < deadline) {
         if (this.disposed) { child.kill(); throw new Error("Browser closed"); }
-        if (failure || child.exitCode !== null) throw failure ?? new Error("Chrome exited before its browser tools were ready");
+        if (failure || child.exitCode !== null) throw failure ?? new Error(`Chrome exited before its browser tools were ready${diagnostics ? `: ${diagnostics}` : ""}`);
         const portFile = await readFile(join(profile, "DevToolsActivePort"), "utf8").catch(() => "");
         const [port, path] = portFile.trim().split("\n");
         if (port && /^\d+$/.test(port) && path?.startsWith("/devtools/browser/")) {
@@ -219,7 +221,7 @@ export class AgentBrowser {
         }
         await new Promise(resolve => setTimeout(resolve, 75));
       }
-      child.kill(); throw new Error("Chrome did not become ready in 15 seconds");
+      child.kill(); throw new Error(`Chrome did not become ready in 30 seconds${diagnostics ? `: ${diagnostics}` : ""}`);
     })();
     try { return await this.opening; } finally { this.opening = undefined; }
   }
@@ -261,7 +263,23 @@ export class AgentBrowser {
     if (name === "browser_tabs") {
       if (args.action === "new") { const created = await cdp.send("Target.createTarget", { url: "about:blank" }); await this.select(cdp, created.targetId); }
       else if (args.action === "select") await this.select(cdp, args.tab);
-      else if (args.action === "close") { if (!args.tab) throw new Error("Choose a tab from browser_tabs"); await cdp.send("Target.closeTarget", { targetId: args.tab }); if (args.tab === this.target) { this.session = undefined; this.target = undefined; this.changed(); await this.select(cdp); } }
+      else if (args.action === "close") {
+        if (!args.tab) throw new Error("Choose a tab from browser_tabs");
+        // closeTarget acknowledges the request before Chrome removes the target.
+        // Select the replacement first so we cannot reattach to the closing tab.
+        if (args.tab === this.target) {
+          const { targetInfos } = await cdp.send("Target.getTargets");
+          const next = targetInfos.find((page: any) => page.type === "page" && page.targetId !== args.tab);
+          const targetId = next?.targetId ?? (await cdp.send("Target.createTarget", { url: "about:blank" })).targetId;
+          await this.select(cdp, targetId);
+        }
+        await cdp.send("Target.closeTarget", { targetId: args.tab });
+        const deadline = Date.now() + 5000;
+        while ((await cdp.send("Target.getTargets")).targetInfos.some((page: any) => page.targetId === args.tab)) {
+          if (Date.now() >= deadline) throw new Error("Chrome is still closing the tab; refresh browser_tabs to check its state");
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+      }
       return { tabs: (await cdp.send("Target.getTargets")).targetInfos.filter((page: any) => page.type === "page").map((page: any) => ({ id: page.targetId, title: page.title, url: page.url, selected: page.targetId === this.target })) };
     }
     await this.select(cdp);
