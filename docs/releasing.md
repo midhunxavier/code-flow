@@ -49,7 +49,7 @@ npm run package:macos -- x64
 npm run test:macos
 ```
 
-The builder downloads an official Node runtime with a pinned SHA-256, compiles the native menu bar supervisor, includes the prepared app and Node license, and creates a drag-to-Applications DMG. The app requires macOS 13+. Git and the agent CLIs remain user-installed. The launcher reads the login shell's PATH to find common CLI and version-manager installations.
+The builder downloads an official Node runtime with a pinned SHA-256, packages a pinned Electron runtime with the prepared backend and Node license, compiles the native computer-use helper, and creates a drag-to-Applications DMG. The app requires macOS 13+. Its sandboxed renderer has no Node access, and the separate local backend survives window reloads and closing. Lifecycle tests launch the actual packaged app, verify renderer isolation and backend continuity, and check normal quit and crash cleanup. Both architectures are tested on matching GitHub runners. Git and the agent CLIs remain user-installed. The launcher reads the login shell's PATH to find common CLI and version-manager installations.
 
 Without signing credentials the output is explicitly named `-unnotarized.dmg`. These builds are for developer testing; do not describe them as signed, notarized or Gatekeeper approved.
 

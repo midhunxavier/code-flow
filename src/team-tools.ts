@@ -49,12 +49,18 @@ const MAX_RESPONSE = 128 * 1024;
 const MAX_TTL = 25 * 60 * 60_000;
 type Handler = (request: TeamToolRequest, identity: Readonly<TeamToolIdentity>) => Promise<unknown>;
 interface Grant {
+  initialized?: boolean;
   identity: Readonly<TeamToolIdentity>;
   path: string;
   expiresAt: number;
   handler: Handler;
   isActive?: () => boolean;
   pending: number;
+}
+
+export function teamMcpConfig(connection: TeamToolConnection) {
+  if (!/^http:\/\/127\.0\.0\.1:\d+\/v1\/runs\/[^/]+\/members\/[^/]+\/attempts\/[^/]+$/.test(connection.endpoint) || !/^[\w-]{43}$/.test(connection.token) || !Number.isFinite(connection.expiresAt) || connection.expiresAt <= Date.now()) throw new Error("Invalid member tool connection");
+  return { serverUrl: `${connection.endpoint}/mcp`, headers: { Authorization: `Bearer ${connection.token}` }, tools: Object.fromEntries(TEAM_TOOLS.map(tool => [tool.name, { eager: true }])) };
 }
 
 /** Validate the closed wire schema before domain handlers see data. Identity is never an argument. */
@@ -152,13 +158,18 @@ export class TeamToolBridge {
       res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" });
       res.end(json.length <= MAX_RESPONSE ? json : JSON.stringify({ error: "Tool response exceeded its context limit" }));
     };
-    if (req.method !== "POST" || req.headers.origin || req.headers["content-type"] !== "application/json") { reply(403, { error: "Forbidden team bridge request" }); return; }
+    if (req.headers.origin) { reply(403, { error: "Forbidden team bridge request" }); return; }
     const auth = req.headers.authorization;
     const token = typeof auth === "string" && /^Bearer [A-Za-z0-9_-]{43}$/.test(auth) ? auth.slice(7) : "";
     const grant = token ? this.grants.get(digest(token)) : undefined;
-    if (!grant || req.url !== grant.path || grant.expiresAt <= Date.now() || grant.isActive?.() === false) { reply(403, { error: "Invalid or expired member capability" }); return; }
+    const mcp = !!grant && req.url === `${grant.path}/mcp`;
+    if (!grant || req.url !== grant.path && !mcp || grant.expiresAt <= Date.now() || grant.isActive?.() === false) { reply(403, { error: "Invalid or expired member capability" }); return; }
+    if (mcp && req.method === "GET") { res.writeHead(405, { Allow: "POST" }); res.end(); return; }
+    if (req.method !== "POST" || !/^application\/json(?:\s*;|$)/i.test(req.headers["content-type"] ?? "")) { reply(403, { error: "Forbidden team bridge request" }); return; }
     if (grant.pending >= 4) { reply(429, { error: "Too many active member commands" }); return; }
     grant.pending++;
+    let rpcId: string | number | null = null, toolCall = false;
+    const success = (value: unknown) => reply(200, mcp ? { jsonrpc: "2.0", id: rpcId, result: value } : value);
     try {
       const chunks: Buffer[] = [];
       let size = 0;
@@ -169,15 +180,30 @@ export class TeamToolBridge {
       }
       // Recheck revocation after reading the body; a slow client cannot outlive its turn.
       if (this.grants.get(digest(token)) !== grant || grant.expiresAt <= Date.now() || grant.isActive?.() === false) { reply(403, { error: "Invalid or expired member capability" }); return; }
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      if (body?.method === "tools/list" && Object.keys(body).length === 1) { reply(200, { tools: TEAM_TOOLS }); return; }
+      let body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      if (mcp) {
+        if (!body || typeof body !== "object" || Array.isArray(body) || body.jsonrpc !== "2.0" || typeof body.method !== "string" || body.id !== undefined && typeof body.id !== "string" && !(typeof body.id === "number" && Number.isFinite(body.id))) { reply(400, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request" } }); return; }
+        if (body.id === undefined) { res.writeHead(202); res.end(); return; }
+        rpcId = body.id;
+        if (body.method === "initialize") { grant.initialized = true; success({ protocolVersion: ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"].includes(body.params?.protocolVersion) ? body.params.protocolVersion : "2025-03-26", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "code-flow-team", version: "1.0.0" } }); return; }
+        if (!grant.initialized) throw new Error("Initialize the member bridge first");
+        if (body.method === "resources/list") { success({ resources: [] }); return; }
+        if (body.method === "resources/templates/list") { success({ resourceTemplates: [] }); return; }
+        if (body.method === "ping") { success({}); return; }
+        if (body.method === "tools/call") { toolCall = true; body = { name: body.params?.name, arguments: body.params?.arguments ?? {} }; }
+        else if (body.method === "tools/list") { success({ tools: TEAM_TOOLS }); return; }
+        else { reply(200, { jsonrpc: "2.0", id: rpcId, error: { code: -32601, message: "Method not found" } }); return; }
+      }
+      if (body?.method === "tools/list" && Object.keys(body).length === 1) { success({ tools: TEAM_TOOLS }); return; }
       const request = validateTeamToolRequest(body);
       const value = await grant.handler(request, grant.identity);
-      reply(200, { result: value ?? null });
+      success(mcp ? { content: [{ type: "text", text: JSON.stringify(value ?? null) }] } : { result: value ?? null });
     } catch (error) {
       // Domain errors are useful, but never include transport credentials in diagnostics.
       const message = error instanceof Error ? error.message : "Team command failed";
-      reply(message.includes("no longer active") ? 403 : 400, { error: message.replaceAll(token, "[redacted]").slice(0, 1_000) });
+      const safe = message.replaceAll(token, "[redacted]").slice(0, 1_000);
+      if (mcp && toolCall) success({ isError: true, content: [{ type: "text", text: safe }] });
+      else reply(message.includes("no longer active") ? 403 : 400, mcp ? { jsonrpc: "2.0", id: rpcId, error: { code: -32603, message: safe } } : { error: safe });
     } finally { grant.pending--; }
   }
 }

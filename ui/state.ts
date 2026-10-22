@@ -1,3 +1,4 @@
+import { chatTaskId } from "../src/chat-family.js";
 import { needsYou, matchesHistoryFilter } from "../src/run-status.js";
 import { DEFAULT_EXECUTION_BUDGET } from "../src/execution-budget.js";
 export { needsYou, runState, isFlagged } from "../src/run-status.js";
@@ -70,6 +71,13 @@ export const sideOpen = signal(window.innerWidth > 760 && store.get("sideOpen") 
 export const sideTab = signal<SideTab>(SIDE_TABS.includes(store.get("sideTab") as SideTab) ? (store.get("sideTab") as SideTab) : "chat");
 /** Width of the side panel on wide screens, in pixels; dragged, and remembered. */
 export const sideWidth = signal(Math.min(Math.max(Number(store.get("sideWidth")) || 420, 300), 900));
+const viewportWidth = signal(window.innerWidth);
+window.addEventListener("resize", () => { viewportWidth.value = window.innerWidth; });
+/** Leave room for the conversation when the panel is docked; retain the saved width on resize. */
+export const sideMaxWidth = computed(() => Math.max(300, Math.min(900, viewportWidth.value - (railCollapsed.value ? 64 : viewportWidth.value <= 1180 ? 236 : 248) - 360)));
+export const sideDisplayWidth = computed(() => Math.min(sideWidth.value, sideMaxWidth.value));
+export const sideExpanded = signal(false);
+export const sideFullWidth = computed(() => sideOpen.value && (sideExpanded.value || viewportWidth.value <= 760));
 export function openSide(tab?: SideTab) {
   if (tab) {
     showSideTab(tab);
@@ -83,11 +91,12 @@ function showSideTab(tab: SideTab) {
   store.set("sideTab", tab);
 }
 export function closeSide() {
+  sideExpanded.value = false;
   sideOpen.value = false;
   store.set("sideOpen", "0");
 }
 export function setSideWidth(px: number) {
-  sideWidth.value = Math.min(Math.max(Math.round(px), 300), 900);
+  sideWidth.value = Math.min(Math.max(Math.round(px), 300), sideMaxWidth.value);
   store.set("sideWidth", String(sideWidth.value));
 }
 /**
@@ -97,14 +106,15 @@ export function setSideWidth(px: number) {
  */
 export const sideChat = computed(() => sideMemo.value.chat || null);
 export function setSideChat(key: string | null, scope = sideScope.value.key) {
-  const m = sideMemory.value[scope] ?? { at: 0 };
+  scope = taskSideKey(scope);
+  const m = sideMemoryFor(scope);
   const run = key && !key.startsWith("side:") && key !== "solo";
   // A chat you open here gets a place in the strip; a side chat you go back to comes back to it.
   rememberSide(
     {
       chat: key ?? "",
       chats: run && !(m.chats ?? []).includes(key) ? [...(m.chats ?? []), key] : m.chats,
-      closed: key?.startsWith("side:") ? m.closed?.filter((k) => k !== key) : m.closed,
+      closed: key ? m.closed?.filter((k) => k !== key) : m.closed,
     },
     scope,
   );
@@ -230,6 +240,7 @@ export const draftError = signal("");
 export const projectPickerPurpose = signal<"filter" | "composer">("filter");
 export const repositoryChoice = signal<{ repository: string; project?: string } | null>(null);
 export const composerRunOptions = signal<{
+  taskTeam?: import("../src/task-team.js").TaskTeamConfig;
   remoteWorker?: import("./remote-workers.js").WorkerChoice;
   container?: { enabled: boolean; image: string; authVolume: string };
   verification?: string;
@@ -366,7 +377,7 @@ export interface SideScope {
 type SidePin = { kind: "run"; id: string } | { kind: "project"; project?: string; repo: string };
 const sidePin = signal<SidePin | null>(store.json<SidePin | null>("sidePin", null));
 
-const runScope = (run: RunSummary, pinned = false): SideScope => ({ key: `run:${run.id}`, kind: "run", run, project: projectFor(run), repo: run.repo, pinned });
+const runScope = (run: RunSummary, pinned = false): SideScope => ({ key: `run:${chatTaskId(run)}`, kind: "run", run, project: projectFor(run), repo: run.repo, pinned });
 function projectScope(project: Project | undefined, repo: string, pinned = false): SideScope {
   const r = repo;
   return { key: project ? `project:${project.id}` : r ? `repo:${r}` : "none", kind: "project", project, repo: r, pinned };
@@ -446,7 +457,7 @@ export function pinSide(on: boolean) {
  * scope: the main window opens the run, with the chat in its panel.
  */
 export function openSideChat(runId: string, chat: string) {
-  const key = `run:${runId}`;
+  const key = taskSideKey(`run:${runId}`);
   if (poppedScope.value && poppedScope.value !== key) return handOff({ type: HANDOFF, route: { view: "run", id: runId }, drafts: [], sideChat: { run: runId, chat } });
   setSideChat(`side:${chat}`, key);
   if (sideScope.value.key !== key) setPin(followed.value.key === key ? null : { kind: "run", id: runId });
@@ -455,18 +466,20 @@ export function openSideChat(runId: string, chat: string) {
 
 /** Open links in the Browser belonging to the run that supplied them. */
 export function openBrowserPage(url: string, runId?: string) {
-  const key = runId ? `run:${runId}` : sideScope.value.key;
+  const key = runId ? taskSideKey(`run:${runId}`) : sideScope.value.key;
   const memo = sideMemory.value[key];
   const pages = memo?.pages ?? (memo?.url ? [{ id: "p0", url: memo.url }] : []);
   const existing = pages.find(page => { try { return new URL(page.url).href === new URL(url).href; } catch { return page.url === url; } });
   const id = existing?.id ?? `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  rememberSide({ pages: existing ? pages : [...pages, { id, url }], page: id, tab: "browser" }, key);
+  rememberSide({ pages: existing ? pages : [...pages, { id, url }], page: id, tab: "browser", browserRequest:{id:`${Date.now()}-${Math.random()}`,url} }, key);
   if (runId && sideScope.value.key !== key) setPin(followed.value.key === key ? null : { kind: "run", id: runId });
   openSide("browser");
 }
 
 /** What the panel remembers per scope, so going back to a run brings back its panel. */
 export interface SideMemory {
+  browserRequest?: {id:string;url:string};
+  browserHandled?: string;
   tab?: SideTab;
   /** The chat shown (see `sideChat`); "" for a new chat. */
   chat?: string;
@@ -496,9 +509,22 @@ export interface SideMemory {
 }
 const MAX_SIDE_MEMORIES = 200;
 export const sideMemory = signal<Record<string, SideMemory>>(store.json("sideMemory", {}));
-export const sideMemo = computed<SideMemory>(() => sideMemory.value[sideScope.value.key] ?? { at: 0 });
+export function taskSideKey(key: string): string {
+  const run = key.startsWith("run:") ? runs.value.get(key.slice(4)) : undefined;
+  return run ? `run:${chatTaskId(run)}` : key;
+}
+/** Fold earlier per-tab memories into the task without losing already-open side chats. */
+function sideMemoryFor(key: string): SideMemory {
+  const memories = Object.entries(sideMemory.value).filter(([scope]) => taskSideKey(scope) === key).map(([, memory]) => memory).sort((a, b) => a.at - b.at);
+  if (!memories.length) return { at: 0 };
+  const merged = Object.assign({}, ...memories) as SideMemory;
+  if (memories.some(memory => memory.chats !== undefined)) merged.chats = [...new Set(memories.flatMap(memory => memory.chats ?? []))].filter(id => !merged.closed?.includes(id));
+  return merged;
+}
+export const sideMemo = computed<SideMemory>(() => sideMemoryFor(sideScope.value.key));
 export function rememberSide(patch: Omit<Partial<SideMemory>, "at">, key = sideScope.value.key) {
-  const all = { ...sideMemory.value, [key]: { ...sideMemory.value[key], ...patch, at: Date.now() } };
+  key = taskSideKey(key);
+  const all = { ...sideMemory.value, [key]: { ...sideMemoryFor(key), ...patch, at: Date.now() } };
   const keys = Object.keys(all);
   if (keys.length > MAX_SIDE_MEMORIES) for (const k of keys.sort((a, b) => all[a]!.at - all[b]!.at).slice(0, keys.length - MAX_SIDE_MEMORIES)) delete all[k];
   sideMemory.value = all;
@@ -611,7 +637,7 @@ export const composerOrigins = signal<Record<string, string>>({ pattern: store.g
 export const contextPaths = signal<Map<string, ContextItem>>(new Map());
 export const attachments = signal<Attachment[]>([]);
 export const contextError = signal("");
-export const patternId = signal(store.get("pattern") ?? "auto-team");
+export const patternId = signal(store.get("pattern") ?? "solo");
 export const pattern = computed(() => patterns.value.find((p) => p.id === patternId.value) ?? patterns.value[0]);
 /** A role is filled by an agent, or "auto": code-flow picks one whose plan has room. */
 export type { RoleValue } from "./roles.js";
@@ -864,7 +890,7 @@ export function upsertRun(run: RunSummary) {
  * (a list fetched while the stream moved on) never replaces a newer one.
  */
 const feed = { epoch: "", seq: 0, runSeq: new Map<string, number>() };
-interface RunPage { runs: RunSummary[]; total: number; nextCursor?: string }
+interface RunPage { runs: RunSummary[]; related?: RunSummary[]; total: number; nextCursor?: string }
 export const historyTotal = signal<number | null>(null);
 export const attentionTotal = signal<number | null>(null);
 export const attentionTruncated = signal(false);
@@ -926,6 +952,42 @@ function applyRunList(list: RunSummary[], fresher: (id: string) => boolean, pres
   for (const run of next.values()) noticeChange(before.get(run.id), run);
 }
 
+/** Restore all tabs/side chats when opening a deep link outside the first history page. */
+export async function loadAgentChats(id: string) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { epoch, seq } = feed;
+    const family = await api<RunSummary[]>(`/api/runs/${encodeURIComponent(id)}/chats`);
+    if (feed.epoch !== epoch) continue; // Initial stream connection or a server restart: use its new sequence.
+    applyRunList(family, key => (feed.runSeq.get(key) ?? 0) > seq, true);
+    return;
+  }
+  throw new Error("The connection changed while loading chats. Reopen the task to retry.");
+}
+export const lastAgentTabs = signal<Record<string, string>>(store.json("lastAgentTabs", {}));
+/** Closing a tab only changes this browser's view; the task and its work keep running. */
+const closedAgentTabs = signal<Record<string, string[]>>(store.json("closedAgentTabs", {}));
+export const agentTabClosed = (run: RunSummary) => closedAgentTabs.value[chatTaskId(run)]?.includes(run.id) ?? false;
+export function setAgentTabClosed(run: RunSummary, closed: boolean) {
+  if (run.pattern !== "solo" || run.chatLink?.kind === "side" || agentTabClosed(run) === closed) return;
+  const task = chatTaskId(run);
+  const ids = new Set(closedAgentTabs.value[task]);
+  if (closed) ids.add(run.id); else ids.delete(run.id);
+  const next = { ...closedAgentTabs.value }; delete next[task];
+  if (ids.size) next[task] = [...ids];
+  closedAgentTabs.value = Object.fromEntries(Object.entries(next).slice(-200));
+  store.set("closedAgentTabs", JSON.stringify(closedAgentTabs.value));
+}
+export function rememberAgentTab(run: RunSummary) {
+  if (run.pattern !== "solo" || run.chatLink?.kind === "side") return;
+  setAgentTabClosed(run, false); // Following a direct link or sidebar entry reopens the conversation.
+  const task = chatTaskId(run);
+  if (lastAgentTabs.value[task] === run.id) return;
+  const next = { ...lastAgentTabs.value }; delete next[task]; next[task] = run.id;
+  const entries = Object.entries(next).slice(-200);
+  lastAgentTabs.value = Object.fromEntries(entries);
+  store.set("lastAgentTabs", JSON.stringify(lastAgentTabs.value));
+}
+
 export async function refreshRuns() {
   const { epoch, seq } = feed;
   const query = historyRequestQuery();
@@ -939,7 +1001,7 @@ export async function refreshRuns() {
     if (feed.epoch !== epoch || generation !== historyGeneration || query !== historyRequestQuery() || request !== historyRefresh) return;
     const list = Array.isArray(page) ? page : page.runs;
     for (const run of list) historyMatches.add(run.id);
-    applyRunList(list, (id) => (feed.runSeq.get(id) ?? 0) > seq, true);
+    applyRunList([...list, ...(Array.isArray(page) ? [] : page.related ?? [])], (id) => (feed.runSeq.get(id) ?? 0) > seq, true);
     historyTotal.value = Array.isArray(page) ? page.length : page.total;
     if (historyPages <= 1) historyNextCursor.value = Array.isArray(page) ? null : page.nextCursor ?? null;
     historyPages = Math.max(1, historyPages);
@@ -964,7 +1026,7 @@ export async function loadOlderRuns() {
     const page = await api<RunPage>(`/api/runs?limit=100&cursor=${encodeURIComponent(cursor)}${query ? `&${query}` : ""}`);
     if (generation !== historyGeneration || query !== historyRequestQuery() || feed.epoch !== epoch) return;
     for (const run of page.runs) historyMatches.add(run.id);
-    applyRunList(page.runs, (id) => (feed.runSeq.get(id) ?? 0) > seq, true);
+    applyRunList([...page.runs, ...page.related ?? []], (id) => (feed.runSeq.get(id) ?? 0) > seq, true);
     historyNextCursor.value = page.nextCursor ?? null;
     historyTotal.value = page.total;
     historyPages++;
@@ -1220,7 +1282,7 @@ async function switchComposer(next: string, options: { repository?: string; carr
         task.value = ""; acceptanceCriteria.value = []; attachments.value = []; contextPaths.value = new Map();
         source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
         roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
-        patternId.value = store.get("pattern") ?? "auto-team"; agentSettings.value = store.json("agentSettings", {});
+        patternId.value = store.get("pattern") ?? "solo"; agentSettings.value = store.json("agentSettings", {});
         optionValues.value = {}; limits.value = store.json("limits", DEFAULT_EXECUTION_BUDGET);
         approvalChoices.value = store.json("approvePlanByPattern", {}); selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
         if (project?.defaults) applyDefaults(project.defaults);

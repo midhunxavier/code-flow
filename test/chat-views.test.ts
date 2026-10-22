@@ -183,7 +183,7 @@ test("teamSteps leaves out side chats' turns, also before the run says whose the
 /** The keyed items of a ChatThread, and every element in it, without rendering components. */
 function thread(run: any, steps: any[]) {
   const tree = m.ChatThread({ run, steps: m.teamSteps(run, steps), data: runData(steps) });
-  const items: any[] = tree.props.children[0];
+  const items: any[] = tree.props.children.find(Array.isArray) ?? [];
   const all: any[] = [];
   const walk = (node: any) => {
     if (Array.isArray(node)) node.forEach(walk);
@@ -246,4 +246,20 @@ test("sideChatIn: while the run's stream replays snapshots older than the chat, 
   assert.equal(caught.chat.mode, "ask");
 
   assert.equal(m.sideChatIn(live, summary, "nope"), undefined);
+});
+
+test("native streamed replies replace final snapshots without duplication; thinking and tool deltas keep their order", () => {
+  for (const provider of ["claude", "codex"]) {
+    const current = step(provider, { agent: provider }), data = runData([current]);
+    const events: any[] = [{ kind: "text", messageId: "m1", text: "" }, { kind: "text", messageId: "m1", text: "Hello", delta: true }, { kind: "thinking", messageId: "r1", text: "Checking", delta: true }];
+    data.events.set(current.id, events);
+    assert.equal(m.itemsFor(data, current)[0].text, "Hello");
+    events.push({ kind: "text", messageId: "m1", text: " world", delta: true }, { kind: "text", messageId: "m1", text: "Hello world" }, { kind: "tool_call", callId: "t", name: "shell", input: "test" }, { kind: "tool_result", callId: "t", output: "first\n", delta: true }, { kind: "tool_result", callId: "t", output: "second", delta: true });
+    assert.equal(m.itemsFor(data, current).length, 3);
+    assert.equal(m.itemsFor(data, current)[0].text, "Hello world");
+    assert.equal(m.itemsFor(data, current)[2].output, "first\nsecond");
+    events.push({ kind: "tool_result", callId: "t", output: "first\nsecond", isError: false });
+    assert.equal(m.itemsFor(data, current)[2].output, "first\nsecond");
+    data.built.clear(); assert.equal(m.itemsFor(data, current)[0].text, "Hello world", "SSE replay yields the same text");
+  }
 });

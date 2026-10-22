@@ -101,3 +101,37 @@ test("status, provider and repository filters have independent server cursors an
   assert.equal(state.historyTotal.value, 0, "an unfiltered stream snapshot cannot overwrite filtered totals");
   assert.equal(state.historyNextCursor.value, null);
 });
+
+
+test("provider tabs share task-scoped side chats and migrate previous per-tab memories", () => {
+  const root = { ...run("task"), pattern: "solo" };
+  const fork = { ...run("fork"), pattern: "solo", chatLink: { workspaceId: "task", sourceId: "task", kind: "tab" as const } };
+  const side = { ...run("side"), pattern: "solo", chatLink: { workspaceId: "task", sourceId: "fork", kind: "side" as const } };
+  const other = { ...run("other"), pattern: "solo" };
+  state.runs.value = new Map([root, fork, side, other].map(item => [item.id, item]));
+  state.sideMemory.value = {
+    "run:task": { at: 10, chats: [], tab: "chat" },
+    "run:fork": { at: 20, chat: "side", chats: ["side"], tab: "chat" },
+  };
+  state.route.value = { view: "run", id: "task" };
+  assert.equal(state.sideScope.value.key, "run:task");
+  assert.equal(state.sideChat.value, "side", "the task recovers a side chat created from an older fork");
+  state.route.value = { view: "run", id: "fork" };
+  assert.equal(state.sideScope.value.key, "run:task");
+  assert.equal(state.sideScope.value.run?.id, "fork", "new side requests inherit the selected conversation's context");
+  assert.deepEqual(state.sideMemo.value.chats, ["side"]);
+  state.rememberSide({ chats: [], closed: ["side"], chat: "" });
+  assert.deepEqual(state.sideMemo.value.chats, [], "closed legacy chats do not reappear during migration");
+  state.setSideChat("side");
+  assert.deepEqual(state.sideMemo.value.chats, ["side"]);
+  state.route.value = { view: "run", id: "other" };
+  assert.equal(state.sideChat.value, null, "unrelated tasks keep their own side chats");
+  state.setSideChat("side", "run:fork");
+  assert.equal(state.sideChat.value, null, "a late send response does not move another task's panel");
+  state.route.value = { view: "run", id: "task" };
+  assert.equal(state.sideChat.value, "side");
+  state.rememberAgentTab(fork);
+  assert.equal(state.lastAgentTabs.value.task, "fork");
+  state.rememberAgentTab(side);
+  assert.equal(state.lastAgentTabs.value.task, "fork", "opening a side chat preserves the selected main tab");
+});

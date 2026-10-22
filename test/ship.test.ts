@@ -38,7 +38,7 @@ function finished(run: Run): Promise<void> {
   });
 }
 async function runPattern(pattern: string, roles: Record<string, any>, extra: Record<string, unknown> = {}) {
-  const run = await manager.start({ pattern: findPattern(pattern)!, task: "Ship it", repo, roles, options: {}, ...extra });
+  const run = await manager.start({ checkpointOnFinish: pattern === "solo", pattern: findPattern(pattern)!, task: "Ship it", repo, roles, options: {}, ...extra });
   await finished(run);
   return run;
 }

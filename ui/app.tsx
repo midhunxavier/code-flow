@@ -45,7 +45,9 @@ import {
   closeSide,
   openSide,
   sideOpen,
-  sideWidth,
+  sideDisplayWidth,
+  sideExpanded,
+  sideFullWidth,
   gitHealth,
   health,
   healthOpen,
@@ -112,6 +114,7 @@ export function handOffLink(e: MouseEvent) {
 }
 
 function MainApp() {
+  const skipTarget = sideFullWidth.value ? "side-panel" : "main-content";
   useEffect(() => {
     const host = executionHost.value;
     document.title = `${waitingCount.value ? `(${waitingCount.value}) ` : ""}code-flow${host.kind === "ssh" ? ` · SSH ${host.name}` : ""}`;
@@ -129,9 +132,9 @@ function MainApp() {
 
   return (
     <>
-      <a class="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to main content</a>
+      <a class="skip-link" href={`#${skipTarget}`} onClick={(event) => { event.preventDefault(); document.getElementById(skipTarget)?.focus(); }}>{sideFullWidth.value ? "Skip to side panel" : "Skip to main content"}</a>
       <ApprovalInbox />
-      <div class={`app ${sideOpen.value ? "with-side" : ""} ${railCollapsed.value ? "rail-collapsed" : ""}`} style={`--side-w:${sideWidth.value}px`}>
+      <div class={`app ${sideOpen.value ? "with-side" : ""} ${sideOpen.value && sideExpanded.value ? "side-expanded" : ""} ${railCollapsed.value ? "rail-collapsed" : ""}`} style={`--side-w:${sideDisplayWidth.value}px`}>
         <Rail />
         {railOpen.value ? <div class="rail-scrim" aria-hidden="true" onClick={() => (railOpen.value = false)} /> : null}
         <div class="main-col">
@@ -166,7 +169,6 @@ function MainApp() {
             )}
           </main>
         </div>
-        {sideOpen.value ? <div class="side-scrim" aria-hidden="true" onClick={closeSide} /> : null}
         <SidePanel />
       </div>
       <FolderPicker />

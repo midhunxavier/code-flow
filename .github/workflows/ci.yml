@@ -55,6 +55,25 @@ jobs:
       - run: npm run package:npm
       - run: npm run test:package
 
+  desktop:
+    name: macOS desktop lifecycle
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run package:macos
+      - run: npm run test:macos
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: desktop-test-evidence
+          path: output/playwright/desktop-*.png
+
   # Critical UI flows in headless Chrome against deterministic provider fixtures.
   e2e:
     runs-on: ubuntu-latest

@@ -6,11 +6,16 @@ import { teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
 /** Execution and evidence are independent: finishing a turn never implies passing checks. */
 export function executionLabel(run: RunSummary): string {
   if (run.status === "running" && (run.awaiting || teamAwaitingAnswer(run))) return "Waiting for you";
+  const turn = run.teamTurns?.at(-1);
+  if (run.status === "done" && turn && (turn.executionStatus && turn.executionStatus !== "done" || turn.reconciliation || turn.resolutionCheck?.ok === false || turn.resolutionReview?.approved === false || turn.reviewStale)) return "Needs attention";
   return { running: "Running", done: "Finished", failed: "Failed", stopped: "Paused", interrupted: "Interrupted", cancelled: "Stopped" }[run.status] ?? run.status;
 }
 
 export function agentReviewLabel(run: RunSummary, branch?: string): string {
   if (run.status === "running") return "Pending";
+  if (run.teamTurns?.at(-1)?.reviewStale) return "Review outdated";
+  const combinedReview = run.teamTurns?.at(-1)?.resolutionReview;
+  if (combinedReview?.approved !== undefined) return combinedReview.approved ? "Approved" : "Changes requested";
   const selected = branch ?? run.artifacts[0]?.branch;
   const findings = selected ? run.findings?.[selected] : undefined;
   if (findings?.stale) return "Review outdated";

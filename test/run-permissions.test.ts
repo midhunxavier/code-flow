@@ -50,7 +50,7 @@ test("malformed recorded policies are rejected instead of relaxing their restric
   const policy = createRunPermissions("standard", false, false);
   for (const patch of [{ trust: "invalid" }, { toolApprovals: "false" }, { required: undefined }, { delegation: "native" }, { version: 2 }, { required: ["unknown"] }, { extraGrant: true }]) assert.throws(() => validateRunPermissions({ ...policy, ...patch }));
   assert.throws(() => createRunPermissions("invalid" as any, false, false));
-  assert.throws(() => resolveRunPermissions({ policy: createRunPermissions("standard", true, false), provider: "claude", mode: "write", currentTrust: "standard", currentTools: true }), /interactive approvals/);
+  assert.equal(resolveRunPermissions({ policy: createRunPermissions("standard", true, false), provider: "claude", mode: "write", currentTrust: "standard", currentTools: true }).toolApprovals, true, "Claude now supports scoped interactive approvals");
 });
 
 test("child environment inheritance cannot drop isolation, change workers or enable container networking", async () => {

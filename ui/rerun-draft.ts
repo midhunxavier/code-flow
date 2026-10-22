@@ -4,7 +4,7 @@ import type { SourcePick } from "./state.js";
 import type { SourceInput } from "../src/github.js";
 
 /** Settings carried into an editable retry, scoped to this draft and repository. */
-export const rerunDraft = signal<Pick<RunSummary, "id" | "repo" | "loop" | "approvals" | "source"> | null>(null);
+export const rerunDraft = signal<Pick<RunSummary, "id" | "repo" | "loop" | "approvals" | "source" | "checkpointOnFinish"> | null>(null);
 
 /** Inherit unchanged source context; send explicitly edited options for a fresh source read. */
 export function sourceForRerun(pick: SourcePick | null, original?: RunSummary["source"]): SourceInput | undefined {

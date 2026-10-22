@@ -203,7 +203,8 @@ test("single agent: one turn, then each reply continues its session on its branc
     assert.equal(run.status, "done", run.error);
     assert.deepEqual(agentTitles(run), ["Your task"]);
     assert.equal(run.artifacts.length, 1);
-    assert.match(run.summary!, /Changes on `.*solo`/);
+    assert.equal(run.summary, run.steps.find(step => step.kind === "agent")?.finalText);
+    assert.equal(run.steps.filter(step => step.kind === "check").length, 0, "Agent does not run an automatic check after answering");
 
     await m.followUp(run.id, { kind: "reply", worktree: "solo", agent: "claude", message: "Now add a test" });
     await finished(m, run);
@@ -227,9 +228,9 @@ test("single agent: a turn that fails ends the turn, not the conversation", asyn
   } finally {
     delete process.env.FAKE_FAIL_VENDOR;
   }
-  assert.equal(run.status, "done", run.error);
+  assert.equal(run.status, "failed", run.error);
   assert.equal(run.steps.find((s) => s.title === "Your task")!.status, "failed");
-  assert.match(run.summary!, /Claude Code didn't finish/);
+  assert.match(run.error!, /boom/);
 
   await m.followUp(run.id, { kind: "reply", worktree: "solo", agent: "claude", message: "Try again" });
   await finished(m, run);

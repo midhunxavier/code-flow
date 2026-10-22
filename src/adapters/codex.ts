@@ -1,3 +1,4 @@
+import { prepareAgentTools } from "./agent-tools.js";
 import { discoverModels } from "./model-discovery.js";
 import { managedPermissionProblem } from "./managed-permissions.js";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -63,6 +64,7 @@ export const codexAdapter: AgentAdapter = {
     if (permissionProblem) return permissionProblem;
     const supportsTools = !opts.agentContainer && opts.teamTools && (await adapterTeamCapabilities("codex")).scopedTools === "tested";
     const teamTools = supportsTools ? await prepareTeamTools(opts.teamTools!) : undefined;
+    const agentTools = opts.agentTools && !opts.agentContainer && opts.permissions?.externalTools !== "disabled" ? await prepareAgentTools(opts.agentTools) : undefined;
     if (opts.agentContainer) onEvent({ kind: "status", text: `Codex runs in Docker image ${opts.agentContainer.image}. Live team tools are unavailable in containers; use structured outcomes and next-turn replies.` });
     else if (opts.teamTools && !teamTools) onEvent({ kind: "status", text: "This Codex CLI has no verified per-turn team tools; use structured outcomes and next-turn replies." });
     try {
@@ -72,7 +74,8 @@ export const codexAdapter: AgentAdapter = {
     const managedSandbox = opts.permissions && sandbox !== "danger-full-access"
       ? ["-c", "sandbox_workspace_write.writable_roots=[]", ...(opts.permissions.required.includes("workspace-writes") ? ["-c", "sandbox_workspace_write.exclude_slash_tmp=true", "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"] : [])]
       : [];
-    const teamConfig = [...(teamTools?.codexConfig ?? []), ...(opts.questionProtocol === "structured" || opts.permissions?.nativeDelegation === false ? ["-c", "agents.enabled=false", "-c", "features.multi_agent=false", "-c", "features.multi_agent_v2.enabled=false", "-c", "features.hooks=false"] : [])];
+    const nativeTools = [...(teamTools?.codexConfig ?? []), ...(agentTools?.codexConfig ?? [])];
+    const teamConfig = [...nativeTools, ...(opts.questionProtocol === "structured" || opts.permissions?.nativeDelegation === false ? ["-c", "agents.enabled=false", "-c", "features.multi_agent=false", "-c", "features.multi_agent_v2.enabled=false", "-c", "features.hooks=false"] : [])];
     const transport = codexTransport();
 
     // Only a thread Codex confirms in this turn: a resume that failed must not hand back its id.
@@ -111,6 +114,10 @@ export const codexAdapter: AgentAdapter = {
         case "item.updated":
         case "item.completed":
           handleItem(msg.type, msg.item, onEvent, (text) => (finalText = text), unknownItem);
+          break;
+        case "item.delta":
+          if (msg.item.type === "command_execution") onEvent({ kind: "tool_result", callId: msg.item.id, output: msg.item.text, isError: false, delta: true });
+          else onEvent({ kind: msg.item.type === "reasoning" ? "thinking" : "text", messageId: msg.item.id, text: msg.item.text, delta: true });
           break;
 
         case "turn.completed": {
@@ -159,20 +166,23 @@ export const codexAdapter: AgentAdapter = {
         cwd: opts.cwd,
         sandbox,
         resumeThreadId: opts.resumeSessionId,
+        forkThreadId: !opts.resumeSessionId ? opts.forkSessionId : undefined,
         model: opts.model,
         effort: opts.effort,
         outputSchema: opts.jsonSchema,
         questionProtocol: opts.questionProtocol,
         config: [...network, ...teamConfig, ...managedSandbox],
-        threadConfig: { ...teamTools?.codexThreadConfig, ...Object.fromEntries([...network, ...teamConfig.filter((_,i)=>!teamTools || i>=teamTools.codexConfig.length), ...managedSandbox].filter(v=>v!=="-c").map(v=>{const split=v.indexOf("="); return [v.slice(0,split),JSON.parse(v.slice(split+1))];})) },
+        threadConfig: { ...teamTools?.codexThreadConfig, ...agentTools?.codexThreadConfig, ...Object.fromEntries([...network, ...teamConfig.slice(nativeTools.length), ...managedSandbox].filter(v=>v!=="-c").map(v=>{const split=v.indexOf("="); return [v.slice(0,split),JSON.parse(v.slice(split+1))];})) },
         signal: opts.signal,
         timeoutMs: opts.timeoutMs,
         idleTimeoutMs: opts.idleTimeoutMs,
+      isPaused: opts.isPaused,
         onMessage: handle,
         onText,
         onSteerable: opts.onSteerable,
         interactiveApprovals: opts.interactiveApprovals,
         onApproval: opts.onApproval,
+        onQuestion: opts.onQuestion,
         agentContainer: opts.agentContainer,
       });
       if (!("unavailable" in served)) {
@@ -211,6 +221,7 @@ export const codexAdapter: AgentAdapter = {
         signal: opts.signal,
         timeoutMs: opts.timeoutMs,
         idleTimeoutMs: opts.idleTimeoutMs,
+      isPaused: opts.isPaused,
         onText,
         onJson: handle,
         agentContainer: opts.agentContainer ? { config: opts.agentContainer, mode: opts.mode, readOnly: schemaFile ? [schemaFile] : undefined } : undefined,
@@ -263,7 +274,7 @@ export const codexAdapter: AgentAdapter = {
       }
     }
     return { ok: true, finalText, sessionId, structured };
-    } finally { await teamTools?.cleanup(); }
+    } finally { await teamTools?.cleanup(); await agentTools?.cleanup(); }
   },
 };
 
@@ -294,14 +305,14 @@ function handleItem(
     case "agent_message":
       if (done && item.text) {
         setFinal(item.text);
-        onEvent({ kind: "text", text: item.text });
+        onEvent({ kind: "text", text: item.text, messageId: item.id, phase: item.phase });
       } else if (done && typeof item.text !== "string") {
         unknown("agent_message without text", item.id); // its answer moved to a field code-flow doesn't read
       }
       break;
 
     case "reasoning":
-      if (done && item.text) onEvent({ kind: "thinking", text: item.text });
+      if (done && item.text) onEvent({ kind: "thinking", text: item.text, messageId: item.id });
       break;
 
     case "command_execution":
@@ -337,7 +348,7 @@ function handleItem(
         onEvent({
           kind: "tool_result",
           callId: item.id,
-          output: truncate(stringify(item.result ?? item.error ?? "")),
+          output: truncate(Array.isArray(item.result?.content) ? item.result.content.map((content: any) => content.type === "text" ? content.text : `[${content.type}${content.mimeType ? `: ${content.mimeType}` : ""}]`).join("\n") : stringify(item.result ?? item.error ?? "")),
           isError: item.status === "failed",
         });
       }

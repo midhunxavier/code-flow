@@ -24,10 +24,11 @@ test("project drafts survive filters, navigation, attachment restoration and rem
   assert.equal(state.composerProject.value, "", "ambiguous legacy ownership stays unassigned");
   assert.equal(state.task.value, "legacy ambiguous draft");
   await state.openComposer("a");
-  assert.equal(state.patternId.value, "auto-team", "new project drafts default to dynamic Auto");
+  assert.equal(state.patternId.value, "solo", "new project drafts default to the Agent conversation");
   const selection = { template: { schemaVersion: 1 as const, id: "project-template", version: 1, name: "Project template", description: "", scope: "project" as const, project: "a", autoEnabled: false, parameters: ["task"], roles: [], tasks: [], contracts: [], workflow: "solo", task: "{{task}}", criteria: [] }, inputs: { task: "A" } };
   selectedTeamTemplate.value = selection;
-  state.composerRunOptions.value = { antigravityExecution: "native", permissionRequirements: [] };
+  const team: import("../src/task-team.js").TaskTeamConfig = { enabled: true, preset: "build-review", coordinator: "claude", providers: ["codex"], settings: { codex: { model: "gpt-6-luna" } }, maxMembers: 3, maxCalls: 12, maxMinutes: 20, approvePlan: true };
+  state.composerRunOptions.value = { taskTeam: team, antigravityExecution: "native", permissionRequirements: [] };
   state.setTask("task A"); state.attachments.value = [{ name: "spec.txt", data: "aGVsbG8=", size: 5 }];
   state.contextPaths.value = new Map([["a.txt", { path: "a.txt", type: "file" }]]);
   state.setCheck("custom check A"); state.baseRef.value = "feature/a";
@@ -39,6 +40,7 @@ test("project drafts survive filters, navigation, attachment restoration and rem
   assert.equal(state.task.value, ""); assert.deepEqual(state.attachments.value, []);
   assert.equal(selectedTeamTemplate.value, null);
   assert.equal(state.composerRunOptions.value.antigravityExecution, undefined);
+  assert.equal(state.composerRunOptions.value.taskTeam, undefined, "Team configuration stays with its project draft");
   state.setTask("task B");
   await state.chooseComposerRepository("/b");
   await state.openComposer("a");
@@ -46,6 +48,7 @@ test("project drafts survive filters, navigation, attachment restoration and rem
   assert.equal(state.contextPaths.value.get("a.txt")?.path, "a.txt");
   assert.deepEqual(selectedTeamTemplate.value, selection);
   assert.equal(state.composerRunOptions.value.antigravityExecution, "native");
+  assert.deepEqual(state.composerRunOptions.value.taskTeam, team);
   assert.equal(state.checkCmd.value, "custom check A"); assert.equal(state.baseRef.value, "feature/a");
   state.projects.value = [{ ...a, repos: ["/a"] }, b];
   assert.match(state.target.value.problem, /no longer/);

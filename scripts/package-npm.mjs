@@ -32,7 +32,7 @@ for (const [source, target] of [["src/architecture.ts", "src/architecture.js"], 
       builder.onResolve({ filter: /^\.\.?\// }, (args) => args.importer.startsWith(join(root, "src") + "/") ? { path: args.path, external: true } : undefined);
     } }],
     platform: "node", format: "esm", target: "node22.13", minify: true, banner, logLevel: "warning" });
-for (const path of ["bin", "public", "LICENSE", "README.md", "scripts/check-node.mjs", "scripts/codeflow.mjs", "scripts/pty.py", "dist/remote-host.json"])
+for (const path of ["bin", "public", "LICENSE", "README.md", "scripts/check-node.mjs", "scripts/codeflow.mjs", "scripts/pty.py", "scripts/computer-use.swift", "dist/remote-host.json"])
   await cp(join(root, path), join(output, path), { recursive: true });
 await mkdir(join(output, "licenses"), { recursive: true });
 for (const [name, source] of [["typescript.txt", "node_modules/typescript/LICENSE.txt"], ["typescript-notices.txt", "node_modules/typescript/ThirdPartyNoticeText.txt"], ["inter.txt", "ui/fonts/OFL-1.1.txt"], ["preact.txt", "node_modules/preact/LICENSE"], ["signals.txt", "node_modules/@preact/signals/LICENSE"], ["signals-core.txt", "node_modules/@preact/signals-core/LICENSE"], ["xterm.txt", "node_modules/@xterm/xterm/LICENSE"], ["xterm-fit.txt", "node_modules/@xterm/addon-fit/LICENSE"], ["uqr.txt", "node_modules/uqr/LICENSE"]])

@@ -1,13 +1,18 @@
+import { chatTaskId, chatUpdatedAt, groupChatTasks } from "../src/chat-family.js";
 import { peopleEnabled } from "./preferences.js";
 import { ComputerProjects, useComputerProjects } from "./connected-projects.js";
 import { useEffect, useState } from "preact/hooks";
 import { inbox } from "./automations.js";
 import { Icon } from "./icons.js";
 import { Menu, MenuItem } from "./panel-bits.js";
-import { DeleteRunDialog, DeleteRunsDialog } from "./run-actions.js";
-import { collaborationConfigured, ago, baseName, fmtCost, fmtTokens, post, showToast, STATUS_TEXT } from "./lib.js";
+import { DeleteRunsDialog } from "./run-actions.js";
+import { collaborationConfigured, api, ago, baseName, fmtCost, fmtTokens, post, showToast, STATUS_TEXT } from "./lib.js";
 import {
   NONE,
+  lastAgentTabs,
+  agentTabClosed,
+  setSideChat,
+  openSide,
   draftsReady,
   composerLoading,
   agents,
@@ -95,7 +100,6 @@ export function Rail() {
   const currentComputer = computers && computers.computers.length > 1 ? computers.computers.find((computer) => computer.id === computers.currentComputerId) : undefined;
   const [showFilters, setShowFilters] = useState(false);
   const [showMore, setShowMore] = useState(false);
-  const [deleting, setDeleting] = useState<RunSummary | null>(null);
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState<RunSummary[] | null>(null);
@@ -109,10 +113,23 @@ export function Rail() {
   const current = r.view === "run" || r.view === "review" ? r.id : undefined;
   /** The project whose page is open. */
   const page = r.view === "project" ? r.id : undefined;
-  const all = [...runs.value.values()].sort((a, b) => b.createdAt - a.createdAt);
-  const list = all.filter((r) => matchesFilter(r) && (!r.archived || view.archived));
-  const archivedCount = all.filter((r) => r.archived).length;
-  const eligible = list.filter(run => run.status !== "running");
+  const tasks = groupChatTasks([...runs.value.values()]);
+  const families = new Map(tasks.map(task => [task.root.id, task]));
+  const members = (run: RunSummary) => families.get(run.id)?.chats ?? [run];
+  const taskArchived = (run: RunSummary) => members(run).every(chat => chat.archived);
+  const taskRunning = (run: RunSummary) => members(run).some(chat => chat.status === "running");
+  const taskNeedsYou = (run: RunSummary) => members(run).some(needsYou);
+  const taskFlagged = (run: RunSummary) => members(run).some(isFlagged);
+  const activityAt = (run: RunSummary) => families.get(run.id)?.updatedAt ?? run.createdAt;
+  const activity = (run: RunSummary) => {
+    const chats = members(run).filter(chat => !chat.archived).sort((a, b) => chatUpdatedAt(b) - chatUpdatedAt(a));
+    return chats.find(chat => chat.awaiting || teamAwaitingAnswer(chat)) ?? chats.find(chat => chat.status === "running") ?? chats.find(needsYou) ?? chats[0] ?? run;
+  };
+  const currentTask = current && runs.value.get(current) ? chatTaskId(runs.value.get(current)!) : current;
+  const all = tasks.map(task => task.root);
+  const list = all.filter(run => members(run).some(chat => matchesFilter(chat) && (!chat.archived || view.archived)));
+  const archivedCount = all.filter(taskArchived).length;
+  const eligible = list.filter(run => !taskRunning(run));
   const eligibleKey = eligible.map(run => run.id).join(",");
   const selectedRuns = eligible.filter(run => selected.has(run.id));
   useEffect(() => {
@@ -121,18 +138,31 @@ export function Rail() {
   }, [eligibleKey]);
   const deselect = (id: string) => setSelected(previous => { const next = new Set(previous); next.delete(id); return next; });
   const toggleSelected = (id: string) => setSelected(previous => { const next = new Set(previous); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const familyForAction = async (run: RunSummary) => run.pattern === "solo" ? await api<RunSummary[]>(`/api/runs/${run.id}/chats`) : [run];
+  const archiveTask = async (run: RunSummary, archived: boolean) => {
+    const family = await familyForAction(run);
+    if (family.some(chat => chat.status === "running")) throw new Error("Finish or stop all chats in this task before archiving it");
+    for (const chat of family) await post(`/api/runs/${chat.id}/archive`, { archived, cleanup: false });
+  };
+  const deleteTasks = async (selected: RunSummary[]) => {
+    try {
+      const chats = (await Promise.all(selected.map(familyForAction))).flat();
+      if (chats.some(chat => chat.status === "running")) throw new Error("Finish or stop all chats in this task before deleting it");
+      setBulkDeleting(chats.sort((a, b) => Number(!a.taskExecution) - Number(!b.taskExecution) || Number(!a.chatLink) - Number(!b.chatLink)));
+    } catch (error) { showToast((error as Error).message); }
+  };
   const archiveSelected = async (archived: boolean) => {
     setBulkBusy(true); setBulkError("");
     const failures: string[] = [];
     let count = 0;
     for (const run of selectedRuns) {
-      try { await post(`/api/runs/${run.id}/archive`, { archived, cleanup: false }); deselect(run.id); count++; }
+      try { await archiveTask(run, archived); deselect(run.id); count++; }
       catch (error) { failures.push(`${run.task.split("\n")[0]}: ${(error as Error).message}`); }
     }
     if (count) showToast(`${count} ${count === 1 ? "run" : "runs"} ${archived ? "archived" : "unarchived"}`);
     setBulkError(failures.join("\n")); setBulkBusy(false);
   };
-  const waiting = list.filter(needsYou);
+  const waiting = list.filter(taskNeedsYou);
   const pending = inbox().length;
   const unread = inboxUnread.value;
   const collapsed = railCollapsed.value;
@@ -149,30 +179,42 @@ export function Rail() {
     setRailView({ collapsed: view.collapsed.includes(key) ? view.collapsed.filter((k) => k !== key) : [...view.collapsed, key] });
 
   const row = (r: RunSummary, meta: string) => {
+    const state = activity(r), archived = taskArchived(r), working = taskRunning(r);
+    const active = currentTask === chatTaskId(r);
+    const openTask = () => {
+      const chats = members(r).filter(chat => !chat.archived);
+      const main = chats.filter(chat => chat.chatLink?.kind !== "side");
+      const opened = main.filter(chat => !agentTabClosed(chat));
+      const choices = opened.length ? opened : main;
+      const waiting = chats.find(chat => chat.awaiting || teamAwaitingAnswer(chat));
+      const preferred = choices.find(chat => chat.id === (active ? current : lastAgentTabs.value[chatTaskId(r)])) ?? choices.find(needsYou) ?? choices.at(-1) ?? r;
+      if (waiting?.chatLink?.kind === "side") { setSideChat(waiting.id, `run:${chatTaskId(r)}`); openSide("chat"); }
+      go({ view: "run", id: waiting && waiting.chatLink?.kind !== "side" ? waiting.id : preferred.id });
+    };
     const tokens = (r.usage?.inputTokens ?? 0) + (r.usage?.outputTokens ?? 0);
     const p = projectFor(r);
     const details = [
-      statusText(r),
-      isFlagged(r) ? "tests changed in ways that could hide failures" : "",
+      statusText(state),
+      taskFlagged(r) ? "tests changed in ways that could hide failures" : "",
       patterns.value.find((x) => x.id === r.pattern)?.name ?? r.pattern,
       p ? (p.repos.length > 1 ? `${p.name} · ${baseName(r.repo)}` : p.name) : baseName(r.repo),
-      ago(r.createdAt),
+      ago(activityAt(r)),
       tokens ? `${fmtTokens(tokens)} tok` : "",
       r.usage?.costUsd ? fmtCost(r.usage.costUsd) : "",
     ].filter(Boolean);
     return (
       <div class={`rail-run-row ${selecting ? "selecting" : ""}`} role="group" aria-label={r.task.split("\n")[0] || "Untitled run"} key={r.id}>
-      {selecting ? <input type="checkbox" class="rail-run-check" aria-label={`Select ${r.task.split("\n")[0] || "Untitled run"}`} checked={selected.has(r.id)} disabled={bulkBusy || !!bulkDeleting || r.status === "running"} onChange={() => toggleSelected(r.id)} /> : null}
+      {selecting ? <input type="checkbox" class="rail-run-check" aria-label={`Select ${r.task.split("\n")[0] || "Untitled run"}`} checked={selected.has(r.id)} disabled={bulkBusy || !!bulkDeleting || working} onChange={() => toggleSelected(r.id)} /> : null}
       <button
         key={r.id}
         type="button"
-        class={`run-item ${current === r.id ? "active" : ""} ${needsYou(r) ? "unseen" : ""} ${r.archived ? "archived" : ""}`}
+        class={`run-item ${active ? "active" : ""} ${taskNeedsYou(r) ? "unseen" : ""} ${archived ? "archived" : ""}`}
         title={`${r.task.split("\n")[0]}\n${details.join(" · ")}`}
-        aria-current={current === r.id ? "page" : undefined}
-        disabled={selecting && (bulkBusy || !!bulkDeleting || r.status === "running")}
-        onClick={() => selecting ? toggleSelected(r.id) : go({ view: "run", id: r.id })}
+        aria-current={active ? "page" : undefined}
+        disabled={selecting && (bulkBusy || !!bulkDeleting || working)}
+        onClick={() => selecting ? toggleSelected(r.id) : openTask()}
       >
-        <span class={`dot ${runState(r)}`} aria-hidden="true" />
+        <span class={`dot ${runState(state)}`} aria-hidden="true" />
         <span class="t">
           {/* how it started: the same marks as the Automations inbox */}
           {r.trigger ? <Icon name={r.trigger.via === "sweep" ? "layers" : r.trigger.via === "webhook" ? "globe" : "clock"} class="inline-icon" /> : null}
@@ -180,7 +222,7 @@ export function Rail() {
           {r.task.split("\n")[0] || "(no task)"}
         </span>
         <span class="m">
-          {isFlagged(r) ? (
+          {taskFlagged(r) ? (
             <span class="flag">
               <Icon name="alert" />
             </span>
@@ -189,17 +231,17 @@ export function Rail() {
         </span>
         <span class="sr-only">
           {" "}
-          · {statusText(r)}
-          {r.archived ? " · archived" : ""}
+          · {statusText(state)}
+          {archived ? " · archived" : ""}
         </span>
       </button>
       {!selecting ? <Menu above class="chat-choice rail-run-menu" label="Run actions" icon="more">
         {close => <>
-          <MenuItem disabled={r.status === "running"} onClick={() => {
+          <MenuItem disabled={working} onClick={() => {
             close();
-            post(`/api/runs/${r.id}/archive`, { archived: !r.archived, cleanup: false }).then(() => showToast(r.archived ? "Run unarchived" : "Run archived"), error => showToast(error.message));
-          }}>{r.archived ? "Unarchive" : "Archive"}</MenuItem>
-          <MenuItem disabled={r.status === "running" || !!r.projectTeam} sub={r.projectTeam ? "Project mission history is retained. Archive instead." : undefined} onClick={() => { close(); setDeleting(r); }}>Delete…</MenuItem>
+            archiveTask(r, !archived).then(() => showToast(archived ? "Run unarchived" : "Run archived"), error => showToast(error.message));
+          }}>{archived ? "Unarchive" : "Archive"}</MenuItem>
+          <MenuItem disabled={working || !!r.projectTeam} sub={r.projectTeam ? "Project mission history is retained. Archive instead." : undefined} onClick={() => { close(); void deleteTasks([r]); }}>Delete…</MenuItem>
         </>}
       </Menu> : null}
       </div>
@@ -240,7 +282,7 @@ export function Rail() {
       );
     const folded = view.collapsed.includes(g.key);
     const showAll = long.has(g.key) || filtering;
-    const shown = folded ? g.runs.filter((r) => r.id === current) : showAll ? g.runs : g.runs.slice(0, PER_PROJECT);
+    const shown = folded ? g.runs.filter((r) => chatTaskId(r) === currentTask) : showAll ? g.runs : g.runs.slice(0, PER_PROJECT);
     const hidden = folded ? 0 : g.runs.length - shown.length;
     return (
       <div key={g.key} class="proj" role="group" aria-label={g.name}>
@@ -260,7 +302,7 @@ export function Rail() {
           </button>
           {g.project ? actions(g.project) : null}
         </div>
-        {shown.map((r) => row(r, short(r.createdAt)))}
+        {shown.map((r) => row(r, short(activityAt(r))))}
         {hidden > 0 ? (
           <button type="button" class="rail-more" onClick={() => setLong(new Set([...long, g.key]))}>
             Show {hidden} more
@@ -274,9 +316,9 @@ export function Rail() {
   if (view.group === "status") {
     const sections: [string, RunSummary[]][] = [
       ["Needs you", waiting],
-      ["Running", list.filter((r) => r.status === "running" && !needsYou(r))],
-      ["Recent", list.filter((r) => !r.archived && r.status !== "running" && !needsYou(r))],
-      ["Archived", list.filter((r) => r.archived)],
+      ["Running", list.filter((r) => taskRunning(r) && !taskNeedsYou(r))],
+      ["Recent", list.filter((r) => !taskArchived(r) && !taskRunning(r) && !taskNeedsYou(r))],
+      ["Archived", list.filter(taskArchived)],
     ];
     const where = (r: RunSummary) => projectFor(r)?.name ?? baseName(r.repo);
     body = sections.map(([title, items]) =>
@@ -300,10 +342,10 @@ export function Rail() {
     };
     for (const r of all) {
       const g = groupOf(r);
-      g.last = Math.max(g.last, r.createdAt);
-      if (r.archived) g.archived++;
+      g.last = Math.max(g.last, activityAt(r));
+      if (taskArchived(r)) g.archived++;
     }
-    for (const r of list) if (!needsYou(r)) groupOf(r).runs.push(r);
+    for (const r of list) if (!taskNeedsYou(r)) groupOf(r).runs.push(r);
     const groups = [...byKey.values()].sort((a, b) => b.last - a.last || a.name.localeCompare(b.name));
     const busy = groups.filter((g) => g.runs.length);
     // Projects with nothing to list fold into one line, unless you're searching (then they're simply left out).
@@ -351,6 +393,7 @@ export function Rail() {
     );
   }
   const empty = !list.length;
+  const shownTasks = filtering ? list.length : all.length;
   return (
     <nav class={`rail ${railOpen.value ? "open" : ""}`} aria-label="Runs">
       <div class="rail-head">
@@ -399,8 +442,8 @@ export function Rail() {
           <div class="rail-bulk-actions">
             <button type="button" class="btn small" disabled={bulkBusy || !!bulkDeleting || !eligible.length} onClick={() => setSelected(selectedRuns.length === eligible.length ? new Set() : new Set(eligible.map(run => run.id)))}>{selectedRuns.length && selectedRuns.length === eligible.length ? "Clear selection" : "Select loaded"}</button>
             <button type="button" class="btn small" disabled={bulkBusy || !selectedRuns.length} onClick={() => void archiveSelected(true)}>Archive</button>
-            {selectedRuns.some(run => run.archived) ? <button type="button" class="btn small" disabled={bulkBusy} onClick={() => void archiveSelected(false)}>Unarchive</button> : null}
-            <button type="button" class="btn small danger" disabled={bulkBusy || !selectedRuns.length || selectedRuns.some(run => !!run.projectTeam)} onClick={() => setBulkDeleting(selectedRuns)}>Delete…</button>
+            {selectedRuns.some(taskArchived) ? <button type="button" class="btn small" disabled={bulkBusy} onClick={() => void archiveSelected(false)}>Unarchive</button> : null}
+            <button type="button" class="btn small danger" disabled={bulkBusy || !selectedRuns.length || selectedRuns.some(run => !!run.projectTeam)} onClick={() => void deleteTasks(selectedRuns)}>Delete…</button>
           </div>
           <span class="help">{bulkBusy ? "Updating runs…" : "Only stopped runs on this computer. Select loaded includes matching runs in folded projects."}</span>
           {selectedRuns.some(run => !!run.projectTeam) ? <span class="help">Project mission history is retained for recovery and approvals. Archive these runs instead.</span> : null}
@@ -454,7 +497,7 @@ export function Rail() {
       ) : null}
       {filtering ? (
         <div class="rail-hint">
-          {list.length} of {all.length} runs
+          {list.length} of {all.length} tasks
           <button type="button" onClick={() => setRunFilter({ q: "", status: "all", pattern: "", agent: "", thisRepo: false })}>
             Clear
           </button>
@@ -465,7 +508,7 @@ export function Rail() {
         {empty ? <div class="rail-empty">{filtering ? "No runs match" : currentComputer ? "No runs in this workspace yet" : "No runs yet — start one on the right"}</div> : null}
       </div>
       <div class="rail-history" role="region" aria-label="Run history pages">
-        <span class="help" role="status">{historyLoading.value ? "Searching history…" : historyTotal.value === null ? "Loading history…" : filtering ? `${list.length} loaded matches · ${historyTotal.value} in history` : runs.value.size > historyTotal.value ? `${runs.value.size} loaded · ${historyTotal.value} at last refresh` : `${runs.value.size} of ${historyTotal.value} runs loaded`}</span>
+        <span class="help" role="status">{historyLoading.value ? "Searching history…" : historyTotal.value === null ? "Loading history…" : `${shownTasks} ${filtering ? "matching " : ""}task${shownTasks === 1 ? "" : "s"} loaded`}</span>
         {historyNextCursor.value ? <button type="button" class="btn small" disabled={historyLoading.value || historyLoadingMore.value} onClick={() => void loadOlderRuns()}>{historyLoadingMore.value ? "Loading…" : "Load older runs"}</button> : null}
         {attentionTruncated.value ? <span class="help" role="status">{attentionTotal.value} running or attention items at last refresh. Older attention is paged; use Load older runs to include more.</span> : null}
         {historyError.value ? <div class="help" role="alert">{historyError.value}<button class="btn small" onClick={() => void refreshRuns()}>Retry history</button></div> : null}
@@ -494,7 +537,6 @@ export function Rail() {
           </>}
         </Menu>
       </div>
-      {deleting ? <DeleteRunDialog run={deleting} onClose={() => setDeleting(null)} /> : null}
       {bulkDeleting ? <DeleteRunsDialog runs={bulkDeleting} onDeleted={deselect} onClose={() => setBulkDeleting(null)} /> : null}
     </nav>
   );

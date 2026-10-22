@@ -4,14 +4,16 @@
 // element or draw a box to comment on (with a best-effort snapshot), shows the numbered pins, and
 // tries style changes on a picked element (Adjust). It does nothing outside code-flow's frame.
 (() => {
-  if (window.top === window || window.__codeflowOverlay) return;
+  const native = typeof window.__codeflowEmit === "function";
+  if ((!native && window.top === window) || window.__codeflowOverlay) return;
   window.__codeflowOverlay = true;
   const PARENTS = __PARENTS__;
   /** The code-flow origin that said hello: messages go only there. */
   let parent = null;
   const early = [];
   const post = (msg) => {
-    if (parent) window.parent.postMessage({ codeflow: 1, ...msg }, parent);
+    if (native) window.__codeflowEmit(JSON.stringify(msg));
+    else if (parent) window.parent.postMessage({ codeflow: 1, ...msg }, parent);
     else if (msg.type === "console" && early.length < 200) early.push(msg);
   };
 
@@ -367,17 +369,24 @@
     if (!entry.original) entry.el.removeAttribute("style");
   };
 
-  addEventListener("message", (e) => {
-    const m = e.data;
-    if (e.source !== window.parent || !PARENTS.includes(e.origin) || !m || m.codeflow !== 1) return;
+  const receive = (m) => {
     if (m.type === "hello") {
-      parent = e.origin;
-      post({ type: "ready", url: location.href, title: document.title });
+
+      post({ type: "ready", url: location.href, title: document.title, document: load });
       for (const msg of early.splice(0)) post(msg);
     } else if (m.type === "recording") recording = m.active === true;
     else if (m.type === "mode") setMode(m.mode);
     else if (m.type === "pins") drawPins(m.pins || []);
     else if (m.type === "adjust") adjust(m.id, m.styles || {});
     else if (m.type === "reset") reset(m.id);
+  };
+  if (native) {
+    window.__codeflowCommand = receive;
+    if (document.readyState === "loading") addEventListener("DOMContentLoaded", () => receive({type:"hello"}), {once:true});
+    else receive({type:"hello"});
+  } else addEventListener("message", e => {
+    if (e.source !== window.parent || !PARENTS.includes(e.origin) || !e.data || e.data.codeflow !== 1) return;
+    if (e.data.type === "hello") parent = e.origin;
+    receive(e.data);
   });
 })();

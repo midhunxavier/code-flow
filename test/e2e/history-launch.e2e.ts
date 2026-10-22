@@ -154,16 +154,16 @@ test("large transcripts page backwards and return to live history with bounded r
 test("sidebar searches beyond loaded pages and loads older history without discarding visible results", async () => {
   await page.goto(base);
   const history = page.getByRole("region", { name: "Run history pages" });
-  await history.getByText("101 of 127 runs loaded", { exact: true }).waitFor();
+  await history.getByText("101 tasks loaded", { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: /Ancient needle task/ }).count(), 0);
   const search = page.getByRole("searchbox", { name: "Search runs (press / to focus)" });
   const remoteSearch = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/runs" && new URL(response.url()).searchParams.get("q") === "Ancient needle");
   await search.fill("Ancient needle"); assert.equal((await remoteSearch).status(), 200);
   await page.getByRole("button", { name: /Ancient needle task/ }).waitFor();
-  await history.getByText("1 loaded matches · 1 in history", { exact: true }).waitFor();
+  await history.getByText("1 matching task loaded", { exact: true }).waitFor();
   await search.fill("");
   await page.getByRole("button", { name: "Load older runs", exact: true }).click();
-  await history.getByText("127 of 127 runs loaded", { exact: true }).waitFor();
+  await history.getByText("127 tasks loaded", { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Load older runs", exact: true }).count(), 0);
 });
 
@@ -236,7 +236,7 @@ test("project conventions save with CAS, restore a previewed version, and explic
 
 test("guided onboarding inspects required and optional dependencies through actual read-only probes", async () => {
   await page.goto(base);
-  await page.getByRole("button", { name: "Solo", exact: true }).waitFor();
+  await page.getByRole("switch", { name: "Team", exact: true }).waitFor();
   assert.equal(await page.locator(".provider-setup").count(), 0, "connected providers do not show setup in the composer");
   await page.goto(`${base}/#/settings/agents`);
   await page.getByText("Check this computer", { exact: true }).first().click();
@@ -267,10 +267,10 @@ test("review inbox controls have distinct labels, keyboard order and a bounded m
 
 test("context directories preview committed sources and explicit budgets block actual provider launch while warnings retain input evidence", async () => {
   await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto(base);
-  await page.getByRole("button", { name: "Solo", exact: true }).click(); await page.getByLabel("Task", { exact: true }).fill("Exercise the explicit context budget before a provider launch.");
+  await selectAgentConversation(page); await page.getByLabel("Task", { exact: true }).fill("Exercise the explicit context budget before a provider launch.");
   await page.locator(".taskbox").getByRole("button", { name: "Files", exact: true }).click(); await page.getByRole("button", { name: "Add api to the task", exact: true }).click();
   await page.getByRole("button", { name: "Side panel", exact: true }).click();
-  await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click(); await page.getByRole("button", { name: "Preview selected context", exact: true }).click();
+  if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click(); await page.getByRole("button", { name: "Preview selected context", exact: true }).click();
   await page.locator(".context-inspection-results").getByText("api/service.mjs · committed base", { exact: true }).waitFor();
   await page.getByRole("checkbox", { name: "Set an explicit input budget for each provider launch", exact: true }).check();
   await page.getByLabel("Maximum explicit input bytes", { exact: true }).fill("1"); await page.getByLabel("When the explicit input exceeds this budget", { exact: true }).selectOption("block");
@@ -285,20 +285,20 @@ test("context directories preview committed sources and explicit budgets block a
   await page.getByRole("button", { name: "Save current workflow", exact: true }).click();
   await page.getByRole("button", { name: "Save new revision", exact: true }).waitFor();
   await page.evaluate(() => { location.hash = "/"; });
-  await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click();
+  if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click();
   await page.getByLabel("Maximum explicit input bytes", { exact: true }).fill("40000"); await page.getByLabel("When the explicit input exceeds this budget", { exact: true }).selectOption("warn");
   await openLibrary();
   await page.getByLabel("Saved workflow", { exact: true }).selectOption({ label: "Budgeted team · r1" });
   await page.getByRole("button", { name: "Save new revision", exact: true }).click();
   await page.getByLabel("Revision to apply", { exact: true }).selectOption("1"); await page.getByRole("button", { name: "Apply workflow", exact: true }).click();
   await page.evaluate(() => { location.hash = "/"; });
-  await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click();
+  if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click();
   assert.equal(await page.getByLabel("Maximum explicit input bytes", { exact: true }).inputValue(), "1", "applying history restores the captured input ceiling");
   assert.equal(await page.getByLabel("When the explicit input exceeds this budget", { exact: true }).inputValue(), "block");
   await page.getByText("Run details", { exact: true }).click();
   await page.locator(".effective-settings").getByText("Preset Budgeted team r1", { exact: true }).first().waitFor();
   const before = readdirSync(records).length;
-  await page.getByRole("button", { name: /^Start run/ }).click(); await page.waitForURL(/#\/run\//);
+  await page.getByRole("button", { name: /^(Start run|Send)/ }).click(); await page.waitForURL(/#\/run\//);
   const id = decodeURIComponent(page.url().split("#/run/")[1]!);
   const read = (id: string) => fetch(`${base}/api/runs/${id}`, { headers }).then((response) => response.json()) as Promise<Run>;
   let blocked = await read(id); for (let attempt = 0; blocked.status === "running" && attempt < 600; attempt++) { await new Promise((resolve) => setTimeout(resolve, 50)); blocked = await read(id); }
@@ -367,3 +367,11 @@ test("filesystem policy enforces scoped app reads/writes and globally blocks exe
   const busy = await request(`/api/projects/${project.id}/filesystem-policy`, { revision: 2, read: { allow: ["."], deny: ["private"] }, write: { allow: ["."], deny: [] } }, "PUT"); assert.equal(busy.status, 409, "policy cannot activate while another project's host agent is active");
   let run = await request(`/api/runs/${id}`).then((response) => response.json()); for (let attempt = 0; run.status === "running" && attempt < 600; attempt++) { await new Promise((resolve) => setTimeout(resolve, 50)); run = await request(`/api/runs/${id}`).then((response) => response.json()); } assert.equal(run.status, "done", run.error);
 });
+
+async function selectAgentConversation(page: import("playwright-core").Page) {
+  const options = page.locator(".composer-options");
+  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
+  const advanced = page.locator(".advanced-controls");
+  if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
+  await page.getByLabel("Workflow", {exact:true}).selectOption("solo");
+}

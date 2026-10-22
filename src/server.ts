@@ -1,3 +1,9 @@
+import { validateTaskTeam } from "./task-team.js";
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
+import { MAX_BROWSER_UPLOAD } from "./browser-files.js";
+import { chatTaskId } from "./chat-family.js";
+import { agentToolBridge, validateAgentTool } from "./agent-tools.js";
 import { HISTORY_STATUSES, type HistoryStatus, type ProjectSection } from "./run-status.js";
 import { modelCatalogStore } from "./model-catalog.js";
 import { permissionProviderProblem, createRunPermissions as catalogPermissions } from "./run-permissions.js";
@@ -846,7 +852,7 @@ function validateOptions(pattern: Pattern, input: unknown): Record<string, numbe
 
 /** Validate a run request (from the composer or an automation) into what the engine starts. */
 async function buildStartInput(body: Record<string, any>): Promise<StartRunInput> {
-  if (body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.projectTeam !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
+  if (body.taskExecution !== undefined || body.teamTurns !== undefined || body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.projectTeam !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
   if (body.projectSelection !== undefined && body.projectSelection !== "explicit") throw new HttpError(400, "Unknown project selection mode");
   if (body.projectSelection === "explicit" && (!projects.available || typeof body.project !== "string" || !projects.get(body.project))) throw new HttpError(409, "Choose an available project before starting");
   if (body.templateCatalog !== undefined || body.teamTemplate !== undefined || body.permissions !== undefined) throw new HttpError(400, "Template snapshots and run authority are assigned by the server");
@@ -874,6 +880,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   if (body.projectSelection === "explicit" && !projects.get(body.project)?.repos.includes(await repoRoot(repo))) throw new HttpError(409, "This repository is no longer an explicit member of the selected project");
   if (body.externalSource !== undefined || (body.externalSourceId !== undefined && typeof body.externalSourceId !== "string")) throw new HttpError(400, "Import the external source through its configured integration first");
   if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
+  if (body.checkpointOnFinish !== undefined && typeof body.checkpointOnFinish !== "boolean") throw new HttpError(400, "checkpointOnFinish must be a boolean");
   if (body.intent !== undefined && !taskIntent(body.intent)) throw new HttpError(400, "Choose a supported task type");
   if (body.journeyId !== undefined) { const journey = await attempt(() => journeys.get(String(body.journeyId))); if (journey.repo !== await repoRoot(repo)) throw new HttpError(400, "The scenario belongs to another repository"); }
   const parent = typeof body.parentRunId === "string" ? manager.get(body.parentRunId) : undefined;
@@ -901,6 +908,8 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   }
   return {
     pattern,
+    checkpointOnFinish: body.checkpointOnFinish ?? parent?.checkpointOnFinish,
+    taskTeam: body.taskTeam === undefined ? undefined : validateTaskTeam(body.taskTeam),
     teamTemplate,
     task,
     intent: taskIntent(body.intent),
@@ -1240,7 +1249,7 @@ function streamAllRuns(req: IncomingMessage, res: ServerResponse, limit?: number
   } else {
     // Active and attention items remain visible even when their creation is outside the recent page.
     const attention = page ? manager.attentionPage({ limit: 100, predicate: (run) => !fileAccess.restrictedRun(run) }) : undefined;
-    const runs = page ? [...new Map([...page.runs, ...attention!.runs].map((run) => [run.id, run])).values()] : fileAccess.list();
+    const runs = page ? [...new Map([...page.runs, ...page.related, ...attention!.runs, ...manager.relatedChats(attention!.runs, run => !fileAccess.restrictedRun(run))].map((run) => [run.id, run])).values()] : fileAccess.list();
     stream.send({ type: "hello", epoch, seq: runFeed.seq, runs, ...(page ? { nextCursor: page.nextCursor, total: page.total, attentionTotal: attention!.total, attentionTruncated: attention!.truncated, attentionNextCursor: attention!.nextCursor } : {}) }, runFeed.seq);
   }
   const client = (e: { seq: number; run: RunSummary }) => { if (!fileAccess.restrictedRun(e.run)) stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq); };
@@ -1302,7 +1311,7 @@ const topics: Record<string, TopicSource> = {
     } else {
       const page = fileAccess.page({ limit: 100 });
       const attention = manager.attentionPage({ limit: 100, predicate: (run) => !fileAccess.restrictedRun(run) });
-      const runs = [...new Map([...page.runs, ...attention.runs].map((run) => [run.id, run])).values()];
+      const runs = [...new Map([...page.runs, ...page.related, ...attention.runs, ...manager.relatedChats(attention.runs, run => !fileAccess.restrictedRun(run))].map((run) => [run.id, run])).values()];
       deliver({ type: "hello", epoch, seq: runFeed.seq, runs, total: page.total, nextCursor: page.nextCursor, attentionTotal: attention.total, attentionTruncated: attention.truncated, attentionNextCursor: attention.nextCursor }, runFeed.seq);
     }
     const client = (e: { seq: number; run: RunSummary }) => { if (!fileAccess.restrictedRun(e.run)) deliver({ type: "run", seq: e.seq, run: e.run }, e.seq); };
@@ -1584,6 +1593,59 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     await attempt(async () => assertImproveEnvironment());
   }
   await attempt(() => fileAccess.ownerGate(req, url, parts));
+  if (parts[1] === "browser") {
+    if (fileAccess.hasRestrictions()) throw new HttpError(403, "Interactive browsing is paused under filesystem restrictions");
+    const scope = url.searchParams.get("scope") ?? "";
+    let browserId: string;
+    if (scope.startsWith("run:")) {
+      const run = await manager.getAsync(scope.slice(4));
+      if (!run) throw new HttpError(404, "Task not found");
+      if (fileAccess.restrictedRun(run)) throw new HttpError(403, "This task's browser is unavailable under its filesystem policy");
+      browserId = `run:${chatTaskId(run)}`;
+    } else if (scope.startsWith("project:") && projects.get(scope.slice(8))) browserId = scope;
+    else if (scope.startsWith("repo:") && scope.length < 4096 && scope.slice(5).startsWith("/")) browserId = scope;
+    else if (scope === "none") browserId = "general";
+    else throw new HttpError(400, "Choose a task or repository for the browser");
+    const browser = await agentToolBridge.browser(browserId);
+    const control = agentToolBridge.control(browserId);
+    if (parts[2] === "control" && parts.length === 3) {
+      if (req.method === "GET") return send(res, 200, control.state());
+      if (req.method === "POST") { const body = await readJson(req, 1024); if (!["takeover", "release"].includes(body.action)) throw new HttpError(400, "Choose takeover or release"); return send(res, 200, body.action === "takeover" ? await control.takeover() : control.resume()); }
+      throw new HttpError(405, "Use GET or POST");
+    }
+    if(req.method==="POST" && parts[2]==="uploads" && parts.length===3) {
+      if(req.headers["content-type"]!=="application/octet-stream")throw new HttpError(400,"Upload a file as application/octet-stream");
+      if(Number(req.headers["content-length"])>MAX_BROWSER_UPLOAD)throw new HttpError(413,"Uploads are limited to 100 MB per file");
+      manager.noteActivity();
+      return send(res,200,await attempt(()=>browser.stageUpload(url.searchParams.get("chooser")??"",url.searchParams.get("name")??"upload",req,url.searchParams.get("relativePath")??undefined)));
+    }
+    if(req.method==="GET" && parts[2]==="downloads" && parts.length===4) {
+      await browser.files.init();
+      const file=await attempt(()=>browser.files.downloaded(parts[3]!));
+      res.writeHead(200,{"content-type":"application/octet-stream","content-length":file.size,"content-disposition":`attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(file.item.name).replace(/'/g,"%27")}`,"cache-control":"no-store","x-content-type-options":"nosniff"});
+      await pipeline(createReadStream(file.path),res).catch(()=>{res.destroy();});return;
+    }
+    if (req.method === "GET" && parts[2] === "events") {
+      const stream = openStream(res);
+      const stop = browser.watch(event => stream.send(event));
+      const controlStop = control.watch(state => stream.send({ type: "control", ...state }));
+      const policyStop = filePolicies.onChange(() => { stop(); res.end(); });
+      res.once("close", () => { stop(); controlStop(); policyStop(); });
+      return;
+    }
+    if (req.method === "POST" && !parts[2]) {
+      const body = await readJson(req, 128 * 1024);
+      let name = "browser_ui", args = body;
+      if (body.action === "navigate") { name = "browser_navigate"; args = {url:body.url}; }
+      if (body.action === "tabs") { name = "browser_tabs"; args = {action:body.operation,...(body.tab ? {tab:body.tab} : {})}; }
+      if (name !== "browser_ui") validateAgentTool(name,args);
+      manager.noteActivity();
+      const input = name !== "browser_ui" || !["state", "watch", "resize", "selection", "overlay", "mouse"].includes(body.action) || body.action === "mouse" && body.type !== "mouseMoved";
+      const operation = () => browser.call(name,args,new AbortController().signal);
+      return send(res, 200, await attempt(() => input ? control.userAction(operation) : operation()));
+    }
+    throw new HttpError(404, "Unknown browser operation");
+  }
   if (parts[1] === "docs-help") {
     if (parts.length !== 2 || via !== "local") throw new HttpError(403, "Use the local owner app for documentation help");
     manager.noteActivity();
@@ -1747,8 +1809,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (body.decision !== "approve" && body.decision !== "decline") throw new HttpError(400, "Choose approve or decline");
       const request = approvals.list().find((record) => record.id === parts[2]);
       const run = request ? manager.get(request.runId) : undefined;
-      if (!request || !run || run.status !== "running" || !run.approvals.tools || !run.steps.some((step) => step.id === request.stepId && step.status === "running")) throw new HttpError(409, "This approval is no longer active");
-      if (!approvals.respond(request.id, body.decision, { runId: run.id, stepId: request.stepId })) throw new HttpError(409, "This approval has expired or was already answered");
+      if (!request || !run || run.status !== "running" || request.kind !== "question" && !run.approvals.tools || !run.steps.some((step) => step.id === request.stepId && step.status === "running")) throw new HttpError(409, "This approval is no longer active");
+      if (!approvals.respond(request.id, body.decision, { runId: run.id, stepId: request.stepId }, body.answers)) throw new HttpError(409, "This request has expired, was answered, or needs an answer for each question");
       manager.log(run.id, `You ${body.decision === "approve" ? "approved" : "declined"} one ${request.kind} action in ${request.stepId}`);
       return send(res, 200, { resolved: true });
     }
@@ -2386,6 +2448,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       throw new HttpError(404, "Unknown launch profile operation");
     }
     if (req.method === "GET" && parts[3] === "events") return await streamTopic(req, res, "run", run.id);
+    if (["GET", "POST"].includes(req.method ?? "") && parts[3] === "team-resolution") return send(res, 200, await attempt(async () => manager.taskResolution(run.id, url.searchParams.get("execution") ?? "", req.method === "POST" ? await readJson(req, 2 * 1024 * 1024) : undefined)));
+    if (req.method === "POST" && parts[3] === "team-resume") return send(res, 200, await attempt(async () => manager.resumeTaskTeam(run.id, (await readJson(req)).execution)));
+    if (req.method === "POST" && parts[3] === "team-review") return send(res, 200, await attempt(async () => manager.refreshTaskTeamReview(run.id, (await readJson(req)).execution)));
+    if (req.method === "POST" && parts[3] === "team-recheck") return send(res, 200, await attempt(async () => manager.recheckTaskTeam(run.id, (await readJson(req)).execution)));
+    if (req.method === "POST" && parts[3] === "task-team") return send(res, 200, await attempt(async () => manager.configureTaskTeam(run.id, await readJson(req))));
     if (req.method === "POST" && parts[3] === "revise-goal") {
       const body = await readJson(req);
       const revised = await attempt(() => manager.reviseGoal(run.id, { message: body.message, budget: body.budget === undefined ? undefined : { maxSteps: body.budget?.maxSteps, maxInvocations: body.budget?.maxInvocations, maxMinutes: body.budget?.maxMinutes } }));
@@ -2405,10 +2472,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const body = await readJson(req);
       return send(res, 200, await attempt(async () => manager.setPriority(run.id, body.priority)));
     }
+    if (req.method === "GET" && parts[3] === "chats" && parts.length === 4) {
+      return send(res, 200, fileAccess.list().filter(other => chatTaskId(other) === chatTaskId(run)));
+    }
     if (req.method === "POST" && parts[3] === "provider-chat" && parts.length === 4) {
       const body = await readJson(req, 64 * 1024);
       const { roles } = await validateRoles(findPattern("solo")!, { agent: [body.agent] }, run.repo, run.loop.remoteWorker, run.trust);
-      const next = await attempt(() => manager.startProviderChat(run.id, { agent: roles.agent![0]!, settings: body.settings, message: body.message }));
+      const next = await attempt(() => manager.startProviderChat(run.id, { agent: roles.agent![0]!, settings: body.settings, message: body.message, kind: body.kind, attachments: body.attachments }));
       return send(res, 201, { id: next.id });
     }
     if (req.method === "POST" && parts[3] === "fork") {
@@ -2508,8 +2578,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "POST" && parts[3] === "notes") {
       const body = await readJson(req);
       const note = await attempt(async () => typeof body.requestId === "string"
-        ? manager.answerTeamQuestion(run.id, body.requestId, String(body.text ?? ""))
-        : (run.team ? manager.addTeamNote.bind(manager) : manager.addNote.bind(manager))(run.id, String(body.text ?? ""), isAgentId(body.agent) ? body.agent : undefined, typeof body.memberId === "string" ? body.memberId : undefined));
+        ? run.pattern === "solo" ? manager.addTeamNote(run.id, String(body.text ?? ""), undefined, undefined, body.requestId) : manager.answerTeamQuestion(run.id, body.requestId, String(body.text ?? ""))
+        : (run.team || run.pattern === "solo" ? manager.addTeamNote.bind(manager) : manager.addNote.bind(manager))(run.id, String(body.text ?? ""), isAgentId(body.agent) ? body.agent : undefined, typeof body.memberId === "string" ? body.memberId : undefined));
       return send(res, 200, note);
     }
     if (req.method === "POST" && parts[3] === "answer") {

@@ -6,8 +6,8 @@ export async function managedPermissionProblem(provider: AgentId, opts: RunOptio
   const p = opts.permissions;
   if (!p) return;
   const fail = (error: string): RunResult => ({ ok: false, finalText: "", error, errorKind: "cli_incompatible" });
-  if (p.nativeDelegation !== false || p.provider !== provider || p.trust !== (opts.trust ?? "standard") || p.mode !== opts.mode || p.toolApprovals !== !!opts.interactiveApprovals) return fail("Adapter options do not match the resolved run permission policy");
-  if (p.toolApprovals && (provider !== "codex" || !opts.onApproval)) return fail("The required interactive approval handler is unavailable");
+  if ((p.nativeDelegation !== false && !opts.conversation) || p.provider !== provider || p.trust !== (opts.trust ?? "standard") || p.mode !== opts.mode || p.toolApprovals !== !!opts.interactiveApprovals) return fail("Adapter options do not match the resolved run permission policy");
+  if (p.toolApprovals && (!["codex", "claude"].includes(provider) || !opts.onApproval)) return fail("The required interactive approval handler is unavailable");
   try {
     // Check the actual CLI on every launch. A cached inventory is insufficient after an
     // installation/configuration change. Container probes run in that image, never on the host.
@@ -19,8 +19,8 @@ export async function managedPermissionProblem(provider: AgentId, opts: RunOptio
       return text;
     };
     const help = await probe(["--help"]);
-    let nested = provider === "claude" && ["--disallowedTools", "--settings"].every(flag => help.includes(flag));
-    if (provider === "codex") {
+    let nested = p.nativeDelegation || provider === "claude" && ["--disallowedTools", "--settings"].every(flag => help.includes(flag));
+    if (provider === "codex" && !p.nativeDelegation) {
       const version = (await probe(["--version"])).match(/codex-cli (\d+)\.(\d+)\.(\d+)/);
       if (!version || Number(version[1]) === 0 && (Number(version[2]) < 162 || Number(version[2]) === 162 && Number(version[3]) < 1)) return fail("codex: managed delegation requires CLI 0.162.1 or newer (agents.enabled control)");
       const features = await probe(["features", "list", "-c", "agents.enabled=false", "-c", "features.multi_agent=false", "-c", "features.multi_agent_v2.enabled=false"]);

@@ -23,7 +23,8 @@ if (process.argv.includes("--fake-agents")) {
   console.log("[dev] using fake agents from test/fake-bin");
 }
 const ui = spawn(process.execPath, ["scripts/build-ui.mjs", "--watch"], { stdio: "inherit" });
-const server = spawn("npx", ["tsx", "watch", "src/server.ts"], { stdio: "inherit", env });
+const stable = process.argv.includes("--stable");
+const server = spawn("npx", ["tsx", ...(stable ? [] : ["watch"]), "src/server.ts"], { stdio: "inherit", env });
 const stop = () => {
   ui.kill("SIGTERM");
   server.kill("SIGTERM");

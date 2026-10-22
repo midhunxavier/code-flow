@@ -125,9 +125,9 @@ test("explicit membership blocks stale launches and adding a repository is a del
 test("project composer launches into its recorded project and history supports review", { timeout: 60_000 }, async () => {
   await projectNewRun(projectB);
   assert.equal(await page.getByLabel("Task", { exact: true }).inputValue(), "Beta draft");
-  await page.getByRole("button", { name: "Solo", exact: true }).click();
+  await selectAgentConversation(page);
   const started = page.waitForResponse(response => response.url().endsWith("/api/runs") && response.request().method() === "POST" && response.status() === 201);
-  await page.getByRole("button", { name: "Start run", exact: true }).click();
+  await page.getByRole("button", { name: /^(Start run|Send)$/, exact: true }).click();
   const result = await (await started).json(); assert.equal(result.project, projectB);
   await page.waitForURL(url => url.hash === `#/run/${result.id}`);
   await page.goto(base + `/#/project/${projectB}/runs`);
@@ -283,3 +283,11 @@ test("new project destinations support narrow screens, themes and keyboard navig
   }
   assert.deepEqual(errors, []);
 });
+
+async function selectAgentConversation(page: import("playwright-core").Page) {
+  const options = page.locator(".composer-options");
+  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
+  const advanced = page.locator(".advanced-controls");
+  if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
+  await page.getByLabel("Workflow", {exact:true}).selectOption("solo");
+}

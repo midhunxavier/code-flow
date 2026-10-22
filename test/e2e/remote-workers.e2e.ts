@@ -26,17 +26,26 @@ before(async () => {
 after(async () => { await browser?.close(); if (server?.exitCode === null) { server.kill("SIGTERM"); await new Promise<void>((accept) => { const timer = setTimeout(() => { server.kill("SIGKILL"); accept(); }, 5000); server.once("exit", () => { clearTimeout(timer); accept(); }); }); } if (directory) await rm(directory, { recursive: true, force: true }); });
 
 test("composer selects a remote worker, stages references, imports its result and inspects public receipts", { timeout: 60_000 }, async () => {
-  await page.getByRole("button", { name: "Solo", exact: true }).click(); await page.getByLabel("Task", { exact: true }).fill("WRITE remote browser fixture"); await page.waitForFunction(() => document.querySelector<HTMLInputElement>("#checkCmd")?.value === "true");
-  await page.locator(".composer-options > summary").click(); await page.locator(".advanced-controls > summary").click(); await page.getByLabel("Agent execution", { exact: true }).selectOption("fixture"); await page.getByLabel("Worker repository mapping", { exact: true }).selectOption("project");
+  await selectAgentConversation(page); await page.getByLabel("Task", { exact: true }).fill("WRITE remote browser fixture"); await page.waitForFunction(() => document.querySelector<HTMLInputElement>("#checkCmd")?.value === "true");
+  if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click(); await page.locator(".advanced-controls > summary").click(); await page.getByLabel("Agent execution", { exact: true }).selectOption("fixture"); await page.getByLabel("Worker repository mapping", { exact: true }).selectOption("project");
   await page.locator(".taskbox").getByRole("button", { name: "Permissions", exact: true }).click();
   assert.equal(await page.getByRole("menuitem", { name: /^Ask for approval/ }).isDisabled(), true); await page.keyboard.press("Escape");
   await page.locator('.taskbox input[type="file"]').setInputFiles({ name: "reference.txt", mimeType: "text/plain", buffer: Buffer.from("explicit staged reference") }); await page.getByRole("button", { name: "Remove reference.txt", exact: true }).waitFor();
-  await page.getByRole("button", { name: /^Start run/ }).click(); await page.waitForURL(/#\/run\//); const id = page.url().split("#/run/")[1]!;
+  await page.getByRole("button", { name: /^(Start run|Send)/ }).click(); await page.waitForURL(/#\/run\//); const id = page.url().split("#/run/")[1]!;
   const run = await until(() => api(`/api/runs/${id}`), (run) => run.status !== "running"); assert.equal(run.status, "done", run.error); assert.deepEqual(run.loop.remoteWorker, { workerId: "fixture", repoMapping: "project" }); assert.deepEqual(run.loop.copy, []); assert.equal(run.approvals.tools, false); assert.equal(run.lastCheck.ok, true);
   const step = run.steps.find((step: any) => step.remote); assert.equal(step.remote.state, "completed"); assert.equal(step.sessionId, undefined); const result = await readFile(join(run.worktrees[0].path, "result.txt"), "utf8"); assert.equal(result, "local exact base\nexplicit staged reference"); assert.equal((await readdir(hostRecord)).length, 0, "no host agent fallback");
   const receipt = await api(`/api/runs/${id}/remote-steps/${step.id}/receipt`, {}); assert.equal(receipt.remote.state, "completed"); assert.equal(JSON.stringify(receipt).includes("capability"), false); assert.equal(JSON.stringify(receipt).includes("result.bundle"), false);
-  await page.locator("button.show-work").first().click();
+  await page.locator("details.work > summary").click();
+  await page.locator("button.tl-step").filter({hasText:step.title}).click();
   const panel = page.getByLabel("Remote execution receipt", { exact: true }); await panel.getByRole("button", { name: "Inspect remote receipt", exact: true }).click(); await panel.getByText("Receipt: completed", { exact: true }).waitFor(); assert.equal(await panel.getByRole("button", { name: "Cancel remote execution", exact: true }).count(), 0);
   const invalid = await fetch(base + "/api/runs", { method: "POST", headers, body: JSON.stringify({ repo: fixture.source, task: "WRITE", pattern: "solo", roles: { agent: ["claude"] }, approvals: { tools: true }, loop: { remoteWorker: { workerId: "fixture", repoMapping: "project" } } }) }); assert.equal(invalid.status, 400);
   await page.goto(base + "/#/settings/connections/execution"); const worker = page.getByLabel("Worker Fixture worker", { exact: true }); await worker.getByRole("button", { name: "Check worker connection", exact: true }).click(); await worker.getByText("claude: CLI installed", { exact: true }).waitFor(); assert.deepEqual(errors, []);
 });
+
+async function selectAgentConversation(page: import("playwright-core").Page) {
+  const options = page.locator(".composer-options");
+  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
+  const advanced = page.locator(".advanced-controls");
+  if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
+  await page.getByLabel("Workflow", {exact:true}).selectOption("solo");
+}

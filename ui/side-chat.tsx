@@ -1,3 +1,4 @@
+import { chatTaskId } from "../src/chat-family.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { AgentTag, Markdown } from "./bits.js";
 import { Icon } from "./icons.js";
@@ -33,10 +34,9 @@ import {
 import type { AgentId, Attachment, FollowUp, RunSummary } from "./types.js";
 
 /**
- * The side panel's Chat tab. On a run, a side chat works in the run's own worktree: Ask reads it,
- * Change edits it (committed and checked like a reply), and each side chat is a conversation of its
- * own. Anywhere else, a chat is a Single-agent run on its own branch. Several can be open at once,
- * in a strip like browser tabs; each run or project remembers its own.
+ * Agent side chats are independent read-only conversations attached to the task's shared
+ * workspace. Their tabs and drafts stay open when the main provider tab changes. Team runs
+ * retain their Ask/Change follow-ups; project-level chats use their own branches.
  */
 
 /** Patterns that are a conversation with one agent (Single agent). */
@@ -78,7 +78,7 @@ export function sideChatIn(live: RunSummary | null, summary: RunSummary, chat: s
 }
 
 /** A run can have side chats once there's a worktree to work in and it's going or finished. */
-const takesSideChats = (run: RunSummary) => (run.status === "done" || run.status === "running") && !!resultWorktree(run);
+const takesSideChats = (run: RunSummary) => (run.pattern === "solo" || run.status === "done" || run.status === "running") && !!resultWorktree(run);
 /** Why a run's side chat can't work in the run's worktree, as a sentence. */
 const whyNoSideChat = (run: RunSummary) => {
   const ended: Record<string, string> = { failed: "failed", cancelled: "was cancelled", stopped: "stopped at a limit", interrupted: "was interrupted" };
@@ -98,19 +98,21 @@ export function ChatTab() {
   const run = s.run;
   // Single-agent chats: not the run you're looking at itself, when it's one (it's open already).
   const solo = [...runs.value.values()].filter((r) => kinds.has(r.pattern) && !r.archived && r.id !== run?.id).sort((a, b) => b.createdAt - a.createdAt);
-  const about = run ? solo.filter((r) => r.parentRunId === run.id) : [];
-  const nearby = solo.filter((r) => !about.includes(r) && (s.project ? projectFor(r)?.id === s.project.id : !!s.repo && r.repo === s.repo));
+  const about = run ? solo.filter((r) => run.pattern === "solo" ? r.chatLink?.kind === "side" && chatTaskId(r) === chatTaskId(run) : r.parentRunId === run.id) : [];
+  const nearby = solo.filter((r) => (run?.pattern !== "solo" && !r.chatLink) && !about.includes(r) && (s.project ? projectFor(r)?.id === s.project.id : !!s.repo && r.repo === s.repo));
   const sides = run ? sideChatsOf(run) : [];
   const closed = new Set(memo.closed ?? []);
   const where = s.project?.name ?? (s.repo ? baseName(s.repo) : "");
 
-  const key = sideChat.value ?? "";
+  const key = run?.pattern === "solo" && sideChat.value === "solo" ? "" : sideChat.value ?? "";
   const side = key.startsWith("side:") ? sides.find((c) => c.key === key) : undefined;
-  const chat = !side && key && key !== "solo" ? runs.value.get(key) : undefined;
+  const candidate = !side && key && key !== "solo" ? runs.value.get(key) : undefined;
+  const attached = (r: RunSummary) => run?.pattern !== "solo" || r.chatLink?.kind === "side" && chatTaskId(r) === chatTaskId(run);
+  const chat = candidate && attached(candidate) ? candidate : undefined;
   const shown = side?.key ?? (chat && kinds.has(chat.pattern) ? chat.id : undefined);
   // Chats open in the strip, and the one shown even if it never got a place there.
   const ids = [...(memo.chats ?? []), ...(shown && !side && !memo.chats?.includes(shown) ? [shown] : [])];
-  const opened = ids.map((id) => runs.value.get(id)).filter((r): r is RunSummary => !!r && kinds.has(r.pattern));
+  const opened = ids.map((id) => runs.value.get(id)).filter((r): r is RunSummary => !!r && kinds.has(r.pattern) && attached(r) && !r.archived && !closed.has(r.id));
 
   // A reply you're looking at is seen.
   const doneCount = side ? finishedTurns(side) : 0;
@@ -137,7 +139,7 @@ export function ChatTab() {
       (r): StripItem => ({
         key: r.id,
         label: r.task.split("\n")[0]!.slice(0, 60) || "(no task)",
-        title: `${r.task.split("\n")[0]}\nA chat on its own branch`,
+        title: `${r.task.split("\n")[0]}\n${r.chatLink ? "Independent conversation in the shared workspace" : "A chat on its own branch"}`,
         agent: Object.values(r.roles).flat()[0] as AgentId | undefined,
         state: r.status === "running" ? "working" : !r.seen && r.id !== shown ? "unread" : runState(r) === "failed" ? "failed" : undefined,
       }),
@@ -147,7 +149,7 @@ export function ChatTab() {
     const rest = items.filter((it) => it.key !== k);
     const next = k === shown ? rest.at(-1)?.key ?? "" : key;
     if (k.startsWith("side:")) rememberSide({ closed: [...(memo.closed ?? []), k], chat: next });
-    else rememberSide({ chats: (memo.chats ?? []).filter((id) => id !== k), chat: next });
+    else rememberSide({ chats: (memo.chats ?? []).filter((id) => id !== k), closed: [...closed, k], chat: next });
   };
   const option = (k: string, label: string, sub: string, done: () => void) => (
     <MenuItem
@@ -174,11 +176,11 @@ export function ChatTab() {
             <>
               {sides.length ? <MenuTitle>Side chats on this run</MenuTitle> : null}
               {sides.map((c) => option(c.key, c.title, `${SHORT[c.agent] ?? c.agent} · ${c.turns.length} message${c.turns.length === 1 ? "" : "s"}`, done))}
-              {about.length ? <MenuTitle>Chats from this run, on their own branch</MenuTitle> : null}
+              {about.length ? <MenuTitle>{run?.pattern === "solo" ? "Side chats on this task" : "Related chats"}</MenuTitle> : null}
               {about.map((r) => option(r.id, r.task.split("\n")[0]!.slice(0, 60), `${STATUS_TEXT[r.status] ?? r.status}`, done))}
               {nearby.length ? <MenuTitle>{where ? `Chats in ${where}` : "Chats"}</MenuTitle> : null}
               {nearby.slice(0, 30).map((r) => option(r.id, r.task.split("\n")[0]!.slice(0, 60), `${STATUS_TEXT[r.status] ?? r.status}`, done))}
-              {run ? (
+              {run && run.pattern !== "solo" ? (
                 <>
                   <MenuTitle>New</MenuTitle>
                   <MenuItem
@@ -202,7 +204,7 @@ export function ChatTab() {
       ) : chat && kinds.has(chat.pattern) ? (
         <ChatView key={chat.id} id={chat.id} />
       ) : run && key !== "solo" && takesSideChats(run) ? (
-        <NewSideChat key={run.id} run={run} />
+        <NewSideChat key={chatTaskId(run)} run={run} />
       ) : (
         <NewChat key={s.key} scope={s} />
       )}
@@ -282,11 +284,11 @@ function NewSideChat({ run }: { run: RunSummary }) {
     <>
       <div class="chat-scroll">
         <div class="side-empty">
-          <h3>Chat about this run</h3>
+          <h3>{run.pattern === "solo" ? "Side chat" : "Chat about this run"}</h3>
           <p class="help">
-            The agent works in this run's worktree (<code>{wt.branch}</code>), in a conversation of its own. <b>Ask</b> reads it and changes nothing; <b>Change</b> edits it, and code-flow commits the change on
+            {run.pattern === "solo" ? <>Ask about this conversation and its files in an independent, read-only session. The main agent can keep working while you talk here.</> : <>The agent works in this run's worktree (<code>{wt.branch}</code>), in a conversation of its own. <b>Ask</b> reads it and changes nothing; <b>Change</b> edits it, and code-flow commits the change on
             the run's branch and runs the check.
-            {run.status === "running" ? " While the team is working, your message waits for it to finish." : ""}
+            {run.status === "running" ? " While the team is working, your message waits for it to finish." : ""}</>}
           </p>
         </div>
       </div>
@@ -299,7 +301,7 @@ function NewSideChat({ run }: { run: RunSummary }) {
 function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"ask" | "change">(chat?.mode ?? "ask");
-  const [agent, setAgent] = useState<AgentId>(chat?.agent ?? savedAgent);
+  const [agent, setAgent] = useState<AgentId>(chat?.agent ?? (run.pattern === "solo" && !["claude", "codex", "agy"].includes(savedAgent()) ? "codex" : savedAgent()));
   const [settings, setSettings] = useState<Record<string, ChatSettings>>({});
   const [permissions, setPermissions] = useState<ChatPermissions>({ trust: chat?.turns.at(-1)?.trust ?? run.trust, tools: chat?.turns.at(-1)?.tools ?? !!run.approvals.tools });
   const selectedSettings = settings[agent] ?? chat?.turns.filter((turn) => turn.agent === agent).at(-1)?.settings ?? run.agentSettings[agent] ?? {};
@@ -324,6 +326,10 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
     const id = chat?.chat ?? `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const title = chat?.title ?? (text.trim().split("\n")[0]!.slice(0, 60) || "Side chat");
     try {
+      if (run.pattern === "solo" && !chat) {
+        const next = await post<{ id: string }>(`/api/runs/${run.id}/provider-chat`, { agent, settings: selectedSettings, message: text.trim(), kind: "side", attachments: images.map(({ name, data }) => ({ name, data })) });
+        setText(""); setImages([]); setSideChat(next.id, `run:${run.id}`); return;
+      }
       await post(`/api/runs/${run.id}/followups`, { kind: "side", worktree: wt.name, agent, settings: selectedSettings, trust: permissions.trust, tools: permissions.tools, message: text.trim(), side: { chat: id, mode, title }, attachments: images.map(({ name, data }) => ({ name, data })) });
       setText("");
       setImages([]);
@@ -356,14 +362,14 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
             }}
           />
           <div class="chatbox-bar chatbox-configurable">
-            <Menu above label="Chat mode" icon="chat" class="chat-choice" trigger={<><span>{mode === "ask" ? "Ask" : "Change"}</span><Icon name="chevron" /></>}>
+            {run.pattern !== "solo" ? <Menu above label="Chat mode" icon="chat" class="chat-choice" trigger={<><span>{mode === "ask" ? "Ask" : "Change"}</span><Icon name="chevron" /></>}>
               {(close) => <>
                 <MenuTitle>Chat mode</MenuTitle>
                 <MenuItem on={mode === "ask"} sub="Read the worktree without changing files" onClick={() => { setMode("ask"); close(); }}>Ask</MenuItem>
                 <MenuItem on={mode === "change"} sub="Edit the worktree, commit changes and run the check" onClick={() => { setMode("change"); close(); }}>Change</MenuItem>
               </>}
-            </Menu>
-            <ChatControls agent={agent} onAgent={(id) => { setAgent(id); store.set("sideAgent", id); }} settings={selectedSettings} onSettings={(value) => setSettings({ ...settings, [agent]: value })} permissions={permissions} onPermissions={setPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} />
+            </Menu> : null}
+            <ChatControls showPermissions={run.pattern !== "solo" || !!chat} providers={run.pattern === "solo" && !chat ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={agent} onAgent={(id) => { setAgent(id); store.set("sideAgent", id); }} settings={selectedSettings} onSettings={(value) => setSettings({ ...settings, [agent]: value })} permissions={permissions} onPermissions={setPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} />
             <span class="chatbox-hint" />
             <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={busy || !text.trim() || !wt} onClick={send}>
               <Icon name="send" />
@@ -371,8 +377,8 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
           </div>
         </div>
         <div class="side-hint help">
-          {mode === "change" ? `Edits ${wt?.branch ?? "the run's worktree"}; code-flow commits it and runs the check.` : "Reads the run's worktree; changes nothing."}
-          {run.status === "running" ? " Waits for the team to finish." : ""}
+          {run.pattern !== "solo" && mode === "change" ? `Edits ${wt?.branch ?? "the run's worktree"}; code-flow commits it and runs the check.` : "Reads the run's worktree; changes nothing."}
+          {run.status === "running" && run.pattern !== "solo" ? " Waits for the team to finish." : ""}
         </div>
       </div>
     </div>
@@ -432,7 +438,7 @@ function ChatView({ id }: { id: string }) {
             <AgentTag id={agent} />
             <span class={`status-pill ${state}`}>{STATUS_TEXT[run.status] ?? run.status}</span>
             {branch ? <code title="The branch this chat works on">{branch}</code> : null}
-            {state === "failing" ? <span class="note">Check fails</span> : state === "done" ? <span class="ok">Check passes</span> : state === "unverified" ? <span class="note">Not verified</span> : null}
+            {run.pattern !== "solo" ? state === "failing" ? <span class="note">Check fails</span> : state === "done" ? <span class="ok">Check passes</span> : state === "unverified" ? <span class="note">Not verified</span> : null : null}
             <a class="btn ghost small" href={`#/run/${encodeURIComponent(run.id)}`} title="Open this chat as a run, with its branch and result">
               Open
             </a>
@@ -453,7 +459,7 @@ function ChatView({ id }: { id: string }) {
           ) : null}
         </div>
       </div>
-      <ConversationBar run={run} steps={steps} chat />
+      <ConversationBar key={run.id} run={run} steps={steps} chat onOpenChat={setSideChat} />
     </>
   );
 }

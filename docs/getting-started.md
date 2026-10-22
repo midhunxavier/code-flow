@@ -33,14 +33,14 @@ Run the same install command to update. Remove the launcher with `npm uninstall 
 
 ### Download the macOS app
 
-Choose **0.1.0-preview.1** for your Mac (**macOS 13+**):
+Choose **0.1.0-preview.2** for your Mac (**macOS 13+**):
 
-- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-arm64-unnotarized.dmg)
-- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-x64-unnotarized.dmg)
+- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/code-flow-0.1.0-preview.2-macos-arm64-unnotarized.dmg)
+- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/code-flow-0.1.0-preview.2-macos-x64-unnotarized.dmg)
 
-Open the DMG, drag **Code Flow** to **Applications**, then open Code Flow. Its menu bar launcher starts the app and opens your browser. Use **Code Flow → Open Code Flow** to reopen the browser, or **Quit Code Flow** to stop it. Node is bundled; install Git and sign in to a supported agent CLI before your first run.
+Open the DMG, drag **Code Flow** to **Applications**, then open Code Flow. The Electron app opens its own desktop window. Closing or reloading that window keeps agents running. Click the Dock icon or **Code Flow → Show Code Flow** to return. Use **Code Flow → Quit** to stop the app; it asks before interrupting active agents. Node is bundled; install Git and sign in to a supported agent CLI before your first run. Install Chrome or Edge for the shared browser.
 
-These are **unnotarized preview builds**. macOS may block them; use npm if blocked. Quit Code Flow before replacing it with a newer download. Run one launcher at a time. [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.1).
+These are **unnotarized preview builds**. macOS may block them; use npm if blocked. Quit Code Flow before replacing it with a newer download. Run one launcher at a time. [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.2).
 
 The preview stores settings and history in `~/.codeflow`, outside the installation. Updating or removing the launcher preserves that folder.
 

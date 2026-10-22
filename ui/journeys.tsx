@@ -12,13 +12,13 @@ export { journeyDraft } from "./composer-draft-fields.js";
 export const recording = signal<{ page: string; url: string; width: number; actions: JourneyAction[]; active: boolean; warning?: string } | undefined>();
 export function recordAction(page: string, data: unknown) {
   const current = recording.value;
-  if (!current?.active || current.page !== page) return;
+  if (!current || current.page !== page) return;
   try {
     const action = journeyAction(data);
     const actions = [...current.actions];
     if (action.kind === "fill" && actions.at(-1)?.kind === "fill" && actions.at(-1)?.selector === action.selector) actions[actions.length - 1] = action;
     else actions.push(action);
-    recording.value = { ...current, actions: actions.slice(0, 30), active: actions.length < 30, warning: actions.length >= 30 ? "Reached the 30-interaction limit. Review and save this scenario." : current.warning };
+    recording.value = { ...current, actions: actions.slice(0, 30), active: current.active && actions.length < 30, warning: actions.length >= 30 ? "Reached the 30-interaction limit. Review and save this scenario." : current.warning };
   } catch (error) { recording.value = { ...current, warning: (error as Error).message }; }
 }
 export async function fixJourney(journey: Journey) {
@@ -38,15 +38,25 @@ export function downloadSpec(journey: Journey) {
   const url = URL.createObjectURL(new Blob([journeySpec(journey)], { type: "text/plain" }));
   const link = document.createElement("a"); link.href = url; link.download = "browser-scenario.spec.ts"; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-export function JourneyRecorder({ pageKey, url, width, repository, ready, toggle }: { pageKey: string; url: string; width: number; repository: string; ready: boolean; toggle: (active: boolean) => void }) {
+export function JourneyRecorder({ pageKey, url, width, repository, ready, toggle }: { pageKey: string; url: string; width: number; repository: string; ready: boolean; toggle: (active: boolean) => void | Promise<unknown> }) {
   const [open, setOpen] = useState(false), [title, setTitle] = useState(""), [selector, setSelector] = useState("body"), [expected, setExpected] = useState("");
   const [saved, setSaved] = useState<Journey>(), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const current = recording.value?.page === pageKey ? recording.value : undefined;
-  const change = () => {
+  const change = async () => {
+    if(busy) return;
     const active = !current?.active;
-    if (active && !current) { recording.value = { page: pageKey, url, width, actions: [], active: true }; setSaved(undefined); }
-    else if (current) recording.value = { ...current, active };
-    setOpen(true); toggle(active);
+    setBusy(true);setError("");
+    try {
+      if(active) {
+        if(!current) {recording.value={page:pageKey,url,width,actions:[],active:true};setSaved(undefined);}
+        else recording.value={...current,active:true};
+      }
+      // Finish queued page input before stopping the recorder so the last click is retained.
+      await toggle(active);
+      if(!active && recording.value?.page===pageKey) recording.value={...recording.value,active:false};
+      setOpen(!active);
+    } catch(error) {setError((error as Error).message);}
+    finally {setBusy(false);}
   };
   const save = async () => {
     if (!current || busy) return; setBusy(true); setError("");

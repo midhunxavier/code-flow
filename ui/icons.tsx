@@ -32,6 +32,8 @@ const PATHS = {
   split: "M4 5h16v14H4zM4 12h16",
   close: "M6 6l12 12M18 6L6 18",
   external: "M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5",
+  expand: "M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5",
+  collapse: "M4 9h5V4M15 4v5h5M9 20v-5H4M20 15h-5v5",
   refresh: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5",
   stop: "M7 7h10v10H7z",
   more: `${circle(5, 12, 1)}${circle(12, 12, 1)}${circle(19, 12, 1)}`,

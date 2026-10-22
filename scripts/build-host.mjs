@@ -11,7 +11,7 @@ export async function buildHost() {
   const result = await build({ absWorkingDir: root, entryPoints: ["src/server.ts"], bundle: true, platform: "node", format: "esm", target: "node22.13", minify: true, write: false, logLevel: "warning",
     banner: { js: 'import { createRequire as __createRequire } from "node:module"; import { fileURLToPath as __fileURLToPath } from "node:url"; import { dirname as __dirnameOf } from "node:path"; const __filename = __fileURLToPath(import.meta.url); const __dirname = __dirnameOf(__filename); const require = __createRequire(import.meta.url);' } });
   const files = { "src/server.mjs": result.outputFiles[0].text };
-  for (const path of ["public/index.html", "package.json", "src/preview-overlay.js", "src/team-tool-client.mjs", "scripts/pty.py"]) files[path] = await readFile(resolve(root, path), "utf8");
+  for (const path of ["public/index.html", "package.json", "src/preview-overlay.js", "src/team-tool-client.mjs", "src/agent-tool-client.mjs", "scripts/computer-use.swift", "scripts/pty.py"]) files[path] = await readFile(resolve(root, path), "utf8");
   for (const name of (await readdir(resolve(root, "public/docs"))).sort()) {
     if (/^[a-z\d-]+\.(?:html|css|js|json|txt)$/.test(name)) files[`public/docs/${name}`] = await readFile(resolve(root, "public/docs", name), "utf8");
   }
@@ -25,6 +25,7 @@ export async function buildHost() {
   files["src/code-intelligence-worker.mjs"] = worker.outputFiles[0].text;
   // esbuild moves adapters/team-tools.ts into src/server.mjs.
   files["team-tool-client.mjs"] = files["src/team-tool-client.mjs"];
+  files["agent-tool-client.mjs"] = files["src/agent-tool-client.mjs"];
   const version = createHash("sha256").update(JSON.stringify(files)).digest("hex");
   await mkdir(resolve(root, "dist"), { recursive: true });
   const temporary = resolve(root, `dist/remote-host.${randomBytes(8).toString("hex")}.tmp`);

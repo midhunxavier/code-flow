@@ -26,15 +26,15 @@ npx @midhunxavier/code-flow@preview
 
 Requires **Node.js 22.13+**, **Git 2.38+**, and at least one supported CLI: `claude`, `codex` or `agy`, installed and signed in. Works on macOS, Linux and Windows through **WSL2**. Keep the terminal open while you work; press **Ctrl+C** to stop.
 
-Prefer a macOS app? Download **0.1.0-preview.1** for your Mac:
+Prefer a macOS app? Download **0.1.0-preview.2** for your Mac:
 
 | Apple Silicon (M1 or later) | Intel |
 | --- | --- |
-| [Download Apple Silicon DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-arm64-unnotarized.dmg) | [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.1/code-flow-0.1.0-preview.1-macos-x64-unnotarized.dmg) |
+| [Download Apple Silicon DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/code-flow-0.1.0-preview.2-macos-arm64-unnotarized.dmg) | [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/code-flow-0.1.0-preview.2-macos-x64-unnotarized.dmg) |
 
-Requires **macOS 13+**. Open the DMG, drag **Code Flow** to **Applications**, then open it to launch the browser app. Node is bundled; Git and a signed-in agent CLI are still required. These DMGs are **unnotarized preview builds** and macOS may block them; use npm if blocked.
+Requires **macOS 13+**. Open the DMG, drag **Code Flow** to **Applications**, then open it in its own desktop window. Closing the window keeps agents running; use **Code Flow → Quit** to stop the app. Node is bundled; Git, a signed-in agent CLI and Chrome or Edge for the shared browser are still required. These DMGs are **unnotarized preview builds** and macOS may block them; use npm if blocked.
 
-[Preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.1) · [Installation and first-run guide](docs/getting-started.md)
+[Preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.2) · [Installation and first-run guide](docs/getting-started.md)
 
 ### Run from source
 

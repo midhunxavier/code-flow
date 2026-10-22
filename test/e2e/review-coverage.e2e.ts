@@ -78,7 +78,7 @@ test("standalone verification rejects setup or per-gate candidate drift and remo
 });
 
 test("human review is commit-scoped and a rejected rework record retains the user's draft", { timeout: 45_000 }, async () => {
-  const started = await api<{ id: string }>("/api/runs", { repo, pattern: "solo", task: "Human review browser fixture", roles: { agent: ["claude"] }, loop: { check: "true", prove: false, maxSteps: 4, maxMinutes: 1 } });
+  const started = await api<{ id: string }>("/api/runs", { repo, pattern: "solo", checkpointOnFinish: true, task: "Human review browser fixture", roles: { agent: ["claude"] }, loop: { check: "true", prove: false, maxSteps: 4, maxMinutes: 1 } });
   const run = await until(() => api(`/api/runs/${started.id}`), (value) => value.status !== "running");
   assert.equal(run.status, "done", run.error);
   const tree = run.worktrees[0]; const endpoint = `/api/runs/${run.id}/review-coverage?branch=${encodeURIComponent(tree.branch)}`;
@@ -108,7 +108,7 @@ test("human review is commit-scoped and a rejected rework record retains the use
 });
 
 test("workspace compares a complete commit and stages only its reviewed inverse", { timeout: 45_000 }, async () => {
-  const started = await api<{ id: string }>("/api/runs", { repo, pattern: "solo", task: "Checkpoint revert browser fixture", roles: { agent: ["claude"] }, loop: { check: "true", maxSteps: 4, maxMinutes: 1 } });
+  const started = await api<{ id: string }>("/api/runs", { repo, pattern: "solo", checkpointOnFinish: true, task: "Checkpoint revert browser fixture", roles: { agent: ["claude"] }, loop: { check: "true", maxSteps: 4, maxMinutes: 1 } });
   const run = await until(() => api(`/api/runs/${started.id}`), (value) => value.status !== "running");
   assert.equal(run.status, "done", run.error);
   const tree = run.worktrees[0];
