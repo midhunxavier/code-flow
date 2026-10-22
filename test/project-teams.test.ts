@@ -516,3 +516,21 @@ test("small documentation tasks submit once, use host checks and review, and rel
   const second = await f.service.assignTask(t.id, { operationId: "another-small-task", revision: t.revision, title: "Another small docs task", instructions: "AUTO-DOCS-HANDOFF Document another example.", acceptance: ["The example is clear"], category: "docs" });
   assert.equal(second.cycles.length, 2, "the first small task leaves enough weekly allowance for another task");
 });
+
+test("disabling missions still settles a cancelled child without reopening its cycle or changing budgets", async () => {
+  const f = await fixture();
+  let t = await f.service.assignTask(f.team.id, { operationId: "cancel-before-disable", revision: f.team.revision, title: "Small task", instructions: "Document the contract", acceptance: ["Clear contract"] });
+  const launch = t.cycles[0]!.launches[0]!, run = f.manager.get(launch.runId!)!, budget = persisted(t.mission.budget);
+  t = await f.service.stopCycle(t.id, { operationId: "cancel-small-task", revision: t.revision });
+  await f.service.setEnabled({ enabled: false, revision: 0 });
+  while (!run.endedAt) await new Promise(resolve => setTimeout(resolve, 20));
+  await f.service.reconcile(); t = f.store.get(t.id);
+  assert.equal(t.cycles[0]!.status, "cancelled");
+  assert.ok(t.cycles[0]!.launches[0]!.usage);
+  assert.deepEqual(t.mission.budget, budget);
+  assert.equal(t.cycles[0]!.launches[0]!.calls, launch.calls);
+  assert.equal(t.cycles[0]!.launches[0]!.minutes, launch.minutes);
+  assert.ok(allowance(t).calls > budget.weeklyCalls - launch.calls);
+  const receipt = persisted(t.cycles[0]!.launches[0]!.usage);
+  await f.service.reconcile(); assert.deepEqual(f.store.get(t.id).cycles[0]!.launches[0]!.usage, receipt);
+});
