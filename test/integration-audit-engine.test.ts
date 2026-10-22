@@ -155,7 +155,7 @@ test("final check reuse requires the same commit, clean checkout, inputs and ver
     let first: Awaited<ReturnType<Context["check"]>>, second: typeof first;
     const p = pattern(async ctx => {
       const wt = await ctx.worktree("build");
-      first = await ctx.check(wt, "Initial check");
+      first = await ctx.check(wt, "Final check");
       if (change === "dirty" || change === "commit") await writeFile(join(wt.path, "README.md"), "Changed after check\n");
       if (change === "commit") await ctx.commit(wt, "Changed commit");
       if (change === "untracked") await writeFile(join(wt.path, "input.txt"), "Changed input\n");

@@ -1615,7 +1615,7 @@ export class TeamContext {
         return { ...result, head: verification?.head ?? await this.gitAt(wt).then(resolveCommit).catch(() => undefined), verification };
 
       },
-      (recorded) => !recorded.head || !head || recorded.head === head,
+      (recorded) => !options.reuse && (!recorded.head || !head || recorded.head === head),
     );
     if ((result as CheckResult & {verification?: Run["verification"]}).verification) this.run.verification = (result as CheckResult & {verification?: Run["verification"]}).verification;
     if (doneWhen && !this.run.loop.verification && !(await this.checkCanRun(wt, result))) return null;
