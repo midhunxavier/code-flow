@@ -88,3 +88,15 @@ test("malformed or incomplete actions never become approvable", async () => {
   assert.deepEqual(registry.list(), []);
   registry.close();
 });
+
+test("structured questions require complete user answers and cancellation never fabricates one", async () => {
+  const registry = new ApprovalRegistry(), controller = new AbortController();
+  const pending = registry.ask("run", "step", [{ id: "choice", question: "Which color?", options: ["Blue", "Green"] }], controller.signal);
+  const request = registry.list()[0]!;
+  assert.equal(registry.respond(request.id, "approve", {}, {}), false);
+  assert.equal(registry.respond(request.id, "approve", { runId: "run", stepId: "step" }, { choice: "Blue" }), true);
+  assert.deepEqual(await pending, { choice: "Blue" });
+  const next = registry.ask("run", "step", [{ id: "text", question: "What next?" }], controller.signal);
+  controller.abort(); assert.equal(await next, undefined);
+  registry.close();
+});

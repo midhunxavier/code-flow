@@ -1,5 +1,8 @@
 import { discoverModels } from "./model-discovery.js";
 import { managedPermissionProblem } from "./managed-permissions.js";
+import { prepareAgentTools } from "./agent-tools.js";
+import { AGENT_TOOL_ALLOWLIST } from "../agent-tools.js";
+import { ClaudeStream } from "./claude-stream.js";
 import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, RunOptions, RunResult } from "./types.js";
 import { classifyError, cliErrorLine, resetFromText } from "./errors.js";
 import { commandExists, describeFailure, processErrorKind, startJsonlProcess, stderrTail, stringify, truncate, unknownEvents } from "./process.js";
@@ -30,7 +33,7 @@ const READ_TOOLS = [
  */
 const GIT_READ_DENY = ["Bash(git *--out*)", "Bash(git *--no-index*)"];
 
-/** Stream-json message types code-flow knowingly ignores (partial messages, progress, the control protocol). */
+/** Stream-json progress types that carry no transcript or control content. */
 const IGNORED_TYPES = new Set(["stream_event", "tool_progress", "tool_use_summary", "auth_status", "keep_alive", "control_request", "control_response", "control_cancel_request"]);
 /** Assistant content blocks code-flow knowingly ignores. */
 const IGNORED_BLOCKS = new Set(["redacted_thinking"]);
@@ -90,20 +93,25 @@ export const claudeAdapter: AgentAdapter = {
     if (permissionProblem) return permissionProblem;
     const supportsTools = !opts.agentContainer && opts.teamTools && (await adapterTeamCapabilities("claude")).scopedTools === "tested";
     const teamTools = supportsTools ? await prepareTeamTools(opts.teamTools!) : undefined;
+    const agentTools = opts.agentTools && !opts.agentContainer && opts.permissions?.externalTools !== "disabled" ? await prepareAgentTools(opts.agentTools) : undefined;
     if (opts.agentContainer) onEvent({ kind: "status", text: `Claude runs in Docker image ${opts.agentContainer.image}. Live team tools are unavailable in containers; use structured outcomes and next-turn replies.` });
     else if (opts.teamTools && !teamTools) onEvent({ kind: "status", text: "This Claude CLI has no verified per-turn team tools; use structured outcomes and next-turn replies." });
     try {
     // The prompt goes on stdin (no positional argument), so its size isn't limited by argv.
-    const args = ["-p", "--output-format", "stream-json", "--verbose"];
-    if (opts.permissions) args.push("--settings", '{"ultracode":false,"disableWorkflows":true,"disableAllHooks":true}');
+    const interactive = !!(opts.conversation || opts.interactiveApprovals || opts.onQuestion);
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"];
+    if (interactive) args.push("--input-format", "stream-json", "--permission-prompt-tool", "stdio");
+    if (opts.permissions && !opts.conversation) args.push("--settings", '{"ultracode":false,"disableWorkflows":true,"disableAllHooks":true}');
     if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
+    else if (opts.forkSessionId) args.push("--resume", opts.forkSessionId, "--fork-session");
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push("--effort", opts.effort);
     if (opts.jsonSchema) args.push("--json-schema", JSON.stringify(opts.jsonSchema));
     if (teamTools) args.push("--mcp-config", teamTools.claudeConfig, "--strict-mcp-config");
     else if (opts.permissions?.externalTools === "disabled") args.push("--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config");
+    if (agentTools) args.push("--mcp-config", agentTools.claudeConfig);
     if (opts.permissions?.externalTools === "disabled") args.push("--no-chrome");
-    const collaborationTools = teamTools ? TEAM_TOOL_ALLOWLIST : [];
+    const collaborationTools = [...(teamTools ? TEAM_TOOL_ALLOWLIST : []), ...(agentTools ? AGENT_TOOL_ALLOWLIST : [])];
     // Full access: every tool, without permission checks.
     const full = opts.mode === "write" && opts.trust === "full";
     const allowedTools = full ? [] : [...(opts.mode === "write" ? writeTools(opts.trust) : READ_TOOLS), ...collaborationTools];
@@ -127,19 +135,68 @@ export const claudeAdapter: AgentAdapter = {
     /** The plan refused this turn (rate_limit_event "rejected"), and when it resets if it said. */
     let rejected: { resetsAt?: number } | undefined;
     const unknown = unknownEvents("claude");
+    const stream = new ClaudeStream(onEvent);
+    const controls = new Map<string, AbortController>();
+    const cancelControls = () => { for (const controller of controls.values()) controller.abort(); };
+    opts.signal?.addEventListener("abort", cancelControls, { once: true });
+
+    const handleControl = async (msg: any) => {
+      const id = msg.request_id;
+      if (typeof id !== "string" || controls.has(id)) return;
+      const controller = new AbortController();
+      controls.set(id, controller);
+      const request = msg.request ?? {};
+      const isQuestion = request.tool_name === "AskUserQuestion";
+      const timer = setTimeout(() => controller.abort(), isQuestion ? 600_000 : 120_000);
+      let response: any = { behavior: "deny", message: "This action was not approved. Ask the user in your response if you need help." };
+      proc.pauseIdle(true);
+      try {
+        if (sawResult || opts.signal?.aborted) return;
+        const work = async () => {
+          if (request.subtype !== "can_use_tool") return;
+          const input = request.input ?? {};
+          if (isQuestion && opts.onQuestion && Array.isArray(input.questions)) {
+            const questions = input.questions.map((q: any, index: number) => ({ id: String(index), question: q.question, options: q.options?.map((o: any) => o.label) }));
+            const answers = await opts.onQuestion(questions, controller.signal);
+            if (answers) response = { behavior: "allow", updatedInput: { ...input, answers: Object.fromEntries(questions.map((q: any) => [q.question, answers[q.id]])) } };
+          } else if (opts.interactiveApprovals && opts.onApproval && typeof request.tool_name === "string") {
+            if (opts.mode === "read") return; // A side conversation cannot escalate a denied tool into a write.
+            const encoded = JSON.stringify(input);
+            if (encoded.length > 16_000) return;
+            const decision = await opts.onApproval({ id, kind: "tool", toolName: request.tool_name, input: encoded, cwd: opts.cwd }, controller.signal);
+            if (decision === "approve") response = { behavior: "allow", updatedInput: input };
+          }
+        };
+        await Promise.race([work(), new Promise<void>(resolve => controller.signal.addEventListener("abort", () => resolve(), { once: true }))]);
+        if (!sawResult && !opts.signal?.aborted) proc.send({ type: "control_response", response: { subtype: "success", request_id: id, response: controller.signal.aborted ? { behavior: "deny", message: "Request expired or was cancelled" } : response } });
+      } catch (error) {
+        if (!sawResult) proc.send({ type: "control_response", response: { subtype: "error", request_id: id, error: String(error) } });
+      } finally { clearTimeout(timer); controller.abort(); controls.delete(id); proc.pauseIdle(controls.size > 0); }
+    };
 
     const proc = startJsonlProcess({
       agentContainer: opts.agentContainer ? { config: opts.agentContainer, mode: opts.mode } : undefined,
       command: "claude",
       args,
-      input: opts.prompt,
+      input: interactive ? undefined : opts.prompt,
+      interactive,
       cwd: opts.cwd,
       signal: opts.signal,
       timeoutMs: opts.timeoutMs,
       idleTimeoutMs: opts.idleTimeoutMs,
+      isPaused: opts.isPaused,
       onText: (line) => onEvent({ kind: "status", text: line }),
       onJson: (msg) => {
         switch (msg.type) {
+          case "stream_event":
+            stream.partial(msg.event);
+            break;
+          case "control_request":
+            void handleControl(msg);
+            break;
+          case "control_cancel_request":
+            controls.get(msg.request_id)?.abort();
+            break;
           case "system":
             if (msg.subtype === "init" && msg.session_id) {
               sessionId = msg.session_id;
@@ -148,20 +205,10 @@ export const claudeAdapter: AgentAdapter = {
             break;
 
           case "assistant":
+            stream.complete(msg.message);
+            lastAssistantText = stream.lastText;
             for (const block of msg.message?.content ?? []) {
-              if (block.type === "text" && block.text) {
-                lastAssistantText = block.text;
-                onEvent({ kind: "text", text: block.text });
-              } else if (block.type === "thinking" && block.thinking) {
-                onEvent({ kind: "thinking", text: block.thinking });
-              } else if (block.type === "tool_use") {
-                onEvent({
-                  kind: "tool_call",
-                  callId: block.id,
-                  name: block.name,
-                  input: truncate(stringify(block.input), 2_000),
-                });
-              } else if (!["text", "thinking"].includes(block.type) && !IGNORED_BLOCKS.has(block.type)) {
+              if (!["text", "thinking", "tool_use"].includes(block.type) && !IGNORED_BLOCKS.has(block.type)) {
                 unknown.add(`${block.type} block`);
               }
             }
@@ -204,6 +251,8 @@ export const claudeAdapter: AgentAdapter = {
 
           case "result":
             sawResult = true;
+            cancelControls();
+            if (interactive) proc.endInput();
             proc.resultSeen();
             finalText = typeof msg.result === "string" ? msg.result : lastAssistantText;
             if (msg.session_id) sessionId = msg.session_id;
@@ -229,7 +278,14 @@ export const claudeAdapter: AgentAdapter = {
       },
     });
 
+    if (interactive) {
+      proc.send({ type: "control_request", request_id: "codeflow-init", request: { subtype: "initialize", hooks: {} } });
+      proc.send({ type: "user", message: { role: "user", content: opts.prompt } });
+    }
+
     const outcome = await proc.outcome;
+    cancelControls();
+    opts.signal?.removeEventListener("abort", cancelControls);
     const drift = unknown.report();
     if (drift) onEvent({ kind: "status", text: drift });
 
@@ -251,13 +307,13 @@ export const claudeAdapter: AgentAdapter = {
     onEvent({ kind: "error", message: error });
     return {
       ok: false,
-      finalText: finalText || lastAssistantText,
+      finalText: finalText || stream.lastText || lastAssistantText,
       sessionId: errorKind === "session_not_found" ? undefined : sessionId,
       error,
       errorKind,
       ...(resetsAt && { resetsAt }),
     };
-    } finally { await teamTools?.cleanup(); }
+    } finally { await teamTools?.cleanup(); await agentTools?.cleanup(); }
   },
 };
 

@@ -51,6 +51,9 @@ export interface TeamTask {
   retainedBaseline?: { sourceRunId: string; sourceRevision: number; sourceTaskHead: string; baseCommit: string };
   /** Measured by Git after a rerun turn, not reported by an agent. Requires fresh final checks/review. */
   noNewDiff?: boolean;
+  steeringVersion?: number;
+  steeringIds?: string[];
+  userCorrections?: string[];
 }
 
 export interface TeamSubplan {
@@ -198,5 +201,6 @@ export interface TeamState extends TeamPlan {
   metrics: TeamMetrics;
   gaps: string[];
   reviewFallback?: string;
+  providerChanges?: { memberId: string; role: TeamMember["role"]; from: AgentId; to: AgentId; reason: string; at: number }[];
   verification?: { revision?: number; head: string; check: "passed" | "failing" | "unknown" | "not_required"; reviewed: boolean; approved: boolean; proof?: string };
 }

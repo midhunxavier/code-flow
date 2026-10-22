@@ -86,7 +86,7 @@ test("the packed npm install runs outside the checkout, opens its authenticated 
     const architecture = await fetch(new URL(`/api/workspace/dependencies?repo=${encodeURIComponent(repo)}`, url), { headers });
     assert.equal(architecture.status, 200);
     assert.match(await architecture.text(), /example\.ts/);
-    for (const helper of ["src/ssh-projects/team-autostart.mjs", "src/ssh-projects/team-status.mjs", "src/ssh-projects/team-remove.mjs", "src/team-tool-client.mjs", "scripts/pty.py"]) await access(join(installed, helper));
+    for (const helper of ["src/ssh-projects/team-autostart.mjs", "src/ssh-projects/team-status.mjs", "src/ssh-projects/team-remove.mjs", "src/team-tool-client.mjs", "src/agent-tool-client.mjs", "scripts/computer-use.swift", "scripts/pty.py"]) await access(join(installed, helper));
     child.kill("SIGTERM");
     const [code] = await exited;
     assert.equal(code, 0, output);

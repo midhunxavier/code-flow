@@ -98,7 +98,8 @@ test("callback failure still cleans up the freshly prepared home", async () => {
 
 test("a stalled native login prompt is auth, preventing automatic transient retries", async () => {
   const f = fixture(["Please sign in SYNTHETIC_SECRET"], "", "write", true);
-  const { result, events } = await f.run({ idleTimeoutMs: 200 });
+  // Allow the synthetic CLI to start under the parallel suite before testing an idle login prompt.
+  const { result, events } = await f.run({ idleTimeoutMs: 1000 });
   assert.equal(result.errorKind, "auth");
   assert.doesNotMatch(JSON.stringify({ result, events }), /SYNTHETIC_SECRET/);
   assert.deepEqual(f.counts(), { prepared: 1, cleaned: 1 });

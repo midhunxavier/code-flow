@@ -31,7 +31,7 @@ export interface EffectivePermissions {
   isolation: "container" | "provider-sandbox" | "os-sandbox" | "tool-rules" | "none";
   implementation?: string;
   commandNetwork: "denied" | "allowed" | "provider-configured";
-  externalTools: "disabled" | "provider-configured";
+  externalTools: "disabled" | "provider-configured" | "task-scoped";
   limitations: string[];
 }
 const levels: Trust[] = ["safe", "standard", "trusted", "full"];
@@ -56,7 +56,7 @@ export function createRunPermissions(trust: Trust, tools: boolean, solo: boolean
 }
 export const supportsRunPermissions = (provider: string): boolean => provider === "claude" || provider === "codex" || provider === "agy";
 /** A sandbox flag or a custom-agent tool list alone is not an inherited run policy. */
-export const AGY_MANAGED_PERMISSION_PROBLEM = "Antigravity managed execution requires the verified local macOS file-only executor and existing Keychain login. Remote/container execution and interactive approvals are unsupported. Choose Claude or Codex for other environments.";
+export const AGY_MANAGED_PERMISSION_PROBLEM = "Antigravity managed execution requires the verified local macOS executor and existing Keychain login. Remote/container execution and interactive approvals are unsupported. Choose Claude or Codex for other environments.";
 export function permissionProviderProblem(provider: AgentId, policy?: RunPermissionPolicy): string | undefined {
   if (policy && provider === "agy" && policy.antigravityExecution !== "native" && (typeof process === "undefined" || process.platform !== "darwin")) return AGY_MANAGED_PERMISSION_PROBLEM;
   if (policy && !supportsRunPermissions(provider)) return `${provider} cannot enforce Code Flow's native-delegation restriction. Choose Claude or Codex for this run.`;
@@ -80,11 +80,12 @@ export function resolveRunPermissions(input: {
   }
   if (provider === "agy") {
     if (input.remote || input.container || policy.toolApprovals && input.currentTools && input.tools !== false && mode === "write") throw new Error(AGY_MANAGED_PERMISSION_PROBLEM);
+    const shared = !policy.required.includes("no-external-tools");
     return {
       required: [...policy.required], delegation: policy.delegation, policyRevision: policy.revision,
       provider, trust, mode, nativeDelegation: false, toolApprovals: false,
-      isolation: "os-sandbox", implementation: "macos-file-only-v1", commandNetwork: "denied", externalTools: "disabled",
-      limitations: ["Antigravity has file tools only; terminal, browser, MCP, hooks and native delegation are disabled.", "The official CLI uses the existing macOS Keychain login; inference networking remains enabled.", "System runtime files and the native security helper remain accessible; model file tools are denied authentication and runtime state.", "Code Flow runs setup and checks in their separately configured command environment.", "Every turn starts with a fresh provider profile and portable context; native sessions are not resumed."],
+      isolation: "os-sandbox", implementation: shared ? "macos-task-tools-v2" : "macos-file-only-v1", commandNetwork: "denied", externalTools: shared ? "task-scoped" : "disabled",
+      limitations: [shared ? "Workspace file tools and Code Flow's task-scoped browser/computer bridge are available. Native browser, arbitrary MCP servers, terminal, hooks and native delegation are disabled. Computer actions require Full access." : "Antigravity has file tools only; terminal, browser, MCP, hooks and native delegation are disabled.", "The official CLI uses the existing macOS Keychain login; inference networking remains enabled.", "System runtime files and the native security helper remain accessible; model file tools are denied authentication and runtime state.", "Code Flow runs setup and checks in their separately configured command environment.", "Every turn starts with a fresh provider profile and portable context; native sessions are not resumed."],
     };
   }
   const externalTools = policy.required.includes("no-external-tools") ? "disabled" : "provider-configured";
@@ -95,7 +96,7 @@ export function resolveRunPermissions(input: {
   if (policy.required.includes("no-command-network") && (commandNetwork !== "denied" || input.remote || input.container)) throw new Error(`${provider} cannot enforce the required command network restriction in this environment`);
   const wantsApprovals = policy.toolApprovals && input.currentTools && input.tools !== false && mode === "write";
   if (wantsApprovals && policy.required.some(r => r === "workspace-writes" || r === "no-command-network")) throw new Error("Interactive command approvals cannot be combined with mandatory sandbox boundaries");
-  if (wantsApprovals && (provider !== "codex" || input.remote || input.container || input.unattended)) throw new Error(`${provider} cannot provide the run's required interactive approvals in this environment`);
+  if (wantsApprovals && (!["codex", "claude"].includes(provider) || input.remote || input.container || input.unattended)) throw new Error(`${provider} cannot provide the run's required interactive approvals in this environment`);
   return {
     required: [...policy.required], delegation: policy.delegation,
     policyRevision: policy.revision, provider, trust, mode, nativeDelegation: false,

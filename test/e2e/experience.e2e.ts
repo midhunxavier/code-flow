@@ -30,7 +30,7 @@ before(async () => {
   await writeFile(join(repo, "subject.test.mjs"), "import { test } from 'node:test'; import assert from 'node:assert/strict'; test('fixture', () => assert.equal(1 + 1, 2));\n");
   await mkdir(join(repo, ".codeflow"));
   await writeFile(join(repo, ".codeflow/config.json"), JSON.stringify({ run: { command: "node app.cjs" } }));
-  const fixtureHtml = "<html lang=\"en\"><head><title>Greeting fixture</title></head><body><main><label>Name<input id=\"name\"></label><label>Password<input id=\"password\" type=\"password\"></label><button id=\"go\" onclick=\"document.querySelector('#result').innerText='Hello ' + document.querySelector('#name').value\">Greet</button><div id=\"result\">Waiting</div></main></body></html>";
+  const fixtureHtml = "<html lang=\"en\"><head><title>Greeting fixture</title></head><body><style>label{position:absolute;top:20px;left:20px}label+label{top:70px}button{position:absolute;top:120px;left:20px}#result{position:absolute;top:170px;left:20px}</style><main><label>Name<input id=\"name\"></label><label>Password<input id=\"password\" type=\"password\"></label><button id=\"go\" onclick=\"document.querySelector('#result').innerText='Hello ' + document.querySelector('#name').value\">Greet</button><div id=\"result\">Waiting</div></main></body></html>";
   await writeFile(join(repo, "app.cjs"), `require('http').createServer((req,res)=>res.writeHead(200,{'content-type':'text/html'}).end(${JSON.stringify(fixtureHtml)})).listen(Number(process.env.PORT), '127.0.0.1');`);
   execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "initial"], { cwd: repo });
   const port = await new Promise<number>((resolve) => { const probe = createServer().listen(0, "127.0.0.1", () => { const port = (probe.address() as AddressInfo).port; probe.close(() => resolve(port)); }); });
@@ -54,7 +54,7 @@ const errors: string[] = [];
 afterEach(async context => { if ((context as unknown as { error?: unknown }).error && page) { console.error("Browser errors", errors); console.error((await page.locator("body").innerText()).slice(0, 7000)); await mkdir(join(root, "output/playwright"), { recursive: true }); await page.screenshot({ path: join(root, "output/playwright/experience-failure.png"), fullPage: true }); } });
 test("result-first review records commit-scoped feedback and rejects a stale decision", { timeout: 45_000 }, async () => {
   page.on("pageerror", error => errors.push(error.message));
-  const started = await api("/api/runs", { repo, pattern: "solo", intent: "bug", task: "Improve a greeting", roles: { agent: ["claude"] }, loop: { check: "true", prove: false, maxSteps: 4, maxMinutes: 1 } });
+  const started = await api("/api/runs", { repo, pattern: "solo", checkpointOnFinish: true, intent: "bug", task: "Improve a greeting", roles: { agent: ["claude"] }, loop: { check: "true", prove: false, maxSteps: 4, maxMinutes: 1 } });
   result = await until(() => api(`/api/runs/${started.id}`), value => value.status !== "running");
   assert.equal(result.status, "done", result.error);
   await page.goto(base + `/#/run/${result.id}`);
@@ -73,11 +73,13 @@ test("browser recording excludes passwords, saves a regression scenario and surv
   await page.getByRole("button", { name: "Try this result", exact: true }).click();
   const recorder = page.getByRole("region", { name: "Record a browser scenario" });
   await recorder.getByRole("button", { name: "Record a bug", exact: true }).click();
-  const frame = page.frameLocator('.browse-frame iframe');
-  await frame.getByLabel("Name", { exact: true }).fill("Ada");
-  await frame.getByLabel("Password", { exact: true }).fill("DO-NOT-SAVE-THIS");
-  await frame.getByRole("button", { name: "Greet", exact: true }).click();
+  const surface=page.getByRole("img",{name:"Live browser page",exact:true});
+  await page.waitForFunction(()=>{const canvas=document.querySelector<HTMLCanvasElement>(".live-browser-surface canvas");return canvas?.dataset.ready==="true"&&Math.abs(canvas.width-canvas.getBoundingClientRect().width)<2;});
+  await surface.click({position:{x:100,y:30}});await page.keyboard.type("Ada");
+  await surface.click({position:{x:140,y:80}});await page.keyboard.type("DO-NOT-SAVE-THIS");
+  await surface.click({position:{x:35,y:130}});
   await recorder.getByRole("button", { name: "Stop recording", exact: true }).click();
+  await recorder.getByText("fill #name = Ada",{exact:true}).waitFor();
   await recorder.getByLabel("Scenario title", { exact: true }).fill("Greeting scenario");
   await recorder.getByLabel("Expected element (CSS selector)", { exact: true }).fill("#result");
   await recorder.getByLabel("Expected visible text", { exact: true }).fill("Hello Ada");
@@ -101,7 +103,7 @@ test("browser recording excludes passwords, saves a regression scenario and surv
   await page.getByRole("heading", { name: "Greeting scenario", exact: true }).waitFor();
 });
 test("scenario replay binds to a finished result preview and rejects invalid targets", { timeout: 45_000 }, async () => {
-  const started = await api("/api/runs", { repo, pattern: "solo", intent: "bug", journeyId: journey.id, task: "Verify the recorded greeting", roles: { agent: ["claude"] }, loop: { check: "true", prove: false, maxSteps: 4, maxMinutes: 1 } });
+  const started = await api("/api/runs", { repo, pattern: "solo", checkpointOnFinish: true, intent: "bug", journeyId: journey.id, task: "Verify the recorded greeting", roles: { agent: ["claude"] }, loop: { check: "true", prove: false, maxSteps: 4, maxMinutes: 1 } });
   const fixed = await until(() => api(`/api/runs/${started.id}`), value => value.status !== "running");
   assert.equal(fixed.journeyId, journey.id);
   const tree = fixed.worktrees.find((tree: any) => tree.branch === fixed.artifacts[0].branch);

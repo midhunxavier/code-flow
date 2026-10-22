@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
  * return. Returns the answer, and the structured answer when a schema was requested.
  */
 export function work({ vendor, prompt, write, schemaRequested, fail }) {
+  if (process.env.FAKE_ANSWER_RECOVERED && prompt.includes("AUTO-ANSWER-OUTAGE") && prompt.includes("## Code Flow team execution receipt") && !existsSync(process.env.FAKE_ANSWER_RECOVERED)) fail("You've hit your usage limit. Try again later.", "usageLimitExceeded");
   if (prompt.includes("SNEAKY")) writeFileSync("sneaky.txt", "a read-only step wrote this\n");
   // A read-only step that commits: `git status` is clean afterwards, so only HEAD shows it.
   if (prompt.includes("COMMITS-IN-READ") && !write) {

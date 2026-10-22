@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { TEAM_TOOLS, type TeamToolConnection } from "../team-tools.js";
 import { captureOutput } from "./process.js";
 import type { AgentId } from "./types.js";
-import { agyIsolationProblem, AGY_FILE_ONLY_LIMITATION } from "./agy-isolation.js";
+import { agyIsolationProblem, AGY_SHARED_TOOLS_LIMITATION, AGY_VERIFIED_CLI_VERSIONS } from "./agy-isolation.js";
 
 export type CapabilityStatus = "tested" | "unsupported" | "unknown";
 export interface AdapterTeamCapabilities {
@@ -73,9 +73,10 @@ async function probe(provider: AgentId): Promise<AdapterTeamCapabilities> {
   } else {
     scopedTools = help && !help.includes("--mcp-config") ? "unsupported" : "unknown";
     isolatedAgy = !await agyIsolationProblem();
+    if (isolatedAgy) scopedTools = "tested";
     sessionResume = "unsupported";
     nestedAgentControl = isolatedAgy ? "tested" : "unknown";
-    evidence.push(isolatedAgy ? AGY_FILE_ONLY_LIMITATION + " macos-file-only-v1 / CLI 1.4.4 has bounded real-provider and kernel fixture evidence; current login entitlement is checked only by execution." : "No verified isolated Antigravity runtime is available. A sandbox help flag cannot establish inherited permissions. Legacy execution remains separate.");
+    evidence.push(isolatedAgy ? AGY_SHARED_TOOLS_LIMITATION + ` CLI ${AGY_VERIFIED_CLI_VERSIONS.join(" or ")} uses a private per-turn HTTP MCP capability for task tools. Live member messaging and memory use a separate scoped HTTP MCP capability. Current login entitlement is checked only by execution.` : "No verified isolated Antigravity runtime is available. A sandbox help flag cannot establish inherited permissions. Legacy execution remains separate.");
   }
   evidence.push("Provider token events report parent-turn totals; a separate nested-agent token breakdown is not available.");
   return {

@@ -371,7 +371,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const tab = await phone.newPage();
   await tab.goto(`${PHONE}${phonePath}`);
-  await tab.getByRole("heading", { name: "What should the agents build?" }).waitFor();
+  await tab.getByRole("heading", { name: "What would you like to work on?" }).waitFor();
   assert.equal(new URL(tab.url()).pathname, "/");
   await tab.getByRole("button", { name: "Show runs" }).click();
   await tab.locator(".rail.open").waitFor();
@@ -384,7 +384,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   await scanned.route("http://qr-scanner.example/", (route) => route.fulfill({ contentType: "text/html", body: `<a href="${PHONE}${phonePath}">Open link</a>` }));
   await scanned.goto("http://qr-scanner.example/");
   await scanned.getByRole("link", { name: "Open link" }).click();
-  await scanned.getByRole("heading", { name: "What should the agents build?" }).waitFor();
+  await scanned.getByRole("heading", { name: "What would you like to work on?" }).waitFor();
   assert.equal(new URL(scanned.url()).pathname, "/");
   await scanner.close();
 
@@ -422,7 +422,7 @@ test("insights and run search", async () => {
   // The history footer can also contain "1 of ... runs loaded" before search
   // settles. Wait for the actual result and the search-specific count.
   await page.locator(".rail .run-item", { hasText: "E2E: automated chore" }).waitFor();
-  await page.locator(".rail-hint").filter({ hasText: /^1 of \d+ runs/ }).waitFor();
+  await page.locator(".rail-hint").filter({ hasText: /^1 of \d+ tasks/ }).waitFor();
   assert.equal(await page.locator(".rail .run-item").count(), 1);
 });
 
@@ -685,7 +685,7 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
   await page.reload();
 });
 
-test("side panel browser: a run's app through the preview, annotated, sent to the main chat; a panel in its own window", async () => {
+test("side panel browser: the live app is annotated and sent to main chat, with legacy panel bookmarks", async () => {
   const api = (path: string, body?: unknown) =>
     fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
   const created = await api("/api/runs", { repo, task: "E2E: a run with an app", pattern: "pipeline", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["codex"] }, options: {} });
@@ -709,16 +709,15 @@ test("side panel browser: a run's app through the preview, annotated, sent to th
   if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
   const side = page.getByRole("complementary", { name: "Side panel" });
   await side.getByRole("tab", { name: "Browser" }).click();
-  const frame = side.locator("#side-pane-browser iframe");
-  await frame.waitFor();
-  const src = new URL((await frame.getAttribute("src"))!);
-  assert.equal(src.hostname, new URL(BASE).hostname, "the preview uses the host name code-flow was opened with");
-  assert.notEqual(src.port, new URL(app.url).port, "the app is shown through the preview, on a port of its own");
+  const surface=side.getByRole("img",{name:"Live browser page",exact:true});
+  await side.getByRole("button",{name:"E2E app",exact:true}).waitFor();
+  await page.waitForFunction(()=>{const canvas=document.querySelector<HTMLCanvasElement>(".live-browser-surface canvas");return canvas?.dataset.ready==="true"&&Math.abs(canvas.width-canvas.getBoundingClientRect().width)<2;});
+  assert.equal(await side.locator("iframe").count(),0);
   await side.getByRole("button", { name: /^Console · 2$/ }).waitFor({ timeout: 15_000 });
 
   // Pick the button, say what's wrong, and put it in the run's main chat.
   await side.getByRole("button", { name: "Pick", exact: true }).click();
-  await side.frameLocator("#side-pane-browser iframe").locator("button.theme-toggle").click();
+  await surface.click({position:{x:30,y:18}});
   await side.locator(".pins-tray .pin-row").waitFor({ timeout: 15_000 });
   await side.getByLabel("What about pin 1?").fill("E2E: the toggle is hard to see");
   await side.getByRole("button", { name: "Add to main chat" }).click();
@@ -736,33 +735,18 @@ test("side panel browser: a run's app through the preview, annotated, sent to th
   assert.equal(reply.kind, "reply");
   assert.equal(reply.files.length, 1, "the snapshot went with the reply");
 
-  // Snapshot: the page in a headless Chrome of the server's own, a box drawn on the picture, and the
-  // picture (boxes numbered) and the box's close-up in the main chat.
-  await side.getByRole("button", { name: "Snapshot", exact: true }).click();
-  const stage = side.locator(".snap-stage");
-  await stage.locator("img").waitFor({ timeout: 30_000 });
-  assert.match(await side.locator(".snap-what").innerText(), /^Snapshot · \d+×\d+$/);
-  const at = (await stage.boundingBox())!;
-  await page.mouse.move(at.x + 10, at.y + 10);
-  await page.mouse.down();
-  await page.mouse.move(at.x + 90, at.y + 60, { steps: 5 });
-  await page.mouse.up();
-  await side.locator(".snap-box:not(.drawing)").waitFor();
+  // Draw an area on the same interactive page; the annotation carries its image into chat.
+  await side.getByRole("button", {name:"Box",exact:true}).click();
+  await page.waitForFunction(()=>{const canvas=document.querySelector<HTMLCanvasElement>(".live-browser-surface canvas");return canvas?.dataset.ready==="true"&&Math.abs(canvas.width-canvas.getBoundingClientRect().width)<2;});
+  const at=(await surface.boundingBox())!;
+  await page.mouse.move(at.x+10,at.y+10);await page.mouse.down();
+  await page.mouse.move(at.x+100,at.y+65,{steps:5});await page.mouse.up();
+  await side.locator(".pins-tray .pin-row").waitFor();
   await side.getByLabel(/^What about pin \d+\?$/).fill("E2E: the header is too tall");
-  await side.getByRole("button", { name: "Add to main chat" }).click();
-  await page.locator(".runview .draft-img").nth(1).waitFor();
-  const snapText = await box.inputValue();
-  assert.match(snapText, /From a snapshot of http:\/\/(localhost|127\.0\.0\.1):\d+\/ \(\d+px wide, as a signed-out visitor sees it\); the boxes are numbered on snapshot-[\w-]+\.png:/);
-  assert.match(snapText, /on the snapshot \(box \d+ on snapshot-[\w-]+\.png\): E2E: the header is too tall/);
-  await page.locator(".runview .chatbox .send").click();
-  for (let i = 0; i < 150; i++) {
-    run = await api(`/api/runs/${created.id}`);
-    if (run.followUps.length > 2 && run.followUps.at(-1)?.status === "done") break;
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  const names = run.followUps.at(-1).files.map((f: string) => f.split("/").pop());
-  assert.equal(names.length, 2, JSON.stringify(names));
-  assert.ok(names.some((n: string) => /-snapshot-[\w-]+\.png$/.test(n)) && names.some((n: string) => /-pin-[\w-]+-\d+\.png$/.test(n)), JSON.stringify(names));
+  await side.getByRole("button",{name:"Add to main chat"}).click();
+  await page.locator(".runview .draft-img").waitFor();
+  assert.match(await box.inputValue(),/E2E: the header is too tall/);
+  assert.equal(page.context().pages().length,1);
   await fetch(`${BASE}/api/runs/${created.id}/worktrees/${wt.name}/serve`, { method: "DELETE", headers: bearer });
 
   // The panel in a window of its own, for this run.
@@ -834,7 +818,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
   const fresh = await context.newPage();
   try {
     await fresh.goto(`${BASE}/?token=${TOKEN}`);
-    await fresh.getByRole("button", { name: "Auto", exact: true }).waitFor();
+    await fresh.getByRole("switch", { name: "Team", exact: true }).waitFor();
     assert.equal(await fresh.locator(".advanced-controls").getAttribute("open"), null, "advanced controls start collapsed");
     assert.equal(await fresh.getByRole("button", { name: "Side panel", exact: true }).getAttribute("aria-pressed"), "false", "first run leaves room for the task");
     if (process.env.CODEFLOW_UI_SCREENSHOTS) {
@@ -907,7 +891,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.getByRole("button", { name: "Save current workflow", exact: true }).click();
     await fresh.getByLabel("Revision to apply").waitFor();
     await fresh.evaluate(() => { location.hash = "/"; });
-    await fresh.getByRole("button", { name: "Solo", exact: true }).click();
+    await openAdvanced(fresh); await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
     await openLibrary();
     await fresh.getByLabel("Saved workflow", { exact: true }).selectOption({ label: "E2E saved team · r1" });
     await fresh.getByRole("button", { name: "Save new revision", exact: true }).click();
@@ -944,7 +928,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.keyboard.press("Meta+k");
     await commands.fill("new run");
     await commands.press("Enter");
-    await fresh.getByRole("button", { name: "Auto", exact: true }).waitFor();
+    await fresh.getByLabel("Task", { exact: true }).waitFor();
     await fresh.setViewportSize({ width: 390, height: 844 });
     const start = await fresh.getByRole("button", { name: /^Start run/ }).boundingBox();
     assert.ok(start && start.y >= 0 && start.y + start.height <= 844, "primary action is visible on a phone without scrolling");
@@ -969,15 +953,15 @@ test("chat menus apply model, effort and permissions to the next reply and survi
   assert.ok(model);
   await page.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
   const main = page.getByRole("main");
-  await main.locator(".chat-provider-fixed", { hasText: "Codex" }).waitFor();
-  assert.equal(await main.getByRole("button", { name: "Provider", exact: true }).count(), 0, "a started single-agent chat cannot change provider");
+  await main.getByRole("button", { name: "Provider", exact: true }).waitFor();
+  assert.match(await main.getByRole("button", { name: "Provider", exact: true }).innerText(), /Codex/, "the provider selector opens another conversation without mutating this one");
   await main.getByRole("button", { name: "Model", exact: true }).click();
   await main.getByRole("option", { name: model.label, exact: true }).click();
   await main.getByRole("button", { name: "Effort", exact: true }).click();
   await main.getByRole("menuitem", { name: "high", exact: true }).click();
   await main.getByRole("button", { name: "Permissions", exact: true }).click();
   await main.getByRole("menuitem", { name: /^Ask for approval/ }).click();
-  await main.getByRole("textbox", { name: "Reply", exact: true }).fill("Use the chosen settings");
+  await main.getByRole("textbox", { name: "Message agent", exact: true }).fill("Use the chosen settings");
   await main.getByRole("button", { name: "Send", exact: true }).click();
   await main.getByText("Use the chosen settings", { exact: true }).waitFor();
   let run = await completed();
@@ -994,11 +978,11 @@ test("chat menus apply model, effort and permissions to the next reply and survi
   await main.getByRole("menuitem", { name: /^Default effort/ }).click();
   await main.getByRole("button", { name: "Permissions", exact: true }).click();
   await main.getByRole("menuitem", { name: /^Full access/ }).click();
-  await main.getByRole("textbox", { name: "Reply", exact: true }).fill("Use defaults for this reply");
+  await main.getByRole("textbox", { name: "Message agent", exact: true }).fill("Use defaults for this reply");
   await main.getByRole("button", { name: "Send", exact: true }).click();
   await main.getByText("Use defaults for this reply", { exact: true }).waitFor();
   run = await completed();
-  assert.deepEqual(run.followUps.at(-1).settings, {});
+  assert.deepEqual(run.followUps.at(-1).settings, { model: "", effort: "" });
   assert.equal(run.followUps.at(-1).tools, false);
   assert.equal(run.followUps.at(-1).trust, "full");
 });
@@ -1023,10 +1007,10 @@ test("chat menu starts another provider with carried-over context", async () => 
   const chatBox = await main.locator(".chatbox").boundingBox();
   assert.ok(menuBox && chatBox && menuBox.x >= chatBox.x && menuBox.x + menuBox.width <= chatBox.x + chatBox.width, "the menu stays inside the chat column instead of overlapping the side panel");
   assert.equal(await actions.locator(".pi-main").evaluate((element) => getComputedStyle(element).whiteSpace), "normal", "the complete action label can wrap");
-  await main.getByRole("menuitem", { name: /^Start new chat with another provider/ }).click();
-  const dialog = page.getByRole("dialog", { name: "New chat with another provider" });
+  await main.getByRole("menuitem", { name: /^Fork chat/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Fork chat" });
   await dialog.getByRole("button", { name: "Provider", exact: true }).click();
-  assert.equal(await dialog.getByRole("menuitem", { name: "Codex", exact: true }).count(), 0);
+  assert.equal(await dialog.getByRole("menuitem", { name: "Codex", exact: true }).count(), 1, "same-provider forks are available");
   await dialog.getByRole("menuitem", { name: /Claude Code/ }).click();
   await dialog.getByPlaceholder("What should the new chat do?").fill("Review the previous answer");
   const response = page.waitForResponse((response) => response.url().endsWith(`/api/runs/${source.id}/provider-chat`) && response.request().method() === "POST");
@@ -1045,7 +1029,7 @@ test("chat menu starts another provider with carried-over context", async () => 
 });
 
 
-test("single-agent setup is inline and completed replies show running checks clearly", async () => {
+test("Agent setup is inline and completed replies keep automatic workflow controls out of chat", async () => {
   const fresh = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const destination = (await fetch(`${BASE}/api/projects`, { headers: bearer }).then(response => response.json())).find((project: any) => project.repos.includes(realpathSync(repo)))
     ?? await fetch(`${BASE}/api/projects`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Inline agent", repos: [repo] }) }).then(response => response.json());
@@ -1070,21 +1054,27 @@ test("single-agent setup is inline and completed replies show running checks cle
     await openAdvanced(fresh);
     await fresh.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
     assert.equal(await box.locator(".chat-controls").count(), 0);
-    await box.getByRole("button", { name: "Solo", exact: true }).click();
+    await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
     assert.match(await box.getByRole("button", { name: "Model", exact: true }).innerText(), /Haiku/);
-    await box.getByRole("button", { name: "Auto", exact: true }).click();
-    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "auto-team", "Auto returns to a dynamic plan");
-    await box.getByRole("button", { name: "Solo", exact: true }).click();
+    await box.getByRole("switch", { name: "Team", exact: true }).click();
+    await box.getByRole("button", { name: "Advanced", exact: true }).click();
+    const setup = fresh.getByRole("dialog", {name:"Team setup"});
+    await setup.getByRole("switch", {name:"Enable Team"}).check();
+    await setup.getByRole("button", {name:"Apply team settings"}).click();
+    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "solo", "Team configuration retains the Agent conversation");
+    await fresh.reload();
+    await box.getByRole("switch", { name: "Team", exact: true }).waitFor();
+    assert.equal(await box.getByRole("switch", { name: "Team", exact: true }).getAttribute("aria-checked"), "true", "unsent Team configuration survives reload with the project draft");
+    await box.getByRole("switch", { name: "Team", exact: true }).click();
+    await openAdvanced(fresh);
+    await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
     await fresh.getByLabel("Done when this passes", { exact: true }).fill('node -e "setTimeout(() => {}, 4000)"');
     await fresh.locator(".composer-options > summary").click();
     await fresh.getByRole("textbox", { name: "Task", exact: true }).fill("Inline single-agent fixture");
-    await box.getByRole("button", { name: "Start run", exact: true }).click();
-    await fresh.locator(".chat-check").waitFor();
-    await fresh.getByRole("button", { name: "Stop checks", exact: true }).waitFor();
-    assert.match(await fresh.locator(".chat-check").innerText(), /The agent has finished/);
-    assert.match(await fresh.locator(".chat-check code").innerText(), /setTimeout/);
-    await fresh.getByRole("button", { name: "More run actions", exact: true }).waitFor({ timeout: 30000 });
-    assert.equal(await fresh.getByRole("button", { name: "Stop run", exact: true }).count(), 0);
+    await box.getByRole("button", { name: "Send", exact: true }).click();
+    await fresh.locator(".turn-body").waitFor();
+    assert.equal(await fresh.locator(".chat-check").count(), 0, "Agent answers do not automatically run the configured check");
+    assert.equal(await fresh.getByRole("button", { name: "More run actions", exact: true }).count(), 0);
     const id = fresh.url().split("/run/")[1];
     const run = await fetch(`${BASE}/api/runs/${id}`, { headers: bearer }).then((response) => response.json());
     assert.deepEqual(run.roles.agent, ["claude"]);
@@ -1114,11 +1104,13 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(await fresh.getByLabel("Default verification profile").inputValue(), "standard");
     assert.equal(await fresh.getByLabel("Default container image").inputValue(), "fixture-image:latest");
     await fresh.evaluate(() => { location.hash = "/"; });
-    await fresh.getByRole("button", { name: "Solo", exact: true }).waitFor();
+    await fresh.getByRole("switch", { name: "Team", exact: true }).waitFor();
     assert.equal(await fresh.locator(".composer-options").getAttribute("open"), null);
     assert.equal(await fresh.locator('.composer-library, [aria-label="Default check command"], [aria-label="Default verification profile"]').count(), 0, "project-wide default editors and library management stay in settings");
     assert.equal(await fresh.getByLabel("Worktree setup command", { exact: true }).isVisible(), false, "per-run setup is inside the collapsed run options");
-    await fresh.locator(".taskbox").getByLabel("Start from branch", { exact: true }).selectOption("origin/feature");
+    await fresh.getByRole("button", { name: "Start from branch", exact: true }).click();
+    await fresh.getByRole("combobox", { name: "Search Start from branch", exact: true }).fill("origin/feature");
+    await fresh.getByRole("option", { name: /^origin\/feature/ }).click();
     await fresh.locator(".composer-options > summary").click();
     await fresh.locator(".advanced-controls > summary").click();
     assert.equal(await fresh.getByLabel("Verification gates", { exact: true }).inputValue(), "standard");
@@ -1137,7 +1129,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     await fresh.getByRole("dialog", { name: "Schedule work" }).getByRole("button", { name: /Run once later/ }).click();
     await fresh.getByRole("dialog", { name: "Start later", exact: true }).waitFor();
     await fresh.getByRole("dialog", { name: "Start later", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
-    await fresh.getByRole("button", { name: "Start run", exact: true }).click();
+    await fresh.getByRole("button", { name: "Send", exact: true }).click();
     await fresh.waitForURL(/#\/run\//);
     const id = fresh.url().split("/run/")[1];
     const run = await fetch(`${BASE}/api/runs/${id}`, { headers: bearer }).then((response) => response.json());
@@ -1148,7 +1140,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(run.loop.setup, "node -e \"process.exit(0); /* setup override */\"");
     assert.equal(run.loop.agentContainer, undefined);
     assert.ok(!run.loop.verification);
-    await fresh.getByRole("button", { name: "More run actions", exact: true }).waitFor({ timeout: 30000 });
+    await fresh.getByRole("button", { name: "Chat actions", exact: true }).waitFor({ timeout: 30000 });
   } finally { await fresh.close(); }
 });
 
@@ -1314,14 +1306,15 @@ test("sidebar archives, hides and deletes runs with confirmation across tabs", a
     await row.hover();
     await row.getByRole("button", { name: "Run actions", exact: true }).click();
     await row.getByRole("menuitem", { name: "Unarchive", exact: true }).click();
-    await fresh.getByRole("main").getByRole("button", { name: "More run actions", exact: true }).waitFor();
+    await fresh.getByRole("main").getByRole("button", { name: "Chat actions", exact: true }).waitFor();
     await row.hover();
     await row.getByRole("button", { name: "Run actions", exact: true }).click();
     await row.getByRole("menuitem", { name: "Delete…", exact: true }).click();
     const dialog = fresh.getByRole("dialog", { name: "Delete this run?", exact: true });
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     assert.equal((await fetch(`${BASE}/api/runs/${created.id}`, { headers: bearer })).status, 200);
-    await fresh.getByRole("main").getByRole("button", { name: "More run actions", exact: true }).click();
+    await row.hover();
+    await row.getByRole("button", { name: "Run actions", exact: true }).click();
     await fresh.getByRole("menuitem", { name: "Delete…", exact: true }).click();
     const runUrl = `${BASE}/api/runs/${created.id}`;
     await fresh.route(runUrl, async route => {

@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.CODEFLOW_HOME = await mkdtemp(join(tmpdir(), "codeflow-agy-policy-home-"));
-const { agyIsolationProfile, agyManagedOptionsProblem, prepareAgyIsolation, verifyAgyVersion, AGY_ISOLATION_VERSION } = await import("../src/adapters/agy-isolation.js");
+const { agyIsolationProfile, agyManagedOptionsProblem, prepareAgyIsolation, verifyAgyVersion, verifiedAgyVersion, AGY_ISOLATION_VERSION } = await import("../src/adapters/agy-isolation.js");
 after(async () => { await rm(process.env.CODEFLOW_HOME!, { recursive: true, force: true }); });
 
 const exec = promisify(execFile);
@@ -105,4 +105,10 @@ test("version inspection cannot execute an unverified wrapper outside the sandbo
     await assert.rejects(verifyAgyVersion(await realpath(script)));
     await assert.rejects(readFile(marker), { code: "ENOENT" });
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test("only explicitly exercised Antigravity runtime versions are accepted", () => {
+  for (const version of ["1.4.4", "1.4.5\n"]) assert.equal(verifiedAgyVersion(version), true);
+  for (const version of ["1.4.3", "1.4.6", "1.5.0", "1.4.5-custom", "unknown"]) assert.equal(verifiedAgyVersion(version), false);
 });

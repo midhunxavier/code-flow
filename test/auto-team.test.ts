@@ -105,7 +105,7 @@ for (const native of [false, true]) test(`Auto routes to ${native ? "native" : "
     calls.push(opts);
     assert.equal(opts.resumeSessionId, undefined);
     assert.equal(opts.permissions?.isolation, native ? "none" : "os-sandbox");
-    assert.equal(opts.permissions?.externalTools, native ? "provider-configured" : "disabled");
+    assert.equal(opts.permissions?.externalTools, native ? "provider-configured" : "task-scoped");
     assert.equal(opts.permissions?.commandNetwork, native ? "allowed" : "denied");
     assert.equal(opts.permissions?.nativeDelegation, native);
     assert.equal(opts.model, "agy-isolated-fixture");
@@ -127,7 +127,7 @@ for (const native of [false, true]) test(`Auto routes to ${native ? "native" : "
     assert.equal(steps.length, 2);
     for (const step of steps) {
       assert.equal(step.sessionId, undefined);
-      assert.equal(step.permissions?.implementation, native ? "agy-native-v1" : "macos-file-only-v1");
+      assert.equal(step.permissions?.implementation, native ? "agy-native-v1" : "macos-task-tools-v2");
       assert.equal(step.modelAssignment?.environment, modelEnvironment(native ? {} : { isolatedAgy: true }));
       assert.ok(step.modelAssignment!.catalogRevision > 0);
     }
@@ -165,7 +165,7 @@ for (const native of [false, true]) test(`Antigravity ${native ? "native" : "iso
   let manager: InstanceType<typeof RunManager> | undefined;
   try {
     await modelCatalogStore.get("agy", { context: native ? {} : { isolatedAgy: true }, force: true });
-    const first = await finish("AUTO-AGY-ISOLATED Implement the sample", { antigravityExecution: native ? "native" : "isolated", roles: { coordinator: ["claude"], pool: ["agy", "claude"] }, roleSettings: { pool: { agy: { model: "agy-isolated-fixture" } } } });
+    const first = await finish("AUTO-AGY-ISOLATED Implement the sample", { options: { providerFailover: false }, antigravityExecution: native ? "native" : "isolated", roles: { coordinator: ["claude"], pool: ["agy", "claude"] }, roleSettings: { pool: { agy: { model: "agy-isolated-fixture" } } } });
     assert.equal(first.run.status, "stopped", first.run.error);
     assert.equal(first.manager.quota.agy?.status, "signed_out");
     const recorded = JSON.stringify(first.run.steps.filter(s => s.agent === "agy").map(s => [s.permissions, s.modelAssignment]));
@@ -573,4 +573,55 @@ test("Auto team dispatches distinct selected models from one provider without le
   assert.deepEqual(steps.map(step => step.settings), [{ model: "opus", effort: "high" }, { model: "sonnet", effort: "" }]);
   assert.notEqual(steps[0]!.sessionId, steps[1]!.sessionId);
   assert.deepEqual(run.team!.inventory!.providers.find(p => p.id === "claude")!.settingsByRole!.worker!.variants, [{ model: "sonnet" }]);
+});
+
+
+test("Auto team accepts host-observed browser effects without source edits and still reviews them", async () => {
+  const { createServer } = await import("node:http");
+  const { claudeAdapter } = await import("../src/adapters/claude.js");
+  const { codexAdapter } = await import("../src/adapters/codex.js");
+  const { agentToolBridge } = await import("../src/agent-tools.js");
+  const server = createServer((_req, res) => { res.setHeader("content-type", "text/html"); res.end('<input aria-label="Name">'); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${(server.address() as any).port}/`;
+  const originals = [claudeAdapter.run, codexAdapter.run];
+  let completeAction = true;
+  for (const [i, adapter] of [claudeAdapter, codexAdapter].entries()) adapter.run = async (opts, onEvent) => {
+    if (opts.prompt.startsWith("AUTO_TEAM_TASK")) {
+      const conn = opts.agentTools!;
+      assert.ok(conn, "team workers get a task-scoped bridge");
+      const call = async (name: string, args = {}) => {
+        const response = await fetch(conn.endpoint, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${conn.token}` }, body: JSON.stringify({ name, arguments: args }) });
+        return await response.json() as any;
+      };
+      const navigation = await call("browser_navigate", { url, operationId: "open-fixture" });
+      assert.equal(navigation.error, undefined, JSON.stringify(navigation));
+      await call("browser_snapshot");
+      assert.match((await call("browser_type", { ref: "stale", text: "wrong", operationId: "stale-fill" })).error, /stale/);
+      if (completeAction) {
+        const page = JSON.parse((await call("browser_snapshot")).content[0].text);
+        const result = await call("browser_type", { ref: page.snapshot.find((item: any) => item.role === "textbox").ref, text: "Task completed", operationId: "complete-fill" });
+        assert.equal(result.error, undefined);
+      }
+    }
+    return originals[i]!(opts, onEvent);
+  };
+  try {
+    const { run } = await finish("AUTO-NO-CHANGE Perform the shared browser interaction", { options: { maxRepairs: 0 } });
+    assert.equal(run.status, "done", run.error);
+    assert.ok(run.steps.some(step => step.title.includes("independent review") && step.status === "done"));
+    const actions = run.steps.flatMap(step => step.sharedToolActions ?? []);
+    assert.ok(actions.length > 0);
+    assert.ok(actions.some(action => action.name === "browser_type" && action.state === "completed"));
+    assert.ok(actions.some(action => action.name === "browser_type" && action.state === "uncertain"), "failed actions remain recoverable without claiming completion");
+    assert.ok(!actions.some(action => action.name === "browser_snapshot"), "observations do not become effect evidence");
+    assert.ok(run.team!.tasks.every(task => task.attempts === 1), "completed effects must not be replayed for an empty diff");
+    completeAction = false;
+    const incomplete = (await finish("AUTO-NO-CHANGE Perform the shared browser interaction", { options: { maxRepairs: 0 } })).run;
+    assert.ok(incomplete.team!.tasks.some(task => task.status !== "completed"), "navigation and failed actions cannot satisfy a deliverable");
+    assert.match(incomplete.team!.gaps.join("\n"), /artifact is missing/);
+  } finally {
+    claudeAdapter.run = originals[0]!; codexAdapter.run = originals[1]!;
+    await agentToolBridge.close(); await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 });

@@ -1,3 +1,5 @@
+import { chatTaskId } from "../src/chat-family.js";
+import { TaskTeamControl, TaskTeamActivity, TaskTeamStatus } from "./task-team.js";
 import { TeamTemplateLibrary } from "./team-template-library.js";
 import { templateFromPlan, type TeamTemplate } from "../src/team-templates.js";
 import { confirmAction } from "./confirm-state.js";
@@ -10,9 +12,9 @@ import { setContextBudget } from "./context-budget.js";
 import { nextRunAction, executionLabel } from "./run-experience.js";
 import { RunEvidence, VerificationEvidence } from "./run-evidence.js";
 import { DeleteRunDialog } from "./run-actions.js";
-import { Menu, MenuItem } from "./panel-bits.js";
+import { Menu, MenuItem, MenuTitle, Strip } from "./panel-bits.js";
 import { Component } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote, Markdown } from "./bits.js";
 import { TriageActions } from "./automations.js";
@@ -22,6 +24,11 @@ import { api, ApiError, baseName, copy, duration, enc, fmtCost, fmtSize, fmtToke
 import { loadLocalAttempts, localAttempts } from "./collab-state.js";
 import {
   agents,
+  loadAgentChats,
+  rememberAgentTab,
+  agentTabClosed,
+  setAgentTabClosed,
+  runs,
   agentSettings,
   optionValues,
   roleModels,
@@ -73,6 +80,7 @@ import type { AgentEvent, AgentId, Artifact, Attachment, CheckedReview, FindingC
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
 const openedAppTurns = new Set<string>();
+const chatScroll = new Map<string, { top: number; follow: boolean }>();
 const modelNote = (run: RunSummary | null, id?: AgentId, settings?: ChatSettings) => {
   const value = settings ?? (id ? run?.agentSettings?.[id] : undefined);
   return [value?.model, value?.effort].filter(Boolean).join(" · ");
@@ -95,7 +103,9 @@ export function RunView({ id }: { id: string }) {
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState("");
   const [resumeBudget, setResumeBudget] = useState<{ id: string; maxSteps: number; maxMinutes: number } | null>(null);
-  const { run, problem, data, persistence } = useRunStream(id, (step) => {
+  const scroll = useRef<HTMLDivElement>(null);
+  const followChat = useRef(true);
+  const { run, problem, data, persistence, version } = useRunStream(id, (step) => {
     // A side chat's turn isn't in the timeline: following it would close the step you're watching.
     if (follow.current && step.status === "running" && !sideWork(step)) setSelected(step.id);
   });
@@ -103,6 +113,11 @@ export function RunView({ id }: { id: string }) {
   useEffect(() => {
     if (run && run.status !== "running" && !run.seen && !document.hidden) void markSeen(run.id);
   }, [run?.status, run?.seen]);
+  useEffect(() => {
+    if (run?.pattern !== "solo") return;
+    rememberAgentTab(run);
+    void loadAgentChats(id).catch(error => showToast(`Could not load this task’s chats: ${error.message}`));
+  }, [id, run?.pattern]);
   // A run started from the team board links back to its task: the runner's own records say which attempt it executes (the engine knows nothing of tasks).
   useEffect(() => { void loadLocalAttempts(); }, [id]);
   const teamTask = localAttempts.value.find((entry) => entry.runId === id)?.taskId;
@@ -129,6 +144,12 @@ export function RunView({ id }: { id: string }) {
   useEffect(() => {
     if (selected) document.querySelector(".tl-step.selected")?.scrollIntoView({ block: "nearest" });
   }, [selected]);
+
+  useLayoutEffect(() => {
+    const saved = chatScroll.get(id); followChat.current = saved?.follow ?? true;
+    if (scroll.current && saved) scroll.current.scrollTop = saved.top;
+  }, [id, !!run]);
+  useEffect(() => { if (scroll.current && run?.pattern === "solo" && followChat.current) scroll.current.scrollTop = scroll.current.scrollHeight; }, [id, version]);
 
   if (!run)
     return (
@@ -169,7 +190,7 @@ export function RunView({ id }: { id: string }) {
   const state = runState(run);
   const awaitingInput = !!run.awaiting || teamAwaitingAnswer(run);
   /** A conversation with one agent (Single agent): the turns are the thread, not a list of steps. */
-  const chat = !!p?.chat;
+  const chat = !!p?.chat && !run.checkpointOnFinish;
 
   const next = nextRunAction(run);
   const allocation = resumeBudget?.id === run.id ? resumeBudget : { id: run.id, maxSteps: Math.min(run.loop.maxSteps, run.loop.maxInvocations ?? run.loop.maxSteps), maxMinutes: run.loop.maxMinutes };
@@ -183,7 +204,11 @@ export function RunView({ id }: { id: string }) {
   const resume = async () => {
     if (actionBusy || !allocationValid) return;
     setActionBusy(true); setActionError("");
-    try { await post(`/api/runs/${run.id}/resume`, { budget: { maxSteps: allocation.maxSteps, maxInvocations: allocation.maxSteps, maxMinutes: allocation.maxMinutes } }); }
+    try {
+      const turn = run.teamTurns?.at(-1), child = turn && runs.value.get(turn.executionId);
+      if (chat && child && child.status !== "done" && (runs.value.get(chatTaskId(run)) ?? run).taskTeam?.enabled) await post(`/api/runs/${run.id}/team-resume`, { execution: child.id });
+      else await post(`/api/runs/${run.id}/resume`, { budget: { maxSteps: allocation.maxSteps, maxInvocations: allocation.maxSteps, maxMinutes: allocation.maxMinutes } });
+    }
     catch (error) { setActionError((error as Error).message); }
     finally { setActionBusy(false); }
   };
@@ -199,7 +224,11 @@ export function RunView({ id }: { id: string }) {
   };
   return (
     <div class="runview">
-      <div class="run-scroll">
+      {chat ? <AgentTabs run={run} /> : null}
+      <div class="run-scroll" ref={scroll} onScroll={event => {
+        const el = event.currentTarget; followChat.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+        chatScroll.set(id, { top: el.scrollTop, follow: followChat.current });
+      }}>
         {persistence?.state === "saving" ? <p class="help" role="status">Saving run…</p> : persistence?.state === "error" ? <p class="msg err" role="alert">Run changes have not been saved: {persistence.error}</p> : null}
         {run.projectTeam && <p class="help">Standing team {run.projectTeam.phase} · <a href={`#/project/${run.project}`}>Review the opportunity, approve this result, or request a bounded team revision</a></p>}
         <header class="run-head">
@@ -216,7 +245,7 @@ export function RunView({ id }: { id: string }) {
               <h2 title={run.task}>{run.task.split("\n")[0] || "(no task)"}</h2>
             </div>
             <div class="run-actions">
-              {finished ? <Menu label="More run actions" icon="more">{close => <>
+              {finished && !chat ? <Menu label="More run actions" icon="more">{close => <>
                 <MenuItem onClick={() => { close(); try {
                   const common = { id: `strategy-${Date.now().toString(36)}`, name: run.task.split("\n")[0]!.slice(0, 80), scope: run.project ? "project" as const : "personal" as const, ...(run.project ? { project: run.project } : {}) };
                   setSavingStrategy(run.team ? templateFromPlan(run.team, common) : { schemaVersion: 1, ...common, version: 1, description: "Saved workflow. Parameterize inputs before reuse.", autoEnabled: false, parameters: ["task"], roles: [], tasks: [], contracts: [], workflow: run.pattern, task: "{{task}}", criteria: [] });
@@ -229,12 +258,12 @@ export function RunView({ id }: { id: string }) {
                 <button
                   class="btn danger"
                   onClick={async () => {
-                    if (await confirmAction(checking ? "Stop the running checks? Finished work stays on its branch; verification will be incomplete." : "Stop this run? Agents still working will be stopped; finished work stays on its branches.", {"title":"Stop current work?","confirmLabel":"Stop work","danger":true})) {
+                    if (chat || await confirmAction(checking ? "Stop the running checks? Finished work stays on its branch; verification will be incomplete." : "Stop this run? Agents still working will be stopped; finished work stays on its branches.", {"title":"Stop current work?","confirmLabel":"Stop work","danger":true})) {
                       post(`/api/runs/${run.id}/cancel`).catch((e) => showToast(e.message));
                     }
                   }}
                 >
-                  <Icon name="stop" /> {checking ? "Stop checks" : "Stop run"}
+                  <Icon name="stop" /> {checking ? "Stop checks" : chat ? "Stop" : "Stop run"}
                 </button>
               ) : null}
             </div>
@@ -242,10 +271,10 @@ export function RunView({ id }: { id: string }) {
         </header>
 
         <div class="thread">
-          <RunEvidence run={run} checking={checking} />
+          {!chat ? <RunEvidence run={run} checking={checking} /> : null}
           {run.teamTemplate || run.team?.templateUses?.length ? <details class="settings"><summary>Template provenance</summary><div class="settings-body">{run.teamTemplate ? <p>Selected: {run.teamTemplate.template.name} v{run.teamTemplate.template.version}</p> : null}{run.team?.templateUses?.map(use => <p key={use.id}>{use.id}: {use.templateId} v{use.version}{use.instructions ? ` · adaptation: ${use.instructions}` : ""}</p>)}<p class="help">Definitions and inputs are pinned to this run. Library edits do not change this execution.</p></div></details> : null}
-          {run.permissions ? <details class="settings"><summary>Run permissions · {run.permissions.trust}{run.permissions.antigravityExecution === "native" ? " · Unrestricted Antigravity" : ""}</summary><div class="settings-body"><p>{run.permissions.antigravityExecution === "native" ? "Unrestricted Antigravity uses the existing login and normal provider settings. Its read-only requests are advisory; terminal, browser, MCP, hooks and native agents are unrestricted by Code Flow, including child usage outside the worker budget. Other providers inherit the run policy." : "Workers inherit this run’s policy. Planning and review turns use narrower access. Native agent delegation is disabled; Code Flow schedules the team."}</p>{[...data.current.steps.values()].filter(step => step.permissions).map(step => <p key={step.id}>{step.title}: {step.permissions!.trust} · {step.permissions!.mode} · {step.permissions!.isolation} · command network {step.permissions!.commandNetwork} · external tools {step.permissions!.externalTools}{step.permissions!.implementation ? <><br /><span class="help">{step.permissions!.implementation}: {step.permissions!.limitations.join(" ")}</span></> : null}</p>)}<p class="help">Worktrees do not restrict reads. External browser/MCP tools retain their provider permissions unless explicitly disabled. Setup, checks and previews use their separately configured execution environment.</p></div></details> : null}
-          {next ? <section class={`next-action ${["resume", "provider", "check", "revise"].includes(next.kind) ? "needs-attention" : ""}`} aria-label="Next action">
+          {!chat && run.permissions ? <details class="settings"><summary>Run permissions · {run.permissions.trust}{run.permissions.antigravityExecution === "native" ? " · Unrestricted Antigravity" : ""}</summary><div class="settings-body"><p>{run.permissions.antigravityExecution === "native" ? "Unrestricted Antigravity uses the existing login and normal provider settings. Its read-only requests are advisory; terminal, browser, MCP, hooks and native agents are unrestricted by Code Flow, including child usage outside the worker budget. Other providers inherit the run policy." : "Workers inherit this run’s policy. Planning and review turns use narrower access. Native agent delegation is disabled; Code Flow schedules the team."}</p>{[...data.current.steps.values()].filter(step => step.permissions).map(step => <p key={step.id}>{step.title}: {step.permissions!.trust} · {step.permissions!.mode} · {step.permissions!.isolation} · command network {step.permissions!.commandNetwork} · external tools {step.permissions!.externalTools}{step.permissions!.implementation ? <><br /><span class="help">{step.permissions!.implementation}: {step.permissions!.limitations.join(" ")}</span></> : null}</p>)}<p class="help">Worktrees do not restrict reads. External browser/MCP tools retain their provider permissions unless explicitly disabled. Setup, checks and previews use their separately configured execution environment.</p></div></details> : null}
+          {!chat && next ? <section class={`next-action ${["resume", "provider", "check", "revise"].includes(next.kind) ? "needs-attention" : ""}`} aria-label="Next action">
             <div><h3>{next.title}</h3><p>{next.detail}</p>
               {next.kind === "resume" ? <div class="resume-budget" role="group" aria-label="Resume budget">
                 <div class="resume-budget-fields">
@@ -263,9 +292,9 @@ export function RunView({ id }: { id: string }) {
             </div>
           </section> : null}
           {actionError ? <p class="msg err" role="alert">{actionError}</p> : null}
-          {!finished ? <LiveProgress run={run} steps={steps} /> : <ResultStudio run={run} />}
+          {!chat ? !finished ? <LiveProgress run={run} steps={steps} /> : <ResultStudio run={run} /> : null}
           {finished && !chat ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
-          <RunMeta run={run} />
+          {!chat ? <RunMeta run={run} /> : null}
           {run.source?.kind === "pr" && !Object.values(run.prs ?? {}).includes(run.source.url) ? <GithubReviewThreadsPanel runId={run.id} /> : null}
           {run.lockdown ? (
             <div class="lockdown" role="note">
@@ -280,16 +309,17 @@ export function RunView({ id }: { id: string }) {
               <div class="run-task">
                 <Markdown text={run.task} />
               </div>
-              <RunChips run={run} />
+              {!chat ? <RunChips run={run} /> : null}
               {run.parentRunId ? (
                 <a class="help" href={`#/run/${run.parentRunId}`}>
-                  ↩ continues an earlier run
+                  ↩ previous conversation
                 </a>
               ) : null}
               {run.supersededBy ? <a class="help" href={`#/run/${run.supersededBy}`}>Continue with the revised goal →</a> : null}
             </div>
           </div>
 
+          {run.taskExecution ? <a class="btn" href={`#/run/${run.taskExecution.chatId}`}>Back to conversation</a> : null}
           {run.awaiting ? <div id="run-approval" tabIndex={-1}><AwaitingCard run={run} /></div> : null}
           {teamAwaitingAnswer(run) ? <div id="run-question" tabIndex={-1}><TeamQuestionCard run={run} /></div> : null}
           {run.team ? <AutoTeam run={run} steps={steps} /> : null}
@@ -308,7 +338,7 @@ export function RunView({ id }: { id: string }) {
           ) : null}
 
           {chat ? (
-            <ChatThread run={run} steps={steps} data={data.current} />
+            <><ChatThread run={run} steps={steps} data={data.current} />{["failed", "stopped", "interrupted", "cancelled"].includes(run.status) ? <div class="chat-recovery" role="status"><p>{run.error ?? run.stopReason ?? "Work is saved. Resume when you're ready."}</p><button class="btn small" disabled={actionBusy} onClick={() => void resume()}>{actionBusy ? "Resuming…" : run.providerRecovery ? "Retry reply" : "Resume"}</button>{actionError ? <p class="help" role="alert">{actionError}</p> : null}</div> : null}</>
           ) : (
             /* The agents' work: one disclosure, each step opening inline to its transcript. */
             <details class={`work ${finished ? "" : "live"}`} open={showWork}>
@@ -356,12 +386,11 @@ export function RunView({ id }: { id: string }) {
 
 
           {chat ? null : <FollowUpThread run={run} data={data.current} />}
-          {finished && chat ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} chat /> : null}
-          <ActivityLog logs={data.current.logs} count={data.current.logs.length} />
+          {!chat ? <ActivityLog logs={data.current.logs} count={data.current.logs.length} /> : null}
         </div>
       </div>
 
-      <ConversationBar run={run} steps={steps} chat={chat} />
+      <ConversationBar key={run.id} run={run} steps={steps} chat={chat} />
       {recovering ? <RecoveryCheckDialog run={run} onClose={() => setRecovering(false)} /> : null}
       {savingStrategy ? <SaveStrategyDialog template={savingStrategy} onClose={() => setSavingStrategy(null)} /> : null}
       {deleting ? <DeleteRunDialog run={run} onClose={() => setDeleting(false)} /> : null}
@@ -370,7 +399,35 @@ export function RunView({ id }: { id: string }) {
   );
 }
 
-/** One line for the work section: what's happening now, or how the work went. */
+/** Main conversations on a task; closing a tab preserves its history, drafts and execution. */
+function AgentTabs({ run }: { run: RunSummary }) {
+  const workspace = run.chatLink?.workspaceId ?? run.id;
+  const tabs = [...runs.value.values()].filter(other => other.pattern === "solo" && !other.archived && other.chatLink?.kind !== "side" && (other.chatLink?.workspaceId ?? other.id) === workspace);
+  if (!tabs.some(other => other.id === run.id)) tabs.push(run);
+  tabs.sort((a, b) => a.createdAt - b.createdAt);
+  const opened = tabs.filter(tab => tab.id === run.id || !agentTabClosed(tab));
+  const pick = (tab: RunSummary) => { rememberAgentTab(tab); navigate({ view: "run", id: tab.id }); };
+  const close = (id: string) => {
+    const at = opened.findIndex(tab => tab.id === id);
+    const tab = opened[at];
+    if (!tab) return;
+    setAgentTabClosed(tab, true);
+    if (id === run.id) {
+      const next = opened[at + 1] ?? opened[at - 1];
+      if (next) pick(next); else navigate({ view: "composer" });
+    }
+    if (tab.status === "running") showToast("Tab closed. The agent continues working; reopen it from this task.", 5000);
+  };
+  return <Strip label="Agent chats" active={run.id} items={opened.map(tab => ({ key: tab.id, label: `${SHORT[(tab.conversationAgent ?? tab.roles.agent?.[0]) ?? "claude"]} · ${tab.task.split("\n")[0]!.slice(0, 45)}`, title: tab.task, agent: (tab.conversationAgent ?? tab.roles.agent?.[0]), state: tab.status === "running" ? "working" : undefined }))} onPick={id => pick(tabs.find(tab => tab.id === id)!)} onClose={close} closeTitle="Close tab — keeps history and any running work">
+    <Menu label="All chats" icon="menu" align="end" title="All chats on this task, including closed tabs">
+      {done => <>
+        <MenuTitle>Chats on this task</MenuTitle>
+        {tabs.map(tab => <MenuItem key={tab.id} on={tab.id === run.id} sub={`${SHORT[(tab.conversationAgent ?? tab.roles.agent?.[0]) ?? "claude"]} · ${STATUS_TEXT[tab.status] ?? tab.status}${agentTabClosed(tab) ? " · Closed tab" : ""}`} onClick={() => { done(); pick(tab); }}>{tab.task.split("\n")[0]}</MenuItem>)}
+      </>}
+    </Menu>
+  </Strip>;
+}
+
 function WorkSummary({ run, steps }: { run: RunSummary; steps: Step[] }) {
   const live = steps.filter((s) => s.status === "running");
   const failed = steps.filter((s) => s.status === "failed").length;
@@ -672,7 +729,7 @@ export function FollowUpBadges({ f, run }: { f: FollowUp; run?: RunSummary }) {
 export function TurnBody({ run, step, data, answer }: { run: RunSummary; step: Step; data: RunData; answer?: string }) {
   const [open, setOpen] = useState(false);
   const version = data.events.get(step.id)?.length ?? 0;
-  const text = answer ?? (step.status === "done" ? step.finalText : step.error ?? step.finalText);
+  const text = answer ?? step.finalText;
   const latestTurn = [...data.steps.values()].filter(value => (value.kind ?? "agent") === "agent" && !sideWork(value)).sort((a, b) => a.startedAt - b.startedAt).at(-1)?.id;
   useEffect(() => {
     const identity = `${run.id}:${step.id}:${step.endedAt}`;
@@ -703,8 +760,9 @@ export function TurnBody({ run, step, data, answer }: { run: RunSummary; step: S
         {open ? "Hide work" : `Show work${tools ? ` · ${tools} tool call${tools === 1 ? "" : "s"}` : ""}`}
         {step.endedAt ? ` · ${duration(step.endedAt - step.startedAt)}` : ""}
       </button>
-      {open ? <Transcript run={run} step={step} data={data} version={version} /> : null}
-      {!text ? null : step.status === "done" ? <Markdown text={text} /> : <div class="ev error">{text}</div>}
+      {open ? <>{step.teamResponseFor ? [...data.steps.values()].filter(previous => previous.teamResponseFor === step.teamResponseFor && previous.id !== step.id).map(previous => <p class="help" key={previous.id}>{SHORT[previous.agent ?? "claude"]}: {previous.error ?? previous.status}. Continued with {SHORT[step.agent ?? "claude"]}.</p>) : null}<Transcript run={run} step={step} data={data} version={version} /></> : null}
+      {text ? <Markdown text={text} /> : step.status !== "done" && !open ? <Transcript run={run} step={step} data={data} version={version} /> : null}
+      {step.error ? <div class="ev error" role="status">{step.error}</div> : null}
     </div>
   );
 }
@@ -718,7 +776,8 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
   const followUps = run.followUps.filter((f) => !f.side); // side chats show in the side panel
   const byStep = new Map(followUps.filter((f) => f.stepId).map((f) => [f.stepId!, f]));
   const sideSteps = sideStepIds(run);
-  const turns = steps.filter((s) => (s.kind ?? "agent") === "agent" && !sideSteps.has(s.id));
+  const responseSteps = new Map(steps.filter(step => step.teamResponseFor).map(step => [step.teamResponseFor, step.id]));
+  const turns = steps.filter((s) => (s.kind ?? "agent") === "agent" && !sideSteps.has(s.id) && (!s.teamResponseFor || responseSteps.get(s.teamResponseFor) === s.id));
   const stepless = followUps.filter((f) => !f.stepId || !data.steps.has(f.stepId));
   // A change a side chat made gets a line, where its turn ran, so the history is whole.
   const sideChanges = run.followUps.filter((f) => f.side?.mode === "change" && f.status !== "pending");
@@ -733,8 +792,28 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
   // ended before its turn) hasn't touched the branch.
   const nothingAfter = followUps.length === 0 && !run.followUps.some((f) => f.side?.mode === "change" && !!f.stepId);
   const agent = Object.values(run.roles).flat()[0];
+  const corrections = (followUp?: FollowUp) => {
+    const start = followUp?.at ?? run.createdAt;
+    const end = followUps.find(next => next.at > start)?.at ?? Infinity;
+    return run.notes.filter(note => note.teamDelivery && note.at >= start && note.at < end);
+  };
+  // The engine's durable ask key identifies the message that delegated this work.
+  // Keep its progress and approval beside that message, including after reload.
+  const teamTurns = (followUp?: FollowUp) => (run.teamTurns ?? []).filter(turn => followUp ? turn.key.includes(`|follow-up ${followUp.id}#`) : turn.key.startsWith("agent|"));
+  const teamWorking = (followUp?: FollowUp) => teamTurns(followUp).some(turn => !turn.report);
+  const teamActivity = (followUp?: FollowUp) => {
+    const turns = teamTurns(followUp);
+    const active = turns.map(turn => runs.value.get(turn.executionId)).find(child => child?.status === "running");
+    return <>
+      {active?.awaiting ? <AwaitingCard run={active} compact /> : null}
+      {active && teamAwaitingAnswer(active) ? <TeamQuestionCard run={active} replyChatId={run.id} /> : null}
+      <TaskTeamActivity run={run} turns={turns} />
+    </>;
+  };
+  const correctionBubble = (note: Note) => <div key={note.id} class="team-question-history">{note.question ? <div class="msg-agent"><div class="help">{note.question.sender} asked</div><Markdown text={note.question.body} /></div> : null}<div class="msg-you"><div class="bubble"><Markdown text={note.text} /><div class="help" role="status">{note.control ? "Stopped · work saved. Resume when you’re ready." : note.teamDelivery?.state === "applied" ? note.requestId ? "Answer sent" : note.teamDelivery.taskIds?.length ? `Updated ${note.teamDelivery.taskIds.join(", ")}` : "Added to the team request" : note.teamDelivery?.state === "not_applied" ? "Saved for your agent" : "Received · updating the team…"}</div></div></div></div>;
   return (
     <>
+      {!turns.length && !followUps.length ? <>{corrections().map(correctionBubble)}{teamActivity()}</> : null}
       {thread.map(({ step: s, followUp, side }) => {
         if (side) return <SideNote key={side.id} run={run} f={side} />;
         if (!s) {
@@ -746,7 +825,9 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
                   <Markdown text={f.message} />
                 </div>
               </div>
-              <div class="fu-answer">
+              {corrections(f).map(correctionBubble)}
+              {teamActivity(f)}
+              {!teamWorking(f) ? <div class="fu-answer">
                 <div class="fu-head">
                   <AgentTag id={f.agent} />
                   {f.status === "pending" && (run.status === "running" || run.status === "done") ? (
@@ -756,7 +837,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
                   )}
                 </div>
                 {f.status === "pending" || !f.result ? null : f.status === "failed" ? <div class="ev error">{f.result}</div> : <Markdown text={f.result} />}
-              </div>
+              </div> : null}
             </div>
           );
         }
@@ -772,6 +853,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
                 </div>
               </div>
             ) : null}
+            {!s.leadQuestion ? corrections(f).map(correctionBubble) : null}
             {notes.map((n) => (
               <div key={n.id} class="msg-you">
                 <div class="bubble">
@@ -780,6 +862,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
                 </div>
               </div>
             ))}
+            {!s.leadQuestion ? teamActivity(f) : null}
             <div class="fu-answer">
               <div class="fu-head">
                 <AgentTag id={s.agent} note={modelNote(run, s.agent, s.settings)} />
@@ -800,7 +883,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
           <Transcript run={run} step={step} data={data} version={data.events.get(step.id)?.length ?? 0} />
         </details>;
       }) : null}
-      {!turns.length && run.status === "running" ? (
+      {!turns.length && !teamWorking() && run.status === "running" ? (
         <div class="fu-answer">
           <div class="fu-head">
             <AgentTag id={agent} />
@@ -1586,7 +1669,7 @@ function ArchiveDialog({ run, onClose }: { run: RunSummary; onClose: () => void 
 }
 
 // ---------------------------------------------------------------- talking to the team
-function AwaitingCard({ run }: { run: RunSummary }) {
+function AwaitingCard({ run, compact = false }: { run: RunSummary; compact?: boolean }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const answer = async (decision: "approve" | "revise" | "reject") => {
@@ -1602,6 +1685,13 @@ function AwaitingCard({ run }: { run: RunSummary }) {
     }
   };
   const awaiting = run.awaiting!;
+  if (compact) return <section class="conversation-approval" aria-label="Team plan approval">
+    <div class="conversation-approval-heading"><span class="task-team-dot" /><b>Your team has a plan</b></div>
+    {run.team?.rationale ? <p>{run.team.rationale.slice(0, 280)}</p> : <p>Review the proposed work before the team starts.</p>}
+    {run.team?.tasks.length ? <ul>{run.team.tasks.slice(0, 3).map(task => <li key={task.id}>{task.title}</li>)}{run.team.tasks.length > 3 ? <li>And {run.team.tasks.length - 3} more in the full plan</li> : null}</ul> : null}
+    <details class="conversation-plan-details"><summary>Review full plan</summary><Markdown text={awaiting.content} /><label class="lbl">Changes to the plan<textarea class="field" rows={2} value={note} onInput={event => setNote(event.currentTarget.value)} /></label><div class="row"><button class="btn small" disabled={busy || !note.trim()} onClick={() => answer("revise")}>Ask for changes</button><button class="btn ghost small" disabled={busy} onClick={() => answer("reject")}>Reject plan</button></div></details>
+    <div class="conversation-approval-actions"><button class="btn primary" disabled={busy} onClick={() => answer("approve")}>{busy ? "Sending…" : "Approve plan"}</button><span class="help">You can also send changes in the chat.</span></div>
+  </section>;
   return (
     <div class="awaiting-card">
       <div class="aw-head">
@@ -1656,21 +1746,29 @@ export function DraftImages({ images, onRemove }: { images: Attachment[]; onRemo
   );
 }
 
-export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: Step[]; chat: boolean }) {
-  const [text, setText] = useState("");
+const agentDrafts = new Map<string, { text: string; images: Attachment[] }>();
+function savedAgentDraft(id: string) {
+  const draft = agentDrafts.get(id); if (draft) return draft;
+  try { return { text: sessionStorage.getItem(`agent-draft:${id}`) ?? "", images: [] }; } catch { return { text: "", images: [] }; }
+}
+
+export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSummary; steps: Step[]; chat: boolean; onOpenChat?: (id: string) => void }) {
+  const [text, setText] = useState(savedAgentDraft(run.id).text);
   const [target, setTarget] = useState("");
   const [handoffOpen, setHandoffOpen] = useState(false);
+  const openChat = onOpenChat ?? (id => navigate({ view: "run", id }));
   const [replySettings, setReplySettings] = useState<Record<string, ChatSettings>>({});
   const [replyPermissions, setReplyPermissions] = useState<ChatPermissions | null>(null);
   const [busy, setBusy] = useState(false);
   const [followupSteps, setFollowupSteps] = useState(run.loop.maxInvocations ?? run.loop.maxSteps);
   const [followupMinutes, setFollowupMinutes] = useState(run.loop.maxMinutes);
   /** Snapshots that came with pins from the Browser: they go with the reply. */
-  const [images, setImages] = useState<Attachment[]>([]);
+  const [images, setImages] = useState<Attachment[]>(savedAgentDraft(run.id).images);
+  useEffect(() => { agentDrafts.set(run.id, { text, images }); try { if (text) sessionStorage.setItem(`agent-draft:${run.id}`, text); else sessionStorage.removeItem(`agent-draft:${run.id}`); } catch {} }, [run.id, text, images]);
   const area = useRef<HTMLTextAreaElement>(null);
   // Pins sent here from the side panel's Browser land in the box, to add a line to before sending.
   // Without a box (a run that failed or stopped) they wait in the queue, for when it's resumed.
-  const takes = run.status === "running" || run.status === "done";
+  const takes = run.status === "running" || run.status === "done" || chat && run.worktrees.length > 0;
   useEffect(() => {
     if (!takes) return;
     const drafts = takeDrafts(`main:${run.id}`);
@@ -1699,14 +1797,14 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
   // Who you can talk to after the run: each agent that wrote code, in its worktree.
   const writers = [
     ...new Map(
-      steps.filter((s) => (s.kind ?? "agent") === "agent" && s.mode === "write" && s.agent && s.worktree).map((s) => [`${s.agent}@${s.worktree}`, s]),
+      steps.filter((s) => (s.kind ?? "agent") === "agent" && (s.mode === "write" || run.chatLink?.kind === "side") && s.agent && s.worktree).map((s) => [`${s.agent}@${s.worktree}`, s]),
     ).values(),
   ];
   const teamAgents = [...new Set(Object.values(run.roles).flat())];
   const coordinator = run.team?.members.find((member) => member.role === "coordinator");
-  const soloAgent = run.pattern === "solo" ? run.roles.agent?.[0] : undefined;
+  const soloAgent = run.pattern === "solo" ? run.conversationAgent ?? run.roles.agent?.[0] : undefined;
   const soloWriter = soloAgent ? writers.find((step) => step.agent === soloAgent) : undefined;
-  const defaultTarget = !running && soloWriter ? `${soloAgent}@${soloWriter.worktree}` : running ? coordinator && coordinator.status !== "retired" ? `member:${coordinator.id}` : "" : run.team ? "team" : writers.at(-1) ? `${writers.at(-1)!.agent}@${writers.at(-1)!.worktree}` : "team";
+  const defaultTarget = !running && soloAgent && run.worktrees.some(tree => tree.name === "solo") ? `${soloAgent}@solo` : running ? coordinator && coordinator.status !== "retired" ? `member:${coordinator.id}` : "" : run.team ? "team" : writers.at(-1) ? `${writers.at(-1)!.agent}@${writers.at(-1)!.worktree}` : "team";
   const targets = running ? run.team ? run.team.members.filter((member) => member.status !== "retired").map((member) => `member:${member.id}`) : teamAgents : ["team", ...writers.map((step) => `${step.agent}@${step.worktree}`)];
   const chosen = target && targets.includes(target) ? target : defaultTarget;
   const targetProvider = chosen.includes("@") ? chosen.split("@")[0] as AgentId : undefined;
@@ -1718,7 +1816,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
   const member = run.team?.members.find((item) => item.id === memberId);
   const minimumCalls = followupMinimumCalls(!!run.team, running, chosen);
   const budgetValid = Number.isInteger(followupSteps) && followupSteps >= minimumCalls && followupSteps <= 200 && Number.isFinite(followupMinutes) && followupMinutes >= 1 && followupMinutes <= 720;
-  if (!running && !sideOnly && run.status !== "done") return null;
+  if (!takes) return null;
 
   const send = async () => {
     if (!text.trim() || busy || (!running && !budgetValid)) return;
@@ -1728,6 +1826,9 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
       if (running) {
         const note = await post<Note>(`/api/runs/${run.id}/notes`, { text, agent: memberId ? undefined : chosen || undefined, memberId });
         if (images.length) showToast("Sent. The snapshots stay here: they go with a reply once the run has finished", 6000);
+        else if (note.requestId) showToast("Answer sent to the team");
+        else if (note.control) showToast("Stopped — work is saved");
+        else if (note.teamDelivery) showToast("Received — updating the team with your message");
         else if (note.deliveredTo?.midTurn) showToast(`Sent into ${note.deliveredTo.agent}'s running turn`);
         else showToast(chosen ? `Queued for ${member?.name ?? chosen}'s next turn` : "Queued for the next agent's turn");
         setText("");
@@ -1823,9 +1924,10 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
   return (
     <div class="convo">
       <div class="convo-inner">
-        {handoffOpen ? <ProviderChatDialog run={run} onClose={() => setHandoffOpen(false)} /> : null}
+        {chat ? <TaskTeamStatus run={run} /> : null}
+        {handoffOpen ? <ProviderChatDialog run={run} onClose={() => setHandoffOpen(false)} onOpenChat={openChat} /> : null}
         {!budgetValid ? <p class="msg err" role="alert">Send is off until the budget below allows {minimumCalls}–200 calls and 1–720 minutes.</p> : null}
-        {!running || run.team ? <details class="followup-budget"><summary>{running ? "Goal revision budget" : "New execution budget"} · {followupSteps} calls · {followupMinutes} min</summary><div class="at-row"><label>Maximum calls<input class="field" aria-label="Follow-up maximum calls" type="number" min={minimumCalls} max={200} value={followupSteps} onInput={(event) => setFollowupSteps(Number(event.currentTarget.value))} /></label><label>Maximum minutes<input class="field" aria-label="Follow-up maximum minutes" type="number" min={1} max={720} value={followupMinutes} onInput={(event) => setFollowupMinutes(Number(event.currentTarget.value))} /></label></div><p class="help">{sideOnly ? "A reply queued behind a side chat joins the running execution's allowance; this budget applies when a reply starts a new execution. " : "This is a new allocation. "}The result branch, project memory and applicable context are retained. Earlier spend remains in lifetime usage.</p>{!budgetValid ? <p class="msg err">Choose {minimumCalls}–200 calls and 1–720 minutes.</p> : null}</details> : null}
+        {!chat && (!running || run.team) ? <details class="followup-budget"><summary>{running ? "Goal revision budget" : "New execution budget"} · {followupSteps} calls · {followupMinutes} min</summary><div class="at-row"><label>Maximum calls<input class="field" aria-label="Follow-up maximum calls" type="number" min={minimumCalls} max={200} value={followupSteps} onInput={(event) => setFollowupSteps(Number(event.currentTarget.value))} /></label><label>Maximum minutes<input class="field" aria-label="Follow-up maximum minutes" type="number" min={1} max={720} value={followupMinutes} onInput={(event) => setFollowupMinutes(Number(event.currentTarget.value))} /></label></div><p class="help">{sideOnly ? "A reply queued behind a side chat joins the running execution's allowance; this budget applies when a reply starts a new execution. " : "This is a new allocation. "}The result branch, project memory and applicable context are retained. Earlier spend remains in lifetime usage.</p>{!budgetValid ? <p class="msg err">Choose {minimumCalls}–200 calls and 1–720 minutes.</p> : null}</details> : null}
         {running && sentNotes.length ? <details key={run.id} class="activity note-history">
           <summary>Sent messages ({sentNotes.length})</summary>
           <div class="notes">{sentNotes.map(noteChip)}</div>
@@ -1836,7 +1938,7 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
           <textarea
             ref={area}
             rows={1}
-            aria-label={running ? "Message the team" : "Reply"}
+            aria-label={chat ? "Message agent" : running ? "Message the team" : "Reply"}
             placeholder={placeholder}
             value={text}
             onInput={(e) => setText(e.currentTarget.value)}
@@ -1877,8 +1979,10 @@ export function ConversationBar({ run, steps, chat }: { run: RunSummary; steps: 
                 </select>
               </label>
             )}
-            {!running && chosen !== "team" && replyAgent ? <ChatControls agent={replyAgent} settings={selectedSettings} onSettings={(value) => setReplySettings({ ...replySettings, [replyAgent]: value })} permissions={selectedPermissions} onPermissions={setReplyPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} /> : null}
-            {run.pattern === "solo" ? <Menu label="Chat actions" icon="more" class="chat-choice chat-action-menu" above align="end">{(close) => <MenuItem disabled={running || sideOnly || busy} sub={running || sideOnly ? "Available when this chat finishes" : "Carry this conversation into a separate chat"} onClick={() => { close(); setHandoffOpen(true); }}>Start new chat with another provider…</MenuItem>}</Menu> : null}
+            {!running && chosen !== "team" && replyAgent && !(chat && (runs.value.get(chatTaskId(run)) ?? run).taskTeam?.enabled) ? <ChatControls showPermissions={run.chatLink?.kind !== "side"} providers={run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={replyAgent} onAgent={chat ? async agent => { try { const next = await post<{ id: string }>(`/api/runs/${run.id}/provider-chat`, { agent, kind: run.chatLink?.kind ?? "tab" }); openChat(next.id); } catch (error) { showToast((error as Error).message); } } : undefined} settings={selectedSettings} onSettings={(value) => setReplySettings({ ...replySettings, [replyAgent]: value })} permissions={selectedPermissions} onPermissions={setReplyPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} /> : null}
+            {chat && soloAgent ? <TaskTeamControl run={run} lead={soloAgent} /> : null}
+            {run.chatLink?.kind === "side" ? <span class="help">Read only</span> : null}
+            {run.pattern === "solo" ? <Menu label="Chat actions" icon="more" class="chat-choice chat-action-menu" above align="end">{(close) => <MenuItem disabled={busy || !run.worktrees.length} sub="Continue with context in a new workspace tab" onClick={() => { close(); setHandoffOpen(true); }}>Fork chat…</MenuItem>}</Menu> : null}
             <span class="chatbox-hint" title={hint}>
               {hint}
             </span>
@@ -2026,6 +2130,7 @@ type Item = (
 export interface Built {
   items: Item[];
   tools: Map<string, Extract<Item, { kind: "tool" }>>;
+  messages?: Map<string, Extract<Item, { text: string }>>;
   /** Events already turned into items. */
   count: number;
 }
@@ -2045,6 +2150,15 @@ export function itemsFor(data: RunData, step: Step): Item[] {
 function addItem(built: Built, e: AgentEvent, streamsDeltas: boolean) {
   const { items, tools } = built;
   const last = items.at(-1);
+  if ((e.kind === "text" || e.kind === "thinking") && e.messageId) {
+    const messages = built.messages ??= new Map();
+    const key = `${e.kind}:${e.messageId}`;
+    let item = messages.get(key);
+    if (!item) { item = { kind: e.kind, text: "", v: 0 }; messages.set(key, item); items.push(item); }
+    item.text = e.delta ? item.text + e.text : e.text;
+    item.v++;
+    return;
+  }
   switch (e.kind) {
     case "text":
       // ACP and agy stream small deltas; the other CLIs send whole blocks.
@@ -2079,7 +2193,7 @@ function addItem(built: Built, e: AgentEvent, streamsDeltas: boolean) {
         tools.set(e.callId, tool); items.push(tool);
       }
       if (tool) {
-        tool.output = e.output;
+        tool.output = e.delta ? (tool.output ?? "") + e.output : e.output;
         tool.isError = e.isError;
         tool.v++;
       }
@@ -2145,7 +2259,7 @@ export async function editAndRerun(run: RunSummary) {
   const destination = projectFor(run);
   if (!await openComposer(destination?.id ?? "", { repository: run.repo, stay: true })) return;
   if (request !== rerunRequest || route.value !== origin || repo.value !== run.repo) return;
-  rerunDraft.value = structuredClone({ id: run.id, repo: run.repo, loop: run.loop, approvals: run.approvals ?? {}, source: run.source });
+  rerunDraft.value = structuredClone({ id: run.id, repo: run.repo, loop: run.loop, approvals: run.approvals ?? {}, source: run.source, checkpointOnFinish: run.checkpointOnFinish });
   composerRunOptions.value = {
     remoteWorker: run.loop.remoteWorker,
     container: { enabled: !!run.loop.agentContainer, image: run.loop.agentContainer?.image ?? "", authVolume: run.loop.agentContainer?.authVolume ?? "" },
@@ -2222,8 +2336,8 @@ function RecoveryCheckDialog({ run, onClose }: { run: RunSummary; onClose: () =>
   </div></dialog>;
 }
 
-function ProviderChatDialog({ run, onClose }: { run: RunSummary; onClose: () => void }) {
-  const choices = agents.value.filter((agent) => agent.id !== run.roles.agent?.[0]);
+function ProviderChatDialog({ run, onClose, onOpenChat }: { run: RunSummary; onClose: () => void; onOpenChat: (id: string) => void }) {
+  const choices = run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : agents.value;
   const [agent, setAgent] = useState<AgentId>(choices.find((agent) => agent.available)?.id ?? choices[0]?.id ?? "codex");
   const [settings, setSettings] = useState<ChatSettings>({});
   const [message, setMessage] = useState("");
@@ -2233,14 +2347,14 @@ function ProviderChatDialog({ run, onClose }: { run: RunSummary; onClose: () => 
     if (busy) return;
     setBusy(true); setError("");
     try {
-      const next = await post<{ id: string }>(`/api/runs/${run.id}/provider-chat`, { agent, settings, message });
-      onClose(); navigate({ view: "run", id: next.id });
+      const next = await post<{ id: string }>(`/api/runs/${run.id}/provider-chat`, { agent, settings, message, kind: run.chatLink?.kind ?? "tab" });
+      onClose(); onOpenChat(next.id);
     } catch (error) { setError((error as Error).message); setBusy(false); }
   };
   return <dialog class="picker small-dialog" ref={ref} aria-labelledby="provider-chat-title"><div class="picker-inner">
-    <div class="picker-head"><h3 id="provider-chat-title">New chat with another provider</h3></div>
+    <div class="picker-head"><h3 id="provider-chat-title">Fork chat</h3></div>
     <div class="dialog-body">
-      <p class="help">Carries over this conversation, saved context files, and committed code into a new worktree on the same computer. The original chat stays intact. Tool logs and private provider sessions are not transferred.</p>
+      <p class="help">Opens a new tab with this conversation and saved context. Tabs share the workspace, including uncommitted edits. Each tab has its own provider session; editing turns take turns using the workspace.</p>
       <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0 }}>
         <ChatControls agent={agent} onAgent={(value) => { setAgent(value); setSettings({}); }} providers={choices} settings={settings} onSettings={setSettings} permissions={{ trust: run.trust, tools: false }} onPermissions={() => {}} showPermissions={false} />
         <label>First message <span class="help">Optional</span><textarea class="field" rows={3} maxLength={20000} value={message} onInput={(event) => setMessage(event.currentTarget.value)} placeholder="What should the new chat do?" /></label>

@@ -1,4 +1,5 @@
 import "./check-node.mjs";
+import { packager } from "@electron/packager";
 import { cp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -32,33 +33,32 @@ if (!bytes || createHash("sha256").update(bytes).digest("hex") !== nodeHash[arch
 run(process.execPath, ["scripts/package-npm.mjs"]);
 const staging = join(root, "output/macos", arch);
 await rm(staging, { recursive: true, force: true });
-const contents = join(staging, "Code Flow.app/Contents");
-const resources = join(contents, "Resources");
-await mkdir(join(contents, "MacOS"), { recursive: true });
-await mkdir(join(resources, "node"), { recursive: true });
-run("tar", ["-xzf", archive, "--strip-components=1", "-C", join(resources, "node"), `node-v${nodeVersion}-darwin-${arch}/bin/node`, `node-v${nodeVersion}-darwin-${arch}/LICENSE`]);
-await cp(join(root, "dist/npm"), join(resources, "app"), { recursive: true });
-await writeFile(join(contents, "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleName</key><string>Code Flow</string>
-<key>CFBundleDisplayName</key><string>Code Flow Preview</string>
-<key>CFBundleIdentifier</key><string>io.github.midhunxavier.code-flow</string>
-<key>CFBundleExecutable</key><string>CodeFlow</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>${pkg.version.split("-")[0]}</string>
-<key>CFBundleVersion</key><string>${pkg.version.match(/preview\.(\d+)$/)?.[1] ?? "1"}</string>
-<key>LSMinimumSystemVersion</key><string>13.0</string>
-<key>LSUIElement</key><true/>
-<key>NSHighResolutionCapable</key><true/>
-</dict></plist>\n`);
-run("xcrun", ["swiftc", "-O", "-swift-version", "5", "-target", `${arch === "x64" ? "x86_64" : arch}-apple-macosx13.0`, "integrations/macos/CodeFlow.swift", "-o", join(contents, "MacOS/CodeFlow"), "-framework", "AppKit"]);
+const desktop = join(root, "dist/desktop");
+await rm(desktop, { recursive: true, force: true });
+await mkdir(join(desktop, "node"), { recursive: true });
+run("tar", ["-xzf", archive, "--strip-components=1", "-C", join(desktop, "node"), `node-v${nodeVersion}-darwin-${arch}/bin/node`, `node-v${nodeVersion}-darwin-${arch}/LICENSE`]);
+await cp(join(root, "dist/npm"), join(desktop, "backend"), { recursive: true });
+await cp(join(root, "integrations/desktop/main.cjs"), join(desktop, "main.cjs"));
+await writeFile(join(desktop, "package.json"), JSON.stringify({ name: "code-flow-desktop", productName: "Code Flow", version: pkg.version, description: pkg.description, main: "main.cjs", author: "Code Flow contributors", license: "MIT" }, null, 2));
+const computerHelper = join(desktop, "backend/scripts/computer-use");
+run("xcrun", ["swiftc", "-O", "-swift-version", "5", "-target", `${arch === "x64" ? "x86_64" : arch}-apple-macosx13.0`, "scripts/computer-use.swift", "-o", computerHelper]);
 const sign = identity ?? "-";
-run("codesign", ["--force", "--sign", sign, ...(identity ? ["--timestamp", "--options", "runtime", "--entitlements", "integrations/macos/node-entitlements.plist"] : []), join(resources, "node/bin/node")]);
-run("codesign", ["--force", "--sign", sign, ...(identity ? ["--timestamp", "--options", "runtime"] : []), join(staging, "Code Flow.app")]);
+run("codesign", ["--force", "--sign", sign, ...(identity ? ["--timestamp", "--options", "runtime"] : []), computerHelper]);
+run("codesign", ["--force", "--sign", sign, ...(identity ? ["--timestamp", "--options", "runtime", "--entitlements", "integrations/macos/node-entitlements.plist"] : []), join(desktop, "node/bin/node")]);
+const iconset = join(cache, "CodeFlow.iconset"), icon = join(cache, "CodeFlow.icns");
+run("xcrun", ["swift", "integrations/desktop/icon.swift", iconset]);
+run("iconutil", ["-c", "icns", iconset, "-o", icon]);
+const built = await packager({ dir: desktop, out: join(root, "output/macos/electron"), name: "Code Flow", executableName: "Code Flow", appBundleId: "io.github.midhunxavier.code-flow", appVersion: pkg.version,
+  platform: "darwin", arch, icon, electronVersion: pkg.devDependencies.electron, overwrite: true, asar: false, prune: false,
+  extendInfo: { LSMinimumSystemVersion: "13.0", NSHighResolutionCapable: true, NSScreenCaptureUsageDescription: "Code Flow uses screen capture for computer tools you ask agents to use.", NSAppleEventsUsageDescription: "Code Flow uses desktop automation when you authorize computer tools." },
+  ...(identity ? { osxSign: { identity, optionsForFile: () => ({ hardenedRuntime: true, entitlements: join(root, "integrations/macos/node-entitlements.plist") }) } } : {}),
+});
+await mkdir(staging, { recursive: true });
+await cp(join(built[0], "Code Flow.app"), join(staging, "Code Flow.app"), { recursive: true, verbatimSymlinks: true });
+if (!identity) run("codesign", ["--force", "--deep", "--sign", "-", join(staging, "Code Flow.app")]);
 run("codesign", ["--verify", "--deep", "--strict", join(staging, "Code Flow.app")]);
 await symlink("/Applications", join(staging, "Applications"));
-await writeFile(join(staging, "Read me.txt"), `Code Flow ${pkg.version}\n\nDrag Code Flow to Applications, then open it. The menu bar app starts Code Flow in your browser.\nUse the menu bar to reopen the browser or quit the local server.\nGit 2.38+ and a signed-in coding CLI are required. Node is included.\n\n${notary ? "Notarized macOS preview." : "This developer preview is not notarized. macOS may block it; use the npm preview for ordinary installation."}\nSettings and history: ~/.codeflow\nHelp: https://midhunxavier.github.io/code-flow/\n`);
+await writeFile(join(staging, "Read me.txt"), `Code Flow ${pkg.version}\n\nDrag Code Flow to Applications, then open it. Code Flow opens in its own desktop window. Closing the window keeps agents running; use Code Flow → Quit to stop the app.\nGit 2.38+, a signed-in coding CLI and Chrome or Edge (for the shared browser) are required. Node is included.\n\n${notary ? "Notarized macOS preview." : "This developer preview is not notarized. macOS may block it; use the npm preview for ordinary installation."}\nSettings and history: ~/.codeflow\nHelp: https://midhunxavier.github.io/code-flow/\n`);
 const releases = join(root, "output/releases");
 await mkdir(releases, { recursive: true });
 const dmg = join(releases, `code-flow-${pkg.version}-macos-${arch}${notary ? "" : "-unnotarized"}.dmg`);

@@ -54,7 +54,7 @@ before(async () => {
     ["retry-required", {}],
   ] as const) {
     const timestamp = Date.now() - 1000;
-    const run = { id, repo, pattern: "solo", task: `Restore ${id}`, baseRef: git("rev-parse", "HEAD"), baseLabel: "main", branchPrefix: `codeflow/${id}`, worktreeDir: join(directory, id), roles: { agent: ["claude"] }, options: {}, context: { paths: [], attachments: [] }, agentSettings: {}, roleSettings: {}, trust: "safe", loop: { ...loop, check: "", setup: "", maxSteps: 4, maxMinutes: 1, checkTimeoutMin: 1 }, usage: { agentSteps: 0, checks: 0 }, status: "done", createdAt: timestamp, endedAt: timestamp + 100, seen: true, worktrees: [], steps: [], notes: [], approvals: {}, followUps: [], merges: [], prs: {}, watches: {}, artifacts: [] };
+    const run = { id, repo, pattern: "solo", checkpointOnFinish: true, task: `Restore ${id}`, baseRef: git("rev-parse", "HEAD"), baseLabel: "main", branchPrefix: `codeflow/${id}`, worktreeDir: join(directory, id), roles: { agent: ["claude"] }, options: {}, context: { paths: [], attachments: [] }, agentSettings: {}, roleSettings: {}, trust: "safe", loop: { ...loop, check: "", setup: "", maxSteps: 4, maxMinutes: 1, checkTimeoutMin: 1 }, usage: { agentSteps: 0, checks: 0 }, status: "done", createdAt: timestamp, endedAt: timestamp + 100, seen: true, worktrees: [], steps: [], notes: [], approvals: {}, followUps: [], merges: [], prs: {}, watches: {}, artifacts: [] };
     const source = id === "retry-untrusted" ? {
       lockdown: "Imported issue is untrusted external context", lockdownOnHost: true,
       externalSource: { id: "original-import", integration: "fixture", provider: "linear", kind: "issue", key: "CF-1", title: "Imported issue", body: "Keep the imported request attributable.", importedAt: timestamp, expiresAt: timestamp + 3600000, trusted: false, untrusted: true },
@@ -83,6 +83,11 @@ before(async () => {
   }
   browser = await chromium.launch({ channel: "chrome", headless: true });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  await page.route("**/api/runs", async route => {
+    if (route.request().method() !== "POST") { await route.continue(); return; }
+    const body = route.request().postDataJSON();
+    await route.continue({ postData: JSON.stringify({ ...body, checkpointOnFinish: true }) });
+  });
   page.on("pageerror", error => errors.push(error.message));
   await page.addInitScript(path => {
     localStorage.setItem("repo", path);
@@ -134,7 +139,7 @@ test("a successful launch opens its run while the history refresh is stalled", {
   try {
     await page.locator(".taskbox textarea").fill("Improve the subject for the daily workflow");
     const started = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && response.request().method() === "POST");
-    await page.getByRole("button", { name: "Start run", exact: true }).click();
+    await page.getByRole("button", { name: /^(Start run|Send)$/ }).click();
     const response = await started;
     assert.equal(response.status(), 201);
     const { id } = await response.json();
@@ -194,7 +199,7 @@ test("needs-work feedback opens branch review, survives a rejected send, and lea
 
 test("edit and run again preserves pinned inputs, provider settings, permissions, limits and custom verification", { timeout: 60_000 }, async () => {
   const original = await api("/api/runs", {
-    repo, pattern: "solo", intent: "bug", task: "Repeat an explicitly configured task", roles: { agent: ["claude"] },
+    repo, pattern: "solo", checkpointOnFinish: true, intent: "bug", task: "Repeat an explicitly configured task", roles: { agent: ["claude"] },
     trust: "safe", approvals: { plan: false, tools: false },
     agentSettings: { claude: { model: "sonnet", effort: "high" } }, roleSettings: { agent: { claude: { model: "haiku", effort: "low" } } },
     context: { paths: [{ path: "subject.txt" }] },
@@ -218,7 +223,7 @@ test("edit and run again preserves pinned inputs, provider settings, permissions
   await page.locator(".advanced-controls > summary").click();
   assert.equal(await page.getByLabel("Verification gates", { exact: true }).inputValue(), "restored");
   const started = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && response.request().method() === "POST");
-  await page.getByRole("button", { name: "Start run", exact: true }).click();
+  await page.getByRole("button", { name: /^(Start run|Send)$/ }).click();
   const response = await started;
   assert.equal(response.status(), 201, await response.text());
   const retried = await finished((await response.json()).id);
@@ -258,14 +263,14 @@ test("retry retains container isolation and never falls back from an unavailable
     request = route.request().postDataJSON();
     await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Container launch inspected without executing" }) });
   }, { times: 1 });
-  await page.getByRole("button", { name: "Start run", exact: true }).click();
+  await page.getByRole("button", { name: /^(Start run|Send)$/ }).click();
   await page.getByText("Container launch inspected without executing", { exact: true }).waitFor();
   assert.deepEqual(request.loop.agentContainer, { image: "prepared-agent:v1", authVolume: "original-login", network: false, memoryMb: 512, cpus: 2 });
   assert.equal(request.parentRunId, "retry-container");
   await edit("retry-remote");
   if (!await page.getByLabel("Agent execution", { exact: true }).isVisible()) await page.locator(".advanced-controls > summary").click();
   assert.equal(await page.getByLabel("Agent execution", { exact: true }).inputValue(), "missing-worker");
-  await until(() => page.getByRole("button", { name: "Start run", exact: true }).isDisabled(), value => value);
+  await until(() => page.getByRole("button", { name: /^(Start run|Send)$/ }).isDisabled(), value => value);
   assert.match(await page.locator(".composer-summary").innerText(), /worker/i);
   assert.deepEqual(errors, []);
 });
@@ -285,7 +290,7 @@ test("retry source option edits refresh CI context while retaining the pinned PR
     await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
     await page.getByRole("checkbox", { name: "CI logs", exact: true }).setChecked(ciLogs);
     const response = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && response.request().method() === "POST");
-    await page.getByRole("button", { name: "Start run", exact: true }).click();
+    await page.getByRole("button", { name: /^(Start run|Send)$/ }).click();
     const started = await response;
     assert.equal(started.status(), 201, await started.text());
     const saved = await finished((await started.json()).id);
@@ -306,7 +311,7 @@ test("retry preserves imported context and its source restrictions through the o
   await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
   await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
   const started = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && response.request().method() === "POST");
-  await page.getByRole("button", { name: "Start run", exact: true }).click();
+  await page.getByRole("button", { name: /^(Start run|Send)$/ }).click();
   const response = await started;
   assert.equal(response.status(), 201, await response.text());
   const retried = await finished((await response.json()).id);
@@ -321,7 +326,7 @@ test("retry preserves imported context and its source restrictions through the o
 });
 
 test("review waits for the actual writer before enabling an automatic revision recipient", { timeout: 45_000 }, async () => {
-  const started = await api("/api/runs", { repo, pattern: "solo", task: "Review a Codex result", roles: { agent: ["codex"] }, loop: { check: "true", maxMinutes: 1, maxSteps: 4 } });
+  const started = await api("/api/runs", { repo, pattern: "solo", checkpointOnFinish: true, task: "Review a Codex result", roles: { agent: ["codex"] }, loop: { check: "true", maxMinutes: 1, maxSteps: 4 } });
   const saved = await finished(started.id);
   assert.equal(saved.status, "done", saved.error);
   let release!: () => void;
@@ -352,7 +357,7 @@ test("deleting the original run while editing a retry cannot discard imported-so
   const removed = await fetch(base + "/api/runs/retry-untrusted", { method: "DELETE", headers });
   assert.equal(removed.status, 200);
   const started = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && response.request().method() === "POST");
-  await page.getByRole("button", { name: "Start run", exact: true }).click();
+  await page.getByRole("button", { name: /^(Start run|Send)$/ }).click();
   assert.equal((await started).status(), 409);
   await page.getByText(/The original run is no longer available/).waitFor();
   assert.equal(await page.locator(".taskbox textarea").inputValue(), "Restore retry-untrusted");

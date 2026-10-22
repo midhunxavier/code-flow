@@ -1,6 +1,15 @@
 import type { AgentId } from "../adapters/index.js";
 import type { TeamInventory, TeamMember, TeamMessage, TeamPlan, TeamState, TeamTask } from "../teams.js";
 
+/** A replacement gets its own provider's settings, never the failed model's.
+ * Model-routing inventories may have empty role settings and no CLI default. */
+export function replacementSettings(provider: TeamInventory["providers"][number], role: TeamMember["role"]) {
+  const configured = provider.settingsByRole?.[role];
+  const model = configured?.model || provider.model || provider.catalog?.defaultModel || provider.models?.[0]?.id || "";
+  const effort = configured?.effort ?? (model === provider.model ? provider.effort : undefined) ?? "";
+  return { model, effort };
+}
+
 const obj = (properties: Record<string, object>) => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false });
 const str = { type: "string" };
 const identifier = { type: "string", pattern: "^[a-z][a-z0-9-]{0,39}$", description: "Stable lowercase identifier, e.g. api, add-validation, goal; never T1 or R1" };
@@ -26,6 +35,14 @@ export const TASK_OUTCOME_SCHEMA = obj({
   questions: array(obj({ id: identifier, recipient: str, body: str, blocking: { type: "boolean" } })), replies: array(reply),
   findings: array(obj({ title: str, body: str, evidence: strings, paths: strings })),
 });
+/** Browser URLs are evidence references, never repository path ownership. */
+export function normalizeTaskOutcomeEvidence(outcome: TaskOutcome): TaskOutcome {
+  return { ...outcome, findings: outcome.findings.map(finding => {
+    const urls = finding.paths.filter(path => /^https?:\/\//i.test(path));
+    return urls.length ? { ...finding, paths: finding.paths.filter(path => !urls.includes(path)), evidence: [...new Set([...finding.evidence, ...urls])] } : finding;
+  }) };
+}
+
 export function taskOutcomeSchema(requirementIds: string[]) {
   return obj({ ...TASK_OUTCOME_SCHEMA.properties, unresolvedRequirements: { type: "array", items: { type: "string", enum: requirementIds }, description: "Only known IDs of unfinished implementation requirements. Use [] on submission. Pending engine commits, checks, proof and independent review belong in handover text, not here." } });
 }

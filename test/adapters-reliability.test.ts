@@ -85,6 +85,15 @@ test("a process that prints nothing for idleTimeoutMs is stopped as stalled; any
   assert.deepEqual([nan.timedOut, nan.stalled, nan.exitCode], [false, false, 0]);
 });
 
+test("explicit shared-tool waits pause both process watchdogs without disabling cancellation", async () => {
+  const end = Date.now() + 1600;
+  const outcome = await startJsonlProcess({ ...node("setTimeout(() => {}, 1900)"), timeoutMs: 1200, idleTimeoutMs: 1000, isPaused: () => Date.now() < end, onJson: () => {} }).outcome;
+  assert.deepEqual([outcome.timedOut, outcome.stalled, outcome.exitCode], [false, false, 0]);
+  const abort = new AbortController();
+  const waiting = startJsonlProcess({ ...node("setTimeout(() => {}, 30000)"), signal: abort.signal, timeoutMs: 1000, isPaused: () => true, onJson: () => {} });
+  abort.abort(); assert.equal((await waiting.outcome).aborted, true);
+});
+
 test("stderr is decoded as a stream: a UTF-8 character split across writes isn't garbled", async () => {
   const outcome = await startJsonlProcess({
     ...node("process.stderr.write(Buffer.from([0xc3])); setTimeout(() => process.stderr.write(Buffer.from([0xa9, 0x0a])), 100)"),

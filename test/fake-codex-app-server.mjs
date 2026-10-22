@@ -184,6 +184,10 @@ export async function serve(args) {
       return { userAgent: "codex_cli_rs/0.162.1 (fake)", codexHome: join(process.env.CODEFLOW_HOME ?? ".", ".codex"), platformFamily: "unix", platformOs: "macos" };
     },
     "thread/start": (params) => startThread(params),
+    "thread/fork": (params) => {
+      if (!existsSync(threadFile(params.threadId))) throw rpcError(-32600, `no rollout found for thread id ${params.threadId}`);
+      return startThread(params);
+    },
     "thread/resume": (params) => {
       // An older Codex whose thread/resume doesn't take every parameter code-flow sends.
       if (process.env.FAKE_CODEX_RESUME_REJECTS_PARAMS) throw rpcError(-32602, "Invalid request: unknown field `excludeTurns`");

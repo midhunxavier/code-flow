@@ -18,7 +18,7 @@ import { assertContextPathAllowed, assertNoContextSymlinks, sensitiveContextPath
 export interface ContextInput {
   paths?: { path: string }[];
   /** Files from outside the repo; `data` is base64. */
-  attachments?: { name: string; data: string }[];
+  attachments?: { name: string; data: string; kind?: "conversation" }[];
 }
 
 export interface ContextPath {
@@ -30,6 +30,7 @@ export interface ContextPath {
 }
 
 export interface ContextAttachment {
+  kind?: "conversation";
   name: string;
   size: number;
   /** Relative to the worktree. */
@@ -63,7 +64,7 @@ export async function prepareContext(repo: string, baseRef: string, input: Conte
   const rawPaths = input?.paths ?? [];
   const rawAttachments = input?.attachments ?? [];
   if (rawPaths.length > LIMITS.paths) throw new Error(`Too many context paths (max ${LIMITS.paths})`);
-  if (rawAttachments.length > LIMITS.attachments) throw new Error(`Too many attached files (max ${LIMITS.attachments})`);
+  if (rawAttachments.filter(file => file.kind !== "conversation").length > LIMITS.attachments || rawAttachments.filter(file => file.kind === "conversation").length > 1) throw new Error(`Too many attached files (max ${LIMITS.attachments})`);
 
   let total = 0;
   const seen = new Set<string>();
@@ -115,7 +116,7 @@ export async function prepareContext(repo: string, baseRef: string, input: Conte
     const name = uniqueName(safeFileName(String(att.name ?? "file")), names);
     await mkdir(join(stageDir, "attachments"), { recursive: true });
     await writeFile(join(stageDir, "attachments", name), data);
-    ctx.attachments.push({ name, size: data.length, file: `${CONTEXT_DIR}/attachments/${name}` });
+    ctx.attachments.push({ ...(att.kind === "conversation" ? { kind: "conversation" as const } : {}), name, size: data.length, file: `${CONTEXT_DIR}/attachments/${name}` });
   }
 
   return ctx;
