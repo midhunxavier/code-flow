@@ -49,6 +49,7 @@ import { approvals } from "./approvals.js";
 import { validateAgentContainer, type AgentContainer } from "./agent-container.js";
 import { runVerification, validateVerificationProfile, assessChangeRisk, reviewCoverage, type VerificationProfile, type VerificationReport } from "./verification.js";
 import { verificationIntegrity, VerificationIntegrityError } from "./verification-integrity.js";
+import { documentationOnlyChange } from "./documentation-changes.js";
 import { prepareTeamRerun, validateTeamRerunSeed, TeamRerunError, type TeamRerunSeed } from "./team-reruns.js";
 import { writeFileInside } from "./fs.js";
 import { describeIssues, inspectChanges, isTestFile, isTestSide, unverifiedIssue, type IntegrityIssue } from "./integrity.js";
@@ -219,7 +220,7 @@ export interface RunFacts {
   /** Whether a test in the result fails without its change (see Proof). */
   proof?: Proof["status"];
   /** An unchanged selective rerun was checked and independently reviewed without claiming new proof. */
-  proofNotRequired?: "unchanged-rerun";
+  proofNotRequired?: "unchanged-rerun" | "documentation-only";
 }
 
 /**
@@ -836,6 +837,7 @@ export class TeamContext {
   private checkRunsHere?: Promise<string | null>;
   /** Whether the run's check passed in each worktree, at which commit, and how many tests ran. */
   private readonly lastChecks = new Map<string, { head?: string; ok: boolean; tests?: number }>();
+  private readonly reusableChecks = new Map<string, { profile: string; result: CheckResult; verification: VerificationReport & { head?: string; branch?: string } }>();
   /** Proofs made in this attempt, by `base..head`: the same change is proven once. */
   private readonly proofCache = new Map<string, Promise<Proof>>();
   /** Repros run in this attempt, by commit and repro: the same test on the same code runs once. */
@@ -1552,12 +1554,25 @@ export class TeamContext {
    * Run the "done when" check in a worktree — code-flow runs it, not an agent, so the result
    * can be trusted. Returns null when no check is configured, or when it can't run here.
    */
-  async check(wt: Worktree, title = "Check", command = this.run.loop.check): Promise<CheckResult | null> {
+  async check(wt: Worktree, title = "Check", command = this.run.loop.check, options: { reuse?: boolean } = {}): Promise<CheckResult | null> {
     if (!command) return null;
     this.checkCancelled();
     const doneWhen = command === this.run.loop.check; // not an agent-suggested command
     if (doneWhen && this.run.checkCantRun) return null;
     const head = this.heads.get(wt.name);
+    const cached = options.reuse && doneWhen ? this.reusableChecks.get(wt.name) : undefined;
+    if (cached && cached.result.command === command && cached.profile === JSON.stringify(this.run.loop.verification)) {
+      try {
+        const at = await assertWorktree(this.run.repo, wt), integrity = await verificationIntegrity(at, this.signal);
+        const untracked = await git(["ls-files", "--others", "--exclude-standard", "-z"], at);
+        if (integrity.head === cached.verification.head && untracked.code === 0 && !untracked.stdout) {
+          await integrity.assert("reusing checks");
+          this.run.verification = structuredClone(cached.verification);
+          this.log(`Reused passing checks for unchanged commit ${integrity.head.slice(0, 12)}`);
+          return cached.result;
+        }
+      } catch (error) { if (!(error instanceof VerificationIntegrityError)) throw error; }
+    }
     const result = await this.remember(
       "check",
       `${wt.name}|${title}|${command}`,
@@ -1600,7 +1615,7 @@ export class TeamContext {
         return { ...result, head: verification?.head ?? await this.gitAt(wt).then(resolveCommit).catch(() => undefined), verification };
 
       },
-      (recorded) => !recorded.head || !head || recorded.head === head,
+      (recorded) => !options.reuse && (!recorded.head || !head || recorded.head === head),
     );
     if ((result as CheckResult & {verification?: Run["verification"]}).verification) this.run.verification = (result as CheckResult & {verification?: Run["verification"]}).verification;
     if (doneWhen && !this.run.loop.verification && !(await this.checkCanRun(wt, result))) return null;
@@ -1618,6 +1633,8 @@ export class TeamContext {
         if (wt.branch) this.run.testCounts = { ...this.run.testCounts, [wt.branch]: { first: kept?.first ?? count, last: count } };
       }
     }
+    const verified = (result as CheckResult & { verification?: Run["verification"] }).verification;
+    if (doneWhen && result.ok && verified?.state === "verified" && verified.head && verified.branch === wt.branch) this.reusableChecks.set(wt.name, { profile: JSON.stringify(this.run.loop.verification), result, verification: structuredClone(verified) });
     return result;
   }
 
@@ -1723,7 +1740,8 @@ export class TeamContext {
    */
   async refreshProof(wt: Worktree): Promise<Proof | null> {
     const last = this.lastChecks.get(wt.name);
-    if (this.proves && last?.ok && last.head && last.head === this.heads.get(wt.name)) return this.prove(wt);
+    const documentation = this.run.facts?.proofNotRequired === "documentation-only" && await documentationOnlyChange(await this.gitAt(wt), this.run.baseRef, await this.head(wt));
+    if (!documentation && this.proves && last?.ok && last.head && last.head === this.heads.get(wt.name)) return this.prove(wt);
     if (this.run.proofs?.[wt.branch]) {
       const { [wt.branch]: _gone, ...rest } = this.run.proofs;
       this.run.proofs = Object.keys(rest).length ? rest : undefined;

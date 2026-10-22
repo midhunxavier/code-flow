@@ -4,6 +4,7 @@ import { mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import { PT_LIMITS, validateTeamDocument, type ProjectTeam } from "./project-team-model.js";
+import { repositoryIdentity } from "./repository-identity.js";
 
 export class ProjectTeamConflict extends Error { readonly status = 409; }
 /** One serialized writer, immutable published snapshots, and fsync before acknowledgment. */
@@ -16,7 +17,8 @@ export class ProjectTeamStore {
   private feature?: { version: 1; enabled: boolean; revision: number };
   constructor(readonly directory = join(CODEFLOW_HOME, "project-teams")) {}
   subscribe(fn: () => void) { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; }
-  private publish(team: ProjectTeam) { this.teams.set(team.id, structuredClone(team)); for (const listener of this.listeners) { try { listener(); } catch {} } }
+  notify() { for (const listener of this.listeners) { try { listener(); } catch {} } }
+  private publish(team: ProjectTeam) { this.teams.set(team.id, structuredClone(team)); this.notify(); }
   async load() {
     const files = await readdir(this.directory).catch((e) => { if (e.code === "ENOENT") return []; throw e; });
     this.teams.clear(); this.faults.clear(); this.feature = undefined;
@@ -41,7 +43,18 @@ export class ProjectTeamStore {
       } catch (error) { this.faults.set(name.slice(0, -5), (error as Error).message); }
     }
     const owners = new Map<string, string[]>();
-    for (const team of this.teams.values()) if (team.status !== "archived") owners.set(team.repo, [...owners.get(team.repo) ?? [], team.id]);
+    for (const team of this.teams.values()) if (team.status !== "archived") {
+      try {
+        const identity = await repositoryIdentity(team.repo);
+        if (team.repositoryId && team.repositoryId !== identity) throw new Error("Repository metadata was replaced; inspect ownership before dispatch");
+        if (!team.repositoryId) {
+          // Add ownership metadata only. Never rewrite mission snapshots, launch receipts or usage.
+          team.repositoryId = identity; team.revision++; team.updatedAt = Date.now();
+          await this.save(team);
+        }
+        owners.set(identity, [...owners.get(identity) ?? [], team.id]);
+      } catch (error) { this.faults.set(team.id, (error as Error).message); this.teams.delete(team.id); }
+    }
     for (const ids of owners.values()) if (ids.length > 1) for (const id of ids) { this.faults.set(id, "Multiple active teams claim this repository; resolve ownership before dispatch"); this.teams.delete(id); }
     this.loaded = true;
   }
@@ -81,7 +94,9 @@ export class ProjectTeamStore {
       if (!this.loaded) throw new Error("Load project team storage before writing");
       if (this.faults.size) throw new Error("Repair damaged team records before creating teams; repository ownership cannot be determined");
       const existing = this.teams.get(team.id); if (existing) { if (existing.operations[0]?.hash !== team.operations[0]?.hash) throw new ProjectTeamConflict("Operation ID was reused with different content"); return structuredClone(existing); }
-      if ([...this.teams.values()].some((t) => t.repo === team.repo && t.status !== "archived")) throw new ProjectTeamConflict("This repository already has a standing team");
+      team = structuredClone(team);
+      team.repositoryId = await repositoryIdentity(team.repo);
+      if ([...this.teams.values()].some((t) => t.status !== "archived" && (t.repo === team.repo || t.repositoryId === team.repositoryId))) throw new ProjectTeamConflict("This repository already has a standing team (including its linked worktrees)");
       await this.save(team); this.publish(team); return structuredClone(team);
     });
   }

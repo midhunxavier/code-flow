@@ -34,16 +34,53 @@ export const safePath = (p: string) => p === "*" || p.length <= 500 && !p.starts
 export const containsPath = (scope: string, path: string) => scope === "*" || path === scope || path.startsWith(`${scope}/`);
 export const CATEGORIES = ["bug", "usability", "performance", "tests", "docs", "experiment"] as const;
 export type Category = typeof CATEGORIES[number];
-export interface ProjectTeamMission {
+export function missionSchedule(value: unknown): Schedule {
+  const schedule = validateSchedule(value);
+  if (!schedule) throw new Error("Choose a schedule");
+  if ("at" in schedule && !schedule.timezone) throw new Error("Choose an explicit schedule time zone");
+  return schedule;
+}
+/** Operational timing does not change the authority or validity of an implementation. */
+export function missionPolicy(mission: ProjectTeamMission) {
+  const { schedule: _schedule, ...policy } = mission;
+  return policy;
+}
+export interface AgentTeamConfiguration {
+  coordinator: AgentId; pool: AgentId[]; agentSettings: AgentSettings;
+  roleSettings?: Record<string, AgentSettings>;
+}
+export interface AgentTeamSnapshot { id: string; revision: number; name: string; configuration: AgentTeamConfiguration }
+export function teamConfiguration(value: AgentTeamConfiguration): AgentTeamConfiguration {
+  return { coordinator: value.coordinator, pool: value.pool, agentSettings: value.agentSettings, ...(value.roleSettings && Object.keys(value.roleSettings).length ? { roleSettings: value.roleSettings } : {}) };
+}
+export function validateTeamConfiguration(value: unknown): AgentTeamConfiguration {
+  const r = closed(value, ["coordinator", "pool", "agentSettings", "roleSettings"], "agent team configuration");
+  const coordinator = text(r.coordinator, 100, "coordinator") as AgentId, pool = strings(r.pool, 8, "provider pool") as AgentId[];
+  if (!pool.length) throw new Error("Select a worker and reviewer provider pool");
+  for (const id of [coordinator, ...pool]) { const reason = providerEligibility(id, { trust: "standard", unattended: true, projectTeam: true }); if (reason) throw new Error(reason); }
+  const roleSettings: Record<string, AgentSettings> = {};
+  for (const [role, settings] of Object.entries(closed(r.roleSettings ?? {}, ["coordinator", "pool"], "team role settings"))) {
+    const valid = validateAgentSettings(settings);
+    if (Object.keys(valid).some((id) => !(role === "coordinator" ? [coordinator] : pool).includes(id as AgentId))) throw new Error("Role settings must use the selected providers");
+    if (Object.keys(valid).length) roleSettings[role] = valid;
+  }
+  return { coordinator, pool, agentSettings: validateAgentSettings(r.agentSettings ?? {}), ...(Object.keys(roleSettings).length ? { roleSettings } : {}) };
+}
+export function validateTeamSnapshot(value: unknown): AgentTeamSnapshot {
+  const r = closed(value, ["id", "revision", "name", "configuration"], "agent team snapshot");
+  if (!/^at-[a-f0-9]{24}$/.test(r.id) || !Number.isSafeInteger(r.revision) || r.revision < 1) throw new Error("Invalid agent team version");
+  return { id: r.id, revision: r.revision, name: text(r.name, 80, "team name"), configuration: validateTeamConfiguration(r.configuration) };
+}
+export interface ProjectTeamMission extends AgentTeamConfiguration {
   mission: string; users: string; priorities: string[]; exclusions: string[]; baseBranch: string;
   mode: "propose" | "build-within-scope"; categories: Category[]; paths: string[]; excludedPaths: string[];
-  coordinator: AgentId; pool: AgentId[]; agentSettings: AgentSettings; trust: Exclude<Trust, "full">;
+  trust: Exclude<Trust, "full">;
   check: string; setup: string; verification?: VerificationProfile;
   schedule: Schedule; maxFiles: number; maxLines: number; rescanDays: number;
   budget: { discoveryCalls: number; discoveryMinutes: number; buildCalls: number; buildMinutes: number; weeklyCalls: number; weeklyMinutes: number };
 }
 export function validateMission(value: unknown): ProjectTeamMission {
-  const r = closed(value, ["mission", "users", "priorities", "exclusions", "baseBranch", "mode", "categories", "paths", "excludedPaths", "coordinator", "pool", "agentSettings", "trust", "check", "setup", "verification", "schedule", "maxFiles", "maxLines", "rescanDays", "budget"], "project mission");
+  const r = closed(value, ["mission", "users", "priorities", "exclusions", "baseBranch", "mode", "categories", "paths", "excludedPaths", "coordinator", "pool", "agentSettings", "roleSettings", "trust", "check", "setup", "verification", "schedule", "maxFiles", "maxLines", "rescanDays", "budget"], "project mission");
   const paths = strings(r.paths ?? ["*"], 32, "included paths"), excludedPaths = strings(r.excludedPaths ?? [".codeflow", ".github/workflows"], 32, "excluded paths");
   if (!paths.length || [...paths, ...excludedPaths].some((p) => !safePath(p))) throw new Error("Choose safe repository-relative paths");
   const coordinator = text(r.coordinator, 100, "coordinator") as AgentId, pool = strings(r.pool, 8, "provider pool") as AgentId[];
@@ -57,15 +94,14 @@ export function validateMission(value: unknown): ProjectTeamMission {
   if (!categories.length || categories.some((c) => !CATEGORIES.includes(c))) throw new Error("Choose supported improvement categories");
   const branch = text(r.baseBranch, 200, "base branch");
   if (branch === "HEAD" || branch.startsWith("-") || /[\s~^:?*\[\\]/.test(branch) || branch.includes("..") || branch.includes("@{")) throw new Error("Choose an explicit named base branch");
-  const schedule = validateSchedule(r.schedule); if (!schedule) throw new Error("Choose a schedule");
-  if ("at" in schedule && !schedule.timezone) throw new Error("Choose an explicit schedule time zone");
+  const schedule = missionSchedule(r.schedule);
   const check = typeof r.check === "string" ? r.check.trim() : "", setup = typeof r.setup === "string" ? r.setup.trim() : "";
   if (check.length > 4000 || setup.length > 4000 || `${check}${setup}`.includes("\0")) throw new Error("Invalid verification commands");
   const verification = r.verification ? validateVerificationProfile(r.verification) : check ? validateVerificationProfile({ name: "Project team checks", checks: [{ id: "primary", kind: "custom", command: check, required: true }] }) : undefined;
   if (mode === "build-within-scope" && !verification?.checks.some((c) => c.required)) throw new Error("Automatic implementation requires a required verification check");
   const b = closed(r.budget ?? {}, ["discoveryCalls", "discoveryMinutes", "buildCalls", "buildMinutes", "weeklyCalls", "weeklyMinutes"], "budget");
   const budget = { discoveryCalls: integer(b.discoveryCalls ?? 8, 8, 40, "discovery calls"), discoveryMinutes: integer(b.discoveryMinutes ?? 15, 1, 60, "discovery minutes"), buildCalls: integer(b.buildCalls ?? 16, 4, 80, "build calls"), buildMinutes: integer(b.buildMinutes ?? 45, 1, 120, "build minutes"), weeklyCalls: integer(b.weeklyCalls ?? 48, 4, 500, "weekly calls"), weeklyMinutes: integer(b.weeklyMinutes ?? 120, 1, 1440, "weekly minutes") };
-  return { mission: text(r.mission, 6000, "mission"), users: text(r.users, 2000, "intended users"), priorities: strings(r.priorities ?? [], 12, "priorities"), exclusions: strings(r.exclusions ?? [], 24, "exclusions"), baseBranch: branch, mode, categories, paths, excludedPaths, coordinator, pool, agentSettings: validateAgentSettings(r.agentSettings ?? {}), trust, check, setup, verification, schedule, maxFiles: integer(r.maxFiles ?? 8, 1, 100, "changed files"), maxLines: integer(r.maxLines ?? 400, 1, 10000, "changed lines"), rescanDays: integer(r.rescanDays ?? 28, 1, 90, "rescan days"), budget };
+  return { mission: text(r.mission, 6000, "mission"), users: text(r.users, 2000, "intended users"), priorities: strings(r.priorities ?? [], 12, "priorities"), exclusions: strings(r.exclusions ?? [], 24, "exclusions"), baseBranch: branch, mode, categories, paths, excludedPaths, ...validateTeamConfiguration({ coordinator, pool, agentSettings: r.agentSettings, roleSettings: r.roleSettings }), trust, check, setup, verification, schedule, maxFiles: integer(r.maxFiles ?? 8, 1, 100, "changed files"), maxLines: integer(r.maxLines ?? 400, 1, 10000, "changed lines"), rescanDays: integer(r.rescanDays ?? 28, 1, 90, "rescan days"), budget };
 }
 export interface OpportunityCandidate {
   key: string; title: string; category: Category; problem: string; users: string; proposal: string; benefit: string;
@@ -81,44 +117,48 @@ export function validateReport(value: unknown): DiscoveryReport {
   if (redactText(JSON.stringify(value)) !== JSON.stringify(value)) throw new Error("Discovery report contains sensitive text; return evidence without credentials");
   const r = closed(value, ["version", "summary", "candidates"], "discovery report");
   if (r.version !== 1 || !Array.isArray(r.candidates) || r.candidates.length > 3) throw new Error("A discovery report contains at most three opportunities");
-  const candidates = r.candidates.map((value: unknown): OpportunityCandidate => {
-    const c = closed(value, Object.keys(DISCOVERY_REPORT_SCHEMA.properties.candidates.items.properties), "opportunity");
-    if (!CATEGORIES.includes(c.category) || !["observed", "hypothesis"].includes(c.kind) || !["low", "medium", "high"].includes(c.risk)) throw new Error("Invalid opportunity category or evidence classification");
-    if (!Array.isArray(c.evidence) || !c.evidence.length || c.evidence.length > 8) throw new Error("Provide one to eight code evidence references");
-    const evidence = c.evidence.map((v: unknown) => { const e = closed(v, ["path", "quote"], "evidence"); const path = text(e.path, 500, "evidence path"); if (!safePath(path) || path === "*" || sensitiveContextPath(path)) throw new Error("Invalid evidence path"); return { path, quote: text(e.quote, 2000, "evidence quote") }; });
-    const paths = strings(c.paths, 16, "opportunity paths"), acceptance = strings(c.acceptance, 12, "acceptance criteria");
-    if (!paths.length || paths.some((p) => !safePath(p)) || !acceptance.length) throw new Error("Opportunities need paths and acceptance criteria");
-    return { key: text(c.key, 150, "problem key").toLowerCase(), title: text(c.title, 180, "title"), category: c.category, problem: text(c.problem, 3000, "problem"), users: text(c.users, 1000, "users"), proposal: text(c.proposal, 3000, "proposal"), benefit: text(c.benefit, 1500, "benefit"), evidence, paths, acceptance, kind: c.kind, risk: c.risk, alignment: integer(c.alignment, 0, 3, "alignment"), impact: integer(c.impact, 0, 3, "impact"), confidence: integer(c.confidence, 0, 3, "confidence"), effort: integer(c.effort, 1, 3, "effort"), rationale: text(c.rationale, 1500, "rationale") };
-  });
+  const candidates = r.candidates.map((value: unknown) => validateCandidate(value));
   if (new Set(candidates.map((c: OpportunityCandidate) => c.key)).size !== candidates.length) throw new Error("Duplicate problem keys in discovery report");
   return { version: 1, candidates, summary: text(r.summary, 4000, "discovery summary") };
+}
+function validateCandidate(value: unknown, ownerAssigned = false): OpportunityCandidate {
+  const c = closed(value, Object.keys(DISCOVERY_REPORT_SCHEMA.properties.candidates.items.properties), "opportunity");
+  if (!CATEGORIES.includes(c.category) || !["observed", "hypothesis"].includes(c.kind) || !["low", "medium", "high"].includes(c.risk)) throw new Error("Invalid opportunity category or evidence classification");
+  if (!Array.isArray(c.evidence) || (!ownerAssigned && !c.evidence.length) || c.evidence.length > 8) throw new Error("Provide one to eight code evidence references");
+  const evidence = c.evidence.map((v: unknown) => { const e = closed(v, ["path", "quote"], "evidence"); const path = text(e.path, 500, "evidence path"); if (!safePath(path) || path === "*" || sensitiveContextPath(path)) throw new Error("Invalid evidence path"); return { path, quote: text(e.quote, 2000, "evidence quote") }; });
+  const paths = strings(c.paths, ownerAssigned ? 32 : 16, "opportunity paths"), acceptance = strings(c.acceptance, 12, "acceptance criteria");
+  if (!paths.length || paths.some((p) => !safePath(p)) || !acceptance.length) throw new Error("Opportunities need paths and acceptance criteria");
+  return { key: text(c.key, 150, "problem key").toLowerCase(), title: text(c.title, 180, "title"), category: c.category, problem: text(c.problem, 3000, "problem"), users: text(c.users, 1000, "users"), proposal: text(c.proposal, 3000, "proposal"), benefit: text(c.benefit, 1500, "benefit"), evidence, paths, acceptance, kind: c.kind, risk: c.risk, alignment: integer(c.alignment, 0, 3, "alignment"), impact: integer(c.impact, 0, 3, "impact"), confidence: integer(c.confidence, 0, 3, "confidence"), effort: integer(c.effort, 1, 3, "effort"), rationale: text(c.rationale, 1500, "rationale") };
 }
 export interface ProjectTeamRun {
   teamId: string; cycleId: string; missionRevision: number; phase: "discovery" | "implementation"; claimId: string; attempt: number;
   opportunityId?: string; opportunityRevision?: number; scope: Pick<ProjectTeamMission, "paths" | "excludedPaths" | "maxFiles" | "maxLines">;
   verificationHash: string; inputHash: string; sourceDigest: string;
+  definition?: AgentTeamSnapshot;
 }
 export interface DiscoveryReceipt { report: DiscoveryReport; digest: string; head: string; reviewerStep: string; approved: boolean; sourceDigest: string }
 export type OpportunityStatus = "proposed" | "selected" | "implementing" | "ready" | "accepted" | "shipped" | "deferred" | "rejected" | "blocked" | "expired";
-export interface ProjectOpportunity extends OpportunityCandidate { id: string; revision: number; cycleId: string; baseCommit: string; status: OpportunityStatus; createdAt: number; evidenceVerified: boolean; reason?: string; deferUntil?: number; result?: { runId: string; branch: string; head: string; reportHash: string }; }
+export interface ProjectOpportunity extends OpportunityCandidate { id: string; revision: number; cycleId: string; baseCommit: string; status: OpportunityStatus; createdAt: number; evidenceVerified: boolean; origin?: "owner"; reason?: string; deferUntil?: number; result?: { runId: string; branch: string; head: string; reportHash: string }; }
 export type CycleStatus = "requested" | "discovering" | "selecting" | "building" | "completed" | "no-op" | "skipped" | "blocked" | "failed" | "cancelled" | "unknown";
-export interface ProjectTeamLaunch { claimId: string; phase: ProjectTeamRun["phase"]; attempt: number; inputHash: string; calls: number; minutes: number; at: number; state: "claimed" | "running" | "settled" | "unknown"; runId?: string; usedCalls?: number; }
-export interface ProjectTeamCycle { id: string; operationId: string; missionRevision: number; mission: ProjectTeamMission; baseCommit: string; sourceDigest: string; fingerprint: string; at: number; endedAt?: number; status: CycleStatus; reason?: string; summary?: string; launches: ProjectTeamLaunch[]; opportunityId?: string; selection?: { policy: 1; selected?: string; reasons: { id: string; reason: string }[] }; report?: DiscoveryReceipt; context: string; }
+export interface ProjectTeamUsageReceipt { version: 1; calls: number; durationMs: number; endedAt: number; recordedAt: number; digest: string }
+export interface ProjectTeamLaunch { claimId: string; phase: ProjectTeamRun["phase"]; attempt: number; inputHash: string; calls: number; minutes: number; at: number; state: "claimed" | "running" | "settled" | "unknown"; runId?: string; usedCalls?: number; usage?: ProjectTeamUsageReceipt; }
+export interface ProjectTeamCycle { id: string; operationId: string; missionRevision: number; mission: ProjectTeamMission; definition?: AgentTeamSnapshot; baseCommit: string; sourceDigest: string; fingerprint: string; at: number; endedAt?: number; status: CycleStatus; reason?: string; summary?: string; launches: ProjectTeamLaunch[]; opportunityId?: string; selection?: { policy: 1; selected?: string; reasons: { id: string; reason: string }[] }; report?: DiscoveryReceipt; context: string; }
 export interface ProjectTeamDecision { id: string; opportunityId: string; revision: number; action: string; note: string; at: number; actor: "owner"; head?: string }
 export interface ProjectTeam {
   version: 1; id: string; revision: number; projectId: string; repo: string; name: string; status: "draft" | "active" | "paused" | "archived"; triggerId?: string;
+  repositoryId?: string;
+  definition?: AgentTeamSnapshot;
+  /** Legacy missions retain their original schedule in their immutable history. */
+  schedule?: Schedule; scheduleEnabled?: boolean;
   missionRevision: number; mission: ProjectTeamMission; missions: { revision: number; value: ProjectTeamMission }[];
   createdAt: number; updatedAt: number; cycles: ProjectTeamCycle[]; opportunities: ProjectOpportunity[]; decisions: ProjectTeamDecision[];
   operations: { id: string; hash: string; at: number }[]; error?: string;
 }
 export const ACTIVE_CYCLES: CycleStatus[] = ["requested", "discovering", "selecting", "building", "unknown"];
-export function allowance(team: ProjectTeam, now = Date.now()) {
-  const launches = team.cycles.flatMap((c) => c.launches).filter((l) => l.state !== "settled" || l.at > now - WEEK);
-  return { calls: team.mission.budget.weeklyCalls - launches.reduce((n, l) => n + (l.state === "settled" ? l.usedCalls ?? l.calls : l.calls), 0), minutes: team.mission.budget.weeklyMinutes - launches.reduce((n, l) => n + l.minutes, 0) };
-}
+export { allowance } from "./project-team-budget.js";
 export function pathPermitted(scope: ProjectTeamRun["scope"], path: string) { return safePath(path) && !sensitiveContextPath(path) && scope.paths.some((p) => containsPath(p, path)) && !scope.excludedPaths.some((p) => containsPath(p, path)); }
 export function candidateProblem(c: ProjectOpportunity, mission: ProjectTeamMission): string | undefined {
-  if (!c.evidenceVerified) return "Evidence could not be verified at the pinned commit";
+  if (c.origin !== "owner" && !c.evidenceVerified) return "Evidence could not be verified at the pinned commit";
   if (!mission.categories.includes(c.category)) return "Outside allowed categories";
   if (c.risk !== "low" || c.confidence < 2 || c.alignment < 2) return "Needs an owner decision about risk, evidence or mission alignment";
   if (c.kind === "hypothesis" && c.category !== "experiment") return "Product benefit needs evidence before automatic implementation";
@@ -135,18 +175,30 @@ export function validateTeamDocument(v: unknown): ProjectTeam {
   const validHash = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
   const commit = (value: unknown) => typeof value === "string" && /^[a-f0-9]{40,64}$/.test(value);
   const unique = (items: any[], field: string) => new Set(items.map((item) => item[field])).size === items.length;
+  if (v.repositoryId !== undefined && !validHash(v.repositoryId)) throw new Error("Invalid repository identity");
+  if (v.schedule !== undefined) missionSchedule(v.schedule);
+  if (v.scheduleEnabled !== undefined && typeof v.scheduleEnabled !== "boolean") throw new Error("Invalid scheduling setting");
+  if (v.definition && digest(validateTeamSnapshot(v.definition).configuration) !== digest(teamConfiguration(v.mission))) throw new Error("Assignment differs from its pinned team configuration");
   if (typeof v.projectId !== "string" || !v.projectId || typeof v.name !== "string" || !v.name || !validTime(v.createdAt) || !validTime(v.updatedAt) || !Number.isSafeInteger(v.missionRevision) || v.missionRevision < 1 || !unique(v.missions, "revision") || !unique(v.cycles, "id") || !unique(v.opportunities, "id") || !unique(v.operations, "id")) throw new Error("Invalid standing team identity or history");
   for (const m of v.missions) { if (!object(m) || !Number.isSafeInteger(m.revision) || m.revision < 1) throw new Error("Invalid mission revision"); validateMission(m.value); }
   if (!v.missions.some((m: any) => m.revision === v.missionRevision && digest(m.value) === digest(v.mission))) throw new Error("Current mission differs from its revision history");
   for (const c of v.cycles) {
     if (!object(c) || !/^pc-[a-f0-9]{24}$/.test(c.id) || !commit(c.baseCommit) || !validHash(c.sourceDigest) || !validHash(c.fingerprint) || !validTime(c.at) || c.endedAt !== undefined && !validTime(c.endedAt) || typeof c.context !== "string" || c.context.length > 200_000 || !Array.isArray(c.launches) || c.launches.length > 2 || !unique(c.launches, "claimId") || !unique(c.launches, "phase") || ![...ACTIVE_CYCLES, "completed", "no-op", "skipped", "blocked", "failed", "cancelled"].includes(c.status)) throw new Error("Invalid cycle accounting");
     if (!v.missions.some((m: any) => m.revision === c.missionRevision && digest(m.value) === digest(c.mission))) throw new Error("Cycle mission is not an immutable saved revision");
+    if (c.definition && digest(validateTeamSnapshot(c.definition).configuration) !== digest(teamConfiguration(c.mission))) throw new Error("Cycle differs from its pinned team configuration");
     for (const l of c.launches) if (!object(l) || !/^claim-[a-f0-9]{24}$/.test(l.claimId) || !["discovery", "implementation"].includes(l.phase) || !Number.isSafeInteger(l.attempt) || l.attempt < 1 || l.attempt > 2 || !validHash(l.inputHash) || !Number.isSafeInteger(l.calls) || l.calls < 4 || l.calls > 80 || !Number.isSafeInteger(l.minutes) || l.minutes < 1 || l.minutes > 120 || !validTime(l.at) || !["claimed", "running", "settled", "unknown"].includes(l.state) || l.usedCalls !== undefined && (!Number.isSafeInteger(l.usedCalls) || l.usedCalls < 0 || l.usedCalls > l.calls) || l.runId !== undefined && (typeof l.runId !== "string" || !/^[\w.-]{1,120}$/.test(l.runId)) || ["running", "settled"].includes(l.state) && !l.runId) throw new Error("Invalid launch reservation or usage");
+    for (const l of c.launches) if (l.usage) {
+      const u = closed(l.usage, ["version", "calls", "durationMs", "endedAt", "recordedAt", "digest"], "usage receipt");
+      if (u.version !== 1 || !l.runId || !Number.isSafeInteger(u.calls) || u.calls < 0 || u.calls > l.calls || !validTime(u.durationMs) || u.durationMs > l.minutes * 60_000 || !validTime(u.endedAt) || u.endedAt < l.at || !validTime(u.recordedAt) || !validHash(u.digest)) throw new Error("Invalid terminal usage receipt");
+    }
     if (c.report) { validateReport(c.report.report); if (digest(c.report.report) !== c.report.digest || !commit(c.report.head)) throw new Error("Invalid report receipt"); }
   }
   for (const o of v.opportunities) {
     if (!object(o) || !/^po-[a-f0-9]{24}$/.test(o.id) || !Number.isSafeInteger(o.revision) || o.revision < 1 || !commit(o.baseCommit) || !validTime(o.createdAt) || typeof o.evidenceVerified !== "boolean" || !v.cycles.some((c: any) => c.id === o.cycleId) || !["proposed", "selected", "implementing", "ready", "accepted", "shipped", "deferred", "rejected", "blocked", "expired"].includes(o.status)) throw new Error("Invalid opportunity history");
-    validateReport({ version: 1, summary: "stored", candidates: [Object.fromEntries(Object.keys(DISCOVERY_REPORT_SCHEMA.properties.candidates.items.properties).map((k) => [k, o[k]]))] });
+    if (o.origin !== undefined && o.origin !== "owner") throw new Error("Invalid task origin");
+    const candidate = Object.fromEntries(Object.keys(DISCOVERY_REPORT_SCHEMA.properties.candidates.items.properties).map((k) => [k, o[k]]));
+    if (o.origin === "owner") validateCandidate(candidate, true);
+    else validateReport({ version: 1, summary: "stored", candidates: [candidate] });
     if (o.result && (!commit(o.result.head) || !validHash(o.result.reportHash) || typeof o.result.runId !== "string" || typeof o.result.branch !== "string")) throw new Error("Invalid result identity");
     if (["ready", "accepted", "shipped"].includes(o.status) && !o.result) throw new Error("Result evidence is missing");
     if (o.status === "deferred" && !validTime(o.deferUntil)) throw new Error("Invalid defer date");

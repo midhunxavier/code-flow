@@ -4,7 +4,25 @@ Enable the project-mission preview, create a mission, and review its first propo
 
 ## Start with a bounded preview
 
-A project mission connects an owner mission to one repository. Existing Automations supplies the clock, and existing Auto team runs do the investigation, implementation, checks and independent review. The team brings opportunities and verified drafts back to the owner. It never merges or publishes automatically.
+A project assignment connects an agent team and owner mission to one repository. Give it tasks directly or enable recurring discovery. Existing Automations supplies the clock, and existing Auto team runs do the investigation, implementation, checks and independent review. The team brings opportunities and verified drafts back to the owner. It never merges or publishes automatically.
+
+## Reusable agent teams and project assignments
+
+Open **Project → Project missions → Reusable agent teams** and choose **Create agent team**. Give it a name, choose its coordinator and worker/reviewer providers, and set model preferences. Optional role settings let the coordinator and workers use different models or effort for the same provider. Saving creates a versioned definition without starting agents or granting access to a repository.
+
+Choose **Assign to this project**, select a repository and configure the mission, base branch, allowed paths, checks and budgets. Reusable-team assignments initially have **Run recurring discovery** turned off. Save the draft and activate it when ready. The same reusable team can be assigned to other projects with separate authority, memory and allowances. One non-archived assignment owns each underlying Git repository, including all its linked worktrees.
+
+Existing missions are already assignments. **Edit mission → Agent team** can attach a reusable definition to one without replacing its ID, cycles, decisions, results, launch receipts or budget ledger. **Save as reusable team** copies only provider/model preferences from an existing assignment; it does not copy mission instructions, private checkpoints, sessions, project memory or permissions.
+
+Editing a reusable team creates a new version. Assignments keep their pinned configuration until you choose a version in **Edit mission** or **Use team version …**. Each cycle and child run records its own snapshot; updates never silently change other assignments or running work. Adopting changed execution settings requires fresh verification for existing ready/accepted results and retains all prior history and charged usage.
+
+## Give an assigned team a task
+
+Activate the assignment, select **Give team a task**, and enter a title, instructions, acceptance criteria and an allowed category. A required verification check must be configured. The task starts an implementation Auto team immediately, skipping discovery. It uses the assignment's existing scope, permissions, implementation allocation and rolling weekly allowance. It works even with recurring discovery disabled, or when discovery is set to proposals only.
+
+Tasks appear alongside opportunities with **Owner-assigned task** attribution. They do not claim independently discovered code evidence. Checks, independent review, exact-commit approval and publication controls are the same as for discovered opportunities. A task never resets usage or inherits a previous run's sessions. Finish or stop the active cycle before assigning another task. The task form retains the exact request after an ambiguous connection failure, so retrying cannot admit the same task twice.
+
+Workers submit completed artifacts; Code Flow commits and integrates them, runs the configured checks and obtains independent review. Pending engine gates belong in the worker handover, not in unresolved implementation requirements. The final check can reuse passing evidence only for the same unchanged commit, checkout and verification profile. Plain documentation changes are identified from the actual diff: checks and independent review remain required, while executable fail-to-pass proof is marked not applicable. Code, configuration, executable files, binary changes and mixed diffs retain the proof requirement.
 
 ## Create a mission
 
@@ -20,7 +38,7 @@ The default schedule is Monday at 09:00 in the browser's time zone. Daily, selec
 
 The default scope permits the repository except `.codeflow` and `.github/workflows`, with eight changed files and 400 added/deleted lines. Credential paths and binary changes are excluded. File bounds enforce mechanical scope; a model's risk and benefit estimates remain judgments to review.
 
-Discovery reserves eight calls and 15 minutes. Implementation reserves 16 calls and 45 minutes. The rolling seven-day allowance is 48 calls and 120 allocated minutes. Calls with settled usage reclaim unused calls; time remains conservatively charged at the phase allocation. Unknown launches remain fully reserved even after seven days. Increase budgets deliberately in the mission editor when the defaults do not fit your cadence.
+Discovery reserves eight calls and 15 minutes. Implementation reserves 16 calls and 45 minutes. The rolling seven-day allowance is 48 calls and 120 minutes. Each launch reserves its full limit before starting. An exact, durable terminal-run receipt replaces that reservation with observed calls and elapsed time rounded up to whole minutes, including cancelled, failed and stopped runs. Original allocation fields and historical mission budgets remain saved. Unknown or interrupted launches remain fully reserved even after seven days; missing evidence never becomes zero usage. Legacy runs can gain additive usage receipts without resetting their history. Increase budgets deliberately in the mission editor when the defaults do not fit your cadence.
 
 ## What a cycle does
 
@@ -42,7 +60,7 @@ Project → Automation → Pursue a mission contains the full opportunity cards,
 - **Defer one week** retains the idea and feedback; once due it may be rediscovered. **Reject** suppresses the problem in later discovery. Owners may explicitly reconsider a saved proposal.
 - **Pause** prevents new cycles and the next implementation stage. An already running discovery may finish into proposals. **Stop cycle** cancels owned work, retaining unresolved reservations. **Archive team** stops scheduling and retains its history.
 
-Changing the mission makes previously ready/accepted results require new verification. Moving a result branch after review invalidates readiness. Generic run resumes, selective reruns, writer follow-ups, automatic PR-fix watchers and triage revision shortcuts are blocked for managed runs; use the project mission's revision controls.
+Changing execution policy makes previously ready/accepted results require new verification. Changing only the schedule, recurring-discovery toggle or assignment name preserves those results and can be done during a cycle. The current schedule is stored separately; historical mission and cycle snapshots retain their original timing. Full-mission schedule updates from older clients receive the same behavior. Moving a result branch after review invalidates readiness. Generic run resumes, selective reruns, writer follow-ups, automatic PR-fix watchers and triage revision shortcuts are blocked for managed runs; use the project mission's revision controls.
 
 Project mission runs can be archived individually or in a sidebar selection. They cannot be deleted: cycle recovery, budgets and exact-result approvals retain their run history. Ordinary runs still support individual and bulk deletion. The mission editor's searchable model picker includes the same free-model filter and badges as the composer; its selections update only that team's mission.
 
@@ -53,6 +71,8 @@ Existing notification destinations receive actionable cycle outcomes using their
 Team aggregates are private files under `$CODEFLOW_HOME/project-teams/`. Each mutation validates and fsyncs its snapshot before acknowledgment. A cycle claim and its full budget allocation are saved before starting a run; the initial run identity is fsynced and attached to the claim before any agent dispatch.
 
 Recovery adopts only a matching team/cycle/claim/input/attempt receipt. An ambiguous launch is marked **unknown** and is never automatically replayed. Inspect its run and host process state, then stop the cycle if abandoning it; stopping does not pretend unknown usage is zero. A storage error remains visible, and corrupt team files are preserved for repair. Duplicate repository ownership blocks both records.
+
+On first load, legacy assignments gain a shared Git metadata identity. This additive upgrade preserves their IDs, immutable mission/cycle history, operation receipts and usage. Linked worktree aliases cannot acquire separate ownership. Replacing a repository's Git metadata blocks dispatch rather than silently adopting the replacement. Reusable definitions are separate `at-*.json` files in the same directory, with at most 100 definitions, 100 versions per definition and a 2 MiB per-definition ceiling; damaged definitions are preserved and reported without preventing unrelated existing missions from loading.
 
 Automations stores only a managed target and a display projection. Mission settings remain authoritative in the team aggregate. Managed schedules cannot be edited through generic automation controls. Schedule occurrences use stable operation IDs, so replaying a due occurrence cannot launch a second cycle. The existing one-hour missed-run grace and DST rules apply.
 
@@ -68,10 +88,15 @@ All mutations use a client-generated `operationId`. Team edits and opportunity d
 
 | Method and path | Purpose |
 |---|---|
-| `GET /api/project-teams?project=ID` | Scoped teams, storage faults and provider eligibility |
-| `POST /api/project-teams` | Create a draft with projectId, repo, name and mission |
+| `GET /api/project-teams?project=ID` | Scoped assignments, reusable team summaries, storage faults and provider eligibility |
+| `GET /api/project-teams/definitions` | Reusable team summaries and definition storage faults |
+| `GET /api/project-teams/definitions/:id` | One definition and its retained versions |
+| `POST /api/project-teams/definitions` | Create from name/configuration, or name/sourceTeamId |
+| `POST /api/project-teams/definitions/:id` | Save a new version with revision, name and configuration |
+| `POST /api/project-teams` | Create a draft with projectId, repo, name, mission, optional definition `{id, revision}` and scheduleEnabled |
 | `GET /api/project-teams/:id` | Aggregate and remaining allowance |
-| `POST /api/project-teams/:id` | Update mission/name/status with revision |
+| `POST /api/project-teams/:id` | Update mission/name/status, schedule/scheduleEnabled or adopt a definition with revision; definition `null` detaches the reusable reference while keeping configuration |
+| `POST /api/project-teams/:id/tasks` | Admit an owner task with revision, title, instructions, acceptance array and optional category |
 | `GET /api/project-teams/:id/preview` | Readiness and schedule preview without model calls |
 | `POST /api/project-teams/:id/cycle` | Explicit cycle admission |
 | `POST /api/project-teams/:id/stop` | Stop owned cycle with revision |

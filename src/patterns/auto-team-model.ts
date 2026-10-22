@@ -21,11 +21,14 @@ export const TEMPLATE_TEAM_PLAN_SCHEMA = obj({ ...TEAM_PLAN_SCHEMA.properties, t
 })) });
 const reply = obj({ requestId: str, body: str, evidence: strings });
 export const TASK_OUTCOME_SCHEMA = obj({
-  taskId: str, memberId: str, status: { type: "string", enum: ["submitted", "needs_info", "failed"] }, checkpoint: str, handover: str,
+  taskId: str, memberId: str, status: { type: "string", enum: ["submitted", "needs_info", "failed"], description: "submitted means the assigned artifact is ready for engine integration and verification; it does not claim final checks or review passed" }, checkpoint: str, handover: str,
   artifacts: strings, unresolvedRequirements: strings,
-  questions: array(obj({ id: str, recipient: str, body: str, blocking: { type: "boolean" } })), replies: array(reply),
+  questions: array(obj({ id: identifier, recipient: str, body: str, blocking: { type: "boolean" } })), replies: array(reply),
   findings: array(obj({ title: str, body: str, evidence: strings, paths: strings })),
 });
+export function taskOutcomeSchema(requirementIds: string[]) {
+  return obj({ ...TASK_OUTCOME_SCHEMA.properties, unresolvedRequirements: { type: "array", items: { type: "string", enum: requirementIds }, description: "Only known IDs of unfinished implementation requirements. Use [] on submission. Pending engine commits, checks, proof and independent review belong in handover text, not here." } });
+}
 export const TEAM_ANSWERS_SCHEMA = obj({ replies: array(reply), unresolved: strings });
 export const LEGACY_TEAM_REVISION_SCHEMA = obj({
   reason: str, addTasks: array(legacyTask), reassignments: array(obj({ taskId: str, memberId: str })),

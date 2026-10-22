@@ -33,7 +33,7 @@ export interface TeamEvaluation {
   reproducibility?: EvaluationReproducibility;
   status: Run["status"];
   verified: boolean;
-  verification: { checks: "passed" | "failed" | "not_required" | "unknown"; review: "approved" | "rejected" | "unknown"; proof?: string; proofNotRequired?: "unchanged-rerun"; gaps: number; requirements: number; covered: number; integrityFlags: number; retainedTasks?: number; newlyExecutedTasks?: number; requirementsUsingBaseline?: number };
+  verification: { checks: "passed" | "failed" | "not_required" | "unknown"; review: "approved" | "rejected" | "unknown"; proof?: string; proofNotRequired?: "unchanged-rerun" | "documentation-only"; gaps: number; requirements: number; covered: number; integrityFlags: number; retainedTasks?: number; newlyExecutedTasks?: number; requirementsUsingBaseline?: number };
   metrics: {
     invocations: number; coordinatorInvocations: number; coordinatorFraction: number | null; workerTurns: number; multiWorker: boolean;
     elapsedMs?: number; activeWorkMs: number; coordinatorMs?: number;
@@ -105,7 +105,8 @@ export function buildTeamEvaluation(run: Run, options: { mode?: EvaluationMode; 
   }).length ?? 0;
   const gaps = team?.gaps.length ?? 0;
   const unchangedRerun = !!run.teamRerun && run.facts?.proofNotRequired === "unchanged-rerun" && check === "passed" && approved;
-  const verified = run.status === "done" && approved && (check === "passed" || check === "not_required") && !gaps && !integrityFlags && (!team || team.status === "completed" && covered === requirements) && (run.prove === false || check === "not_required" || run.facts?.proof === "proven" || unchangedRerun);
+  const documentationOnly = run.facts?.proofNotRequired === "documentation-only" && check === "passed" && approved;
+  const verified = run.status === "done" && approved && (check === "passed" || check === "not_required") && !gaps && !integrityFlags && (!team || team.status === "completed" && covered === requirements) && (run.prove === false || check === "not_required" || run.facts?.proof === "proven" || unchangedRerun || documentationOnly);
   const mode = options.mode ?? "unknown";
   const approvalAnswers = options.journal ? [...options.journal].filter(([key]) => key.startsWith("approval:")).map(([, value]) => value as { decision?: string; note?: string }) : undefined;
   const rated = options.memoryEntries?.flatMap((entry) => entry.feedback?.filter((feedback) => feedback.runId === run.id && run.memoryManifest?.included.some((ref) => ref.id === entry.id && ref.revision === feedback.revision)) ?? []);
@@ -117,7 +118,7 @@ export function buildTeamEvaluation(run: Run, options: { mode?: EvaluationMode; 
     reproducibility: { nodeVersion: process.version, platform: `${process.platform}/${process.arch}`, ...options.reproducibility,
       requestedSettings: Object.fromEntries(Object.entries(run.agentSettings ?? {}).filter((entry): entry is [string, {model?: string; effort?: string}] => entry[1] !== undefined).map(([id, settings]) => [id, structuredClone(settings)])),
       stepSettings: [...new Map(turns.filter((step) => step.agent).map((step) => { const settings = { provider: step.agent!, model: step.settings?.model, effort: step.settings?.effort }; return [JSON.stringify(settings), settings] as const; })).values()] },
-    verification: { checks: check, review: approved ? "approved" : run.facts?.approved === false || team?.verification?.reviewed ? "rejected" : "unknown", proof: run.facts?.proof, gaps, requirements, covered, integrityFlags, ...(run.teamRerun ? { proofNotRequired: run.facts?.proofNotRequired, retainedTasks: team?.tasks.filter((task) => task.retainedBaseline).length ?? 0, newlyExecutedTasks: team?.tasks.filter((task) => !task.retainedBaseline && (task.attempts ?? 0) > 0).length ?? 0, requirementsUsingBaseline: team?.requirements.filter((requirement) => team.tasks.some((task) => task.retainedBaseline && task.requirements.includes(requirement.id))).length ?? 0 } : {}) },
+    verification: { checks: check, review: approved ? "approved" : run.facts?.approved === false || team?.verification?.reviewed ? "rejected" : "unknown", proof: run.facts?.proof, proofNotRequired: run.facts?.proofNotRequired, gaps, requirements, covered, integrityFlags, ...(run.teamRerun ? { proofNotRequired: run.facts?.proofNotRequired, retainedTasks: team?.tasks.filter((task) => task.retainedBaseline).length ?? 0, newlyExecutedTasks: team?.tasks.filter((task) => !task.retainedBaseline && (task.attempts ?? 0) > 0).length ?? 0, requirementsUsingBaseline: team?.requirements.filter((requirement) => team.tasks.some((task) => task.retainedBaseline && task.requirements.includes(requirement.id))).length ?? 0 } : {}) },
     metrics: {
       invocations, coordinatorInvocations: coordination, coordinatorFraction: invocations ? coordination / invocations : null,
       workerTurns: workers.length, multiWorker: new Set(workers.map((step) => team ? step.memberId ?? step.agent : step.worktree ?? step.agent)).size > 1,
