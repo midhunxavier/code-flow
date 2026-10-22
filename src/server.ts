@@ -1284,7 +1284,7 @@ const topics: Record<string, TopicSource> = {
   "project-teams"(projectId, _after, deliver) {
     if (fileAccess.hasRestrictions() || !projects.get(projectId)) throw new TopicError(403, "Standing team scope is unavailable");
     const generation = filesystemFeedRevision;
-    const publish = () => { if (generation === filesystemFeedRevision && !fileAccess.hasRestrictions() && projects.get(projectId)) deliver({ type: "snapshot", teams: projectTeams.list(projectId), ...projectTeams.configuration() }); };
+    const publish = () => { if (generation === filesystemFeedRevision && !fileAccess.hasRestrictions() && projects.get(projectId)) deliver({ type: "snapshot", teams: projectTeams.list(projectId), definitions: projectTeams.teamLibrary(), definitionFaults: Object.fromEntries(projectTeams.definitions.faults), ...projectTeams.configuration() }); };
     const off = projectTeams.store.subscribe(publish); publish(); return off;
   },
   /**

@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import { sanitizeDeferredRequest, type DeferredReadiness, type DeferredRunRequest } from "./deferred-runs.js";
 import { redactText } from "./privacy.js";
-import { readOnlyGitMetadata } from "./agent-container.js";
+import { repositoryIdentity } from "./repository-identity.js";
 
 export interface CoordinationResult { nodeId: string; runId: string; repo: string; branch: string; commit: string; verificationId: string; verifiedAt: number }
 export interface CoordinationClaim { jobId: string; nodeId: string; claimId: string; attempt: number; dependencies: CoordinationResult[] }
@@ -87,7 +87,6 @@ function history(job: CoordinatedChange, now: number, detail: string, node?: Coo
 function current(document: CoordinationDocument, name: string, revision: number) { const job = document.jobs.find((item) => item.id === name); if (!job) throw new Error("Coordinated change not found"); if (!Number.isSafeInteger(revision) || job.revision !== revision) throw new CoordinationConflictError(copy(job)); return job; }
 function getNode(job: CoordinatedChange, name: string) { const node = job.nodes.find((item) => item.id === name); if (!node) throw new Error("Coordinated task not found"); return node; }
 const sameResult = (left: CoordinationResult, right: CoordinationResult) => left.nodeId === right.nodeId && left.runId === right.runId && left.repo === right.repo && left.branch === right.branch && left.commit === right.commit && left.verificationId === right.verificationId;
-async function repositoryIdentity(repo: string) { const common = readOnlyGitMetadata(repo).at(-1); if (!common) throw new Error("Choose a verified local Git repository"); const path = await realpath(common), info = await lstat(path, { bigint: true }); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Repository metadata ownership is unavailable"); return digest({ common: path, device: String(info.dev), inode: String(info.ino) }); }
 
 /** Single-owner durable local coordinator. Mutations serialize across local instances. */
 export class CoordinatedChanges {

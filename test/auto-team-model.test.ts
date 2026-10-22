@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { outcomeProblem, ownsPath, planProblem, readyTasks, revisionProblem, type TaskOutcome, type TeamPolicy, type TeamRevision } from "../src/patterns/auto-team-model.js";
+import { taskOutcomeSchema, outcomeProblem, ownsPath, planProblem, readyTasks, revisionProblem, type TaskOutcome, type TeamPolicy, type TeamRevision } from "../src/patterns/auto-team-model.js";
+import { shapeProblem } from "../src/json.js";
 import type { TeamPlan, TeamState } from "../src/teams.js";
 
 const policy: TeamPolicy = { coordinator: "claude", pool: ["claude", "codex"], inventory: { at: 0, ranking: ["claude", "codex"], providers: [{ id: "claude", available: true, quotaKnown: false }, { id: "codex", available: true, quotaKnown: false }] }, maxMembers: 4, maxTasks: 12, differentProviderReview: false };
@@ -162,4 +163,14 @@ test("revisions may retain unavailable members but cannot give them new work or 
   const pins = structuredClone(unavailable);
   pins.inventory.providers[0]!.settingsByRole = { worker: { model: "required-model" } };
   assert.match(revisionProblem(revision(), s, pins)!, /model settings/);
+});
+
+
+test("worker outcome schema accepts pending engine handoff but rejects prose requirement IDs and mailbox IDs", () => {
+  const schema = taskOutcomeSchema(["goal"]);
+  const value = { taskId: "docs", memberId: "worker", status: "submitted", checkpoint: "Edits complete", handover: "Engine checks and review are pending; no pass claimed", artifacts: ["README.md"], unresolvedRequirements: [], questions: [], replies: [], findings: [] };
+  assert.equal(shapeProblem(schema, value), undefined);
+  assert.ok(shapeProblem(schema, { ...value, unresolvedRequirements: ["goal: checks still pending"] }));
+  const s = state(), task = s.tasks[0]!;
+  assert.match(outcomeProblem({ ...value, taskId: task.id, memberId: task.owner, status: "needs_info", questions: [{ id: "mail:receipt", recipient: "coordinator", body: "Missing contract", blocking: true }] } as TaskOutcome, task, s.members.find(member => member.id === task.owner)!, s)!, /questions need unique local IDs/);
 });

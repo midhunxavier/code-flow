@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -18,7 +18,9 @@ const { ProjectTeamStore } = await import("../src/project-team-store.js");
 const { validateMission, validateReport, allowance, digest, disableRestoredProjectTeam } = await import("../src/project-team-model.js");
 const { assertProjectTeamChanges } = await import("../src/project-team-policy.js");
 const { flushWrites } = await import("../src/store.js");
+const { AgentTeamDefinitions } = await import("../src/agent-team-definitions.js");
 type Team = import("../src/project-team-model.js").ProjectTeam;
+const persisted = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const services: InstanceType<typeof ProjectTeams>[] = [], repos: string[] = [];
 const managers: InstanceType<typeof RunManager>[] = [];
 after(async () => { await Promise.all(services.map((s) => s.stop())); await Promise.all(managers.map((m) => m.shutdown())); await flushWrites(); for (const repo of repos) rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
@@ -268,14 +270,14 @@ test("managed PR merges require a current approval after publication", async (t)
   });
 });
 
-test("an interrupted or cancelled child does not refund unprovable invocation usage", async () => {
-  const f = await fixture(); const t = await f.service.cycle(f.team.id, "cancelled-child"), launch = t.cycles[0]!.launches[0]!;
+test("a terminal child without durable usage evidence retains its full reservation", async () => {
+  const f = await fixture({}, { persistUsage: async () => undefined }); const t = await f.service.cycle(f.team.id, "cancelled-child"), launch = t.cycles[0]!.launches[0]!;
   f.manager.cancel(launch.runId!); const result = await settled(f);
   assert.equal(result.cycles[0]!.status, "blocked"); assert.equal(result.cycles[0]!.launches[0]!.usedCalls, launch.calls);
   assert.equal(allowance(result).calls, result.mission.budget.weeklyCalls - launch.calls);
 });
 
-test("stopping implementation releases the opportunity for a new owner decision without refunding its claim", async () => {
+test("stopping implementation retains its claim until exact terminal usage can settle", async () => {
   const f = await fixture(); await f.service.cycle(f.team.id, "first");
   const deadline = Date.now() + 20000;
   while (f.store.get(f.team.id).cycles[0]!.launches[1]?.state !== "running" && Date.now() < deadline) { await f.service.reconcile(); await new Promise((r) => setTimeout(r, 50)); }
@@ -286,8 +288,13 @@ test("stopping implementation releases the opportunity for a new owner decision 
   assert.equal(t.cycles[0]!.status, "cancelled"); assert.equal(t.opportunities[0]!.status, "blocked");
   const o = t.opportunities[0]!;
   t = await f.service.decide(t.id, o.id, { operationId: "reject-stopped", revision: t.revision, opportunityRevision: o.revision, action: "reject", note: "Stop pursuing this" });
-  assert.equal(t.opportunities[0]!.status, "rejected"); assert.equal(t.cycles[0]!.launches[1]!.state, "running", "Unknown usage remains reserved");
+  assert.equal(t.opportunities[0]!.status, "rejected"); assert.ok(["running", "settled"].includes(t.cycles[0]!.launches[1]!.state));
   const run = f.manager.get(t.cycles[0]!.launches[1]!.runId!)!; while (!run.endedAt) await new Promise((r) => setTimeout(r, 50));
+  await f.service.reconcile();
+  const after = f.store.get(t.id);
+  assert.equal(after.cycles[0]!.status, "cancelled");
+  assert.equal(after.opportunities[0]!.status, "rejected");
+  assert.ok(after.cycles[0]!.launches[1]!.usage, "cancelled cycles also receive a durable usage receipt");
 });
 
 
@@ -314,4 +321,198 @@ test("Standing teams settings persist, reject stale writes and gate dispatch wit
   assert.equal(broken.configuration(true).enabled, false);
   assert.equal(broken.configuration(true).source, "unavailable");
   await assert.rejects(broken.setEnabled(true, 0), /Repair/);
+});
+
+test("schedule-only edits preserve ready and accepted commits, immutable mission history and budgets", async () => {
+  const f = await fixture(); await f.service.cycle(f.team.id, "ready-for-schedule-edit");
+  let t = await settled(f); assert.equal(t.opportunities[0]!.status, "ready");
+  const baseline = structuredClone(t), budget = allowance(t);
+  const schedule = { at: "11:30", days: [2], timezone: "Europe/Stockholm" };
+  t = await f.service.update(t.id, { operationId: "schedule-only", revision: t.revision, schedule });
+  assert.equal(t.missionRevision, baseline.missionRevision); assert.deepEqual(t.missions, baseline.missions);
+  assert.deepEqual(t.cycles, baseline.cycles); assert.deepEqual(t.opportunities, baseline.opportunities); assert.deepEqual(allowance(t), budget);
+  assert.deepEqual(f.automations.get(t.triggerId!)!.schedule, schedule);
+  const o = t.opportunities[0]!;
+  t = await f.service.decide(t.id, o.id, { operationId: "approve-before-reschedule", revision: t.revision, opportunityRevision: o.revision, action: "approve" });
+  const accepted = structuredClone(t);
+  // Older clients still submit their full mission when only the schedule changes.
+  t = await f.service.update(t.id, { operationId: "legacy-schedule-editor", revision: t.revision, mission: { ...t.mission, schedule: { ...schedule, at: "12:00" } } });
+  assert.equal(t.opportunities[0]!.status, "accepted"); assert.deepEqual(t.opportunities, accepted.opportunities);
+  assert.deepEqual(t.missions, accepted.missions); assert.deepEqual(t.cycles, accepted.cycles); assert.deepEqual(allowance(t), budget);
+  const loaded = new ProjectTeamStore(f.store.directory); await loaded.load();
+  assert.deepEqual(loaded.get(t.id), persisted(t), "a schedule edit survives restart without rewriting policy or receipts");
+});
+
+test("rescheduling an active discovery leaves its allocation and implementation authority intact", async () => {
+  const f = await fixture(); let t = await f.service.cycle(f.team.id, "active-reschedule");
+  const claim = structuredClone(t.cycles[0]!), budget = allowance(t);
+  t = await f.service.update(t.id, { operationId: "reschedule-in-flight", revision: t.revision, schedule: { at: "18:00", timezone: "Europe/Stockholm" } });
+  assert.deepEqual(t.cycles[0], claim); assert.deepEqual(allowance(t), budget);
+  t = await settled(f); assert.equal(t.cycles[0]!.status, "completed", t.cycles[0]!.reason);
+  assert.equal(t.opportunities[0]!.status, "ready");
+});
+
+test("linked worktrees cannot acquire a second assignment and replaced metadata blocks dispatch", async () => {
+  const f = await fixture(), linked = join(f.dir, "linked");
+  f.git("worktree", "add", "--detach", linked, "main");
+  await f.projects.update(f.project.id, { repos: [f.repo, linked] });
+  await assert.rejects(f.service.create({ operationId: "linked-assignment", projectId: f.project.id, repo: linked, name: "Alias team", mission: mission() }), /already has.*linked worktrees/);
+  const original = readFileSync(join(f.store.directory, `${f.team.id}.json`), "utf8");
+  renameSync(join(f.repo, ".git"), join(f.repo, ".git-original"));
+  f.git("init", "-q", "-b", "main");
+  await assert.rejects(f.service.cycle(f.team.id, "metadata-replaced"), /metadata was replaced/);
+  const loaded = new ProjectTeamStore(f.store.directory); await loaded.load();
+  assert.match(loaded.faults.get(f.team.id)!, /metadata was replaced/);
+  assert.equal(readFileSync(join(f.store.directory, `${f.team.id}.json`), "utf8"), original);
+});
+
+test("legacy identity upgrade retains mission IDs, all evidence and exact usage reservations", async () => {
+  const f = await fixture({ mission: "PT-EMPTY inspect" }); await f.service.cycle(f.team.id, "legacy-cycle");
+  const legacy = await settled(f); delete legacy.repositoryId;
+  const path = join(f.store.directory, `${legacy.id}.json`); writeFileSync(path, JSON.stringify(legacy));
+  const loaded = new ProjectTeamStore(f.store.directory); await loaded.load();
+  const upgraded = loaded.get(legacy.id);
+  assert.match(upgraded.repositoryId!, /^[a-f0-9]{64}$/); assert.equal(upgraded.triggerId, legacy.triggerId);
+  for (const field of ["missions", "mission", "cycles", "decisions", "opportunities", "operations"] as const) assert.deepEqual(upgraded[field], persisted(legacy[field]));
+  assert.deepEqual(allowance(upgraded), allowance(legacy));
+  const again = new ProjectTeamStore(f.store.directory); await again.load(); assert.deepEqual(again.get(legacy.id), upgraded, "migration is additive and runs once");
+});
+
+test("reusable teams have durable versions and project assignments explicitly pin their configuration", async () => {
+  const f = await fixture();
+  const definition = await f.service.saveDefinition({ operationId: "save-reusable", name: "Product engineers", sourceTeamId: f.team.id });
+  const before = f.store.get(f.team.id);
+  let t = await f.service.update(before.id, { operationId: "attach-team", revision: before.revision, definition: { id: definition.id, revision: 1 } });
+  assert.equal(t.id, before.id); assert.equal(t.definition!.revision, 1);
+  assert.deepEqual(t.cycles, before.cycles); assert.deepEqual(t.missions, before.missions); assert.deepEqual(allowance(t), allowance(before));
+  const secondRepo = join(f.dir, "second-repo"); execFileSync("git", ["clone", "-q", f.repo, secondRepo]);
+  const secondProject = await f.projects.create({ name: "Second product", repos: [secondRepo] });
+  const second = await f.service.create({ operationId: "second-project-assignment", projectId: secondProject.id, repo: secondRepo, name: "Second mission", definition: { id: definition.id, revision: 1 }, scheduleEnabled: false, mission: mission({ mission: "Improve another product" }) });
+  assert.equal(second.definition!.id, t.definition!.id); assert.notEqual(second.projectId, t.projectId);
+  assert.equal(second.status, "draft"); assert.deepEqual(second.cycles, []); assert.deepEqual(allowance(second), { calls: 48, minutes: 120 });
+  const updated = await f.service.saveDefinition({ operationId: "revise-team", revision: 1, name: "Product engineers", configuration: { ...definition.configuration, coordinator: "codex" } }, definition.id);
+  assert.equal(updated.revision, 2); assert.equal(f.store.get(t.id).mission.coordinator, "claude"); assert.equal(f.store.get(second.id).definition!.revision, 1);
+  await assert.rejects(f.service.saveDefinition({ operationId: "stale-team-version", revision: 1, name: "stale", configuration: definition.configuration }, definition.id), /changed/);
+  const persisted = new AgentTeamDefinitions(f.store.directory); await persisted.load();
+  assert.deepEqual(persisted.snapshot(definition.id, 1), definition.versions[0]); assert.equal(persisted.get(definition.id).revision, 2);
+  t = await f.service.update(t.id, { operationId: "adopt-team-update", revision: t.revision, definition: { id: updated.id, revision: updated.revision } });
+  assert.equal(t.mission.coordinator, "codex"); assert.equal(t.definition!.revision, 2); assert.deepEqual(allowance(t), allowance(before));
+  assert.equal(f.store.get(second.id).mission.coordinator, "claude", "adoption never mutates other assignments");
+});
+
+test("direct owner tasks use one bounded implementation, independent review, exact approval and idempotent accounting", async () => {
+  const f = await fixture();
+  const definition = await f.service.saveDefinition({ operationId: "direct-team", name: "Task team", sourceTeamId: f.team.id });
+  let t = await f.service.update(f.team.id, { operationId: "manual-assignment", revision: f.team.revision, scheduleEnabled: false, definition: { id: definition.id, revision: 1 } });
+  assert.equal(f.automations.get(t.triggerId!)!.enabled, false);
+  const request = { operationId: "owner-task", revision: t.revision, title: "Clarify the input contract", instructions: "Document that empty input is valid.", acceptance: ["The input contract is clear and existing checks pass"], category: "docs" };
+  const [first, duplicate] = await Promise.all([f.service.assignTask(t.id, request), f.service.assignTask(t.id, request)]);
+  assert.equal(first.cycles.length, 1); assert.equal(duplicate.cycles.length, 1);
+  assert.deepEqual(first.cycles[0]!.launches.map((l) => l.phase), ["implementation"]);
+  assert.equal(allowance(first).calls, 32); assert.equal(allowance(first).minutes, 75);
+  await assert.rejects(f.service.cycle(t.id, "schedule:manual-team"), /Recurring discovery is disabled/);
+  t = await settled(f);
+  const o = t.opportunities[0]!; assert.equal(o.origin, "owner"); assert.equal(o.evidenceVerified, false); assert.deepEqual(o.evidence, []);
+  assert.equal(o.status, "ready", t.cycles[0]!.reason); assert.equal(f.manager.list().length, 1, "owner tasks skip discovery");
+  const child = f.manager.get(o.result!.runId)!;
+  assert.equal(child.project, f.project.id); assert.deepEqual(child.projectTeam!.definition, t.definition); assert.equal(child.team!.verification!.approved, true);
+  assert.deepEqual(child.team!.verification!.head, o.result!.head);
+  await assert.rejects(f.manager.merge(child.id, { branch: o.result!.branch, into: "main" }), /Approve this exact result/);
+  const recordedUsage = allowance(t), loaded = new ProjectTeamStore(f.store.directory); await loaded.load();
+  assert.deepEqual(loaded.get(t.id), persisted(t)); assert.deepEqual(allowance(loaded.get(t.id)), recordedUsage);
+  const replay = await f.service.assignTask(t.id, request); assert.equal(replay.cycles.length, 1); assert.deepEqual(allowance(replay), recordedUsage);
+  await assert.rejects(f.service.assignTask(t.id, { ...request, instructions: "Different task" }), /reused/);
+  t = await f.service.decide(t.id, o.id, { operationId: "approve-owner-task", revision: t.revision, opportunityRevision: o.revision, action: "approve" });
+  assert.equal(t.opportunities[0]!.status, "accepted");
+});
+
+test("owner-task admission rejects missing checks, stale revisions, injected scope and insufficient budget without spending", async () => {
+  const f = await fixture({ budget: { weeklyCalls: 4 } });
+  const request = { operationId: "insufficient", revision: f.team.revision, title: "Task", instructions: "A task", acceptance: ["Checked"] };
+  await assert.rejects(f.service.assignTask(f.team.id, request), /Insufficient rolling/);
+  assert.deepEqual(f.store.get(f.team.id), f.team); assert.equal(f.manager.list().length, 0);
+  await assert.rejects(f.service.assignTask(f.team.id, { ...request, scope: { paths: ["*"] } }), /Invalid owner task fields/);
+  const g = await fixture({ mode: "propose", check: "" });
+  await assert.rejects(g.service.assignTask(g.team.id, { ...request, revision: g.team.revision }), /required verification check/);
+  const h = await fixture();
+  await assert.rejects(h.service.assignTask(h.team.id, { ...request, revision: 1 }), /Reload/);
+  assert.deepEqual(h.store.get(h.team.id), h.team); assert.equal(h.manager.list().length, 0);
+});
+
+test("reusable team storage preserves corrupt files and failed writes never change existing assignments", async () => {
+  const f = await fixture();
+  const input = { operationId: "durable-definition", name: "Engineers", sourceTeamId: f.team.id };
+  const definition = await f.service.saveDefinition(input);
+  assert.deepEqual(await f.service.saveDefinition(input), definition);
+  await assert.rejects(f.service.saveDefinition({ ...input, name: "Different" }), /reused/);
+  const path = join(f.store.directory, `${definition.id}.json`); writeFileSync(path, "{corrupt");
+  const loaded = new AgentTeamDefinitions(f.store.directory); await loaded.load();
+  assert.equal(loaded.faults.size, 1);
+  await assert.rejects(loaded.save({ operationId: input.operationId, name: input.name, configuration: definition.configuration }), /Repair/);
+  assert.equal(readFileSync(path, "utf8"), "{corrupt"); assert.deepEqual(f.store.get(f.team.id), f.team);
+});
+
+test("role-specific team models reach the run and definition changes cannot alter an allocated snapshot", async () => {
+  const f = await fixture();
+  const configuration = { coordinator: "claude", pool: ["claude"], agentSettings: {}, roleSettings: { coordinator: { claude: { model: "opus", effort: "high" } }, pool: { claude: { model: "haiku", effort: "low" } } } };
+  const definition = await f.service.saveDefinition({ operationId: "role-model-team", name: "Specialists", configuration });
+  let t = await f.service.update(f.team.id, { operationId: "attach-specialists", revision: f.team.revision, definition: { id: definition.id, revision: 1 } });
+  t = await f.service.assignTask(t.id, { operationId: "specialist-task", revision: t.revision, title: "Clarify behavior", instructions: "Clarify the documented input behavior.", acceptance: ["Existing checks pass"] });
+  const updated = await f.service.saveDefinition({ operationId: "update-specialists", revision: 1, name: "Specialists", configuration: { ...configuration, roleSettings: { coordinator: { claude: { model: "sonnet" } } } } }, definition.id);
+  assert.equal(updated.revision, 2);
+  await assert.rejects(f.service.update(t.id, { operationId: "adopt-during-task", revision: t.revision, definition: { id: definition.id, revision: 2 } }), /Stop the active cycle/);
+  t = await settled(f);
+  const run = f.manager.get(t.cycles[0]!.launches[0]!.runId!)!;
+  assert.equal(t.opportunities[0]!.status, "ready", JSON.stringify({ reason: t.cycles.at(-1)!.reason, error: run.error, gaps: run.team?.gaps }));
+  assert.deepEqual(run.roleSettings, configuration.roleSettings);
+  assert.equal(run.team!.members.find((m) => m.role === "coordinator")!.model, "opus");
+  assert.equal(run.team!.members.find((m) => m.role === "worker")!.model, "haiku");
+  assert.equal(run.projectTeam!.definition!.revision, 1); assert.equal(t.definition!.revision, 1);
+  await assert.rejects(f.service.saveDefinition({ operationId: "forged-permissions", name: "Bad", configuration: { ...configuration, trust: "full" } }), /Invalid agent team configuration/);
+});
+
+test("backups retain reusable definitions and mission usage while restore pauses assigned work", async () => {
+  const f = await fixture();
+  const definition = await f.service.saveDefinition({ operationId: "backup-team", name: "Backup engineers", sourceTeamId: f.team.id });
+  let t = await f.service.update(f.team.id, { operationId: "backup-attach", revision: f.team.revision, definition: { id: definition.id, revision: 1 }, scheduleEnabled: false });
+  await f.service.assignTask(t.id, { operationId: "backup-task", revision: t.revision, title: "Document behavior", instructions: "Clarify the documented input contract.", acceptance: ["Checks pass"] });
+  t = await settled(f); assert.equal(t.opportunities[0]!.status, "ready");
+  const { createEncryptedBackup, restoreEncryptedBackup } = await import("../src/maintenance.js");
+  const backupHome = join(f.dir, "backup-home"); mkdirSync(join(backupHome, "project-teams"), { recursive: true });
+  for (const entry of [t.id, definition.id]) writeFileSync(join(backupHome, "project-teams", `${entry}.json`), readFileSync(join(f.store.directory, `${entry}.json`)));
+  const output = join(f.dir, "assignment.cfb"), destination = join(f.dir, "restored");
+  await createEncryptedBackup({ home: backupHome, output, password: "team backup password 12345" });
+  await restoreEncryptedBackup({ input: output, destination, password: "team backup password 12345" });
+  const restored = new ProjectTeamStore(join(destination, "project-teams")); await restored.load();
+  const after = restored.get(t.id); assert.equal(after.status, "paused"); assert.equal(after.opportunities[0]!.status, "blocked");
+  assert.deepEqual(after.cycles, persisted(t.cycles)); assert.deepEqual(after.missions, persisted(t.missions)); assert.deepEqual(allowance(after), allowance(t));
+  const restoredDefinitions = new AgentTeamDefinitions(restored.directory); await restoredDefinitions.load();
+  assert.deepEqual(restoredDefinitions.get(definition.id), persisted(definition)); assert.deepEqual(after.definition, persisted(t.definition));
+});
+
+test("small documentation tasks submit once, use host checks and review, and release unused budget durably", async () => {
+  const f = await fixture({ paths: ["README.md"], budget: { buildCalls: 8, buildMinutes: 10, weeklyCalls: 24, weeklyMinutes: 30 } });
+  writeFileSync(join(f.repo, ".codeflow/config.json"), JSON.stringify({ prove: true }));
+  f.git("add", ".codeflow/config.json"); f.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "enable proof");
+  await f.service.assignTask(f.team.id, { operationId: "small-docs", revision: f.team.revision, title: "Clarify empty input", instructions: "AUTO-DOCS-HANDOFF Add a concise documented example.", acceptance: ["The example is accurate; required checks and independent review pass"], category: "docs" });
+  let t = await settled(f);
+  for (let attempt = 0; attempt < 20 && !t.cycles[0]!.launches[0]!.usage; attempt++) { await f.service.reconcile(); t = f.store.get(t.id); }
+  const run = f.manager.get(t.cycles[0]!.launches[0]!.runId!)!;
+  assert.equal(t.opportunities[0]!.status, "ready", JSON.stringify({ reason: t.cycles[0]!.reason, gaps: run.team?.gaps, error: run.error }));
+  assert.equal(run.team!.tasks[0]!.attempts, 1);
+  assert.equal(run.team!.metrics.invocations, 3, "one plan, one worker and one independent review");
+  assert.equal(run.team!.verification!.reviewed, true);
+  assert.equal(run.facts!.proofNotRequired, "documentation-only");
+  assert.equal(run.proofs?.[t.opportunities[0]!.result!.branch], undefined, "no fabricated executable proof for prose");
+  assert.equal(run.usage.checks, 1, "the unchanged final commit reuses the host check");
+  const launch = t.cycles[0]!.launches[0]!;
+  assert.equal(launch.calls, 8); assert.equal(launch.minutes, 10);
+  assert.equal(launch.usage!.calls, 3); assert.ok(launch.usage!.durationMs < 60000);
+  assert.deepEqual(allowance(t), { calls: 21, minutes: 29 });
+  const reloaded = new ProjectTeamStore(f.store.directory); await reloaded.load();
+  assert.deepEqual(allowance(reloaded.get(t.id)), allowance(t));
+  const before = persisted(t.cycles); await f.service.reconcile();
+  assert.deepEqual(persisted(f.store.get(t.id).cycles), before, "terminal accounting is idempotent");
+  const second = await f.service.assignTask(t.id, { operationId: "another-small-task", revision: t.revision, title: "Another small docs task", instructions: "AUTO-DOCS-HANDOFF Document another example.", acceptance: ["The example is clear"], category: "docs" });
+  assert.equal(second.cycles.length, 2, "the first small task leaves enough weekly allowance for another task");
 });

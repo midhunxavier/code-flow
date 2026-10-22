@@ -149,3 +149,28 @@ test("cancel and immediate resume waits for a pending workflow write before reco
     await manager.shutdown();
   }
 });
+
+test("final check reuse requires the same commit, clean checkout, inputs and verification profile", async () => {
+  for (const change of ["none", "commit", "dirty", "untracked", "profile"]) {
+    let first: Awaited<ReturnType<Context["check"]>>, second: typeof first;
+    const p = pattern(async ctx => {
+      const wt = await ctx.worktree("build");
+      first = await ctx.check(wt, "Initial check");
+      if (change === "dirty" || change === "commit") await writeFile(join(wt.path, "README.md"), "Changed after check\n");
+      if (change === "commit") await ctx.commit(wt, "Changed commit");
+      if (change === "untracked") await writeFile(join(wt.path, "input.txt"), "Changed input\n");
+      if (change === "profile") ctx.run.loop.verification!.checks.push({ id: "extra", kind: "custom", command: "node -e 'console.log(2)'", required: true, timeoutMs: 10000 });
+      second = await ctx.check(wt, "Final check", undefined, { reuse: true });
+      return "checked";
+    });
+    const manager = new RunManager(id => id === p.id ? p : undefined);
+    try {
+      const command = "node -e 'console.log(1)'";
+      const run = await manager.start({ repo, pattern: p, task: `Check reuse ${change}`, roles: {}, options: {}, loop: { check: command, verification: { name: "Required", checks: [{ id: "primary", kind: "custom", command, required: true, timeoutMs: 10000 }] } } });
+      await finished(manager, run);
+      assert.equal(first!.ok, true, run.error);
+      assert.equal(second!.ok, change !== "dirty", change);
+      assert.equal(run.usage.checks, change === "none" ? 1 : 2, change);
+    } finally { await manager.shutdown(); }
+  }
+});

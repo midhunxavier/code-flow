@@ -3141,10 +3141,14 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 /* Standing project teams share the project page and multiplexed event transport. */
 .standing-teams { margin: 20px 0; padding: 20px; }
 .standing-teams > .pp-card-head { padding: 0 0 12px; }
-.pt-team { padding: 16px 0; border-top: 1px solid var(--border); }
+.pt-team { padding: 16px 0; border-top: 1px solid var(--border); min-width: 0; overflow-wrap: anywhere; }
 .pt-form { display: grid; gap: 12px; padding: 16px 0; max-width: 760px; }
 .pt-form label, .pt-opportunity > label { display: grid; gap: 6px; }
 .pt-form fieldset label { display: flex; gap: 8px; margin: 8px 0; }
+.pt-form label:has(> input[type="checkbox"]), .pt-actions > label { display: flex; align-items: center; gap: 8px; }
+.agent-team-library { margin: 16px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.agent-team-library > summary { cursor: pointer; font-weight: 600; }
+.standing-teams .field { min-width: 0; max-width: 100%; }
 .pt-json { font-family: var(--mono); width: 100%; }
 .pt-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .pt-opportunities { display: grid; gap: 12px; margin: 16px 0; }
