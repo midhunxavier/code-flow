@@ -453,7 +453,7 @@
   .live-browser-keyboard { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: .01; padding: 0; border: 0; resize: none; }
   .live-browser-surface:focus-within { outline: 2px solid var(--focus); outline-offset: -2px; }
   .live-browser-empty { position: absolute; inset: 0; display: grid; place-content: center; color: #444; pointer-events: none; padding: 20px; text-align: center; }
-  .live-browser-dialog { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 12px; border-bottom: 1px solid var(--border); background: var(--raised); }
+  .live-browser-dialog { position: absolute; inset: 0 0 auto; z-index: 1; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 12px; border-bottom: 1px solid var(--border); background: var(--raised); }
   .live-browser-dialog p { flex-basis: 100%; margin: 0; overflow-wrap: anywhere; }
   .live-browser-dialog .field { min-width: 0; flex: 1; }
   .side-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -3491,3 +3491,23 @@ dialog.task-conflict-dialog[open] { display: flex; flex-direction: column; }
 .task-team-dialog .task-team-switch input:checked::before { transform: translateX(16px); }
 .task-team-dialog .task-team-switch input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .task-branch .model-select { min-width: 0; flex: 1; }
+/* Connection journeys and project invitations share the settings surface. */
+.connection-journeys { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+.connection-journey { display: flex; flex-direction: column; gap: 12px; padding: 20px; color: var(--text); border: 1px solid var(--border); border-radius: 12px; background: var(--panel); text-decoration: none; }
+.connection-journey:hover, .connection-journey[aria-current="page"] { border-color: var(--accent-ink); background: var(--selected); }
+.connection-journey > span { font-size: 13px; line-height: 1.6; }
+.connection-journey .connection-action { margin-top: auto; font-weight: 600; }
+.connection-checklist { padding-left: 24px; line-height: 1.8; }
+.invitation-result, .join-next { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border); }
+.project-invitations .field, .join-project .field { width: 100%; min-width: 0; }
+.project-invitations code, .join-project code { overflow-wrap: anywhere; }
+.project-invitations label, .join-next label { display: grid; gap: 6px; }
+.project-invitations details { margin-top: 20px; }
+.invitation-list, .join-project-list { list-style: none; padding: 0; margin: 12px 0 0; }
+.invitation-list li, .join-project-list li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.invitation-list small, .join-project-list .help { display: block; }
+.join-project { max-width: 640px; }
+.join-project h1 { overflow-wrap: anywhere; }
+.join-project .team-setup-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.join-next ol { padding-left: 22px; line-height: 1.8; }
+@media (max-width: 800px) { .connection-journeys { grid-template-columns: 1fr; } .connection-journey { padding: 16px; gap: 6px; } }

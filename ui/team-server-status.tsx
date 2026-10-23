@@ -53,7 +53,7 @@ export function SshTeamServerCard({ host, onManage }: { host: { id: string; name
     {error ? <p class="msg err" role="alert">{error}</p> : null}
     {actionError ? <p class="msg err" role="alert">{actionError}</p> : null}
     <div class="settings-actions">
-      {onManage ? <button class="btn primary" disabled={deleting} onClick={onManage}>{info?.state === "running" ? "Manage team server" : "Set up team server"}</button> : <a class="btn primary" href="#/settings/connections/sharing">Manage team server</a>}
+      {onManage ? <button class="btn primary" disabled={deleting} onClick={onManage}>{info?.state === "running" ? "Manage team server" : "Set up team server"}</button> : <a class="btn primary" href="#/settings/connections/host">Manage team server</a>}
       <button class="btn" disabled={checking || deleting} onClick={() => setRevision(value => value + 1)}>{checking ? "Checking…" : "Refresh status"}</button>
       {onManage && info && info.state !== "not-installed" ? <button class="btn danger" disabled={deleting || checking} onClick={() => void remove()}>{deleting ? "Deleting…" : "Delete team server"}</button> : null}
     </div>

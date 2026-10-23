@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    # PR updates run below; duplicate push checks can be cancelled and block merging.
+    branches: [main]
   pull_request:
 
 permissions:

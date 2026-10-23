@@ -6,6 +6,30 @@ Project → More → **Board** contains tasks on the project’s owning computer
 
 Linked servers remain available through the connection-scoped **Board** entry and its **Team connection** selector. A linked project is not attached to a local project by a matching ID, name or repository path. The URL’s `team` query pins requests, downloads and the stream to that connection. Opening a local project’s Board or People switches the document to `team=local`; previous requests and subscriptions cannot become actions against the new source. Missing projects show an unavailable state instead of another board. Shared users see Board and Results plus People from their authorized board projection, including projects with repository keys but no server clone.
 
+## Start with what you want to connect
+
+Open **Settings → Connections → Share access** and choose:
+
+| Your goal | Choose | Next step |
+| --- | --- | --- |
+| Continue your work on a phone or tablet | **Connect my devices** | Choose Wi-Fi or Tailscale, configure HTTPS for full control, then scan your private device QR code. |
+| Join someone else’s project | **Join a team** | Open their invitation, choose your own account, then connect your own CodeFlow when you want to run tasks. |
+| Give people access to a project | **Host a team** | Choose this computer or an SSH server, configure repositories and secure access, then invite teammates. |
+
+**Manage existing connections and access** retains the account, role, device, runner and execution-grant settings. Old Settings → Team and Remote access bookmarks still open the appropriate settings.
+
+## Invite and join a project
+
+The server owner opens **Project → People → Invite a teammate**, or the **Teammates** step in team-server setup. Choose a project and role, then **Create invitation**. Copy the link or let the recipient scan its QR code. Each link admits one person, expires after 24 hours, and can be revoked from **Pending invitations**. Only the token hash is saved; copy the link before leaving the page. Share it privately with its intended recipient.
+
+Invitation creation in the app becomes available after secure network access is configured. The link uses the HTTPS server origin, without the owner's phone-pairing capability. The recipient must be able to reach that origin over the same Wi-Fi or permitted Tailscale network.
+
+The recipient opens the invitation, checks the project and role, then creates their own account with a password of at least 15 characters or signs in with an existing shared account. Acceptance creates the account/membership and browser session atomically. Existing accounts keep other project roles and any stronger role already held in this project. Used, expired and revoked invitations explain how to request a replacement. A removed project cannot be joined.
+
+After joining, **Open project board** opens the invited project immediately. Contributors and maintainers also see a credential-free **connection link**: paste it in their own CodeFlow under **Join a team**, sign in, and choose a local clone using **Choose folder**. The project checklist shows which folders still need mapping and provides a board link for each project. The shared dashboard keeps **Connect your computer to run team tasks** available later.
+
+A project invitation grants only its project role. It never grants the owner's access, a terminal, or permission to run agents on the server. Those require the existing separate grants. The browser can collaborate on tasks and reviews; a connected computer runs the work its owner starts with their own agent logins. Personal device pairing remains a separate flow.
+
 ## Choose where work runs
 
 Team collaboration lets the people who work on a project share one **team board** of tasks and hand work between their computers. One ordinary code-flow instance acts as the **team server**: teammates reach it over HTTPS through Tailscale or another network and sign in with the existing [shared project accounts](shared-projects.md). Each teammate's own code-flow installation can be linked to that server as a **runner** ("this computer"): it executes board tasks locally, in a Git worktree, with that person's own agent CLIs and logins; publishes bounded progress and a final **hand-over checkpoint** (a verified Git bundle plus structured context) to the board; and can hand the task over to a teammate, who continues from the checkpoint with any agent. Reviews attach to checkpoint commits.
@@ -18,12 +42,12 @@ Deliberately absent in this version: live pairing in the same terminal; moving a
 
 ## Set up the team server
 
-Open **Settings → Connections → Share access → People → Set up team server** for the guided setup. Choose **This computer** or a saved SSH server under **Server**. Setup targets that server’s own board, independently of the team selected in your browser tab. For an SSH server, choose the HTTPS port and click **Set up on this server**. Disconnected saved servers offer **Connect and set up on this server**. Then complete the five steps:
+Open **Settings → Connections → Share access → Host a team** for the guided setup. Choose **This computer** or a saved SSH server under **Server**. Setup targets that server’s own board, independently of the team selected in your browser tab. For an SSH server, choose the HTTPS port and click **Set up on this server**. Disconnected saved servers offer **Connect and set up on this server**. Then complete the five steps:
 
 1. Choose an existing project or create one, and set your name on the board. A local clone on the server is optional.
 2. Define the shared repository keys, labels, Git URLs and default branches.
 3. Choose Tailscale or another HTTPS network, enable team access, and create or import a trusted certificate using the existing secure-access controls. For another network, you manage the hostname and reachability. The wizard installs a separate team server on remote machines; the managed SSH workspace keeps its network listeners disabled.
-4. Create teammate accounts or grant existing accounts access to this project. Other project roles are preserved.
+4. Create one-use project invitations so teammates choose their own credentials. Direct account creation and granting existing accounts access remain available. Other project roles are preserved.
 5. Review the saved configuration and copy connection instructions containing the HTTPS server origin. Passwords and phone pairing links are never included.
 
 Saved steps remain if you close and reopen setup. You can defer secure access or accounts; the review then identifies the unfinished steps instead of reporting the server as ready. Keep the host running and ask a teammate to confirm they can connect through your network’s access rules. The individual settings below remain available.

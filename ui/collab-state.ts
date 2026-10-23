@@ -17,7 +17,7 @@ import { subscribe } from "./stream.js";
 /** The two pages, as the owner app's Route union and the shared dashboard's own hash route both carry them. */
 export type TeamRoute = { view: "team"; project?: string } | { view: "team-people"; project?: string } | { view: "team-task"; id: string };
 /** GET /api/team-link: this computer's link to a hub (`linked: false` means this instance is its own team server). */
-export interface TeamLinkInfo { linked: boolean; url?: string; user?: { userId: string; username: string; displayName: string }; hubName?: string; machineName?: string; mappings: Record<string, Record<string, string>>; defaults?: { pattern?: string; roles?: Record<string, string[]>; trust?: string }; runner?: RunnerPublic; lastSync?: number; error?: string }
+export interface TeamLinkInfo { linked: boolean; connection?: "connected" | "reconnecting" | "offline"; url?: string; user?: { userId: string; username: string; displayName: string }; hubName?: string; machineName?: string; mappings: Record<string, Record<string, string>>; defaults?: { pattern?: string; roles?: Record<string, string[]>; trust?: string }; runner?: RunnerPublic; lastSync?: number; error?: string }
 /** GET /api/team-link/attempts: the runner's own record of an attempt it executes here, which links a task to its run page. */
 export interface LocalAttempt { attemptId: string; taskId: string; state: string; runId?: string; repo?: string; base?: string; lastSeq?: number; lastAckedSeq?: number; updatedAt?: number }
 export interface InboxPage { items: InboxItem[]; unread: number }

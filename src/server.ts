@@ -1485,6 +1485,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   const sharedPresent = readCookies(req, SHARED_COOKIE).length > 0;
   const owner = explicitOwner || !sharedPresent && !runnerBearer && (via === "lan" ? phoneSignedIn(req) : signedIn(req));
 
+  if (["api/auth/invitations/preview", "api/auth/invitations/accept"].includes(parts.join("/")) && req.method === "POST") {
+    sharedMutation(req);
+    const transport = sharedTransport(req);
+    if (!transport.secure && !transport.loopback) throw new HttpError(403, "Joining a project requires HTTPS outside this computer");
+    const body = await readLoginJson(req);
+    const invitation = await attempt(async () => sharedAccounts.previewInvitation(body.token));
+    const project = projects.get(invitation.projectId);
+    if (!project) throw new HttpError(410, "This project is no longer available. Ask the owner for a new invitation.");
+    if (parts[3] === "preview") return send(res, 200, { project: { id: project.id, name: project.name }, role: invitation.role, expiresAt: invitation.expiresAt });
+    const session = await attempt(() => sharedAccounts.acceptInvitation({ ...transport, token: body.token, username: body.username, password: body.password, displayName: body.displayName, existing: body.existing === true }, (id, save) => projects.withProject(id, current => {
+      if (!current) throw new HttpError(410, "This project is no longer available. Ask the owner for a new invitation.");
+      return save();
+    })));
+    if (owner) closeOwnerStreams(true);
+    res.setHeader("set-cookie", [sharedCookie(session.token, transport.secure), clearCookie(COOKIE), clearCookie(PHONE_COOKIE)]);
+    return send(res, 200, { user: session.user, projectId: session.projectId });
+  }
   if (parts.join("/") === "api/auth/login" && req.method === "POST") {
     sharedMutation(req);
     const body = await readLoginJson(req);
@@ -1513,7 +1530,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       res.writeHead(302, { location: "/", "set-cookie": [sessionCookie(), clearCookie(SHARED_COOKIE)], "cache-control": "no-store", "referrer-policy": "no-referrer" });
       return res.end();
     }
-    const sharedLogin = sharedAccounts.available && sharedAccounts.hasUsers && (via === "local" || !!phoneTls);
+    const sharedLogin = sharedAccounts.available && (sharedAccounts.hasUsers || sharedAccounts.hasInvitations) && (via === "local" || !!phoneTls);
     const claim = via === "local" && !owner && !sharedPresent && mayClaim(req);
     if (!owner && !shared && !claim && !sharedLogin) {
       res.writeHead(401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...NO_FRAMES });
@@ -1703,6 +1720,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     throw new HttpError(404, "Unknown SSH connection operation");
   }
   if (parts[1] === "accounts") {
+    if (parts[2] === "invitations") {
+      if (parts.length === 3 && req.method === "GET") return send(res, 200, await attempt(async () => ({ invitations: sharedAccounts.invitations() })));
+      if (parts.length === 3 && req.method === "POST") {
+        const body = await readJson(req, 8192);
+        if (typeof body.projectId !== "string" || !projects.get(body.projectId)) throw new HttpError(400, "Choose an existing project to invite people");
+        return send(res, 201, await attempt(() => sharedAccounts.invite({ projectId: body.projectId, role: body.role })));
+      }
+      if (parts.length === 4 && req.method === "DELETE") { await attempt(() => sharedAccounts.revokeInvitation(parts[3]!)); return send(res, 200, { ok: true }); }
+      throw new HttpError(404, "Unknown invitation operation");
+    }
     if (!parts[2] && req.method === "GET") return send(res, 200, await attempt(async () => sharedAccounts.snapshot()));
     const body = await readJson(req);
     if (body.roles) for (const id of Object.keys(body.roles)) if (!projects.get(id)) throw new HttpError(400, "Choose existing projects for shared roles");
