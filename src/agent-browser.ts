@@ -233,12 +233,17 @@ export class AgentBrowser {
     if (target && !page) throw new Error("Unknown browser tab; call browser_tabs first");
     const targetId = page?.targetId ?? (await cdp.send("Target.createTarget", { url: "about:blank" })).targetId;
     if (this.session) {
+      // Only the selected tab should keep producing live frames.
+      await cdp.send("Page.stopScreencast", {}, this.session).catch(() => {});
       if(this.annotationScript) await cdp.send("Page.removeScriptToEvaluateOnNewDocument",{identifier:this.annotationScript},this.session).catch(()=>{});
       await cdp.send("Target.detachFromTarget", { sessionId: this.session }).catch(() => {});
     }
     this.session = (await cdp.send("Target.attachToTarget", { targetId, flatten: true })).sessionId;
     this.target = targetId; this.dialog = undefined; this.requests.clear(); this.networkActivity = 0; this.clearChooser(); this.changed();
     await cdp.send("Page.enable", {}, this.session);
+    // Activate the selected page before applying its viewport. A background
+    // page can otherwise keep a stale capture size when the foreground tab closes.
+    await cdp.send("Page.bringToFront", {}, this.session);
     await cdp.send("Runtime.enable", {}, this.session);
     await cdp.send("Network.enable", {}, this.session);
     await cdp.send("Runtime.addBinding", {name:"__codeflowEmit",executionContextName:annotationWorld}, this.session);
