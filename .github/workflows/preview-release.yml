@@ -139,8 +139,35 @@ jobs:
           name: windows-preview-${{ matrix.arch }}
           path: output/releases/*windows*
 
+  windows-wsl:
+    name: Windows release WSL Linux runtime
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-preview-x64
+          path: output/windows-download
+      - name: Verify and extract the Windows release ZIP
+        working-directory: output/windows-download
+        run: |
+          sha256sum --check *.sha256
+          unzip -q *-windows-x64-unsigned.zip -d ../windows-unpacked
+      - run: npm run test:desktop:wsl
+        env:
+          CODEFLOW_DESKTOP_BUNDLE: ${{ github.workspace }}/output/windows-unpacked/Code Flow/resources/app
+
   draft:
-    needs: [package, macos, windows]
+    needs: [package, macos, windows, windows-wsl]
     runs-on: ubuntu-latest
     permissions:
       contents: write

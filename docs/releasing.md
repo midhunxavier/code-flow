@@ -47,7 +47,7 @@ npm scans new uploads before they become installable. The job waits up to 20 min
 If a run fails or needs to be retried, run **Publish npm release** manually with the existing published tag:
 
 ```sh
-gh workflow run npm-publish.yml -f tag=v0.1.0-preview.3
+gh workflow run npm-publish.yml -f tag=v0.1.0-preview.5
 ```
 
 A retry checks an existing npm version's integrity before repairing its tags. It refuses different bytes for the same version and skips channel changes for older releases. Runs are serialized to prevent two releases racing to update tags. If npm is still scanning an accepted upload, wait and rerun; do not increment the version or replace the release tarball merely to retry.
@@ -58,8 +58,8 @@ For an exceptional manual publication, authenticate as the package owner and pub
 
 ```sh
 npm whoami
-npm publish output/releases/midhunxavier-code-flow-0.1.0-preview.3.tgz --tag preview --access public
-npm dist-tag add @midhunxavier/code-flow@0.1.0-preview.3 latest
+npm publish output/releases/midhunxavier-code-flow-0.1.0-preview.5.tgz --tag preview --access public
+npm dist-tag add @midhunxavier/code-flow@0.1.0-preview.5 latest
 npm view @midhunxavier/code-flow@latest version
 npm view @midhunxavier/code-flow@preview version
 ```
