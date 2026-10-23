@@ -12,12 +12,12 @@ import { ConfirmationHost } from "./confirm-dialog.js";
 import { SharedDashboard, SharedLogin } from "./shared.js";
 import type { SharedPrincipal } from "../src/shared-accounts.js";
 import { configureStreamSharing, type StreamSharing } from "./stream.js";
-import logo from "./brand/vibesboard-mark.png";
+import logo from "./brand/code-flow-mark.svg";
 import { api, localApi, workspaceId, initializeTeamConnection, ensureCollaborationSource, showToast, store, SHORT } from "./lib.js";
 import { agents, composerProject, composerLoading, draftsReady, openBrowserPage, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
-// The tab icon: the vibesboard mark, like the top bar.
-const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/png", href: logo });
+// Reuse the sidebar's stacked-layers mark for the browser tab.
+const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/svg+xml", href: logo });
 document.head.append(icon);
 
 watchNotificationPermission();

@@ -1,6 +1,6 @@
 {
   "name": "@midhunxavier/code-flow",
-  "version": "0.1.0-preview.2",
+  "version": "0.1.0-preview.3",
   "private": true,
   "description": "Run Claude Code, Codex and Antigravity CLI as a team of coding agents using your own subscriptions.",
   "license": "MIT",
@@ -17,7 +17,7 @@
     "dev": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs --fake-agents",
     "dev:real": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test --test-concurrency=4 test/*.test.ts",
+    "test": "tsx --test --test-concurrency=4 test/*.test.ts test/desktop/*.test.mjs",
     "test:e2e": "tsx --test --test-concurrency=2 test/e2e/*.e2e.ts",
     "test:acp:live": "node --import tsx scripts/test-acp-live.mjs",
     "test:vscode": "node scripts/test-vscode.mjs",

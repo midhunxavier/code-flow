@@ -32,6 +32,35 @@ for (const signal of ['SIGTERM', 'SIGKILL']) test(`Electron desktop keeps its ba
     const prefs = await instance.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences());
     assert.equal(prefs.nodeIntegration, false); assert.equal(prefs.contextIsolation, true); assert.equal(prefs.sandbox, true);
     assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
+    assert.equal(await page.evaluate(() => typeof window.codeflowDesktop?.checkForUpdates), 'function');
+    assert.equal(await page.evaluate(() => typeof window.codeflowDesktop?.invoke), 'undefined');
+    assert.equal(await instance.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById('check-updates').label), 'Check for Updates…');
+    // Exercise the real sandbox/preload/IPC/UI path without contacting GitHub or opening a download.
+    await instance.evaluate(({ shell }) => {
+      const originalFetch = globalThis.fetch;
+      globalThis.updateChecks = 0;
+      globalThis.fetch = async (url, options) => {
+        if (!String(url).startsWith('https://api.github.com/repos/midhunxavier/code-flow/releases')) return originalFetch(url, options);
+        globalThis.updateChecks++;
+        if (globalThis.updateChecks === 1) return new Response('', { status: 503 });
+        const version = '99.0.0-preview.10', tag = `v${version}`, name = `code-flow-${version}-macos-${process.arch}.dmg`;
+        return new Response(JSON.stringify([{ tag_name: tag, prerelease: true, assets: [{ name, size: 123, browser_download_url: `https://github.com/midhunxavier/code-flow/releases/download/${tag}/${name}` }] }]));
+      };
+      shell.openExternal = async url => { globalThis.openedUpdate = url; };
+    });
+    await page.goto(`${origin}/#/settings/general`);
+    const updateCard = page.getByRole('region', { name: 'App updates' });
+    await updateCard.getByRole('button', { name: 'Check for updates' }).click();
+    await updateCard.getByText(/Could not check for updates/).waitFor();
+    await instance.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById('check-updates').click());
+    await updateCard.getByRole('button', { name: 'Download installer' }).waitFor();
+    await page.getByRole('link', { name: 'Update available', exact: true }).waitFor();
+    await updateCard.getByRole('button', { name: 'Download installer' }).click();
+    assert.match(await instance.evaluate(() => globalThis.openedUpdate), /99\.0\.0-preview\.10-macos-(arm64|x64)\.dmg$/);
+    await page.reload();
+    await updateCard.getByRole('button', { name: 'Download installer' }).waitFor();
+    await mkdir(join(root, 'output/playwright'), { recursive: true });
+    await page.screenshot({ path: join(root, `output/playwright/desktop-updates-${signal}.png`) });
     const started = await fetch(`${origin}/api/runs`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ repo, task: "Keep this agent turn running while the window closes", pattern: "solo", roles: { agent: ["claude"] }, options: {} }) });
     assert.equal(started.status, 201);
     const run = await started.json();

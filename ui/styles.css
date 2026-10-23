@@ -1808,6 +1808,9 @@
   .pi-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
 
   /* One stable entry point, regardless of how many providers are installed. */
+  .desktop-update-notice { display: flex; align-items: center; justify-content: center; gap: 8px; flex: none; margin: 8px; padding: 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--selected); color: var(--text); font-size: 12px; text-decoration: none; }
+  .desktop-update-notice:hover { background: var(--raised); }
+  .desktop-update-notice .icon { flex: none; width: 16px; height: 16px; }
   .rail-menu { width: 100%; min-width: 0; }
   .rail-menu > .icon-btn { width: 100%; height: 54px; justify-content: flex-start; gap: 10px; padding: 6px 8px; text-align: left; color: var(--text); }
   .rail-menu-avatar { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border: 1px solid var(--border-strong); border-radius: 50%; background: var(--raised); }

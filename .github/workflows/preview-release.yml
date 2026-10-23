@@ -133,3 +133,7 @@ jobs:
           test ! -z "$RELEASE_TAG"
           gh release create "$RELEASE_TAG" --target "$(git rev-parse HEAD)" --draft --prerelease --title "Code Flow $RELEASE_TAG" --notes-file output/releases/preview-notes.md
           gh release upload "$RELEASE_TAG" output/releases/*.tgz output/releases/*.sha256 output/releases/*.dmg output/releases/Formula/code-flow.rb
+          # Signed builds also carry the Squirrel update ZIP and architecture-specific feed.
+          shopt -s nullglob
+          updates=(output/releases/*.zip output/releases/releases-*.json)
+          if (( ${#updates[@]} )); then gh release upload "$RELEASE_TAG" "${updates[@]}"; fi
