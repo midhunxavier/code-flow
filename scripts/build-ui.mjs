@@ -61,7 +61,7 @@ const options = {
   target: "es2022",
   jsx: "automatic",
   jsxImportSource: "preact",
-  loader: { ".png": "dataurl" }, // images are inlined like everything else
+  loader: { ".png": "dataurl", ".svg": "dataurl" }, // images are inlined like everything else
   minify: !watching,
   sourcemap: watching ? "inline" : false,
   write: false,

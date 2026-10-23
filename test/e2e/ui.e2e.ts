@@ -711,12 +711,14 @@ test("side panel browser: the live app is annotated and sent to main chat, with 
   await side.getByRole("tab", { name: "Browser" }).click();
   const surface=side.getByRole("img",{name:"Live browser page",exact:true});
   await side.getByRole("button",{name:"E2E app",exact:true}).waitFor();
-  await page.waitForFunction(()=>{const canvas=document.querySelector<HTMLCanvasElement>(".live-browser-surface canvas");return canvas?.dataset.ready==="true"&&Math.abs(canvas.width-canvas.getBoundingClientRect().width)<2;});
+  const ready=()=>page.waitForFunction(()=>{const canvas=document.querySelector<HTMLCanvasElement>(".live-browser-surface canvas");return canvas?.dataset.ready==="true"&&Math.abs(canvas.width-canvas.getBoundingClientRect().width)<2&&Math.abs(canvas.height-Math.max(200,canvas.getBoundingClientRect().height))<2;});
+  await ready();
   assert.equal(await side.locator("iframe").count(),0);
   await side.getByRole("button", { name: /^Console · 2$/ }).waitFor({ timeout: 15_000 });
 
   // Pick the button, say what's wrong, and put it in the run's main chat.
   await side.getByRole("button", { name: "Pick", exact: true }).click();
+  await ready();
   await surface.click({position:{x:30,y:18}});
   await side.locator(".pins-tray .pin-row").waitFor({ timeout: 15_000 });
   await side.getByLabel("What about pin 1?").fill("E2E: the toggle is hard to see");
@@ -737,7 +739,7 @@ test("side panel browser: the live app is annotated and sent to main chat, with 
 
   // Draw an area on the same interactive page; the annotation carries its image into chat.
   await side.getByRole("button", {name:"Box",exact:true}).click();
-  await page.waitForFunction(()=>{const canvas=document.querySelector<HTMLCanvasElement>(".live-browser-surface canvas");return canvas?.dataset.ready==="true"&&Math.abs(canvas.width-canvas.getBoundingClientRect().width)<2;});
+  await ready();
   const at=(await surface.boundingBox())!;
   await page.mouse.move(at.x+10,at.y+10);await page.mouse.down();
   await page.mouse.move(at.x+100,at.y+65,{steps:5});await page.mouse.up();

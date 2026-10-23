@@ -1,5 +1,6 @@
 import { chatTaskId, chatUpdatedAt, groupChatTasks } from "../src/chat-family.js";
 import { peopleEnabled } from "./preferences.js";
+import { DesktopUpdateNotice } from "./desktop-updates.js";
 import { ComputerProjects, useComputerProjects } from "./connected-projects.js";
 import { useEffect, useState } from "preact/hooks";
 import { inbox } from "./automations.js";
@@ -514,6 +515,7 @@ export function Rail() {
         {historyError.value ? <div class="help" role="alert">{historyError.value}<button class="btn small" onClick={() => void refreshRuns()}>Retry history</button></div> : null}
         {filtering && !f.q.trim() && historyNextCursor.value ? <span class="help">Filters apply to loaded pages. Load older runs to include more history.</span> : null}
       </div>
+      <DesktopUpdateNotice collapsed={collapsed} />
       <div class="rail-foot">
         <Menu class="rail-menu" label="Application menu" icon="more" trigger={<>
           <span class="rail-menu-avatar"><Icon name="layers" /></span>

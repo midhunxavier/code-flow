@@ -1,4 +1,5 @@
-const { app, BrowserWindow, Menu, dialog, shell, screen } = require('electron');
+const { app, BrowserWindow, Menu, dialog, shell, screen, autoUpdater, ipcMain } = require('electron');
+const { DesktopUpdates, trustedSender } = require('./updates.cjs');
 const { fork, execFile } = require('node:child_process');
 const { createServer } = require('node:net');
 const { randomBytes } = require('node:crypto');
@@ -12,7 +13,7 @@ if (process.env.CODEFLOW_DESKTOP_DATA) app.setPath('userData', process.env.CODEF
 const runtime = join(__dirname, 'backend');
 const node = join(__dirname, 'node/bin/node');
 const home = process.env.CODEFLOW_HOME || join(homedir(), '.codeflow');
-let backend, window, origin, ownerURL, quitting = false, exitApproved = false, checkingQuit = false, ready;
+let backend, window, origin, ownerURL, updates, quitting = false, exitApproved = false, checkingQuit = false, ready;
 const token = process.env.CODEFLOW_TOKEN || randomBytes(32).toString('hex');
 const freePort = () => new Promise((resolve, reject) => {
   const server = createServer(); server.on('error', reject);
@@ -37,11 +38,13 @@ async function createWindow() {
     }
   } catch {}
   window = new BrowserWindow({ ...bounds, minWidth: 800, minHeight: 600, title: 'Code Flow', show: false, backgroundColor: '#181914',
-    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false, safeDialogs: true, spellcheck: true } });
+    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false, safeDialogs: true, spellcheck: true,
+      preload: join(__dirname, 'preload.cjs'), additionalArguments: [`--codeflow-origin=${origin}`] } });
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   window.webContents.session.setPermissionCheckHandler(() => false);
   window.webContents.setWindowOpenHandler(({ url }) => { external(url); return { action: 'deny' }; });
   window.webContents.on('will-navigate', (event, url) => { if (origin && new URL(url).origin !== origin) { event.preventDefault(); external(url); } });
+  window.webContents.on('will-redirect', (event, url) => { if (origin && new URL(url).origin !== origin) event.preventDefault(); });
   window.webContents.on('render-process-gone', async (_event, details) => {
     if (quitting || !window || window.isDestroyed()) return;
     const result = await dialog.showMessageBox(window, { type: 'warning', message: 'The window needs to reload', detail: `Your agents are still running in the background. ${details.reason}`, buttons: ['Reload'], noLink: true });
@@ -89,8 +92,8 @@ async function startBackend() {
   });
   await ready;
 }
-async function quit() {
-  if (quitting || checkingQuit) return;
+async function quit(installUpdate = false) {
+  if (quitting || checkingQuit) return false;
   checkingQuit = true;
   if (!exitApproved && origin && backend) {
     try {
@@ -99,22 +102,70 @@ async function quit() {
       const runs = await response.json();
       if (!Array.isArray(runs)) throw new Error("Invalid running-agent response");
       if (runs.some(run => run.status === 'running')) {
-        const answer = await dialog.showMessageBox(window, { type: 'question', message: 'Agents are still working', detail: 'Keep Code Flow running to let them finish. Quitting saves their progress so you can resume later.', buttons: ['Keep running', 'Quit and save progress'], defaultId: 0, cancelId: 0, noLink: true });
-        if (answer.response !== 1) { checkingQuit = false; return; }
+        const answer = await dialog.showMessageBox(window, { type: 'question', message: 'Agents are still working', detail: 'Keep Code Flow running to let them finish. Quitting saves their progress so you can resume later.', buttons: ['Keep running', installUpdate ? 'Save progress and restart' : 'Quit and save progress'], defaultId: 0, cancelId: 0, noLink: true });
+        if (answer.response !== 1) { checkingQuit = false; return false; }
       }
     } catch {
       if (backend) {
-        const answer = await dialog.showMessageBox(window, { type: 'question', message: 'Could not check whether agents are working', detail: 'Keep Code Flow running, or quit and save progress for later.', buttons: ['Keep running', 'Quit and save progress'], defaultId: 0, cancelId: 0, noLink: true });
-        if (answer.response !== 1) { checkingQuit = false; return; }
+        const answer = await dialog.showMessageBox(window, { type: 'question', message: 'Could not check whether agents are working', detail: 'Keep Code Flow running, or quit and save progress for later.', buttons: ['Keep running', installUpdate ? 'Save progress and restart' : 'Quit and save progress'], defaultId: 0, cancelId: 0, noLink: true });
+        if (answer.response !== 1) { checkingQuit = false; return false; }
       }
     }
   }
   quitting = true; checkingQuit = false;
   if (backend) {
     const child = backend;
-    await new Promise(resolve => { const timer = setTimeout(() => { child.kill('SIGTERM'); resolve(); }, 12000); child.once('exit', () => { clearTimeout(timer); resolve(); }); if (child.connected) child.disconnect(); else child.kill('SIGTERM'); });
+    const stopped = await new Promise(resolve => {
+      let timer;
+      const finish = stopped => { clearTimeout(timer); child.removeListener('exit', exited); resolve(stopped); };
+      const exited = () => finish(true);
+      child.once('exit', exited);
+      timer = setTimeout(() => {
+        timer = setTimeout(() => {
+          timer = setTimeout(() => finish(false), 5000);
+          child.kill('SIGKILL');
+        }, 3000);
+        child.kill('SIGTERM');
+      }, 12000);
+      if (child.connected) child.disconnect(); else child.kill('SIGTERM');
+    });
+    // A replacement app must not race a still-running backend for its data directory.
+    if (!stopped && installUpdate) { quitting = false; return false; }
   }
-  app.quit();
+  if (installUpdate) {
+    try { autoUpdater.quitAndInstall(); }
+    catch (error) { quitting = false; throw error; }
+  }
+  else app.quit();
+  return true;
+}
+async function showUpdates() {
+  if (!ready) return;
+  await ready;
+  await createWindow();
+  await window.loadURL(`${origin}/#/settings/general`);
+  await updates.check();
+}
+function setupUpdates() {
+  let nativeUpdates = false;
+  try { nativeUpdates = require('./update-config.json').nativeUpdates === true; } catch {}
+  updates = new DesktopUpdates({ version: app.getVersion(), arch: process.arch,
+    enabled: app.isPackaged && process.platform === 'darwin', nativeUpdates, autoUpdater,
+    openExternal: url => shell.openExternal(url), restart: () => quit(true) });
+  for (const [action, handler] of Object.entries({ state: () => updates.state, check: () => updates.check(), download: () => updates.download(), installer: () => updates.openInstaller(), install: () => updates.install() })) {
+    ipcMain.handle(`codeflow:updates:${action}`, (event) => {
+      if (!trustedSender(event, window, origin)) throw new Error('Desktop updates are only available from the app window.');
+      return handler();
+    });
+  }
+  updates.on('change', state => {
+    if (window && !window.isDestroyed()) window.webContents.send('codeflow:updates:changed', state);
+    const item = Menu.getApplicationMenu()?.getMenuItemById('check-updates');
+    if (item) {
+      item.label = state.phase === 'downloaded' ? 'Restart to Update…' : state.phase === 'available' ? 'Update Available…' : state.phase === 'checking' ? 'Checking for Updates…' : 'Check for Updates…';
+      item.enabled = !['checking', 'downloading', 'installing'].includes(state.phase);
+    }
+  });
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -125,11 +176,16 @@ else {
   process.on('SIGTERM', () => { exitApproved = true; void quit(); });
   process.on('SIGINT', () => { exitApproved = true; void quit(); });
   app.whenReady().then(async () => {
+    setupUpdates();
     Menu.setApplicationMenu(Menu.buildFromTemplate([
-      { label: 'Code Flow', submenu: [{ role: 'about' }, { type: 'separator' }, { label: 'Show Code Flow', accelerator: 'CmdOrCtrl+1', click: () => { void ready?.then(createWindow); } }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
+      { label: 'Code Flow', submenu: [{ role: 'about' }, { id: 'check-updates', label: 'Check for Updates…', click: () => { void showUpdates(); } }, { type: 'separator' }, { label: 'Show Code Flow', accelerator: 'CmdOrCtrl+1', click: () => { void ready?.then(createWindow); } }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
       { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] }, { role: 'windowMenu' },
       { role: 'help', submenu: [{ label: 'Code Flow documentation', click: () => external('https://midhunxavier.github.io/code-flow/') }] },
     ]));
     await startBackend(); await createWindow();
+    if (process.env.CODEFLOW_DESKTOP_TEST !== '1') {
+      setTimeout(() => { void updates.check(); }, 10000).unref();
+      setInterval(() => { void updates.check(); }, 6 * 60 * 60 * 1000).unref();
+    }
   }).catch(async error => { await dialog.showMessageBox({ type: 'error', message: 'Code Flow could not start', detail: String(error.message).replaceAll(token, '[redacted]'), buttons: ['Quit'] }); exitApproved = true; void quit(); });
 }

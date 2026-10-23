@@ -124,7 +124,12 @@ test("teammates keep exclusive tool ownership until their turn ends and reuse th
     await new Promise(resolve => setTimeout(resolve, 30));
     assert.equal(bridge.control("task:shared-team").state().waiting, 1);
     controller.abort();
-    const continued = await waiting; assert.equal(continued.status, 200); assert.deepEqual(continued.value, original.value);
+    const continued = await waiting; assert.equal(continued.status, 200);
+    // Chrome can finish setting about:blank's title while the next owner waits.
+    // Session reuse is established by the same tab IDs, URLs and selection.
+    const identities = (value: any) => JSON.parse(value.content[0].text).tabs.map(({ id, url, selected }: { id: string; url: string; selected: boolean }) => ({ id, url, selected }));
+    assert.ok(identities(original.value).length > 0);
+    assert.deepEqual(identities(continued.value), identities(original.value));
     assert.equal((await tabs(first)).status, 403);
   } finally { await bridge.close(); }
 });

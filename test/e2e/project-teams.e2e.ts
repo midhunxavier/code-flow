@@ -98,6 +98,7 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   assert.deepEqual(draft.mission.agentSettings.claude, { model: "standing-free", effort: "high" });
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("agentSettings")!).claude.model), "composer-default", "mission model selection does not change composer defaults");
   await page.getByRole("button", { name: "Activate", exact: true }).click();
+  await page.getByRole("button", { name: "Pause", exact: true }).waitFor();
   await page.getByRole("button", { name: "Preview next cycle" }).click();
   await page.getByText("Ready to discover", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Run cycle now" }).click();

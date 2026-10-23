@@ -73,8 +73,9 @@ test("browser recording excludes passwords, saves a regression scenario and surv
   await page.getByRole("button", { name: "Try this result", exact: true }).click();
   const recorder = page.getByRole("region", { name: "Record a browser scenario" });
   await recorder.getByRole("button", { name: "Record a bug", exact: true }).click();
+  await recorder.getByRole("button", { name: "Stop recording", exact: true }).click({trial:true});
   const surface=page.getByRole("img",{name:"Live browser page",exact:true});
-  await page.waitForFunction(()=>{const canvas=document.querySelector<HTMLCanvasElement>(".live-browser-surface canvas");return canvas?.dataset.ready==="true"&&Math.abs(canvas.width-canvas.getBoundingClientRect().width)<2;});
+  await page.waitForFunction(()=>{const canvas=document.querySelector<HTMLCanvasElement>(".live-browser-surface canvas");return canvas?.dataset.ready==="true"&&Math.abs(canvas.width-canvas.getBoundingClientRect().width)<2&&Math.abs(canvas.height-Math.max(200,canvas.getBoundingClientRect().height))<2;});
   await surface.click({position:{x:100,y:30}});await page.keyboard.type("Ada");
   await surface.click({position:{x:140,y:80}});await page.keyboard.type("DO-NOT-SAVE-THIS");
   await surface.click({position:{x:35,y:130}});

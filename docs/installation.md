@@ -2,7 +2,7 @@
 
 Open the macOS desktop app, or start the local browser app with one command. You do not need to clone Code Flow or add it to your project. The preview uses your installed coding CLIs and their existing logins.
 
-**Desktop preview 0.1.0-preview.2.** Download the macOS app or use the exact release package below. The npm `preview` channel is published separately and may be older. See the [preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.2).
+**Desktop preview 0.1.0-preview.3.** Download the macOS app or use the exact release package below. The npm `preview` channel is published separately and may be older. See the [preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.3).
 
 ## Choose an installation method
 
@@ -16,7 +16,7 @@ Open the macOS desktop app, or start the local browser app with one command. You
 <section id="install-unix" role="tabpanel" aria-labelledby="install-tab-unix" tabindex="0">
 <h3>Try it with one command</h3>
 <p>Install Node.js 22.13+ and Git 2.38+, then run:</p>
-<pre><code class="language-sh">npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/midhunxavier-code-flow-0.1.0-preview.2.tgz codeflow</code></pre>
+<pre><code class="language-sh">npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.3/midhunxavier-code-flow-0.1.0-preview.3.tgz codeflow</code></pre>
 <p>Code Flow starts locally and opens its sign-in link in your default browser. Keep the terminal open while you work. Press <strong>Ctrl+C</strong> to stop the server.</p>
 </section>
 <section id="install-windows" role="tabpanel" aria-labelledby="install-tab-windows" tabindex="0">
@@ -44,10 +44,10 @@ codeflow</code></pre>
 
 ## macOS app download
 
-Prefer an app you can open from Applications? Download **0.1.0-preview.2** for your Mac:
+Prefer an app you can open from Applications? Download **0.1.0-preview.3** for your Mac:
 
-- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/code-flow-0.1.0-preview.2-macos-arm64-unnotarized.dmg)
-- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/code-flow-0.1.0-preview.2-macos-x64-unnotarized.dmg)
+- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.3/code-flow-0.1.0-preview.3-macos-arm64-unnotarized.dmg)
+- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.3/code-flow-0.1.0-preview.3-macos-x64-unnotarized.dmg)
 
 1. Choose **arm64** for Apple Silicon, or **x64** for an Intel Mac. macOS 13 or later is required.
 2. Open the DMG and drag **Code Flow** to **Applications**.
@@ -79,6 +79,10 @@ If the browser does not open, use the **Open http://localhost:…/?token=…** l
 If another instance is already running, use its browser tab or stop it before starting again. A busy port can be changed with `--port`; an existing server using the same data directory must be stopped first.
 
 ## Settings, updates and removal
+
+In desktop versions with the updater, open **Settings → General → App updates** or **Code Flow → Check for Updates…**. The app also checks on launch and every six hours, and shows **Update available** in the sidebar. Preview installs receive newer previews and stable releases; stable installs receive stable releases only.
+
+Click **Download update**, then **Restart to update** when ready. If agents are working, Code Flow asks whether to keep running or save progress and restart. In-app installation requires a signed, notarized app and a release containing the matching update package. Developer previews show **Download installer** instead: download the DMG, quit Code Flow, and replace the app in Applications. Older versions without this button need one manual upgrade first.
 
 Settings and history live in `~/.codeflow`, outside the installation. Reinstalling, upgrading or removing the launcher preserves that folder. Set `CODEFLOW_HOME` to an absolute path to use a separate data directory. Avoid switching an existing data directory back to an older preview; back it up before trying new versions.
 

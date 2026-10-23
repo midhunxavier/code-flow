@@ -1,4 +1,5 @@
 import { browserPerformance } from "./performance.js";
+import { DesktopUpdatesCard } from "./desktop-updates.js";
 import { SchedulingView } from "./scheduling.js";
 import { ConnectionsView } from "./connections.js";
 import type { ComponentChildren } from "preact";
@@ -91,6 +92,7 @@ function SettingsRow({ title, description, children }: { title: string; descript
 }
 function GeneralSettings() {
   return <>
+    <DesktopUpdatesCard />
     <SettingsCard title="Appearance">
       <p class="help">Choose a look. Your preference is saved in this browser and applies to every workspace.</p>
       <div class="theme-options" role="group" aria-label="Appearance">

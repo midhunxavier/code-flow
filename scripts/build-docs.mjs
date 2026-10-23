@@ -56,7 +56,7 @@ export async function buildDocs() {
       match[0],
       `url("data:font/woff;base64,${(await readFile(resolve(root, "ui/fonts", match[1]))).toString("base64")}")`,
     );
-  const brand = `data:image/png;base64,${(await readFile(resolve(root, "ui/brand/vibesboard-mark.png"))).toString("base64")}`;
+  const brand = `data:image/svg+xml;base64,${(await readFile(resolve(root, "ui/brand/code-flow-mark.svg"))).toString("base64")}`;
   const files = new Map([
     ["style.css", theme + (await read("docs/site/style.css"))],
     ["app.js", await read("docs/site/app.js")],

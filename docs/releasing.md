@@ -33,7 +33,7 @@ Authenticate to the npm account that owns `@midhunxavier/code-flow`. On first pu
 
 ```sh
 npm whoami
-npm publish output/releases/midhunxavier-code-flow-0.1.0-preview.2.tgz --tag preview --access public
+npm publish output/releases/midhunxavier-code-flow-0.1.0-preview.3.tgz --tag preview --access public
 npm view @midhunxavier/code-flow@preview version
 ```
 
@@ -63,6 +63,14 @@ npm run package:macos -- x64
 ```
 
 The builder signs Node with its JIT entitlements, signs the app and DMG, submits to Apple's notarization service, staples the ticket, and verifies the result. Never commit certificates, credentials or keychain files.
+
+### Desktop updates
+
+Signed and notarized builds also produce `code-flow-VERSION-macos-ARCH.zip`, its SHA-256 file, and `releases-ARCH.json`. The ZIP contains the notarized, stapled app; the feed uses Electron's [Squirrel JSON format](https://www.electronjs.org/docs/latest/tutorial/updates) with a version, exact asset URL, checksum and size. The release workflow attaches these automatically. Publish the DMG, ZIP and feed together under the matching `vVERSION` GitHub release, and keep the same Developer ID signing identity across updates. Unnotarized builds never produce a native update feed.
+
+The desktop main process checks public GitHub releases on launch, every six hours, and on demand. It compares stable/preview versions numerically, skips drafts and missing architecture assets, and never selects an older version. It downloads through Electron's native updater only after the user chooses **Download update**. Restarting uses the normal active-agent confirmation and backend shutdown. Unnotarized installations offer the matching DMG instead. No GitHub token is needed, and browser/npm clients have no desktop update controls.
+
+Before publishing the first signed updater release, install it in Applications and test updating to a second signed version on both architectures. Unit and lifecycle tests cover release selection, failure/retry states, bridge isolation and restart cancellation; only this two-version acceptance check validates Apple's signing/notarization and Squirrel's actual app replacement. Existing desktop previews without the updater need a manual upgrade to acquire it.
 
 The GitHub workflow can import the following repository secrets into a temporary build keychain: `MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGN_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD`. Supply all six for signed and notarized builds; with none set, it produces clearly labeled unnotarized developer builds. Partial credential configuration fails instead of silently dropping signing.
 
