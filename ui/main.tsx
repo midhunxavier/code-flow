@@ -21,6 +21,8 @@ const icon = Object.assign(document.createElement("link"), { rel: "icon", type: 
 document.head.append(icon);
 
 watchNotificationPermission();
+// Opening an invitation in an already running app must enter the join screen too.
+window.addEventListener("hashchange", () => { if (!workspaceId && location.hash.startsWith("#/join/")) location.reload(); });
 
 const root = document.getElementById("root")!;
 // Keep ordinary agent/document links in the workspace; modified clicks retain browser defaults.
@@ -61,6 +63,7 @@ function BootError({ message, seconds, onRetry }: { message: string; seconds: nu
 async function boot() {
   let agentList, patternList;
   try {
+    if (location.hash.startsWith("#/join/") && !workspaceId) { const { JoinProject } = await import("./join-project.js"); render(<JoinProject token={location.hash.slice("#/join/".length)} />, root); return; }
     const identity = await localApi<{ kind: "owner"; streamSharing?: StreamSharing } | { kind: "anonymous" } | SharedPrincipal>("/api/auth/self");
     if (identity.kind === "anonymous") { render(<SharedLogin />, root); return; }
     if (identity.kind === "shared") { render(<><SharedDashboard identity={identity} /><ConfirmationHost /></>, root); return; }

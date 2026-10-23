@@ -34,7 +34,7 @@ before(async()=>{
   browser=await chromium.launch({channel:"chrome",headless:true});page=await browser.newPage({viewport:{width:1440,height:1000}});page.setDefaultTimeout(20000);
   await page.goto(`${base}/?token=${token}#/run/${run.id}`);
 });
-afterEach(async context=>{if((context as unknown as {error?:unknown}).error && page){console.error("Browser failure",await page.locator("#side-pane-browser").innerText());console.error("Browser state",await api(`/api/browser?scope=run:${run.id}`,{action:"state"}),await page.locator(".live-browser-surface canvas").evaluate((canvas:HTMLCanvasElement)=>({width:canvas.width,height:canvas.height,box:canvas.getBoundingClientRect().toJSON(),data:{...canvas.dataset}})));mkdirSync(join(root,"output/playwright"),{recursive:true});await page.screenshot({path:join(root,"output/playwright/shared-browser-failure.png")});}});
+afterEach(async context=>{if((context as unknown as {error?:unknown}).error && page){console.error("Browser failure",await page.locator("#side-pane-browser").innerText());console.error("Browser state",await api(`/api/browser?scope=run:${run.id}`,{action:"state"}),await page.locator(".live-browser-surface canvas").evaluate((canvas:HTMLCanvasElement)=>({width:canvas.width,height:canvas.height,box:canvas.getBoundingClientRect().toJSON(),...canvas.dataset})));mkdirSync(join(root,"output/playwright"),{recursive:true});await page.screenshot({path:join(root,"output/playwright/shared-browser-failure.png")});}});
 after(async()=>{await browser?.close();server?.kill("SIGTERM");if(server?.exitCode===null)await new Promise<void>(resolve=>{server.once("exit",()=>resolve());setTimeout(resolve,5000).unref();});fixture?.closeAllConnections();await new Promise<void>(resolve=>fixture?.close(()=>resolve()));});
 test("live in-app Chrome accepts input on frame-blocked pages and is shared across providers",{timeout:live?1200000:60000},async()=>{
   const toggle=page.getByRole("button",{name:"Side panel",exact:true});if(await toggle.getAttribute("aria-pressed")!=="true")await toggle.click();
@@ -42,14 +42,27 @@ test("live in-app Chrome accepts input on frame-blocked pages and is shared acro
   await panel.getByLabel("Address",{exact:true}).fill(site);await panel.getByRole("button",{name:"Go",exact:true}).click();
   await panel.getByRole("button",{name:"Shared browser fixture",exact:true}).waitFor().catch(async error=>{console.error("Browser state",await panel.innerText(),await api(`/api/browser?scope=run:${run.id}`,{action:"state"}));throw error;});
   const surface=panel.getByRole("img",{name:"Live browser page",exact:true});
-  await page.waitForFunction(()=>{const canvas=document.querySelector<HTMLCanvasElement>(".live-browser-surface canvas");return canvas?.dataset.ready==="true"&&Math.abs(canvas.width-canvas.getBoundingClientRect().width)<2&&Math.abs(canvas.height-Math.max(200,canvas.getBoundingClientRect().height))<2&&Number(canvas.dataset.frames)>1;});
+  const endpoint=`/api/browser?scope=run:${run.id}`;
+  const ready=async(expectedTab?:string)=>{
+    let version="",firstFrame=0;
+    await until(async()=>{
+      const state=await api(endpoint,{action:"state"});
+      const drawn=await surface.evaluate((canvas:HTMLCanvasElement)=>({width:canvas.width,height:canvas.height,boxWidth:canvas.getBoundingClientRect().width,boxHeight:canvas.getBoundingClientRect().height,ready:canvas.dataset.ready,tab:canvas.dataset.tab,view:canvas.dataset.view,frames:canvas.dataset.frames}));
+      if(drawn.ready!=="true"||drawn.tab!==state.selected||(expectedTab&&drawn.tab!==expectedTab)||Number(drawn.view)!==state.view||Math.abs(drawn.width-drawn.boxWidth)>=2||Math.abs(drawn.height-Math.max(200,drawn.boxHeight))>=2){version="";return false;}
+      const current=`${drawn.tab}:${drawn.view}:${drawn.width}:${drawn.height}`;
+      if(current!==version){version=current;firstFrame=Number(drawn.frames);return false;}
+      // Tab selection arrives over SSE, and panel layout queues a debounced resize.
+      // Wait for fresh frames of the current server view before sending coordinates.
+      return Number(drawn.frames)>firstFrame+1;
+    });
+  };
+  await ready();
   assert.equal(await panel.locator("iframe").count(),0);assert.equal(await panel.getByText("Snapshot",{exact:true}).count(),0);assert.equal(page.context().pages().length,1);
   const frameCount=await surface.getAttribute("data-frames");await until(async()=>Number(await surface.getAttribute("data-frames"))>Number(frameCount)+2);
   const click=async(x:number,y:number)=>{const point=await surface.evaluate((element,point)=>{const canvas=element as HTMLCanvasElement,box=canvas.getBoundingClientRect(),scale=Math.min(box.width/canvas.width,box.height/canvas.height);return {x:(box.width-canvas.width*scale)/2+point.x*scale,y:(box.height-canvas.height*scale)/2+point.y*scale};},{x,y});await surface.click({position:point});};
   await click(100,75);await page.keyboard.type("Human shared state");await click(60,130);
   await until(async()=>submissions.some(item=>item.value==="Human shared state"));
   assert.match(submissions.at(-1)!.cookie,/proofSession=shared-cobalt-731/);
-  const endpoint=`/api/browser?scope=run:${run.id}`;
   const initial=await api(endpoint,{action:"state"});const target=initial.selected;
   await panel.getByRole("button",{name:"Expand side panel",exact:true}).click();
   await panel.getByRole("button",{name:"Restore side panel",exact:true}).click();
@@ -103,14 +116,12 @@ test("live in-app Chrome accepts input on frame-blocked pages and is shared acro
     for(const item of submissions)assert.match(item.cookie,/proofSession=shared-cobalt-731/);
     mkdirSync(join(root,"output/playwright"),{recursive:true});await page.screenshot({path:join(root,"output/playwright/shared-browser-handoff.png")});
   }
-  const ready=()=>page.waitForFunction(()=>{const canvas=document.querySelector<HTMLCanvasElement>(".live-browser-surface canvas");return canvas?.dataset.ready==="true"&&Math.abs(canvas.width-canvas.getBoundingClientRect().width)<2&&Math.abs(canvas.height-Math.max(200,canvas.getBoundingClientRect().height))<2;});
   await ready();
   await panel.getByRole("button",{name:"New browser tab",exact:true}).click();
   await panel.getByRole("button",{name:"New tab",exact:true}).waitFor();
   await until(async()=>{const state=await api(endpoint,{action:"state"});return state.tabs.length===2&&state.selected!==target&&state.tabs.find((tab:any)=>tab.id===state.selected).url==="about:blank";});
   await panel.getByRole("button",{name:"Close New tab",exact:true}).click();
-  await panel.getByRole("button",{name:"New tab",exact:true}).waitFor({state:"detached"});
-  await until(async()=>(await api(endpoint,{action:"state"})).selected===target);await ready();
+  await until(async()=>(await api(endpoint,{action:"state"})).selected===target);await ready(target);
   await click(60,230);
   await panel.getByRole("button",{name:"Shared browser fixture second",exact:true}).waitFor();await ready();
   await panel.getByRole("button",{name:"Back",exact:true}).click();
@@ -120,7 +131,9 @@ test("live in-app Chrome accepts input on frame-blocked pages and is shared acro
   await panel.getByRole("button",{name:"Back",exact:true}).click();
   await panel.getByRole("button",{name:"Shared browser fixture",exact:true}).waitFor();await ready();
   const dialogStarted=Date.now();
+  const viewportBeforeDialog=await surface.boundingBox();
   await click(60,385);await panel.getByRole("form",{name:"Website dialog"}).waitFor();
+  assert.deepEqual(await surface.boundingBox(),viewportBeforeDialog,"a website dialog must not resize the live viewport or invalidate queued input");
   await panel.getByLabel("Website prompt").fill("Dialog confirmed");await panel.getByRole("button",{name:"OK",exact:true}).click();
   await panel.getByRole("form",{name:"Website dialog"}).waitFor({state:"hidden"});assert.ok(Date.now()-dialogStarted<5000,"dialogs are answered without waiting for a CDP timeout");await ready();
   await click(60,335);

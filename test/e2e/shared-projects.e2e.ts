@@ -135,7 +135,7 @@ test("owner account changes revoke shared sessions immediately and stale account
 });
 
 test("owner account management creates scoped accounts, keeps conflicting drafts and revokes sessions through the UI", async () => {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } }); const page = await context.newPage(); await page.goto(`${base}/?token=${owner}`); await page.goto(`${base}/#/settings/connections/sharing`); await page.getByLabel("Show Board in the app menu").check();
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } }); const page = await context.newPage(); await page.goto(`${base}/?token=${owner}`); await page.goto(`${base}/#/settings/connections/manage`); await page.getByLabel("Show Board in the app menu").check();
   const panel = page.getByRole("region", { name: "Shared project accounts", exact: true }); await panel.getByLabel("Account username", { exact: true }).fill("browser-viewer"); await panel.getByLabel("Display name", { exact: true }).fill("Browser viewer"); await panel.getByLabel("Initial password", { exact: true }).fill(password); await panel.getByLabel("Project two", { exact: true }).selectOption("viewer"); await panel.getByRole("button", { name: "Create account", exact: true }).click(); await panel.getByRole("status").getByText(/Account saved/).waitFor();
   assert.equal(await panel.getByLabel("Replace password (leave empty to keep)", { exact: true }).inputValue(), "", "successful account administration clears passwords");
   const id = await panel.getByLabel("Account", { exact: true }).inputValue(); const state = await fetch(`${base}/api/accounts`, { headers: ownerHeaders }).then((response) => response.json());

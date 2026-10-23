@@ -69,6 +69,7 @@ export function RemoteAccess() {
   return <section class="section auto-card phone-card" aria-label="Remote access">
     <h2 class="section-title">Remote access</h2>
     <p class="help">Open Codeflow from your phone, tablet or another computer. This computer must stay awake and Codeflow must remain running.</p>
+    <ol class="connection-checklist"><li>Choose Wi-Fi for nearby devices or Tailscale for access across networks.</li><li>Set up HTTPS to enable full control, then scan the QR code on your device.</li><li>Manage paired devices below. To invite a teammate with their own account, use <a href="#/settings/connections/host">Host a team</a>.</li></ol>
     {error ? <p class="msg err" role="alert">{error} <button class="btn small" disabled={busy} onClick={() => void refresh(true)}>Retry</button></p> : null}
     {!info ? <p class="help">{error ? "Remote access settings could not be loaded." : "Loading remote access…"}</p> : <>
       <label class="checkpoint">

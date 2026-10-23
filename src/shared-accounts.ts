@@ -14,10 +14,12 @@ export interface SharedCredentials { username: unknown; password: unknown; addre
 export interface SharedUser { id: string; username: string; displayName: string; enabled: boolean; revision: number; roles: Record<string, SharedRole>; createdAt: number; updatedAt: number }
 export interface SharedPrincipal { kind: "shared"; userId: string; username: string; displayName: string; revision: number; roles: Record<string, SharedRole> }
 export interface SharedAccountState { revision: number; users: SharedUser[] }
+export interface ProjectInvitation { id: string; projectId: string; role: SharedRole; createdAt: number; expiresAt: number; acceptedAt?: number; revokedAt?: number }
+interface StoredInvitation extends ProjectInvitation { hash: string }
 interface Password { algorithm: "scrypt"; N: 131072; r: 8; p: 1; salt: string; hash: string }
 interface StoredUser extends SharedUser { password: Password }
 interface Session { hash: string; userId: string; revision: number; createdAt: number; lastSeenAt: number; expiresAt: number }
-interface State { version: 1; revision: number; users: StoredUser[]; sessions: Session[] }
+interface State { version: 1; revision: number; users: StoredUser[]; sessions: Session[]; invitations?: StoredInvitation[] }
 export class SharedAccountError extends Error { constructor(message: string, readonly status = 400) { super(message); } }
 const MAX_USERS = 128, MAX_SESSIONS = 1024, SESSION_MS = 12 * 60 * 60_000, IDLE_MS = 30 * 60_000;
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -48,7 +50,15 @@ const dummySalt = randomBytes(16).toString("hex"), dummyHash = randomBytes(32);
 function publicUser(user: StoredUser): SharedUser { return { id: user.id, username: user.username, displayName: user.displayName, enabled: user.enabled, revision: user.revision, roles: { ...user.roles }, createdAt: user.createdAt, updatedAt: user.updatedAt }; }
 function principal(user: StoredUser): SharedPrincipal { return { kind: "shared", userId: user.id, username: user.username, displayName: user.displayName, revision: user.revision, roles: { ...user.roles } }; }
 function validateState(raw: unknown): State {
-  if (!object(raw) || !keys(raw, ["version", "revision", "users", "sessions"]) || raw.version !== 1 || !integer(raw.revision) || !Array.isArray(raw.users) || raw.users.length > MAX_USERS || !Array.isArray(raw.sessions) || raw.sessions.length > MAX_SESSIONS) throw new Error("Invalid shared account storage");
+  if (!object(raw) || !keys(raw, ["version", "revision", "users", "sessions", "invitations"]) || raw.version !== 1 || !integer(raw.revision) || !Array.isArray(raw.users) || raw.users.length > MAX_USERS || !Array.isArray(raw.sessions) || raw.sessions.length > MAX_SESSIONS) throw new Error("Invalid shared account storage");
+  if (raw.invitations !== undefined) {
+    if (!Array.isArray(raw.invitations) || raw.invitations.length > 256) throw new Error("Invalid invitations");
+    for (const invite of raw.invitations) {
+      if (!object(invite) || !keys(invite, ["id", "projectId", "role", "createdAt", "expiresAt", "acceptedAt", "revokedAt", "hash"]) || typeof invite.projectId !== "string" || typeof invite.id !== "string" || !/^i-[a-f0-9-]{36}$/.test(invite.id) || !hex(invite.hash, 64) || !integer(invite.createdAt) || !integer(invite.expiresAt) || invite.expiresAt !== invite.createdAt + 24 * 60 * 60_000 || (invite.acceptedAt !== undefined && !integer(invite.acceptedAt)) || (invite.revokedAt !== undefined && !integer(invite.revokedAt))) throw new Error("Invalid invitation");
+      validateSharedRoles({ [String(invite.projectId)]: invite.role });
+    }
+    if (new Set(raw.invitations.map(invite => invite.id)).size !== raw.invitations.length || new Set(raw.invitations.map(invite => invite.hash)).size !== raw.invitations.length) throw new Error("Duplicate invitation");
+  }
   for (const u of raw.users) {
     if (!object(u) || !keys(u, ["id", "username", "displayName", "enabled", "revision", "roles", "createdAt", "updatedAt", "password"]) || !userId(u.id) || username(u.username, false) !== u.username || displayName(u.displayName) !== u.displayName || typeof u.enabled !== "boolean" || !integer(u.revision) || u.revision < 1 || !integer(u.createdAt) || !integer(u.updatedAt) || u.updatedAt < u.createdAt || !object(u.password) || !keys(u.password, ["algorithm", "N", "r", "p", "salt", "hash"]) || u.password.algorithm !== "scrypt" || u.password.N !== 131072 || u.password.r !== 8 || u.password.p !== 1 || !hex(u.password.salt, 32) || !hex(u.password.hash, 64)) throw new Error("Invalid shared account record");
     validateSharedRoles(u.roles);
@@ -78,6 +88,7 @@ export class SharedAccounts {
   constructor(private readonly file = join(CODEFLOW_HOME, "shared-accounts.json")) {}
   get available() { return this.loaded && this.readable; }
   get hasUsers() { return this.available && this.state.users.length > 0; }
+  get hasInvitations() { return this.available && !!this.state.invitations?.length; }
   load(): Promise<void> {
     return this.loading ??= (async () => {
       try {
@@ -90,6 +101,64 @@ export class SharedAccounts {
   }
   snapshot(): SharedAccountState { this.require(); return { revision: this.state.revision, users: this.state.users.map(publicUser) }; }
   onChange(listener: () => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  invitations(): ProjectInvitation[] { this.require(); return (this.state.invitations ?? []).map(({ hash: _hash, ...invite }) => ({ ...invite })); }
+  async invite(input: { projectId: string; role: unknown }): Promise<{ invitation: ProjectInvitation; token: string }> {
+    const roles = validateSharedRoles({ [input.projectId]: input.role });
+    const token = randomBytes(32).toString("base64url"), now = Date.now();
+    const invitation: ProjectInvitation = { id: `i-${randomUUID()}`, projectId: input.projectId, role: roles[input.projectId]!, createdAt: now, expiresAt: now + 24 * 60 * 60_000 };
+    await this.load();
+    await this.mutate(state => {
+      state.invitations = (state.invitations ?? []).filter(entry => entry.expiresAt > now);
+      if (state.invitations.length >= 256) throw new SharedAccountError("Too many invitations; wait for existing links to expire", 409);
+      state.invitations.push({ ...invitation, hash: digest(token) });
+    }, false);
+    return { invitation, token };
+  }
+  async revokeInvitation(id: string): Promise<void> {
+    await this.load();
+    await this.mutate(state => { const invite = state.invitations?.find(entry => entry.id === id); if (!invite) throw new SharedAccountError("Invitation not found", 404); invite.revokedAt ??= Date.now(); }, false);
+  }
+  previewInvitation(token: unknown): ProjectInvitation { this.require(); const { hash: _hash, ...invite } = this.findInvitation(this.state, token); return { ...invite }; }
+  private findInvitation(state: State, token: unknown): StoredInvitation {
+    const invite = typeof token === "string" && /^[a-zA-Z0-9_-]{43}$/.test(token) ? state.invitations?.find(entry => entry.hash === digest(token)) : undefined;
+    if (!invite || invite.expiresAt <= Date.now() || invite.revokedAt !== undefined || invite.acceptedAt !== undefined) throw new SharedAccountError("This invitation expired, was used, or was revoked. Ask the project owner for a new link.", 410);
+    return invite;
+  }
+  /** Consume the invitation, membership and sign-in in one durable write; concurrent acceptance can succeed only once. */
+  async acceptInvitation(input: SharedCredentials & { token: unknown; displayName?: unknown; existing?: boolean }, commit: (projectId: string, save: () => Promise<SharedAccountState>) => Promise<SharedAccountState> = (_projectId, save) => save()) {
+    await this.load(); this.require();
+    if (!input.secure && !input.loopback) throw new SharedAccountError("Joining a project requires HTTPS outside this computer", 403);
+    const invitation = this.previewInvitation(input.token);
+    const existing = input.existing ? await this.verify(input) : undefined;
+    if (!existing) this.limiter.check(input.address, String(input.username).slice(0, 128), Date.now());
+    const name = existing?.username ?? username(input.username), label = existing?.displayName ?? displayName(input.displayName);
+    const password = existing ? undefined : await makePassword(input.password);
+    const token = randomBytes(32).toString("base64url");
+    let result!: { token: string; user: SharedUser; projectId: string; expiresAt: number };
+    // Password work is outside both queues. The caller holds the project stable for the
+    // final account write, so deletion cannot consume a link to a missing project.
+    await commit(invitation.projectId, () => this.change(state => {
+      const invite = this.findInvitation(state, input.token), now = Date.now();
+      let user: StoredUser;
+      if (existing) {
+        user = this.find(state, existing.id);
+        if (!user.enabled || user.revision !== existing.revision) throw new SharedAccountError("Account changed; sign in again", 409);
+        if (!roleAtLeast(user.roles[invite.projectId], invite.role)) user.roles[invite.projectId] = invite.role;
+        user.revision++; user.updatedAt = now;
+        state.sessions = state.sessions.filter(session => session.userId !== user.id);
+      } else {
+        if (state.users.some(entry => entry.username === name)) throw new SharedAccountError("That username is already in use. Choose Sign in with an existing account or another username.", 409);
+        if (state.users.length >= MAX_USERS) throw new SharedAccountError("This server has reached its account limit; contact the owner", 409);
+        user = { id: `u-${randomUUID()}`, username: name, displayName: label, enabled: true, revision: 1, roles: { [invite.projectId]: invite.role }, password: password!, createdAt: now, updatedAt: now };
+        state.users.push(user);
+      }
+      invite.acceptedAt = now;
+      state.sessions = state.sessions.filter(session => session.expiresAt > now && session.lastSeenAt + IDLE_MS > now).sort((a, b) => b.createdAt - a.createdAt).slice(0, MAX_SESSIONS - 1);
+      state.sessions.push({ hash: digest(token), userId: user.id, revision: user.revision, createdAt: now, lastSeenAt: now, expiresAt: now + SESSION_MS });
+      result = { token, user: publicUser(user), projectId: invite.projectId, expiresAt: now + SESSION_MS };
+    }));
+    return result;
+  }
   create(input: { revision: unknown; username: unknown; displayName: unknown; password: unknown; roles: unknown }): Promise<SharedAccountState> {
     return this.change(async (state) => { this.cas(state, input.revision); if (state.users.length >= MAX_USERS) throw new SharedAccountError("At most 128 shared accounts may be created"); const name = username(input.username), label = displayName(input.displayName), roles = validateSharedRoles(input.roles); if (state.users.some((user) => user.username === name)) throw new SharedAccountError("That username is already in use", 409); const password = await makePassword(input.password); const now = Date.now(); state.users.push({ id: `u-${randomUUID()}`, username: name, displayName: label, enabled: true, revision: 1, roles, password, createdAt: now, updatedAt: now }); });
   }

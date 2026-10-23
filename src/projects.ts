@@ -136,6 +136,11 @@ export class Projects {
     return p && copy(p);
   }
 
+  /** Keep a dependent durable write ordered with project edits and deletion. */
+  withProject<T>(id: string, action: (project: Project | undefined) => T | Promise<T>): Promise<T> {
+    return this.change(() => action(this.get(id)));
+  }
+
   /** The project a repo's runs go in when none is named: the first one holding it. */
   forRepo(repo: string): Project | undefined {
     const p = (this.committedWhileWriting ?? this.projects).find((x) => x.repos.includes(repo));

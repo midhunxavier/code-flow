@@ -3,6 +3,7 @@ import { RepoKeysEditor } from "./collab-settings.js";
 import { HostExecutionSettings } from "./host-execution.js";
 import { TeamTerminalSettings } from "./team-terminals.js";
 import { TeamConnectionPicker } from "./team-connections.js";
+import { ProjectInvitations } from "./project-invitations.js";
 import { board, boardError, loadBoard, teamTick, type TeamRoute } from "./collab-state.js";
 import { selectedTeamConnection, usePoll } from "./lib.js";
 import { projects } from "./state.js";
@@ -25,6 +26,6 @@ export function TeamPeopleView({ project, shared = false, embedded = false, navi
     {visible.map(entry => <section class="settings-card" key={entry.id}><h3>{entry.name}</h3><ul>{entry.members.map(member => <li key={member.userId}>{member.displayName} · {roleLabel(member.role)}</li>)}</ul>
       {roleAtLeast(entry.role, "maintainer") ? <RepoKeysEditor project={entry} revision={b.revision} /> : null}
     </section>)}
-    {owner ? <><SharedAccountsPanel projects={projects.value} projectId={project} /><HostExecutionSettings board={scoped} /><TeamTerminalSettings board={scoped} /></> : <p class="help">The project owner manages accounts and grants. Your role controls the actions available here.</p>}
+    {owner ? <><ProjectInvitations projects={visible} projectId={project} /><SharedAccountsPanel projects={projects.value} projectId={project} /><HostExecutionSettings board={scoped} /><TeamTerminalSettings board={scoped} /></> : <p class="help">The project owner manages accounts and grants. Your role controls the actions available here.</p>}
   </section>;
 }
