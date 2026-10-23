@@ -280,7 +280,9 @@ const docsHelp = new DocsHelp(docsDirectory, (agent, event) => {
   if (error.kind === "auth") manager.recordQuota(agent, "signed_out", {});
 });
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
-const HOST = "127.0.0.1";
+// Docker's published loopback port reaches the container interface, not its private loopback.
+// Ordinary launches retain the local-only listener; the desktop image opts in explicitly.
+const HOST = process.env.CODEFLOW_DESKTOP_CONTAINER === "1" && process.env.CODEFLOW_LAUNCHER === "1" ? "0.0.0.0" : "127.0.0.1";
 const sshProjects = process.env.CODEFLOW_SSH_HOST ? undefined : new SshProjects({ localProjects: () => projects.list(), canBrowse: () => !fileAccess.hasRestrictions() });
 const tlsConfigured = !!process.env.CODEFLOW_TLS_CERT && !!process.env.CODEFLOW_TLS_KEY;
 if (!!process.env.CODEFLOW_TLS_CERT !== !!process.env.CODEFLOW_TLS_KEY) throw new Error("Configure both CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY");
@@ -297,12 +299,12 @@ function remoteTlsIssue(): string | undefined {
 }
 
 
-const allowedHosts = new Set([`${HOST}:${PORT}`, `localhost:${PORT}`]);
+const allowedHosts = new Set([`${HOST}:${PORT}`, `127.0.0.1:${PORT}`, `localhost:${PORT}`]);
 /** Local apps in the side panel's Browser, each on a port of its own (src/preview.ts). */
 const journeys = new JourneyStore(join(CODEFLOW_HOME, "journeys"));
 const handleJourneys = journeyApi(journeys, manager, [PORT, REMOTE_PORT]);
 const previews = new Previews(
-  () => [`http://localhost:${PORT}`, `http://${HOST}:${PORT}`],
+  () => [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`],
   () => [PORT, REMOTE_PORT],
 );
 

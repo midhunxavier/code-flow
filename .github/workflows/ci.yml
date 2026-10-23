@@ -76,6 +76,9 @@ jobs:
           name: desktop-test-evidence
           path: output/playwright/desktop-*.png
 
+  windows-desktop:
+    uses: ./.github/workflows/windows-desktop.yml
+
   # Critical UI flows in headless Chrome against deterministic provider fixtures.
   e2e:
     runs-on: ubuntu-latest

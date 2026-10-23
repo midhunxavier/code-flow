@@ -1,19 +1,21 @@
-const { app, BrowserWindow, Menu, dialog, shell, screen, autoUpdater, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, dialog, shell, screen, autoUpdater, ipcMain, clipboard, Tray } = require('electron');
 const { DesktopUpdates, trustedSender } = require('./updates.cjs');
 const { fork, execFile } = require('node:child_process');
 const { createServer } = require('node:net');
 const { randomBytes } = require('node:crypto');
-const { readFile, writeFile, mkdir } = require('node:fs/promises');
-const { join } = require('node:path');
+const { readFile, writeFile, mkdir, stat } = require('node:fs/promises');
+const { join, isAbsolute } = require('node:path');
 const { homedir } = require('node:os');
 
 app.setName('Code Flow');
+if (process.platform === 'win32') app.setAppUserModelId('io.github.midhunxavier.code-flow');
 // Separate desktop UI preferences from the backend's existing ~/.codeflow history.
 if (process.env.CODEFLOW_DESKTOP_DATA) app.setPath('userData', process.env.CODEFLOW_DESKTOP_DATA);
 const runtime = join(__dirname, 'backend');
 const node = join(__dirname, 'node/bin/node');
 const home = process.env.CODEFLOW_HOME || join(homedir(), '.codeflow');
-let backend, window, origin, ownerURL, updates, quitting = false, exitApproved = false, checkingQuit = false, ready;
+const dockerDesktop = process.platform === 'win32' || process.env.CODEFLOW_DESKTOP_DOCKER === '1';
+let backend, window, startingWindow, startupAbort, tray, origin, ownerURL, updates, quitting = false, exitApproved = false, checkingQuit = false, ready;
 const token = process.env.CODEFLOW_TOKEN || randomBytes(32).toString('hex');
 const freePort = () => new Promise((resolve, reject) => {
   const server = createServer(); server.on('error', reject);
@@ -60,14 +62,26 @@ async function createWindow() {
   return window;
 }
 async function startBackend() {
-  await mkdir(home, { recursive: true });
   const port = process.env.PORT || await freePort();
   origin = `http://localhost:${port}`;
-  const path = await loginPath();
-  if (quitting) return;
-  backend = fork(join(runtime, 'src/server.js'), [], { execPath: node, cwd: runtime,
-    env: { ...process.env, PATH: path, PORT: String(port), HOST: '127.0.0.1', CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, CODEFLOW_LAUNCHER: '1' },
-    stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  if (dockerDesktop) {
+    const workspace = await projectsFolder();
+    if (!workspace || quitting) return;
+    startingWindow = new BrowserWindow({ width: 600, height: 320, resizable: false, closable: false, title: 'Starting Code Flow', webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } });
+    await startingWindow.loadFile(join(__dirname, 'starting.html'));
+    const { image } = require('./docker-config.json');
+    startupAbort = new AbortController();
+    backend = await require('./docker.cjs').startDockerBackend({ workspace, port, token, userData: app.getPath('userData'), context: join(__dirname, 'docker'), image, signal: startupAbort.signal });
+    startupAbort = undefined;
+    if (quitting) { backend.disconnect(); return; }
+  } else {
+    await mkdir(home, { recursive: true });
+    const path = await loginPath();
+    if (quitting) return;
+    backend = fork(join(runtime, 'src/server.js'), [], { execPath: node, cwd: runtime,
+      env: { ...process.env, PATH: path, PORT: String(port), HOST: '127.0.0.1', CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, CODEFLOW_LAUNCHER: '1' },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  }
   let diagnostics = '';
   const redact = data => {
     const safe = String(data).replaceAll(token, '[redacted]').replace(/([?&]token=)[^\s]+/g, '$1[redacted]');
@@ -77,10 +91,16 @@ async function startBackend() {
   ready = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('The local service did not start within 60 seconds.')), 60000);
     backend.once('error', error => { clearTimeout(timer); reject(error); });
-    backend.on('message', message => {
+    backend.on('message', async message => {
       if (message?.type !== 'codeflow-ready' || typeof message.url !== 'string') return;
       const url = new URL(message.url);
       if (url.origin !== origin) return;
+      if (dockerDesktop) {
+        try {
+          const response = await fetch(`${origin}/api/health`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
+          if (!response.ok) throw new Error('The container service is not reachable on localhost.');
+        } catch (error) { clearTimeout(timer); reject(error); return; }
+      }
       ownerURL = message.url; clearTimeout(timer); resolve();
     });
     backend.once('exit', (code, signal) => { clearTimeout(timer); reject(new Error(`The local service stopped (${code ?? signal}).\n${diagnostics}`)); });
@@ -91,6 +111,38 @@ async function startBackend() {
     void dialog.showMessageBox(window, { type: 'error', message: 'Code Flow’s local service stopped', detail: 'Saved work is preserved. Reopen Code Flow to reconnect and resume unfinished work.\n\n' + diagnostics, buttons: ['Quit'], noLink: true }).then(() => { exitApproved = true; app.quit(); });
   });
   await ready;
+}
+async function projectsFolder(change = false) {
+  const file = join(app.getPath('userData'), 'docker.json');
+  if (!change) {
+    if (process.env.CODEFLOW_DESKTOP_WORKSPACE) return process.env.CODEFLOW_DESKTOP_WORKSPACE;
+    try { const saved = JSON.parse(await readFile(file, 'utf8')); if (typeof saved.workspace === 'string' && isAbsolute(saved.workspace) && (await stat(saved.workspace)).isDirectory()) return saved.workspace; } catch {}
+  }
+  const selected = await dialog.showOpenDialog({ title: 'Choose your projects folder', buttonLabel: 'Use this folder', properties: ['openDirectory', 'createDirectory'] });
+  if (selected.canceled) { if (!change) { exitApproved = true; void quit(); } return; }
+  const workspace = selected.filePaths[0];
+  if (!workspace || !isAbsolute(workspace) || /[,\r\n\0]/.test(workspace)) throw new Error('Choose a projects folder without commas or line breaks.');
+  await mkdir(app.getPath('userData'), { recursive: true });
+  await writeFile(file, JSON.stringify({ workspace }), { mode: 0o600 });
+  if (change) await dialog.showMessageBox({ message: 'Projects folder saved', detail: 'Quit and reopen Code Flow to use this folder. It will appear as /workspace inside the app. Each projects folder has its own saved settings and agent logins; returning to a previous folder restores them.', buttons: ['OK'] });
+  return workspace;
+}
+async function agentSetup() {
+  if (!backend?.name) return;
+  const command = `docker exec -it ${backend.name} bash`;
+  const answer = await dialog.showMessageBox(window, { message: 'Set up your agents', detail: `Claude Code and Codex are included. Sign in inside the container using the terminal command below, then run each CLI’s login command. Login state stays in the Docker volume. Set your Git name and email in this terminal too.\n\n${command}\n\nYour selected projects folder is /workspace inside Code Flow.`, buttons: ['Copy terminal command', 'Done'], noLink: true });
+  if (answer.response === 0) clipboard.writeText(command);
+}
+function setupTray() {
+  if (process.platform !== 'win32') return;
+  tray = new Tray(join(__dirname, 'icon.png'));
+  tray.setToolTip('Code Flow');
+  tray.on('double-click', () => { void ready?.then(createWindow); });
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Show Code Flow', click: () => { void ready?.then(createWindow); } },
+    { label: 'Set up agents…', click: () => { void agentSetup(); } },
+    { type: 'separator' }, { label: 'Quit Code Flow', click: () => { void quit(); } },
+  ]));
 }
 async function quit(installUpdate = false) {
   if (quitting || checkingQuit) return false;
@@ -113,6 +165,7 @@ async function quit(installUpdate = false) {
     }
   }
   quitting = true; checkingQuit = false;
+  startupAbort?.abort();
   if (backend) {
     const child = backend;
     const stopped = await new Promise(resolve => {
@@ -126,7 +179,7 @@ async function quit(installUpdate = false) {
           child.kill('SIGKILL');
         }, 3000);
         child.kill('SIGTERM');
-      }, 12000);
+      }, dockerDesktop ? 20000 : 12000);
       if (child.connected) child.disconnect(); else child.kill('SIGTERM');
     });
     // A replacement app must not race a still-running backend for its data directory.
@@ -149,8 +202,8 @@ async function showUpdates() {
 function setupUpdates() {
   let nativeUpdates = false;
   try { nativeUpdates = require('./update-config.json').nativeUpdates === true; } catch {}
-  updates = new DesktopUpdates({ version: app.getVersion(), arch: process.arch,
-    enabled: app.isPackaged && process.platform === 'darwin', nativeUpdates, autoUpdater,
+  updates = new DesktopUpdates({ version: app.getVersion(), arch: process.arch, platform: process.platform,
+    enabled: app.isPackaged && ['darwin', 'win32'].includes(process.platform), nativeUpdates, autoUpdater,
     openExternal: url => shell.openExternal(url), restart: () => quit(true) });
   for (const [action, handler] of Object.entries({ state: () => updates.state, check: () => updates.check(), download: () => updates.download(), installer: () => updates.openInstaller(), install: () => updates.install() })) {
     ipcMain.handle(`codeflow:updates:${action}`, (event) => {
@@ -177,15 +230,20 @@ else {
   process.on('SIGINT', () => { exitApproved = true; void quit(); });
   app.whenReady().then(async () => {
     setupUpdates();
+    setupTray();
     Menu.setApplicationMenu(Menu.buildFromTemplate([
-      { label: 'Code Flow', submenu: [{ role: 'about' }, { id: 'check-updates', label: 'Check for Updates…', click: () => { void showUpdates(); } }, { type: 'separator' }, { label: 'Show Code Flow', accelerator: 'CmdOrCtrl+1', click: () => { void ready?.then(createWindow); } }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
+      { label: 'Code Flow', submenu: [{ role: 'about' }, { id: 'check-updates', label: 'Check for Updates…', click: () => { void showUpdates(); } }, { type: 'separator' }, { id: 'show-window', label: 'Show Code Flow', accelerator: 'CmdOrCtrl+1', click: () => { void ready?.then(createWindow); } },
+        ...(dockerDesktop ? [{ label: 'Set up agents…', click: () => { void agentSetup(); } }, { label: 'Choose projects folder…', click: () => { void projectsFolder(true).catch(error => dialog.showErrorBox('Projects folder could not be saved', error.message)); } }] : []),
+        ...(process.platform === 'darwin' ? [{ role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }] : []), { type: 'separator' }, { role: 'quit' }] },
       { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] }, { role: 'windowMenu' },
       { role: 'help', submenu: [{ label: 'Code Flow documentation', click: () => external('https://midhunxavier.github.io/code-flow/') }] },
     ]));
-    await startBackend(); await createWindow();
+    await startBackend();
+    if (quitting || !ownerURL) return;
+    await createWindow(); startingWindow?.destroy(); startingWindow = undefined;
     if (process.env.CODEFLOW_DESKTOP_TEST !== '1') {
       setTimeout(() => { void updates.check(); }, 10000).unref();
       setInterval(() => { void updates.check(); }, 6 * 60 * 60 * 1000).unref();
     }
-  }).catch(async error => { await dialog.showMessageBox({ type: 'error', message: 'Code Flow could not start', detail: String(error.message).replaceAll(token, '[redacted]'), buttons: ['Quit'] }); exitApproved = true; void quit(); });
+  }).catch(async error => { startingWindow?.destroy(); startingWindow = undefined; if (quitting) return; await dialog.showMessageBox({ type: 'error', message: 'Code Flow could not start', detail: String(error.message).replaceAll(token, '[redacted]'), buttons: ['Quit'] }); exitApproved = true; void quit(); });
 }
