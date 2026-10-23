@@ -3,7 +3,7 @@
 import "./check-node.mjs";
 import { build } from "esbuild";
 import { cp, mkdir, readFile, readdir, rm, writeFile, chmod } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { resolve, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
@@ -29,7 +29,7 @@ const banner = { js: 'import { createRequire as __createRequire } from "node:mod
 for (const [source, target] of [["src/architecture.ts", "src/architecture.js"], ["src/code-intelligence-worker.mjs", "src/code-intelligence-worker.mjs"]])
   await build({ entryPoints: [join(root, source)], outfile: join(output, target), bundle: true,
     plugins: [{ name: "preserve-local-modules", setup(builder) {
-      builder.onResolve({ filter: /^\.\.?\// }, (args) => args.importer.startsWith(join(root, "src") + "/") ? { path: args.path, external: true } : undefined);
+      builder.onResolve({ filter: /^\.\.?\// }, (args) => resolve(args.importer).startsWith(join(root, "src") + sep) ? { path: args.path, external: true } : undefined);
     } }],
     platform: "node", format: "esm", target: "node22.13", minify: true, banner, logLevel: "warning" });
 for (const path of ["bin", "public", "LICENSE", "README.md", "scripts/check-node.mjs", "scripts/codeflow.mjs", "scripts/pty.py", "scripts/computer-use.swift", "dist/remote-host.json"])
