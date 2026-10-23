@@ -1,7 +1,7 @@
 const { fork } = require('node:child_process');
 const { createInterface } = require('node:readline');
-const { readFile, writeFile, mkdir, unlink, stat } = require('node:fs/promises');
-const { join } = require('node:path');
+const { readFile, writeFile, mkdir, unlink, stat, readlink, realpath } = require('node:fs/promises');
+const { join, dirname } = require('node:path');
 const { homedir } = require('node:os');
 
 const id = process.argv[2];
@@ -15,7 +15,9 @@ async function owned(record) {
   if (!record.runner.startsWith(base) || !/^[a-f0-9]{64}\/runner\.cjs$/.test(record.runner.slice(base.length))) return false;
   try {
     const args = (await readFile(`/proc/${record.pid}/cmdline`, 'utf8')).split('\0');
-    return (await stat(`/proc/${record.pid}`)).uid === process.getuid() && args[1] === record.runner && args[2] === id;
+    const entry = args.findIndex((arg, index) => arg === record.runner && args[index + 1] === id);
+    const executable = await realpath(join(dirname(record.runner), 'node/bin/node'));
+    return entry > 0 && (await stat(`/proc/${record.pid}`)).uid === process.getuid() && await readlink(`/proc/${record.pid}/exe`) === executable;
   } catch { return false; }
 }
 async function stopPrevious(signal = 'SIGTERM', wait = false) {

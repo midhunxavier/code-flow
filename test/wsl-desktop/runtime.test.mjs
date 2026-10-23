@@ -38,8 +38,8 @@ test('Windows-built WSL payload installs, runs a fixture agent, preserves histor
     for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
     await rm(directory, { recursive: true, force: true });
   });
-  async function launch() {
-    const child = spawn(node, [runner, id], { env, stdio: ['pipe', 'pipe', 'pipe'] }); children.add(child);
+  async function launch(nodeArgs = []) {
+    const child = spawn(node, [...nodeArgs, runner, id], { env, stdio: ['pipe', 'pipe', 'pipe'] }); children.add(child);
     child.stdout.on('data', data => { diagnostics += data; }); child.stderr.on('data', data => { diagnostics += data; });
     const ready = new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`WSL backend startup timed out.\n${diagnostics}`)), 60000);
@@ -50,7 +50,7 @@ test('Windows-built WSL payload installs, runs a fixture agent, preserves histor
     const message = await ready; assert.equal(message.id, id); assert.equal(message.port, port);
     return child;
   }
-  let child = await launch();
+  let child = await launch(['--no-warnings']);
   assert.equal((await fetch(`${origin}/api/health`, { headers })).status, 200);
   const page = await fetch(origin, { headers }); assert.equal(page.status, 200);
   const html = await page.text(); assert.doesNotMatch(html, /\/\*__CSS__\*\/|\/\/__JS__/);
