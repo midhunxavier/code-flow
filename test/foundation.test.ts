@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, uptime } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "codeflow-foundation-home-"));
 process.env.CODEFLOW_HOME = home;
@@ -43,6 +43,26 @@ test("childEnv drops code-flow's token, npm variables and its own node_modules/.
   const install = "/opt/tools/code-flow";
   const path = ["/opt/tools/code-flow/node_modules/.bin", "/opt/tools/node_modules/.bin", ".", "relative/bin", "/repo/node_modules/.bin", "/usr/bin", ""].join(":");
   assert.equal(cleanPath(path, install), "/repo/node_modules/.bin:/usr/bin");
+});
+
+test("subprocess state stays in the server home when a relative home is inherited or overridden", () => {
+  const saved = process.env.CODEFLOW_HOME;
+  const directory = mkdtempSync(join(tmpdir(), "codeflow-relative-home-"));
+  const cwd = join(directory, "repository"), state = join(directory, "state");
+  mkdirSync(cwd);
+  try {
+    for (const via of ["inherited", "extra"] as const) {
+      process.env.CODEFLOW_HOME = via === "inherited" ? relative(process.cwd(), state) : home;
+      const env = childEnv(via === "extra" ? { CODEFLOW_HOME: relative(process.cwd(), state) } : {});
+      const result = spawnSync(process.execPath, ["-e", "const fs=require('node:fs'),path=require('node:path');fs.mkdirSync(process.env.CODEFLOW_HOME,{recursive:true});fs.writeFileSync(path.join(process.env.CODEFLOW_HOME,'receipt'),'saved');"], { cwd, env, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(existsSync(join(state, "receipt")), true, `${via} home must stay outside the repository`);
+      rmSync(state, { recursive: true });
+    }
+  } finally {
+    if (saved === undefined) delete process.env.CODEFLOW_HOME; else process.env.CODEFLOW_HOME = saved;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("childEnv never launches cwd Git or provider impostors through inherited or overridden PATH", async (t) => {

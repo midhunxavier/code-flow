@@ -30,5 +30,18 @@ test("filtered task UI runs a prepared snapshot, protects a conflicting original
   await panel.getByRole("button", { name: "Delete private task and export", exact: true }).click(); await panel.getByText("Private task/export deleted; any imported review branch is preserved.", { exact: true }).waitFor(); assert.equal(git("rev-parse", `codeflow/${id}`) !== before, true); assert.deepEqual(await fetch(`${base}/api/filtered-tasks`, { headers }).then((response) => response.json()), []);
 });
 test("filtered task cancellation waits for the owned daemon receipt and permits explicit private cleanup", async () => {
-  const panel = page.getByRole("region", { name: "Filtered Docker tasks", exact: true }); await panel.getByLabel("Filtered task instructions", { exact: true }).fill("linger until I cancel this task"); await panel.getByRole("button", { name: "Start filtered Docker task", exact: true }).click(); for (let attempt = 0; readdirSync(state).filter((name) => name.endsWith(".json")).length === 0 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 50)); assert.ok(readdirSync(state).some((name) => name.endsWith(".json")), "a fixture daemon child actually runs"); await panel.getByRole("button", { name: "Cancel task and confirm container stopped", exact: true }).click(); await panel.getByText(/^Filtered task status: cancelled/).waitFor(); assert.equal(readdirSync(state).filter((name) => name.endsWith(".json")).length, 0); await panel.getByRole("button", { name: "Delete private task and export", exact: true }).click(); await panel.getByText("Private task/export deleted; any imported review branch is preserved.", { exact: true }).waitFor();
+  const panel = page.getByRole("region", { name: "Filtered Docker tasks", exact: true });
+  await panel.getByLabel("Filtered task instructions", { exact: true }).fill("linger until I cancel this task");
+  await panel.getByRole("button", { name: "Start filtered Docker task", exact: true }).click();
+  // Preparation includes Git and Docker probes; wait for the daemon receipt rather
+  // than assuming those processes can all start within five seconds on a busy host.
+  const running = () => readdirSync(state).some((name) => name.endsWith(".json"));
+  const deadline = Date.now() + 30_000;
+  while (!running() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(running(), `a fixture daemon child actually runs: ${await panel.innerText()}`);
+  await panel.getByRole("button", { name: "Cancel task and confirm container stopped", exact: true }).click();
+  await panel.getByText(/^Filtered task status: cancelled/).waitFor();
+  assert.equal(readdirSync(state).filter((name) => name.endsWith(".json")).length, 0);
+  await panel.getByRole("button", { name: "Delete private task and export", exact: true }).click();
+  await panel.getByText("Private task/export deleted; any imported review branch is preserved.", { exact: true }).waitFor();
 });

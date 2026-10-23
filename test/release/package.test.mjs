@@ -14,6 +14,17 @@ const freePort = () => new Promise((resolve) => {
   const server = createServer().listen(0, "127.0.0.1", () => { const port = server.address().port; server.close(() => resolve(port)); });
 });
 
+test("packaging excludes in-progress UI and documentation rebuild files", { timeout: 120_000 }, async () => {
+  const paths = ["public/index.release-qa.tmp", "public/assets/main-release-qa.js.tmp", "public/docs/installation.html.release-qa.tmp"];
+  try {
+    for (const path of paths) await writeFile(join(root, path), "incomplete rebuild output");
+    execFileSync(process.execPath, ["scripts/package-npm.mjs"], { cwd: root, stdio: "pipe" });
+    for (const path of paths) await assert.rejects(access(join(root, "dist/npm", path)), { code: "ENOENT" });
+  } finally {
+    await Promise.all(paths.map(path => rm(join(root, path), { force: true })));
+  }
+});
+
 test("the packed npm install runs outside the checkout, opens its authenticated UI and shuts down cleanly", { timeout: 120_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "codeflow-package-"));
   const install = join(directory, "install");
@@ -29,7 +40,7 @@ test("the packed npm install runs outside the checkout, opens its authenticated 
     assert.ok(packed.files.some((file) => file.path === "src/ssh-projects/bootstrap.mjs"));
     assert.ok(packed.files.some((file) => file.path === "src/code-intelligence-worker.mjs"));
     assert.ok(packed.files.some((file) => file.path === "dist/remote-host.json"));
-    assert.ok(!packed.files.some((file) => /(?:node_modules\/|test\/|\.ts$|\.env$)/.test(file.path)));
+    assert.ok(!packed.files.some((file) => /(?:node_modules\/|test\/|\.ts$|\.env$|\.tmp$)/.test(file.path)));
     execFileSync("npm", ["install", "--prefix", install, "--ignore-scripts", "--no-audit", "--no-fund", join(directory, packed.filename)], { cwd: directory, stdio: "pipe" });
     const installed = join(install, "node_modules", pkg.name);
     const bin = join(install, "node_modules/.bin/codeflow");

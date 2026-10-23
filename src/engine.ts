@@ -3643,6 +3643,9 @@ export class RunManager {
         `${retired ? `; retired ${retired} private/team memory record(s)` : ""}`,
     });
     if (result.failed.length) this.emit(run, { type: "log", level: "warn", text: `Couldn't remove: ${result.failed.join("; ")}` });
+    // Archival is announced before cleanup starts. Notify folder consumers again
+    // once removal finishes so they do not keep offering now-missing worktrees.
+    this.emitRun(run);
     return result;
   }
 

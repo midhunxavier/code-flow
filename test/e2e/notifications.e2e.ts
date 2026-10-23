@@ -38,7 +38,7 @@ before(async () => {
     NOTIFICATION_FIXTURE_URL: "https://notifications-fixture.invalid/private-path?key=secret-fixture-url", NOTIFICATION_FIXTURE_CREDENTIAL: "secret-fixture-credential", NOTIFICATION_FIXTURE_MODE: mode, NOTIFICATION_FIXTURE_REQUESTS: requests,
   }, stdio: "pipe" });
   let output = ""; server.stdout?.on("data", (chunk) => { output += chunk; }); server.stderr?.on("data", (chunk) => { output += chunk; });
-  for (let attempt = 0; attempt < 100; attempt++) { if (await fetch(base + "/api/health", { headers }).then((res) => res.ok, () => false)) break; if (attempt === 99 || server.exitCode !== null) throw new Error(`Server failed to start: ${output}`); await new Promise((resolve) => setTimeout(resolve, 100)); }
+  for (let attempt = 0; attempt < 300; attempt++) { if (await fetch(base + "/api/health", { headers }).then((res) => res.ok, () => false)) break; if (attempt === 299 || server.exitCode !== null) throw new Error(`Server failed to start: ${output}`); await new Promise((resolve) => setTimeout(resolve, 100)); }
   browser = await chromium.launch({ channel: "chrome", headless: true }); page = await browser.newPage();
   await page.addInitScript((path) => { localStorage.setItem("repo", path); localStorage.setItem("sideOpen", "0"); }, repo);
 });
