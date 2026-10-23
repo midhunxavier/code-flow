@@ -20,8 +20,8 @@ Open the macOS desktop app, or start the local browser app with one command. You
 <p>Code Flow starts locally and opens its sign-in link in your default browser. Keep the terminal open while you work. Press <strong>Ctrl+C</strong> to stop the server.</p>
 </section>
 <section id="install-windows" role="tabpanel" aria-labelledby="install-tab-windows" tabindex="0">
-<h3>Windows desktop with Docker</h3>
-<p>The source-built Windows desktop preview runs its backend and agents in Docker Desktop using Linux containers. Build with <code>npm run package:windows</code>, extract the ZIP, and open <strong>Code Flow.exe</strong>. The first launch asks for your projects folder. See the <a href="windows-desktop.md">Windows desktop guide</a> for setup and validation status. This portable preview is unsigned.</p>
+<h3>Windows desktop with WSL2</h3>
+<p>The source-built Windows desktop preview runs its backend and agents in your WSL2 distribution. Node is bundled; Git and agent CLIs are installed inside WSL. Docker is not required. Build with <code>npm run package:windows</code>, extract the ZIP, and open <strong>Code Flow.exe</strong>. See the <a href="windows-desktop.md">Windows desktop guide</a> for setup and validation status. This portable preview is unsigned.</p>
 <h3>Use Windows Subsystem for Linux</h3>
 <p>This preview runs inside <strong>WSL2</strong>. Install Node.js 22.13+, Git 2.38+ and your agent CLIs inside WSL, sign in there, and keep your repository in the Linux filesystem. In your WSL terminal, run:</p>
 <pre><code class="language-sh">npx @midhunxavier/code-flow@preview</code></pre>

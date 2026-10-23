@@ -22,8 +22,8 @@ The launcher starts Code Flow locally and opens your default browser with its si
 
 On Windows, install Node, Git and your agent CLI inside WSL2, sign in there, and keep your repository in the Linux filesystem. Native PowerShell and Command Prompt execution are not supported in this preview.
 
-For a desktop window on Windows, the source-built [Docker desktop preview](windows-desktop.md)
-runs the backend and agents in Docker Desktop and mounts a chosen projects folder.
+For a desktop window on Windows, the source-built [WSL2 desktop preview](windows-desktop.md)
+bundles Node.js and runs the backend in your Linux distribution, using its Git and agent CLI logins. Docker is not required.
 
 For regular use, install the launcher globally, then start it with `codeflow`:
 

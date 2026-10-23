@@ -14,7 +14,8 @@ if (process.env.CODEFLOW_DESKTOP_DATA) app.setPath('userData', process.env.CODEF
 const runtime = join(__dirname, 'backend');
 const node = join(__dirname, 'node/bin/node');
 const home = process.env.CODEFLOW_HOME || join(homedir(), '.codeflow');
-const dockerDesktop = process.platform === 'win32' || process.env.CODEFLOW_DESKTOP_DOCKER === '1';
+const dockerDesktop = process.env.CODEFLOW_DESKTOP_DOCKER === '1';
+const wslDesktop = process.platform === 'win32' && !dockerDesktop;
 let backend, window, startingWindow, startupAbort, tray, origin, ownerURL, updates, quitting = false, exitApproved = false, checkingQuit = false, ready;
 const token = process.env.CODEFLOW_TOKEN || randomBytes(32).toString('hex');
 const freePort = () => new Promise((resolve, reject) => {
@@ -64,7 +65,14 @@ async function createWindow() {
 async function startBackend() {
   const port = process.env.PORT || await freePort();
   origin = `http://localhost:${port}`;
-  if (dockerDesktop) {
+  if (wslDesktop) {
+    startingWindow = new BrowserWindow({ width: 600, height: 320, resizable: false, closable: false, title: 'Starting Code Flow', webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } });
+    await startingWindow.loadFile(join(__dirname, 'starting.html'));
+    startupAbort = new AbortController();
+    backend = await require('./wsl.cjs').startWslBackend({ source: __dirname, config: require('./wsl-config.json'), userData: app.getPath('userData'), port, token, signal: startupAbort.signal });
+    startupAbort = undefined;
+    if (quitting) { backend.disconnect(); return; }
+  } else if (dockerDesktop) {
     const workspace = await projectsFolder();
     if (!workspace || quitting) return;
     startingWindow = new BrowserWindow({ width: 600, height: 320, resizable: false, closable: false, title: 'Starting Code Flow', webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } });
@@ -95,10 +103,17 @@ async function startBackend() {
       if (message?.type !== 'codeflow-ready' || typeof message.url !== 'string') return;
       const url = new URL(message.url);
       if (url.origin !== origin) return;
-      if (dockerDesktop) {
+      if (dockerDesktop || wslDesktop) {
         try {
-          const response = await fetch(`${origin}/api/health`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
-          if (!response.ok) throw new Error('The container service is not reachable on localhost.');
+          let reachable = false;
+          for (let attempt = 0; attempt < 30 && !quitting; attempt++) {
+            try {
+              const response = await fetch(`${origin}/api/health`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000) });
+              if (response.ok) { reachable = true; break; }
+            } catch {}
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+          if (!reachable) throw new Error('The local service is not reachable. Check that WSL localhost forwarding is enabled, then reopen Code Flow.');
         } catch (error) { clearTimeout(timer); reject(error); return; }
       }
       ownerURL = message.url; clearTimeout(timer); resolve();
@@ -128,6 +143,12 @@ async function projectsFolder(change = false) {
   return workspace;
 }
 async function agentSetup() {
+  if (backend?.distro) {
+    const command = require('./wsl.cjs').setupCommand(backend);
+    const answer = await dialog.showMessageBox(window, { message: 'Set up agents in WSL', detail: `Code Flow uses ${backend.distro}. Node.js and npm are included; install Git and your agent CLIs in this distribution and sign in there. Existing WSL logins are reused.\n\nPaste this command into PowerShell to open a WSL terminal with the bundled Node runtime:\n\n${command}`, buttons: ['Copy terminal command', 'Done'], noLink: true });
+    if (answer.response === 0) clipboard.writeText(command);
+    return;
+  }
   if (!backend?.name) return;
   const command = `docker exec -it ${backend.name} bash`;
   const answer = await dialog.showMessageBox(window, { message: 'Set up your agents', detail: `Claude Code and Codex are included. Sign in inside the container using the terminal command below, then run each CLI’s login command. Login state stays in the Docker volume. Set your Git name and email in this terminal too.\n\n${command}\n\nYour selected projects folder is /workspace inside Code Flow.`, buttons: ['Copy terminal command', 'Done'], noLink: true });
@@ -179,7 +200,7 @@ async function quit(installUpdate = false) {
           child.kill('SIGKILL');
         }, 3000);
         child.kill('SIGTERM');
-      }, dockerDesktop ? 20000 : 12000);
+      }, dockerDesktop || wslDesktop ? 20000 : 12000);
       if (child.connected) child.disconnect(); else child.kill('SIGTERM');
     });
     // A replacement app must not race a still-running backend for its data directory.
@@ -233,7 +254,8 @@ else {
     setupTray();
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: 'Code Flow', submenu: [{ role: 'about' }, { id: 'check-updates', label: 'Check for Updates…', click: () => { void showUpdates(); } }, { type: 'separator' }, { id: 'show-window', label: 'Show Code Flow', accelerator: 'CmdOrCtrl+1', click: () => { void ready?.then(createWindow); } },
-        ...(dockerDesktop ? [{ label: 'Set up agents…', click: () => { void agentSetup(); } }, { label: 'Choose projects folder…', click: () => { void projectsFolder(true).catch(error => dialog.showErrorBox('Projects folder could not be saved', error.message)); } }] : []),
+        ...(dockerDesktop || wslDesktop ? [{ label: 'Set up agents…', click: () => { void agentSetup(); } }] : []),
+        ...(dockerDesktop ? [{ label: 'Choose projects folder…', click: () => { void projectsFolder(true).catch(error => dialog.showErrorBox('Projects folder could not be saved', error.message)); } }] : []),
         ...(process.platform === 'darwin' ? [{ role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }] : []), { type: 'separator' }, { role: 'quit' }] },
       { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] }, { role: 'windowMenu' },
       { role: 'help', submenu: [{ label: 'Code Flow documentation', click: () => external('https://midhunxavier.github.io/code-flow/') }] },

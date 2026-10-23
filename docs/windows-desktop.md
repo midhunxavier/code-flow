@@ -1,13 +1,14 @@
-# Windows desktop with Docker
+# Windows desktop with WSL2
 
-The Windows desktop preview opens Code Flow in an Electron window and runs its backend,
-Git and coding agents in a Linux container managed by Docker Desktop. You do not need
-Node.js or agent CLIs installed on Windows to run the packaged app. Docker Desktop must
-be installed, running and using **Linux containers**. Its default backend uses WSL2;
-you do not need to manage a separate WSL distribution for Code Flow.
+The Windows desktop preview opens Code Flow in an Electron window and runs the backend
+and coding agents in your WSL2 Linux distribution. **Docker Desktop is not required.**
+Node.js and npm are bundled. Git and agent CLIs must be installed and signed in inside
+WSL; no separate Windows installations of those tools are needed. Existing WSL CLI
+logins are reused.
 
-This is an **unsigned portable preview**, built from source or downloaded as a Windows
-workflow artifact. It has not yet been validated on a physical Windows machine.
+This is an **unsigned portable preview**. CI builds x64 and ARM64 packages on Windows
+and tests the Windows-produced x64 Linux payload on Ubuntu. Physical Windows startup,
+WSL localhost forwarding and real provider authentication still require acceptance testing.
 
 ## Build the app
 
@@ -18,94 +19,106 @@ npm ci
 npm run package:windows -- x64
 ```
 
-The ZIP and its SHA-256 checksum are written to `output/releases/`. Use `arm64` instead
-of `x64` for a Windows ARM package. Packaging works on Windows, macOS and Linux; running
-the resulting `.exe` requires Windows. macOS and Linux packaging also require `zip`.
-Run `npm run desktop:docker` to try the same Docker
-backend in a desktop window on your development machine.
+Use `arm64` for Windows ARM. The ZIP and SHA-256 checksum are written to `output/releases/`.
+Packaging works on Windows, macOS and Linux; macOS and Linux also need `zip`.
+The package includes the official Node.js Linux archive with a pinned SHA-256 checksum.
+The first launch copies the backend and Node into the Linux filesystem; it does not
+install packages or download executable code at startup.
 
-## First launch
+## Set up WSL2
 
-1. Install and start [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/).
-   Use its local Linux-container context.
-2. Extract the **entire ZIP** and open **Code Flow.exe**. Windows may show an
-   unknown-publisher prompt because this preview is unsigned.
-3. Choose a folder containing your projects. Inside Code Flow, that folder appears as
-   **`/workspace`**. For example, `C:\Projects\demo` appears as `/workspace/demo` when you
-   select `C:\Projects`. Select only the folder you intend the app and its agents to use.
-4. Wait for the first launch to build the bundled runtime. It downloads the pinned Node,
-   Claude Code and Codex versions, requires internet access, and can take several minutes.
-   Subsequent launches reuse the local image. A changed runtime builds a new image.
-5. Open **Code Flow → Set up agents…** and copy the terminal command into PowerShell.
-   It opens Bash inside this app's container. Sign in using each vendor's own CLI flow:
+In PowerShell, install WSL if needed:
+
+```powershell
+wsl --install
+```
+
+Restart if prompted, open Ubuntu, and complete Linux username and password setup.
+Check the distribution version and default selection:
+
+```powershell
+wsl --list --verbose
+wsl --set-default Ubuntu
+```
+
+Use an initialized Ubuntu or Debian distribution running **version 2**. Code Flow uses
+the default distribution, or the distribution named by `CODEFLOW_WSL_DISTRO` in its
+launch environment. It checks WSL2 and the Linux architecture before starting.
+See Microsoft's [WSL installation guide](https://learn.microsoft.com/windows/wsl/install).
+
+## First launch and agent setup
+
+1. Extract the **entire ZIP** and open **Code Flow.exe**. Windows may show an
+   unknown-publisher prompt because the preview is unsigned.
+2. Wait for the bundled runtime to be copied into WSL. Later launches reuse that version.
+3. Open **Code Flow → Set up agents…** and paste the copied command into **PowerShell**.
+   It opens a terminal in the selected distribution with the bundled Node and npm on PATH.
+4. If needed, install Git, Python and supported CLIs in that terminal:
 
    ```sh
+   sudo apt-get update
+   sudo apt-get install -y git python3
+   npm install --global --prefix "$HOME/.local" @anthropic-ai/claude-code@2.1.302 @openai/codex@0.162.1
    claude auth login
    codex login --device-auth
    git config --global user.name "Your Name"
    git config --global user.email "you@example.com"
    ```
 
-   Open any printed login URL in your Windows browser. Use the vendor's manual-code or
-   device flow when prompted; a callback to an unpublished container port will not reach
-   the CLI. Provider login flows and real inference still require Windows acceptance testing.
-6. Add `/workspace/your-repository` in Code Flow and start a run. Agent tools execute on
-   Linux, so install your project's Linux dependencies inside the container. Windows
-   `node_modules` and other platform-specific build output may need to be rebuilt.
+   Existing installations and logins can be used. Open any printed login URL in your
+   Windows browser and follow the vendor's flow. The app delegates authentication to
+   those CLIs and does not copy credentials between Windows and Linux.
+5. Choose a repository in the app using its **Linux path**, such as `/home/you/projects/demo`.
+   Windows drives can also be accessed through WSL paths such as `/mnt/c/Projects/demo`.
+   Prefer repositories in the Linux filesystem for Git, dependency and build performance.
 
-The runtime includes Bash, Git, SSH, Python 3, ripgrep, Node.js, Claude Code and Codex.
-Install additional Linux tools in a derived image for repeatable use. Executables placed
-in `~/.local/bin` persist in the home volume and are on the runtime's PATH. Host-installed
-CLIs, SSH keys and Git credential helpers are not shared automatically. Configure private
-repository access inside the container using your normal Git authentication flow.
+Repositories, checks, shells and agents all run in the selected WSL distribution. Install
+project dependencies there; Windows `node_modules` and other native build output may
+need to be rebuilt for Linux. Additional language tools and private Git authentication
+are managed through the distribution's normal tools.
 
 ## Closing, updating and storage
 
 Closing the window keeps agents running. Reopen it from the notification-area icon or
-launch the app again. **Code Flow → Quit** saves progress and stops the app's container.
-If agents are working, the app asks before quitting. Reopening after an interrupted session
-removes only the previous container labeled for this desktop installation and reuses its
-saved data. Other Docker containers remain running.
+launch the app again. **Code Flow → Quit** saves progress and stops this app's backend.
+If agents are working, the app asks before quitting. It does not shut down the WSL
+virtual machine or terminate the distribution, so other WSL programs keep running.
 
-The selected folder is a writable bind mount at `/workspace`. Your Git repositories keep
-their host files; Code Flow worktrees and history live in the container's persistent home.
-Linked Git worktrees created outside the chosen folder may reference unavailable host
-paths. Use a regular clone in the chosen folder. The container trusts Git ownership for
-its mounted repositories; Windows bind mounts do not preserve Linux UID ownership.
+Settings and history live in `~/.codeflow-desktop/<installation-id>/state` inside WSL.
+CLI logins stay in their usual Linux locations, such as `~/.claude` and `~/.codex`.
+The installation ID derives from the Windows desktop preferences directory and stays
+stable when the portable app is replaced. Changing distributions uses that distribution's
+separate filesystem and logins; it does not migrate history between distributions.
 
-Settings, conversations, CLI logins and Git configuration live in the named volume
-`codeflow-desktop-home-<installation-id>-<folder-id>` under `/home/node`. Its IDs derive
-from the desktop preferences directory and selected folder, so replacing the app preserves the same volume.
-Uninstalling the portable app does not delete it. Back up this volume before deleting it
-or resetting Docker Desktop. Image updates preserve this home volume, but tools installed
-only in the container's writable layer are discarded when the container stops.
+Versioned application runtimes live under
+`~/.local/share/code-flow/desktop/<installation-id>/versions/`. A new bundle installs a
+new version and preserves application state. Removing the Windows ZIP does not delete
+Linux history, CLI logins or cached runtimes. Back up state before deleting it.
 
-Use **Choose projects folder…**, then quit and reopen the app, to change the mounted folder.
-Each selected folder has its own home volume, settings and logins. Returning to a previous
-folder restores its saved data. This prevents saved `/workspace` paths from referring to
-different repositories after a folder change.
-Update checks open the matching Windows ZIP; quit, extract the new copy, and launch it.
-Automatic installer replacement is not enabled for this unsigned preview.
+After an interrupted session, the launcher checks its own saved Linux process record
+and command line before stopping an old backend. Stale PID records cannot authorize
+termination of unrelated Linux processes. Updates open the matching Windows ZIP; quit,
+extract the new copy, and launch it. Automatic installer replacement is disabled for
+this unsigned preview.
 
-## Runtime boundaries
+## Runtime boundaries and validation
 
-Only the selected folder and the app's named home volume are mounted. The backend port
-is published on `127.0.0.1` and uses the app's owner token. The Docker client receives the
-token through its environment; it is not placed in command arguments or container logs.
-The runtime uses a non-root Linux user with Linux capabilities dropped and privilege
-escalation disabled. It has outbound network access for Git, package installs and providers.
+The backend uses a loopback listener. Windows reaches it through
+[WSL localhost forwarding](https://learn.microsoft.com/windows/wsl/networking).
+No LAN listener or firewall exception is added. The owner token is passed through a
+private stdin pipe and redacted from backend output; it is not placed in process arguments.
 
-The Docker socket and host home are not mounted. Nested Docker execution, additional
-agent-container isolation, the shared Chrome browser and native desktop computer tools
-are unavailable in this initial runtime. Antigravity is not bundled. The normal Linux
-team-tool bridges remain available because the backend and agents share the same container.
-This container is a boundary around the application; it does not grant each agent a
-separate container. Existing per-agent permission and approval rules still apply.
+The backend and agents have the filesystem and network permissions of your WSL user,
+including Windows drives exposed by WSL. WSL does not replace the app's agent permission
+and approval rules. Native Windows desktop computer tools are unavailable. Shared browser
+features require a compatible browser installed inside the Linux distribution.
 
-`npm run test:desktop:docker` builds the real runtime, checks the bundled CLI versions and
-exercises a deterministic fixture run, history persistence, log redaction, crash recovery
-and shutdown against a real Docker daemon. It never authenticates or calls a provider.
-CI builds the Windows ZIP separately on a Windows runner. Real Windows startup, Docker
-file sharing, provider login and inference remain a release acceptance gate.
+The Windows desktop workflow builds both packages, verifies executable and archive
+contents and checksums, then extracts the x64 artifact on Ubuntu. `npm run test:desktop:wsl`
+checks the actual bundled Node and bootstrap, UI assets, semantic analysis, a deterministic
+fixture agent run, history recovery, log redaction and shutdown. It never signs in or calls
+a provider. Windows unit tests cover WSL2 detection, architecture checks, command arguments
+and the private control channel. The hosted Ubuntu test exercises the Linux payload;
+it does not emulate WSL networking or prove a real Windows login flow.
 
 [Documentation library](README.md) · [Installation](installation.md)

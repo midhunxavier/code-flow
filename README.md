@@ -36,10 +36,10 @@ Requires **macOS 13+**. Open the DMG, drag **Code Flow** to **Applications**, th
 
 [Preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.3) · [Installation and first-run guide](docs/getting-started.md)
 
-A **Windows desktop preview with Docker Desktop** can be built with `npm run package:windows`.
-It includes the Linux backend, Claude Code and Codex, mounts a chosen projects folder,
-and preserves settings and logins in a Docker volume. See the [Windows desktop guide](docs/windows-desktop.md)
-for setup, limitations and validation status. The portable ZIP is unsigned.
+A **Windows desktop preview using WSL2** can be built with `npm run package:windows`.
+It bundles Node.js and runs the backend in your Linux distribution, reusing the Git and
+agent CLI installations and logins there. Docker Desktop is not required. See the
+[Windows desktop guide](docs/windows-desktop.md) for setup and validation status. The portable ZIP is unsigned.
 
 ### Run from source
 

@@ -9,7 +9,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 export async function prepareDockerDesktop() {
   const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   execFileSync(process.execPath, ['scripts/package-npm.mjs'], { cwd: root, stdio: 'inherit' });
-  const desktop = join(root, 'dist/windows-desktop');
+  const desktop = join(root, 'dist/docker-desktop');
   await rm(desktop, { recursive: true, force: true });
   await mkdir(join(desktop, 'docker'), { recursive: true });
   await cp(join(root, 'dist/npm'), join(desktop, 'docker/backend'), { recursive: true });

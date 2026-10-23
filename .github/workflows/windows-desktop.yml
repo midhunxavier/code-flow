@@ -40,8 +40,8 @@ jobs:
           path: output/releases/*windows*
           if-no-files-found: error
 
-  docker:
-    name: Windows-built Docker runtime
+  wsl:
+    name: Windows-built WSL Linux runtime
     needs: package
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -61,6 +61,6 @@ jobs:
         run: |
           sha256sum --check *.sha256
           unzip -q *-windows-x64-unsigned.zip -d ../windows-unpacked
-      - run: npm run test:desktop:docker
+      - run: npm run test:desktop:wsl
         env:
           CODEFLOW_DESKTOP_BUNDLE: ${{ github.workspace }}/output/windows-unpacked/Code Flow/resources/app

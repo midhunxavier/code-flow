@@ -13,6 +13,7 @@
     "test:package": "node --test test/release/*.test.mjs",
     "test:macos": "node --test test/macos/*.test.mjs",
     "test:desktop:docker": "node --test test/docker-desktop/*.test.mjs",
+    "test:desktop:wsl": "node --test test/wsl-desktop/*.test.mjs",
     "test:windows": "node --test test/windows/*.test.mjs",
     "release:prepare": "node scripts/prepare-preview.mjs",
     "build:worker": "node scripts/build-worker.mjs",

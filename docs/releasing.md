@@ -118,11 +118,11 @@ The tap must exist and contain the generated formula before advertising the Home
 Review the draft notes and attached checksums. Verify each DMG's signing status and label it accurately. Publish the draft as a **prerelease**, leaving GitHub's stable latest release unchanged. This starts automatic npm publication and advances both npm tags after verification. The draft notes include an exact GitHub tarball command so the preview can be tried while npm processes the upload.
 
 The Windows desktop job builds an unsigned portable ZIP for x64 and ARM64, with its Linux
-Docker build context included. Review the checksums and label it as a Docker Desktop
-preview. The app builds the image locally at first launch; no registry publication is needed.
+backend and checksum-verified Node runtime included. Review the checksums and label it as a WSL2 desktop
+preview. The app installs its bundled runtime into the selected distribution at first launch.
 Before claiming Windows end-to-end validation, exercise native startup, folder selection,
-Docker file sharing, CLI login, a real agent run, window close/reopen, quit and persisted
-history on a Windows machine. The Docker lifecycle test and Windows packaging checks
+WSL localhost forwarding, CLI login, a real agent run, window close/reopen, quit and persisted
+history on a Windows machine. The WSL Linux payload test and Windows packaging checks
 cover different parts of this path. See [Windows desktop](windows-desktop.md).
 
 The npm launcher still supports Windows through WSL2. Native Windows agent execution
