@@ -52,7 +52,7 @@ before(async () => {
     target: "es2022",
     jsx: "automatic",
     jsxImportSource: "preact",
-    loader: { ".png": "dataurl" },
+    loader: { ".png": "dataurl", ".svg": "dataurl" },
     logLevel: "error",
   });
   const file = join(mkdtempSync(join(tmpdir(), "codeflow-ui-review-")), "ui.mjs");
