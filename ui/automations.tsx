@@ -157,7 +157,7 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
         )}
       </section> : null}
 
-      <p class="help">To access this computer from another device, open <a href="#/settings/connections/sharing">Connections → Share access</a>.</p>
+      <p class="help">To access this computer from another device, open <a href="#/settings/connections/devices">Connections → Share access</a>.</p>
     </div>
   );
 }

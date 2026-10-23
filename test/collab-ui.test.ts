@@ -48,7 +48,7 @@ test("team routes parse from their hashes and serialize back to them", () => {
   assert.equal(hashFor({ view: "team", project: "p 1/x" }), "#/team/project/p%201%2Fx", "project ids are encoded like other ids");
   // Neighbouring routes are untouched.
   assert.deepEqual(parseRouteHash("#/project/p-1"), { view: "project", id: "p-1" });
-  assert.deepEqual(parseRouteHash("#/settings/team"), { view: "settings", section: "connections", group: "sharing" });
+  assert.deepEqual(parseRouteHash("#/settings/team"), { view: "settings", section: "connections", group: "manage" });
   assert.equal(hashFor({ view: "settings", section: "connections", group: "sharing" }), "#/settings/connections/sharing");
 });
 

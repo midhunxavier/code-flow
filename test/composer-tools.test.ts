@@ -76,7 +76,7 @@ test("version 1 presets preserve independent context budgets in import/export an
 
 
 test("legacy connection links resolve to one purpose-based hub", () => {
-  for (const [legacy, group] of [["ssh", "workspace"], ["team", "sharing"], ["remote-access", "sharing"]]) {
+  for (const [legacy, group] of [["ssh", "workspace"], ["team", "manage"], ["remote-access", "devices"]]) {
     assert.deepEqual(parseRouteHash(`#/settings/${legacy}`), { view: "settings", section: "connections", group });
   }
   for (const kind of ["once", "repeat", "backlog", "missions"]) assert.deepEqual(parseRouteHash(hashFor({ view: "automations", kind })), { view: "automations", kind });

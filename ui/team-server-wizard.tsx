@@ -9,6 +9,7 @@ import { teamServerAddress } from "./collab-state.js";
 import { SecureRemoteSetup, type RemoteInfo } from "./remote-access.js";
 import { selectTeamConnection } from "./team-connections.js";
 import { repositoryChoice } from "./team-repository-choice.js";
+import { ProjectInvitations } from "./project-invitations.js";
 
 const STEPS = ["Project", "Repositories", "Secure access", "Teammates", "Share"];
 const blankRepo = (): RepoRef => ({ key: "app", label: "App", defaultBranch: "main" });
@@ -117,7 +118,8 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
       ? { ...entry, ...repositoryChoice(path, current.filter((_, other) => other !== index).map(row => row.key)), sourcePath: path, remote: undefined }
       : { ...entry, sourcePath: undefined }));
   };
-  const ready = !!project && configuredRepos.length > 0 && !!address && members.some((user) => canRun(user.roles[projectId]));
+  const serverReady = !!project && configuredRepos.length > 0 && !!address;
+  const ready = serverReady && members.some((user) => canRun(user.roles[projectId]));
 
   const run = async (action: () => Promise<void>) => {
     if (locked.current) return false; locked.current = true; setBusy(true); onBusy(true); setError("");
@@ -175,7 +177,7 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
       finally { setPassword(""); }
     });
   };
-  const shareText = address && project ? `Join ${project.name} in Code Flow\nTeam server: ${address}\n\n1. ${remote?.transport === "tailscale" ? "Connect your computer to our Tailscale network." : "Make sure your computer can reach the team server over HTTPS."}\n2. Open your own Code Flow → Settings → Team → Add team connection (or Connect this computer).\n3. Enter the server address and the account credentials shared with you separately.\n4. Map these repository keys to your local clones: ${configuredRepos.map((entry) => entry.key).join(", ")}.\nUse the same Code Flow version as the server.` : "";
+  const shareText = address && project ? `Join ${project.name} in Code Flow\nTeam server: ${address}\n\n1. ${remote?.transport === "tailscale" ? "Connect your computer to our Tailscale network." : "Make sure your computer can reach the team server over HTTPS."}\n2. Open your own Code Flow → Settings → Connections → Share access → Join a team.\n3. Enter the server address and the account credentials shared with you separately.\n4. Map these repository keys to your local clones: ${configuredRepos.map((entry) => entry.key).join(", ")}.\nUse the same Code Flow version as the server.` : "";
 
   return <section class="settings-card team-server-wizard" aria-label="Team server setup" aria-busy={busy}>
     <div class="pp-card-head"><h3>Set up team server</h3><button class="btn small" disabled={busy} onClick={onClose}>Close setup</button></div>
@@ -216,7 +218,8 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
         <button class="btn primary" disabled={busy} onClick={() => void next()}>{address ? "Continue to teammates" : "Set up access later"}</button>
       </div> : null}
       {step === 3 ? <div>
-        <p>Add accounts for people working on {project?.name}. Contributor lets them run tasks on their computers; Maintainer also lets them manage the project board.</p>
+        <ProjectInvitations projects={projects} projectId={projectId} prefix={prefix} address={address} />
+        <h4>Or manage accounts directly</h4><p>Add accounts for people working on {project?.name}. Contributor lets them run tasks on their computers; Maintainer also lets them manage the project board.</p>
         {members.length ? <ul>{members.map((user) => <li key={user.id}>{user.displayName} ({user.username}) · {user.roles[projectId]}</li>)}</ul> : <p class="help">No teammates have access to this project yet.</p>}
         <form onSubmit={(event) => { event.preventDefault(); void addPerson(); }}><fieldset disabled={busy} class="team-setup-fields"><legend class="sr-only">Teammate account</legend>
           <label>Account<select aria-label="Account" class="field" value={person} onChange={(event) => { const id = event.currentTarget.value; setPerson(id); setPassword(""); setRole(accounts.users.find((user) => user.id === id)?.roles[projectId] ?? "contributor"); }}><option value="">Create a new account…</option>{accounts.users.filter((user) => user.enabled).map((user) => <option key={user.id} value={user.id}>{user.displayName} ({user.username})</option>)}</select></label>
@@ -228,10 +231,11 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
         <button class="btn primary" disabled={busy} onClick={() => void next()}>{members.length ? "Review setup" : "Add teammates later"}</button>
       </div> : null}
       {step === 4 ? <div class="team-setup-fields">
-        <h4>{ready ? "Ready to share with your team" : "Your setup is saved, with steps still to finish"}</h4>
+        <h4>{ready ? "Ready to share with your team" : serverReady ? "Ready to invite your team" : "Your setup is saved, with steps still to finish"}</h4>
         <ul><li>Project: {project?.name ?? "Unavailable — choose a project"}</li><li>Repositories: {configuredRepos.length ? configuredRepos.map((entry) => entry.key).join(", ") : "Add a repository key"}</li><li>Secure access: {address ?? "Finish secure access setup"}</li><li>Teammates: {members.length} with access{members.some((user) => canRun(user.roles[projectId])) ? " · task execution enabled" : " · add a contributor or maintainer to run tasks"}</li></ul>
         <div class="settings-actions"><button class="btn" disabled={busy} onClick={() => setStep(0)}>Edit project</button><button class="btn" disabled={busy} onClick={() => setStep(1)}>Edit repositories</button><button class="btn" disabled={busy} onClick={() => setStep(2)}>Edit secure access</button><button class="btn" disabled={busy} onClick={() => setStep(3)}>Edit teammates</button></div>
-        {ready ? <><label>Connection instructions<textarea class="field" readOnly rows={8} value={shareText} /></label><button class="btn primary" onClick={() => void copy(shareText, "Connection instructions copied")}>Copy connection instructions</button><p class="help">Send each teammate’s username and password separately. Ask one teammate to connect and confirm access; network permissions still apply. Use the same Code Flow version on every computer.</p></> : null}
+        {serverReady ? <ProjectInvitations projects={projects} projectId={projectId} prefix={prefix} address={address} /> : null}
+        {ready ? <><label>Connection instructions<textarea class="field" readOnly rows={8} value={shareText} /></label><button class="btn primary" onClick={() => void copy(shareText, "Connection instructions copied")}>Copy connection instructions</button><p class="help">New teammates can use an invitation above to choose their own password. Existing accounts can use these connection instructions. Ask one teammate to connect and confirm access; network permissions still apply. Use the same Code Flow version on every computer.</p></> : null}
         <div class="settings-actions"><button class="btn" disabled={busy} onClick={() => void next()}>Check setup again</button><button class="btn primary" disabled={busy} onClick={() => { if (prefix) return onClose(); const url = new URL(location.href); url.hash = "#/team"; history.replaceState(history.state, "", url.href); selectTeamConnection("local"); }}>{prefix ? "Finish setup" : ready ? "Open team board" : "Finish for now"}</button></div>
       </div> : null}
       {step > 0 && step < 4 ? <button class="btn ghost" disabled={busy} onClick={() => { setError(""); setStep(step - 1); }}>Back</button> : null}

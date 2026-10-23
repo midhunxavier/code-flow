@@ -272,7 +272,7 @@ export function Composer() {
 
   if (!projects.value.length && !repo.value && !task.value.trim()) return <div class="composer project-welcome">
     <div class="eyebrow">Your first project</div><h1>What would you like to work on?</h1><p class="lede">Open a repository to start a project, describe a task, and review your agents’ work.</p>
-    <div class="project-welcome-actions"><button class="btn primary" onClick={() => openRepository()}>Open repository</button><a class="btn" href="#/settings/connections/sharing">Join shared project</a></div>
+    <div class="project-welcome-actions"><button class="btn primary" onClick={() => openRepository()}>Open repository</button><a class="btn" href="#/settings/connections/join">Join shared project</a></div>
     <p class="help">Computer: {computerLabel()} · <a href="#/settings/connections/workspace">On another computer</a></p><ProviderSetupPrompt />
   </div>;
   return (

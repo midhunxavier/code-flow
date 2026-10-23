@@ -9,7 +9,7 @@ export function selectTeamConnection(id: string) {
   location.assign(url.href);
 }
 /** Selection is in the URL, so bookmarks and separate browser tabs keep their own team. */
-export function TeamConnectionPicker() {
+export function TeamConnectionPicker({ hideWhenEmpty = false }: { hideWhenEmpty?: boolean }) {
   const [connections, setConnections] = useState<Connection[]>([]), [error, setError] = useState("");
   usePoll(async (current) => {
     try { const data = await api<{ connections: Connection[] }>("/api/team-link/connections"); if (current()) { setConnections(data.connections); setError(""); } }
@@ -17,6 +17,7 @@ export function TeamConnectionPicker() {
   }, 15_000, []);
   const remotes = connections.filter((entry) => entry.id !== "local");
   const selected = selectedTeamConnection || (remotes.length === 1 ? remotes[0]!.id : remotes.length === 0 ? "local" : "");
+  if (hideWhenEmpty && !remotes.length && !error) return null;
   return <section class="settings-card team-connection-picker" aria-label="Team connections">
     <label class="lbl">Team connection<select class="field" value={selected} onChange={(event) => selectTeamConnection(event.currentTarget.value)}>
       <option value="" disabled>Choose a team…</option>
@@ -25,6 +26,6 @@ export function TeamConnectionPicker() {
     </select></label>
     <p class="help">Each team keeps its own projects, account and repository mappings. Switching teams keeps other connections and running tasks active.</p>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
-    <a class="btn small" href="#/settings/connections/sharing">Manage team connections</a>
+    <a class="btn small" href="#/settings/connections/join">Manage team connections</a>
   </section>;
 }

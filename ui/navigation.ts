@@ -31,7 +31,7 @@ export function parseRouteHash(hash: string): Route {
   if (view === "run" && id) return { view: "run", id };
   if (view === "review" && id && rest.length) return { view: "review", id, branch: rest.join("/") };
   if (view === "settings" && (id === "workspace" || id === "automations" || id === "insights")) return { view: id, ...(id === "insights" && rest[0] ? { group: rest[0] } : {}) };
-  if (view === "settings" && ["ssh", "remote-access", "team"].includes(id ?? "")) return { view: "settings", section: "connections", group: id === "ssh" ? "workspace" : "sharing" };
+  if (view === "settings" && ["ssh", "remote-access", "team"].includes(id ?? "")) return { view: "settings", section: "connections", group: id === "ssh" ? "workspace" : id === "remote-access" ? "devices" : "manage" };
   if (view === "settings") return { view: "settings", ...(id ? { section: settingsSection(id) } : {}), ...((id === "insights" || id === "connections") && rest[0] ? { group: rest[0] } : {}) };
   // Everyday work has standalone destinations; old Settings bookmarks remain valid.
   if (view === "workspace") return { view: "workspace" };
