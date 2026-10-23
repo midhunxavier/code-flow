@@ -75,7 +75,10 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   await page.getByRole("button", { name: "Enable project missions", exact: true }).click();
   await page.getByRole("button", { name: "Disable project missions", exact: true }).waitFor();
   assert.equal((await api("/api/project-teams/settings")).body.enabled, true);
-  await stopServer(); await startServer(); await page.reload();
+  await stopServer(); await startServer();
+  // The shared stream also reloads when the restarted server changes its identity.
+  // Either navigation may win; the enabled-state assertion below verifies recovery.
+  await page.reload().catch(error => { if (!String(error).includes("ERR_ABORTED")) throw error; });
   await page.getByRole("button", { name: "Disable project missions", exact: true }).waitFor();
   assert.equal((await api("/api/project-teams/settings")).body.source, "saved", "feature remains enabled after a server restart without environment flags");
   assert.equal((await api("/api/project-teams/settings", { enabled: false, revision: 0 })).status, 409);

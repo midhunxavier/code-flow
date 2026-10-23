@@ -12,8 +12,9 @@ import type { SymbolHit } from "../src/code-intelligence.js";
 interface Editable { path: string; text: string; hash: string; bytes: number; folder?: string }
 
 /** Key by folder at the call site: drafts and responses never cross repository scopes. */
-export function CodeBrowser({ folder, initialPath, onClose, compact = false }: { folder: string; initialPath?: string; onClose?: () => void; compact?: boolean }) {
+export function CodeBrowser({ folder, initialPath, onClose, compact = false, refreshKey = "" }: { folder: string; initialPath?: string; onClose?: () => void; compact?: boolean; refreshKey?: string }) {
   const [panelMode,setPanelMode] = useState<"files"|"search">("files");
+  const [treeRevision, setTreeRevision] = useState(0);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [paths, setPaths] = useState("");
   const perform = async (action: () => Promise<void>) => {
@@ -68,7 +69,7 @@ export function CodeBrowser({ folder, initialPath, onClose, compact = false }: {
     if (!file) return;
     try {
       const saved = await post<{ hash: string; bytes: number }>("/api/workspace/file", { repo: folder, path: file.path, text: draft, expectedHash: file.hash });
-      setFile({ ...file, ...saved, text: draft }); setMergeConflict(false); setPreview(false); showToast("File saved");
+      setFile({ ...file, ...saved, text: draft }); setTreeRevision((revision) => revision + 1); setMergeConflict(false); setPreview(false); showToast("File saved");
     } catch (error) { setConflict(true); throw error; }
   });
 
@@ -84,15 +85,15 @@ export function CodeBrowser({ folder, initialPath, onClose, compact = false }: {
   const back = () => { setFile(null); setReadOnly(null); onClose?.(); };
   return <section class={`code-browser ${compact ? "compact-files" : ""} ${selectedPath ? "file-open" : ""}`} aria-label="Code browser">
     {compact ? <header class="files-heading">
-      {selectedPath ? <button class="btn ghost small" aria-label="Back to the files" onClick={back}>← {panelMode === "search" ? "Search" : "Files"}</button> : <div class="segmented small" role="group" aria-label="File explorer view"><button aria-pressed={panelMode === "files"} onClick={() => setPanelMode("files")}>Files</button><button aria-pressed={panelMode === "search"} onClick={() => setPanelMode("search")}><Icon name="search" />Search</button></div>}
+      {selectedPath ? <button class="btn ghost small" aria-label="Back to the files" disabled={busy} onClick={back}>← {panelMode === "search" ? "Search" : "Files"}</button> : <div class="segmented small" role="group" aria-label="File explorer view"><button aria-pressed={panelMode === "files"} onClick={() => setPanelMode("files")}>Files</button><button aria-pressed={panelMode === "search"} onClick={() => setPanelMode("search")}><Icon name="search" />Search</button></div>}
       <span class="files-location" title={folder}>{baseName(folder)}</span>
       {file && draft !== file.text ? <span class="badge">Unsaved</span> : null}
     </header> : <p class="help code-scope">Editing scope: <code>{folder || "Choose a repository"}</code></p>}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
     {busy ? <p class="help files-progress" role="status">Working…</p> : null}
-    {compact ? <div key="explorer" class="files-explorer" hidden={!!selectedPath || panelMode !== "files"}><FileTree root={folder} onOpen={path => {if(!busy) void loadFile(path);}} /></div> : <details open={!selectedPath}><summary>Browse files</summary><FileTree root={folder} onOpen={path => {if(!busy) void loadFile(path);}} /></details>}
+    {compact ? <div key="explorer" class="files-explorer" hidden={!!selectedPath || panelMode !== "files"}><FileTree key={`${refreshKey}:${treeRevision}`} root={folder} onOpen={path => {if(!busy) void loadFile(path);}} /></div> : <details open={!selectedPath}><summary>Browse files</summary><FileTree key={`${refreshKey}:${treeRevision}`} root={folder} onOpen={path => {if(!busy) void loadFile(path);}} /></details>}
     {selectedPath ? <div key="actions" class="files-actions settings-actions">
-      {!compact ? <button class="btn small" onClick={back}>Back to the files</button> : null}
+      {!compact ? <button class="btn small" disabled={busy} onClick={back}>Back to the files</button> : null}
       {route.value.view === "composer" && folder === repo.value ? <button class="btn small" onClick={() => addContext({path:selectedPath,type:"file"})}>+ Task</button> : null}
       <button class="btn small ghost" onClick={() => {sideDraft.value=`About ${selectedPath}: `;setSideChat(null);openSide("chat");}}><Icon name="chat" />Ask about this file</button>
     </div> : null}

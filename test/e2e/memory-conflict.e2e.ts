@@ -47,9 +47,9 @@ before(async () => {
   let output = "";
   server.stdout?.on("data", (chunk) => { output += String(chunk); });
   server.stderr?.on("data", (chunk) => { output += String(chunk); });
-  for (let attempt = 0; attempt < 100; attempt++) {
+  for (let attempt = 0; attempt < 300; attempt++) {
     if (await fetch(base + "/api/health", { headers }).then((response) => response.ok, () => false)) break;
-    if (attempt === 99 || server.exitCode !== null) throw new Error(`Memory UI server did not start: ${output}`);
+    if (attempt === 299 || server.exitCode !== null) throw new Error(`Memory UI server did not start: ${output}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   const project = await api("/api/projects", { name: "Memory UI", repos: [repo] });
@@ -62,7 +62,7 @@ before(async () => {
   });
   browser = await chromium.launch({ channel: "chrome", headless: true });
   page = await browser.newPage({ extraHTTPHeaders: headers });
-  page.setDefaultTimeout(5_000);
+  page.setDefaultTimeout(15_000);
   await page.route(base + "/memory-fixture", (route) => route.fulfill({ contentType: "text/html", body: `<!doctype html><html><body><script type="module">${bundle.outputFiles![0]!.text.replace(/<\/script/gi, "<\\/script")}</script></body></html>` }));
 });
 

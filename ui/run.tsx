@@ -1318,6 +1318,7 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
   const [into, setInto] = useState("");
   const [archiveAfter, setArchiveAfter] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [validating, setValidating] = useState(false);
   const [conflicts, setConflicts] = useState<string[] | null>(null);
   const [requireValidation, setRequireValidation] = useState(!!run.loop.verification);
   const [validation, setValidation] = useState<MergeValidation | null>(null);
@@ -1326,12 +1327,13 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
   const validated = validation?.branch === branch && validation.into === target && validation.report?.state === "verified" && !validation.conflicts.length;
   const validateTarget = async (allowUntrusted = false) => {
     setBusy(true);
+    setValidating(true);
     setValidation(null);
     try { setValidation(await post(`/api/runs/${run.id}/validate-merge`, { branch, into: target, allowUntrusted })); }
     catch (error) {
       if (error instanceof ApiError && error.confirm === "allowUntrusted" && await confirmAction(`${error.message}\n\nRun validation on this computer?`, {"title":"Run validation locally?","confirmLabel":"Run validation","danger":true})) { setBusy(false); await validateTarget(true); return; }
       showToast((error as Error).message, 5000);
-    } finally { setBusy(false); }
+    } finally { setBusy(false); setValidating(false); }
   };
   const merge = async () => {
     setBusy(true);
@@ -1361,10 +1363,10 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
           <input type="checkbox" checked={archiveAfter} onChange={(e) => setArchiveAfter(e.currentTarget.checked)} /> Archive the run afterwards (removes its worktrees, keeps branches)
         </label>
         <button class="btn primary small" disabled={busy || !target || requireValidation && !validated} onClick={merge}>
-          {busy ? "Merging…" : `Merge into ${target || "…"}`}
+          {busy && !validating ? "Merging…" : `Merge into ${target || "…"}`}
         </button>
       </div>
-      {run.loop.check || run.loop.verification ? <div class="row"><label class="check"><input type="checkbox" checked={requireValidation} onChange={(event) => setRequireValidation(event.currentTarget.checked)} /> Require verification of the current merge target</label><button class="btn small" disabled={busy || !target} onClick={() => validateTarget()}>Validate merge result</button>{validation?.into === target ? <span role="status" class="help">{validation.conflicts.length ? `Conflicts: ${validation.conflicts.join(", ")}` : `Merge verification: ${validation.report?.state ?? "unchecked"}`} · target {validation.target.slice(0, 12)}{validation.report ? ` · ${validation.report.checks.length} gates` : ""}</span> : null}</div> : null}
+      {run.loop.check || run.loop.verification ? <div class="row"><label class="check"><input type="checkbox" checked={requireValidation} onChange={(event) => setRequireValidation(event.currentTarget.checked)} /> Require verification of the current merge target</label><button class="btn small" disabled={busy || !target} onClick={() => validateTarget()}>{validating ? "Validating…" : "Validate merge result"}</button>{validation?.into === target ? <span role="status" class="help">{validation.conflicts.length ? `Conflicts: ${validation.conflicts.join(", ")}` : `Merge verification: ${validation.report?.state ?? "unchecked"}`} · target {validation.target.slice(0, 12)}{validation.report ? ` · ${validation.report.checks.length} gates` : ""}</span> : null}</div> : null}
       <div class="help">If {target || "the branch"} is checked out, code-flow merges there only when it has no uncommitted changes, and aborts cleanly on conflicts.</div>
       {conflicts ? (
         <div class="conflicts">
