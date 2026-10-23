@@ -2,7 +2,7 @@
 
 Open the macOS desktop app, or start the local browser app with one command. You do not need to clone Code Flow or add it to your project. The preview uses your installed coding CLIs and their existing logins.
 
-**Desktop preview 0.1.0-preview.3.** Download the macOS app or use the exact release package below. The npm `preview` channel is published separately and may be older. See the [preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.3).
+**Desktop preview 0.1.0-preview.4.** Download the macOS app or use the exact release package below. Each published app release automatically updates the npm `latest` and `preview` channels after npm processing completes. See the [preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.4).
 
 ## Choose an installation method
 
@@ -16,7 +16,7 @@ Open the macOS desktop app, or start the local browser app with one command. You
 <section id="install-unix" role="tabpanel" aria-labelledby="install-tab-unix" tabindex="0">
 <h3>Try it with one command</h3>
 <p>Install Node.js 22.13+ and Git 2.38+, then run:</p>
-<pre><code class="language-sh">npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.3/midhunxavier-code-flow-0.1.0-preview.3.tgz codeflow</code></pre>
+<pre><code class="language-sh">npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.4/midhunxavier-code-flow-0.1.0-preview.4.tgz codeflow</code></pre>
 <p>Code Flow starts locally and opens its sign-in link in your default browser. Keep the terminal open while you work. Press <strong>Ctrl+C</strong> to stop the server.</p>
 </section>
 <section id="install-windows" role="tabpanel" aria-labelledby="install-tab-windows" tabindex="0">
@@ -44,10 +44,10 @@ codeflow</code></pre>
 
 ## macOS app download
 
-Prefer an app you can open from Applications? Download **0.1.0-preview.3** for your Mac:
+Prefer an app you can open from Applications? Download **0.1.0-preview.4** for your Mac:
 
-- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.3/code-flow-0.1.0-preview.3-macos-arm64-unnotarized.dmg)
-- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.3/code-flow-0.1.0-preview.3-macos-x64-unnotarized.dmg)
+- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.4/code-flow-0.1.0-preview.4-macos-arm64-unnotarized.dmg)
+- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.4/code-flow-0.1.0-preview.4-macos-x64-unnotarized.dmg)
 
 1. Choose **arm64** for Apple Silicon, or **x64** for an Intel Mac. macOS 13 or later is required.
 2. Open the DMG and drag **Code Flow** to **Applications**.
