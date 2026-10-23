@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SharedAccounts } from "../src/shared-accounts.js";
+import { SharedAccounts, SharedAccountError } from "../src/shared-accounts.js";
+import { Projects } from "../src/projects.js";
 import { parseTeamAddress, teamConnectionLink } from "../ui/team-join-link.js";
 
 const credentials = { username: "teammate", displayName: "Team mate", password: "my own strong passphrase", secure: true, loopback: false, address: "192.0.2.1" };
+function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
 async function fixture(fn: (store: SharedAccounts, file: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "codeflow-invitation-")), file = join(dir, "accounts.json");
   try { const store = new SharedAccounts(file); await store.load(); await fn(store, file); } finally { await rm(dir, { recursive: true, force: true }); }
@@ -48,6 +50,45 @@ test("existing members prove their password, preserve other projects and never d
   const next = await store.invite({ projectId: "p-three", role: "contributor" });
   const added = await store.acceptInvitation({ ...credentials, token: next.token, existing: true });
   assert.deepEqual(added.user.roles, { "p-one": "maintainer", "p-two": "reviewer", "p-three": "contributor" });
+}));
+
+test("deletion after password verification leaves new and existing accounts and invitations untouched", async () => fixture(async (store, file) => {
+  const projects = new Projects(`${file}.projects`); await projects.load();
+  for (const existing of [false, true]) {
+    if (existing) await store.create({ ...credentials, revision: store.snapshot().revision, roles: { "p-other": "reviewer" } });
+    const project = await projects.create({ name: `Deleted ${existing}` });
+    const { token } = await store.invite({ projectId: project.id, role: "contributor" });
+    const before = await readFile(file, "utf8");
+    const verified = deferred(), proceed = deferred();
+    const accepting = store.acceptInvitation({ ...credentials, token, existing }, async (id, save) => {
+      verified.resolve(); await proceed.promise;
+      return projects.withProject(id, current => {
+        if (!current) throw new SharedAccountError("This project is no longer available", 410);
+        return save();
+      });
+    });
+    await verified.promise; await projects.remove(project.id); proceed.resolve();
+    await assert.rejects(accepting, (error: unknown) => error instanceof SharedAccountError && error.status === 410);
+    assert.equal(await readFile(file, "utf8"), before, "no membership, session or invitation changes are persisted");
+    assert.equal(store.previewInvitation(token).acceptedAt, undefined);
+  }
+}));
+
+test("project deletion waits for an invitation's final durable write", async () => fixture(async (store, file) => {
+  const projects = new Projects(`${file}.projects`); await projects.load();
+  const project = await projects.create({ name: "Joining" });
+  const { token } = await store.invite({ projectId: project.id, role: "contributor" });
+  const committing = deferred(), proceed = deferred();
+  const accepting = store.acceptInvitation({ ...credentials, token }, (id, save) => projects.withProject(id, async current => {
+    assert.equal(current?.id, project.id); committing.resolve(); await proceed.promise;
+    const result = await save(); assert.ok(projects.get(id), "project stays present until the account write is durable"); return result;
+  }));
+  await committing.promise;
+  let removed = false; const deleting = projects.remove(project.id).then(() => { removed = true; });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(removed, false);
+  proceed.resolve(); await accepting; await deleting;
+  assert.equal(projects.get(project.id), undefined);
+  assert.ok(store.invitations()[0]?.acceptedAt);
 }));
 
 test("expiry, revocation, plaintext, invalid roles and corrupt invitation storage fail closed", async () => fixture(async (store, file) => {

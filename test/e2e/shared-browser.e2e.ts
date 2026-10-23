@@ -34,7 +34,7 @@ before(async()=>{
   browser=await chromium.launch({channel:"chrome",headless:true});page=await browser.newPage({viewport:{width:1440,height:1000}});page.setDefaultTimeout(20000);
   await page.goto(`${base}/?token=${token}#/run/${run.id}`);
 });
-afterEach(async context=>{if((context as unknown as {error?:unknown}).error && page){console.error("Browser failure",await page.locator("#side-pane-browser").innerText());mkdirSync(join(root,"output/playwright"),{recursive:true});await page.screenshot({path:join(root,"output/playwright/shared-browser-failure.png")});}});
+afterEach(async context=>{if((context as unknown as {error?:unknown}).error && page){console.error("Browser failure",await page.locator("#side-pane-browser").innerText());console.error("Browser state",await api(`/api/browser?scope=run:${run.id}`,{action:"state"}),await page.locator(".live-browser-surface canvas").evaluate((canvas:HTMLCanvasElement)=>({width:canvas.width,height:canvas.height,box:canvas.getBoundingClientRect().toJSON(),...canvas.dataset})));mkdirSync(join(root,"output/playwright"),{recursive:true});await page.screenshot({path:join(root,"output/playwright/shared-browser-failure.png")});}});
 after(async()=>{await browser?.close();server?.kill("SIGTERM");if(server?.exitCode===null)await new Promise<void>(resolve=>{server.once("exit",()=>resolve());setTimeout(resolve,5000).unref();});fixture?.closeAllConnections();await new Promise<void>(resolve=>fixture?.close(()=>resolve()));});
 test("live in-app Chrome accepts input on frame-blocked pages and is shared across providers",{timeout:live?1200000:60000},async()=>{
   const toggle=page.getByRole("button",{name:"Side panel",exact:true});if(await toggle.getAttribute("aria-pressed")!=="true")await toggle.click();
@@ -119,7 +119,9 @@ test("live in-app Chrome accepts input on frame-blocked pages and is shared acro
   await panel.getByRole("button",{name:"Back",exact:true}).click();
   await panel.getByRole("button",{name:"Shared browser fixture",exact:true}).waitFor();await ready();
   const dialogStarted=Date.now();
+  const viewportBeforeDialog=await surface.boundingBox();
   await click(60,385);await panel.getByRole("form",{name:"Website dialog"}).waitFor();
+  assert.deepEqual(await surface.boundingBox(),viewportBeforeDialog,"a website dialog must not resize the live viewport or invalidate queued input");
   await panel.getByLabel("Website prompt").fill("Dialog confirmed");await panel.getByRole("button",{name:"OK",exact:true}).click();
   await panel.getByRole("form",{name:"Website dialog"}).waitFor({state:"hidden"});assert.ok(Date.now()-dialogStarted<5000,"dialogs are answered without waiting for a CDP timeout");await ready();
   await click(60,335);

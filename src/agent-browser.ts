@@ -233,6 +233,7 @@ export class AgentBrowser {
     if (target && !page) throw new Error("Unknown browser tab; call browser_tabs first");
     const targetId = page?.targetId ?? (await cdp.send("Target.createTarget", { url: "about:blank" })).targetId;
     if (this.session) {
+      await cdp.send("Page.stopScreencast", {}, this.session).catch(() => {});
       if(this.annotationScript) await cdp.send("Page.removeScriptToEvaluateOnNewDocument",{identifier:this.annotationScript},this.session).catch(()=>{});
       await cdp.send("Target.detachFromTarget", { sessionId: this.session }).catch(() => {});
     }
@@ -265,13 +266,13 @@ export class AgentBrowser {
       else if (args.action === "select") await this.select(cdp, args.tab);
       else if (args.action === "close") {
         if (!args.tab) throw new Error("Choose a tab from browser_tabs");
-        // closeTarget acknowledges the request before Chrome removes the target.
-        // Select the replacement first so we cannot reattach to the closing tab.
+        // Choose the replacement before closing, then attach only after Chrome removes
+        // the old target: closing it can reset the replacement's viewport dimensions.
+        let replacement: string | undefined;
         if (args.tab === this.target) {
           const { targetInfos } = await cdp.send("Target.getTargets");
           const next = targetInfos.find((page: any) => page.type === "page" && page.targetId !== args.tab);
-          const targetId = next?.targetId ?? (await cdp.send("Target.createTarget", { url: "about:blank" })).targetId;
-          await this.select(cdp, targetId);
+          replacement = next?.targetId ?? (await cdp.send("Target.createTarget", { url: "about:blank" })).targetId;
         }
         await cdp.send("Target.closeTarget", { targetId: args.tab });
         const deadline = Date.now() + 5000;
@@ -279,6 +280,7 @@ export class AgentBrowser {
           if (Date.now() >= deadline) throw new Error("Chrome is still closing the tab; refresh browser_tabs to check its state");
           await new Promise(resolve => setTimeout(resolve, 25));
         }
+        if (replacement) await this.select(cdp, replacement);
       }
       return { tabs: (await cdp.send("Target.getTargets")).targetInfos.filter((page: any) => page.type === "page").map((page: any) => ({ id: page.targetId, title: page.title, url: page.url, selected: page.targetId === this.target })) };
     }

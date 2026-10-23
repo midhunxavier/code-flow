@@ -125,17 +125,19 @@ export class SharedAccounts {
     return invite;
   }
   /** Consume the invitation, membership and sign-in in one durable write; concurrent acceptance can succeed only once. */
-  async acceptInvitation(input: SharedCredentials & { token: unknown; displayName?: unknown; existing?: boolean }) {
+  async acceptInvitation(input: SharedCredentials & { token: unknown; displayName?: unknown; existing?: boolean }, commit: (projectId: string, save: () => Promise<SharedAccountState>) => Promise<SharedAccountState> = (_projectId, save) => save()) {
     await this.load(); this.require();
     if (!input.secure && !input.loopback) throw new SharedAccountError("Joining a project requires HTTPS outside this computer", 403);
-    this.previewInvitation(input.token);
+    const invitation = this.previewInvitation(input.token);
     const existing = input.existing ? await this.verify(input) : undefined;
     if (!existing) this.limiter.check(input.address, String(input.username).slice(0, 128), Date.now());
     const name = existing?.username ?? username(input.username), label = existing?.displayName ?? displayName(input.displayName);
     const password = existing ? undefined : await makePassword(input.password);
     const token = randomBytes(32).toString("base64url");
     let result!: { token: string; user: SharedUser; projectId: string; expiresAt: number };
-    await this.change(state => {
+    // Password work is outside both queues. The caller holds the project stable for the
+    // final account write, so deletion cannot consume a link to a missing project.
+    await commit(invitation.projectId, () => this.change(state => {
       const invite = this.findInvitation(state, input.token), now = Date.now();
       let user: StoredUser;
       if (existing) {
@@ -154,7 +156,7 @@ export class SharedAccounts {
       state.sessions = state.sessions.filter(session => session.expiresAt > now && session.lastSeenAt + IDLE_MS > now).sort((a, b) => b.createdAt - a.createdAt).slice(0, MAX_SESSIONS - 1);
       state.sessions.push({ hash: digest(token), userId: user.id, revision: user.revision, createdAt: now, lastSeenAt: now, expiresAt: now + SESSION_MS });
       result = { token, user: publicUser(user), projectId: invite.projectId, expiresAt: now + SESSION_MS };
-    });
+    }));
     return result;
   }
   create(input: { revision: unknown; username: unknown; displayName: unknown; password: unknown; roles: unknown }): Promise<SharedAccountState> {

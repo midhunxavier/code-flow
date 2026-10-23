@@ -453,7 +453,7 @@
   .live-browser-keyboard { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: .01; padding: 0; border: 0; resize: none; }
   .live-browser-surface:focus-within { outline: 2px solid var(--focus); outline-offset: -2px; }
   .live-browser-empty { position: absolute; inset: 0; display: grid; place-content: center; color: #444; pointer-events: none; padding: 20px; text-align: center; }
-  .live-browser-dialog { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 12px; border-bottom: 1px solid var(--border); background: var(--raised); }
+  .live-browser-dialog { position: absolute; inset: 0 0 auto; z-index: 1; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 12px; border-bottom: 1px solid var(--border); background: var(--raised); }
   .live-browser-dialog p { flex-basis: 100%; margin: 0; overflow-wrap: anywhere; }
   .live-browser-dialog .field { min-width: 0; flex: 1; }
   .side-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }

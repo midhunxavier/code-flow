@@ -1494,7 +1494,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     const project = projects.get(invitation.projectId);
     if (!project) throw new HttpError(410, "This project is no longer available. Ask the owner for a new invitation.");
     if (parts[3] === "preview") return send(res, 200, { project: { id: project.id, name: project.name }, role: invitation.role, expiresAt: invitation.expiresAt });
-    const session = await attempt(() => sharedAccounts.acceptInvitation({ ...transport, token: body.token, username: body.username, password: body.password, displayName: body.displayName, existing: body.existing === true }));
+    const session = await attempt(() => sharedAccounts.acceptInvitation({ ...transport, token: body.token, username: body.username, password: body.password, displayName: body.displayName, existing: body.existing === true }, (id, save) => projects.withProject(id, current => {
+      if (!current) throw new HttpError(410, "This project is no longer available. Ask the owner for a new invitation.");
+      return save();
+    })));
     if (owner) closeOwnerStreams(true);
     res.setHeader("set-cookie", [sharedCookie(session.token, transport.secure), clearCookie(COOKIE), clearCookie(PHONE_COOKIE)]);
     return send(res, 200, { user: session.user, projectId: session.projectId });
