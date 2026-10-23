@@ -109,6 +109,7 @@ test("live in-app Chrome accepts input on frame-blocked pages and is shared acro
   await panel.getByRole("button",{name:"New tab",exact:true}).waitFor();
   await until(async()=>{const state=await api(endpoint,{action:"state"});return state.tabs.length===2&&state.selected!==target&&state.tabs.find((tab:any)=>tab.id===state.selected).url==="about:blank";});
   await panel.getByRole("button",{name:"Close New tab",exact:true}).click();
+  await panel.getByRole("button",{name:"New tab",exact:true}).waitFor({state:"detached"});
   await until(async()=>(await api(endpoint,{action:"state"})).selected===target);await ready();
   await click(60,230);
   await panel.getByRole("button",{name:"Shared browser fixture second",exact:true}).waitFor();await ready();

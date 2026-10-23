@@ -118,7 +118,9 @@ test("parallel race steps replay; only the unfinished judge runs again", async (
   process.env.FAKE_SLEEP_MS = "5000";
   const a = new RunManager(findPattern);
   const run = await start(a, "race", { contestants: ["claude", "codex"], judge: ["claude"] });
-  await until(() => run.steps.some((s) => s.title === "Judge candidates" && s.status === "running"));
+  // The candidate intentionally sleeps for five seconds before the judge can
+  // start; allow worktree and process startup overhead on busy CI runners.
+  await until(() => run.steps.some((s) => s.title === "Judge candidates" && s.status === "running"), 30_000);
   await a.shutdown();
   delete process.env.FAKE_SLEEP_VENDOR;
   delete process.env.FAKE_SLEEP_MS;
