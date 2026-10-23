@@ -32,6 +32,9 @@ export function childEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     if (key.startsWith("npm_") || key === "INIT_CWD") delete env[key];
   }
   const merged = { ...env, ...extra };
+  // Agents and checks run in repository worktrees. Keep a relative server home
+  // anchored here so their state cannot end up inside the user's repository.
+  if (merged.CODEFLOW_HOME !== undefined) merged.CODEFLOW_HOME = resolve(merged.CODEFLOW_HOME);
   // Apply after overrides; an empty PATH must not restore current-directory lookup.
   merged.PATH = cleanPath(merged.PATH ?? "");
   return merged;

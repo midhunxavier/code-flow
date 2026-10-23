@@ -53,6 +53,31 @@ async function projectNewRun(id: string) {
   await page.getByLabel("Task", { exact: true }).waitFor({ timeout: 15000 }).catch(async error => { console.error(await page.locator("body").innerText(), errors); throw error; });
 }
 
+test("repository picker clears stale feedback, keeps invalid selections open and accepts checkout subfolders", { timeout: 45_000 }, async () => {
+  await page.getByRole("button", { name: "Open repository", exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "Open repository", exact: true });
+  const field = picker.getByLabel("Folder path");
+  const open = picker.getByRole("button", { name: "Open this repository", exact: true });
+  await field.fill(repoA); await field.press("Enter");
+  await picker.getByText("✓ This folder is a git repository", { exact: true }).waitFor();
+  await field.fill(directory);
+  await picker.getByText("Press Enter or Go to check this path", { exact: true }).waitFor();
+  assert.equal(await picker.getByText("✓ This folder is a git repository", { exact: true }).count(), 0);
+  assert.equal(await open.isEnabled(), false);
+  await field.press("Enter");
+  await picker.getByText("Open a folder marked Git, or type a path", { exact: true }).waitFor();
+  await open.click();
+  await picker.getByText(/not a git repository/i).waitFor();
+  assert.equal(await picker.isVisible(), true, "invalid folders can be corrected in place");
+  await field.fill(join(repoA, ".codeflow")); await field.press("Enter");
+  await picker.getByText("Open a folder marked Git, or type a path", { exact: true }).waitFor();
+  await open.click();
+  const choice = page.getByRole("dialog", { name: "Open repository in a project", exact: true });
+  await choice.getByLabel("New project name", { exact: true }).waitFor();
+  assert.equal(await choice.getByLabel("New project name", { exact: true }).inputValue(), "alpha");
+  await choice.getByRole("button", { name: "Cancel", exact: true }).click();
+});
+
 test("first repository creates a project before execution and requires no workspace setup", { timeout: 45_000 }, async () => {
   await page.getByRole("button", { name: "Open repository", exact: true }).click(); await chooseFolder(repoA);
   await page.getByLabel("New project name", { exact: true }).waitFor();

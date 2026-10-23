@@ -131,7 +131,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   const path = page.getByLabel("Folder path");
   await path.fill(repo);
   releaseHome();
-  await page.getByText("Open a folder marked Git, or type a path").waitFor();
+  await page.getByText("Press Enter or Go to check this path").waitFor();
   await path.press("Enter");
   await page.getByText("✓ This folder is a git repository").waitFor();
   await page.unroute(/\/api\/fs\b/);
@@ -153,6 +153,18 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   // The run finishes; the fake Codex can't satisfy the check, so the result says so.
   await page.getByText("⚠ Finished — but the check still fails").waitFor({ timeout: 30_000 });
 
+  // A visited Files tab stays mounted: it must show files added by the follow-up.
+  const side = page.getByRole("complementary", { name: "Side panel", exact: true });
+  await page.getByRole("button", { name: "Side panel", exact: true }).click();
+  await side.getByRole("tab", { name: "Files", exact: true }).click();
+  await side.getByRole("treeitem", { name: "package.json", exact: true }).waitFor();
+  await side.getByRole("treeitem", { name: "package.json", exact: true }).click();
+  const editor = side.getByRole("textbox", { name: "File contents", exact: true });
+  await editor.waitFor();
+  const originalFile = await editor.inputValue();
+  await editor.fill(originalFile + "\n");
+  await page.getByRole("button", { name: "Side panel", exact: true }).click();
+
   // Review: comment on the changed line and send it to Claude.
   await page.getByRole("button", { name: "Review changes" }).click();
   await page.locator("tr.dl.add").first().click();
@@ -165,15 +177,55 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   await page.getByText("✓ Finished — the check passes").waitFor({ timeout: 30_000 });
   await page.locator(".fu .msg-you", { hasText: "Implement it properly so npm test passes" }).waitFor();
   await page.locator(".fu-head", { hasText: "check passes" }).waitFor();
+  await page.getByRole("button", { name: "Side panel", exact: true }).click();
+  assert.equal(await editor.inputValue(), originalFile + "\n", "refreshing the tree preserves an open unsaved editor");
+  await editor.fill(originalFile);
+  await side.getByRole("button", { name: "Back to the files", exact: true }).click();
+  await side.getByRole("treeitem", { name: /^claude-/ }).first().waitFor();
+  await page.getByRole("button", { name: "Side panel", exact: true }).click();
 
   // Merge into main from the UI.
   await page.getByRole("button", { name: "Merge…" }).click();
+  // Keep the result Files tab selected while archive cleanup removes its worktree.
+  await page.getByRole("button", { name: "Side panel", exact: true }).click();
+  await side.getByRole("tab", { name: "Files", exact: true }).click();
+  const resultFolder = await side.getByRole("combobox", { name: "Folder", exact: true }).inputValue();
+  assert.notEqual(resultFolder, realpathSync(repo), "Files initially shows the result worktree");
+  await page.getByRole("button", { name: "Side panel", exact: true }).click();
   await page.getByRole("button", { name: "Merge into main" }).click();
   await page.locator(".badge", { hasText: "Merged into main" }).waitFor();
+  assert.equal(await page.getByRole("region", { name: "Next action", exact: true }).count(), 0, "archived results do not ask for a second review or claim removed worktrees remain");
+
+  await page.getByRole("button", { name: "Side panel", exact: true }).click();
+  await side.getByRole("tab", { name: "Files", exact: true }).click();
+  await page.waitForFunction((repo) => (document.querySelector('#side-pane-files select[aria-label="Folder"]') as HTMLSelectElement | null)?.value === repo, realpathSync(repo));
+  await side.getByRole("treeitem", { name: "package.json", exact: true }).waitFor();
+  assert.equal(await side.getByText(/isn't a checkout/).count(), 0, "archived Files recovers to the repository");
+  await page.waitForFunction(() => document.querySelector('#side-pane-files select[aria-label="Folder"]')?.children.length === 1);
+  await page.getByRole("button", { name: "Side panel", exact: true }).click();
 
   const log = execFileSync("git", ["log", "-1", "--format=%s", "main"], { cwd: repo }).toString();
   assert.match(log, /^Merge codeflow\/.+\/build into main/);
   assert.ok(execFileSync("git", ["ls-files"], { cwd: repo }).toString().includes("claude-"), "Claude's fix is on main");
+});
+
+test("archived runs still offer worktrees explicitly retained without cleanup", { timeout: 30_000 }, async () => {
+  const api = (path: string, body?: unknown) => fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+  const created = await api("/api/runs", { repo, task: "Retain this checkout", pattern: "solo", checkpointOnFinish: true, roles: { agent: ["claude"] }, loop: { check: "true", prove: false } });
+  let run = await api(`/api/runs/${created.id}`);
+  for (let i = 0; i < 100 && run.status === "running"; i++) { await new Promise((resolve) => setTimeout(resolve, 100)); run = await api(`/api/runs/${created.id}`); }
+  assert.equal(run.status, "done");
+  await api(`/api/runs/${run.id}/archive`, { cleanup: false });
+  await page.goto(`${BASE}/?token=${TOKEN}#/run/${run.id}`);
+  const toggle = page.getByRole("button", { name: "Side panel", exact: true });
+  if (await toggle.getAttribute("aria-pressed") !== "true") await toggle.click();
+  const side = page.getByRole("complementary", { name: "Side panel", exact: true });
+  await side.getByRole("tab", { name: "Files", exact: true }).click();
+  const folder = side.getByRole("combobox", { name: "Folder", exact: true });
+  await folder.locator(`option[value="${run.worktrees[0].path}"]`).waitFor({ state: "attached" });
+  await folder.selectOption(run.worktrees[0].path);
+  await side.getByRole("treeitem", { name: "package.json", exact: true }).waitFor();
+  await toggle.click();
 });
 
 test("approve the plan from the UI: ask for changes, then approve", async () => {

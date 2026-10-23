@@ -33,7 +33,9 @@ for (const [source, target] of [["src/architecture.ts", "src/architecture.js"], 
     } }],
     platform: "node", format: "esm", target: "node22.13", minify: true, banner, logLevel: "warning" });
 for (const path of ["bin", "public", "LICENSE", "README.md", "scripts/check-node.mjs", "scripts/codeflow.mjs", "scripts/pty.py", "scripts/computer-use.swift", "dist/remote-host.json"])
-  await cp(join(root, path), join(output, path), { recursive: true });
+  // Rebuilds publish through temporary files that may disappear between listing
+  // and copying. Skip them before fs.cp stats them, and never ship partial assets.
+  await cp(join(root, path), join(output, path), { recursive: true, filter: source => !source.endsWith(".tmp") });
 await mkdir(join(output, "licenses"), { recursive: true });
 for (const [name, source] of [["typescript.txt", "node_modules/typescript/LICENSE.txt"], ["typescript-notices.txt", "node_modules/typescript/ThirdPartyNoticeText.txt"], ["inter.txt", "ui/fonts/OFL-1.1.txt"], ["preact.txt", "node_modules/preact/LICENSE"], ["signals.txt", "node_modules/@preact/signals/LICENSE"], ["signals-core.txt", "node_modules/@preact/signals-core/LICENSE"], ["xterm.txt", "node_modules/@xterm/xterm/LICENSE"], ["xterm-fit.txt", "node_modules/@xterm/addon-fit/LICENSE"], ["uqr.txt", "node_modules/uqr/LICENSE"]])
   await cp(join(root, source), join(output, "licenses", name));

@@ -186,6 +186,26 @@ function ScopeHeader({ popped }: { popped: boolean }) {
 // ---------------------------------------------------------------- files
 function FilesTab() {
   const [place, setPlace, places] = usePlace("files");
+  const run = sideScope.value.run;
+  const [retained, setRetained] = useState<{ runId: string; paths: string[] } | null>(null);
+  useEffect(() => {
+    if (!run?.archived) { setRetained(null); return; }
+    let current = true;
+    // Archive can keep shared/dirty worktrees or remove them. Only offer folders
+    // still present; a historical worktree record is not an available folder.
+    void Promise.all(run.worktrees.map(async (tree) => {
+      try { await api(`/api/fs?path=${enc(tree.path)}`); return tree.path; }
+      catch { return null; }
+    })).then((paths) => { if (current) setRetained({ runId: run.id, paths: paths.filter((p): p is string => p !== null) }); });
+    return () => { current = false; };
+  }, [run]);
+  const availablePlaces = run?.archived ? places.filter((p) => !p.runId || retained?.runId === run.id && retained.paths.includes(p.path)) : places;
+  useEffect(() => {
+    if (run?.archived) {
+      const repository = places.find((p) => p.path === run.repo);
+      if (repository) setPlace(repository);
+    }
+  }, [run?.id, run?.archived]);
   /** The file shown, and the folder it's in: it closes when the panel shows another folder. */
   const [open, setOpen] = useState<{ root: string; path: string } | null>(null);
   // Something else asked for a file (a run's diff, a transcript): show it, in its folder.
@@ -198,14 +218,17 @@ function FilesTab() {
     sideFile.value = null;
   }, [sideFile.value]);
   const viewKey = place?.path ?? "";
+  // A visited tab stays mounted while agents work. Refresh its tree on completion,
+  // including follow-ups, without remounting the editor or losing an unsaved draft.
+  const treeRevision = `${run?.endedAt ?? ""}:${run?.followUps.filter((f) => f.status !== "pending").map((f) => f.id).join(",") ?? ""}`;
   useEffect(() => setOpen((o) => (o?.root === viewKey ? o : null)), [viewKey]);
   // Keyed by folder (and file): another worktree's tree or file never shows what an earlier one loaded.
   return (
     <>
       <div class="side-toolbar">
-        <PlacePicker label="Folder" place={place} places={places} onChange={setPlace} />
+        <PlacePicker label="Folder" place={place} places={availablePlaces} onChange={setPlace} />
       </div>
-      {place ? <CodeBrowser compact key={viewKey} folder={viewKey} initialPath={open?.root === viewKey ? open.path : undefined} onClose={() => setOpen(null)} /> : <p class="side-empty">Choose a repository or run worktree.</p>}
+      {place ? <CodeBrowser compact key={viewKey} folder={viewKey} refreshKey={treeRevision} initialPath={open?.root === viewKey ? open.path : undefined} onClose={() => setOpen(null)} /> : <p class="side-empty">Choose a repository or run worktree.</p>}
     </>
   );
 }
