@@ -23,21 +23,48 @@ npm pack ./dist/npm --dry-run
 node dist/npm/bin/codeflow.mjs --help
 ```
 
-The **Preview release** GitHub workflow builds and tests the tarball on macOS and Linux, builds both macOS architectures, and creates a **draft prerelease** with the exact artifacts. It accepts an existing Git ref and checks that its version matches the requested tag. It does not publish npm or create a Homebrew tap. Run it against a committed, reviewed release ref.
+The **Preview release** GitHub workflow builds and tests the tarball on macOS and Linux, builds both macOS architectures, and creates a **draft prerelease** with the exact artifacts. It accepts an existing Git ref and checks that its version matches the requested tag. Run it against a committed, reviewed release ref. Publishing that draft starts the separate **Publish npm release** workflow. Creating a draft alone does not publish npm or create a Homebrew tap.
 
-## npm preview channel
+## Automatic npm publishing
 
 The published package is scoped as `@midhunxavier/code-flow` because npm rejected the unscoped name as too similar to the existing `codeflow` package. The installed commands remain `codeflow` and `code-flow`.
 
-Authenticate to the npm account that owns `@midhunxavier/code-flow`. On first publication, confirm the package name is available and that you are publishing from the intended account. Then publish the tested tarball:
+When a GitHub app release is published, `.github/workflows/npm-publish.yml` downloads its npm tarball and checksum, checks the package name and version against the release tag, and publishes those exact bytes. It updates **both `latest` and `preview`** to the new version, so the unqualified npm install command also follows the current preview. It never rebuilds the package during publication.
+
+The publisher uses npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers/) with GitHub Actions OIDC. Configure this once in the npm package's **Settings → Trusted Publisher**:
+
+- Provider: GitHub Actions
+- Organization or user: `midhunxavier`
+- Repository: `code-flow`
+- Workflow filename: `npm-publish.yml`
+- Environment name: `npm`
+- Allowed actions: **npm publish** and **npm dist-tag**
+
+The matching GitHub environment is `npm`. The workflow grants `id-token: write` only to the publishing job and pins npm 11.21.1, which supports OIDC for both publication and tag updates. No `NPM_TOKEN` secret or interactive login is needed for each release. Do not remove existing trusted publishers or weaken account 2FA when configuring this workflow.
+
+npm scans new uploads before they become installable. The job waits up to 20 minutes for the version, five more for the tarball, and five for tag visibility. It verifies the downloaded npm tarball against the GitHub artifact, then a separate job without publisher permissions checks fresh installs through both tags. Inspect both jobs before calling the npm release complete. The publisher disables build provenance generation because it uploads an existing artifact rather than building it.
+
+If a run fails or needs to be retried, run **Publish npm release** manually with the existing published tag:
+
+```sh
+gh workflow run npm-publish.yml -f tag=v0.1.0-preview.3
+```
+
+A retry checks an existing npm version's integrity before repairing its tags. It refuses different bytes for the same version and skips channel changes for older releases. Runs are serialized to prevent two releases racing to update tags. If npm is still scanning an accepted upload, wait and rerun; do not increment the version or replace the release tarball merely to retry.
+
+The automatic trigger requires a GitHub `release.published` event. Publishing the draft in GitHub's UI or with an authenticated maintainer's `gh release edit --draft=false` produces that event. If another Actions workflow publishes the draft using its `GITHUB_TOKEN`, GitHub suppresses follow-on release workflows; that workflow must explicitly dispatch **Publish npm release** instead.
+
+For an exceptional manual publication, authenticate as the package owner and publish the tested tarball, then update both channels:
 
 ```sh
 npm whoami
 npm publish output/releases/midhunxavier-code-flow-0.1.0-preview.3.tgz --tag preview --access public
+npm dist-tag add @midhunxavier/code-flow@0.1.0-preview.3 latest
+npm view @midhunxavier/code-flow@latest version
 npm view @midhunxavier/code-flow@preview version
 ```
 
-Use the actual version's filename when publishing subsequent previews. Never publish this preview with the `latest` tag. The staged package also sets `publishConfig.tag` to `preview`. Test `npx @midhunxavier/code-flow@preview` from a clean directory after registry publication.
+Use the actual version and filename for subsequent releases. The packaged manifest defaults to `preview`; the release workflow explicitly moves both channels. Verify `npx @midhunxavier/code-flow@latest --version` and `npx @midhunxavier/code-flow@preview --version` from a clean directory after registry publication.
 
 ## macOS DMG
 
@@ -88,7 +115,7 @@ The tap must exist and contain the generated formula before advertising the Home
 
 ## Publish the GitHub prerelease
 
-Review the draft notes and attached checksums. Verify each DMG's signing status and label it accurately. Publish the draft as a **prerelease**, leaving the stable latest release unchanged. The draft notes include an exact GitHub tarball command so the preview can be tried even before the npm channel is available.
+Review the draft notes and attached checksums. Verify each DMG's signing status and label it accurately. Publish the draft as a **prerelease**, leaving GitHub's stable latest release unchanged. This starts automatic npm publication and advances both npm tags after verification. The draft notes include an exact GitHub tarball command so the preview can be tried while npm processes the upload.
 
 Keep platform claims precise: macOS and Linux are supported; Windows users use WSL2. Native Windows execution is not supported. On a real Windows machine, confirm WSL networking and the Windows browser opener before claiming end-to-end Windows validation.
 
