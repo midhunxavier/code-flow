@@ -13,7 +13,7 @@ export const CONNECTION_PURPOSES = [
   { id: "execution", label: "Delegate execution", description: "Send individual agent turns to a provisioned SSH worker while keeping this workspace here." },
   { id: "sharing", label: "Share access", description: "Open this computer from another device or collaborate with people." },
 ] as const;
-export function ConnectionsView({ purpose = "workspace" }: { purpose?: string }) {
+export function ConnectionsView({ purpose = "workspace", connection }: { purpose?: string; connection?: string }) {
   const sharing = ["sharing", "devices", "join", "host", "manage"].includes(purpose);
   const selected = CONNECTION_PURPOSES.find(item => item.id === (sharing ? "sharing" : purpose)) ?? CONNECTION_PURPOSES[0];
   const host = executionHost.value;
@@ -32,13 +32,13 @@ export function ConnectionsView({ purpose = "workspace" }: { purpose?: string })
       </nav>
       {purpose === "sharing" ? <section class="settings-card"><h3>One project, a clear place to work</h3><p>Connect your own devices to continue your work, or give teammates their own project access. A team server keeps tasks, reviews and handovers together; each person can connect their computer to run tasks with their own agents.</p><p class="help">Wi-Fi works on the same local network. Tailscale connects permitted devices across networks. Keep the host awake and CodeFlow running.</p></section> : null}
       {purpose === "devices" ? host.kind === "local" ? <RemoteAccess /> : <p class="help">Device access is configured on your local computer. {host.kind === "ssh" ? <a href="/#/settings/connections/devices">Open local access settings</a> : null}</p> : null}
-      {purpose === "join" ? host.kind === "local" ? <TeamJoinSettings /> : <p class="help">Connect from CodeFlow on your own computer. <a href="/#/settings/connections/join">Open local team connections</a></p> : null}
+      {purpose === "join" ? host.kind === "local" ? <TeamJoinSettings connection={connection} /> : <p class="help">Connect from CodeFlow on your own computer. <a href="/#/settings/connections/join">Open local team connections</a></p> : null}
       {purpose === "host" && host.kind !== "host" ? <TeamServerWizard onClose={() => { location.hash = "#/settings/connections/sharing"; }} /> : null}
       {purpose === "host" && host.kind === "host" ? <p class="help">Open CodeFlow on the server’s owner computer to set up project access and invite teammates.</p> : null}
       <a class="btn small" href="#/settings/connections/manage">Manage existing connections and access</a>
       {purpose === "manage" ? <>
       {host.kind === "local" ? <RemoteAccess /> : null}
-      <section class="settings-card"><h3>People</h3><p>Shared boards, reviews and handovers. Manage project membership in Project → More → People.</p><label class="checkpoint"><input type="checkbox" checked={peopleEnabled.value} onChange={event => setPeopleEnabled(event.currentTarget.checked)} /><span>Show Board in the app menu</span></label><p class="help">Show an unused Board shortcut in this browser. Configured collaboration remains visible; access is controlled by project roles and grants.</p></section>
+      <section class="settings-card"><h3>People</h3><p>Shared boards, reviews and handovers. Manage project membership in Project → People and access.</p><label class="checkpoint"><input type="checkbox" checked={peopleEnabled.value} onChange={event => setPeopleEnabled(event.currentTarget.checked)} /><span>Show Board in the app menu</span></label><p class="help">Show an unused Board shortcut in this browser. Configured collaboration remains visible; access is controlled by project roles and grants.</p></section>
       {<><a class="btn" href="#/team">{host.kind === "ssh" ? "Open computer board" : "Open Board"}</a><TeamSettings />{host.kind !== "ssh" ? <SharedAccountsPanel projects={projects.value} /> : null}</>}
       </> : null}
     </> : null}

@@ -36,7 +36,7 @@ before(() => {
       copy: [".env", "config/*.local.json", "../escape"],
       run: { command: "npm run dev", port: 5173 },
       models: { claude: { model: "opus" } },
-      limits: { maxSteps: 25 },
+      limits: { maxSteps: 25, checkTimeoutMin: 25 },
       trust: "safe",
     }),
   );
@@ -62,7 +62,7 @@ const recorded = (dir: string) => readdirSync(dir).map((f) => JSON.parse(readFil
 test("repo config is read and validated", async () => {
   const { config, found } = await readRepoConfig(repo);
   assert.ok(found);
-  assert.deepEqual([config.check, config.trust, config.run?.port, config.limits?.maxSteps], ["test -f .env", "safe", 5173, 25]);
+  assert.deepEqual([config.check, config.trust, config.run?.port, config.limits?.maxSteps, config.limits?.checkTimeoutMin], ["test -f .env", "safe", 5173, 25, 25]);
   const broken = mkdtempSync(join(tmpdir(), "codeflow-ws-broken-"));
   mkdirSync(join(broken, ".codeflow"));
   writeFileSync(join(broken, ".codeflow", "config.json"), "{ nope");
@@ -72,7 +72,7 @@ test("repo config is read and validated", async () => {
 test("config defaults apply: env files are copied (never committed), check and limits come from config", async () => {
   const run = await runPattern(pipelineRoles);
   assert.equal(run.status, "done", run.error);
-  assert.deepEqual([run.loop.check, run.loop.setup, run.loop.maxSteps, run.trust], ["test -f .env", "true", 25, "safe"]);
+  assert.deepEqual([run.loop.check, run.loop.setup, run.loop.maxSteps, run.loop.checkTimeoutMin, run.trust], ["test -f .env", "true", 25, 25, "safe"]);
   assert.deepEqual(run.app, { command: "npm run dev", port: 5173 });
   assert.equal(run.agentSettings.claude?.model, "opus");
   assert.equal(run.verdict, "passed", "the check found the copied .env");
@@ -116,9 +116,9 @@ test("copy refuses symlinks (a cloned repo's .env → your credentials) and file
 });
 
 test("explicit settings beat the config", async () => {
-  const run = await runPattern(pipelineRoles, { loop: { check: "", maxSteps: 40 }, trust: "standard", agentSettings: { claude: { model: "sonnet" } } });
+  const run = await runPattern(pipelineRoles, { loop: { check: "", maxSteps: 40, checkTimeoutMin: 2 }, trust: "standard", agentSettings: { claude: { model: "sonnet" } } });
   assert.equal(run.status, "done", run.error);
-  assert.deepEqual([run.loop.check, run.loop.maxSteps, run.trust, run.agentSettings.claude?.model], [undefined, 40, "standard", "sonnet"]);
+  assert.deepEqual([run.loop.check, run.loop.maxSteps, run.loop.checkTimeoutMin, run.trust, run.agentSettings.claude?.model], [undefined, 40, 2, "standard", "sonnet"]);
 });
 
 test("permission modes and per-role models reach each CLI", async () => {

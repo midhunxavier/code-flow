@@ -15,6 +15,7 @@ const { flushWrites } = await import("../src/store.js");
 const { memoryStore } = await import("../src/memory.js");
 const { editableTeamPlan } = await import("../src/workflow-control.js");
 type Run = import("../src/engine.js").Run;
+type TeamPlan = import("../src/teams.js").TeamPlan;
 const repositories: string[] = [];
 after(async () => { await flushWrites(); for (const repo of repositories) rmSync(repo, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
 
@@ -90,6 +91,80 @@ test("Auto team creates independent members, runs dependency waves, and verifies
   const files = execFileSync("git", ["ls-tree", "--name-only", run.artifacts[0]!.branch], { cwd: run.repo }).toString();
   assert.match(files, /claude-alpha.txt/); assert.match(files, /claude-beta.txt/);
   assert.equal(run.team!.metrics.coordinatorInvocations, 1);
+});
+
+test("Auto accepts directory ownership with trailing separators and replays the recorded plan", async () => {
+  const { adapters } = await import("../src/adapters/index.js");
+  const { extractJson } = await import("../src/json.js");
+  const original = adapters.claude.run;
+  let planningCalls = 0;
+  adapters.claude.run = async (opts, onEvent) => {
+    const result = await original(opts, onEvent);
+    if (opts.prompt.includes("AUTO_TEAM_PLAN")) {
+      planningCalls++;
+      const value = (result.structured ?? extractJson(result.finalText)) as TeamPlan;
+      return { ...result, structured: { ...value, tasks: value.tasks.map(task => ({ ...task, paths: ["mqtt-python/src/mqtt_mcp/adapters/", "docs/"] })) } };
+    }
+    return result;
+  };
+  let item: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    item = await start("Implement the sample", { approvals: { plan: true } });
+    const { manager, run } = item;
+    const awaiting = async () => {
+      await waitFor(run, manager, () => !!run.awaiting || run.status !== "running");
+      assert.ok(run.awaiting, run.error);
+      assert.ok(run.team!.tasks.length);
+      for (const task of run.team!.tasks) assert.deepEqual(task.paths, ["mqtt-python/src/mqtt_mcp/adapters", "docs"]);
+      assert.equal(planningCalls, 1, "valid directory notation needs no extra provider turn");
+    };
+    await awaiting();
+    manager.cancel(run.id);
+    await waitFor(run, manager, () => run.status !== "running");
+    await manager.resume(run.id);
+    await awaiting();
+  } finally {
+    if (item) { item.manager.cancel(item.run.id); await waitFor(item.run, item.manager, () => item!.run.status !== "running"); }
+    adapters.claude.run = original;
+  }
+});
+
+for (const providerFailover of [true, false]) test(`Resume retries an invalid plan with refreshed discovery, provider failover ${providerFailover}`, async () => {
+  const { adapters } = await import("../src/adapters/index.js");
+  const { extractJson } = await import("../src/json.js");
+  const original = adapters.claude.run;
+  let planningCalls = 0, repair = false, candidate: TeamPlan | undefined;
+  adapters.claude.run = async (opts, onEvent) => {
+    const result = await original(opts, onEvent);
+    if (opts.prompt.includes("AUTO_TEAM_PLAN") || opts.jsonSchema && (opts.jsonSchema as any).properties?.members) {
+      planningCalls++;
+      const value = (result.structured ?? extractJson(result.finalText)) as TeamPlan;
+      if (value?.tasks?.length) candidate = value;
+      assert.ok(candidate);
+      return { ...result, structured: repair ? structuredClone(candidate) : { ...candidate, tasks: candidate.tasks.map(task => ({ ...task, paths: ["../outside/"] })) } };
+    }
+    return result;
+  };
+  let item: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    item = await start("Implement the sample", { options: { providerFailover }, approvals: { plan: true } });
+    const { manager, run } = item;
+    await waitFor(run, manager, () => run.status !== "running");
+    assert.equal(run.status, "failed");
+    assert.match(run.error!, /invalid path:.*outside/);
+    assert.equal(planningCalls, 2);
+    const discoveredAt = run.team!.inventory!.at;
+    repair = true;
+    await manager.resume(run.id);
+    await waitFor(run, manager, () => !!run.awaiting || run.status !== "running");
+    assert.ok(run.awaiting, run.error);
+    assert.equal(planningCalls, 3, "Resume requests one fresh repair instead of replaying the rejected retry");
+    assert.ok(run.team!.inventory!.at > discoveredAt, "failed planning refreshes model availability on Resume");
+    assert.ok(run.team!.tasks.every(task => task.paths.every(path => !path.includes(".."))));
+  } finally {
+    if (item) { item.manager.cancel(item.run.id); await waitFor(item.run, item.manager, () => item!.run.status !== "running"); }
+    adapters.claude.run = original;
+  }
 });
 
 for (const native of [false, true]) test(`Auto routes to ${native ? "native" : "isolated"} Antigravity with recorded catalog provenance and fresh worker turns`, { skip: !native && process.platform !== "darwin" }, async () => {

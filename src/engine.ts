@@ -2357,7 +2357,7 @@ export class TeamContext {
     const retry = await this.ask({
       ...params,
       title: `${params.title} (retry)`,
-      identity: params.identity ? `${params.identity} (retry)` : undefined,
+      identity: `${params.identity ?? params.title} (retry)${this.run.resumes ? `:resume:${this.run.resumes}` : ""}`,
       resume: inSession ? first : params.resume,
       prompt:
         `Your previous answer did not contain a valid ${params.what}: ${firstRead.problem}.\n` +
@@ -4960,7 +4960,7 @@ export class RunManager {
     const loop: LoopSettings = {
       ...DEFAULT_LOOP,
       ...Object.fromEntries(
-        Object.entries({ maxMinutes: config.limits?.maxMinutes, maxSteps: config.limits?.maxSteps, copy: config.copy }).filter(([, v]) => v !== undefined),
+        Object.entries({ maxMinutes: config.limits?.maxMinutes, maxSteps: config.limits?.maxSteps, checkTimeoutMin: config.limits?.checkTimeoutMin, copy: config.copy }).filter(([, v]) => v !== undefined),
       ),
       ...Object.fromEntries(Object.entries(given).filter(([, v]) => v !== undefined && v !== "")),
     };

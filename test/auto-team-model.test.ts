@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { replacementSettings, normalizeTaskOutcomeEvidence, taskOutcomeSchema, outcomeProblem, ownsPath, planProblem, readyTasks, revisionProblem, type TaskOutcome, type TeamPolicy, type TeamRevision } from "../src/patterns/auto-team-model.js";
+import { replacementSettings, normalizeOwnedPath, pathAllowed, normalizeTaskOutcomeEvidence, taskOutcomeSchema, outcomeProblem, ownsPath, planProblem, readyTasks, revisionProblem, type TaskOutcome, type TeamPolicy, type TeamRevision } from "../src/patterns/auto-team-model.js";
 import { shapeProblem } from "../src/json.js";
 import type { TeamPlan, TeamState } from "../src/teams.js";
 
@@ -21,6 +21,23 @@ test("team composition rejects identity collisions, cycles, orphan requirements,
   p = plan(); p.tasks[0]!.dependsOn = ["api"]; assert.match(planProblem(p, policy)!, /dependency/);
   p = plan(); p.requirements.push({ id: "forgotten", description: "Must ship" }); assert.match(planProblem(p, policy)!, /every requirement/);
   p = plan(); p.tasks[0]!.owner = "reviewer"; assert.match(planProblem(p, policy)!, /non-reviewer/);
+});
+
+test("directory ownership normalization preserves scope and still rejects unsafe paths", () => {
+  const paths = ["mqtt-python/src/mqtt_mcp/adapters/", "mqtt-python/src/mqtt_mcp/infrastructure/"].map(normalizeOwnedPath);
+  const p = plan(); p.tasks[0]!.paths = paths;
+  assert.equal(planProblem(p, policy), undefined);
+  assert.equal(ownsPath(paths, "mqtt-python/src/mqtt_mcp/adapters/paho.py"), true);
+  assert.equal(ownsPath(paths, "mqtt-python/src/mqtt_mcp/adapters-other/paho.py"), false);
+  assert.equal(ownsPath(paths, "mqtt-python/src/mqtt_mcp/server.py"), false);
+  const overlap = { ...p.tasks[0]!, id: "overlap", owner: "other", paths: ["mqtt-python/src/mqtt_mcp/adapters/paho.py"] };
+  assert.equal(readyTasks([p.tasks[0]!, overlap]).length, 1, "nested writers still serialize");
+  for (const path of ["/", "/tmp/private/", "../private/", "src/../../private/", "src/.git/", "src//nested/", "src//", "src/**/", "*/", "C:/private/", "src\\private/", "./src/"]) {
+    const normalized = normalizeOwnedPath(path);
+    assert.equal(pathAllowed(normalized), false, path);
+    p.tasks[0]!.paths = [normalized];
+    assert.match(planProblem(p, policy)!, /invalid path:/);
+  }
 });
 
 test("same-provider identities are allowed but exhausted providers and invented settings are rejected", () => {

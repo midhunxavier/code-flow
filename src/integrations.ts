@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { registerPrivateEnvNames } from "./env.js";
+import { redactText } from "./privacy.js";
 
 export type ExternalSourceKind = "issue" | "pr";
 export interface IntegrationConfig {
@@ -36,6 +37,8 @@ export interface ExternalSource extends ExternalSourceItem {
   expiresAt: number;
   trusted: false;
   untrusted: true;
+  /** Project context chosen and validated by the server when importing. */
+  projectContext?: { project: string; repository: string };
   /** Server-fetched code provenance; clients never establish these commit identities. */
   code?: { previewId: string; head: string; target: string; base: string };
 }
@@ -168,6 +171,8 @@ function jiraItem(c: IntegrationConfig, kind: ExternalSourceKind, v: any) {
 
 export class Integrations {
   private configs: IntegrationConfig[] = [];
+  private administratorConfigs: IntegrationConfig[] = [];
+  private managedEnvironment: NodeJS.ProcessEnv = {};
   private readonly imported = new Map<string, ExternalSource>();
   private readonly adapters: Record<string, ReadOnlySourceProvider>;
   private readonly environment: NodeJS.ProcessEnv;
@@ -204,11 +209,29 @@ export class Integrations {
       return { id: raw.id, name: text(raw.name, 80) || raw.id, provider: raw.provider, baseUrl: base.href, ...(gitBaseUrl ? { gitBaseUrl } : {}), project: raw.project.trim(), credentialEnv: raw.credentialEnv, usernameEnv: raw.usernameEnv, auth };
     });
     this.configs = configs;
+    this.administratorConfigs = configs;
     registerPrivateEnvNames(configs.flatMap((config) => [config.credentialEnv, ...(config.usernameEnv ? [config.usernameEnv] : [])]));
     this.imported.clear();
   }
   list() {
-    return this.configs.map((c) => ({ id: c.id, name: c.name, provider: c.provider, project: c.project, kinds: this.adapters[c.provider]!.kinds, codeHost: ["gitlab", "bitbucket"].includes(c.provider), configured: !!this.environment[c.credentialEnv] && (c.auth !== "basic" || !!this.environment[c.usernameEnv!]) }));
+    return this.configs.map((c) => ({ id: c.id, name: c.name, provider: c.provider, project: c.project, kinds: this.adapters[c.provider]!.kinds, codeHost: ["gitlab", "bitbucket"].includes(c.provider), administratorManaged: this.administratorConfigs.some(value => value.id === c.id), configured: !!this.credential(c.credentialEnv) && (c.auth !== "basic" || !!this.credential(c.usernameEnv!)) }));
+  }
+  /** Server-only secrets stay out of process.env and therefore out of agent environments. */
+  async applyManaged(configs: IntegrationConfig[], credentials: NodeJS.ProcessEnv) {
+    const next = new Integrations({ adapters: this.adapters, environment: this.environment, fetch: this.fetcher });
+    await next.load([...this.administratorConfigs, ...configs]);
+    if (JSON.stringify(next.configs) === JSON.stringify(this.configs) && JSON.stringify(credentials) === JSON.stringify(this.managedEnvironment)) return;
+    const unchanged = (config: IntegrationConfig, previous?: IntegrationConfig) => previous && JSON.stringify(config) === JSON.stringify(previous) && [config.credentialEnv, config.usernameEnv].filter((name): name is string => !!name).every(name => this.credential(name) === (credentials[name] ?? this.environment[name]));
+    const changed = new Set(this.configs.filter(config => !unchanged(config, next.configs.find(c => c.id === config.id))).map(c => c.id));
+    this.configs = next.configs.map(config => { const previous = this.configs.find(c => c.id === config.id); return unchanged(config, previous) ? previous! : config; });
+    this.managedEnvironment = { ...credentials };
+    for (const [id, source] of this.imported) if (changed.has(source.integration)) this.imported.delete(id);
+  }
+  private credential(name: string) { return this.managedEnvironment[name] ?? this.environment[name]; }
+  private redact<T>(value: T): T {
+    const secrets = this.configs.flatMap(c => [this.credential(c.credentialEnv), c.usernameEnv ? this.credential(c.usernameEnv) : undefined]).filter((secret): secret is string => !!secret);
+    const visit = (item: unknown): unknown => typeof item === "string" ? redactText(item, secrets) : Array.isArray(item) ? item.map(visit) : item && typeof item === "object" ? Object.fromEntries(Object.entries(item).map(([key, entry]) => [key, visit(entry)])) : item;
+    return visit(value) as T;
   }
   /** Built-in owner code-host operations are separate from the read-only extension client. */
   codeHost(id: string): CodeHostSession {
@@ -216,7 +239,7 @@ export class Integrations {
     let gitBaseUrl = stored.gitBaseUrl;
     if (!gitBaseUrl) { const base = new URL(stored.baseUrl); if (stored.provider === "gitlab" && base.pathname.endsWith("/api/v4/")) gitBaseUrl = new URL(base.pathname.slice(0, -"api/v4/".length), base.origin).href; else if (stored.provider === "bitbucket" && base.origin === "https://api.bitbucket.org") gitBaseUrl = "https://bitbucket.org/"; else throw new Error("Configure an explicit gitBaseUrl for this code host"); }
     const config: CodeHostSession["config"] = { ...stored, provider: stored.provider, gitBaseUrl };
-    const headers = () => { const token = this.environment[stored.credentialEnv]; if (!token) throw new Error(`Credentials are unavailable for integration ${stored.id}`); const result: Record<string, string> = { accept: "application/json" }; if (stored.auth === "private-token") result["PRIVATE-TOKEN"] = token; else if (stored.auth === "basic") { const username = this.environment[stored.usernameEnv!]; if (!username) throw new Error(`Credentials are unavailable for integration ${stored.id}`); result.authorization = `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`; } else result.authorization = stored.auth === "api-key" ? token : `Bearer ${token}`; return result; };
+    const headers = () => { const token = this.credential(stored.credentialEnv); if (!token) throw new Error(`Credentials are unavailable for integration ${stored.id}`); const result: Record<string, string> = { accept: "application/json" }; if (stored.auth === "private-token") result["PRIVATE-TOKEN"] = token; else if (stored.auth === "basic") { const username = this.credential(stored.usernameEnv!); if (!username) throw new Error(`Credentials are unavailable for integration ${stored.id}`); result.authorization = `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`; } else result.authorization = stored.auth === "api-key" ? token : `Bearer ${token}`; return result; };
     return {
       config: structuredClone(config),
       request: async (path, input = {}) => {
@@ -228,11 +251,11 @@ export class Integrations {
         if (response.status === 204) { await response.body?.cancel(); return { data: null, headers: response.headers }; }
         const reader = response.body?.getReader(), chunks: Uint8Array[] = []; let bytes = 0;
         if (reader) try { for (;;) { const { value, done } = await reader.read(); if (done) break; bytes += value.byteLength; if (bytes > RESPONSE_LIMIT) { await reader.cancel(); throw new Error("Code host response exceeded 2 MiB"); } chunks.push(value); } } finally { reader.releaseLock(); }
-        let data: any; try { data = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new Error("Code host returned invalid JSON"); } return { data, headers: response.headers };
+        let data: any; try { data = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new Error("Code host returned invalid JSON"); } return { data: this.redact(data), headers: response.headers };
       },
       gitEnvironment: (remote) => {
         if (this.configs.find((entry) => entry.id === id) !== stored) throw new Error("Code host configuration changed"); const allowed = new URL(gitBaseUrl!), url = new URL(remote); if (url.protocol !== "https:" || url.origin !== allowed.origin || !url.pathname.startsWith(allowed.pathname) || url.username || url.password || url.search || url.hash) throw new Error("Git credentials cannot leave the explicitly configured HTTPS Git root");
-        const token = this.environment[stored.credentialEnv]; if (!token) throw new Error("Code host Git credentials are unavailable"); const username = stored.auth === "basic" ? this.environment[stored.usernameEnv!] : stored.provider === "gitlab" ? "oauth2" : "x-token-auth"; if (!username) throw new Error("Code host Git username is unavailable");
+        const token = this.credential(stored.credentialEnv); if (!token) throw new Error("Code host Git credentials are unavailable"); const username = stored.auth === "basic" ? this.credential(stored.usernameEnv!) : stored.provider === "gitlab" ? "oauth2" : "x-token-auth"; if (!username) throw new Error("Code host Git username is unavailable");
         return { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: `http.${url.href}.extraHeader`, GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_TRACE: undefined, GIT_TRACE_CURL: undefined, GIT_CURL_VERBOSE: undefined };
       },
     };
@@ -248,14 +271,14 @@ export class Integrations {
     if (cursor !== undefined && (typeof cursor !== "string" || cursor.length > 1_000 || /[\x00-\x1f]/.test(cursor))) throw new Error("Invalid integration page cursor");
     const page = await this.adapters[c.provider]!.list(c, kind, this.request(c), cursor);
     if (!Array.isArray(page.items)) throw new Error("Integration returned an invalid source list");
-    return { items: page.items.slice(0, PAGE_SIZE).map((value) => ({ ...this.bounded(c, kind, value), body: text(value.body, 1_000) })), nextCursor: text(page.nextCursor, 1_000) || undefined, truncated: page.truncated || page.items.length > PAGE_SIZE };
+    return this.redact({ items: page.items.slice(0, PAGE_SIZE).map((value) => ({ ...this.bounded(c, kind, value), body: text(value.body, 1_000) })), nextCursor: text(page.nextCursor, 1_000) || undefined, truncated: page.truncated || page.items.length > PAGE_SIZE });
   }
-  async importSource(id: string, kind: ExternalSourceKind, key: string): Promise<ExternalSource> {
+  async importSource(id: string, kind: ExternalSourceKind, key: string, projectContext?: ExternalSource["projectContext"]): Promise<ExternalSource> {
     const c = this.config(id, kind);
     if (typeof key !== "string" || !key || key.length > 100) throw new Error("Invalid source key");
-    const value = await this.adapters[c.provider]!.get(c, kind, key, this.request(c));
+    const value = this.redact(await this.adapters[c.provider]!.get(c, kind, key, this.request(c)));
     const importedAt = Date.now();
-    const source: ExternalSource = { ...this.bounded(c, kind, value), id: `source-${randomBytes(16).toString("hex")}`, importedAt, expiresAt: importedAt + IMPORT_TTL, trusted: false, untrusted: true };
+    const source: ExternalSource = { ...this.bounded(c, kind, value), id: `source-${randomBytes(16).toString("hex")}`, importedAt, expiresAt: importedAt + IMPORT_TTL, trusted: false, untrusted: true, ...(projectContext ? { projectContext: { ...projectContext } } : {}) };
     this.expire();
     if (this.imported.size >= 200) this.imported.delete(this.imported.keys().next().value!);
     this.imported.set(source.id, structuredClone(source));
@@ -277,13 +300,13 @@ export class Integrations {
       const base = new URL(c.baseUrl), url = new URL(path, base);
       if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname) || url.username || url.password) throw new Error("Integration requests must stay within the configured API base");
       if (query && (!/^\s*query\b/.test(query.query) || /\bmutation\s*(?:\w+\s*)?[({]/.test(query.query))) throw new Error("Only read-only GraphQL queries are supported");
-      const token = this.environment[c.credentialEnv];
+      const token = this.credential(c.credentialEnv);
       if (!token) throw new Error(`Credentials are unavailable for integration ${c.id}`);
       const headers: Record<string, string> = { accept: "application/json" };
       if (c.auth === "private-token") headers["PRIVATE-TOKEN"] = token;
       else if (c.auth === "api-key") headers.authorization = token;
       else if (c.auth === "basic") {
-        const username = this.environment[c.usernameEnv!];
+        const username = this.credential(c.usernameEnv!);
         if (!username) throw new Error(`Credentials are unavailable for integration ${c.id}`);
         headers.authorization = `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`;
       } else headers.authorization = `Bearer ${token}`;

@@ -2,7 +2,7 @@
 
 Connect each teammate’s computer as a runner for its local repositories and CLI logins. Use explicit host-execution or terminal grants only when teammates should work on the team server itself.
 
-Project → More → **Board** contains tasks on the project’s owning computer. Project → More → **People** contains members, roles and repository keys; the owner also gets existing account and execution/terminal grant controls. Configured boards become project tabs. The optional **Show Board in the app menu** preference only controls an unused shortcut: it never hides configured collaboration or its settings. Command search includes Board and People, with Team as a search alias.
+Project → More → **Board** contains tasks on the project’s owning computer. The member count beside the project title opens **People and access**, with membership and computer status. The owner can expand **Advanced administration** for accounts and execution/terminal grants. Configured boards become project tabs. The optional **Show Board in the app menu** preference only controls an unused shortcut: it never hides configured collaboration or its settings. Command search includes Board and People, with Team as a search alias.
 
 Linked servers remain available through the connection-scoped **Board** entry and its **Team connection** selector. A linked project is not attached to a local project by a matching ID, name or repository path. The URL’s `team` query pins requests, downloads and the stream to that connection. Opening a local project’s Board or People switches the document to `team=local`; previous requests and subscriptions cannot become actions against the new source. Missing projects show an unavailable state instead of another board. Shared users see Board and Results plus People from their authorized board projection, including projects with repository keys but no server clone.
 
@@ -20,13 +20,13 @@ Open **Settings → Connections → Share access** and choose:
 
 ## Invite and join a project
 
-The server owner opens **Project → People → Invite a teammate**, or the **Teammates** step in team-server setup. Choose a project and role, then **Create invitation**. Copy the link or let the recipient scan its QR code. Each link admits one person, expires after 24 hours, and can be revoked from **Pending invitations**. Only the token hash is saved; copy the link before leaving the page. Share it privately with its intended recipient.
+The server owner opens **Project → Share**, or the **Teammates** step in team-server setup. Choose a project and role, then **Create invitation**. Copy the link or let the recipient scan its QR code. Each link admits one person, expires after 24 hours, and can be revoked from **Pending invitations**. Only the token hash is saved; copy the link before leaving the page. Share it privately with its intended recipient.
 
 Invitation creation in the app becomes available after secure network access is configured. The link uses the HTTPS server origin, without the owner's phone-pairing capability. The recipient must be able to reach that origin over the same Wi-Fi or permitted Tailscale network.
 
 The recipient opens the invitation, checks the project and role, then creates their own account with a password of at least 15 characters or signs in with an existing shared account. Acceptance creates the account/membership and browser session atomically. Existing accounts keep other project roles and any stronger role already held in this project. Used, expired and revoked invitations explain how to request a replacement. A removed project cannot be joined.
 
-After joining, **Open project board** opens the invited project immediately. Contributors and maintainers also see a credential-free **connection link**: paste it in their own CodeFlow under **Join a team**, sign in, and choose a local clone using **Choose folder**. The project checklist shows which folders still need mapping and provides a board link for each project. The shared dashboard keeps **Connect your computer to run team tasks** available later.
+Accepting the invitation opens the project board directly. Viewers and reviewers need no computer setup. Contributors and maintainers can choose **Set up this computer for coding** to open their local Code Flow with the server, account name, and project filled in. After confirming their password, **Choose repository folder** connects their existing clone. A connection link remains available as a fallback for another computer.
 
 A project invitation grants only its project role. It never grants the owner's access, a terminal, or permission to run agents on the server. Those require the existing separate grants. The browser can collaborate on tasks and reviews; a connected computer runs the work its owner starts with their own agent logins. Personal device pairing remains a separate flow.
 
@@ -45,9 +45,9 @@ Deliberately absent in this version: live pairing in the same terminal; moving a
 Open **Settings → Connections → Share access → Host a team** for the guided setup. Choose **This computer** or a saved SSH server under **Server**. Setup targets that server’s own board, independently of the team selected in your browser tab. For an SSH server, choose the HTTPS port and click **Set up on this server**. Disconnected saved servers offer **Connect and set up on this server**. Then complete the five steps:
 
 1. Choose an existing project or create one, and set your name on the board. A local clone on the server is optional.
-2. Define the shared repository keys, labels, Git URLs and default branches.
+2. Choose existing repositories or enter their names, Git URLs and default branches. Internal identifiers are generated automatically.
 3. Choose Tailscale or another HTTPS network, enable team access, and create or import a trusted certificate using the existing secure-access controls. For another network, you manage the hostname and reachability. The wizard installs a separate team server on remote machines; the managed SSH workspace keeps its network listeners disabled.
-4. Create one-use project invitations so teammates choose their own credentials. Direct account creation and granting existing accounts access remain available. Other project roles are preserved.
+4. Create one-use project invitations so teammates choose their own credentials. Direct account creation and granting existing accounts access remain under **Advanced account administration**. Other project roles are preserved.
 5. Review the saved configuration and copy connection instructions containing the HTTPS server origin. Passwords and phone pairing links are never included.
 
 Saved steps remain if you close and reopen setup. You can defer secure access or accounts; the review then identifies the unfinished steps instead of reporting the server as ready. Keep the host running and ask a teammate to confirm they can connect through your network’s access rules. The individual settings below remain available.
@@ -258,3 +258,18 @@ No real Tailscale network, second physical machine, TLS certificate or real prov
 ---
 
 [Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)
+
+
+### Share a project and get a teammate started
+
+Open a project and choose **Share** beside its title. The member count opens **People and access**. Choose View, Review and comment, Contribute, or Manage project, then create and copy an invitation. Existing secure server access is reused. If access is missing, the dialog shows just the network/HTTPS step and keeps the selected project and role. When sharing a project for the first time, its existing repository folders supply portable repository names and generated identifiers; absolute folder paths are not published.
+
+An invited person creates a Code Flow account on that server or signs in to an existing one. Accepting the invitation opens the project board immediately and removes the invitation secret from the address bar. Reviewers and viewers need no computer setup. Invalid, expired, used, and revoked invitations explain how to get a fresh link or sign in to an already joined project.
+
+Contributors can optionally choose **Set up this computer for coding** on the board. Enter the address of Code Flow running on their computer (the default is `http://localhost:4318`; use its actual port). The handoff carries only the team address, username, and project in the URL fragment. It never carries an invitation secret, password, or owner credential. Confirm the account password locally, select an existing Git repository folder, and open the same project board. Known local project folders with matching repository names are offered as suggestions. Saving checks the repository; folder mappings remain private to that computer. Git access and cloning remain separate.
+
+A task opened on the shared server presents **My computer** and **Team server** execution options. The latter requires a separate owner grant and task ownership. Connecting a computer or accepting an invitation does not grant server execution or terminal access.
+
+**People and access** shows roles, joined membership, pending invitations, and computer connection status. A connected background computer never marks the person as online. Expand a person for computer names and last connection times (visible to that account and the server owner), plus server execution grants where authorized. The server does not know teammates’ repository mappings, so it does not claim their repositories are ready. Manual accounts, password replacement, host execution grants, and terminals are under **Advanced administration**. Repository identifiers are generated from names; existing identifiers stay stable and may be edited under advanced repository settings.
+
+The agent collaboration switch is labeled **AI team**, separate from human project membership. The onboarding browser suite exercises owner invitations, mobile acceptance, reviewer readiness, guided local setup, task execution, permissions, invalid links, and missing secure access. It uses isolated server homes and fake coding agents.

@@ -128,6 +128,14 @@ The installed CLI updated to 1.4.5. The explicit supported-version list now incl
 
 The production adapter's live write/read probe passed on 1.4.5: a workspace edit and structured answer succeeded, the outside symlink read produced a tool denial, the outside sentinel stayed unchanged, no hook marker appeared, no request reached the browser fixture, and no native session was retained. Kernel fixture tests still cover policy/configuration/authentication-write denials. A real Claude → Codex → Antigravity UI fork also recovered the carried conversation token. These observations retain the existing file-only scope and authentication limitations; they do not certify arbitrary future runtime versions or unrestricted browser/MCP behavior.
 
+## Antigravity 1.4.6 compatibility (2026-10-23)
+
+The installed CLI updated to 1.4.6, which the previous exact-version check rejected before starting a side chat. The supported-version list now includes 1.4.6; other unverified versions still stop before launch. The macOS sandbox and protected per-turn settings are unchanged.
+
+The production file-only probe passed on 1.4.6 with `gemini-3.8-flash-low`: the workspace edit and structured answer succeeded, the fresh read-only turn denied the outside symlink read, the outside sentinel stayed unchanged, no hook marker appeared, no browser request reached the fixture, and no native session was retained. The probe now recognizes the existing structured `finish` completion tool in its write turn, matching the production profile.
+
+Isolated model discovery returned six candidates. A separate read-only fixture read its workspace marker and called the scoped `codeflow_team/read_inbox` MCP tool once, returning the expected synthetic inbox marker without retaining a native session. These observations cover installed-version file access and scoped MCP transport; live browser/computer acceptance remains recorded for 1.4.5 below. All 40 targeted isolation, authentication, recovery, shared-tool, side-chat, permission and model-catalog tests passed, along with TypeScript checking.
+
 ## Task-scoped Antigravity tools (2026-10-22, later update)
 
 Interactive Antigravity Agent and Team turns can now use the shared Codeflow browser and computer bridge. Their isolated receipt is `macos-task-tools-v2` with `externalTools: task-scoped`; required `no-external-tools` retains the existing `macos-file-only-v1` profile and exposes no bridge. This supersedes earlier statements that isolated Antigravity is always file-only. Native shell/browser, ambient customizations and provider delegation remain unavailable in the isolated profile.

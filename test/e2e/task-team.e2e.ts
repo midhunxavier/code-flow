@@ -40,10 +40,10 @@ for (const [lead, worker] of (live ? [["claude", "codex"], ["codex", "agy"], ["a
   const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tree.path }).toString().trim();
   const main = page.locator(".runview");
   if (!live) await api("/api/team-templates", { expectedVersion: 0, template: { schemaVersion: 1, id: "saved-transition-team", version: 1, name: "Saved mixed-provider team", description: "A reusable team for this fixture", scope: "personal", autoEnabled: false, parameters: ["task"], roles: [], tasks: [], contracts: [], workflow: "auto-team", task: "{{task}}", criteria: [], preferences: { roles: { coordinator: ["claude"], pool: ["claude", "codex"] }, options: { maxMembers: 3 }, agentSettings: {}, roleSettings: {} } } });
-  await main.getByRole("switch", { name: "Team", exact: true }).click();
+  await main.getByRole("switch", { name: "AI team", exact: true }).click();
   await main.getByRole("button", { name: "Advanced", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Team setup" });
-  await dialog.getByRole("switch", { name: "Enable Team" }).check();
+  const dialog = page.getByRole("dialog", { name: "AI team setup" });
+  await dialog.getByRole("switch", { name: "Enable AI team" }).check();
   await dialog.getByLabel("Team template", { exact: true }).selectOption("build-review");
   if (!live) await dialog.getByLabel("Team template", { exact: true }).selectOption("saved:saved-transition-team");
   await dialog.getByLabel("Team lead", { exact: true }).selectOption(lead!);
@@ -56,7 +56,7 @@ for (const [lead, worker] of (live ? [["claude", "codex"], ["codex", "agy"], ["a
   // Model pins use the same API as the panel; no credentials or provider stubs in live runs.
   run = await api(`/api/runs/${first.id}`);
   await api(`/api/runs/${first.id}/task-team`, { ...run.taskTeam, providers: live ? [worker] : ["claude", "codex"], settings, maxCalls: 16, maxMinutes: 8 });
-  await page.reload(); assert.equal(await main.getByRole("switch", { name: "Team", exact: true }).getAttribute("aria-checked"), "true");
+  await page.reload(); assert.equal(await main.getByRole("switch", { name: "AI team", exact: true }).getAttribute("aria-checked"), "true");
   await main.getByRole("textbox", { name: "Message agent", exact: true }).fill(live ? "Change result.txt to contain exactly team cobalt-731 followed by a newline. Preserve draft.txt byte for byte. This is a tiny plain text edit: one implementation worker and an independent reviewer suffice. No packages, external services or publishing. The configured node check verifies the content. Keep the other files unchanged." : "AUTO-MINIMAL implement the requested result");
   await main.getByRole("button", { name: "Send", exact: true }).click(); await page.getByRole("region", { name: "Team activity" }).waitFor();
   run = await done(first.id);
@@ -79,7 +79,7 @@ for (const [lead, worker] of (live ? [["claude", "codex"], ["codex", "agy"], ["a
   run = await done(first.id); assert.equal(run.teamTurns.length, 1); assert.equal(run.taskTeam.enabled, true);
   await page.screenshot({ path: join(root, `output/playwright/team-ux-clean-${lead}.png`) });
 
-  await main.getByRole("switch", { name: "Team", exact: true }).click();
+  await main.getByRole("switch", { name: "AI team", exact: true }).click();
   await main.getByRole("textbox", { name: "Message agent", exact: true }).fill("What token did I give you? Read result.txt and draft.txt and report their contents. Answer directly without changing any files."); await main.getByRole("button", { name: "Send", exact: true }).click();
   await main.getByText("What token did I give you? Read result.txt and draft.txt and report their contents. Answer directly without changing any files.", { exact: true }).waitFor();
   run = await done(first.id); assert.equal(run.teamTurns.length, 1); assert.equal(run.taskTeam.enabled, false); if (live) assert.match(run.summary, /cobalt-731/);
@@ -197,13 +197,13 @@ test("new tasks expose a clear Team toggle, lead-only controls and searchable br
   assert.equal(await composer.getByRole("listbox", { name: "Start from branch", exact: true }).getByRole("option").count(), 1);
   await search.press("Enter");
   assert.match(await composer.getByRole("button", { name: "Start from branch", exact: true }).innerText(), /feature\/searchable-branch/);
-  const toggle = composer.getByRole("switch", { name: "Team", exact: true });
+  const toggle = composer.getByRole("switch", { name: "AI team", exact: true });
   await toggle.click(); assert.equal(await toggle.getAttribute("aria-checked"), "true");
   assert.equal(await composer.locator(".task-controls .chat-controls").count(), 0);
   await composer.getByRole("button", { name: "Lead model", exact: true }).waitFor();
   await composer.getByRole("button", { name: "Advanced", exact: true }).click();
-  const setup = page.getByRole("dialog", { name: "Team setup" });
-  assert.equal(await setup.getByRole("switch", { name: "Enable Team" }).isChecked(), true);
+  const setup = page.getByRole("dialog", { name: "AI team setup" });
+  assert.equal(await setup.getByRole("switch", { name: "Enable AI team" }).isChecked(), true);
   await setup.getByRole("group", { name: "Team providers" }).waitFor();
   await setup.getByRole("button", { name: "Apply team settings" }).click();
   await page.screenshot({ path: join(root, "output/playwright/composer-team-clean.png") });

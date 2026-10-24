@@ -82,3 +82,11 @@ test("denied and blocked IndexedDB opens restore and save drafts through localSt
     else Reflect.deleteProperty(globalThis, "indexedDB");
   }
 });
+
+
+test("guided computer setup retains public connection hints across route serialization", () => {
+  const hint = "https://team.example/#/connect?username=alice&project=p-one";
+  const hash = `#/settings/connections/join?connection=${encodeURIComponent(hint)}`;
+  assert.deepEqual(parseRouteHash(hash), { view: "settings", section: "connections", group: "join", connection: hint });
+  assert.equal(hashFor(parseRouteHash(hash)), hash);
+});

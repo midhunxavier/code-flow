@@ -94,8 +94,8 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     await page.unroute(inventoryRoute);
     await wizard.getByRole("button", { name: "Refresh repositories", exact: true }).click();
     await wizard.getByRole("alert").filter({ hasText: "Workspace temporarily unavailable" }).waitFor({ state: "hidden" });
-    assert.equal(await wizard.getByLabel("Repository key", { exact: true }).inputValue(), "project");
-    assert.equal(await wizard.getByLabel("Repository label", { exact: true }).inputValue(), "project");
+    assert.equal(await wizard.getByLabel("Repository name", { exact: true }).inputValue(), "project");
+    assert.equal(await wizard.getByLabel("Repository name", { exact: true }).inputValue(), "project");
     await wizard.getByRole("button", { name: "Add repository", exact: true }).click();
     await wizard.getByLabel("Existing repository 2", { exact: true }).locator(`option[value="${canonicalRepo}"][disabled]`).waitFor({ state: "attached" });
     await wizard.getByRole("button", { name: "Remove repository 2", exact: true }).click();
@@ -116,7 +116,8 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     await wizard.getByLabel("Private key file (PEM)", { exact: true }).setInputFiles(certificate.keyPath);
     await wizard.getByRole("button", { name: "Save and apply HTTPS", exact: true }).click();
     await wizard.getByRole("button", { name: "Continue to teammates", exact: true }).click();
-    await wizard.getByLabel("Username", { exact: true }).fill("teammate");
+    await wizard.getByText("Advanced account administration", { exact: true }).click();
+  await wizard.getByLabel("Username", { exact: true }).fill("teammate");
     await wizard.getByLabel("Display name", { exact: true }).fill("Remote teammate");
     const password = "private remote team password 12345";
     await wizard.getByLabel("Initial password", { exact: true }).fill(password);

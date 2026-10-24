@@ -7,21 +7,21 @@ import type { NotificationDelivery, NotificationEvent, NotificationSettings } fr
 interface Destination { id: string; name: string; protocol: "webhook" | "slack"; available: boolean; configured: boolean; host?: string; settings: NotificationSettings; dropped: number; lastError?: string }
 const EVENTS: { id: NotificationEvent; label: string }[] = [{ id: "done", label: "Run finished" }, { id: "failure", label: "Run or verification failed" }, { id: "needs-attention", label: "A decision or answer is needed" }];
 
-export function NotificationsView() {
+export function NotificationsView({ destinationIds, projectId }: { destinationIds?: string[]; projectId?: string } = {}) {
   const [destinations, setDestinations] = useState<Destination[]>([]);
   const [deliveries, setDeliveries] = useState<NotificationDelivery[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const reload = async () => {
     const [targets, history] = await Promise.all([api<Destination[]>("/api/notifications"), api<NotificationDelivery[]>("/api/notifications/deliveries")]);
-    setDestinations(targets); setDeliveries(history);
+    setDestinations(targets.filter(target => !destinationIds || destinationIds.includes(target.id))); setDeliveries(history.filter(item => (!destinationIds || destinationIds.includes(item.target)) && (!projectId || item.project === projectId || item.manual)));
   };
   useEffect(() => {
     let alive = true;
-    const load = () => Promise.all([api<Destination[]>("/api/notifications"), api<NotificationDelivery[]>("/api/notifications/deliveries")]).then(([targets, history]) => { if (alive) { setDestinations(targets); setDeliveries(history); setError(""); } }, (err) => { if (alive) setError(err.message); });
+    const load = () => Promise.all([api<Destination[]>("/api/notifications"), api<NotificationDelivery[]>("/api/notifications/deliveries")]).then(([targets, history]) => { if (alive) { setDestinations(targets.filter(target => !destinationIds || destinationIds.includes(target.id))); setDeliveries(history.filter(item => (!destinationIds || destinationIds.includes(item.target)) && (!projectId || item.project === projectId || item.manual))); setError(""); } }, (err) => { if (alive) setError(err.message); });
     const stop = pollVisible(load, 10_000);
     return () => { alive = false; stop(); };
-  }, []);
+  }, [JSON.stringify(destinationIds), projectId]);
   const retry = async (delivery: NotificationDelivery) => {
     setBusy(delivery.id);
     try { await post(`/api/notifications/deliveries/${delivery.id}/retry`); await reload(); showToast("Notification retry queued"); }
@@ -31,7 +31,7 @@ export function NotificationsView() {
   return <section class="wb-card notifications-panel" aria-label="Outbound notifications">
     <h2>Notifications</h2>
     <p>Choose a destination, the events to send and the projects it covers. Notifications include task titles, run IDs, workflow and result status.</p>
-    {!destinations.length ? <p class="help">Configure HTTPS webhook or Slack destinations with CODEFLOW_NOTIFICATIONS_FILE or CODEFLOW_NOTIFICATIONS_JSON on the server. New destinations start disabled.</p> : <div class="wb-list">{destinations.map((target) => <DestinationSettings key={target.id} destination={target} refresh={reload} />)}</div>}
+    {!destinations.length ? <p class="help">Connect Slack or a webhook in Integrations. New destinations start off; choose projects and events before enabling delivery.</p> : <div class="wb-list">{destinations.map((target) => <DestinationSettings key={target.id} destination={target} refresh={reload} projectId={projectId} />)}</div>}
     <h3>Delivery history</h3>
     <p class="help">Keeps 200 deliveries. Temporary failures retry up to three times. A delivery interrupted by restart needs an explicit retry; the recipient may already have received it.</p>
     {/* data-label names each cell's column where phones stack a delivery's cells (styles.css, workspace) */}
@@ -46,11 +46,12 @@ export function NotificationsView() {
   </section>;
 }
 
-function DestinationSettings({ destination: target, refresh }: { destination: Destination; refresh: () => Promise<void> }) {
-  const [settings, setSettings] = useState(target.settings);
+function DestinationSettings({ destination: target, refresh, projectId }: { destination: Destination; refresh: () => Promise<void>; projectId?: string }) {
+  const initialSettings = () => projectId && Array.isArray(target.settings.projects) && !target.settings.projects.length ? { ...target.settings, projects: [projectId] } : target.settings;
+  const [settings, setSettings] = useState(initialSettings);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  useEffect(() => { setSettings(target.settings); }, [JSON.stringify(target.settings)]);
+  useEffect(() => { setSettings(initialSettings()); }, [JSON.stringify(target.settings)]);
   const selected = settings.projects === "all" ? [] : settings.projects;
   const choices = [{ id: "unassigned", name: "Without a project" }, ...projects.value.map((project) => ({ id: project.id, name: project.name })), ...selected.filter((id) => id !== "unassigned" && !projects.value.some((project) => project.id === id)).map((id) => ({ id, name: `Unavailable project: ${id}` }))];
   const save = async () => {

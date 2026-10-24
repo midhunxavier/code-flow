@@ -88,6 +88,8 @@ import { replayEvents } from "./run-log.js";
 import { previewTarget, Previews } from "./preview.js";
 import { SnapshotError, takeSnapshot } from "./snapshot.js";
 import { Integrations } from "./integrations.js";
+import { IntegrationConnections } from "./integration-connections.js";
+import { createIntegrationConnectionsApi } from "./integration-connections-api.js";
 import { Notifications } from "./notifications.js";
 import { GithubReviewThreads, ReviewThreadError } from "./github-review-threads.js";
 import { approvals } from "./approvals.js";
@@ -226,9 +228,12 @@ const launchProfiles = new LaunchProfiles(manager.devServers);
 manager.onWorkspaceStop((runId) => launchProfiles.stopMatching(`${runId}/`));
 const integrations = new Integrations();
 const codeHostsApi = createCodeHostsApi({ integrations, manager, projects, build: buildStartInput });
-await integrations.load().catch((error) => logError("External sources disabled: invalid integration configuration", error));
+const integrationsReady = await integrations.load().then(() => true, (error) => { logError("External sources disabled: invalid integration configuration", error); return false; });
 const notifications = new Notifications();
 const notificationsReady = await notifications.load().then(() => true, (error) => { logError("Notifications disabled: configuration or delivery state cannot be read", error); return false; });
+const integrationConnections = new IntegrationConnections({ integrations, notifications });
+if (integrationsReady && notificationsReady) await integrationConnections.load().catch(error => logError("Integration connection storage is unavailable", error));
+const integrationConnectionsApi = createIntegrationConnectionsApi({ connections: integrationConnections, integrations, projects });
 /** The side panel's terminals and notes. */
 const shells = new Shells();
 const teamTerminals = new TeamTerminals({
@@ -897,9 +902,10 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   if (body.externalSourceRef) {
     const ref = body.externalSourceRef;
     if (typeof ref.integration !== "string" || !["issue", "pr"].includes(ref.kind) || typeof ref.key !== "string") throw new HttpError(400, "Choose a configured external source");
-    externalSource = await attempt(() => integrations.importSource(ref.integration, ref.kind, ref.key));
+    externalSource = await attempt(() => integrations.importSource(ref.integration, ref.kind, ref.key, typeof body.project === "string" && projects.get(body.project) ? { project: body.project, repository: repo } : undefined));
   }
   if (externalSource && body.source) throw new HttpError(400, "Choose one external source for this run");
+  if (externalSource?.projectContext && (externalSource.projectContext.project !== body.project || externalSource.projectContext.repository !== repo)) throw new HttpError(400, "Keep the imported issue's project and repository, or import it again from the intended project");
   if (body.loop?.verification) loop.verification = await attempt(async () => validateVerificationProfile(body.loop.verification));
   if (loop.remoteWorker && (body.approvals?.tools || loop.agentContainer)) throw new HttpError(400, "Remote workers use their provisioned isolation profile and cannot wait for native tool approvals");
   const container = inheritedLoop.container;
@@ -1805,6 +1811,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (result) return send(res, result.status, result.body);
   }
 
+  if (parts[1] === "integration-connections") {
+    if (fileAccess.hasRestrictions()) throw new HttpError(403, "Integration connections are unavailable under custom filesystem restrictions");
+    if (await attempt(() => integrationConnectionsApi(req, res, url, parts.slice(1)))) return;
+  }
   if (parts[1] === "integrations") {
     if (req.method === "GET" && !parts[2]) return send(res, 200, integrations.list());
     if (req.method === "GET" && parts[2] && parts[3] === "items") {

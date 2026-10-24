@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SharedAccounts, SharedAccountError } from "../src/shared-accounts.js";
 import { Projects } from "../src/projects.js";
-import { parseTeamAddress, teamConnectionLink } from "../ui/team-join-link.js";
+import { parseTeamAddress, teamConnectionLink, computerSetupLink } from "../ui/team-join-link.js";
 
 const credentials = { username: "teammate", displayName: "Team mate", password: "my own strong passphrase", secure: true, loopback: false, address: "192.0.2.1" };
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
@@ -116,3 +116,16 @@ test("old account documents remain readable and connection hints reject credenti
   assert.equal(parseTeamAddress("http://localhost:4317").url, "http://localhost:4317");
   for (const value of ["javascript:alert(1)", "http://hub.example", "https://user:pass@hub.example", "https://hub.example/r/secret", "https://hub.example/?token=owner", "https://hub.example/#/join/short"]) assert.throws(() => parseTeamAddress(value));
 }));
+
+
+test("computer setup preserves public project context and rejects non-local or credential-bearing handoffs", () => {
+  const connection = teamConnectionLink("https://hub.example:4318", "alice", "p-shared");
+  assert.deepEqual(parseTeamAddress(connection), { url: "https://hub.example:4318", username: "alice", project: "p-shared" });
+  const setup = new URL(computerSetupLink("http://localhost:4322", connection));
+  assert.equal(setup.origin, "http://localhost:4322");
+  assert.equal(setup.search, "?team=local");
+  assert.equal(new URLSearchParams(setup.hash.split("?")[1]).get("connection"), connection);
+  for (const address of ["https://evil.example", "javascript:alert(1)", "http://user:pass@localhost:4318", "http://localhost:4318/?token=owner", "http://localhost:4318/path", "http://localhost:4318/#secret"]) assert.throws(() => computerSetupLink(address, connection));
+  assert.throws(() => computerSetupLink("http://localhost:4318", "https://hub.example/?token=owner"));
+  assert.throws(() => computerSetupLink("http://localhost:4318", `https://hub.example/#/join/${"x".repeat(43)}`));
+});

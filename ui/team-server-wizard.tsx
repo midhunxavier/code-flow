@@ -13,7 +13,6 @@ import { ProjectInvitations } from "./project-invitations.js";
 
 const STEPS = ["Project", "Repositories", "Secure access", "Teammates", "Share"];
 const blankRepo = (): RepoRef => ({ key: "app", label: "App", defaultBranch: "main" });
-const canRun = (role?: SharedRole) => role === "contributor" || role === "maintainer";
 
 interface Autostart { supported: boolean; enabled: boolean; unitEnabled?: boolean; message: string; command?: string }
 interface SetupHost { id: string; name: string; state: string }
@@ -119,7 +118,7 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
       : { ...entry, sourcePath: undefined }));
   };
   const serverReady = !!project && configuredRepos.length > 0 && !!address;
-  const ready = serverReady && members.some((user) => canRun(user.roles[projectId]));
+  const ready = serverReady && members.length > 0;
 
   const run = async (action: () => Promise<void>) => {
     if (locked.current) return false; locked.current = true; setBusy(true); onBusy(true); setError("");
@@ -177,7 +176,7 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
       finally { setPassword(""); }
     });
   };
-  const shareText = address && project ? `Join ${project.name} in Code Flow\nTeam server: ${address}\n\n1. ${remote?.transport === "tailscale" ? "Connect your computer to our Tailscale network." : "Make sure your computer can reach the team server over HTTPS."}\n2. Open your own Code Flow → Settings → Connections → Share access → Join a team.\n3. Enter the server address and the account credentials shared with you separately.\n4. Map these repository keys to your local clones: ${configuredRepos.map((entry) => entry.key).join(", ")}.\nUse the same Code Flow version as the server.` : "";
+  const shareText = address && project ? `Join ${project.name} in Code Flow\nTeam server: ${address}\n\n1. ${remote?.transport === "tailscale" ? "Connect your computer to our Tailscale network." : "Make sure your computer can reach the team server over HTTPS."}\n2. Open your own Code Flow → Settings → Connections → Share access → Join a team.\n3. Enter the server address and the account credentials shared with you separately.\n4. Choose your local repository folders: ${configuredRepos.map((entry) => entry.label).join(", ")}.\nUse the same Code Flow version as the server.` : "";
 
   return <section class="settings-card team-server-wizard" aria-label="Team server setup" aria-busy={busy}>
     <div class="pp-card-head"><h3>Set up team server</h3><button class="btn small" disabled={busy} onClick={onClose}>Close setup</button></div>
@@ -193,7 +192,7 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
           <button class="btn primary" type="submit">Save and continue</button>
         </fieldset>
       </form> : null}
-      {step === 1 ? <form onSubmit={(event) => { event.preventDefault(); void next(); }}><p class="help">Give each repository a shared name. Teammates use these keys to choose their own local clones.</p><fieldset disabled={busy} class="team-setup-fields"><legend class="sr-only">Shared repositories</legend>
+      {step === 1 ? <form onSubmit={(event) => { event.preventDefault(); void next(); }}><p class="help">Give each repository a name. Teammates choose their own repository folder when they start coding.</p><fieldset disabled={busy} class="team-setup-fields"><legend class="sr-only">Shared repositories</legend>
         <div class="settings-actions"><button class="btn small" type="button" disabled={loadingRepositories} onClick={() => void refreshRepositories()}>{loadingRepositories ? "Loading repositories…" : "Refresh repositories"}</button></div>
         {repositoryError ? <p class="msg err" role="alert">{repositoryError}</p> : null}
         {rows.map((entry, index) => <div class="team-setup-repo" key={index}>
@@ -201,8 +200,8 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
             <option value="">Enter repository details manually</option>
             {knownRepositories.map(path => <option key={path} value={path} disabled={rows.some((row, at) => at !== index && row.sourcePath === path)}>{path}</option>)}
           </select></label>
-          <p class="help team-setup-repo-source">{knownRepositories.length ? `Choose a repository from the existing projects on ${hostName}${workspacePrefix ? ", including its SSH workspace" : ""}. This fills the shared key and label; add its Git URL and check the default branch below.` : `No repository folders were found in the projects on ${hostName}. Add the folder to a project on that computer and refresh repositories, or enter the shared details manually.`} Teammates still map the key to their own checkout after connecting.</p>
-          {(["key", "label", "remote", "defaultBranch"] as const).map((field) => <label key={field}>{({ key: "Repository key", label: "Repository label", remote: "Git URL (optional)", defaultBranch: "Default branch" })[field]}<input class="field" required={field === "key"} maxLength={field === "key" ? 64 : field === "label" ? 80 : field === "remote" ? 300 : 100} pattern={field === "key" ? "[a-z][a-z0-9-]{0,63}" : undefined} value={entry[field] ?? ""} onInput={(event) => setRows(rows.map((row, at) => at === index ? { ...row, [field]: event.currentTarget.value } : row))} /></label>)}<button class="btn small" type="button" onClick={() => setRows(rows.filter((_, at) => at !== index))}>Remove repository {index + 1}</button></div>)}
+          <p class="help team-setup-repo-source">{knownRepositories.length ? `Choose a repository from the existing projects on ${hostName}${workspacePrefix ? ", including its SSH workspace" : ""}. This fills the repository name; add its Git URL and check the default branch below.` : `No repository folders were found in the projects on ${hostName}. Add the folder to a project on that computer and refresh repositories, or enter the shared details manually.`} Teammates select their own checkout after connecting.</p>
+          {(["label", "remote", "defaultBranch"] as const).map((field) => <label key={field}>{({ key: "Repository key", label: "Repository name", remote: "Git URL (optional)", defaultBranch: "Default branch" })[field]}<input class="field" required={field === "label"} maxLength={field === "label" ? 80 : field === "remote" ? 300 : 100} value={entry[field] ?? ""} onInput={(event) => setRows(rows.map((row, at) => at === index ? { ...row, [field]: event.currentTarget.value, ...(field === "label" && !configuredRepos.some(saved => saved.key === row.key) ? { key: repositoryChoice(event.currentTarget.value, rows.filter((_, other) => other !== at).map(other => other.key)).key } : {}) } : row))} /></label>)}<button class="btn small" type="button" onClick={() => setRows(rows.filter((_, at) => at !== index))}>Remove repository {index + 1}</button></div>)}
         <div class="settings-actions"><button class="btn" type="button" disabled={rows.length >= 50} onClick={() => setRows([...rows, { key: "", label: "", defaultBranch: "main" }])}>Add repository</button><button class="btn primary" type="submit">Save repositories and continue</button></div>
       </fieldset></form> : null}
       {step === 2 ? <div class="team-setup-fields">
@@ -219,7 +218,7 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
       </div> : null}
       {step === 3 ? <div>
         <ProjectInvitations projects={projects} projectId={projectId} prefix={prefix} address={address} />
-        <h4>Or manage accounts directly</h4><p>Add accounts for people working on {project?.name}. Contributor lets them run tasks on their computers; Maintainer also lets them manage the project board.</p>
+        <details><summary>Advanced account administration</summary><p>Add accounts for people working on {project?.name}. Contributor lets them run tasks on their computers; Maintainer also lets them manage the project board.</p>
         {members.length ? <ul>{members.map((user) => <li key={user.id}>{user.displayName} ({user.username}) · {user.roles[projectId]}</li>)}</ul> : <p class="help">No teammates have access to this project yet.</p>}
         <form onSubmit={(event) => { event.preventDefault(); void addPerson(); }}><fieldset disabled={busy} class="team-setup-fields"><legend class="sr-only">Teammate account</legend>
           <label>Account<select aria-label="Account" class="field" value={person} onChange={(event) => { const id = event.currentTarget.value; setPerson(id); setPassword(""); setRole(accounts.users.find((user) => user.id === id)?.roles[projectId] ?? "contributor"); }}><option value="">Create a new account…</option>{accounts.users.filter((user) => user.enabled).map((user) => <option key={user.id} value={user.id}>{user.displayName} ({user.username})</option>)}</select></label>
@@ -227,12 +226,12 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
           <label>Project role<select aria-label="Project role" class="field" value={role} onChange={(event) => setRole(event.currentTarget.value as SharedRole)}><option value="contributor">Contributor — work on tasks</option><option value="maintainer">Maintainer — manage this project</option><option value="reviewer">Reviewer — review and comment</option><option value="viewer">Viewer — read only</option></select></label>
           <button class="btn" type="submit">{person ? "Save project access" : "Add teammate"}</button>
         </fieldset></form>
-        {notice ? <p role="status">{notice}</p> : null}
+        {notice ? <p role="status">{notice}</p> : null}</details>
         <button class="btn primary" disabled={busy} onClick={() => void next()}>{members.length ? "Review setup" : "Add teammates later"}</button>
       </div> : null}
       {step === 4 ? <div class="team-setup-fields">
         <h4>{ready ? "Ready to share with your team" : serverReady ? "Ready to invite your team" : "Your setup is saved, with steps still to finish"}</h4>
-        <ul><li>Project: {project?.name ?? "Unavailable — choose a project"}</li><li>Repositories: {configuredRepos.length ? configuredRepos.map((entry) => entry.key).join(", ") : "Add a repository key"}</li><li>Secure access: {address ?? "Finish secure access setup"}</li><li>Teammates: {members.length} with access{members.some((user) => canRun(user.roles[projectId])) ? " · task execution enabled" : " · add a contributor or maintainer to run tasks"}</li></ul>
+        <ul><li>Project: {project?.name ?? "Unavailable — choose a project"}</li><li>Repositories: {configuredRepos.length ? configuredRepos.map((entry) => entry.label).join(", ") : "Add a repository"}</li><li>Secure access: {address ?? "Finish secure access setup"}</li><li>Project access granted: {members.length} teammates</li><li>Computer connected: check each teammate in People and access.</li><li>Repository selected: checked on each teammate’s computer.</li><li>Allowed to run on team server: requires a separate owner grant in advanced administration.</li></ul><p class="help">Viewers and reviewers are ready as soon as they join. Coding setup is optional.</p>
         <div class="settings-actions"><button class="btn" disabled={busy} onClick={() => setStep(0)}>Edit project</button><button class="btn" disabled={busy} onClick={() => setStep(1)}>Edit repositories</button><button class="btn" disabled={busy} onClick={() => setStep(2)}>Edit secure access</button><button class="btn" disabled={busy} onClick={() => setStep(3)}>Edit teammates</button></div>
         {serverReady ? <ProjectInvitations projects={projects} projectId={projectId} prefix={prefix} address={address} /> : null}
         {ready ? <><label>Connection instructions<textarea class="field" readOnly rows={8} value={shareText} /></label><button class="btn primary" onClick={() => void copy(shareText, "Connection instructions copied")}>Copy connection instructions</button><p class="help">New teammates can use an invitation above to choose their own password. Existing accounts can use these connection instructions. Ask one teammate to connect and confirm access; network permissions still apply. Use the same Code Flow version on every computer.</p></> : null}

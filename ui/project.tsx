@@ -3,6 +3,8 @@ import { runSearchText } from "../src/run-history.js";
 import { checksLabel, type ProjectSection as HistorySection } from "../src/run-status.js";
 import { SchedulingView } from "./scheduling.js";
 import { TeamBoardView } from "./collab-board.js";
+import { IntegrationsScreen } from "./integration-connections.js";
+import { ProjectShare } from "./project-share.js";
 import { TeamPeopleView } from "./collab-people.js";
 import { useProjectFeatures } from "./project-features.js";
 import { OutcomeMetrics } from "./experience.js";
@@ -38,14 +40,14 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
   const selectedRepository = repository ?? (p.repos.length === 1 ? p.repos[0] : undefined);
   return <div class="project-page">
     <header class="page-head"><div class="page-head-text pp-title"><h1>{p.name}</h1><p class="project-computer-label"><Icon name="terminal" />Computer: {computerLabel()}</p></div>
-      <div class="page-head-actions"><button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}><Icon name="plus" />New run</button>
+      <div class="page-head-actions"><ProjectShare key={id} project={p} /><button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}><Icon name="plus" />New run</button>
         <Menu label="Project actions" icon="more">{close => <>
           <MenuItem onClick={() => { close(); editProject(id); }}>Edit project</MenuItem>
           <MenuItem onClick={() => { close(); route.value = { view: "project", id, section: "settings" }; }}>Project settings</MenuItem>
         </>}</Menu>
       </div>
     </header>
-    <nav class="project-tabs" aria-label="Project navigation">{([[undefined, "Overview"], ["runs", "Runs"], ["repositories", "Repositories"]] as const).map(([value, label]) => <a class={`btn ${section === value ? "primary" : ""}`} href={destination(value)} aria-current={section === value ? "page" : undefined}>{label}</a>)}{features.board || section === "board" ? <a class="btn" href={destination("board")} aria-current={section === "board" ? "page" : undefined}>Board</a> : null}{features.automation || section === "automation" ? <a class="btn" href={destination("automation")} aria-current={section === "automation" ? "page" : undefined}>Automation</a> : null}<a class="btn" href={destination("settings")} aria-current={section === "settings" ? "page" : undefined}>Project settings</a><Menu label="More project tools" icon="more" trigger={<span>More</span>} class="project-more">{close => <>{(["board", "people", "automation"] as const).map(value => <MenuItem onClick={() => { close(); if (value === "board" || value === "people") location.assign(destination(value)); else route.value = { view: "project", id, section: value }; }}>{({ board: "Board", people: "People", automation: "Automation" })[value]}</MenuItem>)}</>}</Menu></nav>
+    <nav class="project-tabs" aria-label="Project navigation">{([[undefined, "Overview"], ["runs", "Runs"], ["repositories", "Repositories"], ["connections", "Connections"]] as const).map(([value, label]) => <a class={`btn ${section === value ? "primary" : ""}`} href={destination(value)} aria-current={section === value ? "page" : undefined}>{label}</a>)}{features.board || section === "board" ? <a class="btn" href={destination("board")} aria-current={section === "board" ? "page" : undefined}>Board</a> : null}{features.automation || section === "automation" ? <a class="btn" href={destination("automation")} aria-current={section === "automation" ? "page" : undefined}>Automation</a> : null}<a class="btn" href={destination("settings")} aria-current={section === "settings" ? "page" : undefined}>Project settings</a><Menu label="More project tools" icon="more" trigger={<span>More</span>} class="project-more">{close => <>{(["board", "people", "automation"] as const).map(value => <MenuItem onClick={() => { close(); if (value === "board" || value === "people") location.assign(destination(value)); else route.value = { view: "project", id, section: value }; }}>{({ board: "Board", people: "People", automation: "Automation" })[value]}</MenuItem>)}</>}</Menu></nav>
     {!section ? <>
       <section class="project-start pp-card" aria-label="Start work"><h2>{composerProject.value === id && task.value.trim() ? "Continue your draft" : "What would you like to work on?"}</h2><p>{p.repos.length ? "Describe the outcome, choose your agents, and review the result here." : "Add a repository to start a run in this project."}</p>
         {composerProject.value === id && task.value.trim() ? <p class="draft-preview">{task.value.slice(0, 240)}</p> : null}
@@ -54,7 +56,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
       <ProjectTeamsInbox projectId={id} />
       <ProjectOverview key={id} id={id} />
       <a class="btn" href={destination("runs")}>View run history</a>
-    </> : section === "board" ? <TeamBoardView project={id} embedded navigate={navigateTeam} /> : section === "people" ? <TeamPeopleView project={id} embedded navigate={navigateTeam} /> : section === "automation" ? <SchedulingView key={id} projectId={id} kind={kind} /> : section === "runs" ? <ProjectRuns key={id} projectId={id} /> : section === "repositories" ? <>
+    </> : section === "board" ? <TeamBoardView project={id} embedded navigate={navigateTeam} /> : section === "people" ? <TeamPeopleView project={id} embedded navigate={navigateTeam} /> : section === "connections" ? <IntegrationsScreen key={id} projectId={id} /> : section === "automation" ? <SchedulingView key={id} projectId={id} kind={kind} /> : section === "runs" ? <ProjectRuns key={id} projectId={id} /> : section === "repositories" ? <>
       <div class="project-repository-head"><h2>Repositories</h2><button class="btn" onClick={() => openRepository(id)}><Icon name="plus" />Add repository</button></div>
       {!p.repos.length ? <p class="help">No repositories yet. Add a repository from {computerLabel()} to use its files and tools.</p> : <div class="project-repository-list">{p.repos.map(folder => <a class={`pp-card project-repository ${selectedRepository === folder ? "selected" : ""}`} href={hashFor({ view: "project", id, section: "repositories", repository: folder, tool: "code" })}><strong>{baseName(folder)}</strong><code>{folder}</code><span>Open repository tools →</span></a>)}</div>}
       {selectedRepository ? <WorkbenchView key={`${id}:${selectedRepository}`} projectId={id} initialFolder={selectedRepository} initialTool={tool} onNavigate={(folder, nextTool) => { route.value = { view: "project", id, section: "repositories", repository: folder, tool: nextTool }; }} /> : p.repos.length ? <p class="help">Choose a repository to inspect its files, checks, services and history.</p> : null}
