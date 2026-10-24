@@ -59,6 +59,7 @@ Requires **macOS 13+**. The app opens its own window and keeps agents running wh
 
 ## Connect and collaborate
 
+- [Project integrations](project-integrations.md)
 - [Team collaboration](team-collaboration.md) · [Shared project accounts](shared-projects.md)
 - [SSH projects](ssh-projects.md) · [Remote workers](remote-workers.md)
 - [GitLab and Bitbucket workflows](code-hosts.md) · [External sources](external-sources.md)

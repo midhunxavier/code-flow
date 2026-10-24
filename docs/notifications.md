@@ -1,12 +1,12 @@
 # Outbound notifications
 
-Open Settings → Notifications, configure a destination and its scope, then inspect delivery history. Outbound destinations are opt-in and can disclose the event details selected for delivery.
+Open a project’s **Connections** tab or **Settings → Integrations** to connect Slack or an HTTPS webhook. Select events and projects there or in **Settings → Notifications**, then inspect delivery history. Outbound destinations are opt-in and can disclose the event details selected for delivery.
 
 ## Choose where alerts go
 
-Notifications require an explicitly configured destination and a saved opt-in for its events and project scope. New destinations start disabled. No account is connected and no destination can be created from the browser.
+Notifications require an explicitly configured destination and a saved opt-in for its events and project scope. New destinations start disabled. The guided [connection setup](project-integrations.md) keeps URLs and credentials encrypted on the server. Setup validates the destination URL; **Send test notification** explicitly verifies delivery.
 
-Set `CODEFLOW_NOTIFICATIONS_FILE` to a server-side JSON file, or set `CODEFLOW_NOTIFICATIONS_JSON` to its contents:
+For administrator-managed destinations, set `CODEFLOW_NOTIFICATIONS_FILE` to a server-side JSON file, or set `CODEFLOW_NOTIFICATIONS_JSON` to its contents:
 
 ```json
 [

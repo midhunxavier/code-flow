@@ -13,8 +13,7 @@ import { themeChoice, setTheme, type ThemeChoice } from "./theme.js";
 import { executionHost } from "./ssh-projects.js";
 import { inbox } from "./automations.js";
 import { NotificationsView } from "./notifications.js";
-import { IntegrationsView } from "./integrations.js";
-import { CodeHostsPanel } from "./code-hosts.js";
+import { IntegrationsScreen } from "./integration-connections.js";
 import { ConventionsPanel } from "./conventions.js";
 import { FilePolicyPanel } from "./filesystem-policy.js";
 import { ExtensionsPanel } from "./extensions.js";
@@ -32,7 +31,7 @@ import {
   externalSource, source, setTask, type Trust,
 } from "./state.js";
 
-export function SettingsView({ section = "general", group }: { section?: SettingsSection; group?: string }) {
+export function SettingsView({ section = "general", group, connection }: { section?: SettingsSection; group?: string; connection?: string }) {
   const [query, setQuery] = useState("");
   const navigation = useRef<HTMLElement>(null);
   // Reset before the new section is interactive so a delayed effect cannot erase fresh input.
@@ -68,9 +67,9 @@ export function SettingsView({ section = "general", group }: { section?: Setting
             {section === "general" ? <GeneralSettings /> : null}
             {section === "agents" ? <AgentSettings /> : null}
             {section === "runs" ? <RunSettings /> : null}
-            {section === "connections" ? <ConnectionsView purpose={group} /> : null}
+            {section === "connections" ? <ConnectionsView purpose={group} connection={connection} /> : null}
             {section === "notifications" ? <><SettingsCard title="Desktop notifications"><SettingsRow title="Run updates" description="Notify when a run finishes or needs your attention, while you’re away from it."><button class="settings-switch" role="switch" aria-label="Desktop notifications" aria-checked={canNotify()} onClick={() => void setDesktopNotifications(!canNotify())}><span /></button></SettingsRow><p class="help">{"Notification" in window ? notificationPermission.value === "denied" ? "Notifications are blocked. Allow them in your browser’s site permissions to enable this setting." : "This preference is saved in this browser for the current workspace." : "This browser doesn’t support desktop notifications."}</p></SettingsCard><NotificationsView /></> : null}
-            {section === "integrations" ? <><IntegrationsView onImport={(imported) => { externalSource.value = imported; source.value = null; setTask(`Address ${imported.provider} ${imported.kind} ${imported.key}: ${imported.title}`); route.value = { view: "composer" }; }} /><CodeHostsPanel projects={projects.value} /></> : null}
+            {section === "integrations" ? <IntegrationsScreen /> : null}
             {section === "workspace" ? <WorkbenchView /> : null}
             {section === "insights" ? <InsightsView group={group} /> : null}
             {section === "automations" ? <SchedulingView /> : null}

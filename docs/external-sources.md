@@ -6,7 +6,9 @@ Configure the source integration, select an issue or pull request, and review th
 
 code-flow can list and import GitLab issues and merge requests, Bitbucket Cloud issues and pull requests, Linear issues, and Jira Cloud issues. Import reads the item's text and metadata. It does not fetch a review request's branch, publish comments, transition issues, push commits or merge remote work.
 
-Configure integrations on the server with `CODEFLOW_INTEGRATIONS_FILE` pointing to a JSON file, or `CODEFLOW_INTEGRATIONS_JSON` containing the array directly. The file takes precedence. Restart code-flow after changing configuration. Credentials are read from named environment variables; the browser receives connection names and availability, never credential values or environment variable names.
+Use the project’s **Connections** tab for guided setup, or **Settings → Integrations** to manage services across projects. Select the project repository, connect and test the service, then choose an issue to prepare a task with its project and repository preserved. See [project integrations](project-integrations.md).
+
+Existing administrator-managed integrations can still use `CODEFLOW_INTEGRATIONS_FILE` pointing to a JSON file, or `CODEFLOW_INTEGRATIONS_JSON` containing the array directly. The file takes precedence. Restart code-flow after changing environment configuration. Credentials are read from named environment variables; the browser receives connection names and availability, never credential values or environment variable names.
 
 ```json
 [

@@ -1757,7 +1757,7 @@ function savedAgentDraft(id: string) {
 export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSummary; steps: Step[]; chat: boolean; onOpenChat?: (id: string) => void }) {
   const [text, setText] = useState(savedAgentDraft(run.id).text);
   const [target, setTarget] = useState("");
-  const [handoffOpen, setHandoffOpen] = useState(false);
+  const [handoff, setHandoff] = useState<{ agent: AgentId; settings: ChatSettings } | null>(null);
   const openChat = onOpenChat ?? (id => navigate({ view: "run", id }));
   const [replySettings, setReplySettings] = useState<Record<string, ChatSettings>>({});
   const [replyPermissions, setReplyPermissions] = useState<ChatPermissions | null>(null);
@@ -1927,7 +1927,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
     <div class="convo">
       <div class="convo-inner">
         {chat ? <TaskTeamStatus run={run} /> : null}
-        {handoffOpen ? <ProviderChatDialog run={run} onClose={() => setHandoffOpen(false)} onOpenChat={openChat} /> : null}
+        {handoff ? <ProviderChatDialog run={run} initialAgent={handoff.agent} initialSettings={handoff.settings} initialMessage={text} attachments={images} onClose={() => setHandoff(null)} onOpenChat={openChat} /> : null}
         {!budgetValid ? <p class="msg err" role="alert">Send is off until the budget below allows {minimumCalls}–200 calls and 1–720 minutes.</p> : null}
         {!chat && (!running || run.team) ? <details class="followup-budget"><summary>{running ? "Goal revision budget" : "New execution budget"} · {followupSteps} calls · {followupMinutes} min</summary><div class="at-row"><label>Maximum calls<input class="field" aria-label="Follow-up maximum calls" type="number" min={minimumCalls} max={200} value={followupSteps} onInput={(event) => setFollowupSteps(Number(event.currentTarget.value))} /></label><label>Maximum minutes<input class="field" aria-label="Follow-up maximum minutes" type="number" min={1} max={720} value={followupMinutes} onInput={(event) => setFollowupMinutes(Number(event.currentTarget.value))} /></label></div><p class="help">{sideOnly ? "A reply queued behind a side chat joins the running execution's allowance; this budget applies when a reply starts a new execution. " : "This is a new allocation. "}The result branch, project memory and applicable context are retained. Earlier spend remains in lifetime usage.</p>{!budgetValid ? <p class="msg err">Choose {minimumCalls}–200 calls and 1–720 minutes.</p> : null}</details> : null}
         {running && sentNotes.length ? <details key={run.id} class="activity note-history">
@@ -1981,10 +1981,9 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
                 </select>
               </label>
             )}
-            {!running && chosen !== "team" && replyAgent && !(chat && (runs.value.get(chatTaskId(run)) ?? run).taskTeam?.enabled) ? <ChatControls showPermissions={run.chatLink?.kind !== "side"} providers={run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={replyAgent} onAgent={chat ? async agent => { try { const next = await post<{ id: string }>(`/api/runs/${run.id}/provider-chat`, { agent, kind: run.chatLink?.kind ?? "tab" }); openChat(next.id); } catch (error) { showToast((error as Error).message); } } : undefined} settings={selectedSettings} onSettings={(value) => setReplySettings({ ...replySettings, [replyAgent]: value })} permissions={selectedPermissions} onPermissions={setReplyPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} /> : null}
+            {!running && chosen !== "team" && replyAgent && !(chat && (runs.value.get(chatTaskId(run)) ?? run).taskTeam?.enabled) ? <ChatControls showPermissions={run.chatLink?.kind !== "side"} providers={run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={replyAgent} onAgent={chat ? agent => setHandoff({ agent, settings: agent === replyAgent ? selectedSettings : replySettings[agent] ?? {} }) : undefined} resetPermissionsOnAgentChange={!chat} settings={selectedSettings} onSettings={(value) => setReplySettings({ ...replySettings, [replyAgent]: value })} permissions={selectedPermissions} onPermissions={setReplyPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} /> : null}
             {chat && soloAgent ? <TaskTeamControl run={run} lead={soloAgent} /> : null}
             {run.chatLink?.kind === "side" ? <span class="help">Read only</span> : null}
-            {run.pattern === "solo" ? <Menu label="Chat actions" icon="more" class="chat-choice chat-action-menu" above align="end">{(close) => <MenuItem disabled={busy || !run.worktrees.length} sub="Continue with context in a new workspace tab" onClick={() => { close(); setHandoffOpen(true); }}>Fork chat…</MenuItem>}</Menu> : null}
             <span class="chatbox-hint" title={hint}>
               {hint}
             </span>
@@ -2338,33 +2337,37 @@ function RecoveryCheckDialog({ run, onClose }: { run: RunSummary; onClose: () =>
   </div></dialog>;
 }
 
-function ProviderChatDialog({ run, onClose, onOpenChat }: { run: RunSummary; onClose: () => void; onOpenChat: (id: string) => void }) {
+function ProviderChatDialog({ run, initialAgent, initialSettings, initialMessage, attachments, onClose, onOpenChat }: {
+  run: RunSummary; initialAgent: AgentId; initialSettings: ChatSettings; initialMessage: string; attachments: Attachment[];
+  onClose: () => void; onOpenChat: (id: string) => void;
+}) {
   const choices = run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : agents.value;
-  const [agent, setAgent] = useState<AgentId>(choices.find((agent) => agent.available)?.id ?? choices[0]?.id ?? "codex");
-  const [settings, setSettings] = useState<ChatSettings>({});
-  const [message, setMessage] = useState("");
+  const [agent, setAgent] = useState(initialAgent);
+  const [settings, setSettings] = useState(initialSettings);
+  const [message, setMessage] = useState(initialMessage);
+  const [images, setImages] = useState(attachments);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const ref = useDialog(true, () => { if (!busy) onClose(); });
   const start = async () => {
-    if (busy) return;
+    if (busy || !message.trim() || !choices.some(item => item.id === agent && item.available)) return;
     setBusy(true); setError("");
     try {
-      const next = await post<{ id: string }>(`/api/runs/${run.id}/provider-chat`, { agent, settings, message, kind: run.chatLink?.kind ?? "tab" });
+      const next = await post<{ id: string }>(`/api/runs/${run.id}/provider-chat`, { agent, settings, message: message.trim(), kind: run.chatLink?.kind ?? "tab", attachments: images.map(({ name, data }) => ({ name, data })) });
       onClose(); onOpenChat(next.id);
     } catch (error) { setError((error as Error).message); setBusy(false); }
   };
   return <dialog class="picker small-dialog" ref={ref} aria-labelledby="provider-chat-title"><div class="picker-inner">
     <div class="picker-head"><h3 id="provider-chat-title">Fork chat</h3></div>
     <div class="dialog-body">
-      <p class="help">Opens a new tab with this conversation and saved context. Tabs share the workspace, including uncommitted edits. Each tab has its own provider session; editing turns take turns using the workspace.</p>
+      <p class="help">Send a message to start a new chat with this conversation’s context. Chats share the workspace.</p>
       <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0 }}>
+        <label>Message<textarea class="field" rows={4} maxLength={20000} autoFocus value={message} onInput={(event) => setMessage(event.currentTarget.value)} placeholder="What should the new chat do?" /></label>
+        <DraftImages images={images} onRemove={index => setImages(images.filter((_, i) => i !== index))} />
         <ChatControls agent={agent} onAgent={(value) => { setAgent(value); setSettings({}); }} providers={choices} settings={settings} onSettings={setSettings} permissions={{ trust: run.trust, tools: false }} onPermissions={() => {}} showPermissions={false} />
-        <label>First message <span class="help">Optional</span><textarea class="field" rows={3} maxLength={20000} value={message} onInput={(event) => setMessage(event.currentTarget.value)} placeholder="What should the new chat do?" /></label>
       </fieldset>
-      <p class="help">Without a message, the new provider reads the context and waits for your next request. Existing permission limits are retained.</p>
       {error ? <p class="msg err" role="alert">{error}</p> : null}
     </div>
-    <div class="picker-foot"><span class="ps" /><button class="btn" disabled={busy} onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !choices.some((item) => item.id === agent && item.available)} onClick={() => void start()}>{busy ? "Starting…" : "Start new chat"}</button></div>
+    <div class="picker-foot"><span class="ps" /><button class="btn" disabled={busy} onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !message.trim() || !choices.some((item) => item.id === agent && item.available)} onClick={() => void start()}>{busy ? "Sending…" : "Send"}</button></div>
   </div></dialog>;
 }
 

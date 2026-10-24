@@ -15,7 +15,7 @@ const exec = promisify(execFile);
 export const AGY_ISOLATION_VERSION = "macos-file-only-v1";
 export const AGY_SHARED_TOOLS_VERSION = "macos-task-tools-v2";
 export const AGY_SHARED_TOOLS_LIMITATION = "Antigravity uses isolated workspace file tools and Code Flow's shared browser/computer and live member tools. Native browser, terminal, arbitrary MCP servers, hooks and native delegation stay disabled. Computer actions require Full access. Native sessions are not resumed.";
-export const AGY_VERIFIED_CLI_VERSIONS = ["1.4.4", "1.4.5"] as const;
+export const AGY_VERIFIED_CLI_VERSIONS = ["1.4.4", "1.4.5", "1.4.6"] as const;
 export const verifiedAgyVersion = (version: string) => AGY_VERIFIED_CLI_VERSIONS.some(supported => version.trim() === supported);
 export const AGY_FILE_ONLY_LIMITATION = "Antigravity is limited to file tools in a fresh macOS sandbox. Terminal, browser, MCP, hooks and native delegation are disabled; Code Flow runs checks separately. Native sessions are not resumed.";
 

@@ -33,6 +33,8 @@ export function codeHostFixture(remote: string, stateFile?: string) {
     }
     if (current.missingPolicy && /approval_state|mergeability/.test(path)) return Response.json({}, { status: 403 });
     if (gl) {
+      if (path.endsWith("/issues")) return Response.json([]);
+      if (path.endsWith("/merge_requests")) return Response.json([glRequest]);
       if (/\/merge_requests\/(?:7|\d+)$/.test(path)) return Response.json(glRequest);
       if (path.endsWith("/repository/branches/main")) return Response.json({ commit: { id: facts.target } });
       if (path.endsWith("/approvals")) return Response.json({ approved: true });
@@ -42,6 +44,8 @@ export function codeHostFixture(remote: string, stateFile?: string) {
       if (path.endsWith("/discussions")) return Response.json(current.comments.map((comment: any) => ({ id: `discussion-${comment.id}`, notes: [{ id: comment.id, body: comment.body, resolvable: true, resolved: comment.resolved, author: { username: "fixture-reviewer" }, position: { new_path: "subject.txt", new_line: 1 } }] })));
       if (path.endsWith("/projects/org/repo")) return Response.json(project);
     } else {
+      if (path.endsWith("/issues")) return Response.json({ values: [] });
+      if (path.endsWith("/pullrequests")) return Response.json({ values: [bbRequest] });
       if (/\/pullrequests\/(?:7|\d+)$/.test(path)) return Response.json(bbRequest);
       if (path.endsWith("/repositories/org/repo")) return Response.json({ full_name: "org/repo" });
       if (path.endsWith("/refs/branches/main")) return Response.json({ target: { hash: facts.target } });

@@ -363,6 +363,7 @@ test("the team wizard reuses HTTPS and existing project access, and shares only 
   await wizard.getByRole("button", { name: "Save and continue", exact: true }).click();
   await wizard.getByRole("button", { name: "Save repositories and continue", exact: true }).click();
   await wizard.getByRole("button", { name: "Continue to teammates", exact: true }).click();
+  await wizard.getByText("Advanced account administration", { exact: true }).click();
   await wizard.getByLabel("Username", { exact: true }).fill("wizard-member");
   await wizard.getByLabel("Display name", { exact: true }).fill("Team member");
   const secret = "a private wizard password 12345";
@@ -381,6 +382,7 @@ test("the team wizard reuses HTTPS and existing project access, and shares only 
   assert.ok(!text.includes("/r/") && !text.includes(secret) && !text.includes("token="), "share text excludes phone capability and account password");
   await wizard.getByRole("button", { name: "Edit teammates", exact: true }).click();
   const accounts = await api("/api/accounts"), member = accounts.users.find((entry: any) => entry.username === "wizard-member");
+  await wizard.getByText("Advanced account administration", { exact: true }).click();
   await wizard.getByLabel("Account", { exact: true }).selectOption(member.id);
   await wizard.getByLabel("Project role", { exact: true }).selectOption("maintainer");
   await wizard.getByRole("button", { name: "Save project access", exact: true }).click();

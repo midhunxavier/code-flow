@@ -241,6 +241,7 @@ test("project Board and People use the owning server despite colliding linked pr
     assert.equal(new URL(page.url()).searchParams.get("team"), "local");
     assert.equal(await page.getByRole("button", { name: /Remote colliding task/ }).count(), 0);
     await page.getByRole("button", { name: "People", exact: true }).click();
+    await page.getByText("Advanced administration", { exact: true }).click();
     await page.getByRole("region", { name: "Shared project accounts", exact: true }).waitFor();
     assert.equal(new URL(page.url()).hash, `#/project/${projectA}/people`);
     assert.equal(await page.locator(`#shared-role-${projectB}`).count(), 0, "roles form is project scoped");
@@ -287,7 +288,7 @@ test("new project destinations support narrow screens, themes and keyboard navig
   for (const section of ["people", "automation/repeat", "board"]) {
     await page.goto(base + `/#/project/${projectA}/${section}`);
     await page.locator(".project-page").waitFor();
-    if (section === "people") await page.getByRole("region", { name: "Shared project accounts", exact: true }).waitFor();
+    if (section === "people") { await page.getByText("Advanced administration", { exact: true }).click(); await page.getByRole("region", { name: "Shared project accounts", exact: true }).waitFor(); }
     if (section === "board") await page.getByRole("button", { name: /Local board task/ }).waitFor();
     if (section.startsWith("automation")) await page.getByText("Alpha scheduled task", { exact: true }).waitFor();
     for (const colorScheme of ["light", "dark"] as const) {

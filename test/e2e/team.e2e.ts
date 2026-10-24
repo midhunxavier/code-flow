@@ -85,16 +85,16 @@ test("Settings → Team defines a repository key and maps it; the board form cre
   await page.getByRole("heading", { level: 2, name: "Connections", exact: true }).waitFor();
   await page.getByRole("button", { name: "Connect this computer", exact: true }).waitFor(); // not linked: the connect form, named as the docs and the server's hints name it, with this computer's name prefilled
   const machine = page.getByLabel("Machine name"); await page.waitForFunction((input) => (input as HTMLInputElement).value !== "", await machine.elementHandle()); assert.notEqual(await machine.inputValue(), "");
-  await page.getByText("No repository keys yet.", { exact: false }).waitFor();
+  await page.getByText("No coding repositories to connect here.", { exact: false }).waitFor();
   await page.getByRole("link", { name: /Turn on secure remote access/ }).waitFor(); // no remote access: no address to hand out (and never the phone link's secret path)
-  const keys = page.getByRole("group", { name: /^Repository keys · Fixture app/ }); await keys.waitFor();
+  const keys = page.getByRole("group", { name: /^Repositories · Fixture app/ }); await keys.waitFor();
   await keys.getByRole("button", { name: "Add repository", exact: true }).click();
-  await keys.getByLabel("Key", { exact: true }).fill("app"); await keys.getByLabel("Label", { exact: true }).fill("Fixture app"); await keys.getByLabel("Default branch", { exact: true }).fill("main");
-  await keys.getByRole("button", { name: "Save repository keys", exact: true }).click();
-  await page.getByRole("status").filter({ hasText: "Repository keys saved" }).waitFor();
-  const mapping = page.locator(".team-mapping").filter({ hasText: "Fixture app" }); await mapping.getByText("Not mapped on this computer.", { exact: true }).waitFor();
+  await keys.getByLabel("Repository name", { exact: true }).fill("Fixture app"); await keys.getByText("Advanced repository identifier", { exact: true }).click(); await keys.getByLabel("Key", { exact: true }).fill("app"); await keys.getByLabel("Default branch", { exact: true }).fill("main");
+  await keys.getByRole("button", { name: "Save repositories", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "Repositories saved" }).waitFor();
+  const mapping = page.locator(".team-mapping").filter({ hasText: "Fixture app" }); await mapping.getByText("Choose a repository folder on this computer.", { exact: true }).waitFor();
   await mapping.getByRole("button", { name: "Use current repository", exact: true }).click(); await mapping.getByRole("button", { name: "Save", exact: true }).click();
-  await page.getByRole("status").filter({ hasText: "Repository mapped" }).waitFor();
+  await page.getByRole("status").filter({ hasText: "Repository selected" }).waitFor();
   const link = await api<{ linked: boolean; mappings: Record<string, Record<string, string>> }>("/api/team-link"); assert.equal(link.linked, false); assert.deepEqual(link.mappings, { [projectId]: { app: repo } });
   const board = await api<{ projects: { id: string; repositories: unknown[] }[] }>("/api/team/board"); assert.deepEqual(board.projects.find((project) => project.id === projectId)?.repositories, [{ key: "app", label: "Fixture app", defaultBranch: "main" }]);
 
@@ -152,7 +152,7 @@ test("the board, the task page and Settings → Team pass axe in light, dark and
   const screens: [string, string, () => Promise<void>][] = [
     ["/team", "board", () => page.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }).waitFor()],
     [`/team/task/${taskId}`, "task", () => page.locator(".team-comment-text").filter({ hasText: OWNER_COMMENT }).waitFor()],
-    ["/settings/team", "settings team", () => page.getByRole("button", { name: "Save repository keys", exact: true }).waitFor()],
+    ["/settings/team", "settings team", () => page.getByRole("button", { name: "Save repositories", exact: true }).waitFor()],
   ];
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
@@ -399,8 +399,7 @@ test("the hosting wizard configures the local board even from another team and h
   await wizard.getByLabel("Local repository folder (optional)", { exact: true }).fill("");
   await wizard.getByRole("button", { name: "Save and continue", exact: true }).click();
   await wizard.getByRole("heading", { name: "Step 2 of 5: Repositories", exact: true }).waitFor();
-  await wizard.getByLabel("Repository key", { exact: true }).fill("service");
-  await wizard.getByLabel("Repository label", { exact: true }).fill("Service");
+  await wizard.getByLabel("Repository name", { exact: true }).fill("Service");
   await wizard.getByRole("button", { name: "Save repositories and continue", exact: true }).click();
   await wizard.getByRole("heading", { name: "Step 3 of 5: Secure access", exact: true }).waitFor();
   await wizard.getByLabel("Connection method", { exact: true }).selectOption("lan");
@@ -409,6 +408,7 @@ test("the hosting wizard configures the local board even from another team and h
   assert.equal(await wizard.getByRole("button", { name: "Continue to teammates", exact: true }).count(), 0);
   await wizard.getByRole("button", { name: "Set up access later", exact: true }).click();
   await wizard.getByRole("heading", { name: "Step 4 of 5: Teammates", exact: true }).waitFor();
+  await wizard.getByText("Advanced account administration", { exact: true }).click();
   await wizard.getByLabel("Username", { exact: true }).fill("wizard-person");
   await wizard.getByLabel("Display name", { exact: true }).fill("Wizard teammate");
   const secret = "wizard initial password 12345";
@@ -433,7 +433,7 @@ test("the hosting wizard configures the local board even from another team and h
   await wizard.getByLabel("Project", { exact: true }).selectOption(added.id);
   await wizard.getByRole("button", { name: "Save and continue", exact: true }).click();
   await wizard.getByRole("heading", { name: "Step 2 of 5: Repositories", exact: true }).waitFor();
-  assert.equal(await wizard.getByLabel("Repository key", { exact: true }).inputValue(), "service", "reopening reuses saved repository setup");
+  assert.equal(await wizard.getByLabel("Repository name", { exact: true }).inputValue(), "Service", "reopening reuses saved repository setup");
   assert.deepEqual(violations, []); assert.deepEqual(errors, []);
 });
 
@@ -520,7 +520,7 @@ test("host execution: owner grants a project, teammate queues work and downloads
   await audit(page, "host execution owner settings");
   const hosted = await api<TaskView>("/api/team/tasks", { method: "POST", body: JSON.stringify({ projectId, repository: "app", title: "Host greeting task", goal: "Add a greeting", owner: casey.id }) });
   await shared.goto(`${base}/#/team/task/${hosted.id}`);
-  await shared.getByRole("button", { name: "Run on host computer", exact: true }).click();
+  await shared.getByRole("button", { name: "Run on team server", exact: true }).click();
   await shared.getByText("Host task: finished", { exact: false }).waitFor({ timeout: 60_000 });
   await shared.getByRole("link", { name: "Download bundle", exact: true }).waitFor();
   const bundleHref = await shared.getByRole("link", { name: "Download bundle", exact: true }).getAttribute("href");
@@ -593,7 +593,8 @@ test("an empty shared project exposes Board and People without a server clone or
   await tab.getByRole("heading", { name: "Your board is ready for its first task", exact: true }).waitFor();
   await tab.getByRole("button", { name: "People", exact: true }).click();
   await tab.getByRole("region", { name: "Project people", exact: true }).waitFor();
-  await tab.getByRole("group", { name: "Repository keys · Shared without clone", exact: true }).waitFor();
+  await tab.getByText("Project repositories", { exact: true }).click();
+  await tab.getByRole("group", { name: "Repositories · Shared without clone", exact: true }).waitFor();
   assert.equal(await tab.getByLabel("Key", { exact: true }).inputValue(), "service");
   assert.equal(await tab.getByRole("region", { name: "Shared project accounts", exact: true }).count(), 0);
   assert.equal(await tab.getByText("Run teammates’ tasks on this computer", { exact: true }).count(), 0);

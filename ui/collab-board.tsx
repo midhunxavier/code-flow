@@ -1,3 +1,4 @@
+import { ConnectComputer } from "./connect-computer.js";
 import { executionHost } from "./ssh-projects.js";
 import { SshTeamServerCard } from "./team-server-status.js";
 import { TeamTerminalPanel } from "./team-terminals.js";
@@ -54,6 +55,7 @@ export function TeamBoardView({ project, shared = false, embedded = false, navig
       <div class="page-head-actions"><button class="btn" onClick={() => navigate({ view: "team-people", ...(chosen ? { project: chosen } : {}) })}>People</button>{canCreate ? <button type="button" class="btn primary" aria-expanded={!!creating} disabled={!!creating} onClick={() => setCreating("manual")}><Icon name="plus" /> New task</button> : null}{canCreate && !shared ? <button type="button" class="btn" disabled={!!creating} onClick={() => setCreating("agent")}>Draft with agent</button> : null}</div>
     </div>
     {ssh && !embedded ? <><SshTeamServerCard key={ssh.id} host={ssh} /><div class="team-board-context"><strong>Viewing this computer’s board · {ssh.name}</strong><p>Tasks below belong to this computer. To use the shared team board, connect your computer with the team address and account from team server setup.</p></div></> : null}
+    {shared && chosen ? <section class="settings-card project-welcome" aria-label="Project access"><strong>You’re in {b.projects.find(p => p.id === chosen)?.name}</strong><p class="help">Your project access is ready. {canCreate ? "Create tasks, discuss work, and review results. Coding on your computer is optional." : "You can view results" + (b.projects.find(p => p.id === chosen)?.role === "reviewer" ? ", comment, and review work. No computer setup needed." : ". No computer setup needed.")}</p>{canCreate ? <ConnectComputer project={b.projects.find(p => p.id === chosen)!} /> : null}</section> : null}
     {shared ? <TeamTerminalPanel board={b} project={chosen} /> : null}
     {!ssh && (shared || link && !link.linked) ? <HostQueue board={b} project={chosen} /> : null}
     {!shared && !ssh && link && !link.linked && !b.tasks.length ? <div class="settings-callout team-callout"><Icon name="people" /><div><strong>Not connected to a team server</strong><p>Connect this computer in Connections → Share access to work on a shared board, or create tasks here to use this computer as the team server.</p><a href="#/settings/connections/sharing">Open Connections → Share access <span aria-hidden="true">→</span></a></div></div> : null}

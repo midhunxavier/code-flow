@@ -4,9 +4,9 @@ Configure the GitLab or Bitbucket connection, fetch the change into an isolated 
 
 ## Review on another code host
 
-Settings → Integrations → GitLab and Bitbucket code hosts provides explicit owner workflows for GitLab and Bitbucket Cloud. Jira, Linear and source-provider extensions remain read-only. No provider account is contacted in the fixture tests.
+Open the project’s **Connections** tab, connect GitLab or Bitbucket, then choose **Choose issue or PR → Review pull request → Load PR preview**. This opens the explicit owner workflow with the project and repository preserved. Jira, Linear and source-provider extensions remain read-only. No provider account is contacted in the fixture tests.
 
-Configure integrations with `CODEFLOW_INTEGRATIONS_JSON` or `CODEFLOW_INTEGRATIONS_FILE`:
+Use the guided [connection setup](project-integrations.md), or keep administrator-managed integrations in `CODEFLOW_INTEGRATIONS_JSON` or `CODEFLOW_INTEGRATIONS_FILE`:
 
 ```json
 [

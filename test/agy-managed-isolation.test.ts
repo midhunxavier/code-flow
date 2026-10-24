@@ -109,6 +109,6 @@ test("version inspection cannot execute an unverified wrapper outside the sandbo
 
 
 test("only explicitly exercised Antigravity runtime versions are accepted", () => {
-  for (const version of ["1.4.4", "1.4.5\n"]) assert.equal(verifiedAgyVersion(version), true);
-  for (const version of ["1.4.3", "1.4.6", "1.5.0", "1.4.5-custom", "unknown"]) assert.equal(verifiedAgyVersion(version), false);
+  for (const version of ["1.4.4", "1.4.5\n", "1.4.6", "1.4.6\n"]) assert.equal(verifiedAgyVersion(version), true);
+  for (const version of ["1.4.3", "1.4.7", "1.5.0", "1.4.6-custom", "unknown"]) assert.equal(verifiedAgyVersion(version), false);
 });

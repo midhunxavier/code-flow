@@ -63,7 +63,7 @@ test("Agent is the fresh default and Advanced team workflows survive reload and 
   const fresh = await context.newPage();
   try {
     await fresh.goto(`${base}/?token=${token}`);
-    const team = fresh.getByRole("switch", { name: "Team", exact: true });
+    const team = fresh.getByRole("switch", { name: "AI team", exact: true });
     await team.waitFor();
     assert.equal(await team.getAttribute("aria-checked"), "false");
     assert.equal(await fresh.getByLabel("Workflow", { exact: true }).isVisible(), false);

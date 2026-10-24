@@ -14,11 +14,12 @@ const obj = (properties: Record<string, object>) => ({ type: "object", propertie
 const str = { type: "string" };
 const identifier = { type: "string", pattern: "^[a-z][a-z0-9-]{0,39}$", description: "Stable lowercase identifier, e.g. api, add-validation, goal; never T1 or R1" };
 const strings = { type: "array", items: str };
+const repositoryPaths = { ...strings, description: "Repository-relative file or directory paths. A directory includes its descendants. Use * alone for the whole repository; do not use absolute paths, traversal, .git paths or partial globs." };
 const array = (items: object) => ({ type: "array", items });
 const member = obj({ id: identifier, name: str, role: { type: "string", enum: ["coordinator", "worker", "reviewer"] }, provider: { type: "string", description: "Exact provider ID from the supplied eligible inventory and selected pool" }, model: str, effort: str, reason: str });
-const legacyTask = obj({ id: identifier, title: str, instructions: str, owner: { type: "string", description: "An active worker member ID (or coordinator for investigation). Never the reviewer: code-flow schedules independent review automatically." }, kind: { type: "string", enum: ["implementation", "investigation"] }, dependsOn: strings, requirements: strings, acceptance: strings, paths: strings });
+const legacyTask = obj({ id: identifier, title: str, instructions: str, owner: { type: "string", description: "An active worker member ID (or coordinator for investigation). Never the reviewer: code-flow schedules independent review automatically." }, kind: { type: "string", enum: ["implementation", "investigation"] }, dependsOn: strings, requirements: strings, acceptance: strings, paths: repositoryPaths });
 const task = obj({ ...legacyTask.properties, dependencyTypes: array(obj({ taskId: identifier, kind: { type: "string", enum: ["completion", "artifact", "knowledge"] } })) });
-const subplans = array(obj({ id: { type: "string", pattern: "^[a-z][a-z0-9-]{0,27}$" }, strategy: { type: "string", enum: ["investigate-implement", "implement-verify", "bounded-repair"] }, owner: str, requirements: strings, acceptance: strings, paths: strings, dependsOn: strings, instructions: str }));
+const subplans = array(obj({ id: { type: "string", pattern: "^[a-z][a-z0-9-]{0,27}$" }, strategy: { type: "string", enum: ["investigate-implement", "implement-verify", "bounded-repair"] }, owner: str, requirements: strings, acceptance: strings, paths: repositoryPaths, dependsOn: strings, instructions: str }));
 /** Legacy schemas stay separate so saved wave decisions are still valid during replay. */
 export const LEGACY_TEAM_PLAN_SCHEMA = obj({ requirements: array(obj({ id: identifier, description: str })), members: array(member), tasks: array(legacyTask), contracts: strings, rationale: str });
 /** Every wire object is closed and every property required, as strict Codex output requires. */
@@ -69,6 +70,10 @@ const ID = /^[a-z][a-z0-9-]{0,39}$/;
 const unique = (items: string[]) => new Set(items).size === items.length;
 const nonempty = (value: string) => !!value.trim();
 
+/** A trailing directory separator does not change ownership; leave all other syntax for validation. */
+export function normalizeOwnedPath(path: string): string {
+  return path.endsWith("/") && !path.includes("*") ? path.slice(0, -1) : path;
+}
 export function pathAllowed(path: string): boolean {
   return path === "*" || (!!path && path.length <= 500 && !/[\u0000-\u001f\u007f]/.test(path) && !path.startsWith("/") && !path.startsWith("-") && !path.includes("\\") && !path.split("/").some((p) => p === "." || p === ".." || p === ".git" || p === "") && !path.includes("*") && !/^[A-Za-z]:/.test(path));
 }
@@ -128,7 +133,8 @@ export function planProblem(plan: TeamPlan, policy: TeamPolicy, retainedMembers:
     if (!t.requirements.length || t.requirements.some((id) => !plan.requirements.some((r) => r.id === id))) return `${t.id} must cover existing requirements`;
     if (t.dependencyTypes && (Object.keys(t.dependencyTypes).some((id) => !t.dependsOn.includes(id)) || Object.values(t.dependencyTypes).some((kind) => !["completion", "artifact", "knowledge"].includes(kind)))) return `${t.id} has invalid typed dependencies`;
     if (!unique(t.dependsOn) || t.dependsOn.some((id) => id === t.id || !plan.tasks.some((other) => other.id === id))) return `${t.id} has an invalid dependency`;
-    if (t.paths.some((p) => !pathAllowed(p)) || (t.kind === "implementation" && !t.paths.length)) return `${t.id} needs safe owned repository paths (directories, files, or *)`;
+    const unsafePath = t.paths.find(p => !pathAllowed(p));
+    if (unsafePath !== undefined || (t.kind === "implementation" && !t.paths.length)) return `${t.id} needs safe owned repository paths (directories, files, or *)${unsafePath === undefined ? "" : `; invalid path: ${JSON.stringify(unsafePath).slice(0, 180)}`}`;
   }
   if (plan.requirements.some((r) => !plan.tasks.some((t) => t.requirements.includes(r.id)))) return "every requirement must have a task; requirements cannot silently disappear";
   const visited = new Set<string>();

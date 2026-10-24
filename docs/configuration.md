@@ -13,7 +13,8 @@ Open **Settings** at the bottom of the sidebar, press **⌘, / Ctrl+,**, or sear
 - **SSH connections:** save and open remote VMs, with optional port and identity-file overrides. See [SSH projects](ssh-projects.md).
 - **Remote access:** Tailscale, Wi-Fi, pairing and device access to the local workspace.
 - **Team:** connect this computer to a team server as a runner and map repository keys to local clones; on the team server, define each project's repository keys and the owner's display name, read the `https://` address teammates connect to and revoke runners. See [Team collaboration](team-collaboration.md).
-- **Integrations, Projects & access, Extensions, Data & storage:** existing source/code-host/worker integrations, project conventions, filesystem policies, shared accounts, extensions and retention controls.
+- **Integrations:** guided service setup and connection management; each project has its own [Connections tab](project-integrations.md). Existing environment-based integrations remain administrator-managed under Advanced.
+- **Projects & access, Extensions, Data & storage:** project conventions, filesystem policies, shared accounts, extensions and retention controls.
 - **Advanced:** collect/export diagnostics and find the server configuration reference. Process-level settings and credentials remain environment configuration and require a restart.
 
 Appearance, run defaults and sidebar preferences save in this browser, separately for each SSH workspace. SSH definitions and the team link with its repository mappings save on the local server; project, access, notification and retention settings save on the machine hosting that workspace; team board tasks, checkpoints and runner registrations save on the team server the link points to. Controls with a **Save** action keep their existing explicit save behavior. Numeric run limits save when you leave the field; invalid values restore the previous setting.
@@ -31,7 +32,7 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
   "copy": [".env", ".env.local", "config/*.local.json"],
   "run": { "command": "npm run dev", "port": 3000 },
   "models": { "claude": { "model": "opus", "effort": "high" } },
-  "limits": { "maxMinutes": 90, "maxSteps": 60 },
+  "limits": { "maxMinutes": 90, "maxSteps": 60, "checkTimeoutMin": 25 },
   "trust": "standard",
   "image": "node:22",
   "learn": true,

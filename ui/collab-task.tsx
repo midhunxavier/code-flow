@@ -102,7 +102,7 @@ export function TeamTaskView({ id, shared = false, navigate }: { id: string; sha
             {!task.owner && canEdit && meId ? <button type="button" class="btn small" disabled={!!busy || !!ownerProblem(task, role, meId)} title={ownerProblem(task, role, meId)} onClick={() => void save({ owner: meId }, "Taking the task…")}>Take this task</button> : null}
           </div>
           {offered ? <p class="msg warn" role="status">Hand-over offered to {whoLabel(offered.to, meId)} by {whoLabel(offered.from, meId)} {ago(offered.offeredAt)}{offered.note ? `: ${offered.note}` : ""}</p> : null}
-          {shared ? <HostTaskControl key={task.id} task={task} meId={meId} /> : null}
+          {shared && canEdit ? <HostTaskControl key={task.id} task={task} meId={meId} projectName={project?.name} /> : null}
           {!shared && isOwner && link === null ? <p class="help">This computer's team link is not available here, so the task cannot be run from this page.</p> : null}
         </section>
         <CheckpointsCard task={task} latest={checkpoint} meId={meId} canEdit={canEdit} maintainer={maintainer} shared={shared} busy={busy} act={act} onFetch={setFetching} reload={load} />
@@ -327,7 +327,7 @@ function StartDialog({ task, checkpoint, onClose, onStarted }: { task: Task; che
     } catch (err) { setError((err as Error).message); setBusy(false); }
   };
   return <dialog class="picker team-build-dialog" ref={ref} aria-labelledby="tt-start-title"><form class="picker-inner" onSubmit={(event) => void submit(event)}>
-    <div class="picker-head"><h3 id="tt-start-title">Build with agents</h3><p class="help">Build on this computer in a worktree of your clone. Progress, checks and a checkpoint return to this task for review.</p></div>
+    <div class="picker-head"><h3 id="tt-start-title">Build with agents</h3><p class="help">My computer · Use your repository and agent login in a worktree of your clone. Progress, checks and a checkpoint return to this task for review.</p></div>
     <div class="dialog-body">
       <label for="tt-start-repo">Repository path for <code>{task.repository}</code></label>
       <div class="row-inline"><input id="tt-start-repo" class="field mono" value={path} placeholder={mapped || "/absolute/path/to/your/clone"} disabled={busy} onInput={(event) => setPath(event.currentTarget.value)} /><button type="button" class="btn small" disabled={busy || !repo.value} title={repo.value || "Choose a repository in the composer first"} onClick={() => setPath(repo.value)}>Use current repository</button></div>
