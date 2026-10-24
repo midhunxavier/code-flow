@@ -76,6 +76,7 @@ test("owner invites one project; a phone recipient chooses a password and reache
   await owner.goto(`${base}/?team=local#/project/${projectId}`);
   await owner.getByRole("button", { name: "Share", exact: true }).click();
   const share = owner.getByRole("dialog", { name: "Share Shared app", exact: true });
+  await share.waitFor(); // Mount the dialog before audit waits for its opening animation.
   const invites = share.getByRole("region", { name: "Project invitations" });
   assert.equal(await share.getByLabel("Account", { exact: true }).count(), 0);
   await audit(owner);
