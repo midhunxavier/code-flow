@@ -154,7 +154,7 @@ test("Agent UI renders replies, keeps drafts and files across provider tabs, res
   assert.equal(await tabs.locator(".sess-pick").count(), 1, "closed tabs stay closed after reload");
   assert.equal(await panel.getByRole("textbox", {name:"Message agent",exact:true}).inputValue(), "Keep side draft");
   await tabs.getByRole("button", {name:/^Close Codex/}).click();
-  await page.getByRole("switch", {name:"Team",exact:true}).waitFor();
+  await page.getByRole("switch", {name:"AI team",exact:true}).waitFor();
   assert.equal(await rail.locator(".run-item").count(), 2, "closing the last tab keeps the sidebar task");
   await rail.locator(".run-item").filter({hasText:first.task ?? (live ? "Remember cobalt-731" : "Agent UI first message")}).click();
   await page.waitForURL(new RegExp(second.id));
