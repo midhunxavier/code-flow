@@ -10,9 +10,10 @@ import type { Board, BoardProject, RepoRef, RunnerPublic } from "../src/collab/m
 import { ApiError, api, copy, enc, post, showToast, usePoll } from "./lib.js";
 import { roleAtLeast } from "./shared-roles.js";
 import { executionHost } from "./ssh-projects.js";
+import { repositoryChoice } from "./team-repository-choice.js";
 import { parseTeamAddress } from "./team-join-link.js";
 import { collaborationHref } from "./lib.js";
-import { repo, pickerChoose, pickerOpen } from "./state.js";
+import { repo, projects as localProjects, pickerChoose, pickerOpen } from "./state.js";
 import { type TeamLinkInfo, ago, board, boardError, del, loadBoard, loadTeamLink, memberName, put, teamLink, teamLinkError, teamServerAddress, teamTick } from "./collab-state.js";
 
 /**
@@ -41,23 +42,27 @@ export function TeamSettings() {
   </>;
 }
 
-export function TeamJoinSettings() {
+export function TeamJoinSettings({ connection }: { connection?: string }) {
+  let focusProject: string | undefined;
+  try { focusProject = connection ? parseTeamAddress(connection).project : undefined; } catch { /* The connect form explains invalid hints. */ }
   usePoll(() => { void loadBoard(); void loadTeamLink(); }, 15_000, [teamTick.value]);
   const link = teamLink.value, b = board.value;
-  return <div class="team-join-settings"><TeamConnectionPicker hideWhenEmpty /><ThisComputerCard link={link} />
+  return <div class="team-join-settings"><TeamConnectionPicker hideWhenEmpty /><ThisComputerCard key={connection ?? "default"} link={link} initialConnection={connection} />
     {link?.linked ? <section class="settings-card" aria-label="Project readiness"><h3>Your team projects</h3><p class="help">Your account is connected. Choose a local repository folder for each project you want to work on. Tasks you start here run on this computer.</p>
-      {!b ? <p role="status">{boardError.value || "Loading your projects…"}</p> : !b.projects.length ? <p role="status">No projects have been shared with this account yet. Ask the owner for a project invitation.</p> : <ul class="join-project-list">{b.projects.map(project => {
+      {!b ? <p role="status">{boardError.value || "Loading your projects…"}</p> : !b.projects.length ? <p role="status">No projects have been shared with this account yet. Ask the owner for a project invitation.</p> : <ul class="join-project-list">{b.projects.filter(project => !focusProject || project.id === focusProject).map(project => {
         const missing = project.repositories.filter(repository => !link.mappings[project.id]?.[repository.key]);
         const canRun = roleAtLeast(project.role, "contributor");
-        return <li key={project.id}><div><b>{project.name}</b><span class="help">{roleAtLeast(project.role, "maintainer") ? "Maintainer" : canRun ? "Contributor" : "Review access"} · {!canRun ? "Ready to review" : !project.repositories.length ? "Ask a maintainer to add a repository" : missing.length ? `Choose ${missing.length} local ${missing.length === 1 ? "folder" : "folders"} below` : "Repositories connected"}</span></div><a class="btn small" href={collaborationHref(`#/team/project/${encodeURIComponent(project.id)}`)}>Open project board</a></li>;
+        return <li key={project.id}><div><b>{project.name}</b><span class="help">{roleAtLeast(project.role, "maintainer") ? "Maintainer" : canRun ? "Contributor" : "Review access"} · {!canRun ? "Ready to review" : !project.repositories.length ? "Ask a maintainer to add a repository" : missing.length ? `Choose ${missing.length} local ${missing.length === 1 ? "folder" : "folders"} below` : "Repository selected"}</span></div><a class="btn small" href={collaborationHref(`#/team/project/${encodeURIComponent(project.id)}`)}>Open project board</a></li>;
       })}</ul>}
     </section> : null}
-    {link?.linked ? <RepositoriesCard link={link} b={b} /> : null}
+    {link?.linked && b && focusProject && !b.projects.some(project => project.id === focusProject) ? <p class="msg" role="status">This account no longer has access to the requested project. Ask the owner for an invitation, or <a href="#/settings/connections/join">choose another project</a>.</p> : null}
+    {link?.linked ? <RepositoriesCard link={link} b={b} projectId={focusProject} /> : null}
   </div>;
 }
 
-function ThisComputerCard({ link }: { link: TeamLinkInfo | null }) {
-  const [url, setUrl] = useState(""), [username, setUsername] = useState(""), [password, setPassword] = useState(""), [name, setName] = useState("");
+function ThisComputerCard({ link, initialConnection = "" }: { link: TeamLinkInfo | null; initialConnection?: string }) {
+  let initialUsername = ""; try { initialUsername = parseTeamAddress(initialConnection).username ?? ""; } catch { /* Validated before connection. */ }
+  const [url, setUrl] = useState(initialConnection), [username, setUsername] = useState(initialUsername), [password, setPassword] = useState(""), [name, setName] = useState("");
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [adding, setAdding] = useState(false);
   let target: ReturnType<typeof parseTeamAddress> | undefined;
@@ -65,7 +70,7 @@ function ThisComputerCard({ link }: { link: TeamLinkInfo | null }) {
   useEffect(() => { if (link && !link.linked && !name && link.machineName) setName(link.machineName); }, [link?.machineName]);
   const connect = async (event: Event) => {
     event.preventDefault(); if (busy) return; setBusy(true); setError("");
-    try { const address = parseTeamAddress(url); if (address.invitation) throw new Error("Open the invitation first to join the project and choose your account."); const connected = await post<{ id: string }>("/api/team-link/connect", { url: address.url, username: username.trim(), password, ...(name.trim() ? { name: name.trim() } : {}) }); setPassword(""); showToast("Connected to the team server"); location.hash = "#/settings/connections/join"; selectTeamConnection(connected.id); }
+    try { const address = parseTeamAddress(url); if (address.invitation) throw new Error("Open the invitation first to join the project and choose your account."); const connected = await post<{ id: string }>("/api/team-link/connect", { url: address.url, username: username.trim(), password, ...(name.trim() ? { name: name.trim() } : {}) }); setPassword(""); showToast("Connected to the team server"); location.hash = address.project ? `#/settings/connections/join?connection=${encodeURIComponent(url)}` : "#/settings/connections/join"; selectTeamConnection(connected.id); }
     catch (err) { setPassword(""); setError((err as Error).message); } finally { setBusy(false); }
   };
   const disconnect = async () => {
@@ -76,19 +81,19 @@ function ThisComputerCard({ link }: { link: TeamLinkInfo | null }) {
   return <section class="settings-card" aria-busy={busy}>
     <h3>{link?.linked && !adding ? "This computer" : "Connect to your team"}</h3>
     {!link ? <p class="help">{teamLinkError.value ? `The team link could not be read: ${teamLinkError.value}` : "Loading…"}</p> : link.linked && !adding ? <>
-      <p class="help">Linked to a team server: its board shows under Team, and tasks you start here publish their progress and checkpoints to it.</p>
+      <p class="help">Connected to your team server. Choose your repository folder below, then open your project. Tasks use this computer’s coding agents.</p>
       <dl class="team-kv">
         <dt>Connection</dt><dd><span class={`badge ${link.connection === "connected" ? "ok" : "warn"}`}>{link.connection === "connected" ? "Connected" : link.connection === "reconnecting" ? "Reconnecting…" : link.connection === "offline" ? "Offline" : "Checking…"}</span></dd>
         <dt>Team server</dt><dd><code>{link.url}</code>{link.hubName ? ` · ${link.hubName}` : ""}</dd>
         <dt>Signed in as</dt><dd>{link.user ? `${link.user.displayName} (${link.user.username})` : "unknown"}</dd>
         <dt>Machine name</dt><dd>{link.machineName ?? link.runner?.name ?? "—"}</dd>
-        <dt>Runner</dt><dd>{link.runner ? <><span class={`badge ${link.runner.revokedAt ? "warn" : link.runner.online ? "ok" : ""}`}>{link.runner.revokedAt ? "Revoked" : link.runner.online ? "Online" : "Offline"}</span> <span class="help">last seen {ago(link.runner.lastSeenAt)}</span></> : <span class="help">Not reported yet</span>}</dd>
+        <dt>Computer connection</dt><dd>{link.runner ? <><span class={`badge ${link.runner.revokedAt ? "warn" : link.runner.online ? "ok" : ""}`}>{link.runner.revokedAt ? "Revoked" : link.runner.online ? "Online" : "Offline"}</span> <span class="help">last seen {ago(link.runner.lastSeenAt)}</span></> : <span class="help">Not reported yet</span>}</dd>
         {link.lastSync ? <><dt>Last sync</dt><dd>{ago(link.lastSync)}</dd></> : null}
       </dl>
       {link.error ? <p class="msg err" role="alert">{link.error}</p> : null}
       <div class="settings-actions"><button class="btn primary" disabled={busy} onClick={() => setAdding(true)}>Add team connection</button><button class="btn" disabled={busy} onClick={() => void disconnect()}>Disconnect this team</button></div>
     </> : <form class="team-connect" onSubmit={(event) => void connect(event)}>
-      <p class="help">Join a teammate's board: the team server is another code-flow reachable over HTTPS (through Tailscale or another network), and you sign in with the shared account its owner created for you with the contributor or maintainer role. This computer stays the only place your agents run. You can save several team servers and keep using your own board.</p>
+      <p class="help">Connect with the account you created from your invitation. Your coding agents and repository stay on this computer.</p>
       <div class="settings-grid">
         <label>Team server URL<input class="field" type="url" required placeholder="Paste a team address, invitation or connection link" value={url} disabled={busy} autoComplete="url" onInput={(event) => { const value = event.currentTarget.value; setUrl(value); try { const address = parseTeamAddress(value); if (address.username) setUsername(address.username); } catch { /* Validate on submit. */ } }} /></label>
         {!target?.invitation ? <><label>Username<input class="field" required maxLength={64} value={username} disabled={busy} autoComplete="username" onInput={(event) => setUsername(event.currentTarget.value)} /></label>
@@ -98,26 +103,28 @@ function ThisComputerCard({ link }: { link: TeamLinkInfo | null }) {
       {target?.invitation ? <div><p class="help">First accept the invitation on {target.url}. Then return here with your account to connect this computer.</p><a class="btn primary" href={target.invitation} target="_blank" rel="noreferrer">Open invitation</a></div> : <><p class="help">Connect to your team’s Wi-Fi or Tailscale network first. After signing in, choose your local repository folders.</p><div class="settings-actions"><button type="submit" class="btn primary" disabled={busy || !url.trim() || !username.trim() || !password}>{busy ? "Connecting…" : "Connect this computer"}</button></div></>}
       {adding ? <button type="button" class="btn" onClick={() => setAdding(false)}>Cancel</button> : null}
     </form>}
-    {error ? <p class="msg err" role="alert">{error}</p> : null}
+    {error ? <><p class="msg err" role="alert">{error}</p><p class="help">Check the team server address and your account details. If the server cannot be reached, start it and connect to your team’s Wi-Fi or Tailscale network, then try again.</p></> : null}
   </section>;
 }
 
 /** Repository keys are shared names; each computer says which of its folders a key means. */
-function RepositoriesCard({ link, b }: { link: TeamLinkInfo | null; b: Board | null }) {
+function RepositoriesCard({ link, b, projectId }: { link: TeamLinkInfo | null; b: Board | null; projectId?: string }) {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(""), [error, setError] = useState("");
-  const rows = (b?.projects ?? []).flatMap((project) => project.repositories.map((ref) => ({ project, ref, key: `${project.id}/${ref.key}`, saved: link?.mappings[project.id]?.[ref.key] ?? "" })));
+  const rows = (b?.projects ?? []).filter(project => (!projectId || project.id === projectId) && roleAtLeast(project.role, "contributor")).flatMap((project) => project.repositories.map((ref) => ({ project, ref, key: `${project.id}/${ref.key}`, saved: link?.mappings[project.id]?.[ref.key] ?? "" })));
   const save = async (projectId: string, repository: string, path: string, key: string) => {
     if (busy) return; setBusy(key); setError("");
-    try { await put("/api/team-link/mappings", { projectId, repository, path }); showToast("Repository mapped"); await loadTeamLink(); setDrafts((current) => { const next = { ...current }; delete next[key]; return next; }); } catch (err) { setError((err as Error).message); } finally { setBusy(""); }
+    try { await put("/api/team-link/mappings", { projectId, repository, path }); showToast("Repository selected"); await loadTeamLink(); setDrafts((current) => { const next = { ...current }; delete next[key]; return next; }); } catch (err) { setError((err as Error).message); } finally { setBusy(""); }
   };
   return <section class="settings-card"><h3>Repositories</h3>
-    <p class="help">Tasks name a repository by its key; map each key to your clone so attempts, hand-overs and fetched checkpoints land there. Paths stay on this computer and never reach the team server.</p>
-    {!b ? <p class="help">{boardError.value || "Loading the board…"}</p> : !rows.length ? <p class="help">No repository keys yet. A maintainer defines them per project{link?.linked ? " on the team server" : " in the Team server card below"}.</p> : <div class="team-mappings">
+    <p class="help">Choose your existing clone for each repository. Code Flow checks that the folder is a Git repository when you save it. Folder paths stay on this computer.</p>
+    {!b ? <p class="help">{boardError.value || "Loading the board…"}</p> : !rows.length ? <p class="help">No coding repositories to connect here. A project maintainer can add repository details.</p> : <div class="team-mappings">
       {rows.map(({ project, ref, key, saved }) => { const value = drafts[key] ?? saved, dirty = value !== saved, id = `team-map-${key.replace(/[^a-zA-Z0-9_-]/g, "_")}`; return <div key={key} class="team-mapping">
-        <label for={id}>{project.name} · {ref.label} <code>{ref.key}</code>{ref.remote ? <span class="help"> {ref.remote}</span> : null}</label>
-        <div class="row-inline"><input id={id} class="field mono" placeholder="/absolute/path/to/your/clone" value={value} disabled={!!busy} onInput={(event) => setDrafts({ ...drafts, [key]: event.currentTarget.value })} /><button type="button" class="btn small" disabled={!!busy} onClick={() => { pickerChoose.value = { title: `Choose ${ref.label} repository`, choose: path => setDrafts(current => ({ ...current, [key]: path })) }; pickerOpen.value = true; }}>Choose folder</button><button type="button" class="btn small" disabled={!!busy || !repo.value} title={repo.value || "Choose a repository in the composer first"} onClick={() => setDrafts({ ...drafts, [key]: repo.value })}>Use current repository</button><button type="button" class="btn small primary" disabled={!!busy || !dirty || !value.trim()} onClick={() => void save(project.id, ref.key, value.trim(), key)}>{busy === key ? "Saving…" : "Save"}</button></div>
-        {!saved && !dirty ? <span class="help">Not mapped on this computer.</span> : null}
+        <label for={id}>{project.name} · {ref.label}{ref.remote ? <span class="help"> {ref.remote}</span> : null}</label>
+        <div class="row-inline"><input id={id} class="field mono" placeholder="/absolute/path/to/your/clone" value={value} disabled={!!busy} onInput={(event) => setDrafts({ ...drafts, [key]: event.currentTarget.value })} /><button type="button" class="btn small" disabled={!!busy} onClick={() => { pickerChoose.value = { title: `Choose ${ref.label} repository`, choose: path => setDrafts(current => ({ ...current, [key]: path })) }; pickerOpen.value = true; }}>Choose repository folder</button><button type="button" class="btn small" disabled={!!busy || !repo.value} title={repo.value || "Choose a repository in the composer first"} onClick={() => setDrafts({ ...drafts, [key]: repo.value })}>Use current repository</button><button type="button" class="btn small primary" disabled={!!busy || !dirty || !value.trim()} onClick={() => void save(project.id, ref.key, value.trim(), key)}>{busy === key ? "Saving…" : "Save"}</button></div>
+        {[...new Set(localProjects.value.flatMap(p => p.repos))].filter(path => path.split(/[\\/]/).pop()?.toLowerCase() === ref.label.toLowerCase() && path !== value).map(path => <button class="btn small" type="button" onClick={() => setDrafts(current => ({ ...current, [key]: path }))}>Use detected folder: {path}</button>)}
+        {saved && !dirty ? <span class="help">Repository selected</span> : null}
+        {!saved && !dirty ? <span class="help">Choose a repository folder on this computer.</span> : null}
       </div>; })}
     </div>}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
@@ -163,23 +170,23 @@ export function RepoKeysEditor({ project, revision }: { project: BoardProject; r
   const save = async () => {
     if (busy) return; setBusy(true); setError("");
     const repositories = rows.map((row) => ({ key: row.key.trim(), label: row.label.trim() || row.key.trim(), ...(row.remote?.trim() ? { remote: row.remote.trim() } : {}), ...(row.defaultBranch?.trim() ? { defaultBranch: row.defaultBranch.trim() } : {}) }));
-    try { await put(`/api/team/projects/${enc(project.id)}/repositories`, { repositories, revision }); showToast("Repository keys saved"); void loadBoard(); }
+    try { await put(`/api/team/projects/${enc(project.id)}/repositories`, { repositories, revision }); showToast("Repositories saved"); void loadBoard(); }
     catch (err) { if (err instanceof ApiError && err.status === 409) { showToast("Board changed; reloading", 3000); void loadBoard(); } else setError((err as Error).message); }
     finally { setBusy(false); }
   };
   const id = (index: number, field: string) => `team-keys-${project.id}-${index}-${field}`;
-  return <fieldset class="team-keys" disabled={busy}><legend>Repository keys · {project.name}</legend>
-    <p class="help">A key is up to 64 lowercase letters, digits or dashes and starts with a letter; the remote and default branch are hints for teammates.</p>
+  return <fieldset class="team-keys" disabled={busy}><legend>Repositories · {project.name}</legend>
+    <p class="help">Give each repository a name. Add its Git URL to help teammates find their clone.</p>
     {rows.map((row, index) => <div key={index} class="team-key-row">
-      <label for={id(index, "key")}>Key</label><input id={id(index, "key")} class="field mono" required pattern="[a-z][a-z0-9-]{0,63}" maxLength={64} value={row.key} onInput={(event) => update(index, { key: event.currentTarget.value })} />
-      <label for={id(index, "label")}>Label</label><input id={id(index, "label")} class="field" maxLength={80} value={row.label} onInput={(event) => update(index, { label: event.currentTarget.value })} />
-      <label for={id(index, "remote")}>Remote</label><input id={id(index, "remote")} class="field mono" maxLength={300} placeholder="git@github.com:org/repo.git" value={row.remote ?? ""} onInput={(event) => update(index, { remote: event.currentTarget.value })} />
+      <label for={id(index, "label")}>Repository name</label><input id={id(index, "label")} class="field" required maxLength={80} value={row.label} onInput={event => update(index, { label: event.currentTarget.value, ...(!project.repositories.some(saved => saved.key === row.key) ? { key: repositoryChoice(event.currentTarget.value, rows.filter((_, at) => at !== index).map(row => row.key)).key } : {}) })} />
+      <label for={id(index, "remote")}>Git URL</label><input id={id(index, "remote")} class="field mono" maxLength={300} placeholder="git@github.com:org/repo.git" value={row.remote ?? ""} onInput={(event) => update(index, { remote: event.currentTarget.value })} />
       <label for={id(index, "branch")}>Default branch</label><input id={id(index, "branch")} class="field mono" maxLength={100} placeholder="main" value={row.defaultBranch ?? ""} onInput={(event) => update(index, { defaultBranch: event.currentTarget.value })} />
+      <details class="repository-identifier"><summary>Advanced repository identifier</summary><label for={id(index, "key")}>Key</label><input id={id(index, "key")} class="field mono" required pattern="[a-z][a-z0-9-]{0,63}" maxLength={64} value={row.key} onInput={event => update(index, { key: event.currentTarget.value })} /><p class="help">Changing an existing identifier requires teammates to select their repository folders again.</p></details>
       <button type="button" class="btn small ghost" aria-label={`Remove repository key ${row.key || index + 1}`} onClick={() => setRows(rows.filter((_, at) => at !== index))}>Remove</button>
     </div>)}
     <div class="settings-actions">
       <button type="button" class="btn small" disabled={rows.length >= 50} onClick={() => setRows([...rows, { key: "", label: "" }])}>Add repository</button>
-      <button type="button" class="btn small primary" disabled={!dirty || rows.some((row) => !/^[a-z][a-z0-9-]{0,63}$/.test(row.key.trim()))} onClick={() => void save()}>Save repository keys</button>
+      <button type="button" class="btn small primary" disabled={!dirty || rows.some((row) => !/^[a-z][a-z0-9-]{0,63}$/.test(row.key.trim()))} onClick={() => void save()}>Save repositories</button>
       {dirty ? <button type="button" class="btn small" onClick={() => setRows(project.repositories.map((ref) => ({ ...ref })))}>Discard</button> : null}
     </div>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
@@ -197,11 +204,11 @@ function RunnersCard({ b }: { b: Board | null }) {
     try { await del(`/api/team/runners/${enc(runner.id)}`); showToast("Runner revoked"); await load(); } catch (err) { setError((err as Error).message); } finally { setBusy(""); }
   };
   const list = (runners ?? []).slice().sort((x, y) => Number(!!x.revokedAt) - Number(!!y.revokedAt) || y.lastSeenAt - x.lastSeenAt);
-  return <section class="settings-card"><h3>Runners</h3>
+  return <section class="settings-card"><h3>Connected computers</h3>
     <p class="help">The computers connected to the board{b?.me.userId === "owner" ? " (every teammate's, as the team server's owner)" : " with your account"}. Revoking one ends its credential; the work it did stays.</p>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
     {runners === null && !error ? <p class="help" role="status">Loading…</p> : null}
-    {runners && !runners.length ? <p class="help">No runner has connected yet.</p> : null}
+    {runners && !runners.length ? <p class="help">No computer has connected yet.</p> : null}
     {list.length ? <div class="pd-list">{list.map((runner) => <div key={runner.id} class="pd-row"><span class="pd-name">{runner.name}</span><span class={`badge ${runner.revokedAt ? "warn" : runner.online ? "ok" : ""}`}>{runner.revokedAt ? "Revoked" : runner.online ? "Online" : "Offline"}</span><span class="pd-when">{memberName(b, runner.userId)} · last seen {ago(runner.lastSeenAt)}</span>{runner.revokedAt ? null : <button type="button" class="btn small" disabled={!!busy} onClick={() => void revoke(runner)}>{busy === runner.id ? "Revoking…" : "Revoke"}</button>}</div>)}</div> : null}
   </section>;
 }

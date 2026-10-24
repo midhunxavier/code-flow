@@ -18,7 +18,7 @@ import { approves, builderReply, checkReview, findingsForBuilder, findingsLine, 
 import { checkEvidence, fence, jsonInstruction, proofEvidence, proofLine, proofRule, READ_ONLY, section, WRITE } from "./prompts.js";
 import { coordinatorCheckpoint, decompositionInstructions, expandSubplans, integrateBranch, strategyInstances, TEAM_STRATEGIES } from "./team-strategies.js";
 import { REVIEW_SCHEMA } from "./schemas.js";
-import { replacementSettings, normalizeTaskOutcomeEvidence, outcomeProblem, ownsPath, planProblem, readyTasks, revisionProblem, LEGACY_TEAM_PLAN_SCHEMA, LEGACY_TEAM_REVISION_SCHEMA, taskOutcomeSchema, TEAM_ANSWERS_SCHEMA, TEAM_PLAN_SCHEMA, TEMPLATE_TEAM_PLAN_SCHEMA, TEAM_REVISION_SCHEMA, validReply, type TaskOutcome, type TeamPolicy, type TeamReply, type TeamRevision } from "./auto-team-model.js";
+import { replacementSettings, normalizeOwnedPath, normalizeTaskOutcomeEvidence, outcomeProblem, ownsPath, planProblem, readyTasks, revisionProblem, LEGACY_TEAM_PLAN_SCHEMA, LEGACY_TEAM_REVISION_SCHEMA, taskOutcomeSchema, TEAM_ANSWERS_SCHEMA, TEAM_PLAN_SCHEMA, TEMPLATE_TEAM_PLAN_SCHEMA, TEAM_REVISION_SCHEMA, validReply, type TaskOutcome, type TeamPolicy, type TeamReply, type TeamRevision } from "./auto-team-model.js";
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, Math.floor(value)));
 const json = (value: unknown) => fence(JSON.stringify(value, null, 2), "json");
@@ -33,7 +33,7 @@ function cleanTask(t: TeamTask): TeamTask {
   const supplied = t.dependencyTypes as TeamTask["dependencyTypes"] | { taskId: string; kind: "completion" | "artifact" | "knowledge" }[];
   if (Array.isArray(supplied) && new Set(supplied.map((d) => d.taskId)).size !== supplied.length) throw new Error("Each dependency may have only one kind");
   const dependencyTypes = Array.isArray(supplied) ? Object.fromEntries(supplied.map(({ taskId, kind }) => [taskId, kind])) : supplied;
-  return { id: t.id, title: t.title, instructions: t.instructions, owner: t.owner, kind: t.kind, dependsOn: [...t.dependsOn], ...(dependencyTypes ? { dependencyTypes: { ...dependencyTypes } } : {}), requirements: [...t.requirements], acceptance: [...t.acceptance], paths: [...t.paths], status: "pending", attempts: 0 };
+  return { id: t.id, title: t.title, instructions: t.instructions, owner: t.owner, kind: t.kind, dependsOn: [...t.dependsOn], ...(dependencyTypes ? { dependencyTypes: { ...dependencyTypes } } : {}), requirements: [...t.requirements], acceptance: [...t.acceptance], paths: t.paths.map(normalizeOwnedPath), status: "pending", attempts: 0 };
 }
 function cleanPlan(plan: TeamPlan, catalog: readonly TeamTemplate[] = []): TeamPlan {
   plan = expandTemplateUses(plan, catalog);
@@ -91,7 +91,8 @@ export const autoTeamPattern: Pattern = {
     const planSchema = eventDriven ? catalog.length ? TEMPLATE_TEAM_PLAN_SCHEMA : TEAM_PLAN_SCHEMA : LEGACY_TEAM_PLAN_SCHEMA;
     const revisionSchema = eventDriven ? TEAM_REVISION_SCHEMA : LEGACY_TEAM_REVISION_SCHEMA;
     const coordinatorProvider = ctx.agent("coordinator");
-    const inventory = await ctx.remember("team-inventory", "plan:0", () => ctx.teamInventory());
+    const retryPlanning = (ctx.run.resumes ?? 0) > 0 && ctx.run.team?.status === "planning" && !ctx.run.team.tasks.length;
+    const inventory = await ctx.remember("team-inventory", retryPlanning ? `plan:0:resume:${ctx.run.resumes}` : "plan:0", () => ctx.teamInventory());
     const invocationLimit = Math.max(0, Math.min(ctx.run.loop.maxSteps, ctx.run.loop.maxInvocations ?? ctx.run.loop.maxSteps));
     if (invocationLimit < 4) throw new Error("Auto team needs at least four invocations for planning, work, review, and recovery allowance");
     const policy: TeamPolicy = {
@@ -211,7 +212,7 @@ export const autoTeamPattern: Pattern = {
       if (!ctx.option("providerFailover", true)) return ctx.decide<T>(params);
       let previous: StepOutcome | undefined, problem: string | undefined;
       for (let attempt = 0; attempt < 2; attempt++) {
-        const outcome = await teamAsk({ ...params, ...(attempt ? { identity: `${params.identity ?? params.title}:schema-retry`, resume: undefined, prompt: params.prompt + `\nReturn valid ${params.what}: ${problem}. Follow the supplied schema exactly.` } : {}) });
+        const outcome = await teamAsk({ ...params, ...(attempt ? { identity: `${params.identity ?? params.title}:schema-retry${ctx.run.resumes ? `:resume:${ctx.run.resumes}` : ""}`, resume: undefined, prompt: params.prompt + `\nReturn valid ${params.what}: ${problem}. Follow the supplied schema exactly.` } : {}) });
         const value = outcome.structured ?? extractJson(outcome.finalText);
         problem = value === undefined ? "No JSON answer" : shapeProblem(params.schema, value) ?? params.validate?.(value);
         if (!problem) return { value: value as T, outcome };

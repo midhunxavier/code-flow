@@ -1,3 +1,4 @@
+import { ConnectComputer } from "./connect-computer.js";
 import { useEffect, useState } from "preact/hooks";
 import type { Board, BoardProject, Task } from "../src/collab/model.js";
 import type { HostJob, HostProjectPolicy } from "../src/collab/host-execution.js";
@@ -61,7 +62,7 @@ function ProjectExecution({ project, saved, busy, save }: { project: BoardProjec
   </fieldset>;
 }
 
-export function HostTaskControl({ task, meId }: { task: Task; meId?: string }) {
+export function HostTaskControl({ task, meId, projectName }: { task: Task; meId?: string; projectName?: string }) {
   const { data, error, setError, load } = useQueue(), [busy, setBusy] = useState(false);
   const grant = data?.policies.find((p) => p.projectId === task.projectId);
   const jobs = data?.jobs.filter((j) => j.taskId === task.id) ?? [], job = [...jobs].reverse().find(active) ?? jobs.at(-1);
@@ -70,13 +71,14 @@ export function HostTaskControl({ task, meId }: { task: Task; meId?: string }) {
     if (busy) return; setBusy(true); setError("");
     try { await post(path, body); await load(); } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   };
-  return <div class="team-section"><h3>Host computer</h3>
+  return <div class="team-section"><h3>Where should this task run?</h3><div class="task-computer-options"><section><h4>My computer</h4><p class="help">Use your repository and agent login.</p><ConnectComputer project={{ id: task.projectId, name: projectName ?? "this project" }} label="Connect this computer" /></section><section><h4>Team server</h4>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
     {job ? <p role="status">{job.state === "queued" ? "Queued for the host computer" : `Host task: ${job.state}`} · requested by {job.displayName}{job.message ? ` · ${job.message}` : ""}</p> : null}
-    {canStart && !jobs.some(active) ? <button class="btn small primary" disabled={busy || task.status === "done" || task.attempts.some((a) => ["claimed", "running", "unknown"].includes(a.state)) || task.handoff?.state === "offered"} onClick={() => void execute(`/api/host-execution/tasks/${enc(task.id)}`, { revision: task.revision })}>Run on host computer</button> : null}
+    {canStart && !jobs.some(active) ? <button class="btn small primary" disabled={busy || task.status === "done" || task.attempts.some((a) => ["claimed", "running", "unknown"].includes(a.state)) || task.handoff?.state === "offered"} onClick={() => void execute(`/api/host-execution/tasks/${enc(task.id)}`, { revision: task.revision })}>Run on team server</button> : null}
     {job && active(job) && job.userId === meId ? <button class="btn small" disabled={busy || job.state === "stopping"} onClick={() => void execute(`/api/host-execution/jobs/${enc(job.id)}/cancel`, {})}>{job.state === "queued" ? "Remove from queue" : "Stop host task"}</button> : null}
-    <p class="help">{grant?.allowed ? `Uses ${grant.agent} on the host. Your browser can close after queuing. Progress and downloadable checkpoints appear on this task.` : "The host owner can grant execution in Settings → Team. You can also run this task from your own linked Code Flow installation."}</p>
-    {grant?.allowed && task.owner?.userId !== meId ? <p class="help">Take ownership of this task to queue it on the host.</p> : null}
+    <p class="help">{grant?.allowed ? `Uses ${grant.agent} on the host. Your browser can close after queuing. Progress and downloadable checkpoints appear on this task.` : "Ask the owner to grant access in People and access → Advanced administration."}</p>
+    {!grant?.allowed ? <button class="btn small" disabled>Team server access required</button> : null}
+    {grant?.allowed && task.owner?.userId !== meId ? <p class="help">Take ownership of this task to queue it on the server.</p> : null}</section></div>
   </div>;
 }
 

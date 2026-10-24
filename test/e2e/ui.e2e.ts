@@ -872,7 +872,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
   const fresh = await context.newPage();
   try {
     await fresh.goto(`${BASE}/?token=${TOKEN}`);
-    await fresh.getByRole("switch", { name: "Team", exact: true }).waitFor();
+    await fresh.getByRole("switch", { name: "AI team", exact: true }).waitFor();
     assert.equal(await fresh.locator(".advanced-controls").getAttribute("open"), null, "advanced controls start collapsed");
     assert.equal(await fresh.getByRole("button", { name: "Side panel", exact: true }).getAttribute("aria-pressed"), "false", "first run leaves room for the task");
     if (process.env.CODEFLOW_UI_SCREENSHOTS) {
@@ -1042,7 +1042,7 @@ test("chat menus apply model, effort and permissions to the next reply and survi
 });
 
 
-test("chat menu starts another provider with carried-over context", async () => {
+test("provider selection waits for a message and confirmation before forking with context", async () => {
   const api = async (path: string, body?: unknown) => {
     const response = await fetch(`${BASE}${path}`, body === undefined ? { headers: bearer } : { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(body) });
     const value = await response.json(); assert.ok(response.ok, JSON.stringify(value)); return value;
@@ -1055,20 +1055,26 @@ test("chat menu starts another provider with carried-over context", async () => 
   }
   await page.goto(`${BASE}/?token=${TOKEN}#/run/${source.id}`);
   const main = page.getByRole("main");
-  await main.getByRole("button", { name: "Chat actions", exact: true }).click();
-  const actions = main.getByRole("menu", { name: "Chat actions", exact: true });
-  const menuBox = await actions.boundingBox();
-  const chatBox = await main.locator(".chatbox").boundingBox();
-  assert.ok(menuBox && chatBox && menuBox.x >= chatBox.x && menuBox.x + menuBox.width <= chatBox.x + chatBox.width, "the menu stays inside the chat column instead of overlapping the side panel");
-  assert.equal(await actions.locator(".pi-main").evaluate((element) => getComputedStyle(element).whiteSpace), "normal", "the complete action label can wrap");
-  await main.getByRole("menuitem", { name: /^Fork chat/ }).click();
+  assert.equal(await main.getByRole("button", { name: "Chat actions", exact: true }).count(), 0);
+  await main.getByRole("button", { name: "Permissions", exact: true }).click();
+  await main.getByRole("menuitem", { name: /^Ask for approval/ }).click();
+  await main.getByRole("textbox", { name: "Message agent", exact: true }).fill("Keep the original draft");
+  await main.getByRole("button", { name: "Provider", exact: true }).click();
+  await main.getByRole("menuitem", { name: /^Codex/ }).click();
   const dialog = page.getByRole("dialog", { name: "Fork chat" });
+  assert.equal(await dialog.getByPlaceholder("What should the new chat do?").inputValue(), "Keep the original draft");
+  assert.equal((await api(`/api/runs/${source.id}/chats`)).length, 1, "same-provider selection waits for Send");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.match(await main.getByRole("button", { name: "Permissions", exact: true }).innerText(), /Ask for approval/, "cancel does not change the original permission choice");
+  assert.equal(await main.getByRole("textbox", { name: "Message agent", exact: true }).inputValue(), "Keep the original draft");
+  await main.getByRole("button", { name: "Provider", exact: true }).click();
+  await main.getByRole("menuitem", { name: /Claude Code/ }).click();
   await dialog.getByRole("button", { name: "Provider", exact: true }).click();
   assert.equal(await dialog.getByRole("menuitem", { name: "Codex", exact: true }).count(), 1, "same-provider forks are available");
   await dialog.getByRole("menuitem", { name: /Claude Code/ }).click();
   await dialog.getByPlaceholder("What should the new chat do?").fill("Review the previous answer");
   const response = page.waitForResponse((response) => response.url().endsWith(`/api/runs/${source.id}/provider-chat`) && response.request().method() === "POST");
-  await dialog.getByRole("button", { name: "Start new chat", exact: true }).click();
+  await dialog.getByRole("button", { name: "Send", exact: true }).click();
   const result = await response;
   assert.equal(result.status(), 201, await result.text());
   const childId = (await result.json()).id;
@@ -1110,16 +1116,16 @@ test("Agent setup is inline and completed replies keep automatic workflow contro
     assert.equal(await box.locator(".chat-controls").count(), 0);
     await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
     assert.match(await box.getByRole("button", { name: "Model", exact: true }).innerText(), /Haiku/);
-    await box.getByRole("switch", { name: "Team", exact: true }).click();
+    await box.getByRole("switch", { name: "AI team", exact: true }).click();
     await box.getByRole("button", { name: "Advanced", exact: true }).click();
-    const setup = fresh.getByRole("dialog", {name:"Team setup"});
-    await setup.getByRole("switch", {name:"Enable Team"}).check();
+    const setup = fresh.getByRole("dialog", {name:"AI team setup"});
+    await setup.getByRole("switch", {name:"Enable AI team"}).check();
     await setup.getByRole("button", {name:"Apply team settings"}).click();
     assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "solo", "Team configuration retains the Agent conversation");
     await fresh.reload();
-    await box.getByRole("switch", { name: "Team", exact: true }).waitFor();
-    assert.equal(await box.getByRole("switch", { name: "Team", exact: true }).getAttribute("aria-checked"), "true", "unsent Team configuration survives reload with the project draft");
-    await box.getByRole("switch", { name: "Team", exact: true }).click();
+    await box.getByRole("switch", { name: "AI team", exact: true }).waitFor();
+    assert.equal(await box.getByRole("switch", { name: "AI team", exact: true }).getAttribute("aria-checked"), "true", "unsent Team configuration survives reload with the project draft");
+    await box.getByRole("switch", { name: "AI team", exact: true }).click();
     await openAdvanced(fresh);
     await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
     await fresh.getByLabel("Done when this passes", { exact: true }).fill('node -e "setTimeout(() => {}, 4000)"');
@@ -1158,7 +1164,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(await fresh.getByLabel("Default verification profile").inputValue(), "standard");
     assert.equal(await fresh.getByLabel("Default container image").inputValue(), "fixture-image:latest");
     await fresh.evaluate(() => { location.hash = "/"; });
-    await fresh.getByRole("switch", { name: "Team", exact: true }).waitFor();
+    await fresh.getByRole("switch", { name: "AI team", exact: true }).waitFor();
     assert.equal(await fresh.locator(".composer-options").getAttribute("open"), null);
     assert.equal(await fresh.locator('.composer-library, [aria-label="Default check command"], [aria-label="Default verification profile"]').count(), 0, "project-wide default editors and library management stay in settings");
     assert.equal(await fresh.getByLabel("Worktree setup command", { exact: true }).isVisible(), false, "per-run setup is inside the collapsed run options");
@@ -1194,7 +1200,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(run.loop.setup, "node -e \"process.exit(0); /* setup override */\"");
     assert.equal(run.loop.agentContainer, undefined);
     assert.ok(!run.loop.verification);
-    await fresh.getByRole("button", { name: "Chat actions", exact: true }).waitFor({ timeout: 30000 });
+    await fresh.getByRole("button", { name: "Provider", exact: true }).waitFor({ timeout: 30000 });
   } finally { await fresh.close(); }
 });
 
@@ -1360,7 +1366,7 @@ test("sidebar archives, hides and deletes runs with confirmation across tabs", a
     await row.hover();
     await row.getByRole("button", { name: "Run actions", exact: true }).click();
     await row.getByRole("menuitem", { name: "Unarchive", exact: true }).click();
-    await fresh.getByRole("main").getByRole("button", { name: "Chat actions", exact: true }).waitFor();
+    await fresh.getByRole("main").getByRole("button", { name: "Provider", exact: true }).waitFor();
     await row.hover();
     await row.getByRole("button", { name: "Run actions", exact: true }).click();
     await row.getByRole("menuitem", { name: "Delete…", exact: true }).click();

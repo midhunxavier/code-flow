@@ -10,11 +10,11 @@ export type ChatSettings = { model?: string; effort?: string };
 export type ChatPermissions = { trust: Trust; tools: boolean };
 
 /** Choices belong to the next message; changing them never changes an in-flight turn. */
-export function ChatControls({ agent, onAgent, settings, onSettings, permissions, onPermissions, restricted = false, approvalsAvailable = true, providers, showPermissions = true }: {
+export function ChatControls({ agent, onAgent, settings, onSettings, permissions, onPermissions, restricted = false, approvalsAvailable = true, providers, showPermissions = true, resetPermissionsOnAgentChange = true }: {
   agent: AgentId; onAgent?: (id: AgentId) => void;
   settings: ChatSettings; onSettings: (settings: ChatSettings) => void;
   permissions: ChatPermissions; onPermissions: (permissions: ChatPermissions) => void;
-  restricted?: boolean; approvalsAvailable?: boolean; providers?: AgentInfo[]; showPermissions?: boolean;
+  restricted?: boolean; approvalsAvailable?: boolean; providers?: AgentInfo[]; showPermissions?: boolean; resetPermissionsOnAgentChange?: boolean;
 }) {
   const [custom, setCustom] = useState(false);
   const choices = providers ?? agents.value;
@@ -34,7 +34,7 @@ export function ChatControls({ agent, onAgent, settings, onSettings, permissions
   const trigger = (text: string) => <><span>{text}</span><Icon name="chevron" /></>;
   return <div class="chat-controls">
     {onAgent ? <Menu above label="Provider" icon="layers" class="chat-choice" trigger={trigger(provider?.displayName ?? agent)}>
-      {(close) => <><MenuTitle>Provider</MenuTitle>{choices.map((entry) => <MenuItem key={entry.id} on={entry.id === agent} disabled={!entry.available} sub={!entry.available ? "Not installed" : undefined} onClick={() => { onAgent(entry.id); if (permissions.tools) onPermissions({ trust: entry.id.startsWith("acp:") ? "full" : "standard", tools: entry.id === "codex" || entry.id === "claude" || entry.id.startsWith("acp:") }); setCustom(false); close(); }}>{pick(entry.id === agent, entry.displayName)}</MenuItem>)}</>}
+      {(close) => <><MenuTitle>Provider</MenuTitle>{choices.map((entry) => <MenuItem key={entry.id} on={entry.id === agent} disabled={!entry.available} sub={!entry.available ? "Not installed" : undefined} onClick={() => { onAgent(entry.id); if (permissions.tools && resetPermissionsOnAgentChange) onPermissions({ trust: entry.id.startsWith("acp:") ? "full" : "standard", tools: entry.id === "codex" || entry.id === "claude" || entry.id.startsWith("acp:") }); setCustom(false); close(); }}>{pick(entry.id === agent, entry.displayName)}</MenuItem>)}</>}
     </Menu> : <span class="chat-provider-fixed" title="Provider stays fixed for this conversation. Start a new run to use another provider.">{provider?.displayName ?? agent}</span>}
     <ModelSelect compact label="Model" title={`Model · ${provider?.displayName ?? agent}`} value={settings.model ?? ""} placeholder={modelName}
       options={[

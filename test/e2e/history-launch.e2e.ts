@@ -236,7 +236,7 @@ test("project conventions save with CAS, restore a previewed version, and explic
 
 test("guided onboarding inspects required and optional dependencies through actual read-only probes", async () => {
   await page.goto(base);
-  await page.getByRole("switch", { name: "Team", exact: true }).waitFor();
+  await page.getByRole("switch", { name: "AI team", exact: true }).waitFor();
   assert.equal(await page.locator(".provider-setup").count(), 0, "connected providers do not show setup in the composer");
   await page.goto(`${base}/#/settings/agents`);
   await page.getByText("Check this computer", { exact: true }).first().click();

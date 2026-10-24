@@ -16,7 +16,7 @@ Object.assign(globalThis, { __subscribeTest: (topic: string, deliver: (event: an
 const testSource = source.replace('import { subscribe } from "./stream.js";', "const subscribe = globalThis.__subscribeTest;");
 const bundle = await build({ stdin: { contents: testSource + "\nexport { feedFor, receive, use, release };", resolveDir: fileURLToPath(new URL("../ui", import.meta.url)), loader: "ts" }, bundle: true, write: false, platform: "browser", format: "esm" });
 Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
-Object.defineProperty(globalThis, "location", { configurable: true, value: { search: "" } });
+Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("http://localhost/") });
 Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: (callback: () => void) => { callback(); return 1; } });
 const { feedFor, receive, loadStepTranscript, use, release } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0]!.text).toString("base64")}`);
 const event = (id: string, seq: number) => ({ type: "agent", runId: id, stepId: "step", seq, ts: seq, event: { kind: "text", text: `event ${seq}` } });

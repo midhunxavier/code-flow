@@ -906,8 +906,6 @@
   .chat-choice .pop-menu { position: fixed; inset: auto; width: min(300px, calc(100vw - 24px)); max-height: min(440px, calc(100dvh - 80px)); }
   .chat-choice .pi-main { display: flex; align-items: center; gap: 10px; }
   .chat-choice .pi-sub { white-space: normal; line-height: 1.4; }
-  .chat-action-menu .pop-item { min-width: 0; gap: 4px; }
-  .chat-action-menu .pi-main { display: block; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
   .chat-permissions .pop-item:last-of-type:not(:disabled) .pi-main { color: var(--warn); }
   .chat-choice-check { margin-left: auto; flex: none; }
   .chat-permissions.full-access > .icon-btn { color: var(--warn); }
@@ -3514,6 +3512,64 @@ dialog.task-conflict-dialog[open] { display: flex; flex-direction: column; }
 .join-project .team-setup-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
 .join-next ol { padding-left: 22px; line-height: 1.8; }
 @media (max-width: 800px) { .connection-journeys { grid-template-columns: 1fr; } .connection-journey { padding: 16px; gap: 6px; } }
+
+/* Project sharing keeps invitations prominent and administration out of the normal join flow. */
+.project-share-dialog { width: min(620px, calc(100vw - 24px)); }
+.project-share-dialog .dialog-body { overflow-y: auto; min-height: 0; }
+.project-share-dialog .settings-card { margin: 0; border: 0; padding: 0; }
+.project-share-dialog .picker-foot { flex-wrap: wrap; }
+.project-share-dialog .picker-head h3 { overflow-wrap: anywhere; }
+.share-access { padding: 16px; border: 1px solid var(--border); border-radius: 10px; margin: 16px 0; }
+.project-welcome { margin: 16px 0; }
+.people-table-wrap { overflow-x: auto; }
+.people-table { width: 100%; border-collapse: collapse; text-align: left; }
+.people-table th, .people-table td { padding: 12px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.people-table th { font-size: 12px; color: var(--muted); font-weight: 500; }
+.people-table td { font-size: 13px; overflow-wrap: anywhere; }
+.people-table td .btn.ghost { white-space: normal; text-align: left; padding: 0; }
+.people-table .help { display: block; }
+.people-invitation-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.person-details { max-width: 320px; font-size: 12px; line-height: 1.5; }
+.person-details ul { padding-left: 16px; }
+.people-repositories, .people-administration { margin-top: 20px; }
+.people-repositories summary, .people-administration summary { cursor: pointer; padding: 8px 0; }
+.setup-guide { padding-left: 20px; line-height: 1.7; }
+.task-computer-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.task-computer-options > section { padding: 16px; border: 1px solid var(--border); border-radius: 10px; }
+@media (max-width: 600px) {
+  .people-table th, .people-table td { padding: 8px 4px; font-size: 12px; }
+  .task-computer-options { grid-template-columns: 1fr; }
+  .project-share-dialog .phone-qr { flex-wrap: wrap; }
+}
+
+.repository-identifier { grid-column: 1 / -1; }
+
+.project-invitations code, .project-share-dialog code { color: var(--text-2); }
+
+/* Guided service connections share the project's repository context. */
+.integration-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px; margin: 20px 0; }
+.integration-card.settings-card { margin: 0; min-width: 0; }
+.integration-card h3 { margin-top: 0; }
+.integration-connection { padding: 16px 0; border-top: 1px solid var(--border); }
+.integration-connection > strong { display: block; margin-bottom: 8px; }
+.integration-connection .help, .connection-suggestion { overflow-wrap: anywhere; }
+.integration-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.connection-repository { display: block; max-width: 480px; }
+.connection-dialog { width: min(620px, calc(100vw - 24px)); }
+.connection-fields { display: grid; gap: 16px; padding: 20px; overflow-y: auto; }
+.connection-fields label { display: grid; gap: 6px; }
+.connection-fields details label { margin: 12px 0; }
+.connection-fields code { color: var(--text-2); }
+.connection-dialog .picker-foot { flex-wrap: wrap; }
+.connection-item { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.connection-item > div { min-width: 0; overflow-wrap: anywhere; }
+.connection-item > .btn { flex-shrink: 0; }
+.connection-preview, .connection-publish { padding: 20px 0; border-top: 1px solid var(--border); margin-top: 16px; }
+.connection-source-body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow-y: auto; }
+.integration-advanced { margin: 24px 0; }
+.integration-advanced summary { cursor: pointer; }
+.connection-work { scroll-margin-top: 16px; }
+@media (max-width: 600px) { .connection-item { flex-direction: column; } }
 
 /* Local and SSH model-training preview. */
 .ml-workspace { display: grid; gap: 18px; }

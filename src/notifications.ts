@@ -11,7 +11,7 @@ import { redactExport, redactText } from "./privacy.js";
 
 export type NotificationEvent = "done" | "failure" | "needs-attention";
 export interface NotificationSettings { enabled: boolean; events: NotificationEvent[]; projects: "all" | string[] }
-interface TargetConfig { id: string; name: string; protocol: "webhook" | "slack"; urlEnv: string; secretEnv?: string }
+export interface TargetConfig { id: string; name: string; protocol: "webhook" | "slack"; urlEnv: string; secretEnv?: string }
 interface SavedSettings extends NotificationSettings { destinationHash?: string; dropped?: number; lastError?: string }
 interface NotificationPayload { version: 1; id: string; event: NotificationEvent; runId: string; teamId?: string; cycleId?: string; project?: string; pattern: string; status: string; result: string; title: string; test?: boolean }
 export interface NotificationDelivery {
@@ -70,8 +70,21 @@ export function validateNotificationSettings(value: unknown): NotificationSettin
   return { enabled: raw.enabled, events, projects };
 }
 
+function targetConfigs(input: unknown): TargetConfig[] {
+    if (!Array.isArray(input) || input.length > 20) throw new Error("Configure at most 20 notification destinations");
+    const ids = new Set<string>();
+    return input.map((raw: any): TargetConfig => {
+      if (!raw || !/^[a-z][a-z0-9-]{0,63}$/.test(raw.id) || ids.has(raw.id) || !["webhook", "slack"].includes(raw.protocol)) throw new Error("Notification destinations need unique IDs and webhook or slack protocol");
+      ids.add(raw.id);
+      if (typeof raw.urlEnv !== "string" || !/^[A-Z_][A-Z0-9_]{0,99}$/.test(raw.urlEnv) || raw.secretEnv !== undefined && (typeof raw.secretEnv !== "string" || !/^[A-Z_][A-Z0-9_]{0,99}$/.test(raw.secretEnv))) throw new Error("Notification credentials must name server environment variables");
+      return { id: raw.id, name: text(raw.name, 80) || raw.id, protocol: raw.protocol, urlEnv: raw.urlEnv, secretEnv: raw.secretEnv };
+    });
+}
+
 export class Notifications {
   private configs: TargetConfig[] = [];
+  private administratorConfigs: TargetConfig[] = [];
+  private managedEnvironment: NodeJS.ProcessEnv = {};
   private state: SavedState = EMPTY();
   private loaded = false;
   private queue: Promise<unknown> = Promise.resolve();
@@ -97,16 +110,9 @@ export class Notifications {
       if (content && content.length > 128_000) throw new Error("Notification configuration exceeds 128 KB");
       try { input = content ? JSON.parse(content) : []; } catch { throw new Error("Notification configuration is not valid JSON"); }
     }
-    if (!Array.isArray(input) || input.length > 20) throw new Error("Configure at most 20 notification destinations");
-    const ids = new Set<string>();
-    const configs = input.map((raw: any): TargetConfig => {
-      if (!raw || !/^[a-z][a-z0-9-]{0,63}$/.test(raw.id) || ids.has(raw.id) || !["webhook", "slack"].includes(raw.protocol)) throw new Error("Notification destinations need unique IDs and webhook or slack protocol");
-      ids.add(raw.id);
-      if (typeof raw.urlEnv !== "string" || !/^[A-Z_][A-Z0-9_]{0,99}$/.test(raw.urlEnv) || raw.secretEnv !== undefined && (typeof raw.secretEnv !== "string" || !/^[A-Z_][A-Z0-9_]{0,99}$/.test(raw.secretEnv))) throw new Error("Notification credentials must name server environment variables");
-      return { id: raw.id, name: text(raw.name, 80) || raw.id, protocol: raw.protocol, urlEnv: raw.urlEnv, secretEnv: raw.secretEnv };
-    });
+    const configs = targetConfigs(input);
     registerPrivateEnvNames(["CODEFLOW_NOTIFICATIONS_FILE", "CODEFLOW_NOTIFICATIONS_JSON", ...configs.flatMap((c) => [c.urlEnv, ...(c.secretEnv ? [c.secretEnv] : [])])]);
-    this.configs = configs;
+    this.configs = configs; this.administratorConfigs = configs;
     const saved = await readFile(this.file, "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
     let state = EMPTY();
     if (saved !== undefined) {
@@ -115,12 +121,13 @@ export class Notifications {
         const parsed = JSON.parse(saved);
         if (parsed.version !== 1 || !parsed.settings || typeof parsed.settings !== "object" || !Array.isArray(parsed.deliveries) || !Array.isArray(parsed.seen)) throw new Error("Invalid state");
         state = { version: 1, settings: Object.create(null), deliveries: [], seen: parsed.seen.filter((key: unknown) => typeof key === "string" && key.length <= 200).slice(-MAX_SEEN) };
-        for (const c of configs) {
-          const value = Object.hasOwn(parsed.settings, c.id) ? parsed.settings[c.id] : undefined;
-          if (value) state.settings[c.id] = { ...validateNotificationSettings(value), destinationHash: text(value.destinationHash, 64), dropped: Number.isSafeInteger(value.dropped) && value.dropped > 0 ? value.dropped : 0, lastError: text(value.lastError, 300) || undefined };
+        for (const id of Object.keys(parsed.settings)) {
+          if (!/^[a-z][a-z0-9-]{0,63}$/.test(id)) throw new Error("Invalid destination ID");
+          const value = parsed.settings[id];
+          if (value) state.settings[id] = { ...validateNotificationSettings(value), destinationHash: text(value.destinationHash, 64), dropped: Number.isSafeInteger(value.dropped) && value.dropped > 0 ? value.dropped : 0, lastError: text(value.lastError, 300) || undefined };
         }
         for (const value of parsed.deliveries.slice(-MAX_DELIVERIES)) {
-          if (!value || !/^notification-[a-f0-9]{24}$/.test(value.id) || !configs.some((c) => c.id === value.target) || !EVENTS.includes(value.event) || !["pending", "sending", "delivered", "failed", "cancelled"].includes(value.state) || !Number.isFinite(value.createdAt) || !Number.isFinite(value.updatedAt) || !Number.isInteger(value.attempts) || value.attempts < 0 || value.attempts > MAX_ATTEMPTS || !value.payload || value.payload.version !== 1 || value.payload.id !== value.id || value.payload.runId !== value.runId || value.payload.event !== value.event || value.payload.project !== value.project) throw new Error("Invalid delivery");
+          if (!value || !/^notification-[a-f0-9]{24}$/.test(value.id) || typeof value.target !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(value.target) || !EVENTS.includes(value.event) || !["pending", "sending", "delivered", "failed", "cancelled"].includes(value.state) || !Number.isFinite(value.createdAt) || !Number.isFinite(value.updatedAt) || !Number.isInteger(value.attempts) || value.attempts < 0 || value.attempts > MAX_ATTEMPTS || !value.payload || value.payload.version !== 1 || value.payload.id !== value.id || value.payload.runId !== value.runId || value.payload.event !== value.event || value.payload.project !== value.project) throw new Error("Invalid delivery");
           const delivery: SavedDelivery = { id: value.id, target: value.target, event: value.event, runId: text(value.runId, 100), teamId: text(value.payload.teamId, 100) || undefined, cycleId: text(value.payload.cycleId, 100) || undefined, project: text(value.project, 100) || undefined, state: value.state,
             attempts: value.attempts, totalAttempts: Number.isSafeInteger(value.totalAttempts) && value.totalAttempts >= value.attempts ? value.totalAttempts : value.attempts, retryCount: Number.isSafeInteger(value.retryCount) && value.retryCount > 0 ? value.retryCount : 0, createdAt: value.createdAt, updatedAt: value.updatedAt, nextAttemptAt: Number.isFinite(value.nextAttemptAt) ? value.nextAttemptAt : undefined,
             httpStatus: Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599 ? value.httpStatus : undefined, reason: text(value.reason, 300) || undefined,
@@ -143,8 +150,27 @@ export class Notifications {
   list() {
     return this.redact(this.configs.map((c) => {
       const destination = this.destination(c), setting = this.state.settings[c.id] ?? defaults();
-      return { id: c.id, name: c.name, protocol: c.protocol, available: this.loaded, configured: !!destination, host: destination?.url.hostname, settings: { enabled: setting.enabled, events: setting.events, projects: setting.projects }, dropped: setting.dropped ?? 0, lastError: setting.lastError };
+      return { id: c.id, name: c.name, protocol: c.protocol, available: this.loaded, configured: !!destination, host: destination?.url.hostname, administratorManaged: this.administratorConfigs.some(value => value.id === c.id), settings: { enabled: setting.enabled, events: setting.events, projects: setting.projects }, dropped: setting.dropped ?? 0, lastError: setting.lastError };
     }));
+  }
+  private credential(name: string) { return this.managedEnvironment[name] ?? this.environment[name]; }
+  async applyManaged(input: TargetConfig[], credentials: NodeJS.ProcessEnv) {
+    const configs = targetConfigs([...this.administratorConfigs, ...input]);
+    if (JSON.stringify(configs) === JSON.stringify(this.configs) && JSON.stringify(credentials) === JSON.stringify(this.managedEnvironment)) return;
+    const before = this.configs, previousSecrets = this.managedEnvironment;
+    try {
+      await this.mutate(() => {
+        this.configs = configs; this.managedEnvironment = { ...credentials };
+        for (const c of configs) {
+          const settings = this.state.settings[c.id] ?? defaults(), destination = this.destination(c);
+          if (settings.destinationHash !== destination?.hash) { settings.enabled = false; settings.destinationHash = destination?.hash; }
+          this.state.settings[c.id] = settings;
+        }
+        for (const job of this.state.deliveries) if (job.state === "pending" && (!configs.some(c => c.id === job.target) || this.destination(configs.find(c => c.id === job.target)!)?.hash !== job.destinationHash)) {
+          job.state = "cancelled"; job.nextAttemptAt = undefined; job.reason = "Destination disconnected or changed"; job.updatedAt = this.now();
+        }
+      });
+    } catch (error) { this.configs = before; this.managedEnvironment = previousSecrets; throw error; }
   }
   deliveries(): NotificationDelivery[] {
     return this.redact([...this.state.deliveries].reverse().map(({ payload: _payload, destinationHash: _hash, ...delivery }) => delivery));
@@ -256,7 +282,7 @@ export class Notifications {
       let status: number | undefined, retryable = true, retryAfter = 30_000, delivered = false;
       try {
         const headers: Record<string, string> = { "content-type": "application/json", "idempotency-key": job.id };
-        if (c.secretEnv) headers.authorization = `Bearer ${this.environment[c.secretEnv]}`;
+        if (c.secretEnv) headers.authorization = `Bearer ${this.credential(c.secretEnv)}`;
         const message = `code-flow: ${job.event}\n${job.payload.title}\n${job.payload.teamId ? `Team ${job.payload.teamId}` : `Run ${job.runId}`} · ${job.payload.status} · ${job.payload.result}`;
         const slackText = message.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
         const body = c.protocol === "slack" ? { text: slackText, blocks: [{ type: "section", text: { type: "plain_text", text: message, emoji: false } }], unfurl_links: false, unfurl_media: false } : job.payload;
@@ -282,13 +308,13 @@ export class Notifications {
   private allowed(job: { event: NotificationEvent; project?: string }, settings: NotificationSettings) { return settings.enabled && settings.events.includes(job.event) && (settings.projects === "all" || settings.projects.includes(job.project ?? "unassigned")); }
   private config(id: string) { const c = this.configs.find((value) => value.id === id); if (!c) throw new Error("Notification destination not found"); return c; }
   private destination(c: TargetConfig): { url: URL; hash: string } | undefined {
-    const value = this.environment[c.urlEnv];
-    if (!value || value.length > 4_096 || c.secretEnv && !this.environment[c.secretEnv]) return undefined;
+    const value = this.credential(c.urlEnv);
+    if (!value || value.length > 4_096 || c.secretEnv && !this.credential(c.secretEnv)) return undefined;
     try { const url = new URL(value); if (url.protocol !== "https:" || url.username || url.password || url.hash) return undefined; return { url, hash: digest([c.protocol, url.href]) }; } catch { return undefined; }
   }
   private payload(value: NotificationPayload): NotificationPayload { return this.redact({ version: 1, id: text(value.id, 100), event: value.event, runId: text(value.runId, 100), teamId: value.teamId ? text(value.teamId, 100) : undefined, cycleId: value.cycleId ? text(value.cycleId, 100) : undefined, project: value.project ? text(value.project, 100) : undefined, pattern: text(value.pattern, 100), status: text(value.status, 100), result: text(value.result, 100), title: text(this.redact(value.title), 200), ...(value.test ? { test: true } : {}) }); }
   private redact<T>(value: T): T {
-    const secrets = this.configs.flatMap((c) => [this.environment[c.urlEnv], c.secretEnv ? this.environment[c.secretEnv] : undefined]).filter((secret): secret is string => !!secret && secret.length >= 8);
+    const secrets = this.configs.flatMap((c) => [this.credential(c.urlEnv), c.secretEnv ? this.credential(c.secretEnv) : undefined]).filter((secret): secret is string => !!secret && secret.length >= 8);
     const visit = (item: unknown): unknown => typeof item === "string" ? redactText(item, secrets) : Array.isArray(item) ? item.map(visit) : item && typeof item === "object" ? Object.fromEntries(Object.entries(item).map(([key, entry]) => [key, visit(entry)])) : item;
     return visit(redactExport(value)) as T;
   }

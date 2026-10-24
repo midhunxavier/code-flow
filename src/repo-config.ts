@@ -15,7 +15,7 @@ import { COPIED_FILES, git, gitWithInput, worktreeGit } from "./git.js";
  *     "copy": [".env", ".env.local", "config/*.local.json"],  // gitignored files to copy in
  *     "run": { "command": "npm run dev", "port": 3000 },      // "Run app" (gets $PORT)
  *     "models": { "claude": { "model": "opus", "effort": "high" } },
- *     "limits": { "maxMinutes": 90, "maxSteps": 60 },
+ *     "limits": { "maxMinutes": 90, "maxSteps": 60, "checkTimeoutMin": 25 },
  *     "trust": "standard",
  *     "image": "node:22",                          // Docker image for isolated checks
  *     "learn": true,                               // pass on problems reviewers keep raising
@@ -31,7 +31,7 @@ export interface RepoConfig {
   copy?: string[];
   run?: { command: string; port?: number };
   models?: AgentSettings;
-  limits?: { maxMinutes?: number; maxSteps?: number };
+  limits?: { maxMinutes?: number; maxSteps?: number; checkTimeoutMin?: number };
   trust?: Trust;
   /** Docker image for running checks in isolation (untrusted sources, automations). */
   image?: string;
@@ -59,7 +59,7 @@ export async function readRepoConfig(repo: string): Promise<{ config: RepoConfig
       // Positive numbers only: a negative or absurd budget would stop every run at once.
       const positive = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : undefined);
       const steps = positive(raw.limits.maxSteps);
-      config.limits = { maxMinutes: positive(raw.limits.maxMinutes), maxSteps: steps === undefined ? undefined : Math.max(1, Math.round(steps)) };
+      config.limits = { maxMinutes: positive(raw.limits.maxMinutes), maxSteps: steps === undefined ? undefined : Math.max(1, Math.round(steps)), checkTimeoutMin: positive(raw.limits.checkTimeoutMin) };
     }
     // Not "full": a repo's own file mustn't be able to turn off the agents' sandboxes.
     if (["safe", "standard", "trusted"].includes(raw.trust)) config.trust = raw.trust;

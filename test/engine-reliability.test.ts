@@ -670,8 +670,8 @@ test("a time budget past setTimeout's range doesn't stop the run at once; limits
   const { run } = await runPattern("pipeline", pipeline, { loop: { maxMinutes: 100_000 } });
   assert.equal(run.status, "done", run.error);
 
-  const dir = newRepo({ ".codeflow/config.json": JSON.stringify({ limits: { maxMinutes: -5, maxSteps: "lots" } }) });
-  assert.deepEqual((await readRepoConfig(dir)).config.limits, { maxMinutes: undefined, maxSteps: undefined });
+  const dir = newRepo({ ".codeflow/config.json": JSON.stringify({ limits: { maxMinutes: -5, maxSteps: "lots", checkTimeoutMin: 0 } }) });
+  assert.deepEqual((await readRepoConfig(dir)).config.limits, { maxMinutes: undefined, maxSteps: undefined, checkTimeoutMin: undefined });
   const manager = new RunManager(findPattern);
   const bad = await idle(manager, await manager.start({ pattern: findPattern("pipeline")!, task: "Budgets", repo: dir, roles: pipeline as never, options: {}, loop: { maxMinutes: 0 } }));
   assert.equal(bad.status, "done", bad.error);

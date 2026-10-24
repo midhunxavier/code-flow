@@ -1,7 +1,7 @@
 import { settingsSection, type SettingsSection } from "./settings-sections.js";
 export type SideTab = "chat" | "changes" | "files" | "terminal" | "browser" | "notes";
 export const SIDE_TABS: SideTab[] = ["chat", "changes", "files", "terminal", "browser", "notes"];
-export const PROJECT_SECTIONS = ["runs", "repositories", "board", "people", "automation", "ml", "settings"] as const;
+export const PROJECT_SECTIONS = ["runs", "repositories", "connections", "board", "people", "automation", "ml", "settings"] as const;
 export type ProjectSection = typeof PROJECT_SECTIONS[number];
 export const REPOSITORY_TOOLS = ["verification", "code", "context", "history", "services", "coordination", "filtered-tasks"] as const;
 export type RepositoryTool = typeof REPOSITORY_TOOLS[number];
@@ -12,7 +12,7 @@ export type Route =
   | { view: "automations"; kind?: string }
   | { view: "workspace"; project?: string }
   | { view: "insights"; group?: string }
-  | { view: "settings"; section?: SettingsSection; group?: string }
+  | { view: "settings"; section?: SettingsSection; group?: string; connection?: string }
   | { view: "project"; id: string; section?: ProjectSection; repository?: string; tool?: RepositoryTool; kind?: string }
   | { view: "side"; tab: SideTab; scope: string }
   | { view: "run"; id: string }
@@ -24,6 +24,7 @@ export type Route =
 
 /** Decode a deep link without allowing malformed URL escapes to prevent the app rendering. */
 export function parseRouteHash(hash: string): Route {
+  if (hash.startsWith("#/settings/connections/join?")) return { view: "settings", section: "connections", group: "join", connection: new URLSearchParams(hash.split("?")[1]).get("connection") ?? undefined };
   let parts: string[];
   try { parts = hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent); }
   catch { return { view: "invalid", hash }; }
@@ -62,6 +63,7 @@ export function hashFor(r: Route): string {
   if (r.view === "workspace") return r.project ? `#/project/${encodeURIComponent(r.project)}/workspace` : "#/workspace";
   if (r.view === "insights") return `#/insights${r.group ? `/${encodeURIComponent(r.group)}` : ""}`;
   if (r.view === "run") return `#/run/${encodeURIComponent(r.id)}`;
+  if (r.view === "settings" && r.connection && r.section === "connections" && r.group === "join") return `#/settings/connections/join?connection=${encodeURIComponent(r.connection)}`;
   if (r.view === "settings") return r.section ? `#/settings/${r.section}${(r.section === "insights" || r.section === "connections") && r.group ? `/${encodeURIComponent(r.group)}` : ""}` : "#/settings";
   if (r.view === "project") return `#/project/${encodeURIComponent(r.id)}${r.section ? `/${r.section}` : ""}${r.section === "automation" && r.kind ? `/${encodeURIComponent(r.kind)}` : ""}${r.section === "repositories" && (r.repository || r.tool) ? `/${encodeURIComponent(r.repository ?? "")}${r.tool ? `/${r.tool}` : ""}` : ""}`;
   if (r.view === "team-people") return `#/team/people${r.project ? `/${encodeURIComponent(r.project)}` : ""}`;
