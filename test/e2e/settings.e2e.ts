@@ -28,6 +28,51 @@ before(async () => {
 after(async () => { await browser?.close(); server?.kill("SIGTERM"); await new Promise<void>((resolve) => { if (server?.exitCode !== null) return resolve(); server?.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }); rmSync(directory, { recursive: true, force: true }); });
 const category = (name: string) => page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name, exact: true }).click();
 
+test("desktop updates are hidden in browsers and show download/restart states accessibly in the app", async () => {
+  await page.goto(`${base}/#/settings/general`);
+  await page.getByRole("heading", { name: "General", exact: true }).waitFor();
+  assert.equal(await page.getByRole("region", { name: "App updates" }).count(), 0);
+  const desktop = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const desktopErrors: string[] = [];
+  desktop.on("pageerror", error => desktopErrors.push(error.message));
+  try {
+    // Keep this browser fixture free of tsx's function-name helpers when serialized.
+    await desktop.addInitScript({ content: `(() => {
+      let state = { currentVersion: "0.1.0-preview.2", phase: "idle", message: "Check for a newer version of Code Flow." };
+      const listeners = new Set();
+      const fixture = { update(next) { state = { ...state, ...next }; for (const callback of listeners) callback(state); return state; } };
+      window.addEventListener("desktop-update-fixture", event => fixture.update(event.detail));
+      window.codeflowDesktop = {
+        getUpdateState: async () => state,
+        onUpdateState: callback => { listeners.add(callback); return () => { listeners.delete(callback); }; },
+        checkForUpdates: async () => fixture.update({ phase: "available", version: "0.1.0-preview.10", canInstall: true, message: "Code Flow 0.1.0-preview.10 is available.", releaseUrl: "https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.10" }),
+        downloadUpdate: async () => fixture.update({ phase: "downloading", message: "Downloading and verifying your update. You can keep working." }),
+        installUpdate: async () => fixture.update({ phase: "downloaded", message: "Your update is ready whenever you’re ready to restart." }),
+        openUpdateInstaller: async () => state,
+      };
+    })()` });
+    await desktop.goto(`${base}/?token=settings-test`);
+    await desktop.goto(`${base}/#/settings/general`);
+    assert.equal(await desktop.evaluate(() => typeof window.codeflowDesktop), "object", desktopErrors.join("\n"));
+    const card = desktop.getByRole("region", { name: "App updates" });
+    await card.getByRole("button", { name: "Check for updates" }).click();
+    await desktop.getByRole("link", { name: "Update available", exact: true }).waitFor();
+    await card.getByRole("button", { name: "Download update", exact: true }).click();
+    assert.equal(await card.getByRole("button", { name: "Downloading…" }).isDisabled(), true);
+    await desktop.evaluate(() => window.dispatchEvent(new CustomEvent("desktop-update-fixture", { detail: { phase: "downloaded", message: "Your update is ready. Restart Code Flow to install it." } })));
+    await card.getByRole("button", { name: "Restart to update", exact: true }).click();
+    await card.getByText("Your update is ready whenever you’re ready to restart.").waitFor();
+    await desktop.addScriptTag({ content: axe.source });
+    for (const width of [1440, 390]) {
+      await desktop.setViewportSize({ width, height: 1000 });
+      const violations = await desktop.evaluate(async () => (await (window as any).axe.run('[aria-label="App updates"]', { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } })).violations);
+      assert.deepEqual(violations.map((v: any) => v.id), []);
+      assert.equal(await desktop.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    }
+    assert.deepEqual(desktopErrors, []);
+  } finally { await desktop.close(); }
+});
+
 test("Kilo and Cline presets connect through ACP, preserve edited invocations, and appear in model settings", async () => {
   for (const [name, command, args, login, scenario] of [
     ["Kilo", "kilo", "acp", "kilo auth login", "happy"],
@@ -173,8 +218,8 @@ test("desktop notification preferences are reachable from the app menu and survi
   await page.context().grantPermissions(["notifications"]);
   await page.goto(`${base}/`);
   await page.reload();
-  await page.getByRole("button", { name: "New run", exact: true }).waitFor();
-  await page.keyboard.press("Control+,");
+  await page.getByRole("button", { name: "Application menu", exact: true }).click();
+  await page.getByRole("menuitem", { name: /^Settings/ }).click();
   await category("Notifications");
   const toggle = page.getByRole("switch", { name: "Desktop notifications", exact: true });
   assert.equal(await toggle.getAttribute("aria-checked"), "true");

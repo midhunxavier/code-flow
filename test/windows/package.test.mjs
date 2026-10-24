@@ -1,0 +1,30 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { access, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root = fileURLToPath(new URL('../..', import.meta.url));
+const arch = process.env.CODEFLOW_WINDOWS_ARCH ?? 'x64';
+
+test('Windows portable package contains a PE executable, verified WSL runtime, UI assets and matching archive checksum', async () => {
+  const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+  const bundle = join(root, 'output/windows', arch, 'Code Flow'), resources = join(bundle, 'resources/app');
+  assert.equal((await readFile(join(bundle, 'Code Flow.exe'))).subarray(0, 2).toString(), 'MZ');
+  const config = JSON.parse(await readFile(join(resources, 'wsl-config.json'), 'utf8'));
+  assert.equal(config.arch, arch); assert.match(config.bundleId, /^[a-f0-9]{64}$/);
+  assert.equal(createHash('sha256').update(await readFile(join(resources, 'wsl/node-linux.tar.gz'))).digest('hex'), config.nodeSha256);
+  for (const path of ['wsl/bootstrap.sh', 'wsl/runner.cjs', 'backend/src/server.js', 'backend/public/index.html', 'wsl.cjs', 'main.cjs', 'preload.cjs', 'starting.html', 'icon.png']) await access(join(resources, path));
+  assert.equal((await readFile(join(resources, 'wsl/bootstrap.sh'), 'utf8')).includes('\r'), false);
+  const html = await readFile(join(resources, 'backend/public/index.html'), 'utf8');
+  assert.doesNotMatch(html, /\/\*__CSS__\*\/|\/\/__JS__/);
+  const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^\"]+)"/g)].map(match => match[1]);
+  assert.ok(assets.some(asset => asset.endsWith('.js')), 'The Windows-built page must load its JavaScript.');
+  assert.ok(assets.some(asset => asset.endsWith('.css')), 'The Windows-built page must load its stylesheet.');
+  for (const asset of assets) await access(join(resources, 'backend/public', asset));
+  assert.equal(JSON.parse(await readFile(join(resources, 'update-config.json'), 'utf8')).nativeUpdates, false);
+  const filename = `code-flow-${pkg.version}-windows-${arch}-unsigned.zip`;
+  const bytes = await readFile(join(root, 'output/releases', filename));
+  assert.equal(bytes.subarray(0, 2).toString(), 'PK');
+  assert.equal((await readFile(join(root, 'output/releases', `${filename}.sha256`), 'utf8')).trim(), `${createHash('sha256').update(bytes).digest('hex')}  ${filename}`);
+});

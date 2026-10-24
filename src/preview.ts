@@ -70,6 +70,16 @@ export class Previews {
   /** The origins code-flow's own page can have: the overlay takes commands only from them, and only they may frame a preview. */
   constructor(private readonly parents: () => string[], private readonly ownPorts: () => number[], private readonly remoteConnect?: (target: PreviewTarget) => Duplex, private readonly overlay = true) {}
 
+  async ready(address: string): Promise<boolean> {
+    const target = previewTarget(address);
+    if (!target || this.ownPorts().includes(target.port)) throw new Error("Choose a local HTTP app other than code-flow");
+    if (this.remoteConnect) throw new Error("Local readiness checks are unavailable for a forwarded preview");
+    try {
+      const response = await fetch(`http://${target.hostname}:${target.port}/`, { method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(2000) });
+      return response.status >= 200 && response.status < 500;
+    } catch { return false; }
+  }
+
   /**
    * The preview for a local app: its address on the proxy. The same app keeps its port. `host`
    * is the Host code-flow's page was asked for with; the preview uses the same host name.

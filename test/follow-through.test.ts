@@ -51,7 +51,7 @@ async function idle(manager: Manager, run: Run) {
 async function fixCi(tamper?: "workflow" | "fewer") {
   const { repo, origin } = newRepo();
   const manager = new RunManager(findPattern);
-  const run = await idle(manager, await manager.start({ pattern: findPattern("solo")!, task: "Fix CI", repo, roles: { agent: ["claude"] }, options: {}, loop: { check: CHECK } }));
+  const run = await idle(manager, await manager.start({ checkpointOnFinish: true, pattern: findPattern("solo")!, task: "Fix CI", repo, roles: { agent: ["claude"] }, options: {}, loop: { check: CHECK } }));
   assert.equal(run.status, "done", run.error);
   const wt = run.worktrees[0]!;
   if (tamper) process.env.FAKE_CI_TAMPER = tamper;

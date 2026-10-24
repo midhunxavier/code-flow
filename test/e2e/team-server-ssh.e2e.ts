@@ -139,6 +139,17 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     const teamProjects = await call(prefix + "/api/projects");
     assert.equal(teamProjects.length, 1); assert.equal(teamProjects[0].name, "Remote team project");
     assert.equal((await call(prefix + "/api/accounts")).users.length, 1);
+    const invitations = wizard.getByRole("region", { name: "Project invitations", exact: true });
+    await invitations.getByRole("button", { name: "Create invitation", exact: true }).click();
+    const invitationLink = await invitations.getByLabel("Invitation link", { exact: true }).inputValue();
+    assert.ok(invitationLink.startsWith(`https://team.example.test:${teamPort}/#/join/`));
+    const pending = await call(prefix + "/api/accounts/invitations"); assert.equal(pending.invitations.length, 1);
+    assert.equal((await call("/api/accounts/invitations")).invitations.length, 0, "SSH invitations never modify the local server");
+    await invitations.getByText("Pending invitations (1)", { exact: true }).click();
+    await invitations.getByRole("button", { name: "Revoke invitation", exact: true }).click();
+    await invitations.getByLabel("Invitation link", { exact: true }).waitFor({ state: "hidden" });
+    assert.ok((await call(prefix + "/api/accounts/invitations")).invitations[0].revokedAt);
+
     const wrongTeam = await call(prefix + "/api/team/board?teamConnection=bogus");
     assert.equal(wrongTeam.me.displayName, "Remote owner", "setup pins its target even if a caller passes another team");
     await mkdir(join(root, "output/playwright"), { recursive: true });
@@ -212,7 +223,7 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await page.screenshot({ path: "/tmp/code-flow-team-board-mobile.png", fullPage: true, animations: "disabled" });
     await page.setViewportSize({ width: 1440, height: 1100 });
-    await page.goto(`${base}/computer/${connection.id}/#/settings/connections/sharing`);
+    await page.goto(`${base}/computer/${connection.id}/#/settings/connections/manage`);
     await page.getByLabel("Show Board in the app menu").check();
     const statusCard = page.getByRole("region", { name: "Team server on Connected VM", exact: true });
     await statusCard.getByText("Not responding", { exact: true }).waitFor();

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { outcomeProblem, ownsPath, planProblem, readyTasks, revisionProblem, type TaskOutcome, type TeamPolicy, type TeamRevision } from "../src/patterns/auto-team-model.js";
+import { replacementSettings, normalizeTaskOutcomeEvidence, taskOutcomeSchema, outcomeProblem, ownsPath, planProblem, readyTasks, revisionProblem, type TaskOutcome, type TeamPolicy, type TeamRevision } from "../src/patterns/auto-team-model.js";
+import { shapeProblem } from "../src/json.js";
 import type { TeamPlan, TeamState } from "../src/teams.js";
 
 const policy: TeamPolicy = { coordinator: "claude", pool: ["claude", "codex"], inventory: { at: 0, ranking: ["claude", "codex"], providers: [{ id: "claude", available: true, quotaKnown: false }, { id: "codex", available: true, quotaKnown: false }] }, maxMembers: 4, maxTasks: 12, differentProviderReview: false };
@@ -162,4 +163,31 @@ test("revisions may retain unavailable members but cannot give them new work or 
   const pins = structuredClone(unavailable);
   pins.inventory.providers[0]!.settingsByRole = { worker: { model: "required-model" } };
   assert.match(revisionProblem(revision(), s, pins)!, /model settings/);
+});
+
+
+test("worker outcome schema accepts pending engine handoff but rejects prose requirement IDs and mailbox IDs", () => {
+  const schema = taskOutcomeSchema(["goal"]);
+  const value = { taskId: "docs", memberId: "worker", status: "submitted", checkpoint: "Edits complete", handover: "Engine checks and review are pending; no pass claimed", artifacts: ["README.md"], unresolvedRequirements: [], questions: [], replies: [], findings: [] };
+  assert.equal(shapeProblem(schema, value), undefined);
+  assert.ok(shapeProblem(schema, { ...value, unresolvedRequirements: ["goal: checks still pending"] }));
+  const s = state(), task = s.tasks[0]!;
+  assert.match(outcomeProblem({ ...value, taskId: task.id, memberId: task.owner, status: "needs_info", questions: [{ id: "mail:receipt", recipient: "coordinator", body: "Missing contract", blocking: true }] } as TaskOutcome, task, s.members.find(member => member.id === task.owner)!, s)!, /questions need unique local IDs/);
+});
+
+
+test("browser URLs become evidence without gaining repository path authority", () => {
+  const value: TaskOutcome = { taskId: "api", memberId: "builder", status: "submitted", checkpoint: "Observed", handover: "Confirmed", artifacts: [], unresolvedRequirements: [], questions: [], replies: [], findings: [{ title: "Browser", body: "Confirmation", evidence: ["visible confirmation"], paths: ["https://example.test/result", "src/api.ts", "../private"] }] };
+  const normalized = normalizeTaskOutcomeEvidence(value);
+  assert.deepEqual(normalized.findings[0]!.paths, ["src/api.ts", "../private"]);
+  assert.deepEqual(normalized.findings[0]!.evidence, ["visible confirmation", "https://example.test/result"]);
+  assert.ok(value.findings[0]!.paths.includes("https://example.test/result"), "original evidence is immutable");
+});
+
+
+test("provider replacement chooses a reported model when role settings and CLI default are empty, preserving pins", () => {
+  const provider = { id: "agy" as const, available: true, quotaKnown: false, settingsByRole: { reviewer: {} }, models: [{ id: "reported" }] };
+  assert.deepEqual(replacementSettings(provider, "reviewer"), { model: "reported", effort: "" });
+  assert.deepEqual(replacementSettings({ ...provider, model: "configured" }, "reviewer"), { model: "configured", effort: "" });
+  assert.deepEqual(replacementSettings({ ...provider, settingsByRole: { reviewer: { model: "pinned", effort: "high" } } }, "reviewer"), { model: "pinned", effort: "high" });
 });

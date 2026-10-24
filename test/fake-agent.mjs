@@ -101,7 +101,15 @@ if (vendor === "codex" && args[0] === "app-server") {
 }
 
 // Prompts arrive on stdin, as the real CLIs receive them from code-flow.
-const stdin = readFileSync(0, "utf8");
+let stdin;
+if (vendor === "claude" && args.includes("--input-format")) {
+  const { createInterface } = await import("node:readline");
+  for await (const line of createInterface({ input: process.stdin })) {
+    const value = JSON.parse(line);
+    if (value.type === "control_request") process.stdout.write(JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: value.request_id, response: {} } }) + "\n");
+    if (value.type === "user") { stdin = value.message.content; break; }
+  }
+} else stdin = readFileSync(0, "utf8");
 const prompt = vendor === "agy" ? JSON.parse(stdin.split("\n")[0]).message.content : stdin;
 
 /** FAKE_<name>_VENDOR names this vendor (one, or a comma-separated list). */
@@ -133,7 +141,7 @@ if (process.env.FAKE_RECORD_DIR) {
     JSON.stringify({ vendor, args, prompt, cwd: process.cwd(), token: process.env.CODEFLOW_TOKEN ?? null, teamTools }));
 }
 const write =
-  (vendor === "claude" && (args.includes("acceptEdits") || args.includes("bypassPermissions"))) ||
+  (vendor === "claude" && (args.includes("acceptEdits") || args.includes("bypassPermissions") || (args[args.indexOf("--allowedTools") + 1] ?? "").split(",").includes("Write"))) ||
   (vendor === "codex" && (args.includes('sandbox_mode="workspace-write"') || args.includes('sandbox_mode="danger-full-access"'))) ||
   // agy has no read-only flag; code-flow enforces read-only by reverting changes.
   (vendor === "agy" && args.includes("--dangerously-skip-permissions"));

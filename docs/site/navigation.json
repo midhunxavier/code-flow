@@ -1,6 +1,8 @@
 {
   "Get started": [
     "README",
+    "installation",
+    "windows-desktop",
     "getting-started",
     "patterns",
     "acp-agents",
@@ -56,7 +58,8 @@
     "accessibility",
     "performance",
     "run-storage",
-    "documentation"
+    "documentation",
+    "releasing"
   ],
   "Engineering records": [
     "application-improvements",

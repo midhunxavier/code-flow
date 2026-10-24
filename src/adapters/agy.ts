@@ -8,16 +8,20 @@ import { classifyError, cliErrorLine, resetFromText } from "./errors.js";
 import { captureOutput, commandExists, describeFailure, processErrorKind, startJsonlProcess, stringify, truncate, unknownEvents } from "./process.js";
 import { STEP_TIMEOUT_MS } from "../config.js";
 import { childEnv } from "../env.js";
-import { agyIsolationProblem, agyManagedOptionsProblem, inspectAgyIsolationRuntime, prepareAgyIsolation, discoverIsolatedAgyModels, AGY_FILE_ONLY_LIMITATION, AGY_ISOLATION_VERSION } from "./agy-isolation.js";
+import { agyIsolationProblem, agyManagedOptionsProblem, inspectAgyIsolationRuntime, prepareAgyIsolation, discoverIsolatedAgyModels, AGY_FILE_ONLY_LIMITATION, AGY_SHARED_TOOLS_LIMITATION, AGY_VERIFIED_CLI_VERSIONS } from "./agy-isolation.js";
+import { TEAM_TOOLS } from "../team-tools.js";
+import { AGENT_TOOLS } from "../agent-tools.js";
+import { prepareAgyNativeTools } from "./agy-tools.js";
 
 /**
  * Google Antigravity CLI via `agy -p --output-format stream-json`.
  * Since 2026-06-18 this, not Gemini CLI, is the CLI that serves Google AI Pro/Ultra plans.
  * Uses the cached login from an interactive `agy` session.
  *
- * Managed execution uses a fresh, protected, file-only macOS executor and existing Keychain
+ * Managed execution uses a fresh, protected macOS executor and existing Keychain
  * authentication by default. Explicit agy-native-v1 run authority instead uses the normal
- * host profile without sandboxing. Both managed modes start fresh portable turns.
+ * host profile without sandboxing. Task browser/computer tools use a short-lived HTTP MCP
+ * capability in a private profile; no global MCP settings are edited. Both modes use portable turns.
  * Legacy execution behaviour (only when no managed run policy is supplied):
  *  - Headless mode cannot answer approval prompts. A denied tool does not let the agent
  *    carry on: the turn ends with an empty response. So by default every run uses
@@ -49,14 +53,14 @@ function skipPermissions(): boolean {
 
 /** Dependency injection applies only to the isolated executor; native execution requires its own receipt. */
 export function createAgyAdapter(prepare: (opts: RunOptions) => Promise<Awaited<ReturnType<typeof prepareAgyIsolation>>> = async opts =>
-  prepareAgyIsolation(opts.cwd, opts.mode, await inspectAgyIsolationRuntime())): AgentAdapter {
+  prepareAgyIsolation(opts.cwd, opts.mode, await inspectAgyIsolationRuntime(), opts.agentTools, !!opts.jsonSchema, opts.teamTools)): AgentAdapter {
 return {
   id: "agy",
   displayName: "Antigravity CLI",
   binary: "agy",
   available: () => commandExists("agy"),
   managedAvailability: agyIsolationProblem,
-  managedLimitations: [AGY_FILE_ONLY_LIMITATION],
+  managedLimitations: [AGY_SHARED_TOOLS_LIMITATION],
   async discoverModels(context) {
     if (context?.agentContainer) throw new Error("Antigravity container discovery is unverified");
     if (context?.isolatedAgy) return discoverIsolatedAgyModels();
@@ -79,26 +83,27 @@ return {
     const native = opts.permissions?.implementation === "agy-native-v1";
     const managed = !!opts.permissions;
     let nativeScratch: string | undefined;
+    let nativeTools: Awaited<ReturnType<typeof prepareAgyNativeTools>> | undefined;
     let isolation: Awaited<ReturnType<typeof prepareAgyIsolation>> | undefined;
     if (opts.permissions) {
       const problem = native ? agyNativeOptionsProblem(opts) : agyManagedOptionsProblem(opts);
       if (problem) return { ok: false, finalText: "", errorKind: "cli_incompatible", error: problem };
       if (opts.resumeSessionId) return { ok: false, finalText: "", errorKind: "session_not_found", error: "Managed Antigravity requires a fresh turn with portable context" };
       try { if (!native) isolation = await prepare(opts); }
-      catch { return { ok: false, finalText: "", errorKind: "cli_incompatible", error: "Could not establish the verified Antigravity isolation boundary. macOS, CLI 1.4.4 and an existing Keychain login/security cache are required. No permissive fallback was used." }; }
+      catch { return { ok: false, finalText: "", errorKind: "cli_incompatible", error: `Could not establish the verified Antigravity isolation boundary. macOS, CLI ${AGY_VERIFIED_CLI_VERSIONS.join(" or ")} and an existing Keychain login/security cache are required. No permissive fallback was used.` }; }
     }
     try {
-    if (native) { nativeScratch = await mkdtemp(join(tmpdir(), "codeflow-agy-native-")); onEvent({ kind: "status", text: AGY_NATIVE_LIMITATION }); }
-    if (isolation) onEvent({ kind: "status", text: `${AGY_FILE_ONLY_LIMITATION} Executor: ${AGY_ISOLATION_VERSION}; CLI 1.4.4.` });
+    if (native) { nativeScratch = await mkdtemp(join(tmpdir(), "codeflow-agy-native-")); if (opts.agentTools || opts.teamTools) nativeTools = await prepareAgyNativeTools(opts.agentTools, undefined, opts.teamTools); onEvent({ kind: "status", text: AGY_NATIVE_LIMITATION }); }
+    if (isolation) onEvent({ kind: "status", text: `${opts.agentTools ? AGY_SHARED_TOOLS_LIMITATION : AGY_FILE_ONLY_LIMITATION} Executor: ${opts.permissions?.implementation}; supported CLI ${AGY_VERIFIED_CLI_VERSIONS.join(" or ")}.` });
     if (opts.agentContainer) onEvent({ kind: "status", text: `Antigravity runs in Docker image ${opts.agentContainer.image}. Team messages and memory are provided at turn boundaries.` });
-    if (opts.teamTools) onEvent({ kind: "status", text: "Live MCP collaboration is unavailable in this Antigravity adapter; team messages and memory are provided at turn boundaries." });
+    if (opts.teamTools) onEvent({ kind: "status", text: isolation || native ? "Scoped codeflow_team tools connect this member to the live team mailbox and memory." : "Live member tools are unavailable in legacy Antigravity execution; use structured turn-boundary messages." });
     // A NaN or missing timeout must not become "--print-timeout NaNm".
     const timeoutMs = typeof opts.timeoutMs === "number" && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : STEP_TIMEOUT_MS;
     // Prompt as one stream-json message on stdin (-p would need it as an argument).
     const args = [
       "--input-format", "stream-json",
       "--output-format", "stream-json",
-      "--print-timeout", `${Math.max(1, Math.ceil(timeoutMs / 60_000))}m`,
+      "--print-timeout", `${Math.max(1, Math.ceil((opts.isPaused ? Math.max(timeoutMs, 24 * 60 * 60_000) : timeoutMs) / 60_000))}m`,
     ];
     const sandboxed = !native && (!!isolation || !(opts.mode === "write" && opts.trust === "full"));
     if (sandboxed) args.push("--sandbox");
@@ -122,6 +127,8 @@ return {
     let statusKind: ErrorKind | undefined;
     let sawResult = false;
     let policyDrift = false;
+    let policyTool = "";
+    let deniedFile = false;
     let managedDiagnostic = "";
     let structured: unknown;
     const openTools = new Set<string>();
@@ -132,13 +139,14 @@ return {
       agentContainer: opts.agentContainer ? { config: opts.agentContainer, mode: opts.mode } : undefined,
       command: isolation?.command ?? "agy",
       args: [...(isolation?.args ?? []), ...args],
-      input: `${JSON.stringify({ event: "user", message: { content: opts.prompt } })}\n`,
+      input: `${JSON.stringify({ event: "user", message: { content: (isolation ? `Execution capabilities: You have source-file tools inside the assigned workspace ${opts.cwd}. Code Flow has already prepared the Git worktree and manages commits, integration and checks. Do not inspect .git files/directories, follow worktree metadata links, or inspect the parent repository or paths outside this workspace. Git metadata and shell are unavailable. ${opts.agentTools ? "Use codeflow_agent MCP tools for the same Browser panel and computer tools the user and other providers use. Inspect the current browser tab before acting. Prefer browser tools for websites; fresh screenshots ground computer actions. For computer_action clicks, use coordinateSpace=normalized and Gemini coordinates from 0 to 1000 on each axis (500,500 is the center); do not send normalized positions as pixels." : "Browser and MCP access are unavailable in this profile."} If an unavailable capability is essential, report that limitation without attempting a workaround.\n\n` : opts.agentTools ? "Use codeflow_agent MCP tools for the Browser panel shared with the user and teammates and for native computer interaction. Inspect the current browser before acting; do not create a separate browser session. Use a fresh computer_screenshot before each computer_action. For clicks use coordinateSpace=normalized with Gemini 0–1000 coordinates (500,500 is the center).\n\n" : "") + opts.prompt } })}\n`,
       cwd: isolation?.paths.workspace ?? opts.cwd,
       // Without the sandbox the agent's commands use your git config, but never code-flow's own secrets.
-      env: isolation?.env ?? (sandboxed ? sandboxGitEnv() : childEnv()),
+      env: isolation?.env ?? (nativeTools ? childEnv({ HOME: nativeTools.home }) : sandboxed ? sandboxGitEnv() : childEnv()),
       signal: opts.signal,
       timeoutMs: timeoutMs + 30_000,
       idleTimeoutMs: opts.idleTimeoutMs,
+      isPaused: opts.isPaused,
       onText: (line) => {
         // Native login/refresh diagnostics may contain URLs, tokens or account details.
         if (managed) managedDiagnostic = (managedDiagnostic + "\n" + line).slice(-64000);
@@ -156,10 +164,11 @@ return {
 
           case "step_update": {
             const step = msg.step_update ?? {};
-            if (isolation && step.step_type === "tool" && step.tool_name && !managedAgyToolAllowed(step.tool_name, opts.mode)) {
+            if (isolation && step.step_type === "tool" && step.tool_name && !managedAgyToolAllowed(step.tool_name, opts.mode, !!opts.agentTools, step.tool_info?.parameters, !!opts.teamTools)) {
               // Defense against runtime drift, not a substitute for provider/OS enforcement:
               // the stream can report a call after it began. Never forward its payload.
               policyDrift = true;
+              policyTool = /^[\w.-]{1,100}$/.test(step.tool_name) ? step.tool_name : "unrecognized tool";
               proc.kill();
               return;
             }
@@ -196,6 +205,7 @@ return {
                 }
                 openTools.delete(callId);
                 const error = step.tool_info?.error?.message;
+                if (isolation && typeof error === "string" && /permission check failed|user denied permission/i.test(error)) deniedFile = true;
                 onEvent({
                   kind: "tool_result",
                   callId,
@@ -213,7 +223,7 @@ return {
             const result = msg.result ?? {};
             finalText = result.response ?? streamedText;
             if (result.conversation_id && !managed) sessionId = result.conversation_id;
-            if (result.structured_output !== undefined) structured = result.structured_output;
+            if (result.structured_output !== undefined) structured = normalizeAgyStructured(result.structured_output, opts.jsonSchema);
             if (result.status && result.status !== "SUCCESS") {
               const detail = typeof result.error === "string" ? result.error : result.error?.message;
               resultError = detail ? `${detail} (agy status ${result.status})` : `agy finished with status ${result.status}`;
@@ -252,7 +262,7 @@ return {
     if (drift && !managed) onEvent({ kind: "status", text: drift });
 
     if (policyDrift) {
-      const error = "Antigravity reported a tool outside its verified file-only policy. The worker was stopped; runtime compatibility must be reverified.";
+      const error = `Antigravity reported ${policyTool} outside its verified task policy. The worker was stopped; runtime compatibility must be reverified.`;
       onEvent({ kind: "error", message: error });
       return { ok: false, finalText: "", errorKind: "cli_incompatible", error };
     }
@@ -278,6 +288,7 @@ return {
     // Explicit cancellation still wins over any earlier authentication diagnostic.
     const errorKind: ErrorKind = stopped === "cancelled" ? stopped : authKind ?? stopped ?? statusKind ?? classifyError(own);
     if (managed) error = native ? `Unrestricted Antigravity failed (${errorKind}). Check the existing login in its normal session, then resume. Code Flow never starts sign-in or changes credentials; native diagnostics are withheld.` : managedAgyFailure(errorKind);
+    if (isolation && deniedFile && errorKind === "other") error = "Antigravity requested a file outside its permitted source-file scope. The turn stopped with its permissions intact. Code Flow handles Git metadata and checks; continue with source files in the assigned workspace or select another team provider.";
     const resetsAt = errorKind === "usage_limit" ? resetFromText(own) : undefined;
     onEvent({ kind: "error", message: error });
     return {
@@ -288,15 +299,32 @@ return {
       errorKind,
       ...(resetsAt && { resetsAt }),
     };
-    } finally { await isolation?.cleanup(); if (nativeScratch) await rm(nativeScratch, { recursive: true, force: true }); }
+    } finally { await isolation?.cleanup(); await nativeTools?.cleanup(); if (nativeScratch) await rm(nativeScratch, { recursive: true, force: true }); }
   },
 };
 }
 export const agyAdapter = createAgyAdapter();
 
-export function managedAgyToolAllowed(name: string, mode: "read" | "write"): boolean {
+/** CLI structured completion adds two presentation fields to the finish payload. */
+export function normalizeAgyStructured(value: unknown, schema?: object): unknown {
+  if (!schema || !value || typeof value !== "object" || Array.isArray(value)) return value;
+  const result = { ...value } as Record<string, unknown>;
+  const properties = (schema as { properties?: Record<string, unknown> }).properties ?? {};
+  for (const name of ["toolAction", "toolSummary"]) if (!Object.hasOwn(properties, name)) delete result[name];
+  return result;
+}
+
+export function managedAgyToolAllowed(name: string, mode: "read" | "write", sharedTools = false, parameters?: unknown, teamTools = false): boolean {
+  // Resource discovery is read-only; the isolated profile contains only our server.
+  if ((sharedTools || teamTools) && name === "list_resources") return true;
+  if (sharedTools && AGENT_TOOLS.some(tool => name === `mcp_codeflow_agent_${tool.name}`)) return true;
+  if (teamTools && TEAM_TOOLS.some(tool => name === `mcp_codeflow_team_${tool.name}`)) return true;
+  if ((sharedTools || teamTools) && name === "call_mcp_tool") {
+    const p = parameters as Record<string, unknown> | undefined;
+    return sharedTools && p?.ServerName === "codeflow_agent" && AGENT_TOOLS.some(tool => tool.name === p.ToolName) || teamTools && p?.ServerName === "codeflow_team" && TEAM_TOOLS.some(tool => tool.name === p.ToolName);
+  }
   // CLI 1.4.4 exposes manage_task for the fresh process's own tasks, but cannot create them.
-  return ["view_file", "list_dir", "manage_task", ...(mode === "write" ? ["write_to_file", "replace_file_content"] : [])].includes(name);
+  return ["view_file", "list_dir", "manage_task", "finish", ...(mode === "write" ? ["write_to_file", "replace_file_content"] : [])].includes(name);
 }
 
 export function managedAgyAuthKind(detail: string): "auth" | undefined {

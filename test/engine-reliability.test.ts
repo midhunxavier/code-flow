@@ -675,6 +675,6 @@ test("a time budget past setTimeout's range doesn't stop the run at once; limits
   const manager = new RunManager(findPattern);
   const bad = await idle(manager, await manager.start({ pattern: findPattern("pipeline")!, task: "Budgets", repo: dir, roles: pipeline as never, options: {}, loop: { maxMinutes: 0 } }));
   assert.equal(bad.status, "done", bad.error);
-  assert.deepEqual([bad.loop.maxMinutes, bad.loop.maxSteps], [60, 40]);
+  assert.deepEqual([bad.loop.maxMinutes, bad.loop.maxSteps], [240, 200]);
   await flushWrites();
 });

@@ -45,7 +45,9 @@ import {
   closeSide,
   openSide,
   sideOpen,
-  sideWidth,
+  sideDisplayWidth,
+  sideExpanded,
+  sideFullWidth,
   gitHealth,
   health,
   healthOpen,
@@ -65,7 +67,7 @@ import {
   sideTab,
   type SideTab,
 } from "./state.js";
-import type { DirListing, RunSummary } from "./types.js";
+import type { DirListing, RepoInfo, RunSummary } from "./types.js";
 import { teamNeedsResume, teamAwaitingAnswer } from "./team-state.js";
 
 export function App() {
@@ -112,6 +114,7 @@ export function handOffLink(e: MouseEvent) {
 }
 
 function MainApp() {
+  const skipTarget = sideFullWidth.value ? "side-panel" : "main-content";
   useEffect(() => {
     const host = executionHost.value;
     document.title = `${waitingCount.value ? `(${waitingCount.value}) ` : ""}code-flow${host.kind === "ssh" ? ` · SSH ${host.name}` : ""}`;
@@ -129,9 +132,9 @@ function MainApp() {
 
   return (
     <>
-      <a class="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to main content</a>
+      <a class="skip-link" href={`#${skipTarget}`} onClick={(event) => { event.preventDefault(); document.getElementById(skipTarget)?.focus(); }}>{sideFullWidth.value ? "Skip to side panel" : "Skip to main content"}</a>
       <ApprovalInbox />
-      <div class={`app ${sideOpen.value ? "with-side" : ""} ${railCollapsed.value ? "rail-collapsed" : ""}`} style={`--side-w:${sideWidth.value}px`}>
+      <div class={`app ${sideOpen.value ? "with-side" : ""} ${sideOpen.value && sideExpanded.value ? "side-expanded" : ""} ${railCollapsed.value ? "rail-collapsed" : ""}`} style={`--side-w:${sideDisplayWidth.value}px`}>
         <Rail />
         {railOpen.value ? <div class="rail-scrim" aria-hidden="true" onClick={() => (railOpen.value = false)} /> : null}
         <div class="main-col">
@@ -166,7 +169,6 @@ function MainApp() {
             )}
           </main>
         </div>
-        {sideOpen.value ? <div class="side-scrim" aria-hidden="true" onClick={closeSide} /> : null}
         <SidePanel />
       </div>
       <FolderPicker />
@@ -574,6 +576,7 @@ function FolderPicker() {
   const [dir, setDir] = useState<DirListing | null>(null);
   const [path, setPath] = useState("");
   const [status, setStatus] = useState("");
+  const [choosing, setChoosing] = useState(false);
   const [hidden, setHidden] = useState(false);
   const pathInput = useRef<HTMLInputElement>(null);
   const opened = useRef(false);
@@ -606,7 +609,7 @@ function FolderPicker() {
       // Focus can precede the first input event (select-all/paste). Do not
       // replace the field during that window, or pasted paths can be appended.
       if (!typed.current && document.activeElement !== pathInput.current) setPath(d.path);
-      setStatus(d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked Git, or type a path");
+      setStatus(typed.current ? "Press Enter or Go to check this path" : d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked Git, or type a path");
     } catch (err) {
       if (request !== latest.current || !pickerOpen.value) return;
       setStatus((err as Error).message);
@@ -620,10 +623,24 @@ function FolderPicker() {
     if (!pickerOpen.value) opened.current = false;
   }, [pickerOpen.value]);
 
-  const choose = (p: string) => {
-    closePicker();
-    if (adding) adding.choose(p);
-    else void pickRepo(p);
+  const choose = async (p: string) => {
+    if (choosing) return;
+    const request = ++latest.current;
+    setChoosing(true);
+    setStatus("Checking repository…");
+    try {
+      // Keep a failed selection in the picker so the path can be corrected.
+      // Resolve through Git: a subfolder inside a checkout is also a valid selection.
+      const info = await api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(p)}`);
+      if (request !== latest.current || !pickerOpen.value) return;
+      closePicker();
+      if (adding) adding.choose(info.repo);
+      else void pickRepo(info.repo);
+    } catch (err) {
+      if (request === latest.current && pickerOpen.value) setStatus((err as Error).message);
+    } finally {
+      setChoosing(false);
+    }
   };
   const parts = dir ? dir.path.split("/").filter(Boolean) : [];
   const recent = dir && dir.path === dir.home ? recentRepos() : [];
@@ -640,7 +657,7 @@ function FolderPicker() {
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            choose(p);
+            void choose(p);
           }}
         >
           Use
@@ -672,6 +689,7 @@ function FolderPicker() {
                 opened.current = true;
                 typed.current = true;
                 setPath(e.currentTarget.value);
+                setStatus("Press Enter or Go to check this path");
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
@@ -718,9 +736,9 @@ function FolderPicker() {
           <button class="btn" type="button" onClick={closePicker}>
             Cancel
           </button>
-          <button class="btn primary" type="button" disabled={!dir || path.trim() !== dir.path || status === "Loading…"} onClick={() => {
+          <button class="btn primary" type="button" disabled={choosing || !dir || path.trim() !== dir.path || status === "Loading…"} onClick={() => {
             const entered = (pathInput.current?.value ?? path).trim();
-            if (dir && entered === dir.path && status !== "Loading…") choose(dir.path);
+            if (dir && entered === dir.path && status !== "Loading…") void choose(dir.path);
           }}>
             {adding?.title === "Open repository" ? "Open this repository" : adding ? "Add this folder" : "Use this folder"}
           </button>

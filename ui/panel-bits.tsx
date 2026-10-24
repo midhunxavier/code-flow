@@ -29,6 +29,9 @@ export const resultWorktree = (run: RunSummary) => run.worktrees.find((w) => w.p
 
 /** Where a tab starts for a scope: a run's result worktree, else the scope's repository. */
 export function defaultPlace(s: SideScope, places = placesFor(s)): Place | undefined {
+  // Archiving may remove result worktrees. The repository remains usable for
+  // Files and new terminals; retained worktrees can still be chosen explicitly.
+  if (s.run?.archived) return places.find((p) => p.path === s.run!.repo) ?? places[0];
   const result = s.run ? resultWorktree(s.run)?.path : undefined;
   return places.find((p) => p.path === result) ?? places[0];
 }
@@ -78,7 +81,7 @@ export interface StripItem {
 }
 
 /** The sessions open in a tab, like browser tabs: pick one, close one; the tab's own buttons go after. */
-export function Strip({ items, active, onPick, onClose, label, children }: { items: StripItem[]; active?: string; onPick: (key: string) => void; onClose?: (key: string) => void; label: string; children?: ComponentChildren }) {
+export function Strip({ items, active, onPick, onClose, closeTitle = "Close", label, children }: { items: StripItem[]; active?: string; onPick: (key: string) => void; onClose?: (key: string) => void; closeTitle?: string; label: string; children?: ComponentChildren }) {
   return (
     <div class="sess-strip">
       {/* A group of buttons, not a tablist: each session has its own close button, which a tablist can't hold. */}
@@ -96,7 +99,7 @@ export function Strip({ items, active, onPick, onClose, label, children }: { ite
               {it.note ? <span class="sess-note">{it.note}</span> : null}
             </button>
             {onClose ? (
-              <button type="button" class="sess-x" aria-label={`Close ${it.label}`} title="Close" onClick={() => onClose(it.key)}>
+              <button type="button" class="sess-x" aria-label={`Close ${it.label}`} title={closeTitle} onClick={() => onClose(it.key)}>
                 <Icon name="close" />
               </button>
             ) : null}

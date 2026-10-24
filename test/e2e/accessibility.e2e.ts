@@ -71,5 +71,10 @@ test("keyboard users can skip navigation, operate the command palette and recove
   assert.equal(await skip.evaluate((element) => element === document.activeElement), true); await page.keyboard.press("Enter"); assert.equal(await page.evaluate(() => document.activeElement?.id), "main-content");
   const trigger = page.getByRole("button", { name: "Open command palette", exact: true }); await trigger.focus(); await page.keyboard.press("Enter"); const input = page.getByRole("combobox", { name: "Find a command, project or run" }); await input.fill("Repository workspace"); await page.keyboard.press("ArrowDown"); await page.keyboard.press("Enter"); await page.getByRole("heading", { name: "Inspect, verify, and recover" }).waitFor();
   await trigger.focus(); await page.keyboard.press("Enter"); await input.waitFor(); await page.keyboard.press("Escape"); assert.equal(await trigger.evaluate((element) => element === document.activeElement), true);
-  await page.getByRole("button", { name: "Side panel", exact: true }).click(); const resize = page.getByRole("separator", { name: "Resize the side panel" }); await resize.focus(); await page.keyboard.press("Home"); assert.equal(await resize.getAttribute("aria-valuenow"), "300"); await page.keyboard.press("ArrowLeft"); assert.equal(await resize.getAttribute("aria-valuenow"), "324"); await page.keyboard.press("End"); assert.equal(await resize.getAttribute("aria-valuenow"), "900");
+  await page.getByRole("button", { name: "Side panel", exact: true }).click(); const resize = page.getByRole("separator", { name: "Resize the side panel" }); await resize.focus(); await page.keyboard.press("Home"); assert.equal(await resize.getAttribute("aria-valuenow"), "300"); await page.keyboard.press("ArrowLeft"); assert.equal(await resize.getAttribute("aria-valuenow"), "324"); await page.keyboard.press("End"); assert.equal(await resize.getAttribute("aria-valuenow"), await resize.getAttribute("aria-valuemax"));
+  await page.getByRole("button", {name:"Expand side panel",exact:true}).click();
+  await audit("expanded panel");
+  assert.deepEqual(findings.at(-1)!.violations, []);
+  await page.keyboard.press("Escape");
+  assert.equal(await page.getByRole("button", {name:"Expand side panel",exact:true}).evaluate(element => element === document.activeElement), true);
 });

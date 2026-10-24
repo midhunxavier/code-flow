@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentApprovalRequest, ApprovalDecision } from "./adapters/types.js";
+import type { AgentApprovalRequest, AgentQuestion, ApprovalDecision } from "./adapters/types.js";
 
 export type ApprovalStatus = "pending" | "approved" | "declined" | "expired" | "cancelled";
 export interface ApprovalRecord extends Omit<AgentApprovalRequest, "id"> {
@@ -12,6 +12,7 @@ export interface ApprovalRecord extends Omit<AgentApprovalRequest, "id"> {
   expiresAt: number;
   status: ApprovalStatus;
   resolvedAt?: number;
+  answers?: Record<string, string>;
 }
 
 interface Pending {
@@ -82,11 +83,23 @@ export class ApprovalRegistry {
       .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).map((record) => structuredClone(record));
   }
 
-  respond(id: string, decision: ApprovalDecision, scope: { runId?: string; stepId?: string } = {}): boolean {
+  async ask(runId: string, stepId: string, questions: AgentQuestion[], signal: AbortSignal): Promise<Record<string, string> | undefined> {
+    const requestId = randomUUID();
+    const decision = await this.request(runId, stepId, { id: requestId, kind: "question", questions }, signal, { timeoutMs: 10 * 60_000 });
+    return decision === "approve" ? this.list(runId).find(record => record.stepId === stepId && record.requestId === requestId)?.answers : undefined;
+  }
+
+  respond(id: string, decision: ApprovalDecision, scope: { runId?: string; stepId?: string } = {}, answers?: unknown): boolean {
     if (decision !== "approve" && decision !== "decline") return false;
     const record = this.records.get(id);
     if (!record || record.status !== "pending" || (scope.runId !== undefined && scope.runId !== record.runId) || (scope.stepId !== undefined && scope.stepId !== record.stepId)) return false;
     if (Date.now() >= record.expiresAt) { this.finish(id, "expired"); return false; }
+    if (decision === "approve" && record.kind === "question") {
+      if (!answers || typeof answers !== "object" || Array.isArray(answers)) return false;
+      const supplied = answers as Record<string, unknown>;
+      if (!record.questions?.every(q => typeof supplied[q.id] === "string" && (supplied[q.id] as string).trim().length > 0 && (supplied[q.id] as string).length <= 20_000)) return false;
+      record.answers = Object.fromEntries(record.questions.map(q => [q.id, supplied[q.id] as string]));
+    }
     return this.finish(id, decision === "approve" ? "approved" : "declined");
   }
 
@@ -136,12 +149,14 @@ export class ApprovalRegistry {
 }
 
 function validateRequest(raw: AgentApprovalRequest): AgentApprovalRequest | undefined {
-  if (!raw || typeof raw.id !== "string" || !raw.id || raw.id.length > 240 || !["command", "file-change"].includes(raw.kind)) return;
+  if (!raw || typeof raw.id !== "string" || !raw.id || raw.id.length > 240 || !["command", "file-change", "tool", "question"].includes(raw.kind)) return;
+  if (raw.kind === "tool" && (typeof raw.toolName !== "string" || !raw.toolName || raw.toolName.length > 240 || typeof raw.input !== "string" || raw.input.length > 16_000)) return;
+  if (raw.kind === "question" && (!Array.isArray(raw.questions) || !raw.questions.length || raw.questions.length > 8 || new Set(raw.questions.map(q => q?.id)).size !== raw.questions.length || raw.questions.some(q => !q || typeof q.id !== "string" || !q.id || q.id.length > 240 || typeof q.question !== "string" || !q.question || q.question.length > 8000 || q.options !== undefined && (!Array.isArray(q.options) || q.options.length > 20 || q.options.some(o => typeof o !== "string" || o.length > 2000))))) return;
   for (const [value, limit] of [[raw.command, 16_000], [raw.cwd, 4_096], [raw.reason, 4_000]] as const) if (value !== undefined && (typeof value !== "string" || value.length > limit || value.includes("\0"))) return;
   if (raw.kind === "command" && !raw.command?.trim()) return;
   if (raw.kind === "file-change" && (!raw.paths?.length || raw.paths.length > 200)) return;
   if (raw.paths !== undefined && (!Array.isArray(raw.paths) || raw.paths.some((path) => typeof path !== "string" || !path || path.length > 4_096 || path.includes("\0")))) return;
-  return structuredClone({ id: raw.id, kind: raw.kind, ...(raw.command ? { command: raw.command } : {}), ...(raw.cwd ? { cwd: raw.cwd } : {}), ...(raw.reason ? { reason: raw.reason } : {}), ...(raw.paths ? { paths: raw.paths } : {}) });
+  return structuredClone({ id: raw.id, kind: raw.kind, ...(raw.command ? { command: raw.command } : {}), ...(raw.cwd ? { cwd: raw.cwd } : {}), ...(raw.reason ? { reason: raw.reason } : {}), ...(raw.paths ? { paths: raw.paths } : {}), ...(raw.kind === "tool" ? { toolName: raw.toolName, input: raw.input } : {}), ...(raw.kind === "question" ? { questions: raw.questions } : {}) });
 }
 function bounded(value: number | undefined, fallback: number, maximum: number): number {
   return Math.min(maximum, Number.isFinite(value) && Number(value) > 0 ? Math.max(1, Math.round(value!)) : fallback);

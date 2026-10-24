@@ -141,3 +141,11 @@ test("fake or incomplete reports cannot promote rollout, and a rejected write do
     assert.equal((await store.decide({ stage: "experimental", rationale: "Keep collecting evidence", evaluationIds: [fake.id] })).stage, "experimental");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("measured documentation proof exemption still requires checks, coverage and independent approval", () => {
+  const run = fixture(); run.prove = true;
+  run.facts!.proofNotRequired = "documentation-only";
+  assert.equal(buildTeamEvaluation(run).verified, true);
+  run.team!.verification!.reviewed = false;
+  assert.equal(buildTeamEvaluation(run).verified, false);
+});

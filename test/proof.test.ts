@@ -40,7 +40,7 @@ before(() => {
 const manager = new RunManager();
 
 async function run(pattern: string, roles: Record<string, any>, extra: Record<string, unknown> = {}, inRepo = repo): Promise<Run> {
-  const r = await manager.start({ pattern: findPattern(pattern)!, task: "Add the feature", repo: inRepo, roles, options: {}, ...extra });
+  const r = await manager.start({ checkpointOnFinish: pattern === "solo", pattern: findPattern(pattern)!, task: "Add the feature", repo: inRepo, roles, options: {}, ...extra });
   await new Promise<void>((resolve) => {
     const check = () => r.status !== "running" && resolve();
     manager.subscribe(r.id, check);
@@ -260,7 +260,7 @@ test("race: each passing candidate is proven, and the judge sees it", async () =
   assert.ok(proofs.every((p) => !/claude|codex/i.test(p)), `proofs don't name the vendor:\n${proofs.join("\n---\n")}`);
 });
 
-test("single agent: the result's proof is reported, and nobody is asked for a test", async () => {
+test("single-agent task checkpoint: the result's proof is reported, and nobody is asked for a test", async () => {
   const r = await run("solo", { agent: ["claude"] }, { loop: { check: "node --test" } });
   assert.equal(r.status, "done", r.error);
   assert.deepEqual(titles(r), ["Your task [claude]:done", "Check:done", "Proof: tests without the change:failed"]);
@@ -268,7 +268,7 @@ test("single agent: the result's proof is reported, and nobody is asked for a te
   assert.match(r.summary!, /⚠ Not proven/);
 });
 
-test("single agent: a test that only fails on the base code because its import isn't there is a weak proof", async () => {
+test("single-agent task checkpoint: a test that only fails on the base code because its import isn't there is a weak proof", async () => {
   const r = await withEnv({ FAKE_IMPORT_TEST: "1" }, () => run("solo", { agent: ["claude"] }, { loop: { check: "node --test" } }, newRepo()));
   assert.equal(r.status, "done", r.error);
   assert.equal(proofOf(r)?.status, "weak");

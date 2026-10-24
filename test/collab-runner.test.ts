@@ -329,7 +329,7 @@ test("handOver offers a checkpoint of this computer's work (committing on reques
 
 test("reconcile finishes a claimed attempt whose run already ended exactly once, drops claims the hub never saw, marks lost runs unknown and never starts a run", async () => {
   const f = fixture("d"), repo = f.clone("work"), store = await newStore("d"), m = manager(), task = await newTask(store), dir = join(root, "d", "runner");
-  const run = await m.start({ pattern: findPattern("solo")!, task: "Add a greeting file", repo, roles: { agent: ["claude"] }, options: {}, trust: "safe", loop: { check: "true" } }); await finished(run); assert.equal(run.status, "done", run.error);
+  const run = await m.start({ checkpointOnFinish: true, pattern: findPattern("solo")!, task: "Add a greeting file", repo, roles: { agent: ["claude"] }, options: {}, trust: "safe", loop: { check: "true" } }); await finished(run); assert.equal(run.status, "done", run.error);
   const attemptId = randomBytes(16).toString("hex"); await store.claimAttempt(owner, task.id, { attemptId, runnerId: "local", runnerName: "laptop", baseCommit: run.baseRef, revision: task.revision });
   const record = (overrides: Record<string, unknown>) => ({ attemptId, taskId: task.id, repo, base: run.baseRef, state: "claimed", lastSeq: 0, lastAckedSeq: 0, deliveredInstructionIds: [], updatedAt: Date.now(), ...overrides });
   mkdirSync(join(dir, "attempts"), { recursive: true }); writeFileSync(join(dir, "attempts", `${attemptId}.json`), JSON.stringify(record({ runId: run.id })));

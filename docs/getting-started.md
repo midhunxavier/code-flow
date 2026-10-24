@@ -4,11 +4,50 @@ Take a small, well-defined task from your own repository to a reviewed result. T
 
 ## Requirements
 
-- Node 22.13+ (`npm start` and `npm run dev` stop with a clear message on an older Node).
+- Node 22.13+ for npm or source installation. The macOS app includes Node.
 - git 2.38 or newer: **Merge** relies on `git merge-tree --write-tree`, which 2.38 added. Check yours with `git --version`.
 - At least one of `claude`, `codex` and `agy` installed and signed in. Run each CLI once interactively first. Open **Settings → Agents & models** to inspect provider health and model choices.
 
 ## Install and run
+
+### Try the preview
+
+On macOS, Linux or inside Windows **WSL2**, run:
+
+```bash
+npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/midhunxavier-code-flow-0.1.0-preview.2.tgz codeflow
+```
+
+The launcher starts Code Flow locally and opens your default browser with its sign-in link. Keep the terminal open while you work; press **Ctrl+C** to stop. If the browser does not open, copy the sign-in link printed in the terminal. Keep that link private.
+
+On Windows, install Node, Git and your agent CLI inside WSL2, sign in there, and keep your repository in the Linux filesystem. Native PowerShell and Command Prompt execution are not supported in this preview.
+
+For a desktop window on Windows, the source-built [WSL2 desktop preview](windows-desktop.md)
+bundles Node.js and runs the backend in your Linux distribution, using its Git and agent CLI logins. Docker is not required.
+
+For regular use, install the launcher globally, then start it with `codeflow`:
+
+```bash
+npm install -g @midhunxavier/code-flow@preview
+codeflow
+```
+
+Run the same install command to update. Remove the launcher with `npm uninstall -g @midhunxavier/code-flow`.
+
+### Download the macOS app
+
+Choose **0.1.0-preview.2** for your Mac (**macOS 13+**):
+
+- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/code-flow-0.1.0-preview.2-macos-arm64-unnotarized.dmg)
+- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.2/code-flow-0.1.0-preview.2-macos-x64-unnotarized.dmg)
+
+Open the DMG, drag **Code Flow** to **Applications**, then open Code Flow. The Electron app opens its own desktop window. Closing or reloading that window keeps agents running. Click the Dock icon or **Code Flow → Show Code Flow** to return. Use **Code Flow → Quit** to stop the app; it asks before interrupting active agents. Node is bundled; install Git and sign in to a supported agent CLI before your first run. Install Chrome or Edge for the shared browser.
+
+These are **unnotarized preview builds**. macOS may block them; use npm if blocked. Quit Code Flow before replacing it with a newer download. Run one launcher at a time. [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.2).
+
+The preview stores settings and history in `~/.codeflow`, outside the installation. Updating or removing the launcher preserves that folder.
+
+### Install from source
 
 ```bash
 git clone https://github.com/midhunxavier/code-flow.git
@@ -22,6 +61,17 @@ npm start            # http://localhost:4317
 The first browser that opens code-flow is signed in automatically. That stays possible until a browser signs in (with or without the link) or code-flow first starts an agent, a check or an app. After that, other browsers need the link code-flow prints when it starts (`Open http://localhost:4317/?token=…`).
 
 The session token exists only in the server's memory, so the agents code-flow runs can't use its API, even sandboxed ones with network access. A restart starts a new session. If the browser asks you to sign in, use the new owner link printed by that server.
+
+## Development
+
+For working on Code Flow itself, use either command after `npm ci`:
+
+```bash
+npm run dev       # deterministic demo agents; no real provider work
+npm run dev:real  # installed real CLIs; sign in to each CLI first
+```
+
+Both modes use http://localhost:4318 and `.codeflow-dev` as their home directory, rebuild the UI and restart the server on source changes. For real-agent mode, install the CLIs you intend to use and run each interactively to sign in before starting. The normal `npm start` workflow above uses http://localhost:4317.
 
 ## Your first run
 

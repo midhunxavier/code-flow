@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
  * return. Returns the answer, and the structured answer when a schema was requested.
  */
 export function work({ vendor, prompt, write, schemaRequested, fail }) {
+  if (process.env.FAKE_ANSWER_RECOVERED && prompt.includes("AUTO-ANSWER-OUTAGE") && prompt.includes("## Code Flow team execution receipt") && !existsSync(process.env.FAKE_ANSWER_RECOVERED)) fail("You've hit your usage limit. Try again later.", "usageLimitExceeded");
   if (prompt.includes("SNEAKY")) writeFileSync("sneaky.txt", "a read-only step wrote this\n");
   // A read-only step that commits: `git status` is clean afterwards, so only HEAD shows it.
   if (prompt.includes("COMMITS-IN-READ") && !write) {
@@ -70,6 +71,7 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     const investigation = prompt.includes("AUTO-INVESTIGATION") || prompt.includes("Discover up to three useful improvements");
     const same = prompt.includes("AUTO-SAME-PROVIDER") || prompt.includes("AUTO-EVENT");
     const tasks = [{ id: "alpha", title: "Alpha implementation", instructions: "Implement alpha " + (prompt.includes("AUTO-USER-QUESTION") ? "AUTO-USER-QUESTION" : prompt.includes("AUTO-QUESTION") ? "AUTO-QUESTION" : ""), owner: "builder", kind: investigation ? "investigation" : "implementation", dependsOn: [], requirements: ["goal"], acceptance: ["The requested behavior has evidence"], paths: ["*"] }];
+    if (prompt.includes("AUTO-DOCS-HANDOFF")) { tasks[0].paths = ["README.md"]; tasks[0].instructions = "AUTO-DOCS-HANDOFF: clarify the input contract and submit the documentation artifact for engine checks and review"; }
     if (same || prompt.includes("AUTO-DEPENDENCIES") || prompt.includes("AUTO-CONTRACT-CHANGE")) tasks.push({ id: "beta", title: "Beta dependent implementation", instructions: "Read alpha's artifact before implementing beta", owner: same ? "builder-two" : "builder", kind: "implementation", dependsOn: ["alpha"], requirements: ["goal"], acceptance: ["Dependent result uses alpha"], paths: ["*"] });
     if (prompt.includes("AUTO-EVENT")) {
       tasks[0].paths = [`${builder}-alpha.txt`];
@@ -102,9 +104,10 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     }
     const needsInfo = attempt === 1 && task.id === "alpha" && /AUTO-(USER-)?QUESTION/.test(task.instructions);
     const failed = prompt.includes("AUTO-FAILURE") || prompt.includes("AUTO-CONTRACT-CHANGE") && task.id === "beta" && attempt === 1 || prompt.includes("AUTO-HANDOVER") && member.id === "builder";
-    if (write && !needsInfo && !failed && !prompt.includes("AUTO-NO-CHANGE")) writeFileSync(`${vendor}-${task.id}.txt`, `${task.id} implementation\n`);
+    if (write && task.instructions.includes("AUTO-DOCS-HANDOFF")) writeFileSync("README.md", "Empty input is valid.\nFor example, an empty list is accepted.\n");
+    else if (write && !needsInfo && !failed && !prompt.includes("AUTO-NO-CHANGE")) writeFileSync(`${vendor}-${task.id}.txt`, `${task.id} implementation\n`);
     if (write && needsInfo) writeFileSync(`${vendor}-${task.id}-partial.txt`, "partial checkpoint\n");
-    answer = json({ taskId: task.id, memberId: member.id, status: failed ? "failed" : needsInfo ? "needs_info" : "submitted", checkpoint: failed ? "The requested work is blocked" : needsInfo ? "Partial work saved; need the input contract" : `Completed ${task.id} with evidence`, handover: `Shared output and next actions for ${task.id}`, artifacts: needsInfo ? [] : [`${vendor}-${task.id}.txt`], unresolvedRequirements: needsInfo || failed ? ["goal"] : [], questions: needsInfo ? [{ id: "input-contract", recipient: task.instructions.includes("AUTO-USER-QUESTION") ? "user" : "coordinator", body: "Should empty input be accepted?", blocking: true }] : [], replies: [], findings: needsInfo || failed ? [] : [{ title: `${task.id} convention`, body: "Preserve empty input behavior in this component", evidence: [`${vendor}-${task.id}.txt`], paths: [] }] });
+    answer = json({ taskId: task.id, memberId: member.id, status: failed ? "failed" : needsInfo ? "needs_info" : "submitted", checkpoint: failed ? "The requested work is blocked" : needsInfo ? "Partial work saved; need the input contract" : `Completed ${task.id} with evidence`, handover: `Shared output and next actions for ${task.id}`, artifacts: needsInfo ? [] : task.instructions.includes("AUTO-DOCS-HANDOFF") ? ["README.md"] : [`${vendor}-${task.id}.txt`], unresolvedRequirements: needsInfo || failed ? ["goal"] : [], questions: needsInfo ? [{ id: "input-contract", recipient: task.instructions.includes("AUTO-USER-QUESTION") ? "user" : "coordinator", body: "Should empty input be accepted?", blocking: true }] : [], replies: [], findings: needsInfo || failed ? [] : [{ title: `${task.id} convention`, body: "Preserve empty input behavior in this component", evidence: [`${vendor}-${task.id}.txt`], paths: [] }] });
   } else if (prompt.includes("AUTO_TEAM_ANSWERS")) {
     const questions = JSON.parse(prompt.match(/## Open questions JSON\n```json\n([\s\S]*?)\n```/)[1]);
     answer = json({ replies: questions.map((q) => ({ requestId: q.id, body: "Empty input is valid", evidence: ["README.md input contract"] })), unresolved: [] });

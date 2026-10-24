@@ -19,20 +19,30 @@ export type ApprovalDecision = "approve" | "decline";
 /** A single concrete action. Approvals never authorize a session or amend a policy. */
 export interface AgentApprovalRequest {
   id: string;
-  kind: "command" | "file-change";
+  kind: "command" | "file-change" | "tool" | "question";
   command?: string;
   paths?: string[];
   reason?: string;
   cwd?: string;
+  toolName?: string;
+  input?: string;
+  questions?: AgentQuestion[];
 }
+
+export interface AgentQuestion { id: string; question: string; options?: string[] }
 
 export interface RunOptions {
   prompt: string;
+  /** Attended Agent conversation: interactive input and provider-native integrations. */
+  conversation?: boolean;
+  onQuestion?: (questions: AgentQuestion[], signal: AbortSignal) => Promise<Record<string, string> | undefined>;
   /** Working directory; for write mode this is always an isolated git worktree. */
   cwd: string;
   mode: AccessMode;
   /** Continue a previous conversation of this same agent (keeps its context). */
   resumeSessionId?: string;
+  /** Create an independent native fork; never resume the source session in place. */
+  forkSessionId?: string;
   /** Model id or alias; undefined = the CLI's configured default. */
   model?: string;
   /** Reasoning effort; undefined = the CLI's configured default. */
@@ -42,6 +52,8 @@ export interface RunOptions {
   timeoutMs?: number;
   /** Stop the CLI (error kind "stalled") when it prints nothing for this long. */
   idleTimeoutMs?: number;
+  /** Host-owned human/tool-resource wait; excludes waiting time from watchdogs. */
+  isPaused?: () => boolean;
   /** Requested final JSON shape. ACP uses prompt instructions; the engine validates the result. */
   jsonSchema?: object;
   /** Auto members ask through their structured outcome, with answers on a later turn. */
@@ -50,6 +62,7 @@ export interface RunOptions {
   permissions?: import("../run-permissions.js").EffectivePermissions;
   /** Ephemeral, server-derived member capability; never serialize with the Run or prompt. */
   teamTools?: import("../team-tools.js").TeamToolConnection;
+  agentTools?: import("../team-tools.js").TeamToolConnection;
   /**
    * How much an agent may do in write mode: "safe" = edit files only, "standard" = also run
    * common build/test commands, "trusted" = any command (and network, where the CLI sandboxes),
@@ -73,11 +86,11 @@ export interface RunOptions {
 /** Normalized event stream — the UI and workflow engine only ever see these. */
 export type AgentEvent =
   | { kind: "session"; sessionId: string }
-  | { kind: "text"; text: string }
-  | { kind: "thinking"; text: string }
+  | { kind: "text"; text: string; messageId?: string; delta?: boolean; phase?: string }
+  | { kind: "thinking"; text: string; messageId?: string; delta?: boolean }
   /** A repeated callId updates the existing tool's name/input as the CLI fills in details. */
   | { kind: "tool_call"; callId: string; name: string; input: string }
-  | { kind: "tool_result"; callId: string; output: string; isError: boolean }
+  | { kind: "tool_result"; callId: string; output: string; isError: boolean; delta?: boolean }
   /** Tokens a turn used; cached input is counted separately (it's much cheaper). costUsd: Claude's API-equivalent figure. */
   | { kind: "usage"; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; costUsd?: number }
   | { kind: "status"; text: string }

@@ -43,6 +43,6 @@ try {
       hookMarker: await readFile(join(root, "hook-marker"), "utf8").catch(() => null), browserRequests: connections,
     });
   }
-  console.log(JSON.stringify({ root, observations, scope: "Bounded CLI 1.4.4/macOS/file-only observations. No forced arbitrary tool-call or other-platform certification." }, null, 2));
+  console.log(JSON.stringify({ root, observations, scope: "Bounded installed CLI/macOS/file-only observations. No forced arbitrary tool-call or other-platform certification." }, null, 2));
   if (observations.some(o => !o.ok || o.nativeSessionRetained || !o.outsideUnchanged || o.hookMarker || o.browserRequests || !o.resultMarker?.includes("ISOLATED_WRITE") || o.tools.some(tool => !["view_file", "list_dir", "manage_task", ...(o.mode === "write" ? ["write_to_file", "replace_file_content"] : [])].includes(tool))) || !observations[0]?.structured) process.exitCode = 1;
 } finally { server.close(); }

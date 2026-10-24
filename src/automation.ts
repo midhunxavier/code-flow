@@ -264,11 +264,11 @@ export class Automations {
   private managed?: { fire: (teamId: string, operationId: string) => Promise<FireResult>; preview: (teamId: string) => Promise<AutomationPreview>; tick: () => Promise<void> };
   setProjectTeams(hooks: NonNullable<Automations["managed"]>) { this.managed = hooks; }
   /** Internal projection: execution settings remain owned by the team's versioned mission. */
-  async syncProjectTeam(team: { id: string; name: string; repo: string; projectId: string; status: string; mission: { schedule: Schedule } }) {
+  async syncProjectTeam(team: { id: string; name: string; repo: string; projectId: string; status: string; mission: { schedule: Schedule }; schedule?: Schedule; scheduleEnabled?: boolean }) {
     this.requireWritable();
     const id = `t-${team.id}`, previous = this.get(id);
     if (previous && previous.target?.teamId !== team.id) throw new Error("Managed automation identity collision");
-    const enabled = team.status === "active", schedule = team.mission.schedule;
+    const enabled = team.status === "active" && team.scheduleEnabled !== false, schedule = team.schedule ?? team.mission.schedule;
     const next: Trigger = { ...previous, id, target: { kind: "project-team", teamId: team.id }, name: team.name, run: { repo: team.repo, project: team.projectId, pattern: "auto-team", task: `Standing team: ${team.name}` }, schedule, enabled, webhook: false, isolate: false, token: previous?.token ?? randomBytes(24).toString("hex"), createdAt: previous?.createdAt ?? Date.now(), nextAt: enabled ? previous?.enabled && JSON.stringify(previous.schedule) === JSON.stringify(schedule) ? previous.nextAt : nextFire(schedule, Date.now()) : undefined };
     if (previous && JSON.stringify(previous) === JSON.stringify(next)) return id;
     this.triggers = [...this.triggers.filter((t) => t.id !== id), next];

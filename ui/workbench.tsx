@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useState } from "preact/hooks";
 import { api, enc, post, showToast } from "./lib.js";
 import { LaunchProfilesPanel } from "./launch-profiles.js";
-import { FilteredTasksPanel } from "./filtered-tasks.js";
+const FilteredTasksPanel = lazyView(() => import("./filtered-tasks.js").then((module) => module.FilteredTasksPanel));
 import { CoordinatedChangesPanel } from "./repo-coordination.js";
 import { repo, runs, route, projects, projectsLoaded } from "./state.js";
 import type { VerificationProfile, VerificationReport } from "../src/verification.js";
 import type { RevertPreview } from "../src/checkpoint-review.js";
 import type { CheckpointHunks } from "../src/workspace-changes.js";
-import { CodeBrowser } from "./code-browser.js";
+import { lazyView } from "./lazy-view.js";
+const CodeBrowser = lazyView(() => import("./code-browser.js").then((module) => module.CodeBrowser));
 import type { RepositoryTool } from "./navigation.js";
 
 type Tab = "verification" | "code" | "context" | "history" | "services" | "coordination" | "filtered-tasks";

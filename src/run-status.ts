@@ -26,7 +26,9 @@ export function needsYou(run: RunSummary): boolean {
   if (run.archived) return false;
   const question = run.status === "running" && !!run.team?.awaitingRequestId;
   if (run.awaiting || question) return true;
-  if (run.projectTeam) return false;
+  if (run.projectTeam || run.taskExecution) return false;
+  const latestTeam = run.teamTurns?.at(-1);
+  if (latestTeam?.executionStatus && latestTeam.executionStatus !== "done" && run.status !== "running" || latestTeam?.reconciliation || latestTeam?.resolutionCheck?.ok === false || latestTeam?.reviewStale || latestTeam?.resolutionReview?.approved === false) return true;
   return run.team?.status === "blocked" || run.triage?.state === "pending" || Object.values(run.watches ?? {}).some(watch => watch.state === "needs-you") ||
     run.status !== "running" && (run.status === "interrupted" || !run.seen);
 }

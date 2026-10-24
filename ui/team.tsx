@@ -249,7 +249,7 @@ export function TeamPlanEditor({ run, onClose }: { run: RunSummary; onClose: () 
 }
 
 /** The one thing a waiting team needs from you, shown under the run header like a plan approval, not at the end of the message list. */
-export function TeamQuestionCard({ run }: { run: RunSummary }) {
+export function TeamQuestionCard({ run, replyChatId }: { run: RunSummary; replyChatId?: string }) {
   const team = run.team;
   const message = team?.messages.find((item) => item.id === team.awaitingRequestId);
   if (!team || !message) return null;
@@ -259,14 +259,14 @@ export function TeamQuestionCard({ run }: { run: RunSummary }) {
   return <section class="awaiting-card team-question" aria-label="The team needs your answer">
     <div class="aw-head"><span class="status-pill awaiting">Waiting for you</span><b>The team needs your answer</b><span class="help">{sender?.name ?? message.sender}{task ? ` · ${task.title}` : ""}</span></div>
     <div class="aw-body"><Markdown text={message.body} /></div>
-    <div class="aw-actions"><QuestionReply key={message.id} run={run} message={message} /></div>
+    <div class="aw-actions"><QuestionReply key={message.id} run={run} message={message} replyChatId={replyChatId} /></div>
   </section>;
 }
 
 // A question moves from the discussion to the attention card when the scheduler
 // finishes independent work. Preserve an answer already being typed across that remount.
 const answerDrafts = new Map<string, string>();
-export function QuestionReply({ run, message, prefix = "team-answer" }: { run: RunSummary; message: TeamMessage; prefix?: string }) {
+export function QuestionReply({ run, message, prefix = "team-answer", replyChatId }: { run: RunSummary; message: TeamMessage; prefix?: string; replyChatId?: string }) {
   const key = `${run.id}/${message.id}`;
   const [text, setText] = useState(() => answerDrafts.get(key) ?? "");
   const [busy, setBusy] = useState(false);
@@ -276,7 +276,7 @@ export function QuestionReply({ run, message, prefix = "team-answer" }: { run: R
     if (!text.trim() || busy || sent) return;
     setBusy(true);
     setError("");
-    try { await post<Note>(`/api/runs/${run.id}/notes`, { requestId: message.id, text }); answerDrafts.delete(key); setSent(true); }
+    try { await post<Note>(`/api/runs/${replyChatId ?? run.id}/notes`, { requestId: message.id, text }); answerDrafts.delete(key); setSent(true); }
     catch (err) { setError((err as Error).message); }
     finally { setBusy(false); }
   };

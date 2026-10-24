@@ -2,7 +2,7 @@ import "./environment.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inspectAgyIsolationRuntime, prepareAgyIsolation, AGY_VERIFIED_CLI_VERSION, AGY_ISOLATION_VERSION } from "../../src/adapters/agy-isolation.js";
+import { inspectAgyIsolationRuntime, prepareAgyIsolation, AGY_VERIFIED_CLI_VERSIONS, AGY_ISOLATION_VERSION } from "../../src/adapters/agy-isolation.js";
 import { agyCredentialFailure, inspectAgyAuthLog } from "../../src/adapters/agy-auth.js";
 import { startJsonlProcess } from "../../src/adapters/process.js";
 
@@ -23,7 +23,7 @@ try {
   const authFailure = auth.credentialFailure || auth.interactiveAuthObserved || agyCredentialFailure(outcome.stderr);
   const discoverySucceeded = outcome.exitCode === 0 && !outcome.timedOut && !outcome.aborted && models > 0 && !authFailure;
   const refreshVerified = discoverySucceeded && auth.log === "read" && auth.refreshObserved;
-  console.log(JSON.stringify({ cliVersion: AGY_VERIFIED_CLI_VERSION, isolation: AGY_ISOLATION_VERSION,
+  console.log(JSON.stringify({ supportedCliVersions: AGY_VERIFIED_CLI_VERSIONS, isolation: AGY_ISOLATION_VERSION,
     discoverySucceeded, modelCount: models, refreshVerified,
     expiredTokenRefreshVerified: refreshVerified && auth.loadedTokenExpired === true,
     nativeLog: auth.log, loadedTokenExpired: auth.loadedTokenExpired,

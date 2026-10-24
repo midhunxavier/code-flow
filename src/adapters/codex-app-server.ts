@@ -3,7 +3,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { classifyError, cliErrorLine } from "./errors.js";
 
 import { startJsonlProcess, stderrTail, stringify, truncate, type ProcessOutcome } from "./process.js";
-import type { AgentApprovalRequest, ApprovalDecision, ErrorKind } from "./types.js";
+import type { AgentApprovalRequest, AgentQuestion, ApprovalDecision, ErrorKind } from "./types.js";
 import type { AgentContainer } from "../agent-container.js";
 
 /**
@@ -21,6 +21,7 @@ export interface AppServerTurn {
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   /** Continue this thread (a `codex exec` session id works too: both share Codex's rollouts). */
   resumeThreadId?: string;
+  forkThreadId?: string;
   model?: string;
   effort?: string;
   outputSchema?: object;
@@ -32,6 +33,7 @@ export interface AppServerTurn {
   signal?: AbortSignal;
   timeoutMs?: number;
   idleTimeoutMs?: number;
+  isPaused?: () => boolean;
   /** How long the server may take to answer `initialize`, and any other request. */
   initTimeoutMs?: number;
   requestTimeoutMs?: number;
@@ -44,6 +46,7 @@ export interface AppServerTurn {
   onSteerable?: (steer: ((text: string) => Promise<boolean>) | undefined) => void;
   interactiveApprovals?: boolean;
   onApproval?: (request: AgentApprovalRequest, signal: AbortSignal) => Promise<ApprovalDecision>;
+  onQuestion?: (questions: AgentQuestion[], signal: AbortSignal) => Promise<Record<string, string> | undefined>;
   /** Upper bounded independently of the process timeout. Defaults to two minutes. */
   approvalTimeoutMs?: number;
   agentContainer?: AgentContainer;
@@ -55,14 +58,11 @@ export interface Unavailable {
 }
 
 const CLIENT_INFO = { name: "code_flow", title: "code-flow", version: "0.1.0" };
-/** Streaming deltas code-flow doesn't show: only completed items are turned into events. */
+/** Notifications without a presentation yet. Text and tool output remain subscribed. */
 const QUIET = [
-  "item/agentMessage/delta",
   "item/plan/delta",
-  "item/reasoning/summaryTextDelta",
   "item/reasoning/summaryPartAdded",
   "item/reasoning/textDelta",
-  "item/commandExecution/outputDelta",
   "item/fileChange/outputDelta",
   "item/fileChange/patchUpdated",
   "turn/diff/updated",
@@ -169,6 +169,7 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     signal: stop.signal,
     timeoutMs: turn.timeoutMs,
     idleTimeoutMs: turn.idleTimeoutMs,
+    isPaused: turn.isPaused,
     interactive: true,
     agentContainer: turn.agentContainer ? { config: turn.agentContainer, mode: turn.sandbox === "read-only" ? "read" : "write" } : undefined,
     onText: turn.onText,
@@ -220,7 +221,17 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     });
 
   function onNotification(method: string, params: any) {
+    // A shared transport may publish other sessions; never mix their output into this turn.
+    if (params.threadId && threadId && params.threadId !== threadId) return;
+    if (params.turnId && turnId && params.turnId !== turnId) return;
     switch (method) {
+      case "item/agentMessage/delta":
+      case "item/reasoning/summaryTextDelta":
+      case "item/commandExecution/outputDelta":
+        if (typeof params.delta === "string" && typeof params.itemId === "string") {
+          turn.onMessage({ type: "item.delta", item: { id: params.itemId, type: method === "item/agentMessage/delta" ? "agent_message" : method === "item/reasoning/summaryTextDelta" ? "reasoning" : "command_execution", text: params.delta } });
+        }
+        break;
       case "turn/started":
         turnId ??= params.turn?.id;
         break;
@@ -293,6 +304,13 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
       ? "Return a needs_info outcome with an addressed question and checkpoint; code-flow can supply the answer on your next turn."
       : "It runs Codex headless.";
     switch (method) {
+      case "item/tool/requestUserInput":
+        if (turn.onQuestion && msg.params?.threadId === threadId && msg.params?.turnId === turnId && Array.isArray(msg.params.questions)) void answerQuestion(msg);
+        else {
+          turn.onText(`Codex asked for input (${method})${requestDetail(msg.params)}; native input unavailable. ${questionGuidance}`);
+          reply({ answers: {} });
+        }
+        break;
       case "item/commandExecution/requestApproval":
       case "item/fileChange/requestApproval":
         if (turn.interactiveApprovals && turn.onApproval) void answerApproval(msg);
@@ -364,6 +382,22 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     approval.controller.abort();
   }
 
+  async function answerQuestion(msg: any): Promise<void> {
+    const id = String(msg.id);
+    if (approvalRequests.has(id) || approvalRequests.size >= 32 || turnEnded || exit) { proc.send({ id: msg.id, result: { answers: {} } }); return; }
+    const approval = { controller: new AbortController(), replyAllowed: true };
+    approvalRequests.set(id, approval); proc.pauseIdle(true);
+    const timer = setTimeout(() => approval.controller.abort(), 600_000);
+    let answers: Record<string, string> | undefined;
+    try {
+      const questions = msg.params.questions.map((q: any) => ({ id: q.id, question: q.question, options: q.options?.map((o: any) => o.label) }));
+      answers = await Promise.race([turn.onQuestion!(questions, approval.controller.signal), new Promise<undefined>(resolve => approval.controller.signal.addEventListener("abort", () => resolve(undefined), { once: true }))]);
+    } catch { /* A failed UI request returns an empty answer, never a guessed response. */ }
+    finally { clearTimeout(timer); approvalRequests.delete(id); proc.pauseIdle(approvalRequests.size > 0); }
+    if (approval.replyAllowed && !exit && !turnEnded) proc.send({ id: msg.id, result: { answers: Object.fromEntries(Object.entries(answers ?? {}).map(([key, value]) => [key, { answers: [value] }])) } });
+    approval.controller.abort();
+  }
+
   function abortApprovals(replyAllowed: boolean): void {
     for (const approval of approvalRequests.values()) {
       approval.replyAllowed = replyAllowed;
@@ -427,12 +461,14 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     const threadParams = { cwd: turn.cwd, sandbox: turn.sandbox, approvalPolicy: turn.interactiveApprovals && turn.onApproval ? "on-request" : "never", model: turn.model, ...(turn.threadConfig ? { config: turn.threadConfig } : {}) };
     let thread: any;
     try {
-      thread = turn.resumeThreadId
+      thread = turn.forkThreadId
+        ? await request("thread/fork", { threadId: turn.forkThreadId, ...threadParams })
+        : turn.resumeThreadId
         ? await request("thread/resume", { threadId: turn.resumeThreadId, excludeTurns: true, ...threadParams })
         : await request("thread/start", threadParams);
     } catch (err) {
       // The thread is gone (Codex: "no rollout found for thread id …"): resuming it again won't help.
-      if (turn.resumeThreadId && err instanceof RpcError && /no rollout found|thread[^\n]{0,20}not found|invalid thread id/i.test(err.message)) {
+      if ((turn.resumeThreadId || turn.forkThreadId) && err instanceof RpcError && /no rollout found|thread[^\n]{0,20}not found|invalid thread id/i.test(err.message)) {
         throw new TurnError(err.message, "session_not_found");
       }
       // A resume whose parameters this Codex rejects (-32602: an older one without `excludeTurns`,
@@ -551,7 +587,7 @@ function workspacePath(cwd: string, requested: string): boolean {
 function execItem(item: any): any {
   switch (item?.type) {
     case "agentMessage":
-      return { id: item.id, type: "agent_message", text: item.text };
+      return { id: item.id, type: "agent_message", text: item.text, phase: item.phase };
     case "reasoning":
       return { id: item.id, type: "reasoning", text: (item.summary?.length ? item.summary : (item.content ?? [])).join("\n\n") };
     case "commandExecution":

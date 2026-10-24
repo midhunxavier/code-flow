@@ -75,7 +75,7 @@ test("template library and workflow selection preserve intentional drafts and ex
 });
 
 test("finished work leads to review, commit-scoped coverage and publishing in one screen", { timeout: 45_000 }, async () => {
-  const started = await api<{ id: string }>("/api/runs", { repo, pattern: "solo", task: "Improve the login error message", roles: { agent: ["claude"] }, loop: { check: "true", prove: false, maxSteps: 4, maxMinutes: 1 } });
+  const started = await api<{ id: string }>("/api/runs", { repo, pattern: "solo", checkpointOnFinish: true, task: "Improve the login error message", roles: { agent: ["claude"] }, loop: { check: "true", prove: false, maxSteps: 4, maxMinutes: 1 } });
   result = await until(() => api(`/api/runs/${started.id}`), value => value.status !== "running");
   assert.equal(result.status, "done", result.error);
   await page.goto(base + `/#/project/${result.project}`);
@@ -107,7 +107,7 @@ test("finished work leads to review, commit-scoped coverage and publishing in on
 });
 
 test("failed checks prepare a follow-up and blocked checks continue from saved work", { timeout: 60_000 }, async () => {
-  const start = (check: string) => api<any>("/api/runs", { repo, pattern: "solo", task: "Recovery fixture", roles: { agent: ["claude"] }, loop: { check, prove: false, maxSteps: 4, maxMinutes: 1 } });
+  const start = (check: string) => api<any>("/api/runs", { repo, pattern: "solo", checkpointOnFinish: true, task: "Recovery fixture", roles: { agent: ["claude"] }, loop: { check, prove: false, maxSteps: 4, maxMinutes: 1 } });
   const failed = await start("false");
   const finished = await until(() => api(`/api/runs/${failed.id}`), value => value.status !== "running");
   assert.equal(finished.verdict, "failing");

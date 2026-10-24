@@ -508,7 +508,7 @@ test("Improve rewrites the task in one read-only turn: Auto picks the agent, bad
   await refused({ text: "IMPROVE-EMPTY", repo }, /didn't return a rewritten task/, 502);
 });
 
-test("Improve holds repository and policy leases during a delayed turn, and explicit remote/container profiles never launch a native fallback", { timeout: 60_000 }, async () => {
+test("Improve pins policy without blocking workspace edits or new runs, and explicit remote/container profiles never launch a native fallback", { timeout: 60_000 }, async () => {
   const records = mkdtempSync(join(tmpdir(), "codeflow-improve-lease-records-"));
   const instance = await startServer({ FAKE_SLEEP_MS: "60000", FAKE_SLEEP_VENDOR: "claude", FAKE_RECORD_DIR: records });
   const stop = new AbortController(); let turn: Promise<unknown> | undefined;
@@ -530,16 +530,31 @@ test("Improve holds repository and policy leases during a delayed turn, and expl
       catch (error) { if (error instanceof SyntaxError) return false; throw error; }
     });
     const calls = readdirSync(records).map((name) => JSON.parse(readFileSync(join(records, name), "utf8"))); assert.equal(calls.length, 1); assert.equal(calls[0].vendor, "claude"); assert.match(calls[0].prompt, /Rewrite the task below/);
-    const activity = (await api(instance, "/api/health")).body.activity; assert.ok(activity.leases.some((lease: { kind: string; repo: string }) => lease.kind === "prompt improvement" && lease.repo === realpathSync(repo)), "the delayed provider turn holds the canonical repository lease");
-    const edit = await api(instance, "/api/workspace/file", { repo, path: "README.md", text: "Must not overwrite\n", expectedHash: original.body.hash }); assert.equal(edit.status, 409, JSON.stringify(edit.body)); assert.match(edit.body.error, /prompt improvement/);
-    const started = await api(instance, "/api/runs", { pattern: "pipeline", task: "Must not start beside Improve", repo, roles: team, loop: { check: "true", setup: "", copy: [] } }); assert.equal(started.status, 409, JSON.stringify(started.body)); assert.match(started.body.error, /prompt improvement/);
-    const policy = await fetch(`${instance.base}/api/projects/${project.body.id}/filesystem-policy`, { method: "PUT", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ revision: 0, read: { allow: ["."], deny: ["private"] }, write: { allow: ["."], deny: [] } }) }); assert.equal(policy.status, 409, await policy.text()); assert.equal((await api(instance, `/api/projects/${project.body.id}/filesystem-policy`)).body.revision, 0, "the policy is not committed while an improvement can execute or restore files");
-    assert.equal(readdirSync(records).length, 1, "neither the refused run nor unsupported profiles dispatched another provider");
+    const activity = (await api(instance, "/api/health")).body.activity; assert.ok(activity.leases.some((lease: { kind: string; repo: string }) => lease.kind === "prompt improvement" && lease.repo === realpathSync(repo)), "the delayed provider turn remains visible as read-only execution activity");
+    const edit = await api(instance, "/api/workspace/file", { repo, path: "README.md", text: original.body.text, expectedHash: original.body.hash }); assert.equal(edit.status, 200, JSON.stringify(edit.body));
+    const policy = await fetch(`${instance.base}/api/projects/${project.body.id}/filesystem-policy`, { method: "PUT", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ revision: 0, read: { allow: ["."], deny: ["private"] }, write: { allow: ["."], deny: [] } }) }); assert.equal(policy.status, 409, await policy.text()); assert.equal((await api(instance, `/api/projects/${project.body.id}/filesystem-policy`)).body.revision, 0, "the policy is not committed while an improvement can execute");
+    const started = await api(instance, "/api/runs", { pattern: "pipeline", task: "Start beside Improve", repo, roles: { planner: ["codex"], builder: ["codex"], reviewer: ["codex"] }, loop: { check: "true", setup: "", copy: [] } }); assert.equal(started.status, 201, JSON.stringify(started.body));
+    await finishedRun(instance, started.body.id);
     stop.abort(); await assert.rejects(turn, (error: Error) => error.name === "AbortError");
     await waitFor(async () => !(await api(instance, "/api/health")).body.activity.leases.length && !existsSync(calls[0].cwd));
     assert.equal(readFileSync(join(repo, "README.md"), "utf8"), original.body.text, "private cleanup never touches the original checkout"); assert.equal(existsSync(join(repo, "sneaky.txt")), false);
     const saved = await api(instance, "/api/workspace/file", { repo, path: "README.md", text: original.body.text, expectedHash: original.body.hash }); assert.equal(saved.status, 200, JSON.stringify(saved.body));
   } finally { stop.abort(); await turn?.catch(() => undefined); await waitFor(async () => !(await api(instance, "/api/health")).body.activity.leases.length).catch(() => undefined); instance.child.kill("SIGTERM"); }
+});
+
+test("Quick and Repo Improve succeed while a run is active in the same repository", { timeout: 60_000 }, async () => {
+  const instance = await startServer({ FAKE_SLEEP_MS: "60000", FAKE_SLEEP_VENDOR: "claude" });
+  try {
+    const started = await api(instance, "/api/runs", { pattern: "pipeline", task: "Keep working during Improve", repo, roles: team, loop: { check: "true", setup: "", copy: [] } });
+    assert.equal(started.status, 201, JSON.stringify(started.body));
+    for (const mode of ["quick", "repo"]) {
+      assert.equal((await api(instance, `/api/runs/${started.body.id}`)).body.status, "running");
+      const improved = await api(instance, "/api/improve-prompt", { text: "Clarify the next task", repo, agent: "agy", mode });
+      assert.equal(improved.status, 200, JSON.stringify(improved.body));
+      assert.match(improved.body.prompt, /Clarify the next task/);
+      assert.equal((await api(instance, `/api/runs/${started.body.id}`)).body.status, "running", "Improve leaves the existing run running");
+    }
+  } finally { instance.child.kill("SIGTERM"); }
 });
 
 test("Improve refuses relative PATH before source Git validation can execute a committed impostor", { timeout: 45_000 }, async () => {

@@ -166,15 +166,16 @@ export class SshProjects {
     if (this.teamRemoving.has(id)) throw new HttpError(409, "Wait for team server deletion to finish");
     // This is an owner-only setup surface, not a general remote command proxy.
     const url = new URL(path, origin), method = req.method ?? "GET";
-    const allowed = method === "GET" && /^\/api\/(projects|accounts|remote|team\/board)$/.test(url.pathname)
-      || method === "POST" && /^\/api\/(projects|accounts|remote(?:\/tls)?)$/.test(url.pathname)
+    const allowed = method === "GET" && /^\/api\/(projects|accounts(?:\/invitations)?|remote|team\/board)$/.test(url.pathname)
+      || method === "POST" && /^\/api\/(projects|accounts(?:\/invitations)?|remote(?:\/tls)?)$/.test(url.pathname)
+      || method === "DELETE" && /^\/api\/accounts\/invitations\/i-[a-f0-9-]{36}$/.test(url.pathname)
       || method === "PUT" && /^\/api\/(accounts\/[^/]+|team\/profile|team\/projects\/[^/]+\/repositories)$/.test(url.pathname);
     if (!allowed) throw new HttpError(404, "Unknown team server setup operation");
     if (url.pathname.startsWith("/api/team/")) url.searchParams.set("teamConnection", "local");
     const session = this.teamSessions.get(id);
     if (!session || !this.sessions.has(id)) throw new HttpError(409, "Open team server setup on this SSH connection first");
     // The local policy gate already parsed JSON; forward its cached value rather than an exhausted stream.
-    const body = method === "GET" ? undefined : await readJson(req, 192 * 1024);
+    const body = method === "GET" || method === "DELETE" ? undefined : await readJson(req, 192 * 1024);
     return session.gateway.forward(req, res, url.pathname + url.search, origin, body);
   }
   async stopTeamServer(id: string) {

@@ -334,7 +334,7 @@ export class CollabRunner {
       const context = checkpoint && handoverNote && handoverNote !== checkpoint.note.trim() ? { ...checkpoint, note: clean([checkpoint.note.trim(), `Hand-over note from ${clean(handover!.from.displayName, MAX.displayName, true) || "a teammate"}: ${handoverNote}`].filter(Boolean).join("\n\n"), MAX.note) } : checkpoint;
       const prompt = taskPrompt(claimed, { projectName, checkpoint: context });
       let run: Run;
-      try { await this.options.beforeStart?.(); run = await this.manager.start({ pattern, task: prompt, repo, baseRef: base, roles: input.roles, options: {}, agentSettings: input.agentSettings, roleSettings: input.roleSettings, trust: input.trust, loop: input.loop, project: this.options.projectFor?.(repo), beforeDispatch: async (pending) => { await this.options.beforeStart?.(); record.runId = pending.id; await this.save(record); } }); }
+      try { await this.options.beforeStart?.(); run = await this.manager.start({ checkpointOnFinish: true, pattern, task: prompt, repo, baseRef: base, roles: input.roles, options: {}, agentSettings: input.agentSettings, roleSettings: input.roleSettings, trust: input.trust, loop: input.loop, project: this.options.projectFor?.(repo), beforeDispatch: async (pending) => { await this.options.beforeStart?.(); record.runId = pending.id; await this.save(record); } }); }
       catch (error) {
         // Journaled as a pending finish before it is sent: a hub that cannot be reached right now learns of the failure from the recovery pass, instead of showing the attempt claimed (and the task busy) until its 24 h prune.
         const reason = sharedText(`The run could not start on this computer: ${message(error)}`, MAX.reason, false, localPaths({ repo }));

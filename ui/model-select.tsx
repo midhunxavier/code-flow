@@ -5,9 +5,9 @@ import { isFreeModel } from "./model-order.js";
 export type ModelOption = { id: string; label: string; description?: string };
 
 /** Search stays local to the open picker; choosing a model preserves the caller's settings logic. */
-export function ModelSelect({ label, title, value, options, onChange, placeholder = "Choose model", compact = false, disabled = false, class: cls = "" }: {
+export function ModelSelect({ label, title, value, options, onChange, placeholder = "Choose model", compact = false, disabled = false, class: cls = "", kind = "model" }: {
   label: string; title?: string; value: string; options: ModelOption[]; onChange: (value: string) => void;
-  placeholder?: string; compact?: boolean; disabled?: boolean; class?: string;
+  placeholder?: string; compact?: boolean; disabled?: boolean; class?: string; kind?: "model" | "branch";
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -62,9 +62,9 @@ export function ModelSelect({ label, title, value, options, onChange, placeholde
       <div class="model-select-search">
         <div class="model-select-heading">
           <div class="pop-title">{title ?? label}</div>
-          <button type="button" class="model-free-filter" aria-pressed={freeOnly} onClick={() => { setFreeOnly(!freeOnly); setActive(0); }}><span aria-hidden="true">{freeOnly ? "✓" : "+"}</span> Free only</button>
+          {kind === "model" ? <button type="button" class="model-free-filter" aria-pressed={freeOnly} onClick={() => { setFreeOnly(!freeOnly); setActive(0); }}><span aria-hidden="true">{freeOnly ? "✓" : "+"}</span> Free only</button> : null}
         </div>
-        <input ref={input} class="field" type="search" role="combobox" aria-label={`Search ${label}`} aria-autocomplete="list" aria-expanded="true" aria-controls={listId} aria-activedescendant={matches.length ? `${listId}-${index}` : undefined} placeholder="Search models…" value={query} onInput={event => { setQuery(event.currentTarget.value); setActive(0); }} onKeyDown={event => {
+        <input ref={input} class="field" type="search" role="combobox" aria-label={`Search ${label}`} aria-autocomplete="list" aria-expanded="true" aria-controls={listId} aria-activedescendant={matches.length ? `${listId}-${index}` : undefined} placeholder={kind === "branch" ? "Search branches…" : "Search models…"} value={query} onInput={event => { setQuery(event.currentTarget.value); setActive(0); }} onKeyDown={event => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault(); setActive(matches.length ? (index + (event.key === "ArrowDown" ? 1 : matches.length - 1)) % matches.length : 0);
           } else if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); if (matches[index]) choose(matches[index]!.id); }
@@ -74,12 +74,12 @@ export function ModelSelect({ label, title, value, options, onChange, placeholde
         {matches.map((option, i) => <button key={option.id} id={`${listId}-${i}`} type="button" role="option" aria-selected={option.id === value} tabIndex={-1} class={`model-select-option ${i === index ? "active" : ""}`} onClick={() => choose(option.id)}>
           <span><span class="model-option-name">{option.label}</span>{option.description ? <span class="model-option-description">{option.description}</span> : null}</span>
           <span class="model-option-meta">
-            {option.id && isFreeModel(option) ? <span class="model-free-badge">Free</span> : null}
+            {kind === "model" && option.id && isFreeModel(option) ? <span class="model-free-badge">Free</span> : null}
             {option.id === value ? <span aria-hidden="true">✓</span> : null}
           </span>
         </button>)}
       </div>
-      {!matches.length ? <div class="model-select-empty" role="status">{freeOnly ? "No free models found. Try another search or turn off Free only." : "No models found. Try another name or model ID."}</div> : null}
+      {!matches.length ? <div class="model-select-empty" role="status">{freeOnly ? "No free models found. Try another search or turn off Free only." : kind === "branch" ? "No branches found. Try another name." : "No models found. Try another name or model ID."}</div> : null}
     </div> : null}
   </div>;
 }

@@ -15,6 +15,8 @@ export interface JsonlProcessOptions {
   timeoutMs?: number;
   /** Stop the CLI (`stalled`) when it prints nothing, on stdout or stderr, for this long. */
   idleTimeoutMs?: number;
+  /** Host-owned human/tool-resource wait; excludes waiting time from watchdogs. */
+  isPaused?: () => boolean;
   /** After `resultSeen()`: how long the CLI gets to exit before it's stopped. Default 10 s. */
   resultGraceMs?: number;
   env?: NodeJS.ProcessEnv;
@@ -260,11 +262,14 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
     opts.signal?.addEventListener("abort", onAbort, { once: true });
     if (opts.signal?.aborted) onAbort();
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      kill();
-    }, timerMs(validMs(opts.timeoutMs) ?? DEFAULT_TIMEOUT));
-    timer.unref();
+    let remaining = timerMs(validMs(opts.timeoutMs) ?? DEFAULT_TIMEOUT), lastTick = Date.now();
+    let timer: NodeJS.Timeout;
+    const tick = () => {
+      const now = Date.now(); if (!opts.isPaused?.()) remaining -= now - lastTick; lastTick = now;
+      if (remaining <= 0) { timedOut = true; kill(); return; }
+      timer = setTimeout(tick, Math.min(1000, remaining)); timer.unref();
+    };
+    timer = setTimeout(tick, Math.min(1000, remaining)); timer.unref();
 
     // Any output at all, a partial line or stderr included, is a sign of life.
     const idleMs = validMs(opts.idleTimeoutMs);
@@ -274,6 +279,7 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
       if (idleMs === undefined || resultSeen || settled || idlePaused) return;
       clearTimeout(idle);
       idle = setTimeout(() => {
+        if (opts.isPaused?.()) { alive(); return; }
         stalled = true;
         kill();
       }, timerMs(idleMs));

@@ -1,10 +1,10 @@
 import { lazyView } from "./lazy-view.js";
-import { useEffect, useRef, useState } from "preact/hooks";
-const BrowserTab = lazyView(() => import("./browser.js").then((module) => module.BrowserTab));
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+const BrowserTab = lazyView(() => import("./interactive-browser.js").then((module) => module.BrowserTab));
 const ChangesTab = lazyView(() => import("./changes.js").then((module) => module.ChangesTab));
-import { CodeBrowser } from "./code-browser.js";
+const CodeBrowser = lazyView(() => import("./code-browser.js").then((module) => module.CodeBrowser));
 import { Icon, type IconName } from "./icons.js";
-import { ago, api, baseName, enc, onPhone, post, showToast, store } from "./lib.js";
+import { ago, api, baseName, enc, post, showToast, store } from "./lib.js";
 import { placesFor, PlacePicker, usePlace } from "./panel-bits.js";
 import { ChatTab } from "./side-chat.js";
 import {
@@ -25,7 +25,9 @@ import {
   sideMemo,
   sideMemory,
   sideOpen,
-  sideWidth,
+  sideDisplayWidth,
+  sideMaxWidth,
+  sideExpanded,
   sideScope,
   sideTab,
   type SideTab,
@@ -37,7 +39,7 @@ const TerminalTab = lazyView(() => import("./terminal.js").then((module) => modu
  * The side panel: what you'd keep open next to the work in Claude's or Codex's app. A chat with
  * one agent (you pick which), the files of the repository or of a run's worktree, a terminal, a
  * browser for the app a run started, and your notes. It follows what you open (see `sideScope`):
- * on a run, every tab is that run's, and each run keeps its own chat, folders and address.
+ * on an Agent task, provider tabs share the panel memory; other runs and projects keep their own.
  */
 
 const TABS: Record<SideTab, { label: string; icon: IconName; title: string }> = {
@@ -50,6 +52,7 @@ const TABS: Record<SideTab, { label: string; icon: IconName; title: string }> = 
 };
 
 export function SidePanel({ popped = false }: { popped?: boolean }) {
+  const panel = useRef<HTMLElement>(null);
   const run = sideScope.value.run;
   // Changes are a run's: the tab is there while the panel shows one.
   const tabs = SIDE_TABS.filter((t) => t !== "changes" || run);
@@ -64,17 +67,25 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
   useEffect(restoreSideTab, [scopeKey]);
   const [dragging, setDragging] = useState(false);
   const startDrag = (e: PointerEvent) => {
+    if (e.button !== 0) return;
     e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     setDragging(true);
-    const move = (ev: PointerEvent) => setSideWidth(window.innerWidth - ev.clientX);
-    const stop = () => {
-      setDragging(false);
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop);
   };
+  const stopDrag = (e: PointerEvent) => {
+    setDragging(false);
+    const handle = e.currentTarget as HTMLElement;
+    if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
+  };
+  useLayoutEffect(() => {
+    if (!sideOpen.value || !sideExpanded.value || popped) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector('dialog[open], [role="menu"]')) return;
+      event.preventDefault(); sideExpanded.value = false;
+    };
+    document.addEventListener("keydown", escape);
+    return () => document.removeEventListener("keydown", escape);
+  }, [sideOpen.value, sideExpanded.value, popped]);
   const panes: Record<SideTab, () => preact.JSX.Element> = {
     chat: () => <ChatTab />,
     changes: () => (run ? <ChangesTab key={run.id} run={run} /> : <div class="side-empty help">Open a run to see what it changed.</div>),
@@ -83,11 +94,14 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
     browser: () => <BrowserTab />,
     notes: () => <NotesTab />,
   };
-  // Closed, it's off-screen on narrower windows (not gone): inert keeps its controls out of the Tab order.
+  // Keep visited panes mounted while closed so browsers, terminals and drafts survive.
   const closed = !sideOpen.value && !popped;
+  useLayoutEffect(() => {
+    if (closed && panel.current?.contains(document.activeElement)) document.querySelector<HTMLButtonElement>('button[aria-label="Side panel"]')?.focus();
+  }, [closed]);
   return (
-    <aside class={`side ${sideOpen.value ? "open" : ""} ${popped ? "popped" : ""}`} aria-label="Side panel" aria-hidden={closed} inert={closed}>
-      {popped ? null : <div class={`side-handle ${dragging ? "dragging" : ""}`} role="separator" tabIndex={0} aria-orientation="vertical" aria-label="Resize the side panel" aria-valuemin={300} aria-valuemax={900} aria-valuenow={sideWidth.value} title="Drag or use arrow keys to resize" onPointerDown={startDrag} onKeyDown={(event) => { const width = event.key === "ArrowLeft" ? sideWidth.value + 24 : event.key === "ArrowRight" ? sideWidth.value - 24 : event.key === "Home" ? 300 : event.key === "End" ? 900 : undefined; if (width !== undefined) { event.preventDefault(); setSideWidth(width); } }} />}
+    <aside id="side-panel" ref={panel} tabIndex={-1} class={`side ${sideOpen.value ? "open" : ""} ${popped ? "popped" : ""}`} aria-label="Side panel" aria-hidden={closed} inert={closed}>
+      {popped || sideExpanded.value ? null : <div class={`side-handle ${dragging ? "dragging" : ""}`} role="separator" tabIndex={0} aria-orientation="vertical" aria-label="Resize the side panel" aria-valuemin={300} aria-valuemax={sideMaxWidth.value} aria-valuenow={sideDisplayWidth.value} title="Drag or use arrow keys to resize; double-click to reset" onPointerDown={startDrag} onPointerMove={event => { if (dragging) setSideWidth(window.innerWidth - event.clientX); }} onPointerUp={stopDrag} onPointerCancel={stopDrag} onLostPointerCapture={() => setDragging(false)} onDblClick={() => setSideWidth(420)} onKeyDown={(event) => { const width = event.key === "ArrowLeft" ? sideDisplayWidth.value + 24 : event.key === "ArrowRight" ? sideDisplayWidth.value - 24 : event.key === "Home" ? 300 : event.key === "End" ? sideMaxWidth.value : undefined; if (width !== undefined) { event.preventDefault(); setSideWidth(width); } }} />}
       <ScopeHeader popped={popped} />
       <div class="side-tabs" role="tablist" aria-label="Side panel tabs">
         {tabs.map((t) => (
@@ -116,12 +130,6 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
 /** The project and run the panel is showing, and the pin that keeps it there while you open others. */
 function ScopeHeader({ popped }: { popped: boolean }) {
   const s = sideScope.value;
-  /** This tab in a window of its own, fixed to what the panel shows now; the panel here closes. */
-  const popOut = () => {
-    const url = `${location.origin}${location.pathname}#/side/${sideTab.value}/${encodeURIComponent(s.key)}`;
-    if (window.open(url, `codeflow-side-${location.pathname}-${s.key}`, "popup,width=560,height=860")) closeSide();
-    else showToast("The browser blocked the window: allow pop-ups for code-flow", 5000);
-  };
   const thing = s.run ? "run" : "project";
   const where = s.project?.name ?? (s.repo ? baseName(s.repo) : "");
   const task = s.run ? s.run.task.split("\n")[0] || "(no task)" : "";
@@ -161,9 +169,9 @@ function ScopeHeader({ popped }: { popped: boolean }) {
           <Icon name="pin" />
         </button>
       )}
-      {popped || onPhone ? null : (
-        <button type="button" class="icon-btn" aria-label="Open in its own window" title="Open this tab in a window of its own, for this run or project" disabled={!s.repo} onClick={popOut}>
-          <Icon name="external" />
+      {popped ? null : (
+        <button type="button" class="icon-btn side-expand" aria-label={sideExpanded.value ? "Restore side panel" : "Expand side panel"} title={sideExpanded.value ? "Restore alongside chat (Esc)" : "Expand to full screen"} aria-pressed={sideExpanded.value} onClick={() => { sideExpanded.value = !sideExpanded.value; }}>
+          <Icon name={sideExpanded.value ? "collapse" : "expand"} />
         </button>
       )}
       {popped ? null : (
@@ -178,6 +186,26 @@ function ScopeHeader({ popped }: { popped: boolean }) {
 // ---------------------------------------------------------------- files
 function FilesTab() {
   const [place, setPlace, places] = usePlace("files");
+  const run = sideScope.value.run;
+  const [retained, setRetained] = useState<{ runId: string; paths: string[] } | null>(null);
+  useEffect(() => {
+    if (!run?.archived) { setRetained(null); return; }
+    let current = true;
+    // Archive can keep shared/dirty worktrees or remove them. Only offer folders
+    // still present; a historical worktree record is not an available folder.
+    void Promise.all(run.worktrees.map(async (tree) => {
+      try { await api(`/api/fs?path=${enc(tree.path)}`); return tree.path; }
+      catch { return null; }
+    })).then((paths) => { if (current) setRetained({ runId: run.id, paths: paths.filter((p): p is string => p !== null) }); });
+    return () => { current = false; };
+  }, [run]);
+  const availablePlaces = run?.archived ? places.filter((p) => !p.runId || retained?.runId === run.id && retained.paths.includes(p.path)) : places;
+  useEffect(() => {
+    if (run?.archived) {
+      const repository = places.find((p) => p.path === run.repo);
+      if (repository) setPlace(repository);
+    }
+  }, [run?.id, run?.archived]);
   /** The file shown, and the folder it's in: it closes when the panel shows another folder. */
   const [open, setOpen] = useState<{ root: string; path: string } | null>(null);
   // Something else asked for a file (a run's diff, a transcript): show it, in its folder.
@@ -190,14 +218,17 @@ function FilesTab() {
     sideFile.value = null;
   }, [sideFile.value]);
   const viewKey = place?.path ?? "";
+  // A visited tab stays mounted while agents work. Refresh its tree on completion,
+  // including follow-ups, without remounting the editor or losing an unsaved draft.
+  const treeRevision = `${run?.endedAt ?? ""}:${run?.followUps.filter((f) => f.status !== "pending").map((f) => f.id).join(",") ?? ""}`;
   useEffect(() => setOpen((o) => (o?.root === viewKey ? o : null)), [viewKey]);
   // Keyed by folder (and file): another worktree's tree or file never shows what an earlier one loaded.
   return (
     <>
       <div class="side-toolbar">
-        <PlacePicker label="Folder" place={place} places={places} onChange={setPlace} />
+        <PlacePicker label="Folder" place={place} places={availablePlaces} onChange={setPlace} />
       </div>
-      {place ? <CodeBrowser key={viewKey} folder={viewKey} initialPath={open?.root === viewKey ? open.path : undefined} onClose={() => setOpen(null)} /> : <p class="side-empty">Choose a repository or run worktree.</p>}
+      {place ? <CodeBrowser compact key={viewKey} folder={viewKey} refreshKey={treeRevision} initialPath={open?.root === viewKey ? open.path : undefined} onClose={() => setOpen(null)} /> : <p class="side-empty">Choose a repository or run worktree.</p>}
     </>
   );
 }

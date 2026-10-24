@@ -20,5 +20,10 @@ test("live monitor reports an excess once, stops scheduling after abort and sett
   const controller = new AbortController(); let calls = 0, resolve!: () => void; const exceeded = new Promise<void>((done) => resolve = done);
   const monitor = monitorFilteredWorkspace(root, { signal: controller.signal, intervalMs: 20, onExceeded: () => { calls++; controller.abort(); resolve(); } });
   const file = await open(join(root, "growing"), "wx"); await file.truncate(FILTERED_WORKSPACE_LIMITS.logicalBytes + 1); await file.close();
-  await Promise.race([exceeded, new Promise((_, reject) => setTimeout(() => reject(new Error("Live limit did not fire")), 3000).unref())]); await monitor.stop(); await new Promise((done) => setTimeout(done, 50)); assert.equal(calls, 1);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // The production monitor intentionally unrefs its timer; the test's watchdog owns this wait.
+    await Promise.race([exceeded, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("Live limit did not fire")), 3000); })]);
+  } finally { if (timeout) clearTimeout(timeout); controller.abort(); await monitor.stop(); }
+  await new Promise((done) => setTimeout(done, 50)); assert.equal(calls, 1);
 }));

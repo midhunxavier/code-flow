@@ -1,0 +1,71 @@
+name: Publish npm release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published app release to publish or verify (for example v0.1.0-preview.3)
+        required: true
+
+permissions:
+  contents: read
+
+# Serialize all releases so two versions cannot race to move the npm tags.
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'midhunxavier/code-flow'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.publish.outputs.version }}
+      verify: ${{ steps.publish.outputs.verify }}
+    steps:
+      # Use maintained publishing tooling, including when retrying an older release.
+      # The package itself is downloaded from the release and never rebuilt here.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # OIDC dist-tag authentication requires npm >=11.21.0.
+      - run: npm install --global npm@11.21.1 --ignore-scripts
+      - name: Publish the verified release tarball and update both channels
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: node scripts/publish-npm-release.mjs
+
+  verify:
+    needs: publish
+    if: needs.publish.outputs.verify == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Installed release code runs without the publisher's OIDC permission.
+    permissions: {}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify fresh installs through latest and preview
+        env:
+          EXPECTED_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          cd "$RUNNER_TEMP"
+          for channel in latest preview; do
+            actual=$(npm exec --yes --ignore-scripts --cache "$RUNNER_TEMP/npm-smoke-cache" --package="@midhunxavier/code-flow@$channel" -- codeflow --version)
+            test "$actual" = "$EXPECTED_VERSION"
+            echo "$channel installs $actual"
+          done

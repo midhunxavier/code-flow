@@ -1,6 +1,6 @@
 # Local and remote ML automation implementation plan
 
-> Engineering proposal. Updated 23 October 2026 against repository revision `70fde3e`, following review of changes since `d82a2e1`. The roadmap below describes the full planned feature. Opt-in tabular training and single-device LoRA fine-tuning, bounded automatic experiments, scheduled data-driven retraining, a model registry, persistent/streaming inference, bounded model monitoring, guarded automatic promotion and common holdout evaluation are now implemented; see the implementation status and current user guide below.
+> Engineering proposal. Updated 24 October 2026 against repository revision `8d10c8f`, incorporating the latest release packaging and application changes. The roadmap below describes the full planned feature. Opt-in tabular training and single-device LoRA fine-tuning, bounded automatic experiments, scheduled data-driven retraining, a model registry, persistent/streaming inference, bounded model monitoring, guarded automatic promotion and common holdout evaluation are now implemented; see the implementation status and current user guide below.
 
 Code Flow will let users train prediction models and fine-tune open language models using their own computer or a configured server. Agents will prepare experiments, diagnose failures and suggest improvements. A durable job runner will execute training and evaluation independently of agent sessions. Users will receive a model, reproducible training inputs, measured results and a clear way to use it.
 
@@ -9,6 +9,8 @@ Build this as an **ML workspace inside Code Flow**, backed by a separately runni
 ## Implementation status — training, fine-tuning, improvement, scheduling, registry, inference, monitoring, promotion and common evaluation
 
 The opt-in implementation now provides local tabular training, a standalone SSH worker adapter, computer discovery, private Python environment setup, immutable dataset preparation, random/group/time splits, held-out baseline comparison, logs, cancellation and verified model export in **Project → More → ML**. See [Model training](model-training.md) for current setup and limits.
+
+The training worker and fixed recipes are included in both remote-host and npm release packages, so installed backends can resolve and verify them outside a source checkout. Python environments and GPU drivers remain prerequisites on the selected training computer.
 
 The controller uses a bounded, serialized atomic state document for this milestone, and each job uses a detached supervisor with durable receipts. This is a deliberate smaller implementation than the journal, always-on worker service and full deployment lifecycle proposed below. Automatic searches now keep a durable iteration/training reservation ledger in the same atomic document. Jobs pin their selected target and bundle; ambiguous outcomes block another admission. Cancellation intent survives disconnected SSH and controller restarts.
 

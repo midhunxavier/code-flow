@@ -357,7 +357,7 @@ test("requests code-flow doesn't know are answered, and the run shows what Codex
   const cases: [string, RegExp][] = [
     ["item/permissions/requestApproval", /got \{"permissions":\{\},"scope":"turn"\}/],
     ["mcpServer/elicitation/request", /got \{"action":"decline","content":null\}/],
-    ["item/tool/requestUserInput", /got \{"error":\{"code":-32601/],
+    ["item/tool/requestUserInput", /got \{"answers":\{\}\}/],
   ];
   for (const [method, answer] of cases) {
     const { result, events } = await withEnv({ FAKE_CODEX_SERVER_REQUEST: method }, () => turn("Look around"));
@@ -372,7 +372,7 @@ test("Auto members get structured question guidance without granting native perm
     const { result, events } = await withEnv({ FAKE_CODEX_SERVER_REQUEST: method }, () => turn("Ask through the team outcome", { questionProtocol: "structured" }));
     assert.ok(result.ok, result.error);
     assert.ok(events.some((event) => event.kind === "status" && event.text.includes("needs_info")));
-    assert.ok(events.some((event) => event.kind === "text" && /got \{(?:"error"|"action":"decline")/.test(event.text)));
+    assert.ok(events.some((event) => event.kind === "text" && /got \{(?:"answers":\{\}|"action":"decline")/.test(event.text)));
   }
   const denied = await withEnv({ FAKE_CODEX_SERVER_REQUEST: "item/permissions/requestApproval" }, () => turn("Ask through the team outcome", { questionProtocol: "structured" }));
   assert.ok(denied.events.some((event) => event.kind === "text" && event.text.includes('got {"permissions":{},"scope":"turn"}')));

@@ -34,7 +34,7 @@ test("hashed assets negotiate compression and validate without retransmitting co
 
 test("the startup import graph excludes xterm while terminal views remain available on demand", async () => {
   const { build } = await import("esbuild");
-  const result = await build({ entryPoints: ["ui/main.tsx"], outdir: "out", bundle: true, splitting: true, format: "esm", write: false, metafile: true, minify: true, target: "es2022", jsx: "automatic", jsxImportSource: "preact", loader: { ".png": "dataurl" } });
+  const result = await build({ entryPoints: ["ui/main.tsx"], outdir: "out", bundle: true, splitting: true, format: "esm", write: false, metafile: true, minify: true, target: "es2022", jsx: "automatic", jsxImportSource: "preact", loader: { ".png": "dataurl", ".svg": "dataurl" } });
   const outputs = result.metafile!.outputs;
   const entry = Object.keys(outputs).find(path => outputs[path]!.entryPoint === "ui/main.tsx")!;
   const visited = new Set<string>();

@@ -1,3 +1,9 @@
+import { validateTaskTeam } from "./task-team.js";
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
+import { MAX_BROWSER_UPLOAD } from "./browser-files.js";
+import { chatTaskId } from "./chat-family.js";
+import { agentToolBridge, validateAgentTool } from "./agent-tools.js";
 import { HISTORY_STATUSES, type HistoryStatus, type ProjectSection } from "./run-status.js";
 import { MlService } from "./ml/service.js";
 import { handleMlApi } from "./ml/api.js";
@@ -55,6 +61,7 @@ import { listTree, readRepoFile, searchFiles } from "./repo-tree.js";
 import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig, type Trust } from "./repo-config.js";
 import { openFolder } from "./serve.js";
+import { inspectFramePolicy } from "./frame-policy.js";
 import { LaunchProfiles, LaunchProfileError, readLaunchProfiles } from "./launch-profiles.js";
 import { TeamRerunError } from "./team-reruns.js";
 import { ConventionsStore, ConventionsError } from "./conventions.js";
@@ -284,7 +291,9 @@ const docsHelp = new DocsHelp(docsDirectory, (agent, event) => {
   if (error.kind === "auth") manager.recordQuota(agent, "signed_out", {});
 });
 const indexHtml = fileURLToPath(new URL("../public/index.html", import.meta.url));
-const HOST = "127.0.0.1";
+// Docker's published loopback port reaches the container interface, not its private loopback.
+// Ordinary launches retain the local-only listener; the desktop image opts in explicitly.
+const HOST = process.env.CODEFLOW_DESKTOP_CONTAINER === "1" && process.env.CODEFLOW_LAUNCHER === "1" ? "0.0.0.0" : "127.0.0.1";
 const sshProjects = process.env.CODEFLOW_SSH_HOST ? undefined : new SshProjects({ localProjects: () => projects.list(), canBrowse: () => !fileAccess.hasRestrictions() });
 const tlsConfigured = !!process.env.CODEFLOW_TLS_CERT && !!process.env.CODEFLOW_TLS_KEY;
 if (!!process.env.CODEFLOW_TLS_CERT !== !!process.env.CODEFLOW_TLS_KEY) throw new Error("Configure both CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY");
@@ -301,12 +310,12 @@ function remoteTlsIssue(): string | undefined {
 }
 
 
-const allowedHosts = new Set([`${HOST}:${PORT}`, `localhost:${PORT}`]);
+const allowedHosts = new Set([`${HOST}:${PORT}`, `127.0.0.1:${PORT}`, `localhost:${PORT}`]);
 /** Local apps in the side panel's Browser, each on a port of its own (src/preview.ts). */
 const journeys = new JourneyStore(join(CODEFLOW_HOME, "journeys"));
 const handleJourneys = journeyApi(journeys, manager, [PORT, REMOTE_PORT]);
 const previews = new Previews(
-  () => [`http://localhost:${PORT}`, `http://${HOST}:${PORT}`],
+  () => [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`],
   () => [PORT, REMOTE_PORT],
 );
 
@@ -691,7 +700,7 @@ async function improveTask(body: any, res: ServerResponse) {
   // Closing the request (Stop in the composer, or leaving the page) stops the turn.
   improving++; improvingControllers.add(stop);
   try {
-    return await attempt(() => manager.withIdleRepository(request.repo, async () => {
+    return await attempt(() => manager.withReadOnlyExecution(request.repo, async () => {
       await manager.assertExecutionAllowed(request.repo, undefined, "Prompt improvement");
       stop.signal.throwIfAborted();
       const installed = new Set((await agentAvailability()).filter((a) => a.available && IMPROVE_AGENTS.includes(a.id as ImproveAgent)).map((a) => a.id));
@@ -856,7 +865,7 @@ function validateOptions(pattern: Pattern, input: unknown): Record<string, numbe
 
 /** Validate a run request (from the composer or an automation) into what the engine starts. */
 async function buildStartInput(body: Record<string, any>): Promise<StartRunInput> {
-  if (body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.projectTeam !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
+  if (body.taskExecution !== undefined || body.teamTurns !== undefined || body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.projectTeam !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
   if (body.projectSelection !== undefined && body.projectSelection !== "explicit") throw new HttpError(400, "Unknown project selection mode");
   if (body.projectSelection === "explicit" && (!projects.available || typeof body.project !== "string" || !projects.get(body.project))) throw new HttpError(409, "Choose an available project before starting");
   if (body.templateCatalog !== undefined || body.teamTemplate !== undefined || body.permissions !== undefined) throw new HttpError(400, "Template snapshots and run authority are assigned by the server");
@@ -884,6 +893,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   if (body.projectSelection === "explicit" && !projects.get(body.project)?.repos.includes(await repoRoot(repo))) throw new HttpError(409, "This repository is no longer an explicit member of the selected project");
   if (body.externalSource !== undefined || (body.externalSourceId !== undefined && typeof body.externalSourceId !== "string")) throw new HttpError(400, "Import the external source through its configured integration first");
   if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
+  if (body.checkpointOnFinish !== undefined && typeof body.checkpointOnFinish !== "boolean") throw new HttpError(400, "checkpointOnFinish must be a boolean");
   if (body.intent !== undefined && !taskIntent(body.intent)) throw new HttpError(400, "Choose a supported task type");
   if (body.journeyId !== undefined) { const journey = await attempt(() => journeys.get(String(body.journeyId))); if (journey.repo !== await repoRoot(repo)) throw new HttpError(400, "The scenario belongs to another repository"); }
   const parent = typeof body.parentRunId === "string" ? manager.get(body.parentRunId) : undefined;
@@ -911,6 +921,8 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   }
   return {
     pattern,
+    checkpointOnFinish: body.checkpointOnFinish ?? parent?.checkpointOnFinish,
+    taskTeam: body.taskTeam === undefined ? undefined : validateTaskTeam(body.taskTeam),
     teamTemplate,
     task,
     intent: taskIntent(body.intent),
@@ -1250,7 +1262,7 @@ function streamAllRuns(req: IncomingMessage, res: ServerResponse, limit?: number
   } else {
     // Active and attention items remain visible even when their creation is outside the recent page.
     const attention = page ? manager.attentionPage({ limit: 100, predicate: (run) => !fileAccess.restrictedRun(run) }) : undefined;
-    const runs = page ? [...new Map([...page.runs, ...attention!.runs].map((run) => [run.id, run])).values()] : fileAccess.list();
+    const runs = page ? [...new Map([...page.runs, ...page.related, ...attention!.runs, ...manager.relatedChats(attention!.runs, run => !fileAccess.restrictedRun(run))].map((run) => [run.id, run])).values()] : fileAccess.list();
     stream.send({ type: "hello", epoch, seq: runFeed.seq, runs, ...(page ? { nextCursor: page.nextCursor, total: page.total, attentionTotal: attention!.total, attentionTruncated: attention!.truncated, attentionNextCursor: attention!.nextCursor } : {}) }, runFeed.seq);
   }
   const client = (e: { seq: number; run: RunSummary }) => { if (!fileAccess.restrictedRun(e.run)) stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq); };
@@ -1294,7 +1306,7 @@ const topics: Record<string, TopicSource> = {
   "project-teams"(projectId, _after, deliver) {
     if (fileAccess.hasRestrictions() || !projects.get(projectId)) throw new TopicError(403, "Standing team scope is unavailable");
     const generation = filesystemFeedRevision;
-    const publish = () => { if (generation === filesystemFeedRevision && !fileAccess.hasRestrictions() && projects.get(projectId)) deliver({ type: "snapshot", teams: projectTeams.list(projectId), ...projectTeams.configuration() }); };
+    const publish = () => { if (generation === filesystemFeedRevision && !fileAccess.hasRestrictions() && projects.get(projectId)) deliver({ type: "snapshot", teams: projectTeams.list(projectId), definitions: projectTeams.teamLibrary(), definitionFaults: Object.fromEntries(projectTeams.definitions.faults), ...projectTeams.configuration() }); };
     const off = projectTeams.store.subscribe(publish); publish(); return off;
   },
   /**
@@ -1312,7 +1324,7 @@ const topics: Record<string, TopicSource> = {
     } else {
       const page = fileAccess.page({ limit: 100 });
       const attention = manager.attentionPage({ limit: 100, predicate: (run) => !fileAccess.restrictedRun(run) });
-      const runs = [...new Map([...page.runs, ...attention.runs].map((run) => [run.id, run])).values()];
+      const runs = [...new Map([...page.runs, ...page.related, ...attention.runs, ...manager.relatedChats(attention.runs, run => !fileAccess.restrictedRun(run))].map((run) => [run.id, run])).values()];
       deliver({ type: "hello", epoch, seq: runFeed.seq, runs, total: page.total, nextCursor: page.nextCursor, attentionTotal: attention.total, attentionTruncated: attention.truncated, attentionNextCursor: attention.nextCursor }, runFeed.seq);
     }
     const client = (e: { seq: number; run: RunSummary }) => { if (!fileAccess.restrictedRun(e.run)) deliver({ type: "run", seq: e.seq, run: e.run }, e.seq); };
@@ -1486,6 +1498,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   const sharedPresent = readCookies(req, SHARED_COOKIE).length > 0;
   const owner = explicitOwner || !sharedPresent && !runnerBearer && (via === "lan" ? phoneSignedIn(req) : signedIn(req));
 
+  if (["api/auth/invitations/preview", "api/auth/invitations/accept"].includes(parts.join("/")) && req.method === "POST") {
+    sharedMutation(req);
+    const transport = sharedTransport(req);
+    if (!transport.secure && !transport.loopback) throw new HttpError(403, "Joining a project requires HTTPS outside this computer");
+    const body = await readLoginJson(req);
+    const invitation = await attempt(async () => sharedAccounts.previewInvitation(body.token));
+    const project = projects.get(invitation.projectId);
+    if (!project) throw new HttpError(410, "This project is no longer available. Ask the owner for a new invitation.");
+    if (parts[3] === "preview") return send(res, 200, { project: { id: project.id, name: project.name }, role: invitation.role, expiresAt: invitation.expiresAt });
+    const session = await attempt(() => sharedAccounts.acceptInvitation({ ...transport, token: body.token, username: body.username, password: body.password, displayName: body.displayName, existing: body.existing === true }, (id, save) => projects.withProject(id, current => {
+      if (!current) throw new HttpError(410, "This project is no longer available. Ask the owner for a new invitation.");
+      return save();
+    })));
+    if (owner) closeOwnerStreams(true);
+    res.setHeader("set-cookie", [sharedCookie(session.token, transport.secure), clearCookie(COOKIE), clearCookie(PHONE_COOKIE)]);
+    return send(res, 200, { user: session.user, projectId: session.projectId });
+  }
   if (parts.join("/") === "api/auth/login" && req.method === "POST") {
     sharedMutation(req);
     const body = await readLoginJson(req);
@@ -1514,7 +1543,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       res.writeHead(302, { location: "/", "set-cookie": [sessionCookie(), clearCookie(SHARED_COOKIE)], "cache-control": "no-store", "referrer-policy": "no-referrer" });
       return res.end();
     }
-    const sharedLogin = sharedAccounts.available && sharedAccounts.hasUsers && (via === "local" || !!phoneTls);
+    const sharedLogin = sharedAccounts.available && (sharedAccounts.hasUsers || sharedAccounts.hasInvitations) && (via === "local" || !!phoneTls);
     const claim = via === "local" && !owner && !sharedPresent && mayClaim(req);
     if (!owner && !shared && !claim && !sharedLogin) {
       res.writeHead(401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...NO_FRAMES });
@@ -1601,6 +1630,59 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method !== "GET") { auth.claimable = false; manager.noteActivity(); }
     if (await handleMlApi(req, res, url, parts.slice(1), ml)) return;
   }
+  if (parts[1] === "browser") {
+    if (fileAccess.hasRestrictions()) throw new HttpError(403, "Interactive browsing is paused under filesystem restrictions");
+    const scope = url.searchParams.get("scope") ?? "";
+    let browserId: string;
+    if (scope.startsWith("run:")) {
+      const run = await manager.getAsync(scope.slice(4));
+      if (!run) throw new HttpError(404, "Task not found");
+      if (fileAccess.restrictedRun(run)) throw new HttpError(403, "This task's browser is unavailable under its filesystem policy");
+      browserId = `run:${chatTaskId(run)}`;
+    } else if (scope.startsWith("project:") && projects.get(scope.slice(8))) browserId = scope;
+    else if (scope.startsWith("repo:") && scope.length < 4096 && scope.slice(5).startsWith("/")) browserId = scope;
+    else if (scope === "none") browserId = "general";
+    else throw new HttpError(400, "Choose a task or repository for the browser");
+    const browser = await agentToolBridge.browser(browserId);
+    const control = agentToolBridge.control(browserId);
+    if (parts[2] === "control" && parts.length === 3) {
+      if (req.method === "GET") return send(res, 200, control.state());
+      if (req.method === "POST") { const body = await readJson(req, 1024); if (!["takeover", "release"].includes(body.action)) throw new HttpError(400, "Choose takeover or release"); return send(res, 200, body.action === "takeover" ? await control.takeover() : control.resume()); }
+      throw new HttpError(405, "Use GET or POST");
+    }
+    if(req.method==="POST" && parts[2]==="uploads" && parts.length===3) {
+      if(req.headers["content-type"]!=="application/octet-stream")throw new HttpError(400,"Upload a file as application/octet-stream");
+      if(Number(req.headers["content-length"])>MAX_BROWSER_UPLOAD)throw new HttpError(413,"Uploads are limited to 100 MB per file");
+      manager.noteActivity();
+      return send(res,200,await attempt(()=>browser.stageUpload(url.searchParams.get("chooser")??"",url.searchParams.get("name")??"upload",req,url.searchParams.get("relativePath")??undefined)));
+    }
+    if(req.method==="GET" && parts[2]==="downloads" && parts.length===4) {
+      await browser.files.init();
+      const file=await attempt(()=>browser.files.downloaded(parts[3]!));
+      res.writeHead(200,{"content-type":"application/octet-stream","content-length":file.size,"content-disposition":`attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(file.item.name).replace(/'/g,"%27")}`,"cache-control":"no-store","x-content-type-options":"nosniff"});
+      await pipeline(createReadStream(file.path),res).catch(()=>{res.destroy();});return;
+    }
+    if (req.method === "GET" && parts[2] === "events") {
+      const stream = openStream(res);
+      const stop = browser.watch(event => stream.send(event));
+      const controlStop = control.watch(state => stream.send({ type: "control", ...state }));
+      const policyStop = filePolicies.onChange(() => { stop(); res.end(); });
+      res.once("close", () => { stop(); controlStop(); policyStop(); });
+      return;
+    }
+    if (req.method === "POST" && !parts[2]) {
+      const body = await readJson(req, 128 * 1024);
+      let name = "browser_ui", args = body;
+      if (body.action === "navigate") { name = "browser_navigate"; args = {url:body.url}; }
+      if (body.action === "tabs") { name = "browser_tabs"; args = {action:body.operation,...(body.tab ? {tab:body.tab} : {})}; }
+      if (name !== "browser_ui") validateAgentTool(name,args);
+      manager.noteActivity();
+      const input = name !== "browser_ui" || !["state", "watch", "resize", "selection", "overlay", "mouse"].includes(body.action) || body.action === "mouse" && body.type !== "mouseMoved";
+      const operation = () => browser.call(name,args,new AbortController().signal);
+      return send(res, 200, await attempt(() => input ? control.userAction(operation) : operation()));
+    }
+    throw new HttpError(404, "Unknown browser operation");
+  }
   if (parts[1] === "docs-help") {
     if (parts.length !== 2 || via !== "local") throw new HttpError(403, "Use the local owner app for documentation help");
     manager.noteActivity();
@@ -1658,6 +1740,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     throw new HttpError(404, "Unknown SSH connection operation");
   }
   if (parts[1] === "accounts") {
+    if (parts[2] === "invitations") {
+      if (parts.length === 3 && req.method === "GET") return send(res, 200, await attempt(async () => ({ invitations: sharedAccounts.invitations() })));
+      if (parts.length === 3 && req.method === "POST") {
+        const body = await readJson(req, 8192);
+        if (typeof body.projectId !== "string" || !projects.get(body.projectId)) throw new HttpError(400, "Choose an existing project to invite people");
+        return send(res, 201, await attempt(() => sharedAccounts.invite({ projectId: body.projectId, role: body.role })));
+      }
+      if (parts.length === 4 && req.method === "DELETE") { await attempt(() => sharedAccounts.revokeInvitation(parts[3]!)); return send(res, 200, { ok: true }); }
+      throw new HttpError(404, "Unknown invitation operation");
+    }
     if (!parts[2] && req.method === "GET") return send(res, 200, await attempt(async () => sharedAccounts.snapshot()));
     const body = await readJson(req);
     if (body.roles) for (const id of Object.keys(body.roles)) if (!projects.get(id)) throw new HttpError(400, "Choose existing projects for shared roles");
@@ -1764,8 +1856,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (body.decision !== "approve" && body.decision !== "decline") throw new HttpError(400, "Choose approve or decline");
       const request = approvals.list().find((record) => record.id === parts[2]);
       const run = request ? manager.get(request.runId) : undefined;
-      if (!request || !run || run.status !== "running" || !run.approvals.tools || !run.steps.some((step) => step.id === request.stepId && step.status === "running")) throw new HttpError(409, "This approval is no longer active");
-      if (!approvals.respond(request.id, body.decision, { runId: run.id, stepId: request.stepId })) throw new HttpError(409, "This approval has expired or was already answered");
+      if (!request || !run || run.status !== "running" || request.kind !== "question" && !run.approvals.tools || !run.steps.some((step) => step.id === request.stepId && step.status === "running")) throw new HttpError(409, "This approval is no longer active");
+      if (!approvals.respond(request.id, body.decision, { runId: run.id, stepId: request.stepId }, body.answers)) throw new HttpError(409, "This request has expired, was answered, or needs an answer for each question");
       manager.log(run.id, `You ${body.decision === "approve" ? "approved" : "declined"} one ${request.kind} action in ${request.stepId}`);
       return send(res, 200, { resolved: true });
     }
@@ -2196,8 +2288,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (await handleJourneys(req, res, url, parts)) return;
   if (parts[1] === "preview" && req.method === "POST") {
     const body = await readJson(req);
+    if (parts[2] === "status") {
+      const target = previewTarget(String(body.url ?? ""));
+      const registered = typeof body.runId === "string" && manager.get(body.runId) && manager.devServers.list().some(server => server.key.startsWith(`${body.runId}/`) && server.status === "running" && server.port === target?.port);
+      return send(res, 200, { ready: !!registered && await attempt(() => previews.ready(String(body.url ?? ""))) });
+    }
     // On the host name this page was opened with (checkOrigin allows only code-flow's own), so the app is same-site with it.
     return send(res, 200, await attempt(() => previews.show(String(body.url ?? ""), req.headers.host)));
+  }
+  if (parts[1] === "frame-policy" && req.method === "POST") {
+    const body = await readJson(req, 8192);
+    const scheme = (req.socket as typeof req.socket & { encrypted?: boolean }).encrypted === true ? "https" : "http";
+    return send(res, 200, await attempt(() => inspectFramePolicy(String(body.url ?? ""), `${scheme}://${req.headers.host}`)));
   }
   // Snapshot mode: a screenshot of any page, in a headless Chrome of its own (src/snapshot.ts). It
   // keeps away from this computer, except a local app at the address the Browser's preview takes
@@ -2393,6 +2495,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       throw new HttpError(404, "Unknown launch profile operation");
     }
     if (req.method === "GET" && parts[3] === "events") return await streamTopic(req, res, "run", run.id);
+    if (["GET", "POST"].includes(req.method ?? "") && parts[3] === "team-resolution") return send(res, 200, await attempt(async () => manager.taskResolution(run.id, url.searchParams.get("execution") ?? "", req.method === "POST" ? await readJson(req, 2 * 1024 * 1024) : undefined)));
+    if (req.method === "POST" && parts[3] === "team-resume") return send(res, 200, await attempt(async () => manager.resumeTaskTeam(run.id, (await readJson(req)).execution)));
+    if (req.method === "POST" && parts[3] === "team-review") return send(res, 200, await attempt(async () => manager.refreshTaskTeamReview(run.id, (await readJson(req)).execution)));
+    if (req.method === "POST" && parts[3] === "team-recheck") return send(res, 200, await attempt(async () => manager.recheckTaskTeam(run.id, (await readJson(req)).execution)));
+    if (req.method === "POST" && parts[3] === "task-team") return send(res, 200, await attempt(async () => manager.configureTaskTeam(run.id, await readJson(req))));
     if (req.method === "POST" && parts[3] === "revise-goal") {
       const body = await readJson(req);
       const revised = await attempt(() => manager.reviseGoal(run.id, { message: body.message, budget: body.budget === undefined ? undefined : { maxSteps: body.budget?.maxSteps, maxInvocations: body.budget?.maxInvocations, maxMinutes: body.budget?.maxMinutes } }));
@@ -2412,10 +2519,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const body = await readJson(req);
       return send(res, 200, await attempt(async () => manager.setPriority(run.id, body.priority)));
     }
+    if (req.method === "GET" && parts[3] === "chats" && parts.length === 4) {
+      return send(res, 200, fileAccess.list().filter(other => chatTaskId(other) === chatTaskId(run)));
+    }
     if (req.method === "POST" && parts[3] === "provider-chat" && parts.length === 4) {
       const body = await readJson(req, 64 * 1024);
       const { roles } = await validateRoles(findPattern("solo")!, { agent: [body.agent] }, run.repo, run.loop.remoteWorker, run.trust);
-      const next = await attempt(() => manager.startProviderChat(run.id, { agent: roles.agent![0]!, settings: body.settings, message: body.message }));
+      const next = await attempt(() => manager.startProviderChat(run.id, { agent: roles.agent![0]!, settings: body.settings, message: body.message, kind: body.kind, attachments: body.attachments }));
       return send(res, 201, { id: next.id });
     }
     if (req.method === "POST" && parts[3] === "fork") {
@@ -2429,7 +2539,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (req.method === "POST" && parts[3] === "cancel") return send(res, 200, { cancelled: manager.cancel(run.id) });
     if (req.method === "POST" && parts[3] === "resume") {
-      await manager.resume(run.id).catch((err: Error) => {
+      const body = req.headers["content-length"] && req.headers["content-length"] !== "0" || req.headers["transfer-encoding"] ? await readJson(req) : {};
+      await manager.resume(run.id, body.budget).catch((err: Error) => {
         throw new HttpError(400, err.message);
       });
       return send(res, 200, { resumed: true });
@@ -2500,21 +2611,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
           const command = (typeof body.command === "string" && body.command.trim()) || run.app?.command;
           if (!command) throw new HttpError(400, 'Say how to run the app (e.g. "npm run dev"), or add "run" to .codeflow/config.json');
           if (/[\r\n]/.test(command)) throw new HttpError(400, "The command must be a single line");
+          if (body.port !== undefined && (!Number.isInteger(body.port) || body.port < 1 || body.port > 65_535 || [PORT, REMOTE_PORT].includes(body.port))) throw new HttpError(400, "Choose a valid app port other than code-flow's ports");
           // A locked-down run's code is an outsider's, and the app runs on this machine, never in
           // Docker: the same confirmation its checks would need.
           if (run.lockdown && body.allowUntrusted !== true) {
             throw Object.assign(new HttpError(409, `${run.lockdown}. Run app starts that code on this machine, outside any sandbox or container.`), { confirm: "allowUntrusted" });
           }
           manager.noteActivity(); // the app is the repo's code running on this machine
-          return send(res, 200, await manager.devServers.start(key, wt.path, command, run.app?.port));
+          return send(res, 200, await manager.devServers.start(key, wt.path, command, body.port ?? run.app?.port));
         }
       }
     }
     if (req.method === "POST" && parts[3] === "notes") {
       const body = await readJson(req);
       const note = await attempt(async () => typeof body.requestId === "string"
-        ? manager.answerTeamQuestion(run.id, body.requestId, String(body.text ?? ""))
-        : (run.team ? manager.addTeamNote.bind(manager) : manager.addNote.bind(manager))(run.id, String(body.text ?? ""), isAgentId(body.agent) ? body.agent : undefined, typeof body.memberId === "string" ? body.memberId : undefined));
+        ? run.pattern === "solo" ? manager.addTeamNote(run.id, String(body.text ?? ""), undefined, undefined, body.requestId) : manager.answerTeamQuestion(run.id, body.requestId, String(body.text ?? ""))
+        : (run.team || run.pattern === "solo" ? manager.addTeamNote.bind(manager) : manager.addNote.bind(manager))(run.id, String(body.text ?? ""), isAgentId(body.agent) ? body.agent : undefined, typeof body.memberId === "string" ? body.memberId : undefined));
       return send(res, 200, note);
     }
     if (req.method === "POST" && parts[3] === "answer") {
@@ -2670,6 +2782,10 @@ const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("local"
   const runs = manager.list();
   console.log(`code-flow running at http://localhost:${PORT}  (${runs.length} runs loaded from ${CODEFLOW_HOME})`);
   console.log(`  Open http://localhost:${PORT}/?token=${auth.token}  (the first browser to open code-flow signs in without it)`);
+  // The installed launcher opens the owner link only after this listener is ready.
+  // Send it over a private parent/child channel; never persist the session token.
+  if (process.env.CODEFLOW_LAUNCHER === "1" && process.connected)
+    process.send?.({ type: "codeflow-ready", url: `http://localhost:${PORT}/?token=${auth.token}` });
   for (const a of agents) console.log(`  ${a.available ? "✓" : "✗"} ${a.displayName} (${a.binary})`);
   const gitHealth = await checkGit();
   if (!gitHealth.ok) {
@@ -2822,3 +2938,4 @@ async function stop(reason: string, code = 0) {
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   process.on(signal, () => void stop(signal));
 }
+if (process.env.CODEFLOW_LAUNCHER === "1") process.on("disconnect", () => void stop("launcher disconnected"));

@@ -12,17 +12,28 @@ import { ConfirmationHost } from "./confirm-dialog.js";
 import { SharedDashboard, SharedLogin } from "./shared.js";
 import type { SharedPrincipal } from "../src/shared-accounts.js";
 import { configureStreamSharing, type StreamSharing } from "./stream.js";
-import logo from "./brand/vibesboard-mark.png";
+import logo from "./brand/code-flow-mark.svg";
 import { api, localApi, workspaceId, initializeTeamConnection, ensureCollaborationSource, showToast, store, SHORT } from "./lib.js";
-import { agents, composerProject, composerLoading, draftsReady, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
+import { agents, composerProject, composerLoading, draftsReady, openBrowserPage, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
-// The tab icon: the vibesboard mark, like the top bar.
-const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/png", href: logo });
+// Reuse the sidebar's stacked-layers mark for the browser tab.
+const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/svg+xml", href: logo });
 document.head.append(icon);
 
 watchNotificationPermission();
+// Opening an invitation in an already running app must enter the join screen too.
+window.addEventListener("hashchange", () => { if (!workspaceId && location.hash.startsWith("#/join/")) location.reload(); });
 
 const root = document.getElementById("root")!;
+// Keep ordinary agent/document links in the workspace; modified clicks retain browser defaults.
+root.addEventListener("click", event => {
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>(".md a[href]") : null;
+  if (!link || !/^https?:\/\//i.test(link.href) || new URL(link.href).origin === location.origin) return;
+  event.preventDefault();
+  const current = route.value;
+  openBrowserPage(link.href, current.view === "run" || current.view === "review" ? current.id : undefined);
+});
 
 /** Waits between attempts to reach the server; the last one repeats. */
 const RETRY_SECONDS = [1, 2, 5, 10];
@@ -52,6 +63,7 @@ function BootError({ message, seconds, onRetry }: { message: string; seconds: nu
 async function boot() {
   let agentList, patternList;
   try {
+    if (location.hash.startsWith("#/join/") && !workspaceId) { const { JoinProject } = await import("./join-project.js"); render(<JoinProject token={location.hash.slice("#/join/".length)} />, root); return; }
     const identity = await localApi<{ kind: "owner"; streamSharing?: StreamSharing } | { kind: "anonymous" } | SharedPrincipal>("/api/auth/self");
     if (identity.kind === "anonymous") { render(<SharedLogin />, root); return; }
     if (identity.kind === "shared") { render(<><SharedDashboard identity={identity} /><ConfirmationHost /></>, root); return; }

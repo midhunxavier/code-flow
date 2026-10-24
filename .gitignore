@@ -8,3 +8,7 @@ output/playwright/
 output/vscode/
 dist/
 output/performance/
+output/releases/
+output/macos/
+output/windows/
+.playwright-cli/

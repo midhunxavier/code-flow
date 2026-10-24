@@ -58,21 +58,18 @@ before(async () => {
 
 after(async () => { await browser?.close(); server?.kill("SIGTERM"); });
 
-test("Auto is the fresh default, Solo is direct, and Advanced templates survive reload and version edits", { timeout: 45_000 }, async () => {
+test("Agent is the fresh default and Advanced team workflows survive reload and version edits", { timeout: 45_000 }, async () => {
   const context = await browser.newContext();
   const fresh = await context.newPage();
   try {
     await fresh.goto(`${base}/?token=${token}`);
-    const auto = fresh.getByRole("button", { name: "Auto", exact: true });
-    const solo = fresh.getByRole("button", { name: "Solo", exact: true });
-    await auto.waitFor();
-    assert.equal(await auto.getAttribute("aria-pressed"), "true");
+    const team = fresh.getByRole("switch", { name: "Team", exact: true });
+    await team.waitFor();
+    assert.equal(await team.getAttribute("aria-checked"), "false");
     assert.equal(await fresh.getByLabel("Workflow", { exact: true }).isVisible(), false);
-    await solo.click();
     await fresh.reload();
-    assert.equal(await solo.getAttribute("aria-pressed"), "true", "explicit mode survives reload");
-    await auto.click();
-    await fresh.getByRole("button", { name: "Advanced", exact: true }).click();
+    assert.equal(await team.getAttribute("aria-checked"), "false", "Agent remains the default");
+    await selectLegacyTeam(fresh);
     const modelPanel = fresh.getByRole("region", { name: "Automatic worker models" });
     await modelPanel.getByRole("button", { name: "Refresh model catalog" }).waitFor();
     await modelPanel.getByRole("button", { name: "Refresh model catalog" }).click();
@@ -103,7 +100,7 @@ test("Auto is the fresh default, Solo is direct, and Advanced templates survive 
     assert.equal(pinned.template.id, definition.id);
     assert.equal(pinned.template.version, 1);
     assert.equal(pinned.inputs.task, "Implement sample behavior");
-    assert.equal(await auto.getAttribute("aria-pressed"), "true");
+    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "auto-team");
     await fresh.getByRole("button", { name: "Advanced", exact: true }).click();
     await library.getByLabel("Saved templates").selectOption(definition.id);
     await library.getByRole("button", { name: "Edit new version" }).click();
@@ -113,15 +110,39 @@ test("Auto is the fresh default, Solo is direct, and Advanced templates survive 
     const versions = await fetch(`${base}/api/team-templates?history=1`, { headers }).then(r => r.json());
     assert.deepEqual(versions.templates.filter((t: any) => t.id === definition.id).map((t: any) => t.version), [1, 2]);
     assert.equal(await fresh.evaluate(() => JSON.parse(localStorage.getItem("selectedTeamTemplate")!).template.version), 1, "editing the library cannot silently update a selected run template");
-    await solo.click();
+    await fresh.getByRole("button", { name: "Back to Agent conversation", exact: true }).click();
     assert.equal(await fresh.evaluate(() => localStorage.getItem("selectedTeamTemplate")), null);
   } finally { await context.close(); }
 });
 
+test("Resume budget can be extended before continuing saved work", { timeout: 60_000 }, async () => {
+  const started = await fetch(`${base}/api/runs`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ repo, pattern: "pipeline", task: "Implement the sample", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["codex"] }, options: {}, loop: { maxSteps: 1, maxMinutes: 60 } }) });
+  assert.equal(started.status, 201); const { id } = await started.json() as { id: string };
+  await page.goto(`${base}/?token=${token}#/run/${id}`);
+  const budget = page.getByRole("group", { name: "Resume budget", exact: true });
+  await budget.waitFor({ timeout: 30_000 });
+  assert.equal(await budget.getByLabel("Resume maximum calls").inputValue(), "1");
+  await budget.getByLabel("Resume maximum calls").fill("0");
+  const resume = page.getByRole("button", { name: "Extend budget & resume", exact: true });
+  assert.equal(await resume.isDisabled(), true);
+  await budget.getByRole("button", { name: "Use extended budget", exact: true }).click();
+  assert.equal(await budget.getByLabel("Resume maximum calls").inputValue(), "200");
+  assert.equal(await budget.getByLabel("Resume maximum minutes").inputValue(), "240");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await budget.evaluate((element) => element.scrollWidth <= element.clientWidth), true, "budget controls fit on mobile");
+  const response = page.waitForResponse(`${base}/api/runs/${id}/resume`);
+  await resume.click();
+  const resumed = await response; assert.equal(resumed.status(), 200, await resumed.text());
+  assert.deepEqual(resumed.request().postDataJSON(), { budget: { maxSteps: 200, maxInvocations: 200, maxMinutes: 240 } });
+  const saved = await fetch(`${base}/api/runs/${id}`, { headers }).then((result) => result.json()) as Run;
+  assert.equal(saved.loop.maxSteps, 200); assert.equal(saved.loop.maxInvocations, 200); assert.equal(saved.loop.maxMinutes, 240);
+  assert.ok(saved.usage.agentSteps >= 1, "previous usage is retained");
+  await page.setViewportSize({ width: 1280, height: 960 });
+});
+
 test("Auto team approval, addressed question, distinct members, and verified coverage work in the UI", { timeout: 120_000 }, async () => {
   await page.goto(`${base}/?token=${token}`);
-  await page.getByRole("button", { name: "Auto", exact: true }).click();
-  await page.locator(".composer-options > summary").click();
+  await selectLegacyTeam(page);
   const approval = page.getByRole("checkbox", { name: /Let me approve the team and plan/ });
   assert.equal(await approval.isChecked(), true, "Auto plans start with approval enabled");
   await page.getByLabel("Task", { exact: true }).fill("AUTO-USER-QUESTION AUTO-SAME-PROVIDER implement the sample");
@@ -251,8 +272,7 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   await fetch(`${base}/api/runs/${followupId}/cancel`, { method: "POST", headers });
 
   await page.goto(`${base}/?token=${token}`);
-  await page.getByRole("button", { name: "Auto", exact: true }).click();
-  await page.locator(".composer-options > summary").click();
+  await selectLegacyTeam(page);
   await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).uncheck();
   await page.reload();
   await page.locator(".composer-options > summary").click();
@@ -301,3 +321,11 @@ test("changing a running goal stops its team and creates an approved child plan 
   assert.equal(revised!.steps.filter((step) => step.mode === "write").length, 0, "revised work is not dispatched before approval");
   await fetch(`${base}/api/runs/${revisedId}/cancel`, { method: "POST", headers });
 });
+
+async function selectLegacyTeam(page: Page) {
+  const options = page.locator(".composer-options");
+  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
+  const advanced = page.locator(".advanced-controls");
+  if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
+  await page.getByLabel("Workflow", {exact:true}).selectOption("auto-team");
+}

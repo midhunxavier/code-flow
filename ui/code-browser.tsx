@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import { api, enc, fmtSize, post, showToast } from "./lib.js";
+import { api, baseName, enc, fmtSize, post, showToast } from "./lib.js";
+import { Icon } from "./icons.js";
 import { FileTree, addContext } from "./composer.js";
 import { repo, route, sideDraft, setSideChat, openSide } from "./state.js";
 import { loadFileDraft, retainFileDraft } from "./file-drafts.js";
@@ -11,7 +12,9 @@ import type { SymbolHit } from "../src/code-intelligence.js";
 interface Editable { path: string; text: string; hash: string; bytes: number; folder?: string }
 
 /** Key by folder at the call site: drafts and responses never cross repository scopes. */
-export function CodeBrowser({ folder, initialPath, onClose }: { folder: string; initialPath?: string; onClose?: () => void }) {
+export function CodeBrowser({ folder, initialPath, onClose, compact = false, refreshKey = "" }: { folder: string; initialPath?: string; onClose?: () => void; compact?: boolean; refreshKey?: string }) {
+  const [panelMode,setPanelMode] = useState<"files"|"search">("files");
+  const [treeRevision, setTreeRevision] = useState(0);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [paths, setPaths] = useState("");
   const perform = async (action: () => Promise<void>) => {
@@ -66,7 +69,7 @@ export function CodeBrowser({ folder, initialPath, onClose }: { folder: string; 
     if (!file) return;
     try {
       const saved = await post<{ hash: string; bytes: number }>("/api/workspace/file", { repo: folder, path: file.path, text: draft, expectedHash: file.hash });
-      setFile({ ...file, ...saved, text: draft }); setMergeConflict(false); setPreview(false); showToast("File saved");
+      setFile({ ...file, ...saved, text: draft }); setTreeRevision((revision) => revision + 1); setMergeConflict(false); setPreview(false); showToast("File saved");
     } catch (error) { setConflict(true); throw error; }
   });
 
@@ -75,19 +78,46 @@ export function CodeBrowser({ folder, initialPath, onClose }: { folder: string; 
     if (!initialPath) { requestedPath.current = undefined; return; }
     if (!busy && requestedPath.current !== initialPath) { requestedPath.current = initialPath; void loadFile(initialPath); }
   }, [initialPath, busy]);
-  return <section class="code-browser" aria-label="Code browser">
-    <p class="help code-scope">Editing scope: <code>{folder || "Choose a repository"}</code></p>
+  const search = () => perform(async () => {
+    const result = await api<{hits:CodeHit[];scanned:number;truncated:boolean}>(`/api/workspace/search?repo=${enc(folder)}&q=${enc(query)}&mode=${mode}`);
+    setHits(result.hits); setSearchNote(`${result.scanned} files inspected${result.truncated ? " · results limited; narrow your query" : ""}`);
+  });
+  const back = () => { setFile(null); setReadOnly(null); onClose?.(); };
+  return <section class={`code-browser ${compact ? "compact-files" : ""} ${selectedPath ? "file-open" : ""}`} aria-label="Code browser">
+    {compact ? <header class="files-heading">
+      {selectedPath ? <button class="btn ghost small" aria-label="Back to the files" disabled={busy} onClick={back}>← {panelMode === "search" ? "Search" : "Files"}</button> : <div class="segmented small" role="group" aria-label="File explorer view"><button aria-pressed={panelMode === "files"} onClick={() => setPanelMode("files")}>Files</button><button aria-pressed={panelMode === "search"} onClick={() => setPanelMode("search")}><Icon name="search" />Search</button></div>}
+      <span class="files-location" title={folder}>{baseName(folder)}</span>
+      {file && draft !== file.text ? <span class="badge">Unsaved</span> : null}
+    </header> : <p class="help code-scope">Editing scope: <code>{folder || "Choose a repository"}</code></p>}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
-    {busy ? <p role="status">Working…</p> : null}
-    <details open={!selectedPath}><summary>Browse files</summary><FileTree root={folder} onOpen={(path) => { if (!busy) void loadFile(path); }} /></details>
-    {selectedPath ? <div class="settings-actions"><button class="btn small" onClick={() => { setFile(null); setReadOnly(null); onClose?.(); }}>Back to the files</button>{route.value.view === "composer" && folder === repo.value ? <button class="btn small" onClick={() => addContext({ path: selectedPath, type: "file" })}>+ Task</button> : null}<button class="btn small" onClick={() => { sideDraft.value = `About ${selectedPath}: `; setSideChat(null); openSide("chat"); }}>Ask about this file</button></div> : null}
-      {readOnly ? <section aria-label="Read-only file preview"><h3>{readOnly.path}</h3><p class="help">Read-only · {fmtSize(readOnly.size)} · {readOnly.reason}</p>{readOnly.binary ? <p>This is a binary file.</p> : <pre class="file-view" tabIndex={0}>{readOnly.text?.split("\n").slice(0, 5000).join("\n")}</pre>}{readOnly.truncated || (readOnly.text?.split("\n").length ?? 0) > 5000 ? <p class="help">Showing a bounded preview; the rest of the file is omitted.</p> : null}</section> : null}
-      <h2>Search and edit</h2><div class="wb-row"><select class="field" aria-label="Code search mode" value={mode} onChange={(event) => setMode(event.currentTarget.value)}><option value="text">Text</option><option value="symbols">Declarations</option><option value="semantic">JavaScript/TypeScript symbols</option></select><input class="field" aria-label="Search code" disabled={!folder || busy} placeholder={mode === "symbols" ? "Function, class, or variable" : "Search file contents"} value={query} onInput={(event) => setQuery(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === "Enter") void perform(async () => { const result = await api<{ hits: CodeHit[]; scanned: number; truncated: boolean }>(`/api/workspace/search?repo=${enc(folder)}&q=${enc(query)}&mode=${mode}`); setHits(result.hits); setSearchNote(`${result.scanned} files inspected${result.truncated ? " · results limited; narrow your query" : ""}`); }); }} /><button class="btn" disabled={!folder || busy} onClick={() => perform(async () => { const result = await api<{ hits: CodeHit[]; scanned: number; truncated: boolean }>(`/api/workspace/search?repo=${enc(folder)}&q=${enc(query)}&mode=${mode}`); setHits(result.hits); setSearchNote(`${result.scanned} files inspected${result.truncated ? " · results limited" : ""}`); })}>Search</button></div>
-      <p class="help">Declaration search recognizes common forms in several languages. JavaScript/TypeScript symbols and references use an isolated TypeScript language service over bounded saved repository files; external libraries and compiler plugins are excluded.</p>{searchNote ? <p class="help">{searchNote}</p> : null}
-      <div class="wb-hits">{hits.map((hit) => <p key={`${hit.path}:${hit.line}`}><button class="btn ghost wb-path" onClick={() => loadFile(hit.path)}>{hit.path}:{hit.line} {hit.symbol ?? ""}</button><code>{hit.text}</code>{hit.column ? <button class="btn small" disabled={busy} onClick={() => perform(async () => { const result = await api<{hits:SymbolHit[];scanned:number;truncated:boolean;note:string}>(`/api/workspace/references?repo=${enc(folder)}&path=${enc(hit.path)}&line=${hit.line}&column=${hit.column}`); setHits(result.hits); setSearchNote(`${result.hits.length} references in ${result.scanned} saved source files${result.truncated ? " · results limited" : ""}. ${result.note}`); })}>Find references to {hit.symbol ?? `${hit.path}:${hit.line}`}</button> : null}</p>)}</div>
-      <div class="wb-row"><input class="field" aria-label="File to edit" disabled={!folder || busy} placeholder="Repository-relative file path" value={paths} onInput={(event) => setPaths(event.currentTarget.value)} /><button class="btn" disabled={busy || !folder || !paths.trim()} onClick={() => loadFile(paths.trim())}>Open file</button></div>
-      {file ? <><h3>{file.path}</h3><textarea class="field wb-editor" aria-label="File contents" spellcheck={false} disabled={busy} value={draft} onInput={(event) => { const value = event.currentTarget.value; setDraft(value); if (file.folder === folder) setDraftRecovery(retainFileDraft(folder, file, value, mergeConflict)); }} />{mergeNote ? <p class="at-notice" role="status">{mergeNote}</p> : null}<div class="wb-row"><button class="btn" onClick={() => setPreview(!preview)}>{preview ? "Hide comparison" : "Preview changes"}</button><button class="btn primary" disabled={busy || conflict || draft === file.text || mergeConflict && /^(?:<<<<<<< |=======$|>>>>>>> |\|\|\|\|\|\|\| )/m.test(draft)} onClick={save}>Save file</button>{conflict ? <button class="btn" onClick={refreshForMerge}>Load current version and keep draft</button> : null}<button class="btn" onClick={() => downloadArtifact(file.path.split("/").pop() ?? "draft.txt", draft, "text/plain")}>Export draft</button></div>{preview ? <div class="wb-diff"><div><h4>Current file</h4><pre>{file.text}</pre></div><div><h4>Your draft</h4><pre>{draft}</pre></div></div> : null}<p class="help">Saving checks the loaded version and preserves concurrent edits. Files in active run worktrees cannot be edited here. {draftRecovery === "sensitive" ? "This credential filename is excluded from browser draft recovery; export your draft before leaving." : draftRecovery === "full" ? "Browser draft storage is unavailable; export your draft before leaving." : "Unsaved drafts can be recovered in this browser tab for 24 hours."}</p></> : null}
-
-{file ? <ChangeImpact key={file.path} folder={folder} paths={[file.path]} refreshKey={file.hash} /> : null}
-</section>;
+    {busy ? <p class="help files-progress" role="status">Working…</p> : null}
+    {compact ? <div key="explorer" class="files-explorer" hidden={!!selectedPath || panelMode !== "files"}><FileTree key={`${refreshKey}:${treeRevision}`} root={folder} onOpen={path => {if(!busy) void loadFile(path);}} /></div> : <details open={!selectedPath}><summary>Browse files</summary><FileTree key={`${refreshKey}:${treeRevision}`} root={folder} onOpen={path => {if(!busy) void loadFile(path);}} /></details>}
+    {selectedPath ? <div key="actions" class="files-actions settings-actions">
+      {!compact ? <button class="btn small" disabled={busy} onClick={back}>Back to the files</button> : null}
+      {route.value.view === "composer" && folder === repo.value ? <button class="btn small" onClick={() => addContext({path:selectedPath,type:"file"})}>+ Task</button> : null}
+      <button class="btn small ghost" onClick={() => {sideDraft.value=`About ${selectedPath}: `;setSideChat(null);openSide("chat");}}><Icon name="chat" />Ask about this file</button>
+    </div> : null}
+    {readOnly ? <section aria-label="Read-only file preview"><h3 class="file-title" title={readOnly.path}>{readOnly.path}</h3><p class="help">Read-only · {fmtSize(readOnly.size)}</p><details><summary>Preview details</summary><p class="help">{readOnly.reason}</p></details>{readOnly.binary ? <p>This is a binary file.</p> : <pre class="file-view" tabIndex={0}>{readOnly.text?.split("\n").slice(0,5000).join("\n")}</pre>}{readOnly.truncated || (readOnly.text?.split("\n").length ?? 0) > 5000 ? <p class="help">Showing a bounded preview; the rest of the file is omitted.</p> : null}</section> : null}
+    <div key="search" class="files-search-tools" hidden={compact && (!!selectedPath || panelMode !== "search")}>
+      {!compact ? <h2>Search and edit</h2> : null}
+      <form class="wb-row" onSubmit={event => {event.preventDefault();void search();}}>
+        <select class="field" aria-label="Code search mode" value={mode} onChange={event => setMode(event.currentTarget.value)}><option value="text">Text</option><option value="symbols">Declarations</option><option value="semantic">JavaScript/TypeScript symbols</option></select>
+        <input class="field" aria-label="Search code" disabled={!folder || busy} placeholder={mode === "symbols" ? "Function, class, or variable" : "Search file contents"} value={query} onInput={event => setQuery(event.currentTarget.value)} />
+        <button class="btn" disabled={!folder || busy || !query.trim()}>Search</button>
+      </form>
+      {!compact ? <p class="help">Declaration search recognizes common forms in several languages. JavaScript/TypeScript symbols and references use an isolated TypeScript language service over bounded saved repository files; external libraries and compiler plugins are excluded.</p> : null}
+      {searchNote ? <p class="help" role="status">{searchNote}</p> : null}
+      <div class="wb-hits">{hits.map(hit => <p key={`${hit.path}:${hit.line}`}><button class="btn ghost wb-path" onClick={() => loadFile(hit.path)}>{hit.path}:{hit.line} {hit.symbol ?? ""}</button><code>{hit.text}</code>{hit.column ? <button class="btn small" disabled={busy} onClick={() => perform(async () => {const result=await api<{hits:SymbolHit[];scanned:number;truncated:boolean;note:string}>(`/api/workspace/references?repo=${enc(folder)}&path=${enc(hit.path)}&line=${hit.line}&column=${hit.column}`);setHits(result.hits);setSearchNote(`${result.hits.length} references in ${result.scanned} saved source files${result.truncated ? " · results limited" : ""}. ${result.note}`);})}>Find references to {hit.symbol ?? `${hit.path}:${hit.line}`}</button> : null}</p>)}</div>
+      <form class="wb-row" onSubmit={event => {event.preventDefault();if(paths.trim())void loadFile(paths.trim());}}><input class="field" aria-label="File to edit" disabled={!folder || busy} placeholder="Open a file by path…" value={paths} onInput={event => setPaths(event.currentTarget.value)} /><button class="btn" disabled={busy || !folder || !paths.trim()}>Open file</button></form>
+    </div>
+    {file ? <>
+      <h3 class="file-title" title={file.path}>{file.path}</h3>
+      <textarea class="field wb-editor" aria-label="File contents" spellcheck={false} disabled={busy} value={draft} onInput={event => {const value=event.currentTarget.value;setDraft(value);if(file.folder===folder)setDraftRecovery(retainFileDraft(folder,file,value,mergeConflict));}} />
+      {mergeNote ? <p class="at-notice" role="status">{mergeNote}</p> : null}
+      <div class="wb-row file-save-actions"><button class="btn primary" disabled={busy || conflict || draft === file.text || mergeConflict && /^(?:<<<<<<< |=======$|>>>>>>> |\|\|\|\|\|\|\| )/m.test(draft)} onClick={save}>Save file</button><button class="btn" onClick={() => setPreview(!preview)}>{preview ? "Hide comparison" : "Preview changes"}</button>{conflict ? <button class="btn" onClick={refreshForMerge}>Load current version and keep draft</button> : null}{!compact ? <button class="btn" onClick={() => downloadArtifact(file.path.split("/").pop() ?? "draft.txt",draft,"text/plain")}>Export draft</button> : null}</div>
+      {preview ? <div class="wb-diff"><div><h4>Current file</h4><pre>{file.text}</pre></div><div><h4>Your draft</h4><pre>{draft}</pre></div></div> : null}
+      <details class="file-edit-details" open={!compact}><summary>Editing details</summary><p class="help">Saving checks the loaded version and preserves concurrent edits. Files in active run worktrees cannot be edited here. {draftRecovery === "sensitive" ? "This credential filename is excluded from browser draft recovery; export your draft before leaving." : draftRecovery === "full" ? "Browser draft storage is unavailable; export your draft before leaving." : "Unsaved drafts can be recovered in this browser tab for 24 hours."}</p>{compact ? <button class="btn small" onClick={() => downloadArtifact(file.path.split("/").pop() ?? "draft.txt",draft,"text/plain")}>Export draft</button> : null}</details>
+      <ChangeImpact key={file.path} folder={folder} paths={[file.path]} refreshKey={file.hash} />
+    </> : null}
+  </section>;
 }
