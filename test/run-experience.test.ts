@@ -23,6 +23,12 @@ test("pending decisions take precedence and stopped questions require resuming f
   assert.equal(nextRunAction(run({ status: "interrupted", team: { awaitingRequestId: "q" } as RunSummary["team"] }))?.kind, "resume");
   assert.equal(nextRunAction(run({ status: "running" })), null);
 });
+
+test("archived history does not ask for review or imply removed worktrees are available", () => {
+  assert.equal(nextRunAction(run({ archived: true, verdict: "passed" })), null);
+  assert.equal(nextRunAction(run({ archived: true, status: "failed", error: "Command exited 1" })), null);
+  assert.equal(nextRunAction(run({ archived: false, verdict: "passed" }))?.kind, "review");
+});
 test("reviewing another branch cannot borrow the winning branch's verification", () => {
   const checked = run({ verdict: "passed", lastCheck: { ok: true, command: "test", worktree: "build", at: 1 }, worktrees: [{ name: "build", branch: "result", path: "/result" }], findings: { result: { reviewer: "claude", round: 1, verdict: "approve", findings: [], at: 1 } } });
   assert.equal(checksLabel(checked, false, "result"), "Passed");

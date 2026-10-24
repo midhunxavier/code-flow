@@ -112,8 +112,62 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/code-flow.keychain-db" || true
           rm -f "$RUNNER_TEMP/certificate.p12"
 
+  windows:
+    needs: package
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node --test test/desktop/*.test.mjs
+      - run: npm run package:windows -- ${{ matrix.arch }}
+      - run: npm run test:windows
+        env:
+          CODEFLOW_WINDOWS_ARCH: ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-preview-${{ matrix.arch }}
+          path: output/releases/*windows*
+
+  windows-wsl:
+    name: Windows release WSL Linux runtime
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-preview-x64
+          path: output/windows-download
+      - name: Verify and extract the Windows release ZIP
+        working-directory: output/windows-download
+        run: |
+          sha256sum --check *.sha256
+          unzip -q *-windows-x64-unsigned.zip -d ../windows-unpacked
+      - run: npm run test:desktop:wsl
+        env:
+          CODEFLOW_DESKTOP_BUNDLE: ${{ github.workspace }}/output/windows-unpacked/Code Flow/resources/app
+
   draft:
-    needs: [package, macos]
+    needs: [package, macos, windows, windows-wsl]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -133,7 +187,7 @@ jobs:
           test ! -z "$RELEASE_TAG"
           gh release create "$RELEASE_TAG" --target "$(git rev-parse HEAD)" --draft --prerelease --title "Code Flow $RELEASE_TAG" --notes-file output/releases/preview-notes.md
           gh release upload "$RELEASE_TAG" output/releases/*.tgz output/releases/*.sha256 output/releases/*.dmg output/releases/Formula/code-flow.rb
-          # Signed builds also carry the Squirrel update ZIP and architecture-specific feed.
+          # Windows portable ZIPs and signed macOS Squirrel update ZIPs/feeds.
           shopt -s nullglob
           updates=(output/releases/*.zip output/releases/releases-*.json)
           if (( ${#updates[@]} )); then gh release upload "$RELEASE_TAG" "${updates[@]}"; fi

@@ -1,6 +1,6 @@
 {
   "name": "@midhunxavier/code-flow",
-  "version": "0.1.0-preview.3",
+  "version": "0.1.0-preview.5",
   "private": true,
   "description": "Run Claude Code, Codex and Antigravity CLI as a team of coding agents using your own subscriptions.",
   "license": "MIT",
@@ -9,8 +9,12 @@
     "build": "node scripts/build-ui.mjs && node scripts/build-host.mjs",
     "package:npm": "node scripts/package-npm.mjs",
     "package:macos": "node scripts/package-macos.mjs",
+    "package:windows": "node scripts/package-windows.mjs",
     "test:package": "node --test test/release/*.test.mjs",
     "test:macos": "node --test test/macos/*.test.mjs",
+    "test:desktop:docker": "node --test test/docker-desktop/*.test.mjs",
+    "test:desktop:wsl": "node --test test/wsl-desktop/*.test.mjs",
+    "test:windows": "node --test test/windows/*.test.mjs",
     "release:prepare": "node scripts/prepare-preview.mjs",
     "build:worker": "node scripts/build-worker.mjs",
     "start": "npm run build && tsx src/server.ts",
@@ -35,7 +39,8 @@
     "docs:preview": "node scripts/preview-docs.mjs",
     "test:docs": "tsx --test test/docs.test.ts test/docs-help.test.ts",
     "screenshots:docs": "node scripts/screenshot-docs.mjs",
-    "desktop:dev": "node scripts/desktop-dev.mjs"
+    "desktop:dev": "node scripts/desktop-dev.mjs",
+    "desktop:docker": "node scripts/desktop-docker-dev.mjs"
   },
   "engines": {
     "node": ">=22.13.0"

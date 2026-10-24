@@ -28,6 +28,21 @@ test('preview ordering is numeric, stable supersedes preview, and unsupported ve
   assert.throws(() => compareVersions('0.1.0-preview.01', version));
 });
 
+test('Windows updates select only the matching portable ZIP and never offer native installation', async () => {
+  const next = '0.1.0-preview.10', tag_name = `v${next}`, name = `code-flow-${next}-windows-x64-unsigned.zip`;
+  const windows = { tag_name, prerelease: true, assets: [{ name, size: 123, browser_download_url: `https://github.com/midhunxavier/code-flow/releases/download/${tag_name}/${name}` }] };
+  const selected = selectRelease([release(), windows], version, 'x64', true, 'win32');
+  assert.equal(selected.canInstall, false);
+  assert.match(selected.downloadUrl, /windows-x64-unsigned\.zip$/);
+  assert.equal(selectRelease([windows], version, 'arm64', false, 'win32'), undefined);
+  assert.equal(selectRelease([windows], version, 'x64', false), undefined);
+  const autoUpdater = new EventEmitter();
+  const updates = new DesktopUpdates({ version, arch: 'x64', platform: 'win32', enabled: true, nativeUpdates: false, autoUpdater,
+    fetch: async () => ({ ok: true, json: async () => [windows] }) });
+  await updates.check();
+  assert.match(updates.state.message, /extract and open the new copy/);
+});
+
 test('selects the newest compatible release, excluding drafts, older builds and other architectures', () => {
   const selected = selectRelease([release(version), release('0.1.0-preview.1'), release(), release('0.1.0-preview.11', { draft: true }), release('0.1.0-preview.12', { arch: 'x64' })], version, 'arm64', true);
   assert.equal(selected.version, '0.1.0-preview.10');

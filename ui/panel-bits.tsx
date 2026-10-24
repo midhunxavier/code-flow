@@ -29,6 +29,9 @@ export const resultWorktree = (run: RunSummary) => run.worktrees.find((w) => w.p
 
 /** Where a tab starts for a scope: a run's result worktree, else the scope's repository. */
 export function defaultPlace(s: SideScope, places = placesFor(s)): Place | undefined {
+  // Archiving may remove result worktrees. The repository remains usable for
+  // Files and new terminals; retained worktrees can still be chosen explicitly.
+  if (s.run?.archived) return places.find((p) => p.path === s.run!.repo) ?? places[0];
   const result = s.run ? resultWorktree(s.run)?.path : undefined;
   return places.find((p) => p.path === result) ?? places[0];
 }

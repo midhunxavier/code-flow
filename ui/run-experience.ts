@@ -35,6 +35,9 @@ export interface NextAction {
 }
 
 export function nextRunAction(run: RunSummary): NextAction | null {
+  // Archived runs are history. Their worktree records do not imply folders remain,
+  // and a completed/merged result should not be presented as new work to review.
+  if (run.archived) return null;
   const artifact = run.artifacts.find(a => a.stat?.trim() && run.worktrees.some(w => w.branch === a.branch));
   if (run.status === "running") {
     if (run.awaiting) return { kind: "approval", title: "Your plan is ready", detail: "Read the proposed plan and approve it or request changes before work continues.", label: "Review plan" };

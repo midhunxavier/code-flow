@@ -24,7 +24,8 @@ async function inlineFonts(css) {
 const XTERM_CSS = createRequire(import.meta.url).resolve("@xterm/xterm/css/xterm.css");
 
 async function assemble(outputs) {
-  const [template, xtermCss, ownCss] = await Promise.all([readFile("ui/index.html", "utf8"), readFile(XTERM_CSS, "utf8"), readFile("ui/styles.css", "utf8").then(inlineFonts)]);
+  // Windows checkouts use CRLF; the template markers below must match on every build host.
+  const [template, xtermCss, ownCss] = await Promise.all([readFile("ui/index.html", "utf8").then(text => text.replace(/\r\n?/g, "\n")), readFile(XTERM_CSS, "utf8"), readFile("ui/styles.css", "utf8").then(inlineFonts)]);
   const css = (await esbuild.transform(`${xtermCss}\n${ownCss}`, { loader: "css", minify: !watching })).code;
   const cssName = `styles-${createHash("sha256").update(css).digest("hex").slice(0, 8).toUpperCase()}.css`;
   await mkdir("public/assets", { recursive: true });
@@ -39,6 +40,7 @@ async function assemble(outputs) {
   if (!entry) throw new Error("Missing UI entry point");
   const html = template.replace("<style>\n/*__CSS__*/\n</style>", `<link rel="stylesheet" href="/assets/${cssName}" />`)
     .replace('<script type="module">\n//__JS__\n</script>', `<script type="module" src="/assets/${basename(entry.path)}"></script>`);
+  if (html.includes("/*__CSS__*/") || html.includes("//__JS__")) throw new Error("UI template markers were not replaced");
   // Servers and SSH packaging can read while another build is finishing.
   // Publish the complete page at once, never a truncated or partially written bundle.
   const temporary = `public/index.${randomBytes(8).toString("hex")}.tmp`;
