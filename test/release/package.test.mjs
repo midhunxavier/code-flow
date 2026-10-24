@@ -6,7 +6,7 @@ import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,9 +40,12 @@ test("the packed npm install runs outside the checkout, opens its authenticated 
     assert.ok(packed.files.some((file) => file.path === "src/ssh-projects/bootstrap.mjs"));
     assert.ok(packed.files.some((file) => file.path === "src/code-intelligence-worker.mjs"));
     assert.ok(packed.files.some((file) => file.path === "dist/remote-host.json"));
+    assert.ok(packed.files.some((file) => file.path === "dist/training-worker.json"));
     assert.ok(!packed.files.some((file) => /(?:node_modules\/|test\/|\.ts$|\.env$|\.tmp$)/.test(file.path)));
     execFileSync("npm", ["install", "--prefix", install, "--ignore-scripts", "--no-audit", "--no-fund", join(directory, packed.filename)], { cwd: directory, stdio: "pipe" });
     const installed = join(install, "node_modules", pkg.name);
+    const trainingBundle = execFileSync(process.execPath, ["--input-type=module", "-e", "const {loadBundle}=await import(process.argv[1]);const bundle=await loadBundle();console.log(JSON.stringify(Object.keys(bundle.files)))", pathToFileURL(join(installed, "src/ml/transport.js")).href], { cwd: directory, encoding: "utf8" });
+    assert.ok(JSON.parse(trainingBundle).includes("holdout.py"), "installed ML runtime loads its verified worker and recipe bundle outside the checkout");
     const bin = join(install, "node_modules/.bin/codeflow");
     assert.equal(execFileSync(bin, ["--version"], { cwd: directory, encoding: "utf8" }).trim(), pkg.version);
     assert.match(execFileSync(bin, ["--help"], { cwd: directory, encoding: "utf8" }), /--no-open/);

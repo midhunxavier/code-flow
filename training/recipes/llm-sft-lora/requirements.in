@@ -1,0 +1,7 @@
+# Reviewed together for the v1 fixed LoRA recipe; never resolve at job submission.
+torch==2.14.1
+transformers==5.20.2
+trl==1.16.0
+peft==0.21.2
+accelerate==1.15.0
+datasets==5.1.0

@@ -1,4 +1,5 @@
 import "./check-node.mjs";
+import { buildTrainingWorker } from "./build-training-worker.mjs";
 import { build } from "esbuild";
 import { mkdir, readFile, writeFile, rename, readdir } from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
@@ -8,10 +9,11 @@ import { resolve } from "node:path";
 // Keep source-relative helper paths intact; the host needs no npm install or source checkout.
 const root = fileURLToPath(new URL("..", import.meta.url));
 export async function buildHost() {
+  await buildTrainingWorker();
   const result = await build({ absWorkingDir: root, entryPoints: ["src/server.ts"], bundle: true, platform: "node", format: "esm", target: "node22.13", minify: true, write: false, logLevel: "warning",
     banner: { js: 'import { createRequire as __createRequire } from "node:module"; import { fileURLToPath as __fileURLToPath } from "node:url"; import { dirname as __dirnameOf } from "node:path"; const __filename = __fileURLToPath(import.meta.url); const __dirname = __dirnameOf(__filename); const require = __createRequire(import.meta.url);' } });
   const files = { "src/server.mjs": result.outputFiles[0].text };
-  for (const path of ["public/index.html", "package.json", "src/preview-overlay.js", "src/team-tool-client.mjs", "src/agent-tool-client.mjs", "scripts/computer-use.swift", "scripts/pty.py"]) files[path] = await readFile(resolve(root, path), "utf8");
+  for (const path of ["public/index.html", "package.json", "src/preview-overlay.js", "src/team-tool-client.mjs", "src/agent-tool-client.mjs", "scripts/computer-use.swift", "scripts/pty.py", "dist/training-worker.json"]) files[path] = await readFile(resolve(root, path), "utf8");
   for (const name of (await readdir(resolve(root, "public/docs"))).sort()) {
     if (/^[a-z\d-]+\.(?:html|css|js|json|txt)$/.test(name)) files[`public/docs/${name}`] = await readFile(resolve(root, "public/docs", name), "utf8");
   }
