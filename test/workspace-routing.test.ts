@@ -10,7 +10,7 @@ test("same-origin computers keep requests, composer drafts and file recovery sep
   const folder = await mkdtemp(join(tmpdir(), "codeflow-workspace-routing-"));
   const storage = new Map<string, string>(), asked: string[] = [];
   const browserStorage = { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) };
-  Object.assign(globalThis, { window: {}, location: { hostname: "localhost" }, localStorage: browserStorage, sessionStorage: browserStorage,
+  Object.assign(globalThis, { window: {}, location: new URL("http://localhost/"), localStorage: browserStorage, sessionStorage: browserStorage,
     fetch: async (path: string) => { asked.push(path); return new Response("{}"); } });
   try {
     const bundled = await build({ stdin: { contents: 'export { api, localApi, apiPath, store } from "./lib.ts"; export * from "./file-drafts.ts";', resolveDir: fileURLToPath(new URL("../ui", import.meta.url)), loader: "ts" }, bundle: true, write: false, format: "esm", logLevel: "silent" });
