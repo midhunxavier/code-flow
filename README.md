@@ -21,22 +21,22 @@
 Run Code Flow locally and open it in your browser with one command:
 
 ```bash
-npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.5/midhunxavier-code-flow-0.1.0-preview.5.tgz codeflow
+npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.6/midhunxavier-code-flow-0.1.0-preview.6.tgz codeflow
 ```
 
 Requires **Node.js 22.13+**, **Git 2.38+**, and at least one supported CLI: `claude`, `codex` or `agy`, installed and signed in. Works on macOS, Linux and Windows through **WSL2**. Keep the terminal open while you work; press **Ctrl+C** to stop.
 
-Prefer a macOS app? Download **0.1.0-preview.5** for your Mac:
+Prefer a macOS app? Download **0.1.0-preview.6** for your Mac:
 
 | Apple Silicon (M1 or later) | Intel |
 | --- | --- |
-| [Download Apple Silicon DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.5/code-flow-0.1.0-preview.5-macos-arm64-unnotarized.dmg) | [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.5/code-flow-0.1.0-preview.5-macos-x64-unnotarized.dmg) |
+| [Download Apple Silicon DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.6/code-flow-0.1.0-preview.6-macos-arm64-unnotarized.dmg) | [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.6/code-flow-0.1.0-preview.6-macos-x64-unnotarized.dmg) |
 
 Requires **macOS 13+**. Open the DMG, drag **Code Flow** to **Applications**, then open it in its own desktop window. Closing the window keeps agents running; use **Code Flow → Quit** to stop the app. Node is bundled; Git, a signed-in agent CLI and Chrome or Edge for the shared browser are still required. These DMGs are **unnotarized preview builds** and macOS may block them; use npm if blocked.
 
-[Preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.5) · [Installation and first-run guide](docs/getting-started.md)
+[Preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.6) · [Installation and first-run guide](docs/getting-started.md)
 
-Download the **Windows desktop preview using WSL2**: [x64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.5/code-flow-0.1.0-preview.5-windows-x64-unsigned.zip) · [ARM64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.5/code-flow-0.1.0-preview.5-windows-arm64-unsigned.zip). Extract the entire ZIP and open **Code Flow.exe**.
+Download the **Windows desktop preview using WSL2**: [x64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.6/code-flow-0.1.0-preview.6-windows-x64-unsigned.zip) · [ARM64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.6/code-flow-0.1.0-preview.6-windows-arm64-unsigned.zip). Extract the entire ZIP and open **Code Flow.exe**.
 It bundles Node.js and runs the backend in your Linux distribution, reusing the Git and
 agent CLI installations and logins there. Docker Desktop is not required. See the
 [Windows desktop guide](docs/windows-desktop.md) for setup and validation status. The portable ZIP is unsigned.

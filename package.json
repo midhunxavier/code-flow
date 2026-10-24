@@ -1,6 +1,6 @@
 {
   "name": "@midhunxavier/code-flow",
-  "version": "0.1.0-preview.5",
+  "version": "0.1.0-preview.6",
   "private": true,
   "description": "Run Claude Code, Codex and Antigravity CLI as a team of coding agents using your own subscriptions.",
   "license": "MIT",
