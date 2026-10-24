@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { control } from "../src/training-worker/main.js";
-import { residentStatus } from "../src/training-worker/resident.js";
+import { residentRequest, residentStatus } from "../src/training-worker/resident.js";
 import { atomic, identity } from "../src/training-worker/files.js";
 import type { ServingRelease } from "../src/ml/deployment-model.js";
 
@@ -91,4 +91,17 @@ test("a changed resident session cannot be mistaken for the inspected session's 
   const f = await residentFixture();
   await f.finishDuringProbe(f.path, { ...f.record, sessionId: randomUUID(), reason: "Another session" }, 1);
   await assert.rejects(residentStatus(f.root), /Resident generation changed/);
+});
+
+test("inference polling reports a memory-limit receipt when the resident exits during the request", async () => {
+  const f = await residentFixture(), reason = "Serving exceeded its memory limit; resident model released";
+  await f.finishDuringProbe(f.path, { ...f.record, reason }, 1);
+  await assert.rejects(residentRequest(f.root, "resident-poll", { deploymentId: f.record.deploymentId, requestId: randomUUID(), cursor: 0 }), { message: reason });
+});
+
+test("a failed inference poll remains a response failure when the owner is still alive", async () => {
+  const f = await residentFixture();
+  await atomic(f.path, { ...f.record, owner: f.self });
+  await assert.rejects(residentRequest(f.root, "resident-poll", { deploymentId: f.record.deploymentId, requestId: randomUUID(), cursor: 0 }), /Resident worker response failed/);
+  await assert.rejects(residentStatus(f.root), { code: "ENOENT" });
 });

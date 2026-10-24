@@ -128,14 +128,25 @@ export async function residentPrepare(root: string, executable: string, requeste
 export async function residentRequest(root: string, action: string, values: Record<string, any>) {
   const r = await record(root); if (!r || !await alive(r.owner)) { const status = await residentStatus(root); throw new Error(status.reason || "Persistent model is unloaded; warm it before inference"); }
   if (r.deploymentId !== id(values.deploymentId)) throw new Error("Resident deployment identity differs");
+  const call = async (request: Record<string, unknown>) => {
+    try { return await rpc(r, request); }
+    catch (error) {
+      // A request may overlap memory/timeout cleanup after its initial liveness
+      // check. Report the final reason when exit is confirmed; otherwise keep
+      // the outcome uncertain without retrying inference or releasing compute.
+      const latest = await residentStatus(root).catch(() => undefined);
+      if (latest?.sessionId === r.sessionId && latest.state === "unloaded" && latest.reason) throw new Error(latest.reason);
+      throw new Error(`Resident worker response failed: ${(error as Error).message}`);
+    }
+  };
   if (action === "resident-start") {
     if (values.revision !== r.revision || values.expectedSession !== r.sessionId) throw new Error("Resident request revision or session changed; admit a new request");
     const selected = release(values.release);
     if (canonical(selected) !== canonical(r.release) || (await stops(root))[r.deploymentId]! >= r.revision) throw new Error("Resident version differs from the admitted request");
     if (values.stream !== undefined && typeof values.stream !== "boolean") throw new Error("Invalid stream mode");
-    return rpc(r, { action: "start", requestId: id(values.requestId), input: inferenceInput(values.input, r.release), stream: values.stream === true });
+    return call({ action: "start", requestId: id(values.requestId), input: inferenceInput(values.input, r.release), stream: values.stream === true });
   }
-  const result = await rpc(r, { action: action === "resident-poll" ? "poll" : "cancel", requestId: id(values.requestId), ...(action === "resident-poll" ? { cursor: integer(values.cursor, 0, 2048, "Stream cursor") } : {}) });
+  const result = await call({ action: action === "resident-poll" ? "poll" : "cancel", requestId: id(values.requestId), ...(action === "resident-poll" ? { cursor: integer(values.cursor, 0, 2048, "Stream cursor") } : {}) });
   // A cancelled request must finish releasing its session before a new warm can race its socket teardown.
   if (action === "resident-cancel" && result.releasing) await stopRecord(r);
   return result;
