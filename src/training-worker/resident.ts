@@ -42,8 +42,17 @@ async function rpc<T = any>(r: ResidentRecord, request: Record<string, unknown>)
   });
 }
 export async function residentStatus(root: string): Promise<ResidentStatus> {
-  const r = await record(root); if (!r) return { state: "unloaded" };
-  if (await alive(r.owner)) return { ...await rpc<ResidentStatus>(r, { action: "status" }), sessionId: r.sessionId, revision: r.revision, deploymentId: r.deploymentId, releaseId: r.release.id };
+  let r = await record(root); if (!r) return { state: "unloaded" };
+  if (await alive(r.owner)) {
+    try { return { ...await rpc<ResidentStatus>(r, { action: "status" }), sessionId: r.sessionId, revision: r.revision, deploymentId: r.deploymentId, releaseId: r.release.id }; }
+    catch (error) { if (await alive(r.owner)) throw error; }
+  }
+  // Socket teardown and the final receipt precede supervisor exit. Only after
+  // confirming exit may we use that receipt; a live but unreachable owner still
+  // reserves compute. Check the fresh child identity before reporting unloaded.
+  const latest = await record(root);
+  if (!latest || latest.sessionId !== r.sessionId || canonical(latest.owner) !== canonical(r.owner)) throw new Error("Resident generation changed during inspection; check its status again");
+  r = latest;
   if (await orphaned(r)) throw new Error("An orphaned serving process still reserves this worker; stop its deployment to recover");
   return { state: "unloaded", sessionId: r.sessionId, revision: r.revision, deploymentId: r.deploymentId, releaseId: r.release.id, ...(r.reason ? { reason: r.reason } : {}) };
 }
@@ -98,7 +107,12 @@ export async function residentPrepare(root: string, executable: string, requeste
   try { await atomic(recordPath(root), receipt); child.stdin!.end(JSON.stringify({ ...receipt, python })); child.unref();
     const deadline = Date.now() + r.config.timeoutSeconds * 1000 + 7000;
     while (Date.now() < deadline) {
-      const latest = await residentStatus(root).catch(async error => { if (!await alive(processIdentity)) throw error; return { state: "loading" } as ResidentStatus; });
+      const latest = await residentStatus(root).catch(async () => {
+        // It may exit between residentStatus's last probe and this one. Resolve
+        // the final receipt instead of surfacing an obsolete socket error.
+        if (!await alive(processIdentity)) return residentStatus(root);
+        return { state: "loading" } as ResidentStatus;
+      });
       if (latest.state === "ready") return latest;
       if (latest.state === "unloaded") throw new Error(latest.reason || "Persistent model failed to load");
       await pause(150);

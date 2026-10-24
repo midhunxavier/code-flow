@@ -51,15 +51,19 @@ async function probe(root: string, enrollment: Enrollment, requested: unknown, s
 }
 async function state(root: string, jobId: unknown): Promise<JobStatus> {
   const directory = jobDir(root, jobId), accepted = intent(await json(join(directory, "intent.json")));
-  const status = await json<JobStatus>(join(directory, "status.json"), true) ?? { id: accepted.id, state: "submitted", updatedAt: accepted.createdAt };
-  if (accepted.recipe === LLM_RECIPE && accepted.kind === "training") {
-    const progress = await json<JobStatus["progress"]>(join(directory, "progress.json"), true);
-    if (progress) { jobStatus({ ...status, progress }); status.progress = progress; }
+  for (let attempt = 0; ; attempt++) {
+    const status = await json<JobStatus>(join(directory, "status.json"), true) ?? { id: accepted.id, state: "submitted", updatedAt: accepted.createdAt };
+    if (accepted.recipe === LLM_RECIPE && accepted.kind === "training") {
+      const progress = await json<JobStatus["progress"]>(join(directory, "progress.json"), true);
+      if (progress) { jobStatus({ ...status, progress }); status.progress = progress; }
+    }
+    if (terminal(status.state)) return status;
+    const supervisor = status.runner ?? await json<ProcessIdentity>(join(directory, "supervisor.json"), true);
+    if (await alive(supervisor)) return await json(join(directory, "cancel.json"), true) ? { ...status, state: "cancel_requested" } : status;
+    // Exit can race the first read. The runner writes its final receipt before
+    // exiting; read it again after the identity check, without launching a retry.
+    if (attempt) return { ...status, state: "unknown", error: "Supervisor identity cannot be confirmed. Inspect the worker; this job will not be retried automatically." };
   }
-  if (terminal(status.state)) return status;
-  if (await alive(status.runner)) return await json(join(directory, "cancel.json"), true) ? { ...status, state: "cancel_requested" } : status;
-  // A receipt without a confirmed supervisor never authorizes a replacement process.
-  return { ...status, state: "unknown", error: "Supervisor identity cannot be confirmed. Inspect the worker; this job will not be retried automatically." };
 }
 async function snapshotHash(path: string) {
   const digest = createHash("sha256"); for await (const chunk of createReadStream(path)) digest.update(chunk); return digest.digest("hex");
@@ -218,6 +222,10 @@ export async function control(directory: string, raw: unknown): Promise<unknown>
       const child = spawn(process.execPath, [executable, "run", root, accepted.id], { detached: true, stdio: "ignore", env: { PATH: process.env.PATH, HOME: process.env.HOME } });
       await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
       child.unref();
+      // A separate launch receipt bridges startup without overwriting a running
+      // or completed status that the detached supervisor has already published.
+      const supervisor = await identity(child.pid!);
+      if (supervisor) await atomic(join(dir, "supervisor.json"), supervisor);
       return { id: accepted.id, state: "submitted", updatedAt: Date.now() };
     }
     if (request.action === "inspect") return state(root, request.id);
