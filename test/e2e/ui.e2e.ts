@@ -1118,8 +1118,8 @@ test("Agent setup is inline and completed replies keep automatic workflow contro
     assert.match(await box.getByRole("button", { name: "Model", exact: true }).innerText(), /Haiku/);
     await box.getByRole("switch", { name: "AI team", exact: true }).click();
     await box.getByRole("button", { name: "Advanced", exact: true }).click();
-    const setup = fresh.getByRole("dialog", {name:"Team setup"});
-    await setup.getByRole("switch", {name:"Enable Team"}).check();
+    const setup = fresh.getByRole("dialog", {name:"AI team setup"});
+    await setup.getByRole("switch", {name:"Enable AI team"}).check();
     await setup.getByRole("button", {name:"Apply team settings"}).click();
     assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "solo", "Team configuration retains the Agent conversation");
     await fresh.reload();
