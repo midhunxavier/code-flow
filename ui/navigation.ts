@@ -1,7 +1,7 @@
 import { settingsSection, type SettingsSection } from "./settings-sections.js";
 export type SideTab = "chat" | "changes" | "files" | "terminal" | "browser" | "notes";
 export const SIDE_TABS: SideTab[] = ["chat", "changes", "files", "terminal", "browser", "notes"];
-export const PROJECT_SECTIONS = ["runs", "repositories", "board", "people", "automation", "settings"] as const;
+export const PROJECT_SECTIONS = ["runs", "repositories", "board", "people", "automation", "ml", "settings"] as const;
 export type ProjectSection = typeof PROJECT_SECTIONS[number];
 export const REPOSITORY_TOOLS = ["verification", "code", "context", "history", "services", "coordination", "filtered-tasks"] as const;
 export type RepositoryTool = typeof REPOSITORY_TOOLS[number];

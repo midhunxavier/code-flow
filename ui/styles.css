@@ -3325,3 +3325,36 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
   .topbar .host-switcher { flex: 0 1 auto; min-width: 0; }
   .topbar .host-switcher > .icon-btn { max-width: min(38vw, 100%); }
 }
+
+/* Local and SSH model-training preview. */
+.ml-workspace { display: grid; gap: 18px; }
+.ml-workspace .pp-card { padding: 20px; min-width: 0; overflow-wrap: anywhere; }
+.ml-heading, .ml-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.ml-actions { justify-content: flex-start; margin: 14px 0; }
+.ml-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 14px 0; }
+.ml-field { display: grid; gap: 6px; margin: 14px 0; font-weight: 600; min-width: 0; }
+.ml-grid label { display: grid; gap: 6px; font-weight: 600; }
+.ml-grid input, .ml-grid select, .ml-actions input, .ml-field input, .ml-field select { width: 100%; min-width: 0; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; color: inherit; background: var(--bg); font: inherit; }
+.ml-actions label { min-width: 0; flex: 1 1 220px; }
+.ml-check { display: flex; align-items: flex-start; gap: 9px; margin: 14px 0; }
+.ml-check input { margin-top: 4px; flex-shrink: 0; }
+.ml-capability, .ml-server, .ml-detail { border-top: 1px solid var(--border); margin-top: 18px; padding-top: 16px; overflow-wrap: anywhere; }
+.ml-preview, .ml-recipe { font: 12px var(--font-sans, sans-serif); padding: 4px 8px; border: 1px solid var(--border); border-radius: 12px; vertical-align: middle; }
+.ml-experiments { display: grid; gap: 8px; }
+.ml-experiment { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.ml-experiment.selected { outline: 2px solid var(--accent); }
+.ml-select { display: grid; gap: 4px; text-align: left; flex: 1; border: 0; background: none; color: inherit; cursor: pointer; font: inherit; }
+.ml-select span { font-size: 12px; }
+.ml-detail table { width: 100%; border-collapse: collapse; text-align: left; }
+.ml-detail th, .ml-detail td { padding: 10px; border-bottom: 1px solid var(--border); }
+.ml-detail caption { text-align: left; font-weight: 600; padding: 10px; }
+.ml-log { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.ml-workspace details { margin-top: 14px; }
+@media (max-width: 640px) { .ml-select { flex-basis: 100%; } .ml-workspace .pp-card { padding: 16px; } .ml-grid { grid-template-columns: 1fr; } .ml-heading { align-items: flex-start; } }
+
+.ml-table-scroll { overflow-x: auto; }
+.ml-registry-table { min-width: 760px; overflow-wrap: normal; }
+.ml-promotion-table { min-width: 880px; table-layout: fixed; }
+.ml-promotion-table th, .ml-promotion-table td { vertical-align: top; }
+
+.ml-inference-input { width: 100%; min-width: 0; resize: vertical; padding: 10px; border: 1px solid var(--border); border-radius: 8px; color: inherit; background: var(--bg); font: 13px/1.5 var(--mono); }

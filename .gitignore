@@ -1,4 +1,6 @@
 node_modules/
+__pycache__/
+.playwright-cli/
 *.log
 .codeflow-dev/
 public/

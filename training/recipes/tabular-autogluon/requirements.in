@@ -1,0 +1,2 @@
+autogluon.tabular==1.6.1
+pyarrow==23.0.1

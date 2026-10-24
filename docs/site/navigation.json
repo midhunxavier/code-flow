@@ -27,7 +27,8 @@
     "architecture-explorer",
     "memory-storage",
     "memory-claims",
-    "coordinated-changes"
+    "coordinated-changes",
+    "model-training"
   ],
   "Connect and collaborate": [
     "team-collaboration",
@@ -66,6 +67,7 @@
     "worker-permission-verification",
     "dynamic-teams-plan-review-0",
     "project-teams-implementation-plan",
+    "ml-training-implementation-plan",
     "performance-results"
   ]
 }

@@ -38,7 +38,7 @@ test("persisted restrictions defer plugin initialization, CLI probes and prompt 
       : `require('node:fs').appendFileSync(${JSON.stringify(providerMarker)},JSON.stringify({binary:${JSON.stringify(binary)},args:process.argv.slice(2)})+'\\n');const child=require('node:child_process').spawnSync(${JSON.stringify(process.execPath)},[${JSON.stringify(join(root, "test/fake-agent.mjs"))},${JSON.stringify(binary)},...process.argv.slice(2)],{stdio:'inherit'});process.exit(child.status??1);`;
     writeFileSync(join(probeBin, binary), `#!${process.execPath}\n${script}\n`); chmodSync(join(probeBin, binary), 0o700);
   }
-  const server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, CODEFLOW_EXTENSIONS_FILE: "", CODEFLOW_EXTENSIONS_JSON: extensions, CODEFLOW_PYTHON: python, PATH: `${probeBin}:${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: process.env.E2E_DEBUG ? "inherit" : "ignore" });
+  const server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, CODEFLOW_EXTENSIONS_FILE: "", CODEFLOW_EXTENSIONS_JSON: extensions, CODEFLOW_PYTHON: python, CODEFLOW_ML_ENABLED: "true", CODEFLOW_ML_PYTHON: python, PATH: `${probeBin}:${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: process.env.E2E_DEBUG ? "inherit" : "ignore" });
   try {
     let healthy = false; for (let attempt = 0; attempt < 150; attempt++) { healthy = await fetch(`${base}/api/health`, { headers }).then((response) => response.ok, () => false); if (healthy) break; await new Promise((resolve) => setTimeout(resolve, 100)); } assert.equal(healthy, true, "restricted startup remains recoverable by the owner");
     assert.equal((await fetch(`${base}/api/health`, { headers }).then((response) => response.json())).interactiveTerminal, false); assert.equal(existsSync(pythonMarker), false); assert.equal(existsSync(pluginMarker), false, "a valid pinned bundle is not imported before the saved policy is checked");
@@ -48,6 +48,13 @@ test("persisted restrictions defer plugin initialization, CLI probes and prompt 
       assert.equal(response.status, 409, `${prefix} ${mode} ${"repo" in target ? target.project : "omitted repo"}: ${await response.text()}`);
       assert.equal(existsSync(providerMarker), false, "prompt improvement is refused before provider availability or a turn, even for an unrestricted or omitted repo");
     }
+    assert.equal((await fetch(`${base}/api/ml?project=unrestricted`, { headers })).status, 403);
+    for (const path of ["targets/local/probe", "targets/local/setup", "targets/local/upgrade", "datasets", "models", "experiments", "cycles", "schedules", "schedules/missing/check", "schedules/missing/resume", "registry", "registry/missing/promote", "registry/missing/rollback", "versions/missing/restore", "deployments", "deployments/missing/switch", "deployments/missing/rollback", "deployments/missing/stop", "deployments/missing/resume", "deployments/missing/predict", "deployments/missing/stream", "deployments/missing/warm", "monitors", "monitors/missing/pause", "monitors/missing/resume", "monitors/missing/check", "monitors/missing/reference", "promotions", "promotions/missing/pause", "promotions/missing/resume", "promotions/missing/check", "promotions/missing/approve", "promotions/missing/reject", "promotions/missing/rollback"]) {
+      const response = await fetch(`${base}/api/ml/${path}`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ project: "unrestricted", repo: unrestrictedRepo }) });
+      assert.equal(response.status, 409, `ML ${path} cannot execute while host authority is restricted`);
+      assert.equal(existsSync(pythonMarker), false);
+    }
+    for (const path of ["registry/missing", "versions/missing/export", "deployments/missing/runtime"]) assert.equal((await fetch(`${base}/api/ml/${path}`, { headers })).status, 403);
     assert.equal((await fetch(`${base}/api/project-teams`, { headers })).status, 403);
     assert.equal((await fetch(`${base}/api/project-teams/any/cycle`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ operationId: "blocked" }) })).status, 409);
     assert.equal((await fetch(`${base}/r/${phoneToken}`)).status, 403); assert.equal((await fetch(`${base}/api/runs/restricted-result`, { headers })).status, 403);
@@ -70,6 +77,7 @@ test("persisted restrictions defer plugin initialization, CLI probes and prompt 
     assert.equal((await fetch(`${base}/api/docs-help`, { headers })).status, 403);
     assert.equal((await fetch(`${base}/api/docs-help`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ agent: "claude", question: "How do I start?" }) })).status, 409);
     assert.equal((await fetch(`${base}/api/docs-help`, { headers: scopedHeaders })).status, 403);
+    assert.equal((await fetch(`${base}/api/ml?project=restricted`, { headers: scopedHeaders })).status, 403);
     assert.equal(existsSync(pluginMarker), false); assert.equal(existsSync(pythonMarker), false); assert.equal(existsSync(providerMarker), false);
   } finally { server.kill("SIGTERM"); await new Promise<void>((resolve) => { if (server.exitCode !== null) return resolve(); server.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }); rmSync(directory, { recursive: true, force: true }); }
 });

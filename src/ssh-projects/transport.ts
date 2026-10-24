@@ -33,7 +33,8 @@ export class SshTransport {
     this.children.add(child); child.once("close", () => this.children.delete(child));
     return child;
   }
-  async bootstrap(code: string, payload: string, teamServer = false): Promise<string> {
+  async bootstrap(code: string, payload: string, teamServer = false, maxOutputBytes = 64 * 1024): Promise<string> {
+    if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1 || maxOutputBytes > 1024 * 1024) throw new Error("Invalid SSH response limit");
     // Only fixed application code is executed; the host is a validated separate argv value.
     const command = `exec sh -c ${quote(`exec "\${SHELL:-/bin/sh}" -lc ${quote(`exec node --input-type=module -e ${quote(code)}${teamServer ? " -- --team-server" : ""}`)}`)}`;
     const child = this.start([], command);
@@ -41,7 +42,7 @@ export class SshTransport {
       let stdout = "", stderr = "", settled = false;
       const finish = (error?: Error) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(stdout); };
       const timer = setTimeout(() => { child.kill(); finish(new Error("SSH setup timed out. Check the server's SSH login, Node.js and ~/.codeflow/ssh-host/host.log.")); }, 120_000);
-      child.stdout!.on("data", (data) => { stdout += data; if (stdout.length > 64 * 1024) { child.kill(); finish(new Error("SSH setup produced too much output")); } });
+      child.stdout!.on("data", (data) => { stdout += data; if (stdout.length > maxOutputBytes) { child.kill(); finish(new Error("SSH setup produced too much output")); } });
       child.stderr!.on("data", (data) => { stderr = (stderr + data).slice(-8192); });
       child.once("error", finish);
       child.stdin!.on("error", () => undefined);
