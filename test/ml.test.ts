@@ -209,11 +209,40 @@ test("cancellation confirms descendant termination and remains available after c
     const childFile = join(c.home, "ml/worker/jobs", job.id, "descendant");
     for (let i = 0; i < 100; i++) { if (await readFile(childFile).then(() => true, () => false)) break; await new Promise(resolve => setTimeout(resolve, 30)); }
     const descendant = Number(await readFile(childFile, "utf8"));
-    c.disable(); await assert.rejects(c.service.startJob(c.request()), /Enable the local training preview/);
+    c.disable(); await assert.rejects(c.service.startJob(c.request()), /Enable model training in Settings/);
     await c.service.cancel(job.id); const done = await until(c.service, job);
     assert.equal(done.status.state, "cancelled"); assert.throws(() => process.kill(descendant, 0));
     assert.equal((await c.service.cancel(job.id)).status.state, "cancelled");
   } finally { await c.service.cancel(job.id); await until(c.service, job); await c.service.close(); }
+});
+
+test("saved disable fences queued admission while retaining history and cancellation after restart", { timeout: 20000 }, async () => {
+  const c = await context(); await c.service.close();
+  const options = { home: c.home, bundlePath, authorize: async (_project: string, repo: string) => ({ repo, commit: "a".repeat(40) }) };
+  let service = new MlService(options); await service.load();
+  let job: Experiment | undefined;
+  try {
+    await service.setSettings({ enabled: true, revision: 0 });
+    const prepared = await service.startJob(c.request(), false, true);
+    const disable = service.setSettings({ enabled: false, revision: 1 });
+    const admission = service.submitRecord(prepared);
+    await assert.rejects(admission, /Enable model training in Settings/); await disable;
+    assert.equal(service.store.read().experiments.length, 0);
+    assert.equal(await readFile(join(c.home, "ml/worker/jobs", prepared.id, "intent.json")).then(() => true, () => false), false);
+    await service.setSettings({ enabled: true, revision: 2 });
+    job = await service.startJob(c.request(101));
+    await until(service, job, e => e.status.state === "training");
+    await service.setSettings({ enabled: false, revision: 3 });
+    await service.close(); service = new MlService(options); await service.load();
+    assert.deepEqual(service.settings(), { enabled: false, revision: 4 });
+    assert.equal(service.summary("p").configured, true);
+    assert.equal(service.overview("p").datasets.length, 1);
+    await assert.rejects(service.startJob(c.request()), /Enable model training in Settings/);
+    await service.cancel(job.id); assert.equal((await until(service, job)).status.state, "cancelled");
+  } finally {
+    if (job) { await service.cancel(job.id); await until(service, job); }
+    await service.close();
+  }
 });
 
 test("worker fences a missing receipt before reporting failure, so a delayed submit cannot launch", { timeout: 15000 }, async () => {

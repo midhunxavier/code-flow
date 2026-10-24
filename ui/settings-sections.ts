@@ -1,7 +1,7 @@
 import type { IconName } from "./icons.js";
 
 export const SETTINGS_SECTIONS = [
-  { id: "general", label: "General", icon: "sliders", group: "Preferences", description: "Make code-flow feel at home.", keywords: "appearance theme light dark system sidebar group shortcuts keyboard desktop app updates version restart" },
+  { id: "general", label: "General", icon: "sliders", group: "Preferences", description: "Make code-flow feel at home.", keywords: "appearance theme light dark system sidebar group shortcuts keyboard desktop app updates version restart ml machine learning model training fine tuning llm gpu enable disable" },
   { id: "agents", label: "Agents & models", icon: "sparkle", group: "Preferences", description: "Connect coding agents and choose their models and effort.", keywords: "claude codex antigravity opencode kilo cline acp cli connection providers login health quota prompt improvement improve rewrite quick repo" },
   { id: "runs", label: "Run defaults", icon: "layers", group: "Preferences", description: "Set the starting point for your next run.", keywords: "workflow permissions trust sandbox limits minutes steps tokens cost approval" },
   { id: "notifications", label: "Notifications", icon: "bell", group: "Preferences", description: "Decide how code-flow gets your attention.", keywords: "desktop browser alerts slack webhook delivery" },

@@ -12,6 +12,10 @@ export async function handleMlApi(req: IncomingMessage, res: ServerResponse, url
   const [, resource, id, action] = parts;
   try {
     if (parts.length > 4) throw new HttpError(404, "Unknown ML operation");
+    if (resource === "settings" && parts.length === 2) {
+      if (req.method === "GET") { send(res, 200, service.settings()); return true; }
+      if (req.method === "POST") { send(res, 200, await service.setSettings(await readJson(req, 1024))); return true; }
+    }
     if (resource === "capabilities" && parts.length === 2 && req.method === "GET") { send(res, 200, { enabled: service.enabled(), recipes: ["tabular-autogluon-v1", "llm-sft-lora-v1"], training: ["cpu", "mps", "cuda"], serving: ["on-demand", "persistent"], streaming: true, monitoring: true, promotion: true, commonHoldout: true, cloud: false }); return true; }
     if (resource === "summary" && parts.length === 2 && req.method === "GET") { send(res, 200, service.summary(string(url.searchParams.get("project"), "project"))); return true; }
     if (!resource && req.method === "GET") { send(res, 200, service.overview(string(url.searchParams.get("project"), "project"))); return true; }

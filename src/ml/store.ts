@@ -15,6 +15,7 @@ import { dataset, digest, id, intent, jobStatus, integer, string, MlError, type 
 export interface SnapshotRecord { id: string; project: string; repo: string; target: Target; dataset: Dataset; purpose?: "holdout" }
 export interface MlState {
   version: 1; revision: number; controllerId: string; targets: Target[]; datasets: SnapshotRecord[];
+  activation?: { enabled: boolean; revision: number };
   experiments: Experiment[]; cycles: Cycle[]; schedules: TrainingSchedule[]; registry: RegisteredModel[]; deployments: Deployment[]; monitors: ModelMonitor[]; promotions: PromotionPolicy[]; defaults: Record<string, string>;
 }
 export class MlStore {
@@ -37,6 +38,7 @@ export class MlStore {
     if (Buffer.byteLength(JSON.stringify(s)) > 8 * 1024 * 1024) throw new MlError("ML history reached its 8 MiB storage limit; no additional records were saved", 409);
     if (s.version !== 1 || !Number.isSafeInteger(s.revision) || s.revision < 0 || !Array.isArray(s.targets) || s.targets.length > 32 || !Array.isArray(s.experiments) || s.experiments.length > 200 || !Array.isArray(s.datasets) || s.datasets.length > 200 || !s.defaults || typeof s.defaults !== "object") throw new MlError("Invalid ML storage; repair it before starting work", 503);
     id(s.controllerId);
+    if (s.activation !== undefined && (!s.activation || typeof s.activation.enabled !== "boolean" || !Number.isSafeInteger(s.activation.revision) || s.activation.revision < 1)) throw new MlError("Invalid saved ML activation setting", 503);
     if (!Array.isArray(s.cycles) || s.cycles.length > 100 || new Set(s.cycles.map(c => c.id)).size !== s.cycles.length) throw new MlError("Invalid search history", 503);
     const immutableSpec = (spec: any) => { const { forest, learningRate, rank, maxSteps, accumulation, ...fixed } = spec; return canonical(fixed); };
     for (const c of s.cycles) {

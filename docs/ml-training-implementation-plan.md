@@ -8,7 +8,7 @@ Build this as an **ML workspace inside Code Flow**, backed by a separately runni
 
 ## Implementation status — training, fine-tuning, improvement, scheduling, registry, inference, monitoring, promotion and common evaluation
 
-The opt-in implementation now provides local tabular training, a standalone SSH worker adapter, computer discovery, private Python environment setup, immutable dataset preparation, random/group/time splits, held-out baseline comparison, logs, cancellation and verified model export in **Project → More → ML**. See [Model training](model-training.md) for current setup and limits.
+The opt-in implementation now provides local tabular training, a standalone SSH worker adapter, computer discovery, private Python environment setup, immutable dataset preparation, random/group/time splits, held-out baseline comparison, logs, cancellation and verified model export in **Project → ML**. **Settings → General → Model training** now provides a persistent enable/disable button, off by default, scoped to the workspace computer. New projects hide ML until enabled; existing ML history remains accessible while disabled. A saved choice overrides the legacy environment flag. See [Model training](model-training.md) for current setup and limits.
 
 The training worker and fixed recipes are included in both remote-host and npm release packages, so installed backends can resolve and verify them outside a source checkout. Python environments and GPU drivers remain prerequisites on the selected training computer.
 

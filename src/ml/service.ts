@@ -41,9 +41,20 @@ export class MlService {
   start() { this.timer = setInterval(() => { void this.reconcile().catch(() => {}); }, 5000); this.timer.unref(); }
   async close() { clearInterval(this.timer); await this.promotions.close(); await this.monitors.close(); await this.schedules.close(); await this.cycles.close(); await this.deployments.close(); await this.registry.close(); await this.flight; await Promise.allSettled([...this.exports.values()]); await this.transport.close(); }
   active() { return !this.ready || this.promotions.active() || this.monitors.active() || this.deployments.active() || this.registry.active() || this.exports.size > 0 || this.schedules.active() || this.store.read().cycles.some(c => !cycleTerminal(c)) || this.store.read().experiments.some(e => !terminal(e.status.state)); }
-  enabled() { return (this.options.enabled ?? mlEnabled)(); }
+  enabled() { return this.options.enabled?.() ?? this.store.read().activation?.enabled ?? mlEnabled(); }
+  settings() { return { enabled: this.enabled(), revision: this.store.read().activation?.revision ?? 0 }; }
+  async setSettings(raw: unknown) {
+    const v = object(raw, ["enabled", "revision"]);
+    if (typeof v.enabled !== "boolean") throw new MlError("Choose whether model training is enabled");
+    const revision = integer(v.revision, 0, Number.MAX_SAFE_INTEGER - 1, "Settings revision");
+    return this.store.change(s => {
+      if ((s.activation?.revision ?? 0) !== revision) throw new MlError("Model training settings changed elsewhere. Review the current setting and try again.", 409);
+      s.activation = { enabled: v.enabled, revision: revision + 1 };
+      return s.activation;
+    });
+  }
   authorize(project: string, repo: string) { return this.options.authorize(project, repo); }
-  private creation() { if (!this.enabled()) throw new MlError("Enable the local training preview with CODEFLOW_ML_ENABLED=true", 409); }
+  private creation() { if (!this.enabled()) throw new MlError("Enable model training in Settings → General before starting new ML work", 409); }
   assertTarget(target: Target, state = this.store.read(), ownsServing = false) {
     if (!ownsServing && this.deployments.busy(target.workerId)) throw new MlError("Inference is using this computer; retry when it finishes", 409);
     if (this.upgrading.has(target.id) || state.targets.find(t => t.id === target.id)?.revision !== target.revision) throw new MlError("Training computer changed or is being updated", 409);
@@ -205,6 +216,7 @@ export class MlService {
     try { admitted = await this.store.change(s => {
       const same = s.experiments.find(e => e.operationId === operationId);
       if (same) { if (same.requestHash !== requestHash) throw new MlError("Operation inputs changed", 409); return same; }
+      this.creation();
       if (this.upgrading.has(target.id) || s.targets.find(t => t.id === target.id)?.revision !== target.revision) throw new MlError("Computer settings changed; retry after the update", 409);
       const holdoutOwner = accepted.kind === "holdout" ? s.promotions.find(p => p.evaluations?.some(a => a.jobId === jobId && a.state === "pending")) : undefined;
       if (accepted.kind === "holdout" && !holdoutOwner) throw new MlError("Holdout admission requires its saved policy", 409);
