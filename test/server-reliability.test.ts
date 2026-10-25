@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo, type Server } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -424,6 +424,33 @@ test("Run app on a locked-down run asks first: it would run an outsider's code o
   const allowed = await api(a, serve, { command: "sleep 30", allowUntrusted: true });
   assert.equal(allowed.status, 200, JSON.stringify(allowed.body));
   await fetch(`${a.base}${serve}`, { method: "DELETE", headers: bearer });
+});
+
+test("preview retains the worktree's configured port when the discovered command is submitted explicitly", async () => {
+  const started = await api(a, "/api/runs", { pattern: "solo", task: "Prepare a preview", repo, roles: { agent: ["claude"] }, loop: { check: "true", prove: false } });
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  const run = await finishedRun(a, started.body.id), tree = run.worktrees[0];
+  assert.equal(run.app, undefined, "the configuration is added after this run started");
+  const port = await freePort(), command = "node preview.cjs";
+  mkdirSync(join(tree.path, ".codeflow"), { recursive: true });
+  writeFileSync(join(tree.path, ".codeflow/config.json"), JSON.stringify({ run: { command, port } }));
+  writeFileSync(join(tree.path, "preview.cjs"), `require('http').createServer((req, res) => res.end('configured preview')).listen(${port}, '127.0.0.1');`);
+  const serve = `/api/runs/${run.id}/worktrees/${encodeURIComponent(tree.name)}/serve`;
+  const configured = await api(a, serve + "/config");
+  assert.equal(configured.status, 200);
+  assert.deepEqual(configured.body, { command, port });
+  try {
+    const launched = await api(a, serve, { command: configured.body.command });
+    assert.equal(launched.status, 200, JSON.stringify(launched.body));
+    assert.equal(launched.body.port, port);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const ready = await api(a, serve + "/ready");
+      if (ready.body.ready) break;
+      assert.ok(attempt < 99, "the fixed-port app becomes ready");
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.equal(await (await fetch(launched.body.url)).text(), "configured preview");
+  } finally { await fetch(`${a.base}${serve}`, { method: "DELETE", headers: bearer }); }
 });
 
 test("the network listener refuses this machine's own programs; a port that's taken shows instead of a QR code", async () => {
