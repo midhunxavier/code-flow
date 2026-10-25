@@ -376,13 +376,19 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   ];
   writeFileSync(ghState, JSON.stringify(s));
 
-  const project = (await fetch(`${BASE}/api/projects`, { headers: bearer }).then(response => response.json())).find((project: { repos: string[] }) => project.repos.includes(realpathSync(repo)));
+  const project = (await fetch(`${BASE}/api/projects`, { headers: bearer }).then(response => response.json())).find((project: { repos: string[] }) => project.repos.includes(realpathSync(repo)))
+    ?? await fetch(`${BASE}/api/projects`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Sweep fixture", repos: [repo] }) }).then(response => response.json());
   await page.goto(`${BASE}/#/project/${project.id}/automation/backlog`);
   await page.getByRole("button", { name: /Fix open issues/ }).click();
   const dialog = page.locator("dialog.sweep-dialog");
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).waitFor();
+  assert.equal(await dialog.getByRole("checkbox", { name: /how do I run it/ }).count(), 0, "questions stay outside the default repair queue");
+  await dialog.getByRole("button", { name: "All 3", exact: true }).click();
   assert.equal(await dialog.getByRole("checkbox", { name: /how do I run it/ }).isChecked(), false, "a question starts unpicked");
   await dialog.getByRole("checkbox", { name: /tidy the readme/ }).uncheck();
+  await dialog.locator(".sweep-config > summary").click();
+  await dialog.getByRole("combobox", { name: "Builder", exact: true }).selectOption("claude");
+  await dialog.getByRole("combobox", { name: "Reviewer", exact: true }).selectOption("codex");
   await dialog.getByRole("button", { name: "Start 1 run" }).click();
 
   await page.waitForURL(/#\/inbox/);
@@ -394,6 +400,7 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   // The next sweep knows #41 has a run.
   await page.goto(`${BASE}/#/project/${project.id}/automation/backlog`);
   await page.getByRole("button", { name: /Fix open issues/ }).click();
+  await dialog.getByRole("button", { name: "All 3", exact: true }).click();
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).getByText("Already has a run").waitFor();
   assert.equal(await dialog.getByRole("checkbox", { name: /fix the greeting/ }).isChecked(), false);
   await dialog.getByRole("button", { name: "Cancel" }).click();

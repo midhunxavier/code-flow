@@ -47,6 +47,7 @@ test("task rerun controls preview dependency invalidation and execute a child wi
   const started = await api<{ id: string }>("/api/runs", body);
   const original = await until(() => api(`/api/runs/${started.id}`), (run) => run.status !== "running"); assert.equal(original.team.status, "completed");
   await page.goto(base + `/#/run/${started.id}`);
+  await page.locator(".team-details > summary").click();
   const controls = page.locator(".team-rerun");
   await controls.locator(":scope > summary").waitFor({ timeout: 10_000 }).catch(async () => { throw new Error(`Rerun panel missing: ${JSON.stringify(browserErrors)} ${String(await page.locator("body").innerText()).slice(0, 3000)}`); });
   await controls.locator(":scope > summary").click();
@@ -61,6 +62,7 @@ test("task rerun controls preview dependency invalidation and execute a child wi
   assert.equal(child.team.status, "completed", child.error ?? JSON.stringify(child.team.gaps));
   assert.deepEqual(child.steps.filter((step: any) => step.taskId && step.kind === "agent").map((step: any) => step.taskId), ["beta"]);
   assert.ok(!child.steps.some((step: any) => step.title === "Plan Auto team")); assert.equal(child.baseRef, original.team.verification.head);
+  if (await page.locator(".team-details").getAttribute("open") === null) await page.locator(".team-details > summary").click();
   await page.getByText(/Retained baseline input from/).waitFor(); await page.getByText(/No new diff from this rerun turn/).waitFor();
   assert.equal((await api(`/api/runs/${started.id}`)).team.metrics.invocations, original.team.metrics.invocations);
   const stale = await fetch(base + `/api/runs/${started.id}/rerun-tasks`, { method: "POST", headers, body: JSON.stringify({ expectedHead: "0".repeat(40), taskIds: ["alpha"], budget: { maxSteps: 12, maxMinutes: 2 } }) }); assert.equal(stale.status, 409);
