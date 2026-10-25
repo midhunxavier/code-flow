@@ -32,7 +32,7 @@ for (const [source, target] of [["src/architecture.ts", "src/architecture.js"], 
       builder.onResolve({ filter: /^\.\.?\// }, (args) => resolve(args.importer).startsWith(join(root, "src") + sep) ? { path: args.path, external: true } : undefined);
     } }],
     platform: "node", format: "esm", target: "node22.13", minify: true, banner, logLevel: "warning" });
-for (const path of ["bin", "public", "LICENSE", "README.md", "scripts/check-node.mjs", "scripts/codeflow.mjs", "scripts/pty.py", "scripts/computer-use.swift", "dist/remote-host.json"])
+for (const path of ["bin", "public", "LICENSE", "README.md", "scripts/check-node.mjs", "scripts/codeflow.mjs", "scripts/pty.py", "scripts/computer-use.swift", "dist/remote-host.json", "dist/training-worker.json"])
   // Rebuilds publish through temporary files that may disappear between listing
   // and copying. Skip them before fs.cp stats them, and never ship partial assets.
   await cp(join(root, path), join(output, path), { recursive: true, filter: source => !source.endsWith(".tmp") });
@@ -46,7 +46,7 @@ await writeFile(join(output, "package.json"), JSON.stringify({
   repository: { type: "git", url: "git+https://github.com/midhunxavier/code-flow.git" },
   homepage: "https://midhunxavier.github.io/code-flow/", bugs: "https://github.com/midhunxavier/code-flow/issues",
   publishConfig: { access: "public", tag: "preview" },
-  files: ["bin/", "src/", "scripts/", "public/", "dist/remote-host.json", "licenses/"],
+  files: ["bin/", "src/", "scripts/", "public/", "dist/remote-host.json", "dist/training-worker.json", "licenses/"],
 }, null, 2) + "\n");
 await chmod(join(output, "bin/codeflow.mjs"), 0o755);
 console.log(`Built ${pkg.name}@${pkg.version} in dist/npm. Run npm pack ./dist/npm to create the release tarball.`);
