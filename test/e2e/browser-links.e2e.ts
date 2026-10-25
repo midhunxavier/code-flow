@@ -14,7 +14,7 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const directory = mkdtempSync(join(tmpdir(), "codeflow-browser-links-"));
 const home = join(directory, "home"), repo = join(directory, "repo");
 const token = "browser-links-fixture";
-let server: ChildProcess, app: Server, browser: Browser, page: Page, base: string, appUrl: string, unregisteredUrl: string;
+let server: ChildProcess, app: Server, appProbe: Server, browser: Browser, page: Page, base: string, appUrl: string, unregisteredUrl: string;
 let unregisteredRequests = 0;
 const portOf = (server: Server) => (server.address() as AddressInfo).port;
 
@@ -22,8 +22,8 @@ before(async () => {
   app = createServer((_request, response) => { unregisteredRequests++; response.writeHead(200, { "content-type": "text/html", "x-frame-options":"DENY", "content-security-policy":"frame-ancestors 'none'" }).end("<title>Frame-blocked site</title><h1>Unrelated local service</h1>"); });
   await new Promise<void>(resolve => app.listen(0, "127.0.0.1", resolve));
   unregisteredUrl = `http://127.0.0.1:${portOf(app)}/unsafe`;
-  const appProbe = createServer(); await new Promise<void>(resolve => appProbe.listen(0, "127.0.0.1", resolve));
-  const appPort = portOf(appProbe); await new Promise<void>(resolve => appProbe.close(() => resolve()));
+  appProbe = createServer(); await new Promise<void>(resolve => appProbe.listen(0, "127.0.0.1", resolve));
+  const appPort = portOf(appProbe);
   appUrl = `http://127.0.0.1:${appPort}/`;
   const probe = createServer(); await new Promise<void>(resolve => probe.listen(0, "127.0.0.1", resolve));
   base = `http://localhost:${portOf(probe)}`; await new Promise<void>(resolve => probe.close(() => resolve()));
@@ -42,13 +42,16 @@ before(async () => {
   server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: new URL(base).port, CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: "ignore" });
   for (let attempt = 0; attempt < 100; attempt++) { if (await fetch(base + "/api/health", { headers: { authorization: `Bearer ${token}` } }).then(response => response.ok, () => false)) break; await new Promise(resolve => setTimeout(resolve, 100)); }
   const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+  // Keep the advertised port reserved through build/startup and health requests so
+  // another fixture (or an outbound socket) cannot claim it before the app starts.
+  await new Promise<void>(resolve => appProbe.close(() => resolve()));
   const launch = await fetch(`${base}/api/runs/preview-run/worktrees/solo/serve`, { method: "POST", headers, body: JSON.stringify({ command: `'${process.execPath.replaceAll("'", "'\\''")}' app.mjs`, port: appPort }) });
   assert.equal(launch.status, 200, await launch.clone().text());
   assert.equal((await launch.json()).port, appPort);
   browser = await chromium.launch({ channel: "chrome", headless: true }); page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   page.on("pageerror", error => console.error("Browser error:", error.message));
 });
-after(async () => { await browser?.close(); server?.kill("SIGTERM"); if (server?.exitCode === null) await new Promise<void>(resolve => { server.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }); app?.closeAllConnections(); await new Promise<void>(resolve => app?.close(() => resolve())); rmSync(directory, { recursive: true, force: true }); });
+after(async () => { if (appProbe?.listening) await new Promise<void>(resolve => appProbe.close(() => resolve())); await browser?.close(); server?.kill("SIGTERM"); if (server?.exitCode === null) await new Promise<void>(resolve => { server.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }); app?.closeAllConnections(); await new Promise<void>(resolve => app?.close(() => resolve())); rmSync(directory, { recursive: true, force: true }); });
 
 test("a reachable app in an agent answer opens automatically, and link clicks reuse its Browser tab", { timeout: 30_000 }, async () => {
   await page.goto(`${base}/?token=${token}#/run/preview-run`);
