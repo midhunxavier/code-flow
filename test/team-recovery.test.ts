@@ -298,9 +298,8 @@ test("final explanation cannot modify verified files or navigate the shared brow
   adapter.run = async (options, emit) => {
     if (options.prompt.includes("## Code Flow team execution receipt")) {
       assert.equal(options.mode, "read"); assert.equal(options.resumeSessionId, undefined);
-      assert.ok(options.agentTools);
-      const response = await fetch(options.agentTools.endpoint, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${options.agentTools.token}` }, body: JSON.stringify({ name: "browser_navigate", arguments: { url: "https://example.com", operationId: "forbidden-final-navigation" } }) });
-      assert.match((await response.json() as any).error, /read-only/);
+      assert.equal(options.agentTools, undefined, "the saved-result explanation does not need a browser/computer bridge");
+      assert.match(options.prompt, /host-observed evidence/);
       writeFileSync(join(options.cwd, "README.md"), "must be reverted\n"); frozen = true;
       return { ok: true, finalText: "Team result explained." };
     }
@@ -313,9 +312,13 @@ test("final explanation cannot modify verified files or navigate the shared brow
     assert.equal(readFileSync(join(parent.worktrees[0]!.path, "README.md"), "utf8"), "Fixture\n");
     const turn = parent.teamTurns![0]!;
     turn.reviewStale = true;
+    parent.task = "Reply Ready. Do not use tools."; // A completed, turn-local acknowledgement must not replace the delegated review task.
     await manager.refreshTaskTeamReview(parent.id, turn.executionId);
     assert.equal(turn.reviewStale, false, turn.resolutionReview?.error);
     assert.equal(turn.resolutionReview?.approved, true);
-    assert.equal(manager.get(turn.resolutionReview!.executionId)!.steps[0]!.mode, "read");
+    const review = manager.get(turn.resolutionReview!.executionId)!;
+    assert.equal(review.steps[0]!.mode, "read");
+    assert.ok(review.task.startsWith(`Current delegated task to review:\n${manager.get(turn.executionId)!.task}`));
+    assert.ok(review.task.indexOf("Earlier conversation (historical context") < review.task.indexOf("Reply Ready. Do not use tools."));
   } finally { adapter.run = original; await manager.shutdown(); }
 });

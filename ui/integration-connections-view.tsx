@@ -4,6 +4,8 @@ import { projects, openComposer, externalSource, source, setTask, applyTemplate,
 import { ConnectionSetup, SERVICE_NAMES, SERVICE_ACTIONS } from "./connection-setup.js";
 import { CodeHostsPanel } from "./code-hosts.js";
 import { NotificationsView } from "./notifications.js";
+import { Icon, type IconName } from "./icons.js";
+import { Menu, MenuItem } from "./panel-bits.js";
 import type { ConnectionProvider, ConnectionSummary, ConnectionBinding } from "../src/integration-connections.js";
 import type { ExternalSource, ExternalSourceItem, ExternalSourcePage } from "../src/integrations.js";
 import type { PullRequest, Check } from "../src/github.js";
@@ -12,6 +14,7 @@ import { checksLabel, runPassed } from "../src/run-status.js";
 
 interface ConnectionPage { connections: ConnectionSummary[]; bindings?: ConnectionBinding[]; suggestion?: { provider?: ConnectionProvider; scope: string; host: string } }
 const notification = (provider: string) => provider === "slack" || provider === "webhook";
+const SERVICE_ICONS: Record<ConnectionProvider, IconName> = { github: "pull", gitlab: "pull", bitbucket: "pull", linear: "issue", jira: "issue", slack: "chat", webhook: "globe" };
 
 export function IntegrationsScreen({ projectId }: { projectId?: string }) {
   const project = projects.value.find(p => p.id === projectId);
@@ -35,26 +38,39 @@ export function IntegrationsScreen({ projectId }: { projectId?: string }) {
   const selected = data.connections.find(c => c.id === active && connected(c));
   const notificationIds = data.connections.filter(c => notification(c.provider) && connected(c)).map(c => c.id.replace(/^notification:/, ""));
   return <section class="integrations-screen" aria-label={projectId ? "Project connections" : "Integrations"}>
-    <h2>{projectId ? "Connections" : "Integrations"}</h2><p class="help">Connect the services you already use. Choose an issue or pull request to start work in your project.</p>
-    {project ? <label class="connection-repository">Repository<select class="field" value={repository} onChange={e => setRepository(e.currentTarget.value)}>{project.repos.map(repo => <option value={repo} key={repo}>{repo.split("/").pop()}</option>)}</select></label> : <p class="help">Add services here, then use a project’s Connections page to choose its repository and start work. Coding-agent accounts stay under <a href="#/settings/agents">Agents</a>.</p>}
+    <header class="connections-heading">
+      <div><div class="collaboration-eyebrow">{projectId ? "Project services" : "Your services"}</div><h2>{projectId ? "Connections" : "Integrations"}</h2><p class="help">Bring issues, pull requests and updates into your work.</p></div>
+      {project ? <label class="connection-repository">Repository<select class="field" value={repository} onChange={e => setRepository(e.currentTarget.value)}>{project.repos.map(repo => <option value={repo} key={repo}>{repo.split("/").pop()}</option>)}</select></label> : null}
+    </header>
+    {!project ? <p class="help">Add services here, then use a project’s Connections page to choose its repository and start work. Coding-agent accounts stay under <a href="#/settings/agents">Agents</a>.</p> : null}
     {project && !repository ? <p class="msg warn">Add a repository to this project before connecting services.</p> : null}
-    {data.suggestion?.provider ? <p class="connection-suggestion">Suggested from Git remote: <b>{SERVICE_NAMES[data.suggestion.provider]}</b> · {data.suggestion.scope}</p> : null}
+    {data.suggestion?.provider && !data.connections.some(c => c.provider === data.suggestion?.provider && c.configured && connected(c)) ? <p class="connection-suggestion">Suggested for this repository: <b>{SERVICE_NAMES[data.suggestion.provider]}</b> · {data.suggestion.scope}</p> : null}
     {error ? <p class="msg err" role="alert">{error} <button class="btn small" onClick={() => void reload().then(() => setError(""), error => setError(error.message))}>Retry</button></p> : null}
     <div class="integration-grid">{(Object.keys(SERVICE_NAMES) as ConnectionProvider[]).map(provider => {
       const connections = data.connections.filter(c => c.provider === provider);
-      return <article class="settings-card integration-card" key={provider} aria-label={`${SERVICE_NAMES[provider]} connections`}>
-        <h3>{SERVICE_NAMES[provider]}</h3><p class="help">{SERVICE_ACTIONS[provider]}</p>
-        {!connections.length ? <p class="help">Not connected</p> : connections.map(c => <div class="integration-connection" key={c.id}>
-          <strong>{c.name}</strong><span class={`badge${c.configured && connected(c) ? " ok" : ""}`}>{!c.configured ? "Credentials unavailable" : connected(c) ? "Connected" : "Available to connect"}</span><p class="help">{c.scope}{c.administratorManaged ? " · Administrator-managed" : ""}</p>
-          <div class="integration-actions">
+      return <article class={`settings-card integration-card${connections.some(c => c.configured && connected(c)) ? " is-connected" : ""}`} key={provider} aria-label={`${SERVICE_NAMES[provider]} connections`}>
+        <header class="integration-card-heading"><span class="integration-service-icon"><Icon name={SERVICE_ICONS[provider]} /></span><h3>{SERVICE_NAMES[provider]}</h3></header>
+        <p class="help integration-description">{SERVICE_ACTIONS[provider]}</p>
+        <div class="integration-accounts">{!connections.length ? <p class="integration-empty"><span />Not connected</p> : connections.map(c => <div class="integration-connection" key={c.id}>
+          <div class="integration-connection-heading">
+            <span class={`badge${c.configured && connected(c) ? " ok" : ""}`}>{!c.configured ? "Credentials unavailable" : connected(c) ? "Connected" : "Available to connect"}</span>
+            <Menu label={`Manage ${c.name} connection`} icon="more" class="integration-manage">{close => <>
+              <MenuItem disabled={!!busy} onClick={() => { close(); void act(c, "test"); }}>Test connection</MenuItem>
+              {!c.administratorManaged ? <MenuItem disabled={!!busy} onClick={() => { close(); setSetup({ provider, existing: c }); }}>Reconnect</MenuItem> : null}
+              {projectId && connected(c) ? <MenuItem disabled={!!busy} onClick={() => { close(); void act(c, "detach"); }}>Remove from project</MenuItem> : null}
+              {!c.administratorManaged ? <MenuItem disabled={!!busy} onClick={() => { close(); void act(c, "disconnect"); }}><span class="integration-disconnect">Disconnect</span></MenuItem> : null}
+            </>}</Menu>
+          </div>
+          <strong class="integration-scope">{c.scope || c.name}</strong>
+          {c.scope && c.name !== SERVICE_NAMES[provider] && c.name !== c.scope ? <p class="help integration-account-name">{c.name}</p> : null}
+          {c.administratorManaged ? <p class="help integration-account-name">Administrator-managed</p> : null}
+          {busy === c.id ? <p class="help" role="status">Working…</p> : null}
+          <div class="integration-primary-actions">
             {projectId && !connected(c) ? <button class="btn small primary" disabled={!!busy || !repository || !c.configured} onClick={() => void act(c, "attach")}>Use in this project</button> : null}
             {projectId && connected(c) && !notification(provider) ? <button class="btn small primary" disabled={!c.configured || !!busy} onClick={() => setActive(c.id)}>Choose issue or PR</button> : null}
-            <button class="btn small" disabled={!!busy} onClick={() => void act(c, "test")}>{busy === c.id ? "Working…" : "Test connection"}</button>
-            {!c.administratorManaged ? <><button class="btn small" disabled={!!busy} onClick={() => setSetup({ provider, existing: c })}>Reconnect</button><button class="btn small danger" disabled={!!busy} onClick={() => void act(c, "disconnect")}>Disconnect</button></> : null}
-            {projectId && connected(c) ? <button class="btn small" disabled={!!busy} onClick={() => void act(c, "detach")}>Remove from project</button> : null}
           </div>
-        </div>)}
-        <button class="btn" disabled={!!projectId && !repository || !!busy} onClick={() => setSetup({ provider })}>{connections.length ? "Connect another" : "Connect"}</button>
+        </div>)}</div>
+        <footer class="integration-card-footer"><button class={`btn small${connections.length ? " ghost" : ""}`} disabled={!!projectId && !repository || !!busy} onClick={() => setSetup({ provider })}><Icon name="plus" />{connections.length ? "Connect another" : "Connect"}</button></footer>
       </article>;
     })}</div>
     {selected && project && repository ? <ProjectConnectionActions key={`${selected.id}:${repository}`} connection={selected} projectId={project.id} repository={repository} /> : null}

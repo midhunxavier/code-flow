@@ -104,8 +104,8 @@ export function ChangesTab({ run }: { run: RunSummary }) {
           <button type="button" class={!last ? "on" : ""} aria-pressed={!last} title="Everything on the branch since the run started" onClick={() => setLast(false)}>
             Whole run
           </button>
-          <button type="button" class={last ? "on" : ""} aria-pressed={last} title="The branch's latest commit: what the most recent step or follow-up changed" onClick={() => setLast(true)}>
-            Last step
+          <button type="button" class={last ? "on" : ""} aria-pressed={last} title={run.pattern === "solo" && !run.checkpointOnFinish ? "Changes not yet committed" : "The branch's latest commit: what the most recent step or follow-up changed"} onClick={() => setLast(true)}>
+            {run.pattern === "solo" && !run.checkpointOnFinish ? "Uncommitted" : "Last step"}
           </button>
         </div>
         <button type="button" class="btn ghost small" title="Review the branch file by file, full width" onClick={() => navigate({ view: "review", id: run.id, branch })}>

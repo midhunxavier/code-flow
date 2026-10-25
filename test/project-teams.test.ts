@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, renameSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, renameSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -78,8 +78,9 @@ test("complete cycle uses existing Auto teams, preserves read-only discovery, ve
   assert.ok(discovery.steps.filter((s) => s.kind === "agent").every((s) => s.mode === "read"));
   assert.equal(f.git("rev-parse", "main"), base, "A cycle must not merge itself");
   const child = f.manager.get(o.result!.runId)!;
-  await assert.rejects(f.manager.deleteRun(discovery.id), /Standing project teams retain run history/);
-  await assert.rejects(f.manager.deleteRun(child.id), /Standing project teams retain run history/);
+  await f.manager.deleteRun(discovery.id);
+  assert.equal(f.manager.get(discovery.id), undefined, "settled discovery has its report and accounting saved in the mission");
+  await assert.rejects(f.manager.deleteRun(child.id), /awaiting approval or shipping/);
   await f.manager.archive(child.id, { cleanup: false });
   assert.equal(f.manager.get(child.id)?.archived, true);
   await assert.rejects(f.manager.deleteRun(child.id), /Archive this run instead/);
@@ -181,6 +182,122 @@ test("archived teams retain immutable history after decisions and project remova
   await f.projects.remove(f.project.id); await f.service.reconcile();
   assert.deepEqual(f.store.get(t.id), t);
   assert.equal(f.automations.get(`t-${t.id}`)!.enabled, false);
+});
+
+test("orphaned mission runs can be deleted without losing mission records or Git work", async (test) => {
+  const f = await fixture(); await f.service.cycle(f.team.id, "delete-orphans");
+  const team = await settled(f);
+  const ids = team.cycles[0]!.launches.map(launch => launch.runId!);
+  const result = f.manager.get(team.opportunities[0]!.result!.runId)!;
+  await f.manager.archive(result.id, { cleanup: false }); await flushWrites();
+  await f.service.stop();
+
+  await f.projects.update(f.project.id, { repos: [] });
+  await assert.rejects(f.manager.deleteRun(result.id), /awaiting approval or shipping/, "removing repository membership is not deleting the project");
+  const other = await f.projects.create({ name: "Other", repos: [f.repo] });
+  await f.manager.setProject(result.id, other.id); await f.projects.remove(other.id);
+  await assert.rejects(f.manager.deleteRun(result.id), /awaiting approval or shipping/, "moving a run cannot bypass the original mission's protection");
+  await f.manager.setProject(result.id, f.project.id);
+  await f.manager.removeProject(f.project.id);
+
+  const unavailable = test.mock.getter(f.projects, "available", () => false);
+  await assert.rejects(f.manager.deleteRun(result.id), /Restore access to projects/);
+  unavailable.mock.restore();
+  f.store.faults.set(team.id, "Unreadable mission");
+  await assert.rejects(f.manager.deleteRun(result.id), /Restore access to the mission/);
+  f.store.faults.delete(team.id);
+
+  const retained = f.store.get(team.id), budget = allowance(retained);
+  for (const id of ids) {
+    await f.manager.deleteRun(id);
+    assert.equal(f.manager.get(id), undefined);
+    for (const suffix of [".jsonl", ".journal.jsonl", ".checkpoint.json", ".cold-index.json", ".cold-detail.json"]) assert.equal(existsSync(join(home, "runs", id + suffix)), false);
+  }
+  assert.deepEqual(f.store.get(team.id), retained, "deletion keeps mission cycles, approvals and usage receipts");
+  assert.deepEqual(allowance(f.store.get(team.id)), budget);
+  for (const worktree of result.worktrees) {
+    assert.ok(existsSync(worktree.path));
+    assert.ok(f.git("rev-parse", worktree.branch));
+  }
+  const restarted = new RunManager(findPattern, f.projects); managers.push(restarted); await restarted.load();
+  for (const id of ids) assert.equal(restarted.get(id), undefined, "deleted mission history stays deleted after restart");
+});
+
+test("orphaned mission runs cannot be deleted while their agents are active", async () => {
+  const f = await fixture({ mode: "propose" });
+  const admitted = await f.service.cycle(f.team.id, "active-orphan");
+  const id = admitted.cycles[0]!.launches[0]!.runId!;
+  assert.equal(f.manager.get(id)!.status, "running");
+  await f.manager.removeProject(f.project.id);
+  await assert.rejects(f.manager.deleteRun(id), /Finish or stop/);
+  f.manager.cancel(id);
+  await f.manager.shutdown();
+  await f.service.reconcile(); await f.service.stop();
+  await f.manager.deleteRun(id);
+  assert.equal(f.manager.get(id), undefined);
+});
+
+test("stopped mission discovery can be deleted after settlement while its project remains", async (test) => {
+  const f = await fixture({ mode: "propose" });
+  const admitted = await f.service.cycle(f.team.id, "stopped-history");
+  const id = admitted.cycles[0]!.launches[0]!.runId!;
+  await assert.rejects(f.manager.deleteRun(id), /Finish or stop/);
+  f.manager.cancel(id);
+  const team = await settled(f); await f.service.stop();
+  assert.equal(team.cycles[0]!.status, "blocked");
+  assert.equal(team.cycles[0]!.launches[0]!.state, "settled");
+  assert.ok(team.cycles[0]!.launches[0]!.usage);
+  assert.ok(f.projects.get(team.projectId));
+
+  // Fail closed for incomplete recovery/accounting, even when the chat itself has stopped.
+  for (const reason of ["active-cycle", "unsettled-launch", "missing-usage", "missing-launch"] as const) {
+    const incomplete = persisted(team), cycle = incomplete.cycles[0]!;
+    if (reason === "active-cycle") { cycle.status = "unknown"; delete cycle.endedAt; }
+    if (reason === "unsettled-launch") cycle.launches[0]!.state = "unknown";
+    if (reason === "missing-usage") delete cycle.launches[0]!.usage;
+    if (reason === "missing-launch") cycle.launches[0]!.runId = "another-run";
+    const mock = test.mock.method(f.store, "get", () => incomplete);
+    try { await assert.rejects(f.manager.deleteRun(id), /recovery or budget accounting/, reason); }
+    finally { mock.mock.restore(); }
+  }
+  const budget = allowance(team), run = f.manager.get(id)!;
+  await f.manager.deleteRun(id);
+  assert.equal(f.manager.get(id), undefined);
+  assert.ok(f.projects.get(team.projectId), "deletion does not require deleting the project");
+  assert.deepEqual(f.store.get(team.id), team);
+  assert.deepEqual(allowance(f.store.get(team.id)), budget);
+  for (const worktree of run.worktrees) assert.ok(existsSync(worktree.path));
+  const restarted = new RunManager(findPattern, f.projects); managers.push(restarted); await restarted.load();
+  assert.equal(restarted.get(id), undefined);
+});
+
+test("settled history from a replaced repository can be deleted without enabling quarantined missions", async () => {
+  const f = await fixture({ mode: "propose" });
+  const admitted = await f.service.cycle(f.team.id, "replaced-repository");
+  const id = admitted.cycles[0]!.launches[0]!.runId!;
+  f.manager.cancel(id);
+  const team = await settled(f); await f.service.stop();
+  const saved = readFileSync(join(f.store.directory, `${team.id}.json`), "utf8");
+  renameSync(join(f.repo, ".git"), join(f.repo, "old-git"));
+  f.git("init", "-q", "-b", "main");
+  const store = new ProjectTeamStore(f.store.directory);
+  const service = new ProjectTeams({ manager: f.manager, projects: f.projects, automations: f.automations, store, build: async () => { throw new Error("Must not dispatch"); } });
+  services.push(service); await service.load(); service.start();
+  assert.throws(() => store.get(team.id), /Repository metadata was replaced/);
+  assert.deepEqual(store.list(), [], "quarantined teams cannot dispatch");
+  assert.deepEqual(store.deletionHistory(team.id), persisted(team));
+  const copy = store.deletionHistory(team.id); copy.cycles.length = 0;
+  assert.deepEqual(store.deletionHistory(team.id), persisted(team), "history access is a snapshot");
+  await f.manager.deleteRun(id);
+  assert.equal(f.manager.get(id), undefined);
+  await service.reconcile();
+  assert.throws(() => store.get(team.id), /Repository metadata was replaced/);
+  assert.equal(readFileSync(join(store.directory, `${team.id}.json`), "utf8"), saved);
+
+  await service.stop();
+  writeFileSync(join(store.directory, `${team.id}.json`), "{broken");
+  await store.load();
+  assert.throws(() => store.deletionHistory(team.id), /storage is unavailable/, "corrupt history never grants permission to delete");
 });
 
 test("failed checks cannot become ready and repeat scheduled failures require changed input", async () => {

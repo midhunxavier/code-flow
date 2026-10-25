@@ -1,3 +1,5 @@
+import axe from "axe-core";
+import { parseBrowserMessage } from "../../ui/browser-context.js";
 // End-to-end: the real UI in Chrome against a real server with fake agents.
 // Run with `npm run test:e2e` (needs Google Chrome installed; no browser download).
 import { prioritizedReviewRuns } from "../../src/review-inbox.js";
@@ -151,7 +153,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   await page.getByLabel("Task", { exact: true }).press("Meta+Enter");
 
   // The run finishes; the fake Codex can't satisfy the check, so the result says so.
-  await page.getByText("⚠ Finished — but the check still fails").waitFor({ timeout: 30_000 });
+  await page.locator(".result-compact").getByText(/Checks: Failed/).waitFor({ timeout: 30_000 });
 
   // A visited Files tab stays mounted: it must show files added by the follow-up.
   const side = page.getByRole("complementary", { name: "Side panel", exact: true });
@@ -170,11 +172,11 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   await page.locator("tr.dl.add").first().click();
   await page.getByPlaceholder("What should change here?").fill("Implement it properly so npm test passes");
   await page.getByRole("button", { name: /Add comment/ }).click();
-  await page.locator(".review-head select").selectOption("claude");
+  await page.locator(".review-feedback select").selectOption("claude");
   await page.getByRole("button", { name: "Send 1 comment" }).click();
 
   // Back on the run: the comment is in the thread, Claude's follow-up ran, and the check passes now.
-  await page.getByText("✓ Finished — the check passes").waitFor({ timeout: 30_000 });
+  await page.locator(".result-compact").getByText(/Checks: Passed/).waitFor({ timeout: 30_000 });
   await page.locator(".fu .msg-you", { hasText: "Implement it properly so npm test passes" }).waitFor();
   await page.locator(".fu-head", { hasText: "check passes" }).waitFor();
   await page.getByRole("button", { name: "Side panel", exact: true }).click();
@@ -185,6 +187,8 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
   await page.getByRole("button", { name: "Side panel", exact: true }).click();
 
   // Merge into main from the UI.
+  await page.locator(".result-details > summary").click();
+  await page.locator(".artifact-actions > summary").click();
   await page.getByRole("button", { name: "Merge…" }).click();
   // Keep the result Files tab selected while archive cleanup removes its worktree.
   await page.getByRole("button", { name: "Side panel", exact: true }).click();
@@ -242,7 +246,7 @@ test("approve the plan from the UI: ask for changes, then approve", async () => 
   await page.getByRole("button", { name: "Ask for changes" }).click();
   await page.locator(".awaiting-card").getByText("Approve the revised plan (2)").waitFor({ timeout: 30_000 });
   await page.getByRole("button", { name: "✓ Approve" }).click();
-  await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
+  await page.locator(".result-compact").waitFor({ timeout: 30_000 });
   assert.equal(await page.locator(".tl-step", { hasText: "Revise the plan (1)" }).count(), 1);
 });
 
@@ -267,7 +271,7 @@ test("a message sent while Codex is working reaches its running turn", async () 
   assert.equal(await delivered.isVisible(), false, "delivered messages are collapsed by default");
   await page.locator(".note-history > summary").click();
   await delivered.waitFor();
-  await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
+  await page.locator(".result-compact").waitFor({ timeout: 30_000 });
 
   const run = await fetch(`${BASE}/api/runs/${runId}`, { headers: bearer }).then((r) => r.json());
   const implement = run.steps.find((s: { title: string }) => s.title === "Implement plan");
@@ -284,6 +288,8 @@ test("start from a PR with a template: the council's findings are ranked, and po
   await page.locator(".chip-ctx.source", { hasText: "PR #1" }).waitFor();
   await page.getByRole("button", { name: /^Start run/ }).click();
 
+  await page.locator(".run-head .status-pill").filter({ hasText: "Finished" }).waitFor({ timeout: 30_000 });
+  await page.locator(".result-details > summary").click();
   await page.locator(".council .badge", { hasText: "Changes requested" }).waitFor({ timeout: 30_000 });
   assert.equal(await page.locator(".findings li").count(), 3);
   assert.match(await page.locator(".findings li").first().innerText(), /2 reviewers agree/);
@@ -349,6 +355,7 @@ test("a check that can't run here: the result is still reviewed, and the inbox a
   assert.match(await item.locator(".ih .help").innerText(), /checks: blocked/);
 
   await item.locator("a.t").click();
+  await page.locator(".result-details > summary").click();
   await page.getByText("⚠ Finished — but the check couldn't run, so nothing was tested").waitFor();
   await page.locator(".result .cant-run", { hasText: ".codeflow/config.json" }).waitFor();
   assert.equal(await page.locator(".run-head .status-pill").textContent(), "Finished");
@@ -369,13 +376,19 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   ];
   writeFileSync(ghState, JSON.stringify(s));
 
-  const project = (await fetch(`${BASE}/api/projects`, { headers: bearer }).then(response => response.json())).find((project: { repos: string[] }) => project.repos.includes(realpathSync(repo)));
+  const project = (await fetch(`${BASE}/api/projects`, { headers: bearer }).then(response => response.json())).find((project: { repos: string[] }) => project.repos.includes(realpathSync(repo)))
+    ?? await fetch(`${BASE}/api/projects`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Sweep fixture", repos: [repo] }) }).then(response => response.json());
   await page.goto(`${BASE}/#/project/${project.id}/automation/backlog`);
   await page.getByRole("button", { name: /Fix open issues/ }).click();
   const dialog = page.locator("dialog.sweep-dialog");
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).waitFor();
+  assert.equal(await dialog.getByRole("checkbox", { name: /how do I run it/ }).count(), 0, "questions stay outside the default repair queue");
+  await dialog.getByRole("button", { name: "All 3", exact: true }).click();
   assert.equal(await dialog.getByRole("checkbox", { name: /how do I run it/ }).isChecked(), false, "a question starts unpicked");
   await dialog.getByRole("checkbox", { name: /tidy the readme/ }).uncheck();
+  await dialog.locator(".sweep-config > summary").click();
+  await dialog.getByRole("combobox", { name: "Builder", exact: true }).selectOption("claude");
+  await dialog.getByRole("combobox", { name: "Reviewer", exact: true }).selectOption("codex");
   await dialog.getByRole("button", { name: "Start 1 run" }).click();
 
   await page.waitForURL(/#\/inbox/);
@@ -387,6 +400,7 @@ test("sweep: pick open issues, start one run each, and approve the results in th
   // The next sweep knows #41 has a run.
   await page.goto(`${BASE}/#/project/${project.id}/automation/backlog`);
   await page.getByRole("button", { name: /Fix open issues/ }).click();
+  await dialog.getByRole("button", { name: "All 3", exact: true }).click();
   await dialog.locator(".sweep-item", { hasText: "fix the greeting" }).getByText("Already has a run").waitFor();
   assert.equal(await dialog.getByRole("checkbox", { name: /fix the greeting/ }).isChecked(), false);
   await dialog.getByRole("button", { name: "Cancel" }).click();
@@ -532,7 +546,8 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from earlier tests: the run mustn't wait for approval
   await page.getByLabel("Task", { exact: true }).fill("E2E: in the side project");
   await page.getByRole("button", { name: /^Start run/ }).click();
-  await page.getByText(/✓ Finished|⚠ Finished/).first().waitFor({ timeout: 30_000 });
+  await page.locator(".result-compact").waitFor({ timeout: 30_000 });
+  await page.locator(".result-details > summary").click();
   await page.locator(".project-chip", { hasText: "E2E side" }).waitFor();
   await page.locator(".crumbs-bar .crumb", { hasText: "E2E side" }).waitFor();
   await group("E2E side").locator(".run-item", { hasText: "E2E: in the side project" }).waitFor(); // seen once you look at it: under its project, not "Needs you"
@@ -774,11 +789,14 @@ test("side panel browser: the live app is annotated and sent to main chat, with 
   await surface.click({position:{x:30,y:18}});
   await side.locator(".pins-tray .pin-row").waitFor({ timeout: 15_000 });
   await side.getByLabel("What about pin 1?").fill("E2E: the toggle is hard to see");
-  await side.getByRole("button", { name: "Add to main chat" }).click();
+  await side.getByRole("button", { name: "Add to chat" }).click();
   const box = page.locator(".runview .chatbox textarea");
-  await page.locator(".runview .draft-img").waitFor();
+  await page.locator(".runview .browser-context-draft img").waitFor();
   const text = await box.inputValue();
-  assert.match(text, /header > button\.theme-toggle`?: E2E: the toggle is hard to see/);
+  assert.equal(text, "", "page evidence is a card, not textarea contents");
+  assert.match(await page.locator(".runview .browser-context-draft").innerText(), /E2E: the toggle is hard to see/);
+  assert.equal(await page.locator(".runview .browser-context-draft details").getAttribute("open"), null);
+  await box.fill("Please improve the contrast.");
   await page.locator(".runview .chatbox .send").click();
   for (let i = 0; i < 150; i++) {
     run = await api(`/api/runs/${created.id}`);
@@ -787,7 +805,17 @@ test("side panel browser: the live app is annotated and sent to main chat, with 
   }
   const reply = run.followUps.at(-1);
   assert.equal(reply.kind, "reply");
+  const evidence = parseBrowserMessage(reply.message);
+  assert.equal(evidence.text, "Please improve the contrast.");
+  assert.equal(evidence.contexts[0]?.comment, "E2E: the toggle is hard to see");
+  assert.match(evidence.contexts[0]?.selector ?? "", /theme-toggle/);
+  assert.match(evidence.contexts[0]?.html ?? "", /<button/);
+  await page.locator(".runview .browser-context-card", { hasText: "E2E: the toggle is hard to see" }).waitFor();
   assert.equal(reply.files.length, 1, "the snapshot went with the reply");
+
+  await page.reload();
+  await page.locator(".runview .browser-context-card", { hasText: "E2E: the toggle is hard to see" }).waitFor();
+  assert.equal(await page.locator(".runview .browser-context-card details").getAttribute("open"), null);
 
   // Draw an area on the same interactive page; the annotation carries its image into chat.
   await side.getByRole("button", {name:"Box",exact:true}).click();
@@ -797,9 +825,32 @@ test("side panel browser: the live app is annotated and sent to main chat, with 
   await page.mouse.move(at.x+100,at.y+65,{steps:5});await page.mouse.up();
   await side.locator(".pins-tray .pin-row").waitFor();
   await side.getByLabel(/^What about pin \d+\?$/).fill("E2E: the header is too tall");
-  await side.getByRole("button",{name:"Add to main chat"}).click();
-  await page.locator(".runview .draft-img").waitFor();
-  assert.match(await box.inputValue(),/E2E: the header is too tall/);
+  await side.getByRole("button",{name:"Add to chat"}).click();
+  await page.locator(".runview .browser-context-draft img").waitFor();
+  assert.equal(await box.inputValue(), "");
+  // Cards remain readable without exposing raw selectors, including on a phone and in dark mode.
+  const size = page.viewportSize()!;
+  await page.getByRole("button", { name: "Close side panel", exact: true }).click();
+  await page.addScriptTag({ content: axe.source });
+  for (const width of [1440, 390]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+      await page.waitForTimeout(250); // Let the theme transition finish before contrast measurements.
+      const audit = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(".browser-context-draft", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } }));
+      assert.deepEqual(audit.violations.map(v => v.id), []);
+      assert.ok(await page.locator(".browser-context-draft").evaluate(el => el.scrollWidth <= el.clientWidth + 1));
+      mkdirSync(join(root, "output/playwright"), { recursive: true });
+      await page.screenshot({ path: join(root, `output/playwright/browser-context-${theme}-${width}.png`) });
+    }
+  }
+  await page.setViewportSize(size);
+  await page.evaluate(() => document.documentElement.dataset.theme = "light");
+  await box.fill("Keep this typed message.");
+  await page.getByRole("button", { name: "Remove browser context", exact: true }).click();
+  assert.equal(await page.locator(".runview .browser-context-draft").count(), 0);
+  assert.equal(await page.locator(".runview .draft-img").count(), 0);
+  assert.equal(await box.inputValue(), "Keep this typed message.");
   assert.equal(page.context().pages().length,1);
   await fetch(`${BASE}/api/runs/${created.id}/worktrees/${wt.name}/serve`, { method: "DELETE", headers: bearer });
 

@@ -10,6 +10,16 @@ import { createHash } from "node:crypto";
  * return. Returns the answer, and the structured answer when a schema was requested.
  */
 export function work({ vendor, prompt, write, schemaRequested, fail }) {
+  if (write && existsSync("preview-setup-fixture.txt") && prompt.includes("Set up a working web preview of this result")) {
+    const config = JSON.parse(readFileSync(".codeflow/config.json", "utf8"));
+    writeFileSync(".codeflow/config.json", JSON.stringify({ ...config, run: { command: "node app.cjs" } }));
+    if (prompt.includes("AUTO_TEAM_TASK")) {
+      const { task, member } = JSON.parse(prompt.match(/## Assignment JSON\n```json\n([\s\S]*?)\n```/)[1]);
+      const result = { taskId: task.id, memberId: member.id, status: "submitted", checkpoint: "Preview configured", handover: "Start the saved app command", artifacts: [".codeflow/config.json"], unresolvedRequirements: [], questions: [], replies: [], findings: [] };
+      return { answer: JSON.stringify(result), structured: schemaRequested ? result : undefined };
+    }
+    return { answer: "The preview is configured. Code Flow can start the local app." };
+  }
   if (process.env.FAKE_ANSWER_RECOVERED && prompt.includes("AUTO-ANSWER-OUTAGE") && prompt.includes("## Code Flow team execution receipt") && !existsSync(process.env.FAKE_ANSWER_RECOVERED)) fail("You've hit your usage limit. Try again later.", "usageLimitExceeded");
   if (prompt.includes("SNEAKY")) writeFileSync("sneaky.txt", "a read-only step wrote this\n");
   // A read-only step that commits: `git status` is clean afterwards, so only HEAD shows it.
@@ -195,7 +205,7 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
             ? [{ ...offByOne, repro: failingRepro }, nullCheck]
             : [{ ...offByOne, repro: noRepro }],
     });
-  } else if (prompt.includes('"verdict": "approve" | "changes_requested"') && process.env.FAKE_REPRO) {
+  } else if ((prompt.includes('"verdict": "approve" | "changes_requested"') || prompt.includes("AUTO_TEAM_REVIEW")) && process.env.FAKE_REPRO) {
     // A reviewer that shows its finding with a test (FAKE_REPRO): fails (a real bug, raised in the
     // first review only), passes (a false alarm), none (no test), approve-fails (a failing test,
     // every review, under an "approve" verdict), uncollected (a test the check never runs),
@@ -216,7 +226,7 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
               ? { verdict: "changes_requested", issues: [issue({ ...failingRepro, path: "linked/.codeflow/config.test.mjs" })] }
             : { verdict: "changes_requested", issues: [issue(mode === "passes" ? passingRepro : noRepro)] },
     );
-  } else if (prompt.includes('"verdict": "approve" | "changes_requested"')) {
+  } else if ((prompt.includes('"verdict": "approve" | "changes_requested"') || prompt.includes("AUTO_TEAM_REVIEW"))) {
     // State lives outside the worktree: read-only steps have their file changes reverted.
     const marker = `${process.env.CODEFLOW_HOME}/.reviewed-once`;
     const failReview = process.env.FAKE_REVIEW_FAIL_ONCE && !existsSync(marker);

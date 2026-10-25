@@ -6,8 +6,18 @@ import { useDialog } from "./app.js";
 import { ModelSelect } from "./model-select.js";
 import { ChatControls } from "./chat-controls.js";
 import { api, post, store, SHORT } from "./lib.js";
-import { agents, runs, catalogs } from "./state.js";
+import { agents, runs, catalogs, health, composerRunOptions } from "./state.js";
 import type { AgentId, RunSummary } from "./types.js";
+
+function teamProviderProblem(id: AgentId, nativeAgy: boolean): string | undefined {
+  if (!agents.value.find(agent => agent.id === id)?.available) return "CLI is not installed";
+  const diagnostic = health.value?.find(entry => entry.id === id);
+  if (diagnostic?.signedIn === false) return "Sign in to this provider first";
+  if (diagnostic?.compatible === false) return "Update this provider's CLI";
+  if (id === "agy" && !nativeAgy && diagnostic?.managedCompatible !== true) {
+    return diagnostic ? "This Antigravity version or login is not compatible with AI teams" : "Checking Antigravity compatibility…";
+  }
+}
 
 export function defaultTaskTeam(lead: AgentId): TaskTeamConfig {
   const saved = store.json<TaskTeamConfig | null>("taskTeamPreferences", null);
@@ -32,7 +42,8 @@ export function TaskTeamControl({ run, config, lead, project, onChange, disabled
   };
   const enabled = !!value?.enabled && !disabledReason;
   const next = value ?? defaultTaskTeam(lead);
-  const options = agents.value.filter(agent => agent.available && ["claude", "codex", "agy"].includes(agent.id)).flatMap(agent => {
+  const nativeAgy = (owner ? owner.permissions?.antigravityExecution : composerRunOptions.value.antigravityExecution) === "native";
+  const options = agents.value.filter(agent => !teamProviderProblem(agent.id, nativeAgy) && ["claude", "codex", "agy"].includes(agent.id)).flatMap(agent => {
     const catalog = catalogs.value[agent.id];
     return [{ id: `${agent.id}:`, label: `${SHORT[agent.id]} · Default model` }, ...catalog && !("error" in catalog) ? catalog.models.map(model => ({ id: `${agent.id}:${model.id}`, label: `${SHORT[agent.id]} · ${model.label}` })) : []];
   });
@@ -43,11 +54,11 @@ export function TaskTeamControl({ run, config, lead, project, onChange, disabled
       void save({ ...next, coordinator, settings: { ...next.settings, [coordinator]: { model } } }).catch(() => {});
     }} /><button type="button" class="btn ghost small task-team-advanced" onClick={() => setOpen(true)}>Advanced</button></> : null}
     {error ? <span class="help" role="alert">{error}</span> : null}
-    {open ? <TaskTeamDialog value={next} project={project ?? run?.project} toolApprovals={toolApprovals ?? !!run?.approvals.tools} running={run?.status === "running"} onClose={() => setOpen(false)} onSave={async next => { await save(next); setOpen(false); }} /> : null}
+    {open ? <TaskTeamDialog value={next} project={project ?? run?.project} nativeAgy={nativeAgy} toolApprovals={toolApprovals ?? !!run?.approvals.tools} running={run?.status === "running"} onClose={() => setOpen(false)} onSave={async next => { await save(next); setOpen(false); }} /> : null}
   </>;
 }
 
-function TaskTeamDialog({ value, project, running, toolApprovals, onSave, onClose }: { value: TaskTeamConfig; project?: string; running?: boolean; toolApprovals: boolean; onSave: (config: TaskTeamConfig) => Promise<void>; onClose: () => void }) {
+function TaskTeamDialog({ value, project, running, toolApprovals, nativeAgy, onSave, onClose }: { value: TaskTeamConfig; project?: string; running?: boolean; toolApprovals: boolean; nativeAgy: boolean; onSave: (config: TaskTeamConfig) => Promise<void>; onClose: () => void }) {
   const [draft, setDraft] = useState(() => structuredClone(value));
   const [templates, setTemplates] = useState<TeamTemplate[]>([]);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
@@ -57,6 +68,8 @@ function TaskTeamDialog({ value, project, running, toolApprovals, onSave, onClos
   const update = (patch: Partial<TaskTeamConfig>) => setDraft({ ...draft, ...patch });
   const selected = templates.find(template => template.id === draft.template?.id);
   const permissionProblem = draft.enabled && toolApprovals && (draft.coordinator === "agy" || draft.providers.includes("agy")) ? "This task requires interactive tool approvals, which Antigravity does not support. Choose Claude or Codex, or change the task's permissions before enabling Antigravity." : "";
+  const blockedProvider = draft.enabled ? [draft.coordinator, ...draft.providers].find(id => teamProviderProblem(id, nativeAgy)) : undefined;
+  const availabilityProblem = blockedProvider ? `${SHORT[blockedProvider]}: ${teamProviderProblem(blockedProvider, nativeAgy)}. Choose an available provider.` : "";
   const save = async () => { setBusy(true); setError(""); try { await onSave(draft); } catch (error) { setError((error as Error).message); setBusy(false); } };
   return <dialog ref={ref} class="picker task-team-dialog" aria-labelledby="task-team-title"><div class="picker-inner">
     <div class="picker-head"><div><h3 id="task-team-title">AI team setup</h3><p class="help">Your agent answers questions directly and brings in AI teammates for work.</p></div><label class="task-team-switch"><span>{draft.enabled ? "AI team enabled" : "AI team disabled"}</span><input type="checkbox" role="switch" aria-label="Enable AI team" disabled={busy} checked={draft.enabled} onChange={event => update({ enabled: event.currentTarget.checked })} /></label></div>
@@ -72,18 +85,19 @@ function TaskTeamDialog({ value, project, running, toolApprovals, onSave, onClos
         }}><optgroup label="Built-in"><option value="adaptive">Adaptive team</option><option value="build-review">Build and review</option><option value="investigate">Research and investigate</option></optgroup>{templates.length ? <optgroup label="Saved teams and workflows">{templates.map(t => <option value={`saved:${t.id}`} key={t.id}>{t.name} · v{t.version}</option>)}</optgroup> : null}</select></label>
         <p class="help">{selected?.description ?? (draft.preset === "investigate" ? "Investigate and report findings without changing source files." : "Assign useful work to selected providers and review the combined result.")}</p>
         {selected?.parameters.filter(name => name !== "task").map(name => <label class="lbl" key={name}>{name}<input class="field" value={draft.template?.inputs[name] ?? ""} onInput={event => update({ template: { ...draft.template!, inputs: { ...draft.template!.inputs, [name]: event.currentTarget.value } } })} /></label>)}
-        <label class="lbl">Team lead<select class="field" aria-label="Team lead" value={draft.coordinator} onChange={event => update({ coordinator: event.currentTarget.value as AgentId })}>{choices.map(agent => <option value={agent.id} disabled={!agent.available} key={agent.id}>{agent.displayName}{!agent.available ? " · unavailable" : ""}</option>)}</select></label>
+        <label class="lbl">Team lead<select class="field" aria-label="Team lead" value={draft.coordinator} onChange={event => update({ coordinator: event.currentTarget.value as AgentId })}>{choices.map(agent => <option value={agent.id} disabled={!!teamProviderProblem(agent.id, nativeAgy)} key={agent.id}>{agent.displayName}{teamProviderProblem(agent.id, nativeAgy) ? " · unavailable" : ""}</option>)}</select></label>
         <p class="help">Coordinates this team and gives the final answer. If unavailable, another selected provider can continue with the conversation context.</p>
         <div class="task-team-members" role="group" aria-label="Team providers">{choices.map(agent => {
           const selected = draft.providers.includes(agent.id), needed = selected || draft.coordinator === agent.id;
-          return <div class="task-team-member" key={agent.id}><label><input type="checkbox" aria-label={`Use ${agent.displayName}`} checked={selected} disabled={!agent.available} onChange={event => update({ providers: event.currentTarget.checked ? [...draft.providers, agent.id] : draft.providers.filter(id => id !== agent.id) })} /><b>{agent.displayName}</b><span class="help">{selected ? "Available teammate" : draft.coordinator === agent.id ? "Team lead" : "Not selected"}</span></label>{needed ? <ChatControls agent={agent.id} settings={draft.settings[agent.id] ?? {}} onSettings={settings => update({ settings: { ...draft.settings, [agent.id]: settings } })} permissions={{ trust: "standard", tools: false }} onPermissions={() => {}} showPermissions={false} /> : null}</div>;
+          const problem = teamProviderProblem(agent.id, nativeAgy);
+          return <div class="task-team-member" key={agent.id}><label><input type="checkbox" aria-label={`Use ${agent.displayName}`} checked={selected} disabled={!!problem && !selected} onChange={event => update({ providers: event.currentTarget.checked ? [...draft.providers, agent.id] : draft.providers.filter(id => id !== agent.id) })} /><b>{agent.displayName}</b><span class="help">{problem ?? (selected ? "Selected teammate" : draft.coordinator === agent.id ? "Team lead" : "Not selected")}</span></label>{needed && !problem ? <ChatControls agent={agent.id} settings={draft.settings[agent.id] ?? {}} onSettings={settings => update({ settings: { ...draft.settings, [agent.id]: settings } })} permissions={{ trust: "standard", tools: false }} onPermissions={() => {}} showPermissions={false} /> : null}</div>;
         })}</div>
         {draft.providers.includes("agy") || draft.coordinator === "agy" ? <p class="help">Antigravity supports workspace files, live teammate messages and the shared browser. Code Flow runs terminal checks. Computer actions require Full access; interactive tool approvals are unavailable. Side chats use enforced read-only isolation.</p> : null}
         <details class="task-team-limits"><summary>Limits and approval</summary><div class="task-team-limit-grid">{([['maxMembers', 'Maximum members', 3, 6], ['maxCalls', 'Maximum calls', 4, 200], ['maxMinutes', 'Maximum minutes', 1, 720]] as const).map(([key, label, min, max]) => <label key={key}>{label}<input class="field" type="number" min={min} max={max} value={draft[key]} onInput={event => update({ [key]: Number(event.currentTarget.value) })} /></label>)}</div><label><input type="checkbox" checked={draft.approvePlan} onChange={event => update({ approvePlan: event.currentTarget.checked })} /> Let me approve the plan before teammates start</label></details>
         {running ? <p class="help" role="status">New settings apply on Resume or the next conversation turn. Turning AI team off stops its active execution, preserves partial work, and hands control back to your agent.</p> : <p class="help">Turning AI team off keeps these settings for next time. Existing task permissions stay in effect.</p>}
       </fieldset>
-      {error || permissionProblem ? <p class="msg err" role="alert">{error || permissionProblem}</p> : null}
-    </div><div class="picker-foot"><button class="btn" disabled={busy} onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !draft.providers.length || !!permissionProblem} onClick={() => void save()}>{busy ? "Saving…" : "Apply team settings"}</button></div>
+      {error || permissionProblem || availabilityProblem ? <p class="msg err" role="alert">{error || permissionProblem || availabilityProblem}</p> : null}
+    </div><div class="picker-foot"><button class="btn" disabled={busy} onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !draft.providers.length || !!permissionProblem || !!availabilityProblem} onClick={() => void save()}>{busy ? "Saving…" : "Apply team settings"}</button></div>
   </div></dialog>;
 }
 

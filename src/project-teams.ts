@@ -35,7 +35,7 @@ const pending = (t: ProjectTeam) => t.opportunities.filter((o) => ["ready", "acc
 const openOpportunities = (t: ProjectTeam) => t.opportunities.filter((o) => !["shipped", "rejected", "expired"].includes(o.status)).length;
 const operation = (id: unknown, content: unknown) => ({ id: text(id, 150, "operation ID"), hash: digest(content) });
 const finish = (c: ProjectTeamCycle, status: ProjectTeamCycle["status"], reason?: string) => { c.status = status; c.reason = reason; c.endedAt = Date.now(); };
-type Host = Pick<RunManager, "get" | "list" | "start" | "cancel" | "subscribeAll" | "reviewCoverage" | "setProjectTeamGuard" | "setProjectTeamShippingGuard">;
+type Host = Pick<RunManager, "get" | "list" | "start" | "cancel" | "subscribeAll" | "reviewCoverage" | "setProjectTeamGuard" | "setProjectTeamShippingGuard" | "setProjectTeamDeletionGuard">;
 export interface ProjectTeamsOptions {
   manager: Host; projects: Pick<Projects, "get">; automations: Automations;
   build: (body: Record<string, any>) => Promise<StartRunInput>; store?: ProjectTeamStore;
@@ -55,6 +55,24 @@ export class ProjectTeams {
     options.automations.setProjectTeams({ fire: async (id, key) => { const team = await this.cycle(id, key); const c = team.cycles.find((c) => c.operationId === key); const runId = c?.launches[0]?.runId; return { run: runId ? options.manager.get(runId) : undefined, skipped: c?.reason }; }, preview: (id) => this.preview(id), tick: () => this.reconcile() });
     options.manager.setProjectTeamGuard((run) => this.guard(run));
     options.manager.setProjectTeamShippingGuard((run, branch) => this.shippingGuard(run, branch));
+    options.manager.setProjectTeamDeletionGuard((run) => {
+      // Use the mission's original project, even if its run was moved elsewhere.
+      let team: ProjectTeam;
+      try { team = this.store.deletionHistory(run.projectTeam!.teamId); }
+      catch { throw new ProjectTeamConflict("Project mission history could not be checked. Restore access to the mission before deleting this run."); }
+      if (!options.projects.get(team.projectId)) return;
+      const ref = run.projectTeam!;
+      const cycle = team.cycles.find(cycle => cycle.id === ref.cycleId);
+      const launch = cycle?.launches.find(launch => launch.runId === run.id && launch.claimId === ref.claimId && launch.inputHash === ref.inputHash && launch.phase === ref.phase && launch.attempt === ref.attempt);
+      // Once the cycle and its usage receipt are durable, its chat is no longer needed
+      // for recovery. Keep the receipts themselves, including blocked discovery attempts.
+      if (!cycle?.endedAt || ACTIVE_CYCLES.includes(cycle.status) || launch?.state !== "settled" || !launch.usage) {
+        throw new ProjectTeamConflict("This mission cycle still needs its run history for recovery or budget accounting. Finish or stop the mission cycle, then try again. You can archive the run meanwhile.");
+      }
+      if (team.opportunities.some(opportunity => opportunity.result?.runId === run.id && ["ready", "accepted"].includes(opportunity.status))) {
+        throw new ProjectTeamConflict("This mission result is awaiting approval or shipping. Archive this run instead, or reject the result in the mission before deleting it.");
+      }
+    });
   }
   private serialize<T>(fn: () => Promise<T>): Promise<T> { const work = this.queue.then(fn); this.queue = work.catch(() => undefined); return work; }
   async load() { await this.store.load(); await this.definitions.load().catch((error) => { this.definitions.faults.set("definitions", (error as Error).message); }); }

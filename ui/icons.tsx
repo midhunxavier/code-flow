@@ -5,6 +5,7 @@ const PATHS = {
   menu: "M4 7h16M4 12h16M4 17h16",
   help: `${circle(12, 12, 9)}M9.5 9a2.5 2.5 0 1 1 4 2c-1 .6-1.5 1-1.5 2M12 17h.01`,
   plus: "M12 5v14M5 12h14",
+  check: "M5 12l4 4L19 6",
   search: `${circle(11, 11, 7)}M20 20l-4-4`,
   filter: "M4 6h16M7 12h10M10 18h4",
   folder: "M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z",

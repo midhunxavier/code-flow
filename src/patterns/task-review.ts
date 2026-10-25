@@ -12,7 +12,7 @@ export const taskReviewPattern: Pattern = {
     const cwd = await ctx.worktree("review");
     for (const agent of ctx.agents("reviewer")) {
       const outcome = await ctx.ask({ role: "reviewer", agent, cwd, title: "Review combined workspace", mode: "read", retryProviderFailure: true, allowFailure: true, teamResponse: true,
-        schema: REVIEW_SCHEMA, prompt: `You have not authored this work. Review the current workspace against the user's request and combined-edit context below. This is an immutable snapshot. Do not edit, run mutating commands, commit, or perform browser/computer actions. Read relevant files and return an independent review. Use changes_requested if requirements are unmet. Report concrete issues; return empty issues when approved.\n\n${REVIEW_SHAPE}\n\n${ctx.task}` });
+        schema: REVIEW_SCHEMA, prompt: `You have not authored this work. The current action is a new read-only review of the combined workspace, not another acknowledgement of an earlier conversation turn. Review against the current delegated task, latest corrections and applicable ongoing user constraints below. This is an immutable snapshot. Do not edit, run mutating commands, commit, or perform browser/computer actions. Read relevant files and return an independent review through the supplied schema. Use changes_requested if requirements are unmet. Report concrete issues; return empty issues when approved.\n\n${REVIEW_SHAPE}\n\n${ctx.task}` });
       if (!outcome.ok) { if (recoverableProviderFailure(outcome, false)) continue; throw new Error(outcome.error ?? "Review failed"); }
       const value = outcome.structured ?? extractJson(outcome.finalText);
       const problem = value === undefined ? "No review received" : shapeProblem(REVIEW_SCHEMA, value);

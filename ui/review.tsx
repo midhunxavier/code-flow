@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
 import { RunEvidence, VerificationEvidence } from "./run-evidence.js";
 import { ReviewCoveragePanel } from "./review-coverage.js";
+import { resultAgent } from "./run-experience.js";
 import { useRunStream } from "./run-feed.js";
 import { AgentPicker, ArtifactCard } from "./run.js";
 import { api, enc, post, showToast, store } from "./lib.js";
@@ -73,10 +74,15 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   const [general, setGeneral] = useState(() => store.get(`${draftKey}:general`) ?? "");
   const [agent, setAgent] = useState<AgentId | null>(null);
   const [sending, setSending] = useState(false);
+  const [workingChanges, setWorkingChanges] = useState<boolean | null>(null);
+  const feedback = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => setGeneral(store.get(`${draftKey}:general`) ?? ""), [draftKey]);
 
   useEffect(() => {
     let current = true;
     setError("");
+    setWorkingChanges(null);
+    api<{ workingChanges?: boolean }>(`/api/runs/${id}/review-coverage?branch=${enc(branch)}`).then(value => { if (current) setWorkingChanges(!!value.workingChanges); }, e => { if (current) setRunError(e.message); });
     api<DiffFile[]>(`/api/runs/${id}/diff?branch=${enc(branch)}`).then(
       (d) => {
         if (!current) return;
@@ -106,6 +112,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
       await post(`/api/runs/${id}/followups`, { kind: "comments", worktree: worktree.name, agent: target, message });
       changeCommentDrafts(draftKey, () => []);
       store.set(`${draftKey}:general`, "");
+      setGeneral("");
       showToast("Sent — the agent is working on your comments");
       route.value = { view: "run", id };
     } catch (err) {
@@ -130,35 +137,24 @@ export function Review({ id, branch }: { id: string; branch: string }) {
             </span>
           ) : null}
         </div>
-        {/* one group, so the agent and the button wrap together */}
-        <div class="review-send">
-          {summary?.projectTeam ? (
-            <a class="btn" href={`#/project/${summary.project}`}>Use mission revision controls</a>
-          ) : summary?.status === "done" ? (
-            <>
-              <span class="review-to">{agent || defaultAgent ? "Send to" : run || runError ? "Choose an agent" : "Loading recipient…"}</span>
-              <AgentPicker value={target} onChange={setAgent} />
-              <button class="btn primary" disabled={!canSend || sending} onClick={send}>
-                {sending ? "Sending…" : `Send ${comments.length || ""} comment${comments.length === 1 ? "" : "s"}`.replace("  ", " ")}
-              </button>
-            </>
-          ) : (
-            <span class="review-to">Comments can be sent once the run has finished.</span>
-          )}
-        </div>
+        <button class="btn small" onClick={() => feedback.current?.focus()}>Add feedback</button>
       </div>
       {summary ? <div class="review-overview">
         <RunEvidence run={summary} branch={branch} />
-        <div class="review-evidence-tools"><VerificationEvidence run={summary} /><button class="btn small" onClick={() => setRefresh(value => value + 1)}>Refresh changes</button></div>
-        {summary.artifacts.find(a => a.branch === branch) ? <details class="review-delivery"><summary>Publish changes</summary><p class="help">Review the diff and evidence before publishing. Merge validation and confirmation still apply.</p><ArtifactCard key={branch} run={summary} artifact={summary.artifacts.find(a => a.branch === branch)!} steps={[...data.current.steps.values()]} reviewing /></details> : null}
+        <div class="review-option-row"><VerificationEvidence run={summary} />
+        <details class="review-tools"><summary>Review tools</summary>
+          <ReviewCoveragePanel runId={id} branch={branch} refreshKey={`${refresh}:${summary?.status}:${summary?.lastCheck?.at}`} onOpen={setSelected} />
+          {worktree && files?.length ? <ChangeImpact folder={worktree.path} paths={files.map(file => file.path)} refreshKey={`${refresh}:${summary?.status}:${summary?.lastCheck?.at}`} /> : null}
+        </details>
+        {!summary.testRun && summary.artifacts.find(a => a.branch === branch) ? <details class="review-delivery"><summary>Publish changes</summary>{workingChanges === false ? <><p class="help">Review the diff and evidence before publishing. Merge validation and confirmation still apply.</p><ArtifactCard key={branch} run={summary} artifact={summary.artifacts.find(a => a.branch === branch)!} steps={[...data.current.steps.values()]} reviewing /></> : <p class="help">{workingChanges ? "Ask the agent in chat to commit these changes before publishing. Your working files are shown below." : "Checking the workspace…"}</p>}</details> : null}
+        <button class="btn small review-refresh" onClick={() => setRefresh(value => value + 1)}>Refresh changes</button></div>
       </div> : null}
       {error ? <div class="msg err review-msg">{error}</div> : null}
       {runError ? <div class="msg warn review-msg">{runError}</div> : null}
       {summary?.outcome?.decision === "needs-work" && summary.outcome.branch === branch ? <p class="help review-msg">Describe what needs to change in the overall comment or on individual lines, then send your comments to start a revision on this branch.</p> : null}
       <div class="review-body">
         <div class="review-files">
-          {worktree && files?.length ? <ChangeImpact folder={worktree.path} paths={files.map(file => file.path)} refreshKey={`${refresh}:${summary?.status}:${summary?.lastCheck?.at}`} /> : null}
-          <ReviewCoveragePanel runId={id} branch={branch} refreshKey={`${refresh}:${summary?.status}:${summary?.lastCheck?.at}`} onOpen={setSelected} />
+          <div class="review-files-heading">{workingChanges ? "Working changes" : "Changed files"} <span>{files?.length ?? "…"}</span></div>
           {files?.map((f) => {
             const n = comments.filter((c) => c.file === f.path).length;
             const cut = f.path.lastIndexOf("/") + 1;
@@ -182,22 +178,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
             );
           })}
           {files && !files.length ? <div class="tree-empty">No changes on this branch.</div> : null}
-          <div class="general">
-            <label class="lbl" for="general">
-              Overall comment
-            </label>
-            <textarea
-              id="general"
-              class="field"
-              rows={4}
-              placeholder="Anything that isn't about one line…"
-              value={general}
-              onInput={(e) => {
-                setGeneral(e.currentTarget.value);
-                store.set(`${draftKey}:general`, e.currentTarget.value);
-              }}
-            />
-          </div>
+
         </div>
         <div class="review-diff" role="region" aria-label={file ? `Diff of ${file.path}` : "Diff"}>
           {file ? (
@@ -213,13 +194,36 @@ export function Review({ id, branch }: { id: string; branch: string }) {
           )}
         </div>
       </div>
+      <div class="review-feedback" aria-label="Review feedback">
+        <label class="lbl" for="general">Overall comment</label>
+        <textarea ref={feedback} id="general" class="field" rows={2} disabled={sending}
+          placeholder="Tell the agent what to change…" value={general}
+          onInput={e => { setGeneral(e.currentTarget.value); store.set(`${draftKey}:general`, e.currentTarget.value); }} />
+        <div class="review-feedback-actions">
+          <p class="help">Send feedback to start an agent revision and rerun configured checks. Click a diff line to add a specific comment.</p>
+        <div class="review-send">
+          {summary?.projectTeam ? (
+            <a class="btn" href={`#/project/${summary.project}`}>Use mission revision controls</a>
+          ) : summary?.status === "done" ? (
+            <>
+              <span class="review-to">{agent || defaultAgent ? "Send to" : run || runError ? "Choose an agent" : "Loading recipient…"}</span>
+              <AgentPicker value={target} onChange={setAgent} />
+              <button class="btn primary" disabled={!canSend || sending} onClick={send}>
+                {sending ? "Sending…" : `Send ${comments.length || ""} comment${comments.length === 1 ? "" : "s"}`.replace("  ", " ")}
+              </button>
+            </>
+          ) : (
+            <span class="review-to">Comments can be sent once the run has finished.</span>
+          )}
+        </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-/** The agent that last wrote code in a worktree: who line comments go to unless you pick someone else. */
-export const lastWriter = (run: Run | null, worktree?: string): AgentId | undefined =>
-  [...(run?.steps ?? [])].reverse().find((s) => (s.kind ?? "agent") === "agent" && s.worktree === worktree && s.mode === "write")?.agent;
+/** Default feedback recipient, including the lead for a combined team result. */
+export const lastWriter = (run: Run | null, worktree?: string): AgentId | undefined => resultAgent(run, worktree);
 
 /** Line comments (and an overall one) as the follow-up message the agent gets. */
 export function commentsMessage(comments: Comment[], general = ""): string {

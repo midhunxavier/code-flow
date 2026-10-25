@@ -10,6 +10,8 @@ export class ProjectTeamConflict extends Error { readonly status = 409; }
 /** One serialized writer, immutable published snapshots, and fsync before acknowledgment. */
 export class ProjectTeamStore {
   private teams = new Map<string, ProjectTeam>();
+  /** Valid history whose repository ownership prevents dispatch; never used for writes. */
+  private quarantinedHistory = new Map<string, ProjectTeam>();
   private queue: Promise<unknown> = Promise.resolve();
   private listeners = new Set<() => void>();
   readonly faults = new Map<string, string>();
@@ -21,7 +23,7 @@ export class ProjectTeamStore {
   private publish(team: ProjectTeam) { this.teams.set(team.id, structuredClone(team)); this.notify(); }
   async load() {
     const files = await readdir(this.directory).catch((e) => { if (e.code === "ENOENT") return []; throw e; });
-    this.teams.clear(); this.faults.clear(); this.feature = undefined;
+    this.teams.clear(); this.quarantinedHistory.clear(); this.faults.clear(); this.feature = undefined;
     try {
       const file = await open(join(this.directory, "settings.json"), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       let raw;
@@ -53,9 +55,9 @@ export class ProjectTeamStore {
           await this.save(team);
         }
         owners.set(identity, [...owners.get(identity) ?? [], team.id]);
-      } catch (error) { this.faults.set(team.id, (error as Error).message); this.teams.delete(team.id); }
+      } catch (error) { this.faults.set(team.id, (error as Error).message); this.quarantinedHistory.set(team.id, structuredClone(team)); this.teams.delete(team.id); }
     }
-    for (const ids of owners.values()) if (ids.length > 1) for (const id of ids) { this.faults.set(id, "Multiple active teams claim this repository; resolve ownership before dispatch"); this.teams.delete(id); }
+    for (const ids of owners.values()) if (ids.length > 1) for (const id of ids) { this.faults.set(id, "Multiple active teams claim this repository; resolve ownership before dispatch"); this.quarantinedHistory.set(id, structuredClone(this.teams.get(id)!)); this.teams.delete(id); }
     this.loaded = true;
   }
   configuration(defaultEnabled: boolean) {
@@ -84,6 +86,11 @@ export class ProjectTeamStore {
     const error = this.faults.get(id); if (error) throw new Error(`Standing team storage is unavailable: ${error}`);
     const team = this.teams.get(id); if (!team) throw Object.assign(new Error("Project team not found"), { status: 404 });
     return structuredClone(team);
+  }
+  /** Only deletion may inspect validated, quarantined history. Corrupt documents still fail closed. */
+  deletionHistory(id: string): ProjectTeam {
+    const history = this.quarantinedHistory.get(id);
+    return history ? structuredClone(history) : this.get(id);
   }
   private serialized<T>(fn: () => Promise<T>): Promise<T> {
     const result = this.queue.then(fn); this.queue = result.catch(() => undefined); return result;

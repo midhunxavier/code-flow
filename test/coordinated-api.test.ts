@@ -60,7 +60,7 @@ test("revoked membership blocks creation, dispatch, result acceptance, and shipp
 test("incorrect verification HEAD or missing required checks never release downstream tasks", async () => {
   for (const mode of ["head", "missing-check", "stale-review", "profile-mutation"] as const) {
     const f = await fixture(); await f.api.create(f.body()); await f.api.service.tick(); const run = [...f.runs.values()][0]!;
-    if (mode === "head") run.verification!.head = "f".repeat(40); else if (mode === "missing-check") run.verification!.checks = []; else if (mode === "profile-mutation") run.loop.verification!.checks[0]!.command = "true"; else f.options.manager.reviewCoverage = async () => ({ head: run.verification!.head!, files: [], reviewed: [], coverage: { changed: 0, reviewed: 0, percent: 100, unreviewed: [] }, risk: { level: "low", reasons: [], sensitiveFiles: [] }, stale: true, rework: [] });
+    if (mode === "head") run.verification!.head = "f".repeat(40); else if (mode === "missing-check") run.verification!.checks = []; else if (mode === "profile-mutation") run.loop.verification!.checks[0]!.command = "true"; else f.options.manager.reviewCoverage = async () => ({ head: run.verification!.head!, workingChanges: false, files: [], reviewed: [], coverage: { changed: 0, reviewed: 0, percent: 100, unreviewed: [] }, risk: { level: "low", reasons: [], sensitiveFiles: [] }, stale: true, rework: [] });
     await f.api.service.tick(); assert.equal(f.inputs.length, 1); assert.equal((await f.latest()).nodes[0]!.status, "failed"); assert.equal((await f.latest()).nodes[1]!.attempts, 0);
   }
 });

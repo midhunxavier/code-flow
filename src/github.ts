@@ -15,6 +15,7 @@ export interface Issue {
   body: string;
   url: string;
   labels: string[];
+  comments?: { author: string; body: string }[];
 }
 
 export interface PullRequest {
@@ -110,6 +111,8 @@ export interface RunSource {
   isCrossRepository?: boolean;
   /** Failing CI checks and their logs when the run started ("Fix failing CI"). */
   ci?: { failing: string[]; logs: string };
+  /** Bounded discussion excerpts, always treated as outside text. */
+  discussion?: string;
   /** The security alert(s), for runs started from one. */
   alert?: AlertInfo;
   /** Who opened the issue or PR, and their relation to the repo (OWNER, MEMBER, NONE…). */
@@ -225,7 +228,7 @@ export function alertsError(what: string, err: Error): string {
 }
 
 export async function viewIssue(repo: string, number: number): Promise<Issue> {
-  return toIssue(JSON.parse(await gh(repo, ["issue", "view", String(number), "--json", "number,title,body,url,labels"])));
+  return toIssue(JSON.parse(await gh(repo, ["issue", "view", String(number), "--json", "number,title,body,url,labels,comments"])));
 }
 
 export async function listPullRequests(repo: string): Promise<PullRequest[]> {
@@ -304,13 +307,25 @@ export async function prChecks(repo: string, pr: string): Promise<Check[]> {
 /** Logs of the failed GitHub Actions jobs behind `checks`, trimmed (from the end) to fit a prompt. */
 export async function failedLogs(repo: string, checks: Check[], maxChars = 15_000): Promise<string> {
   const runIds = [...new Set(checks.filter((c) => c.bucket === "fail").map((c) => c.link.match(/\/actions\/runs\/(\d+)/)?.[1]).filter(Boolean))] as string[];
-  const parts: string[] = [];
-  for (const id of runIds) {
-    const res = await ghRaw(repo, ["run", "view", id, "--log-failed"]);
-    parts.push(res.stdout.trim() || res.stderr.trim());
-  }
-  const text = parts.filter(Boolean).join("\n\n");
-  return text.length > maxChars ? `…\n${text.slice(-maxChars)}` : text;
+  // Bound requests and preserve evidence from each failed workflow, rather than letting one
+  // enormous log crowd every other failure out of the prompt. Three downloads run at a time.
+  const selected = runIds.slice(0, 8);
+  const parts = new Array<string>(selected.length);
+  let next = 0;
+  const budget = Math.max(0, maxChars - (runIds.length > selected.length ? 100 : 0));
+  const perRun = Math.floor(budget / Math.max(1, selected.length));
+  await Promise.all(Array.from({ length: Math.min(3, selected.length) }, async () => {
+    for (let index = next++; index < selected.length; index = next++) {
+      const id = selected[index]!;
+      const res = await ghRaw(repo, ["run", "view", id, "--log-failed"]);
+      const header = `Actions run ${id}${res.code ? " (logs unavailable or incomplete)" : ""}:\n`;
+      const log = res.stdout.trim() || res.stderr.trim() || "No failed-job log returned; inspect this check on GitHub.";
+      const available = Math.max(0, perRun - header.length - 4);
+      parts[index] = (header + (log.length > available ? `…\n${available ? log.slice(-available) : ""}` : log)).slice(0, perRun);
+    }
+  }));
+  if (runIds.length > selected.length) parts.push(`${runIds.length - selected.length} more failed workflow logs omitted; inspect the remaining checks on GitHub.`);
+  return parts.join("\n\n").slice(0, maxChars);
 }
 
 export async function commentOnPr(repo: string, pr: string, body: string): Promise<void> {
@@ -330,6 +345,8 @@ export interface PrMergeInfo {
   headRefOid: string;
   /** MERGEABLE, CONFLICTING, or UNKNOWN while GitHub is still working it out. */
   mergeable: string;
+  mergeStateStatus?: string;
+  reviewDecision?: string;
   ci: CiState;
   /** The ways this repository lets pull requests be merged. */
   methods: MergeMethod[];
@@ -337,7 +354,7 @@ export interface PrMergeInfo {
 }
 
 export async function prMergeInfo(repo: string, pr: string): Promise<PrMergeInfo> {
-  const data = JSON.parse(await gh(repo, ["pr", "view", pr, "--json", "number,url,state,isDraft,baseRefName,headRefOid,mergeable,mergeCommit,statusCheckRollup"]));
+  const data = JSON.parse(await gh(repo, ["pr", "view", pr, "--json", "number,url,state,isDraft,baseRefName,headRefOid,mergeable,mergeStateStatus,reviewDecision,mergeCommit,statusCheckRollup"]));
   // The PR's own repository (its URL says which), in case it isn't the checkout's default remote.
   const nameWithOwner = String(data.url ?? pr).match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1];
   let methods = MERGE_METHODS;
@@ -359,6 +376,8 @@ export async function prMergeInfo(repo: string, pr: string): Promise<PrMergeInfo
     baseRefName: data.baseRefName,
     headRefOid: data.headRefOid,
     mergeable: data.mergeable ?? "UNKNOWN",
+    mergeStateStatus: data.mergeStateStatus ?? "UNKNOWN",
+    reviewDecision: data.reviewDecision ?? "",
     ci: ciState(data.statusCheckRollup ?? []),
     methods,
     mergeCommit: data.mergeCommit?.oid || undefined,
@@ -373,6 +392,13 @@ export async function mergePullRequest(repo: string, pr: string, method: MergeMe
   await gh(repo, ["pr", "merge", pr, `--${method}`, "--match-head-commit", headSha]);
 }
 
+/** GitHub updates its branch, with an optimistic lock on the commit the user saw. */
+export async function updatePullRequestBranch(repo: string, pr: string, headSha: string): Promise<void> {
+  const match = pr.match(/^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)$/);
+  if (!match || !/^[a-f0-9]{40,64}$/i.test(headSha)) throw new Error("A GitHub pull request and its current commit are required");
+  await gh(repo, ["api", `repos/${match[1]}/${match[2]}/pulls/${match[3]}/update-branch`, "--method", "PUT", "--input", "-"], JSON.stringify({ expected_head_sha: headSha }));
+}
+
 /** GitHub refuses a pull request description longer than this. */
 export const PR_BODY_LIMIT = 65_536;
 
@@ -383,6 +409,12 @@ export function fitPrBody(body: string, limit = PR_BODY_LIMIT): string {
   const cut = body.slice(0, limit - note.length - 1);
   const end = cut.lastIndexOf("\n");
   return (end > cut.length / 2 ? cut.slice(0, end) : cut) + note;
+}
+
+export async function githubRepositoryUrl(repo: string): Promise<string> {
+  const data = JSON.parse(await gh(repo, ["repo", "view", "--json", "url"]));
+  if (typeof data.url !== "string") throw new Error("GitHub did not return the repository URL for visual evidence");
+  return data.url;
 }
 
 /**
@@ -485,6 +517,7 @@ export function sourcePrompt(source: RunSource | undefined): string {
     const header = [`Title: ${source.title.slice(0, 300)}`, source.kind === "pr" ? `Branch: ${source.headRefName} into ${source.baseRefName}` : ""].filter(Boolean).join("\n");
     parts.push(untrustedBlock(source.kind === "issue" ? "issue's title and text" : "pull request's title, branch and description", body ? `${header}\n\n${body}` : header, false));
   }
+  if (source.discussion) parts.push(`### Recent issue discussion (bounded excerpts; open the issue for full context)\n${untrustedBlock("issue discussion", source.discussion, false)}`);
   if (source.ci) {
     parts.push(`### Failing CI checks\n${source.ci.failing.map((n) => `- ${n}`).join("\n") || "(none reported)"}`);
     if (source.ci.logs) parts.push(`### Logs of the failed jobs\n${untrustedBlock("CI log", source.ci.logs, trusted)}`);
@@ -633,7 +666,11 @@ export async function loadSource(repo: string, input: SourceInput): Promise<{ so
   if (input.kind === "issue") {
     const issue = await viewIssue(repo, input.number);
     const trusted = TRUSTED_ASSOCIATIONS.has(who.association);
-    return { source: { kind: "issue", number: issue.number, url: issue.url, title: issue.title, body: issue.body, ...who, trusted } };
+    const comments = issue.comments ?? [];
+    const discussion = comments.slice(-10).map(comment => `@${comment.author.slice(0, 80) || "unknown"}: ${comment.body.slice(0, 500)}${comment.body.length > 500 ? "…" : ""}`).join("\n\n");
+    return { source: { kind: "issue", number: issue.number, url: issue.url, title: issue.title, body: issue.body, ...who, trusted,
+      ...(discussion ? { discussion, untrustedText: true } : {}),
+    } };
   }
   const { branch, pr } = await fetchPullRequest(repo, input.number);
   const source: RunSource = {
@@ -660,7 +697,7 @@ export async function loadSource(repo: string, input: SourceInput): Promise<{ so
   return { source, branch };
 }
 
-const toIssue = (i: any): Issue => ({ number: i.number, title: i.title, body: i.body ?? "", url: i.url, labels: (i.labels ?? []).map((l: any) => l.name) });
+const toIssue = (i: any): Issue => ({ number: i.number, title: i.title, body: i.body ?? "", url: i.url, labels: (i.labels ?? []).map((l: any) => l.name), ...(Array.isArray(i.comments) ? { comments: i.comments.map((comment: any) => ({ author: String(comment.author?.login ?? ""), body: String(comment.body ?? "") })) } : {}) });
 const toPr = (p: any): PullRequest => ({
   number: p.number,
   title: p.title,

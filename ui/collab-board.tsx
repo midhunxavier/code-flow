@@ -7,14 +7,22 @@ import { TeamConnectionPicker } from "./team-connections.js";
 import { useEffect, useState } from "preact/hooks";
 import type { Board, BoardProject, InboxItem, Task, TaskStatus, TaskSummary } from "../src/collab/model.js";
 import { TaskDraftAssistant } from "./task-draft.js";
-import { Icon } from "./icons.js";
+import { Icon, type IconName } from "./icons.js";
 import { post, showToast, usePoll } from "./lib.js";
 import { roleAtLeast } from "./shared-roles.js";
 import { ATTEMPT_LABEL, INBOX_LABEL, STATUS_LABEL, TASK_STATUSES, type Member, type TeamRoute, ago, attemptLive, attemptStale, board, boardError, boardLoaded, inboxOpen, inboxUnread, initials, loadBoard, loadInbox, loadTeamLink, markRead, teamLink, teamTick, whoLabel } from "./collab-state.js";
 
+const STAGE: Record<TaskStatus, { icon: IconName; description: string; empty: string }> = {
+  planned: { icon: "issue", description: "Ready to start", empty: "Nothing planned yet" },
+  working: { icon: "play", description: "In progress", empty: "No work in progress" },
+  blocked: { icon: "alert", description: "Needs attention", empty: "No blocked tasks" },
+  review: { icon: "compare", description: "Awaiting feedback", empty: "Nothing awaiting review" },
+  done: { icon: "check", description: "Completed work", empty: "Completed tasks appear here" },
+};
+
 /**
  * The team board: every task of the projects you can see, in five status columns, with the inbox
- * beside them. The owner app and the shared dashboard render the same view; `shared` only hides what
+ * below them. The owner app and the shared dashboard render the same view; `shared` only hides what
  * needs this computer (the link callout), and `navigate` is whichever router the host page uses.
  */
 export function TeamBoardView({ project, shared = false, embedded = false, navigate }: { project?: string; shared?: boolean; embedded?: boolean; navigate: (to: TeamRoute) => void }) {
@@ -40,20 +48,21 @@ export function TeamBoardView({ project, shared = false, embedded = false, navig
   const projectOf = (task: TaskSummary) => b.projects.find((entry) => entry.id === task.projectId);
   const column = (state: TaskStatus) => {
     const items = tasks.filter((task) => task.status === state).sort((x, y) => y.updatedAt - x.updatedAt);
-    return <section key={state} class="team-column" aria-labelledby={`team-col-${state}`}>
-      <h2 id={`team-col-${state}`}>{STATUS_LABEL[state]}<span class="team-count">{items.length}</span></h2>
-      {items.map((task) => <TaskCard key={task.id} task={task} me={me} project={chosen ? undefined : projectOf(task)} now={now} onOpen={() => navigate({ view: "team-task", id: task.id })} />)}
-      {!items.length ? <p class="team-column-empty">No tasks</p> : null}
+    return <section key={state} class={`team-column stage-${state}`} aria-labelledby={`team-col-${state}`}>
+      <header class="team-column-head"><h2 id={`team-col-${state}`}><span class="team-stage-icon"><Icon name={STAGE[state].icon} /></span>{STATUS_LABEL[state]}<span class="team-count">{items.length}</span></h2><p>{STAGE[state].description}</p></header>
+      <div class="team-column-cards">{items.map((task) => <TaskCard key={task.id} task={task} me={me} project={chosen ? undefined : projectOf(task)} now={now} onOpen={() => navigate({ view: "team-task", id: task.id })} />)}
+        {!items.length ? <div class="team-column-empty"><Icon name={STAGE[state].icon} /><p>{STAGE[state].empty}</p></div> : null}
+      </div>
     </section>;
   };
   const link = teamLink.value;
-  return <div class="team-page">
-    {!shared && !ssh && !embedded ? <TeamConnectionPicker /> : null}
+  return <div class="team-page team-board-page">
     {boardError.value ? <p class="msg err" role="alert">{boardError.value}</p> : null}
-    <div class="page-head">
-      <div class="page-head-text">{embedded ? <h2>Board</h2> : <h1>Board</h1>}<p>{ssh ? `Tasks, ownership and reviews on ${ssh.name}.` : chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>
-      <div class="page-head-actions"><button class="btn" onClick={() => navigate({ view: "team-people", ...(chosen ? { project: chosen } : {}) })}>People</button>{canCreate ? <button type="button" class="btn primary" aria-expanded={!!creating} disabled={!!creating} onClick={() => setCreating("manual")}><Icon name="plus" /> New task</button> : null}{canCreate && !shared ? <button type="button" class="btn" disabled={!!creating} onClick={() => setCreating("agent")}>Draft with agent</button> : null}</div>
+    <div class="page-head team-board-head">
+      <div class="page-head-text"><div class="collaboration-eyebrow"><Icon name="layers" /> Collaboration</div>{embedded ? <h2>Board</h2> : <h1>Board</h1>}<p>{ssh ? `Tasks, ownership and reviews on ${ssh.name}.` : chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>
+      <div class="page-head-actions"><button class="btn" onClick={() => navigate({ view: "team-people", ...(chosen ? { project: chosen } : {}) })}><Icon name="people" /> People</button>{canCreate && !shared ? <button type="button" class="btn" disabled={!!creating} onClick={() => setCreating("agent")}><Icon name="sparkle" /> Draft with agent</button> : null}{canCreate ? <button type="button" class="btn primary" aria-expanded={!!creating} aria-controls={creating ? "team-new" : undefined} disabled={!!creating} onClick={() => setCreating("manual")}><Icon name="plus" /> New task</button> : null}</div>
     </div>
+    {!shared && !ssh && !embedded ? <TeamConnectionPicker compact /> : null}
     {ssh && !embedded ? <><SshTeamServerCard key={ssh.id} host={ssh} /><div class="team-board-context"><strong>Viewing this computer’s board · {ssh.name}</strong><p>Tasks below belong to this computer. To use the shared team board, connect your computer with the team address and account from team server setup.</p></div></> : null}
     {shared && chosen ? <section class="settings-card project-welcome" aria-label="Project access"><strong>You’re in {b.projects.find(p => p.id === chosen)?.name}</strong><p class="help">Your project access is ready. {canCreate ? "Create tasks, discuss work, and review results. Coding on your computer is optional." : "You can view results" + (b.projects.find(p => p.id === chosen)?.role === "reviewer" ? ", comment, and review work. No computer setup needed." : ". No computer setup needed.")}</p>{canCreate ? <ConnectComputer project={b.projects.find(p => p.id === chosen)!} /> : null}</section> : null}
     {shared ? <TeamTerminalPanel board={b} project={chosen} /> : null}
@@ -70,11 +79,12 @@ export function TeamBoardView({ project, shared = false, embedded = false, navig
         <button type="button" class={mine ? "on" : ""} aria-pressed={mine} onClick={() => setMine(true)}>Mine</button>
       </div>
       <label class="team-filter">Status<select class="field" value={status} onChange={(event) => setStatus(event.currentTarget.value as TaskStatus | "")}><option value="">All statuses</option>{TASK_STATUSES.map((state) => <option key={state} value={state}>{STATUS_LABEL[state]}</option>)}</select></label>
-      <span class="help" role="status">{tasks.length} of {projectTasks.length} tasks{mine ? " involve you" : ""}</span>
+      <span class="help team-task-count" role="status">{mine || status ? `${tasks.length} of ${projectTasks.length} tasks${mine ? " involve you" : ""}` : `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`}</span>
+      {tasks.length && !status ? <span class="team-board-hint">Scroll to see all stages <Icon name="chevron" /></span> : null}
     </div>
     {!b.projects.length ? <p class="team-empty">{shared ? "You have no role in a shared project yet. Ask the owner for one." : "Create a project first: the board's tasks belong to projects, and teammates see the projects their accounts have a role in."}</p> : null}
     <div class="team-board">
-      {tasks.length ? <div class={`team-columns ${columns.length === 1 ? "single" : ""}`}>{columns.map(column)}</div> : <section class="team-board-empty" aria-label="Task board">
+      {tasks.length ? <div class={`team-columns ${columns.length === 1 ? "single" : ""}`} role="region" aria-label="Task board" tabIndex={0}>{columns.map(column)}</div> : <section class="team-board-empty" aria-label="Task board">
         <div class="team-workflow" aria-label="Task workflow">{TASK_STATUSES.map(state => <span key={state}>{STATUS_LABEL[state]}<span class="team-count">{projectTasks.filter(task => task.status === state).length}</span></span>)}</div>
         <div class="team-board-empty-body"><Icon name="people" /><h2>{projectTasks.length ? "No tasks match these filters" : "Your board is ready for its first task"}</h2>
           <p>{projectTasks.length ? "Try another status or show everyone’s tasks." : "Give a task a goal and an owner. Follow its progress here, from planning through review to done."}</p>
@@ -93,20 +103,17 @@ function TaskCard({ task, me, project, now, onOpen }: { task: TaskSummary; me: s
   const offeredToMe = task.handoff?.state === "offered" && task.handoff.to.userId === me;
   const needsYou = (task.unreadMentions ?? 0) > 0 || offeredToMe;
   return <button type="button" class={`team-card ${needsYou ? "needs-you" : ""}`} onClick={onOpen}>
+    <span class="tc-context"><span class="tc-repository" title={task.repository}><Icon name="folder" /><code>{task.repository}</code></span>{needsYou ? <span class="tc-attention">Needs you</span> : null}</span>
     <span class="tc-title">{task.title}</span>
-    <span class="tc-meta">
-      {task.owner ? <><span class="team-avatar" aria-hidden="true">{initials(task.owner.displayName)}</span><span>{whoLabel(task.owner, me)}</span></> : <span>Unassigned</span>}
-      <code>{task.repository}</code>
-      {project ? <span>{project.name}</span> : null}
-    </span>
-    {attempt ? <span class={`tc-attempt ${stale ? "team-stale" : live ? "team-live" : ""}`}>{live ? <span class="dot running" aria-hidden="true" /> : null}{stale ? `Connection lost · ${attempt.runnerName}` : `${ATTEMPT_LABEL[attempt.state]} on ${attempt.runnerName}`}{attempt.progress.stage && !stale ? ` · ${attempt.progress.stage}` : ""}</span> : null}
+    {project ? <span class="tc-project">{project.name}</span> : null}
+    {attempt ? <span class={`tc-attempt ${stale ? "team-stale" : live ? "team-live" : ""}`}>{live ? <span class="dot running" aria-hidden="true" /> : <Icon name={stale ? "alert" : "terminal"} />}<span>{stale ? `Connection lost · ${attempt.runnerName}` : `${ATTEMPT_LABEL[attempt.state]} on ${attempt.runnerName}`}{attempt.progress.stage && !stale ? <span class="tc-stage">{attempt.progress.stage}</span> : null}</span></span> : null}
+    {task.blocker ? <span class="tc-blocker"><Icon name="alert" /><span>{task.blocker}</span></span> : null}
     <span class="pills">
       {task.reviewer ? <span class="badge">Reviewer {task.reviewer.userId === me ? "you" : task.reviewer.displayName}</span> : null}
       {task.reviewState === "approved" ? <span class="badge ok">Approved</span> : task.reviewState === "changes-requested" ? <span class="badge warn">Changes requested</span> : task.reviewState === "pending" ? <span class="badge">Review pending</span> : null}
       {task.handoff?.state === "offered" ? <span class="badge warn">Hand-over to {whoLabel(task.handoff.to, me)}</span> : null}
-      {task.blocker ? <span class="badge warn" title={task.blocker}>Blocked</span> : null}
-      {needsYou ? <span class="badge warn">Needs you</span> : null}
     </span>
+    <span class="tc-footer"><span class="tc-owner" title={task.owner ? whoLabel(task.owner, me) : "Unassigned"}><span class={`team-avatar ${task.owner ? "" : "unassigned"}`} aria-hidden="true">{task.owner ? initials(task.owner.displayName) : <Icon name="people" />}</span><span>{task.owner ? whoLabel(task.owner, me) : "Unassigned"}</span></span><time class="tc-updated" dateTime={new Date(task.updatedAt).toISOString()} title={`Updated ${new Date(task.updatedAt).toLocaleString()}`}><span class="sr-only">Updated </span>{ago(task.updatedAt)}</time></span>
   </button>;
 }
 
@@ -132,24 +139,30 @@ function NewTaskForm({ b, projectId: initial, shared, draftWithAgent, onDone, on
     } catch (err) { setError((err as Error).message); } finally { setSaving(false); }
   };
   return <form id="team-new" class="team-section team-new" aria-labelledby="team-new-title" onSubmit={(event) => void submit(event)}>
-    <h2 id="team-new-title">New task</h2>
-    {draftApplied ? <p class="help" role="status">Draft applied. Review and edit the fields, then create the task.</p> : null}
-    <div class="team-fields">
-      {options.length > 1 ? <label>Project<select class="field" value={projectId} disabled={busy} onChange={(event) => setProjectId(event.currentTarget.value)}>{options.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label> : null}
-      <label>Repository<select class="field" required value={repository} disabled={busy || !project?.repositories.length} onChange={(event) => setRepository(event.currentTarget.value)}>{project?.repositories.map((repo) => <option key={repo.key} value={repo.key}>{repo.label} ({repo.key})</option>)}</select></label>
-      <label>Base branch<input class="field" maxLength={100} placeholder={project?.repositories.find((repo) => repo.key === repository)?.defaultBranch ?? "The repository's default branch"} value={baseRef} disabled={busy} onInput={(event) => setBaseRef(event.currentTarget.value)} /></label>
+    <header class="task-create-head"><div><h2 id="team-new-title">New task</h2><p>Define the outcome, then choose who’s involved.</p></div><button type="button" class="icon-btn" aria-label="Close new task" disabled={busy} onClick={onCancel}><Icon name="close" /></button></header>
+    <div class="task-create-layout">
+      <div class="task-create-content">
+        {draftApplied ? <p class="msg ok" role="status">Draft applied. Review and edit the fields, then create the task.</p> : null}
+        {!shared && drafting ? <TaskDraftAssistant key={`${projectId}/${repository}`} projectId={projectId} repository={repository} baseRef={baseRef} onBusy={setDraftBusy} onApply={(draft) => { setTitle(draft.title); setGoal(draft.goal); setAcceptance(draft.acceptance); setDrafting(false); setDraftApplied(true); }} /> : null}
+        <label class="task-create-title">Title<input class="field" required maxLength={200} placeholder="A short, specific name for the work" value={title} disabled={busy} onInput={(event) => setTitle(event.currentTarget.value)} /></label>
+        <label>Goal<textarea class="field" rows={4} maxLength={16384} placeholder="What should be true when this task is done, and why it matters" value={goal} disabled={busy} onInput={(event) => setGoal(event.currentTarget.value)} /></label>
+        <label>Acceptance criteria<textarea class="field" rows={3} maxLength={8192} placeholder="How a reviewer will check the result" value={acceptance} disabled={busy} onInput={(event) => setAcceptance(event.currentTarget.value)} /></label>
+      </div>
+      <aside class="task-create-settings" aria-label="Task settings">
+        <fieldset><legend><Icon name="folder" /> Workspace</legend><div class="task-create-fields">
+          {options.length > 1 ? <label>Project<select class="field" value={projectId} disabled={busy} onChange={(event) => setProjectId(event.currentTarget.value)}>{options.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label> : null}
+          <label>Repository<select class="field" required value={repository} disabled={busy || !project?.repositories.length} onChange={(event) => setRepository(event.currentTarget.value)}>{project?.repositories.map((repo) => <option key={repo.key} value={repo.key}>{repo.label} ({repo.key})</option>)}</select></label>
+          <label>Base branch<input class="field" maxLength={100} placeholder={project?.repositories.find((repo) => repo.key === repository)?.defaultBranch ?? "The repository's default branch"} value={baseRef} disabled={busy} onInput={(event) => setBaseRef(event.currentTarget.value)} /></label>
+        </div></fieldset>
+        {project && !project.repositories.length ? <p class="msg warn" role="status">{project.name} has no repository keys yet. A maintainer defines repository keys in Connections → Share access{!shared && maintainer ? <>: <a href="#/settings/connections/manage">open Connections → Share access</a></> : null}.</p> : null}
+        <fieldset><legend><Icon name="people" /> Assignment</legend><div class="task-create-fields task-create-assignees">
+          <label>Owner<select class="field" value={owner} disabled={busy} onChange={(event) => setOwner(event.currentTarget.value)}><option value="">Unassigned</option>{owners.map((member) => <option key={member.userId} value={member.userId}>{member.userId === b.me.userId ? `${member.displayName} (you)` : member.displayName}</option>)}</select></label>
+          <label>Reviewer<select class="field" value={reviewer} disabled={busy} onChange={(event) => setReviewer(event.currentTarget.value)}><option value="">None yet</option>{reviewers.map((member) => <option key={member.userId} value={member.userId}>{member.userId === b.me.userId ? `${member.displayName} (you)` : member.displayName}</option>)}</select></label>
+        </div><p class="help">You can assign teammates later.</p></fieldset>
+      </aside>
     </div>
-    {project && !project.repositories.length ? <p class="msg warn" role="status">{project.name} has no repository keys yet. A maintainer defines repository keys in Connections → Share access{!shared && maintainer ? <>: <a href="#/settings/connections/manage">open Connections → Share access</a></> : null}.</p> : null}
-    {!shared && drafting ? <TaskDraftAssistant key={`${projectId}/${repository}`} projectId={projectId} repository={repository} baseRef={baseRef} onBusy={setDraftBusy} onApply={(draft) => { setTitle(draft.title); setGoal(draft.goal); setAcceptance(draft.acceptance); setDrafting(false); setDraftApplied(true); }} /> : null}
-    <div class="team-fields">
-      <label>Title<input class="field" required maxLength={200} value={title} disabled={busy} onInput={(event) => setTitle(event.currentTarget.value)} /></label>
-      <label>Owner<select class="field" value={owner} disabled={busy} onChange={(event) => setOwner(event.currentTarget.value)}><option value="">Unassigned</option>{owners.map((member) => <option key={member.userId} value={member.userId}>{member.userId === b.me.userId ? `${member.displayName} (you)` : member.displayName}</option>)}</select></label>
-      <label>Reviewer<select class="field" value={reviewer} disabled={busy} onChange={(event) => setReviewer(event.currentTarget.value)}><option value="">None yet</option>{reviewers.map((member) => <option key={member.userId} value={member.userId}>{member.userId === b.me.userId ? `${member.displayName} (you)` : member.displayName}</option>)}</select></label>
-    </div>
-    <label class="team-wide">Goal<textarea class="field" rows={4} maxLength={16384} placeholder="What should be true when this task is done, and why it matters" value={goal} disabled={busy} onInput={(event) => setGoal(event.currentTarget.value)} /></label>
-    <label class="team-wide">Acceptance criteria<textarea class="field" rows={3} maxLength={8192} placeholder="How a reviewer will check the result" value={acceptance} disabled={busy} onInput={(event) => setAcceptance(event.currentTarget.value)} /></label>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
-    <div class="team-actions"><button type="submit" class="btn primary" disabled={busy || !project?.repositories.length || !title.trim()}>{saving ? "Creating…" : "Create task"}</button><button type="button" class="btn" disabled={busy} onClick={onCancel}>Cancel</button></div>
+    <footer class="task-create-footer"><p><span class="dot" aria-hidden="true" /> Your task will appear in Planned.</p><div class="team-actions"><button type="button" class="btn ghost" disabled={busy} onClick={onCancel}>Cancel</button><button type="submit" class="btn primary" disabled={busy || !project?.repositories.length || !title.trim()}><Icon name="plus" />{saving ? "Creating…" : "Create task"}</button></div></footer>
   </form>;
 }
 

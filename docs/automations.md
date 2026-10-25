@@ -31,6 +31,10 @@ If the previous run is still going (or still starting), a scheduled run or **Run
 
 ## Sweeps
 
+In the backlog picker, **Run with** selects a single agent, a built-in team pattern, or a saved personal/project template. Choose the providers for its roles; multi-agent roles accept more than one provider. **Models and workflow options** contains model, effort and workflow settings. Changing workflows keeps the selected GitHub items. Saved templates retain their version and required inputs, while every run receives its own item-specific task and source. The template's `task` input uses the shared backlog goal; other inputs are entered in the picker. Checks and run permissions stay with the current repository configuration.
+
+New issue and Dependabot sweeps default to **Fix & review**, keeping checks and independent review without a separate planner step. Existing automations keep their saved workflow; edit it to change how future runs execute.
+
 A [sweep](github.md#sweeps-many-at-once) saved with *Also check every day at…* is an automation too. Each time it fires it lists the open issues, Dependabot PRs or security alerts again and starts a run for each **new** item that would be picked by default, up to 5 at a time. It remembers which items it already started, so nothing is swept twice; alerts are remembered by number, so a new alert on a package that was swept before is new work. **Run now** does the same on demand.
 
 A webhook that reaches a sweep names one item, and goes through the same rules:
@@ -66,7 +70,7 @@ Automation and sweep results wait in **Inbox**, with an attention count in the s
 - **Approve:** keeps the result. **Approve & open PR** also pushes the branch and opens a pull request. For a run that started from a pull request (a Dependabot PR, say), **Approve & push to PR #N** pushes the fix to that PR instead.
 - **Revise:** your note goes to the agent that wrote the code, in its own session. The result comes back to the inbox.
 - **Reject:** deletes the run's worktrees and branches.
-- Runs that changed nothing are archived on their own, and their branches deleted.
+- Runs that changed nothing are archived on their own only when their configured checks pass. Their worktree folders are cleaned up, but branches are kept so a later reply can reopen the workspace. Failed, timed-out or incomplete checks keep the workspace and stay in Inbox.
 - Automations never pause for plan approval, and **nothing is ever merged automatically**.
 
 ## Isolation

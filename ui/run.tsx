@@ -1,3 +1,5 @@
+import { BrowserMessage, BrowserDraftCards } from "./browser-context-cards.js";
+import { browserImageNames, editBrowserText, parseBrowserMessage } from "./browser-context.js";
 import { chatTaskId } from "../src/chat-family.js";
 import { TaskTeamControl, TaskTeamActivity, TaskTeamStatus } from "./task-team.js";
 import { TeamTemplateLibrary } from "./team-template-library.js";
@@ -6,10 +8,11 @@ import { confirmAction } from "./confirm-state.js";
 import { DEFAULT_EXECUTION_BUDGET, coordinatorInvocationLimit } from "../src/execution-budget.js";
 import { localAppUrls } from "../src/local-app-url.js";
 import { intentDraft, LiveProgress, ResultStudio } from "./experience.js";
+import { PREVIEW_REQUEST } from "./result-preview.js";
 import { journeyDraft } from "./journeys.js";
 import { rerunDraft } from "./rerun-draft.js";
 import { setContextBudget } from "./context-budget.js";
-import { nextRunAction, executionLabel } from "./run-experience.js";
+import { nextRunAction, executionLabel, agentReviewLabel } from "./run-experience.js";
 import { RunEvidence, VerificationEvidence } from "./run-evidence.js";
 import { DeleteRunDialog } from "./run-actions.js";
 import { Menu, MenuItem, MenuTitle, Strip } from "./panel-bits.js";
@@ -193,6 +196,7 @@ export function RunView({ id }: { id: string }) {
   const chat = !!p?.chat && !run.checkpointOnFinish;
 
   const next = nextRunAction(run);
+  const hasResult = finished && !run.archived && run.worktrees.some(tree => run.artifacts.some(artifact => artifact.branch === tree.branch));
   const allocation = resumeBudget?.id === run.id ? resumeBudget : { id: run.id, maxSteps: Math.min(run.loop.maxSteps, run.loop.maxInvocations ?? run.loop.maxSteps), maxMinutes: run.loop.maxMinutes };
   const minimumCalls = run.pattern === "auto-team" ? 4 : 1;
   const allocationValid = Number.isSafeInteger(allocation.maxSteps) && allocation.maxSteps >= minimumCalls && allocation.maxSteps <= 200 && Number.isFinite(allocation.maxMinutes) && allocation.maxMinutes >= 1 && allocation.maxMinutes <= 720;
@@ -252,7 +256,7 @@ export function RunView({ id }: { id: string }) {
                 } catch (e) { showToast((e as Error).message); } }}>Save as team template…</MenuItem>
                 {!run.projectTeam ? <MenuItem disabled={!draftsReady.value || composerLoading.value} onClick={() => { close(); void editAndRerun(run); }}>Edit &amp; run again</MenuItem> : null}
                 <MenuItem onClick={() => { close(); if (run.archived) void post(`/api/runs/${run.id}/archive`, { archived: false }).catch(e => showToast(e.message)); else setArchiving(true); }}>{run.archived ? "Unarchive" : "Archive…"}</MenuItem>
-                {!run.projectTeam ? <MenuItem onClick={() => { close(); setDeleting(true); }}>Delete…</MenuItem> : null}
+                <MenuItem onClick={() => { close(); setDeleting(true); }}>Delete…</MenuItem>
               </>}</Menu> : null}
               {!finished ? (
                 <button
@@ -271,10 +275,22 @@ export function RunView({ id }: { id: string }) {
         </header>
 
         <div class="thread">
-          {!chat ? <RunEvidence run={run} checking={checking} /> : null}
-          {run.teamTemplate || run.team?.templateUses?.length ? <details class="settings"><summary>Template provenance</summary><div class="settings-body">{run.teamTemplate ? <p>Selected: {run.teamTemplate.template.name} v{run.teamTemplate.template.version}</p> : null}{run.team?.templateUses?.map(use => <p key={use.id}>{use.id}: {use.templateId} v{use.version}{use.instructions ? ` · adaptation: ${use.instructions}` : ""}</p>)}<p class="help">Definitions and inputs are pinned to this run. Library edits do not change this execution.</p></div></details> : null}
-          {!chat && run.permissions ? <details class="settings"><summary>Run permissions · {run.permissions.trust}{run.permissions.antigravityExecution === "native" ? " · Unrestricted Antigravity" : ""}</summary><div class="settings-body"><p>{run.permissions.antigravityExecution === "native" ? "Unrestricted Antigravity uses the existing login and normal provider settings. Its read-only requests are advisory; terminal, browser, MCP, hooks and native agents are unrestricted by Code Flow, including child usage outside the worker budget. Other providers inherit the run policy." : "Workers inherit this run’s policy. Planning and review turns use narrower access. Native agent delegation is disabled; Code Flow schedules the team."}</p>{[...data.current.steps.values()].filter(step => step.permissions).map(step => <p key={step.id}>{step.title}: {step.permissions!.trust} · {step.permissions!.mode} · {step.permissions!.isolation} · command network {step.permissions!.commandNetwork} · external tools {step.permissions!.externalTools}{step.permissions!.implementation ? <><br /><span class="help">{step.permissions!.implementation}: {step.permissions!.limitations.join(" ")}</span></> : null}</p>)}<p class="help">Worktrees do not restrict reads. External browser/MCP tools retain their provider permissions unless explicitly disabled. Setup, checks and previews use their separately configured execution environment.</p></div></details> : null}
-          {!chat && next ? <section class={`next-action ${["resume", "provider", "check", "revise"].includes(next.kind) ? "needs-attention" : ""}`} aria-label="Next action">
+          {/* Your task, as the message that started the conversation. */}
+          <div class="msg-you">
+            <div class="bubble">
+              <div class="run-task">
+                <BrowserMessage text={run.task} />
+              </div>
+              {run.parentRunId ? (
+                <a class="help" href={`#/run/${run.parentRunId}`}>
+                  ↩ previous conversation
+                </a>
+              ) : null}
+              {run.supersededBy ? <a class="help" href={`#/run/${run.supersededBy}`}>Continue with the revised goal →</a> : null}
+            </div>
+          </div>
+
+          {!chat && next && !(hasResult && next.kind === "review") ? <section class={`next-action ${["resume", "provider", "check", "revise"].includes(next.kind) ? "needs-attention" : ""}`} aria-label="Next action">
             <div><h3>{next.title}</h3><p>{next.detail}</p>
               {next.kind === "resume" ? <div class="resume-budget" role="group" aria-label="Resume budget">
                 <div class="resume-budget-fields">
@@ -292,9 +308,7 @@ export function RunView({ id }: { id: string }) {
             </div>
           </section> : null}
           {actionError ? <p class="msg err" role="alert">{actionError}</p> : null}
-          {!chat ? !finished ? <LiveProgress run={run} steps={steps} /> : <ResultStudio run={run} /> : null}
-          {finished && !chat ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
-          {!chat ? <RunMeta run={run} /> : null}
+          {!chat && !finished ? <LiveProgress run={run} steps={steps} /> : null}
           {run.source?.kind === "pr" && !Object.values(run.prs ?? {}).includes(run.source.url) ? <GithubReviewThreadsPanel runId={run.id} /> : null}
           {run.lockdown ? (
             <div class="lockdown" role="note">
@@ -303,27 +317,11 @@ export function RunView({ id }: { id: string }) {
             </div>
           ) : null}
 
-          {/* Your task, as the message that started the conversation. */}
-          <div class="msg-you">
-            <div class="bubble">
-              <div class="run-task">
-                <Markdown text={run.task} />
-              </div>
-              {!chat ? <RunChips run={run} /> : null}
-              {run.parentRunId ? (
-                <a class="help" href={`#/run/${run.parentRunId}`}>
-                  ↩ previous conversation
-                </a>
-              ) : null}
-              {run.supersededBy ? <a class="help" href={`#/run/${run.supersededBy}`}>Continue with the revised goal →</a> : null}
-            </div>
-          </div>
 
           {run.taskExecution ? <a class="btn" href={`#/run/${run.taskExecution.chatId}`}>Back to conversation</a> : null}
           {run.awaiting ? <div id="run-approval" tabIndex={-1}><AwaitingCard run={run} /></div> : null}
           {teamAwaitingAnswer(run) ? <div id="run-question" tabIndex={-1}><TeamQuestionCard run={run} /></div> : null}
-          {run.team ? <AutoTeam run={run} steps={steps} /> : null}
-          {run.team && run.project ? <ProjectMemory projectId={run.project} repo={run.repo} refreshKey={`${run.status}:${run.team.revision}`} /> : null}
+          {run.team ? <details class="team-details"><summary>Team activity · {run.team.status}</summary><AutoTeam run={run} steps={steps} />{run.project ? <ProjectMemory projectId={run.project} repo={run.repo} refreshKey={`${run.status}:${run.team.revision}`} /> : null}</details> : null}
           {run.triage?.state === "pending" && run.status !== "running" ? (
             <div class="awaiting-card" id="run-triage" tabIndex={-1}>
               <div class="aw-head">
@@ -385,8 +383,18 @@ export function RunView({ id }: { id: string }) {
           )}
 
 
+          {!chat && run.patternDone && (run.patternSummary || run.summary) ? <div class="workflow-answer"><div class="lbl">{run.pattern === "solo" ? "Agent" : "Team"}</div><Markdown text={run.patternSummary ?? run.summary ?? ""} /></div> : null}
           {chat ? null : <FollowUpThread run={run} data={data.current} />}
-          {!chat ? <ActivityLog logs={data.current.logs} count={data.current.logs.length} /> : null}
+          {hasResult ? <ResultStudio run={run} /> : null}
+          {finished && !chat && run.status !== "done" ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
+          {!chat ? <details class="result-details"><summary>{run.testRun ? "Test details" : "Details and publishing"}</summary>
+          {!chat ? <RunEvidence run={run} checking={checking} /> : null}
+          {run.teamTemplate || run.team?.templateUses?.length ? <details class="settings"><summary>Template provenance</summary><div class="settings-body">{run.teamTemplate ? <p>Selected: {run.teamTemplate.template.name} v{run.teamTemplate.template.version}</p> : null}{run.team?.templateUses?.map(use => <p key={use.id}>{use.id}: {use.templateId} v{use.version}{use.instructions ? ` · adaptation: ${use.instructions}` : ""}</p>)}<p class="help">Definitions and inputs are pinned to this run. Library edits do not change this execution.</p></div></details> : null}
+          {!chat && run.permissions ? <details class="settings"><summary>Run permissions · {run.permissions.trust}{run.permissions.antigravityExecution === "native" ? " · Unrestricted Antigravity" : ""}</summary><div class="settings-body"><p>{run.permissions.antigravityExecution === "native" ? "Unrestricted Antigravity uses the existing login and normal provider settings. Its read-only requests are advisory; terminal, browser, MCP, hooks and native agents are unrestricted by Code Flow, including child usage outside the worker budget. Other providers inherit the run policy." : "Workers inherit this run’s policy. Planning and review turns use narrower access. Native agent delegation is disabled; Code Flow schedules the team."}</p>{[...data.current.steps.values()].filter(step => step.permissions).map(step => <p key={step.id}>{step.title}: {step.permissions!.trust} · {step.permissions!.mode} · {step.permissions!.isolation} · command network {step.permissions!.commandNetwork} · external tools {step.permissions!.externalTools}{step.permissions!.implementation ? <><br /><span class="help">{step.permissions!.implementation}: {step.permissions!.limitations.join(" ")}</span></> : null}</p>)}<p class="help">Worktrees do not restrict reads. External browser/MCP tools retain their provider permissions unless explicitly disabled. Setup, checks and previews use their separately configured execution environment.</p></div></details> : null}
+          {finished && run.status === "done" ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
+          <RunMeta run={run} /><RunChips run={run} />
+          <ActivityLog logs={data.current.logs} count={data.current.logs.length} />
+          </details> : null}
         </div>
       </div>
 
@@ -593,7 +601,7 @@ function ResultCard({ run, steps, onSelectStep, chat }: { run: RunSummary; steps
     interrupted: "■ Interrupted — press Resume to continue where it stopped",
   };
   if (chat) Object.assign(titles, { done: "✓ The check passes", unverified: "No independent check passed", failing: "⚠ The check fails", unchecked: "⚠ The check couldn't run, so nothing was tested" });
-  const title = titles[state] ?? run.status;
+  const title = state === "done" && agentReviewLabel(run) === "Changes requested" ? "Checks passed · review needs changes" : titles[state] ?? run.status;
   return (
     <div class={`result ${state}${chat ? " chat" : ""}`}>
       {title ? <div class="rh">{title}</div> : null}
@@ -649,7 +657,7 @@ function FollowUpThread({ run, data }: { run: RunSummary; data: RunData }) {
             {f.kind === "reply" || (f.kind === "comments" && !f.from) ? (
               <div class="msg-you">
                 <div class="bubble">
-                  <Markdown text={f.message} />
+                  <RunMessage text={f.message} />
                 </div>
               </div>
             ) : (
@@ -810,7 +818,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
       <TaskTeamActivity run={run} turns={turns} />
     </>;
   };
-  const correctionBubble = (note: Note) => <div key={note.id} class="team-question-history">{note.question ? <div class="msg-agent"><div class="help">{note.question.sender} asked</div><Markdown text={note.question.body} /></div> : null}<div class="msg-you"><div class="bubble"><Markdown text={note.text} /><div class="help" role="status">{note.control ? "Stopped · work saved. Resume when you’re ready." : note.teamDelivery?.state === "applied" ? note.requestId ? "Answer sent" : note.teamDelivery.taskIds?.length ? `Updated ${note.teamDelivery.taskIds.join(", ")}` : "Added to the team request" : note.teamDelivery?.state === "not_applied" ? "Saved for your agent" : "Received · updating the team…"}</div></div></div></div>;
+  const correctionBubble = (note: Note) => <div key={note.id} class="team-question-history">{note.question ? <div class="msg-agent"><div class="help">{note.question.sender} asked</div><Markdown text={note.question.body} /></div> : null}<div class="msg-you"><div class="bubble"><BrowserMessage text={note.text} /><div class="help" role="status">{note.control ? "Stopped · work saved. Resume when you’re ready." : note.teamDelivery?.state === "applied" ? note.requestId ? "Answer sent" : note.teamDelivery.taskIds?.length ? `Updated ${note.teamDelivery.taskIds.join(", ")}` : "Added to the team request" : note.teamDelivery?.state === "not_applied" ? "Saved for your agent" : "Received · updating the team…"}</div></div></div></div>;
   return (
     <>
       {!turns.length && !followUps.length ? <>{corrections().map(correctionBubble)}{teamActivity()}</> : null}
@@ -822,7 +830,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
             <div key={f.id} class="fu">
               <div class="msg-you">
                 <div class="bubble">
-                  <Markdown text={f.message} />
+                  <RunMessage text={f.message} />
                 </div>
               </div>
               {corrections(f).map(correctionBubble)}
@@ -849,7 +857,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
             {f ? (
               <div class="msg-you">
                 <div class="bubble">
-                  <Markdown text={f.message} />
+                  <RunMessage text={f.message} />
                 </div>
               </div>
             ) : null}
@@ -857,7 +865,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
             {notes.map((n) => (
               <div key={n.id} class="msg-you">
                 <div class="bubble">
-                  <Markdown text={n.text} />
+                  <BrowserMessage text={n.text} />
                   {n.deliveredTo?.midTurn ? <div class="help">Sent while it worked</div> : null}
                 </div>
               </div>
@@ -893,6 +901,11 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
       ) : null}
     </>
   );
+}
+
+function RunMessage({ text }: { text: string }) {
+  if (text === PREVIEW_REQUEST) return <><p>Set up a preview of this result.</p><details class="preview-request-details"><summary>Setup instructions</summary><Markdown text={text} /></details></>;
+  return <BrowserMessage text={text} />;
 }
 
 /** The steps that answered side chats: they show in the side panel, not in the run's thread. */
@@ -1019,18 +1032,18 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false }: { run:
             PR <Icon name="external" />
           </a>
         ) : null}
-        <span class="acts">
+        <details class="artifact-actions"><summary>Actions</summary><div class="acts">
           {canReview && !reviewing ? (
             <button class="btn small" onClick={() => navigate({ view: "review", id: run.id, branch: artifact.branch })}>
               Review changes
             </button>
           ) : null}
-          {worktree ? (
+          {worktree && !run.testRun ? (
             <button class="btn small" aria-pressed={panel === "merge"} onClick={() => setPanel(panel === "merge" ? null : "merge")}>
               {pr ? "Merge PR…" : "Merge…"}
             </button>
           ) : null}
-          {worktree && fromPr && !fromPr.isCrossRepository && run.status !== "running" ? (
+          {!run.testRun && worktree && fromPr && !fromPr.isCrossRepository && run.status !== "running" ? (
             <button
               class="btn small primary"
               disabled={pushing}
@@ -1039,8 +1052,8 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false }: { run:
                 if (!await confirmAction(`Push ${artifact.branch} to ${fromPr.headRefName}? This updates PR #${fromPr.number} on GitHub.`, {"title":"Push changes to GitHub?","confirmLabel":"Push changes","danger":false})) return;
                 setPushing(true);
                 try {
-                  await post(`/api/runs/${run.id}/push-pr`, { branch: artifact.branch });
-                  showToast(`Pushed to PR #${fromPr.number}`);
+                  const result = await post<{ warning?: string }>(`/api/runs/${run.id}/push-pr`, { branch: artifact.branch });
+                  showToast(result.warning || `Pushed to PR #${fromPr.number}`, result.warning ? 8000 : 5000);
                 } catch (err) {
                   showToast((err as Error).message, 6000);
                 } finally {
@@ -1051,7 +1064,7 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false }: { run:
               {pushing ? "Pushing…" : `Push to PR #${fromPr.number}`}
             </button>
           ) : null}
-          {worktree && !fromPr ? (
+          {!run.testRun && worktree && !fromPr ? (
             <button class="btn small" aria-pressed={panel === "pr"} onClick={() => setPanel(panel === "pr" ? null : "pr")}>
               Open PR…
             </button>
@@ -1062,20 +1075,20 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false }: { run:
           <button class="btn small" onClick={() => copy(artifact.path, "Path copied")}>
             Copy path
           </button>
-        </span>
+        </div></details>
       </div>
       {run.integrity?.[artifact.branch]?.length ? <IntegrityNote issues={run.integrity[artifact.branch]!} /> : null}
       {run.proofs?.[artifact.branch] ? <ProofNote proof={run.proofs[artifact.branch]!} /> : null}
       {run.findings?.[artifact.branch]?.findings.length ? <FindingsNote review={run.findings[artifact.branch]!} /> : null}
       {/* focusable: a long stat scrolls (max-height), and keyboard users need to reach it to scroll it */}
       {!reviewing ? artifact.stat ? <pre tabIndex={0}>{artifact.stat}</pre> : <div class="help">No changes</div> : null}
-      {!reviewing && worktree && existsHint(run) ? <WorkspaceTools run={run} worktree={worktree.name} /> : null}
-      {panel === "merge" && worktree ? (
+      {!reviewing && worktree && existsHint(run) ? <details class="artifact-tools"><summary>Open in your tools</summary><WorkspaceTools run={run} worktree={worktree.name} /></details> : null}
+      {!run.testRun && panel === "merge" && worktree ? (
         pr ? <PrMergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} />
       ) : null}
-      {panel === "pr" ? <PrPanel run={run} branch={artifact.branch} /> : null}
+      {!run.testRun && panel === "pr" ? <PrPanel run={run} branch={artifact.branch} /> : null}
       {pr ? <GithubReviewThreadsPanel runId={run.id} branch={artifact.branch} /> : null}
-      {pr && worktree && !merged.some((m) => m.pr === pr) ? <WatchPanel run={run} branch={artifact.branch} steps={steps} worktree={worktree.name} /> : null}
+      {!run.testRun && pr && worktree && !merged.some((m) => m.pr === pr) ? <WatchPanel run={run} branch={artifact.branch} steps={steps} worktree={worktree.name} /> : null}
     </div>
   );
 }
@@ -1731,11 +1744,12 @@ function noteStep(note: Note, steps: Step[]): string {
 
 /** While running: message the team. After it finishes: reply to an agent, or the whole team. */
 /** Snapshots waiting to go with a message, each with a way to drop it. */
-export function DraftImages({ images, onRemove }: { images: Attachment[]; onRemove: (i: number) => void }) {
+export function DraftImages({ images, onRemove, message = "" }: { images: Attachment[]; onRemove: (i: number) => void; message?: string }) {
+  const browserImages = browserImageNames(message);
   if (!images.length) return null;
   return (
     <div class="draft-images">
-      {images.map((im, i) => (
+      {images.map((im, i) => browserImages.has(im.name) ? null : (
         <span key={i} class="draft-img" title={im.name}>
           <img src={`data:image/png;base64,${im.data}`} alt={im.name} />
           <span class="di-name">{im.name}</span>
@@ -1918,7 +1932,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
             : chat
               ? "Sent when this turn ends"
               : `Queued for ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.agent ?? "next agent"}`}
-        : {n.text}
+        : {parseBrowserMessage(n.text).text || parseBrowserMessage(n.text).contexts.map(context => context.comment || "Browser selection").join(" · ")}
       </span>
     </span>
   );
@@ -1935,15 +1949,16 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
           <div class="notes">{sentNotes.map(noteChip)}</div>
         </details> : null}
         {running && pendingNotes.length ? <div class="notes">{pendingNotes.map(noteChip)}</div> : null}
-        <DraftImages images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
+        <BrowserDraftCards text={text} onText={setText} images={images} onImages={setImages} />
+        <DraftImages message={text} images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
         <div class="chatbox">
           <textarea
             ref={area}
             rows={1}
             aria-label={chat ? "Message agent" : running ? "Message the team" : "Reply"}
             placeholder={placeholder}
-            value={text}
-            onInput={(e) => setText(e.currentTarget.value)}
+            value={parseBrowserMessage(text).text}
+            onInput={(e) => setText(editBrowserText(text, e.currentTarget.value))}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
                 e.preventDefault();
@@ -2361,8 +2376,9 @@ function ProviderChatDialog({ run, initialAgent, initialSettings, initialMessage
     <div class="dialog-body">
       <p class="help">Send a message to start a new chat with this conversation’s context. Chats share the workspace.</p>
       <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0 }}>
-        <label>Message<textarea class="field" rows={4} maxLength={20000} autoFocus value={message} onInput={(event) => setMessage(event.currentTarget.value)} placeholder="What should the new chat do?" /></label>
-        <DraftImages images={images} onRemove={index => setImages(images.filter((_, i) => i !== index))} />
+        <label>Message<textarea class="field" rows={4} maxLength={20000} autoFocus value={parseBrowserMessage(message).text} onInput={(event) => setMessage(editBrowserText(message, event.currentTarget.value))} placeholder="What should the new chat do?" /></label>
+        <BrowserDraftCards text={message} onText={setMessage} images={images} onImages={setImages} />
+        <DraftImages message={message} images={images} onRemove={index => setImages(images.filter((_, i) => i !== index))} />
         <ChatControls agent={agent} onAgent={(value) => { setAgent(value); setSettings({}); }} providers={choices} settings={settings} onSettings={setSettings} permissions={{ trust: run.trust, tools: false }} onPermissions={() => {}} showPermissions={false} />
       </fieldset>
       {error ? <p class="msg err" role="alert">{error}</p> : null}

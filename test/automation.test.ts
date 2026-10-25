@@ -160,7 +160,7 @@ test("a scheduled run lands in the inbox; another fire while it runs is skipped;
   }
 });
 
-test("a run that changes nothing is archived on its own, branches and all", async () => {
+test("a run that changes nothing is archived with branches kept for later replies", async () => {
   const t = await automations.create({ name: "No-op", enabled: true, webhook: false, isolate: false, run: { repo, pattern: "pipeline", task: "Nothing to do", roles: team } });
   process.env.FAKE_NOOP_VENDOR = "codex";
   let run: Run;
@@ -173,7 +173,48 @@ test("a run that changes nothing is archived on its own, branches and all", asyn
   assert.equal(run.triage?.state, "empty");
   assert.equal(run.archived, true);
   assert.equal(run.seen, true);
-  assert.ok(!branches().some((b) => b.startsWith(run.branchPrefix)), "its branches are gone");
+  for (const wt of run.worktrees) {
+    assert.ok(branches().includes(wt.branch), "its branch is kept for replies");
+    assert.ok(!existsSync(wt.path), "the idle checkout is cleaned up");
+  }
+  await manager.followUp(run.id, { kind: "reply", worktree: "build", agent: "codex", message: "Continue with the next improvement" });
+  await idle(run);
+  const reply = run.followUps.at(-1)!;
+  assert.equal(reply.status, "done", reply.result);
+  assert.equal(run.triage?.state, "pending", "new work after an automatic archive returns to the inbox");
+  assert.ok(existsSync(join(run.worktrees.find(wt => wt.name === "build")!.path, ".git")), "a reply recreates the workspace");
+});
+
+test("failed and timed-out checks keep unchanged sweep workspaces available for replies", async () => {
+  for (const check of ["exit 1", "sleep 5"]) {
+    process.env.FAKE_NOOP_VENDOR = "codex";
+    let run: Run;
+    try {
+      run = await idle(await manager.start({
+        pattern: findPattern("solo")!, repo, task: "Check the existing PR without changing it",
+        roles: { agent: ["codex"] }, options: {}, checkpointOnFinish: true,
+        loop: { check, checkTimeoutMin: 0.01 },
+        trigger: { id: "failed-check-sweep", name: "Dependabot", via: "sweep" },
+      }));
+    } finally { delete process.env.FAKE_NOOP_VENDOR; }
+    assert.equal(run.status, "done", run.error);
+    assert.equal(run.verdict, "failing");
+    assert.equal(run.lastCheck?.ok, false);
+    if (check === "sleep 5") assert.match(run.steps.find(step => step.kind === "check")!.finalText!, /Timed out/);
+    assert.ok(run.artifacts.every(artifact => !artifact.stat?.trim()));
+    assert.equal(run.triage?.state, "pending", "the failed check stays in the inbox");
+    assert.equal(run.archived, false);
+    assert.equal(run.seen, false);
+    for (const wt of run.worktrees) {
+      assert.ok(existsSync(join(wt.path, ".git")), "its worktree is preserved");
+      assert.ok(branches().includes(wt.branch), "its branch is preserved");
+    }
+    await manager.followUp(run.id, { kind: "reply", worktree: "solo", agent: "codex", message: "Investigate the failed check" });
+    await idle(run);
+    const reply = run.followUps.at(-1)!;
+    assert.equal(reply.status, "done", reply.result);
+    assert.equal(run.triage?.state, "pending");
+  }
 });
 
 test("revise sends your note to the agent and returns to the inbox; reject archives and deletes", async () => {

@@ -42,8 +42,12 @@ test("Agent UI renders replies, keeps drafts and files across provider tabs, res
   await page.getByRole("textbox", {name:"Message agent",exact:true}).waitFor();
   const answer = run.steps.filter((step:any)=>step.kind==="agent").at(-1).finalText;
   assert.ok(answer); await page.locator(".turn-body").filter({hasText:live ? /cobalt-731/ : answer}).waitFor();
-  assert.equal(await page.locator(".next-action, .result-studio, .followup-budget").count(),0);
-  assert.equal(await page.getByRole("button", {name:"Review changes",exact:true}).count(),0);
+  assert.equal(await page.locator(".next-action, .followup-budget").count(), 0);
+  const result = page.locator(".result-compact");
+  await result.getByRole("button", { name: "Review changes", exact: true }).waitFor();
+  assert.equal(await result.count(), 1, "Agent results use the same compact next-step card as teams");
+  assert.equal(await result.getByRole("button", { name: "Preview", exact: true }).count(), 1);
+  assert.equal(await result.locator("details[open]").count(), 0, "publishing and advanced controls stay collapsed");
   const originalHead=execFileSync("git",["rev-parse","HEAD"],{cwd:run.worktrees[0].path}).toString().trim();
   writeFileSync(join(run.worktrees[0].path,"unsaved.txt"),"Shared unsaved file\n");
   await page.getByRole("textbox", {name:"Message agent",exact:true}).fill("Keep this draft");

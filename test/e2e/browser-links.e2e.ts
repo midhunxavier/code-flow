@@ -8,12 +8,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "playwright-core";
+import axe from "axe-core";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const directory = mkdtempSync(join(tmpdir(), "codeflow-browser-links-"));
 const home = join(directory, "home"), repo = join(directory, "repo");
 const token = "browser-links-fixture";
-let server: ChildProcess, app: Server, browser: Browser, page: Page, base: string, appUrl: string, unregisteredUrl: string;
+let server: ChildProcess, app: Server, appProbe: Server, browser: Browser, page: Page, base: string, appUrl: string, unregisteredUrl: string;
 let unregisteredRequests = 0;
 const portOf = (server: Server) => (server.address() as AddressInfo).port;
 
@@ -21,8 +22,8 @@ before(async () => {
   app = createServer((_request, response) => { unregisteredRequests++; response.writeHead(200, { "content-type": "text/html", "x-frame-options":"DENY", "content-security-policy":"frame-ancestors 'none'" }).end("<title>Frame-blocked site</title><h1>Unrelated local service</h1>"); });
   await new Promise<void>(resolve => app.listen(0, "127.0.0.1", resolve));
   unregisteredUrl = `http://127.0.0.1:${portOf(app)}/unsafe`;
-  const appProbe = createServer(); await new Promise<void>(resolve => appProbe.listen(0, "127.0.0.1", resolve));
-  const appPort = portOf(appProbe); await new Promise<void>(resolve => appProbe.close(() => resolve()));
+  appProbe = createServer(); await new Promise<void>(resolve => appProbe.listen(0, "127.0.0.1", resolve));
+  const appPort = portOf(appProbe);
   appUrl = `http://127.0.0.1:${appPort}/`;
   const probe = createServer(); await new Promise<void>(resolve => probe.listen(0, "127.0.0.1", resolve));
   base = `http://localhost:${portOf(probe)}`; await new Promise<void>(resolve => probe.close(() => resolve()));
@@ -35,17 +36,22 @@ before(async () => {
   const run = { id: "preview-run", project: "project", repo, baseRef: head, pattern: "solo", task: "Start the server", roles: { agent: ["claude"] }, options: {}, status: "done", createdAt: 1, endedAt: 2, worktrees: [{ name: "solo", path: repo, branch: "main" }], usage: { agentSteps: 1, checks: 0 } };
   const step = { id: "s1", kind: "agent", agent: "claude", title: "Start app", role: "agent", mode: "write", status: "done", startedAt: 1, endedAt: 2, finalText: `Unregistered link: ${unregisteredUrl}.\n\nServer running at [${appUrl}](${appUrl}).\n\n[External reference](${unregisteredUrl})` };
   writeFileSync(join(home, "runs/preview-run.jsonl"), [JSON.stringify({ seq: 1, ts: 1, runId: run.id, type: "run", run }), JSON.stringify({ seq: 2, ts: 2, runId: run.id, type: "step", step })].join("\n") + "\n");
+  const otherRun = { ...run, id: "other-run", task: "Check dependencies", worktrees: [{ name: "solo", path: join(directory, "other-worktree"), branch: "main" }] };
+  writeFileSync(join(home, "runs/other-run.jsonl"), JSON.stringify({ seq: 3, ts: 3, runId: otherRun.id, type: "run", run: otherRun }) + "\n");
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
   server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: new URL(base).port, CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: "ignore" });
   for (let attempt = 0; attempt < 100; attempt++) { if (await fetch(base + "/api/health", { headers: { authorization: `Bearer ${token}` } }).then(response => response.ok, () => false)) break; await new Promise(resolve => setTimeout(resolve, 100)); }
   const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+  // Keep the advertised port reserved through build/startup and health requests so
+  // another fixture (or an outbound socket) cannot claim it before the app starts.
+  await new Promise<void>(resolve => appProbe.close(() => resolve()));
   const launch = await fetch(`${base}/api/runs/preview-run/worktrees/solo/serve`, { method: "POST", headers, body: JSON.stringify({ command: `'${process.execPath.replaceAll("'", "'\\''")}' app.mjs`, port: appPort }) });
   assert.equal(launch.status, 200, await launch.clone().text());
   assert.equal((await launch.json()).port, appPort);
   browser = await chromium.launch({ channel: "chrome", headless: true }); page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   page.on("pageerror", error => console.error("Browser error:", error.message));
 });
-after(async () => { await browser?.close(); server?.kill("SIGTERM"); if (server?.exitCode === null) await new Promise<void>(resolve => { server.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }); app?.closeAllConnections(); await new Promise<void>(resolve => app?.close(() => resolve())); rmSync(directory, { recursive: true, force: true }); });
+after(async () => { if (appProbe?.listening) await new Promise<void>(resolve => appProbe.close(() => resolve())); await browser?.close(); server?.kill("SIGTERM"); if (server?.exitCode === null) await new Promise<void>(resolve => { server.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }); app?.closeAllConnections(); await new Promise<void>(resolve => app?.close(() => resolve())); rmSync(directory, { recursive: true, force: true }); });
 
 test("a reachable app in an agent answer opens automatically, and link clicks reuse its Browser tab", { timeout: 30_000 }, async () => {
   await page.goto(`${base}/?token=${token}#/run/preview-run`);
@@ -154,10 +160,66 @@ test("explicit links to frame-blocked sites open in the same live in-app browser
   await page.locator(".turn-body").getByRole("link", { name: "External reference", exact: true }).click();
   await page.locator("#side-pane-browser").getByRole("button", {name:"Frame-blocked site",exact:true}).waitFor();
   await page.locator('canvas[data-ready="true"]').waitFor();
+  await page.waitForFunction(url => document.querySelector<HTMLInputElement>('.live-browser-address input')?.value === url, unregisteredUrl);
   assert.equal(snapshots,0);
   assert.equal(await page.locator("#side-pane-browser iframe").count(),0);
   assert.equal(page.context().pages().length,1);
   assert.equal(await page.getByLabel("Address", {exact:true}).inputValue(),unregisteredUrl);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator("#side-pane-browser").evaluate(element => element.scrollWidth <= element.clientWidth), true);
+});
+
+test("empty browser tabs explain run scope, and Keep open preserves a website across run switches", { timeout: 60_000 }, async () => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const panel = page.getByRole("complementary", { name: "Side panel", exact: true });
+  const state = async (id: string) => fetch(`${base}/api/browser?scope=run:${id}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ action: "state" }) }).then(response => response.json());
+  const original = (await state("preview-run")).selected;
+  await panel.getByRole("button", { name: "Keep open when switching runs", exact: true }).click();
+  await page.locator(".rail-run-row").getByRole("button", { name: /^Check dependencies/ }).click();
+  await page.getByRole("heading", { name: "Check dependencies", exact: true }).waitFor();
+  await panel.locator(".scope-state").getByText("Pinned", { exact: true }).waitFor();
+  assert.equal(await panel.getByLabel("Address", { exact: true }).inputValue(), unregisteredUrl);
+  assert.equal((await state("preview-run")).selected, original, "pinning keeps the original Chrome tab");
+  await panel.getByRole("button", { name: "Follow", exact: true }).click();
+  await panel.getByRole("region", { name: "Browser start page", exact: true }).waitFor();
+  const blankCanvas = panel.locator(".live-browser-surface canvas");
+  await page.waitForFunction(() => Number(document.querySelector<HTMLCanvasElement>(".live-browser-surface canvas")?.dataset.frames) > 0);
+  assert.equal(await blankCanvas.isVisible(), false, "an actual about:blank frame never becomes a black canvas");
+  assert.equal(await panel.getByLabel("Address", { exact: true }).inputValue(), "");
+  await panel.getByRole("button", { name: "Enter address", exact: true }).click();
+  assert.equal(await panel.getByLabel("Address", { exact: true }).evaluate(element => element === document.activeElement), true);
+  await page.addScriptTag({ content: axe.source });
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 785 });
+      assert.equal(await panel.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+      await page.waitForFunction(() => document.querySelector("#side-panel")!.getAnimations({ subtree: true }).every(animation => animation.playState !== "running"));
+      const audit = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run("#side-panel", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } }));
+      assert.deepEqual(audit.violations.map(v => ({ id: v.id, nodes: v.nodes.map(n => n.target) })), []);
+      await page.screenshot({ path: join(root, `output/playwright/browser-empty-${theme}-${width}.png`) });
+    }
+  }
+  await page.evaluate(() => document.documentElement.dataset.theme = "light");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator(".rail-run-row").getByRole("button", { name: /^Start the server/ }).click();
+  await panel.getByRole("button", { name: "Frame-blocked site", exact: true }).waitFor();
+  assert.equal((await state("preview-run")).selected, original, "returning to the run restores its original page");
+  await panel.getByRole("button", { name: "New browser tab", exact: true }).click();
+  await panel.getByRole("region", { name: "Browser start page", exact: true }).waitFor();
+  assert.equal(await blankCanvas.isVisible(), false);
+  const blank = (await state("preview-run")).selected;
+  await panel.getByRole("button", { name: "Frame-blocked site", exact: true }).click();
+  await panel.locator('canvas[data-ready="true"]').waitFor({ timeout: 10_000 }).catch(async error => {
+    console.error("Selected page", await state("preview-run"), await blankCanvas.evaluate(canvas => ({ ...((canvas as HTMLCanvasElement).dataset), hidden: (canvas as HTMLCanvasElement).hidden })), await panel.innerText());
+    await page.screenshot({ path: join(root, "output/playwright/browser-switch-failure.png") });
+    throw error;
+  });
+  await panel.getByRole("button", { name: "New tab", exact: true }).click();
+  await panel.getByRole("region", { name: "Browser start page", exact: true }).waitFor();
+  assert.equal((await state("preview-run")).selected, blank);
+  assert.equal(await blankCanvas.isVisible(), false, "switching back to a blank tab hides the prior website frame");
+  await panel.getByRole("button", { name: "Close New tab", exact: true }).click();
+  await panel.locator('canvas[data-ready="true"]').waitFor();
+  assert.equal((await state("preview-run")).selected, original);
 });

@@ -116,7 +116,8 @@ test("templates wait for repository configuration before restoring check command
     await dialog.getByLabel("Template", { exact: true }).selectOption({ label: "Roundtrip" });
     const apply = dialog.getByRole("button", { name: "Use template", exact: true });
     await apply.click();
-    assert.match(await page.getByLabel("Run configuration summary").innerText(), /node --test/);
+    await openAdvanced(page);
+    assert.equal(await page.getByLabel("Done when this passes", { exact: true }).inputValue(), "node --test");
   } finally { release(); await page.unroute("**/api/repo-config?*"); }
 });
 

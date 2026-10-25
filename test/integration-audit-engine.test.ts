@@ -174,3 +174,80 @@ test("final check reuse requires the same commit, clean checkout, inputs and ver
     } finally { await manager.shutdown(); }
   }
 });
+
+test("plain completion checks reuse only a passing result for the same clean commit and command", async () => {
+  for (const change of ["none", "commit", "dirty", "staged", "untracked", "hidden", "command", "profile"]) {
+    let first: Awaited<ReturnType<Context["check"]>>, second: typeof first;
+    const p = pattern(async ctx => {
+      const wt = await ctx.worktree("build");
+      first = await ctx.check(wt, "After integration");
+      if (["dirty", "staged", "commit"].includes(change)) await writeFile(join(wt.path, "README.md"), "Changed after check\n");
+      if (change === "staged") execFileSync("git", ["add", "README.md"], { cwd: wt.path });
+      if (change === "commit") await ctx.commit(wt, "Changed commit");
+      if (change === "untracked") await writeFile(join(wt.path, "input.txt"), "Changed input\n");
+      if (change === "hidden") execFileSync("git", ["update-index", "--assume-unchanged", "README.md"], { cwd: wt.path });
+      if (change === "command") ctx.run.loop.check = "node -e 'console.log(2)'";
+      if (change === "profile") ctx.run.loop.verification = { name: "New gates", checks: [{ id: "extra", kind: "custom", command: "node -e 'console.log(2)'", required: true, timeoutMs: 10000 }] };
+      second = await ctx.check(wt, "Final check", undefined, { reuse: true });
+      return "checked";
+    });
+    const manager = new RunManager(id => id === p.id ? p : undefined);
+    try {
+      const run = await manager.start({ repo, pattern: p, task: `Plain check reuse ${change}`, roles: {}, options: {}, loop: { check: "node -e 'console.log(1)'" } });
+      await finished(manager, run);
+      assert.equal(run.status, "done", run.error);
+      assert.equal(first!.ok, true, change);
+      assert.equal(second!.ok, true, change);
+      assert.equal(run.usage.checks, change === "none" ? 1 : 2, change);
+    } finally { await manager.shutdown(); }
+  }
+});
+
+test("plain checks cannot seed reuse from dirty inputs or changes made during the check", async () => {
+  for (const change of ["dirty-before", "untracked-before", "dirty-during", "untracked-during", "hidden-during"]) {
+    const p = pattern(async ctx => {
+      const wt = await ctx.worktree("build");
+      if (change === "dirty-before") await writeFile(join(wt.path, "README.md"), "Different input\n");
+      if (change === "untracked-before") await writeFile(join(wt.path, "input.txt"), "Different input\n");
+      assert.equal((await ctx.check(wt, "After integration"))?.ok, true);
+      execFileSync("git", ["update-index", "--no-assume-unchanged", "README.md"], { cwd: wt.path });
+      execFileSync("git", ["restore", "README.md"], { cwd: wt.path });
+      await rm(join(wt.path, "input.txt"), { force: true });
+      // The checkout is clean again, but the first check did not verify that state.
+      assert.equal((await ctx.check(wt, "Final check", undefined, { reuse: true }))?.ok, true);
+      return "checked";
+    });
+    const manager = new RunManager(id => id === p.id ? p : undefined);
+    const command = change === "dirty-during" ? "node -e 'require(\"node:fs\").writeFileSync(\"README.md\",\"changed\")'"
+      : change === "untracked-during" ? "node -e 'require(\"node:fs\").writeFileSync(\"input.txt\",\"changed\")'"
+      : change === "hidden-during" ? "git update-index --assume-unchanged README.md" : "node -e 'console.log(1)'";
+    try {
+      const run = await manager.start({ repo, pattern: p, task: `Ineligible check ${change}`, roles: {}, options: {}, loop: { check: command } });
+      await finished(manager, run);
+      assert.equal(run.status, "done", run.error);
+      assert.equal(run.usage.checks, 2, change);
+    } finally { await manager.shutdown(); }
+  }
+});
+
+test("a failing recheck invalidates an earlier passing result even on an unchanged commit", async () => {
+  const failFile = join(home, "fail-check");
+  const quote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
+  const command = `node -e ${quote(`process.exit(require("node:fs").existsSync(${JSON.stringify(failFile)}) ? 1 : 0)` )}`;
+  const p = pattern(async ctx => {
+    const wt = await ctx.worktree("build");
+    assert.equal((await ctx.check(wt, "After integration"))?.ok, true);
+    await writeFile(failFile, "fail");
+    assert.equal((await ctx.check(wt, "Requested recheck"))?.ok, false);
+    assert.equal((await ctx.check(wt, "Final check", undefined, { reuse: true }))?.ok, false);
+    return "checked";
+  });
+  const manager = new RunManager(id => id === p.id ? p : undefined);
+  try {
+    const run = await manager.start({ repo, pattern: p, task: "Failing recheck", roles: {}, options: {}, loop: { check: command } });
+    await finished(manager, run);
+    assert.equal(run.status, "done", run.error);
+    assert.equal(run.usage.checks, 3);
+    assert.equal(run.lastCheck?.ok, false);
+  } finally { await manager.shutdown(); await rm(failFile, { force: true }); }
+});

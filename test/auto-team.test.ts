@@ -69,6 +69,84 @@ test("Auto composes a pinned template and workers inherit the run policy across 
   assert.ok(calls.some(s => s.mode === "write") && calls.some(s => s.mode === "read"));
 });
 
+test("initial and revised plans stay compact without live tools; execution retains tools and review", async () => {
+  const { adapters } = await import("../src/adapters/index.js");
+  const originals = { claude: adapters.claude.run, codex: adapters.codex.run };
+  const plans: import("../src/adapters/types.js").RunOptions[] = [];
+  const workers: import("../src/adapters/types.js").RunOptions[] = [];
+  const reviews: import("../src/adapters/types.js").RunOptions[] = [];
+  for (const id of ["claude", "codex"] as const) adapters[id].run = async (opts, emit) => {
+    if (opts.prompt.includes("AUTO_TEAM_PLAN")) plans.push(opts);
+    if (opts.prompt.includes("AUTO_TEAM_TASK")) workers.push(opts);
+    if (opts.prompt.includes("AUTO_TEAM_REVIEW")) reviews.push(opts);
+    return originals[id](opts, emit);
+  };
+  let item: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    item = await start("Implement the sample", { options: { eventDriven: true }, approvals: { plan: true }, trust: "standard" });
+    const { run, manager } = item;
+    await waitFor(run, manager, () => !!run.awaiting || run.status !== "running");
+    assert.ok(run.awaiting, run.error);
+    assert.equal(workers.length, 0);
+    await manager.answer(run.id, { decision: "revise", note: "Keep the scope small." });
+    await waitFor(run, manager, () => plans.length === 2 && !!run.awaiting || run.status !== "running");
+    assert.ok(run.awaiting, run.error);
+    for (const plan of plans) {
+      assert.equal(plan.mode, "read");
+      assert.equal(plan.agentTools, undefined);
+      assert.equal(plan.teamTools, undefined);
+      assert.ok(plan.jsonSchema);
+      assert.ok(plan.prompt.length < 12000, `small fixture plan expanded to ${plan.prompt.length} bytes`);
+      assert.ok(!plan.prompt.includes(JSON.stringify(plan.jsonSchema)), "native schema is not duplicated in the prompt");
+    }
+    await manager.answer(run.id, { decision: "approve" });
+    await waitFor(run, manager, () => run.status !== "running");
+    assert.equal(run.status, "done", run.error);
+    assert.equal(run.verdict, "passed");
+    assert.ok(workers.length);
+    assert.ok(workers.every(worker => worker.agentTools && worker.teamTools));
+    for (const worker of workers) {
+      assert.ok(worker.jsonSchema);
+      assert.ok(!worker.prompt.includes(JSON.stringify(worker.jsonSchema)), "worker schema is delivered natively, not duplicated");
+      assert.ok(worker.prompt.length < 6500, `simple worker context grew to ${worker.prompt.length} bytes`);
+    }
+    assert.ok(reviews.length);
+    for (const review of reviews) {
+      assert.equal(review.mode, "read"); assert.ok(review.jsonSchema);
+      assert.match(review.prompt, /Combined diff/);
+      assert.match(review.prompt, /run by code-flow/);
+      assert.match(review.prompt, /high and medium issues block/);
+      assert.match(review.prompt, /Missing required work blocks approval even if tests pass/);
+    }
+    assert.ok(run.steps.some(step => step.memberId === "verifier" && step.mode === "read"));
+  } finally {
+    if (item) await item.manager.shutdown();
+    for (const id of ["claude", "codex"] as const) adapters[id].run = originals[id];
+  }
+});
+
+for (const blockedBy of ["check", "review"] as const) test(`streamlined execution still blocks completion on a failed ${blockedBy}`, async () => {
+  const { adapters } = await import("../src/adapters/index.js");
+  const original = adapters.codex.run;
+  let reviewed = false;
+  adapters.codex.run = async (opts, emit) => {
+    if (opts.prompt.includes("AUTO_TEAM_REVIEW")) {
+      reviewed = true;
+      if (blockedBy === "review") return { ok: true, finalText: "", structured: { verdict: "changes_requested", issues: [{ severity: "medium", file: "claude-alpha.txt", problem: "A required behavior is missing", fix: "Complete the requirement", repro: { path: "", contents: "", command: "" } }] } };
+    }
+    return original(opts, emit);
+  };
+  let item: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    item = await finish("AUTO-MINIMAL Implement the sample", { options: { eventDriven: true, maxWaves: 1, maxRepairs: 0, providerFailover: false }, loop: { check: blockedBy === "check" ? 'node -e "process.exit(1)"' : "node --test", maxSteps: 12 } });
+    assert.ok(reviewed, "independent review still runs");
+    assert.equal(item.run.status, "stopped", item.run.error);
+    assert.equal(item.run.team?.verification?.approved, false);
+    assert.equal(item.run.lastCheck?.ok, blockedBy !== "check");
+    assert.ok(item.run.team!.gaps.some(gap => blockedBy === "check" ? /configured check fails/.test(gap) : /review has blocking findings/.test(gap)));
+  } finally { adapters.codex.run = original; if (item) await item.manager.shutdown(); }
+});
+
 test("Auto team creates independent members, runs dependency waves, and verifies the final head", async () => {
   const { run } = await finish("AUTO-SAME-PROVIDER Implement the sample");
   assert.equal(run.status, "done", run.error);
@@ -394,10 +472,30 @@ test("Auto team resumes a final-wave user question after replaying the earlier f
 });
 
 test("Auto team investigation can finish with evidence without editing files", async () => {
-  const { run } = await finish("AUTO-INVESTIGATION Explain the existing contract", { loop: { maxSteps: 20 }, prove: false });
+  const { run } = await finish("AUTO-INVESTIGATION Explain the existing contract", { loop: { maxSteps: 20, check: "node --test" }, prove: true });
   assert.equal(run.status, "done", run.error);
   assert.equal(run.team!.status, "completed", JSON.stringify(run.team!.gaps));
-  assert.equal(run.team!.verification!.check, "not_required");
+  assert.equal(run.team!.verification!.check, "passed");
+  assert.equal(run.facts?.approved, true);
+  assert.equal(run.facts?.proof, undefined);
+  assert.ok(run.steps.some(s => s.title.startsWith("Auto team independent review") && s.status === "done"));
+  assert.ok(!run.steps.some(s => s.title.startsWith("Proof:")), "an unchanged investigation must not manufacture failed proof evidence");
+});
+
+test("failed integrated checks send their diagnostics to coordination and the repairing worker", async () => {
+  const record = mkdtempSync(join(tmpdir(), "codeflow-check-diagnostics-"));
+  process.env.FAKE_RECORD_DIR = record;
+  try {
+    const { run } = await finish("AUTO-MINIMAL Implement the sample", {
+      options: { eventDriven: true, maxWaves: 2, maxRepairs: 1 },
+      loop: { maxSteps: 16, check: 'node -e "console.error(\'FORMAT_ERROR: remove trailing blank line in tests/security.py\'); process.exit(1)"' },
+    });
+    const prompts = readdirSync(record).map(file => JSON.parse(readFileSync(join(record, file), "utf8")) as { prompt: string });
+    assert.ok(prompts.some(p => p.prompt.includes("AUTO_TEAM_REVISION") && p.prompt.includes("FORMAT_ERROR: remove trailing blank line")), "coordinator must see the actual failure, not guess at the cause");
+    assert.ok(prompts.some(p => p.prompt.includes("AUTO_TEAM_TASK") && p.prompt.includes('"attempt": 2') && p.prompt.includes("FORMAT_ERROR: remove trailing blank line")), "the repair turn must retain the same host diagnostics");
+    assert.equal(run.status, "stopped");
+    assert.equal(run.lastCheck?.ok, false, "passing diagnostics must never bypass a failing check");
+  } finally { delete process.env.FAKE_RECORD_DIR; rmSync(record, { recursive: true, force: true }); }
 });
 
 test("Auto team private checkpoints do not enter coordinator revisions or another worker's context", async () => {

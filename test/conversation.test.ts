@@ -285,3 +285,16 @@ test("a team run doesn't turn leftover notes into a turn", async () => {
     delete process.env.FAKE_SLEEP_MS;
   }
 });
+
+
+test("fix & review honors an explicit plan-approval checkpoint before editing", async () => {
+  const m = new RunManager(findPattern);
+  const r = await start(m, "fix-review", { builder: ["codex"], reviewer: ["claude"] }, { approvals: { plan: true } });
+  await until(() => !!r.awaiting);
+  assert.deepEqual(agentTitles(r), ["Plan"]);
+  assert.equal(r.awaiting!.title, "Approve the plan");
+  m.answer(r.id, { decision: "approve" });
+  await finished(m, r);
+  assert.equal(r.status, "done", r.error);
+  assert.deepEqual(agentTitles(r), ["Plan", "Implement plan", "Review (round 1)"]);
+});

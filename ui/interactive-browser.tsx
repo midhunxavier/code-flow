@@ -74,6 +74,10 @@ export function InteractiveBrowser() {
     return () => { events.close(); setConnected(false); };
   }, [visible,scope]);
   const selected = state?.tabs.find(tab => tab.id === state.selected);
+  // Chrome sends frames for about:blank too. Present a start page instead of its
+  // featureless canvas, and never show a frame from the previously selected tab.
+  const blank = selected?.url === "about:blank";
+  const showPage = !!selected && !blank && frame?.tab === selected.id;
   useEffect(() => {
     if (!addressEditing.current) setAddress(selected?.url === "about:blank" ? "" : selected?.url ?? "");
     if (selected?.url && selected.url !== "about:blank") rememberSide({url:selected.url},scope);
@@ -173,9 +177,15 @@ export function InteractiveBrowser() {
     {selected && /^https?:\/\//.test(selected.url) ? <LiveBrowserTools key={selected.id} pageKey={`${scope}|${selected.id}`} url={selected.url} width={state!.width} send={message=>send({action:"overlay",tab:selected.id,message})} />:null}
     <div class="live-browser-surface" ref={surface}>
       {state?.dialog ? <form class="live-browser-dialog" aria-label="Website dialog" onSubmit={event => {event.preventDefault();act("dialog",{accept:true,text:prompt});}}><p>{state.dialog.message}</p>{state.dialog.type === "prompt" ? <input class="field" aria-label="Website prompt" value={prompt} onInput={event => setPrompt(event.currentTarget.value)} /> : null}<button class="btn primary">OK</button><button type="button" class="btn" onClick={() => act("dialog",{accept:false})}>Cancel</button></form> : null}
-      <canvas ref={canvas} hidden={!frame} role="img" aria-label="Live browser page" data-tab={drawn?.tab} data-view={drawn?.view} data-frame-width={frame?.width} data-frame-height={frame?.height} data-ready={connected && drawn?.view === state?.view && drawn?.tab === state?.selected} onContextMenu={event => event.preventDefault()} onPointerDown={event => {event.preventDefault();keyboard.current?.focus({preventScroll:true}); event.currentTarget.setPointerCapture(event.pointerId);pointer(event,"mousePressed");}} onPointerUp={event => {pointer(event,"mouseReleased");if(event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);}} onPointerMove={event => {if(event.buttons || performance.now()-hoverAt.current>80) {hoverAt.current=performance.now();pointer(event,"mouseMoved");}}} onWheel={event => {event.preventDefault();pointer(event,"mouseWheel");}} />
-      <textarea ref={keyboard} class="live-browser-keyboard" aria-label="Type in browser page" autoComplete="off" autoCapitalize="off" spellcheck={false} onKeyDown={key} onInput={event => {if ((event as InputEvent).isComposing) return;const text=event.currentTarget.value; event.currentTarget.value="";if(text) act("text",{text});}} onCompositionEnd={event => {const text=event.currentTarget.value;event.currentTarget.value="";if(text) act("text",{text});}} onPaste={event => {event.preventDefault();const text=event.clipboardData?.getData("text/plain");if(text) act("text",{text});}} />
-      {!frame ? <div class="live-browser-empty">{connected ? "Open a website to start browsing" : "Starting your browser…"}</div> : null}
+      <canvas ref={canvas} hidden={!showPage} role="img" aria-label="Live browser page" data-tab={drawn?.tab} data-view={drawn?.view} data-frame-width={frame?.width} data-frame-height={frame?.height} data-ready={showPage && connected && drawn?.view === state?.view && drawn?.tab === state?.selected} onContextMenu={event => event.preventDefault()} onPointerDown={event => {event.preventDefault();keyboard.current?.focus({preventScroll:true}); event.currentTarget.setPointerCapture(event.pointerId);pointer(event,"mousePressed");}} onPointerUp={event => {pointer(event,"mouseReleased");if(event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);}} onPointerMove={event => {if(event.buttons || performance.now()-hoverAt.current>80) {hoverAt.current=performance.now();pointer(event,"mouseMoved");}}} onWheel={event => {event.preventDefault();pointer(event,"mouseWheel");}} />
+      <textarea ref={keyboard} disabled={!showPage} tabIndex={showPage ? 0 : -1} class="live-browser-keyboard" aria-label="Type in browser page" autoComplete="off" autoCapitalize="off" spellcheck={false} onKeyDown={key} onInput={event => {if ((event as InputEvent).isComposing) return;const text=event.currentTarget.value; event.currentTarget.value="";if(text) act("text",{text});}} onCompositionEnd={event => {const text=event.currentTarget.value;event.currentTarget.value="";if(text) act("text",{text});}} onPaste={event => {event.preventDefault();const text=event.clipboardData?.getData("text/plain");if(text) act("text",{text});}} />
+      {blank ? <section class="live-browser-empty" aria-label="Browser start page">
+        <div class="live-browser-empty-icon"><Icon name="globe" /></div>
+        <h3>No website open</h3>
+        <p>Each {sideScope.value.run ? "run" : "project"} keeps its own browser tabs. Your pages in other runs are still there.</p>
+        <button type="button" class="btn" onClick={() => addressInput.current?.focus()}>Enter address</button>
+        <p class="help">Use <strong>Keep open</strong> on a website’s browser to keep it visible while switching runs.</p>
+      </section> : !showPage ? <div class="live-browser-empty" role="status">{connected ? "Loading page…" : "Starting your browser…"}</div> : null}
     </div>
     {selected ? <LiveBrowserTray pageKey={`${scope}|${selected.id}`} />:null}
   </div>;

@@ -29,6 +29,10 @@ export function independentRoles(
     const other = supervisor && outside([supervisor]);
     if (supervisor && supervisor !== "auto" && (out.reviewer?.[0] ?? supervisor) === supervisor && other) out.reviewer = [other];
   }
+  if (patternId === "fix-review" && !saved.reviewer && !out.builder?.includes("auto")) {
+    const other = outside(out.builder ?? []);
+    if (out.builder?.includes(out.reviewer?.[0]!) && other) out.reviewer = [other];
+  }
   // A reviewer of the planner's vendor would let a wrong plan through; best neither the planner's nor the builder's.
   if (patternId === "pipeline" && !saved.reviewer) {
     const [planner] = out.planner ?? [];

@@ -1,7 +1,15 @@
 import { checksLabel } from "../src/run-status.js";
 export { checksLabel } from "../src/run-status.js";
-import type { RunSummary } from "./types.js";
+import type { AgentId, Run, RunSummary } from "./types.js";
 import { teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
+
+/** A combined team result has no writing step of its own; its lead handles follow-ups. */
+export function resultAgent(run: Pick<Run, "pattern" | "conversationAgent" | "roles" | "steps" | "team"> | null, worktree?: string): AgentId | undefined {
+  if (!run || !worktree) return;
+  if (run.pattern === "solo") return run.conversationAgent ?? run.roles.agent?.[0];
+  const writer = [...run.steps].reverse().find(step => (step.kind ?? "agent") === "agent" && step.worktree === worktree && step.mode === "write" && !step.sideOf)?.agent;
+  return writer ?? (worktree === "integration" ? run.team?.members.find(member => member.role === "coordinator" && member.status !== "retired")?.provider ?? run.roles.coordinator?.[0] : undefined);
+}
 
 /** Execution and evidence are independent: finishing a turn never implies passing checks. */
 export function executionLabel(run: RunSummary): string {
@@ -53,6 +61,10 @@ export function nextRunAction(run: RunSummary): NextAction | null {
   const checks = checksLabel(run);
   if (checks === "Blocked" || checks === "Not configured") return { kind: "check", title: checks === "Blocked" ? "Verification needs attention" : "No automated check is configured", detail: `${run.checkCantRun?.reason ?? "Choose a runnable check before relying on this result."} You can configure a continuation from the saved result branch.`, label: "Fix check command", branch: artifact?.branch };
   if (checks === "Failed") return { kind: "revise", title: "Checks need a fix", detail: "The run finished, but its checks failed. Send a follow-up using the existing result and review the new evidence.", label: "Request a fix", branch: artifact?.branch };
-  if (artifact) return { kind: "review", title: checks === "Passed" ? "Ready for your review" : "Changes are ready to inspect", detail: checks === "Passed" ? "Inspect the changes and evidence, then open a pull request or merge." : "Independent verification is incomplete. Review the evidence before using these changes.", label: "Review changes", branch: artifact.branch };
+  if (artifact) {
+    const review = agentReviewLabel(run, artifact.branch);
+    const blocked = review === "Changes requested" || review === "Review outdated";
+    return { kind: "review", title: blocked ? "Changes need attention" : checks === "Passed" ? "Ready for your review" : "Changes are ready to inspect", detail: blocked ? "Review the findings and ask the agent for a revision in chat." : checks === "Passed" ? "Inspect the changes and evidence before publishing." : "Independent verification is incomplete. Review the evidence before using these changes.", label: "Review changes", branch: artifact.branch };
+  }
   return null;
 }

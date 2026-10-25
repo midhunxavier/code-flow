@@ -1,3 +1,5 @@
+import { BrowserMessage, BrowserDraftCards } from "./browser-context-cards.js";
+import { editBrowserText, parseBrowserMessage } from "./browser-context.js";
 import { chatTaskId } from "../src/chat-family.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { AgentTag, Markdown } from "./bits.js";
@@ -250,7 +252,7 @@ function SideChatView({ run: summary, chat }: { run: RunSummary; chat: string })
               <div key={f.id} class="fu">
                 <div class="msg-you">
                   <div class="bubble">
-                    <Markdown text={f.message} />
+                    <BrowserMessage text={f.message} />
                     <div class={`side-mode ${change ? "change" : ""}`}>{change ? "Change" : "Ask"}</div>
                   </div>
                 </div>
@@ -324,7 +326,7 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
     setBusy(true);
     setError("");
     const id = chat?.chat ?? `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    const title = chat?.title ?? (text.trim().split("\n")[0]!.slice(0, 60) || "Side chat");
+    const title = chat?.title ?? ((parseBrowserMessage(text).text || parseBrowserMessage(text).contexts[0]?.comment || "Browser feedback").trim().split("\n")[0]!.slice(0, 60) || "Side chat");
     try {
       if (run.pattern === "solo" && !chat) {
         const next = await post<{ id: string }>(`/api/runs/${run.id}/provider-chat`, { agent, settings: selectedSettings, message: text.trim(), kind: "side", attachments: images.map(({ name, data }) => ({ name, data })) });
@@ -345,15 +347,16 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
     <div class="convo">
       <div class="convo-inner">
         {error ? <div class="msg err">{error}</div> : null}
-        <DraftImages images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
+        <BrowserDraftCards text={text} onText={setText} images={images} onImages={setImages} />
+        <DraftImages message={text} images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
         <div class="chatbox">
           <textarea
             ref={area}
             rows={1}
             aria-label="Message"
             placeholder={mode === "change" ? `Ask ${name} for a change…` : chat ? `Reply to ${name}…` : `Ask ${name} about this run…`}
-            value={text}
-            onInput={(e) => setText(e.currentTarget.value)}
+            value={parseBrowserMessage(text).text}
+            onInput={(e) => setText(editBrowserText(text, e.currentTarget.value))}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
                 e.preventDefault();
@@ -445,7 +448,7 @@ function ChatView({ id }: { id: string }) {
           </div>
           <div class="msg-you">
             <div class="bubble">
-              <Markdown text={run.task} />
+              <BrowserMessage text={run.task} />
             </div>
           </div>
           <ChatThread run={run} steps={steps} data={data.current} />

@@ -4,10 +4,12 @@ Review the result diff and its check evidence. Use the run’s publishing contro
 
 ## Review and ship
 
-**Review changes** opens a workspace containing the diff, verification evidence, commit-scoped human review coverage and review comments. Mark files reviewed in the file pane. Expand **Publish changes** to use the existing merge, PR and validation controls without leaving review. **Refresh changes** reloads the diff and coverage after an external branch update; coverage is reset when the commit changes.
+**Review changes** opens a workspace containing the file list, diff and a persistent feedback box. Click a diff line for a specific comment, or describe the change in **Overall comment**. Sending comments returns to chat while the agent revises the work. **Review tools** contains commit-scoped human review coverage and impact analysis. Expand **Publish changes → Actions** to merge or update a PR without leaving review. **Refresh changes** reloads the diff and coverage after an external branch update; coverage is reset when the commit changes.
 
 
-When a run finishes, each result branch has **Review changes**, **Merge…** and **Open PR…** buttons.
+When a run finishes, **Review changes** is available beside its answer. Merge and PR controls are under **Details and publishing → Actions**, or **Publish changes** inside the review.
+
+Agent conversations show current working files, including new files that are not committed. The file list says **Working changes** when those edits are present. You can inspect and comment immediately; ask the agent to commit before publishing or recording approval against that commit. Viewing a diff does not stage files or change the branch.
 
 - **Review changes** opens a per-file diff. Click any line to comment on it, and add an overall comment if you like.
   - **Send N comments to [agent]** queues a *follow-up* in the same run: that agent continues its own session in the worktree, addresses the comments, and code-flow commits and re-runs the check.
@@ -42,8 +44,8 @@ Runs can start from GitHub instead of a blank task box, using GitHub CLI (`gh`) 
 
 | Template | Pattern | Starts from |
 |---|---|---|
-| **Fix an issue** | Plan → Build → Review | an issue; the PR you open later says `Closes #N` |
-| **Fix failing CI** | Plan → Build → Review | a PR, with its failing checks and their job logs (`gh run view --log-failed`) given to the agents |
+| **Fix an issue** | Fix & review | an issue; the PR you open later says `Closes #N` |
+| **Fix failing CI** | Fix & review | a PR, with its failing checks and their job logs (`gh run view --log-failed`) given to the agents |
 | **Review a PR as a council** | Review council | a PR |
 | **Upgrade a dependency** | Plan → Build → Review | the task box (replace `PACKAGE`) |
 
@@ -51,27 +53,38 @@ The task names the issue or PR by number. Its title isn't put in the task (whoev
 
 ### Sweeps: many at once
 
-**Sweep** under *Start from* lists a whole kind of work, with a checkbox per item. The ones you pick start **one run each**, with the team, check and settings you set up in the composer. Each result waits in the [inbox](automations.md#the-inbox) for you to approve, revise or reject, and nothing is merged automatically.
+**Sweep** under *Start from* lists a whole kind of work, with a checkbox per item. The ones you pick start **one run each**. Issues and Dependabot PRs default to **Fix & review**: one agent diagnoses and implements a focused fix, then code-flow runs the configured checks, fail-to-pass proof when enabled, and independent review. This removes the separate planner invocation while keeping the verification and review loop. Agents use focused tests during implementation and the host runs the completion suite. You can still choose a single agent, another team pattern or a saved template under **Run with**; expand **Configure agents and checks** to change providers or verification. Each result waits in the [inbox](automations.md#the-inbox) for you to approve, revise or reject, and nothing is merged automatically.
 
 | Sweep | Lists | Picked by default | Each run |
 |---|---|---|---|
 | **Fix open issues** | open issues | all, except ones labelled *question*, *wontfix*, *duplicate*, *invalid*… | fixes the issue and adds a test; **Approve & open PR** says `Closes #N` |
-| **Fix Dependabot PRs** | Dependabot's open PRs (`gh pr list --app dependabot`), with their CI | only the ones whose CI fails; green ones say *ready for you to merge* | gets the failing checks and their logs, adapts the code to the new version, with the PR's text and logs [fenced as untrusted](#untrusted-text); **Approve & push to PR #N** pushes the fix to Dependabot's branch (never forced) |
+| **Fix Dependabot PRs** | Dependabot's open PRs (`gh pr list --app dependabot`), with their CI | only non-draft PRs whose CI fails; passing, pending and unchecked PRs stay available to inspect on GitHub | gets the failing checks and their logs, adapts the code to the new version, with the PR's text and logs [fenced as untrusted](#untrusted-text); **Approve & push to PR #N** pushes the fix to Dependabot's branch (never forced) |
 | **Fix security alerts** | Dependabot alerts, code scanning alerts and leaked secrets | high and medium alerts that have a fix | Dependabot alerts: one run per package, upgrading past every alert on it. Code scanning: one run per alert, fixing the cause rather than suppressing it |
 
+- **Needs work** shows the default repair queue; **All** includes questions, passing PRs and existing runs. Selecting all never starts passing, pending, unchecked or draft Dependabot PRs, or items already covered by a run. GitHub is read again before launching a manual sweep; closed or newly passing items are skipped with a reason.
+- Issue repairs reproduce the problem and add regression coverage. Ambiguous reports and external CI failures should return the evidence and the missing information instead of speculative edits. Dependency repairs preserve the upgrade, required checks and existing test coverage.
+- CI context downloads up to eight failed GitHub Actions workflows, three at a time, with an excerpt for each. Omitted logs are identified so one long log cannot hide every other failure.
 - An item that already has a run (running, or finished and not rejected) starts unpicked and links to that run, so sweeping again doesn't redo work. For a package's Dependabot alerts that means a run covering every one of them: a new alert on the package is new work.
 - Lists read every page GitHub has, up to 1,000 items of each kind (200 Dependabot PRs), and say so when there were more.
 - Dependabot alerts that an open Dependabot PR already upgrades start unpicked, and so do alerts with no patched version yet (that run would have to mitigate instead).
 - **Leaked secrets are never handed to an agent.** They're listed so you can revoke and rotate them yourself.
-- At most 25 runs start per sweep; agents and checks still queue behind `CODEFLOW_MAX_AGENTS` and `CODEFLOW_MAX_CHECKS`. A run that can't start (an untrusted issue without Docker, say) is reported, and the rest go on.
+- At most 25 runs start per sweep; agents and checks still queue behind `CODEFLOW_MAX_AGENTS` and `CODEFLOW_MAX_CHECKS`. A run that can't start (an untrusted issue without Docker, say) stays in the dialog with its error. Only failed items remain selected for retry; started items link to their runs. Results wait in Inbox.
 - *Also check every day at…* saves the sweep as an [automation](automations.md#sweeps) that starts runs for new items.
 - Reading security alerts needs the `security_events` scope for private repositories: `gh auth refresh -s security_events` (and admin or security manager access). The sweep says so if it's missing, or if a feature isn't turned on for the repo.
+
+### Visual evidence, on request
+
+Ask in chat: “Test this flow and attach screenshots and a short recording to the PR.” Agent and Team modes receive the same capture instructions; ordinary backend repairs do not add visual tests automatically. The agent reuses available browser tests or tools, records the actual flow, and reports any missing capture capability.
+
+Requested media is saved as ordinary reviewable files under `.codeflow/evidence/`, with `README.md` describing steps, commands, results and limitations. When publishing through code-flow, new or changed committed PNG/JPEG/WebP screenshots are embedded in the PR description; WebM/MP4 recordings and test notes are linked. A push to an existing source PR adds an evidence comment. Links reference the published commit. This uses files on the result branch, rather than GitHub's separate drag-and-drop attachment storage. Review the files for sensitive content before publishing. At most eight media files, up to 20 MB each, are linked; symlinks and uncommitted files are excluded. A failed comment is reported separately from a successful push.
+
+Screenshots and recordings illustrate behavior; they are not proof that tests passed. Check results remain separately recorded. Ask the agent to refresh captures after changing the tested flow.
 
 ### Issues and pull requests
 
 **GitHub** in the task box starts from any open issue or PR:
 
-- An **issue's** title and description go to every agent with the task.
+- An **issue's** title, description and up to ten recent discussion excerpts go to every agent with the task. Discussion excerpts are always fenced as untrusted evidence; agents can open the issue for full context.
 - A **PR's** branch is fetched (`pull/N/head`, so forks work too) and becomes the run's base. Its description goes to the agents, and its changes are compared against the PR's target branch.
 - When a run came from a PR, a result has **Push to PR #N**. It pushes to the PR's branch and is never forced, so it fails if someone else pushed in the meantime. You can't push to a PR from a fork; you can still review it.
 

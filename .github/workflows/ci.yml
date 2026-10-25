@@ -93,7 +93,19 @@ jobs:
           git config --global user.name "code-flow CI"
           git config --global user.email "ci@code-flow.invalid"
       - run: npm ci
+      - name: Install browser video encoder
+        run: node node_modules/playwright-core/cli.js install ffmpeg
       - run: npm run test:e2e
+      - name: Save browser screenshots and recordings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-evidence
+          path: |
+            output/playwright/**/*.png
+            output/playwright/**/*.webm
+          if-no-files-found: ignore
+          retention-days: 7
 
   vscode:
     name: VS Code extension host
