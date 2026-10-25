@@ -1,3 +1,4 @@
+import { ciRepairTask, issueRepairTask } from "./repair-strategy.js";
 import type { RunSummary } from "./engine.js";
 import { repoRoot } from "./git.js";
 import {
@@ -38,6 +39,8 @@ export interface SweepItem {
   note?: string;
   /** Never handed to an agent (a leaked secret): listed so you can act on it yourself. */
   manual?: boolean;
+  /** Listed for context, but starting a repair would be redundant or premature. */
+  blockedReason?: string;
   /** A run that already covers this item. */
   existingRun?: string;
   /** What the item's run gets: its task and where it starts from. */
@@ -70,6 +73,7 @@ export async function listSweep(repo: string, kind: SweepKind, runs: RunSummary[
       item.existingRun = covering.id;
       item.selected = false;
       item.note = covering.status === "running" ? "A run is working on it" : "Already has a run";
+      item.blockedReason = item.note;
     }
   }
   return list;
@@ -96,14 +100,14 @@ async function issueItems(repo: string): Promise<SweepList> {
         note: skip ? `Labelled “${skip}”` : undefined,
         // Not the title: whoever opened the issue wrote it, and the task is read as instructions.
         // The run gets the title with the issue's text, fenced as information.
-        task: `Fix issue #${i.number}. Add a test that fails without the fix.`,
+        task: issueRepairTask(`issue #${i.number}`),
         source: { kind: "issue", number: i.number },
       };
     }),
   };
 }
 
-const CI_NOTE = { pass: "CI passes — ready for you to merge", pending: "CI is still running", none: "No CI checks reported" } as const;
+const CI_NOTE = { pass: "CI passes — no repair needed. Review on GitHub.", pending: "CI is still running — wait for a result", none: "No CI checks reported — inspect on GitHub first" } as const;
 
 async function dependabotItems(repo: string): Promise<SweepList> {
   const prs = await listDependabotPrs(repo);
@@ -117,12 +121,11 @@ async function dependabotItems(repo: string): Promise<SweepList> {
       detail: `${pr.ci === "fail" ? "CI failing" : pr.ci === "pass" ? "CI green" : pr.ci === "pending" ? "CI running" : "no CI"} · ${pr.headRefName}`,
       url: pr.url,
       // Only a failing PR needs an agent; code-flow never merges the green ones for you.
-      selected: pr.ci === "fail",
-      note: pr.ci === "fail" ? undefined : CI_NOTE[pr.ci],
+      selected: pr.ci === "fail" && !pr.isDraft,
+      note: pr.isDraft ? "Draft PR — mark ready on GitHub before repairing" : pr.ci === "fail" ? undefined : CI_NOTE[pr.ci],
+      blockedReason: pr.isDraft ? "Draft PR — mark ready on GitHub before repairing" : pr.ci === "fail" ? undefined : CI_NOTE[pr.ci],
       // The PR's title stays out of the task: package names and versions come from upstream.
-      task:
-        `Make CI pass on Dependabot's pull request #${pr.number}. The failing checks and their logs are below. ` +
-        "Fix the cause by adapting the code to the new version; don't pin it back, and don't disable, skip or weaken tests.",
+      task: ciRepairTask(`Dependabot's pull request #${pr.number}`, true),
       source: { kind: "pr", number: pr.number, ciLogs: true },
     })),
   };
@@ -321,6 +324,8 @@ export async function runSweep(input: {
   runs: RunSummary[];
   start: (item: SweepRequestItem) => Promise<{ id: string }>;
   concurrency?: number;
+  /** Fresh GitHub listing, so stale selections do not start unnecessary or closed work. */
+  list?: SweepList;
 }): Promise<SweepOutcome> {
   const outcome: SweepOutcome = { started: [], skipped: [], failed: [] };
   const root = await repoRoot(input.repo).catch(() => input.repo);
@@ -330,6 +335,16 @@ export async function runSweep(input: {
     for (let item = queue.shift(); item; item = queue.shift()) {
       if (seen.has(item.key)) continue;
       seen.add(item.key);
+      if (input.list) {
+        const requested = item;
+        const current = input.list.items.find(entry => entry.key === requested.key && entry.source?.kind === requested.source.kind &&
+          entry.source.number === requested.source.number && entry.source.tool === requested.source.tool &&
+          JSON.stringify(sourceKeys(entry.source).sort()) === JSON.stringify(sourceKeys(requested.source).sort()));
+        const why = !current ? "No longer in the open GitHub list. Refresh and try again." : current.manual || !current.task || !current.source ? "Needs manual action on GitHub" : current.blockedReason;
+        if (why) { outcome.skipped.push({ key: item.key, why }); continue; }
+        // Always reload CI evidence for PR repairs; the client's stale snapshot is not authoritative.
+        item = { ...item, source: current!.source! };
+      }
       const covering = coveringRun(input.runs, root, item.source);
       if (covering) {
         outcome.skipped.push({ key: item.key, why: `already has run ${covering.id}` });
@@ -356,7 +371,7 @@ export async function runSweep(input: {
  */
 export function nextSweepItems(list: SweepList, handled: Set<string>, max: number): SweepRequestItem[] {
   return list.items
-    .filter((i) => i.selected && !i.manual && i.source && i.task && !sourceKeys(i.source).every((k) => handled.has(k)))
+    .filter((i) => i.selected && !i.manual && !i.blockedReason && i.source && i.task && !sourceKeys(i.source).every((k) => handled.has(k)))
     .slice(0, max)
     .map((i) => ({ key: i.key, task: i.task!, source: i.source! }));
 }

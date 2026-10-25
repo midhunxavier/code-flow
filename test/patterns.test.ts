@@ -87,6 +87,25 @@ test("pipeline: the reviewer judges the change against the task, with the plan a
   assert.match(await logs(run), /claude both plans and reviews; a reviewer from another vendor is likelier to catch a wrong plan/);
 });
 
+test("fix & review: skips planning but keeps independent review and requested-change rounds", async () => {
+  rmSync(join(process.env.CODEFLOW_HOME!, ".reviewed-once"), { force: true });
+  process.env.FAKE_REVIEW_FAIL_ONCE = "1";
+  try {
+    const { result: run, prompts } = await recording(() => runPattern("fix-review", { builder: ["codex"], reviewer: ["claude"] }));
+    assert.equal(run.status, "done", run.error);
+    assert.deepEqual(run.steps.map(step => step.title), ["Fix the issue", "Review (round 1)", "Address review (round 1)", "Review (round 2)"]);
+    assert.equal(run.facts?.approved, true);
+    assert.equal(run.facts?.reviewRounds, 2);
+    const build = prompts.find(entry => entry.prompt.includes("## Approach"))!;
+    assert.equal(build.vendor, "codex");
+    assert.match(build.prompt, /do not repeat the full completion suite yourself/);
+    const reviews = prompts.filter(entry => entry.prompt.includes("You are the reviewer"));
+    assert.equal(reviews.length, 2);
+    assert.ok(reviews.every(entry => entry.vendor === "claude"));
+    assert.ok(reviews.every(entry => !entry.prompt.includes("## The planner's plan")));
+  } finally { delete process.env.FAKE_REVIEW_FAIL_ONCE; }
+});
+
 test("race: contestants in parallel, judge picks anonymized winner", async () => {
   const run = await runPattern("race", { contestants: ["claude", "codex"], judge: ["claude"] });
   assert.equal(run.status, "done", run.error);

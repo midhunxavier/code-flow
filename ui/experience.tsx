@@ -2,11 +2,13 @@ import { useEffect, useState } from "preact/hooks";
 import type { outcomeMetrics, TaskIntent, workflowRecommendations } from "../src/experience.js";
 import { progressSummary } from "../src/experience.js";
 import { api, duration, enc, post, usePoll } from "./lib.js";
-import { navigate, openSide, pinSide, patterns, rememberSide, sideMemo, runs, setPattern } from "./state.js";
+import { navigate, openBrowserPage, draftTo, patterns, runs, setPattern } from "./state.js";
 import type { DevServer, RunSummary, Step } from "./types.js";
 import { ScenarioEvidence } from "./journeys.js";
 import type { Journey } from "../src/journeys.js";
 import { checksLabel, agentReviewLabel } from "./run-experience.js";
+import { continuePreviewSetup, requestPreviewSetup, startResultPreview } from "./result-preview.js";
+import { ResultNextStep } from "./result-next-step.js";
 
 export { intentDraft } from "./composer-draft-fields.js";
 type Experience = { metrics: ReturnType<typeof outcomeMetrics>; recommendations: ReturnType<typeof workflowRecommendations> };
@@ -50,12 +52,29 @@ async function waitForPreview(run: RunSummary, worktree: string) {
 export function ResultStudio({ run }: { run: RunSummary }) {
   const choices = run.worktrees.filter(tree => run.artifacts.some(artifact => artifact.branch === tree.branch));
   const [selected, setSelected] = useState(choices[0]?.name ?? ""), [busy, setBusy] = useState(false), [error, setError] = useState(""), [command, setCommand] = useState(run.app?.command ?? "");
-  const [server, setServer] = useState<DevServer | null>(null), [journey, setJourney] = useState<Journey>(), [head, setHead] = useState("");
+  const [server, setServer] = useState<DevServer | null>(null), [journey, setJourney] = useState<Journey>(), [head, setHead] = useState(""), [workingChanges, setWorkingChanges] = useState(false);
   const tree = choices.find(tree => tree.name === selected) ?? choices[0];
-  useEffect(() => { let alive = true; setHead(""); setServer(null); if (tree) { api<{ head: string }>(`/api/runs/${run.id}/review-coverage?branch=${enc(tree.branch)}`).then(value => alive && setHead(value.head), error => alive && setError(error.message)); api<DevServer | null>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve`).then(value => alive && setServer(value), error => alive && setError(error.message)); } return () => { alive = false; }; }, [run.id, tree?.branch, run.endedAt]);
+  useEffect(() => { let alive = true; setHead(""); setServer(null); if (tree) { api<{ head: string; workingChanges?: boolean }>(`/api/runs/${run.id}/review-coverage?branch=${enc(tree.branch)}`).then(value => { if (alive) { setHead(value.head); setWorkingChanges(!!value.workingChanges); } }, error => alive && setError(error.message)); api<DevServer | null>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve`).then(value => alive && setServer(value), error => alive && setError(error.message)); } return () => { alive = false; }; }, [run.id, tree?.branch, run.endedAt]);
   useEffect(() => { let alive = true; if (run.journeyId) api<{ journey: Journey }>(`/api/journeys/${run.journeyId}`).then(value => alive && setJourney(value.journey), error => alive && setError(error.message)); return () => { alive = false; }; }, [run.journeyId]);
-  if (!tree) return null;
-  const tryResult = async () => { setBusy(true); setError(""); try { const app = server?.status === "running" ? server : await post<DevServer>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve`, { command }); setServer(app); await waitForPreview(run, tree.name); pinSide(false); openSide("browser"); rememberSide({ pages: [...(sideMemo.value.pages ?? []).filter(page => page.id !== `result-${tree.name}`), { id: `result-${tree.name}`, url: app.url }], page: `result-${tree.name}` }); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } };
+  useEffect(() => {
+    let alive = true;
+    if (tree) {
+      api<{ command: string } | null>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve/config`).then(value => { if (alive) setCommand(value?.command ?? ""); }, () => {});
+      continuePreviewSetup(run, tree).then(app => { if (app && alive) { setServer(app); openBrowserPage(app.url, run.id); } }, error => { if (alive) setError(error.message); });
+    }
+    return () => { alive = false; };
+  }, [run.id, tree?.name, run.endedAt]);
+  if (!tree || run.archived) return null;
+  const tryResult = async () => {
+    setBusy(true); setError("");
+    try {
+      const configured = command.trim() || (await api<{ command: string } | null>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve/config`))?.command;
+      if (!configured && server?.status !== "running") { await requestPreviewSetup(run, tree); return; }
+      const app = await startResultPreview(run, tree, configured);
+      if (app) { setServer(app); openBrowserPage(app.url, run.id); }
+    } catch (error) { setError((error as Error).message); }
+    finally { setBusy(false); }
+  };
   const rate = async (decision: "accepted" | "needs-work") => {
     setBusy(true); setError("");
     try {
@@ -67,15 +86,27 @@ export function ResultStudio({ run }: { run: RunSummary }) {
     } catch (error) { setError((error as Error).message); }
     finally { setBusy(false); }
   };
-  return <section class="result-studio" aria-label="Try and assess the result"><div class="experience-kicker">YOUR RESULT</div><h3>Try it. Inspect the evidence. Decide.</h3>{choices.length > 1 ? <label>Result branch<select class="field" disabled={busy} value={tree.name} onChange={e => setSelected(e.currentTarget.value)}>{choices.map(choice => <option key={choice.name} value={choice.name}>{choice.name}</option>)}</select></label> : null}
-    <p class="help">Checks: {checksLabel(run, false, tree.branch)} · Agent review: {agentReviewLabel(run, tree.branch)} · <code>{head.slice(0, 12) || "Loading commit…"}</code></p>
-    <div class="experience-actions"><button class="btn primary" disabled={busy || !command.trim() && server?.status !== "running"} onClick={tryResult}>{busy ? "Working…" : "Try this result"}</button><button class="btn" onClick={() => navigate({ view: "review", id: run.id, branch: tree.branch })}>Inspect changes</button><button class="btn" disabled={busy || !head} onClick={() => void rate("accepted")}>Accept result</button><button class="btn" disabled={busy || !head} onClick={() => void rate("needs-work")}>Needs more work</button></div>
-    <details><summary>{command ? "Preview launch command" : "Set up the preview"}</summary><label>App command<input class="field" placeholder="npm run dev -- --port $PORT" value={command} onInput={e => setCommand(e.currentTarget.value)} /></label><p class="help">Runs in this result's worktree. Use the allocated PORT environment variable. Starting a preview executes repository code.</p></details>
-    {run.outcome ? <p class="help">{run.outcome.decision === "accepted" ? "Accepted" : "Needs more work"} at {run.outcome.head.slice(0, 12)}{head && (run.outcome.head !== head || run.outcome.branch !== tree.branch) ? " · previous result; assess this commit separately" : ""}. Feedback does not publish or merge the result.</p> : null}
+  const checks = checksLabel(run, false, tree.branch), review = agentReviewLabel(run, tree.branch);
+  const attention = checks === "Failed" || review === "Changes requested" || review === "Review outdated";
+  return <section class={`result-studio result-compact${attention ? " needs-attention" : ""}`} aria-label="Try and assess the result">
+    <ResultNextStep key={`${run.id}/${tree.branch}`} run={run} branch={tree.branch}><div class="result-primary"><div><h3>{attention ? "Changes need attention" : "Ready to review"}</h3>
+      <p class="help">Checks: {checks} · Review: {review}</p></div>
+      <div class="experience-actions"><button class="btn primary" onClick={() => navigate({ view: "review", id: run.id, branch: tree.branch })}>Review changes</button>
+        <button class="btn" disabled={busy || !!run.projectTeam && !command.trim()} onClick={tryResult}>{busy ? "Preparing preview…" : server?.status === "running" ? "Open preview" : "Preview"}</button></div>
+    </div></ResultNextStep>
+    <p class="result-chat-hint">{run.testRun ? "Review the test evidence or keep discussing it in chat." : "Ask for changes or a preview in chat."} <button class="link" onClick={() => draftTo(`main:${run.id}`, "")}>Continue chatting</button></p>
+    {choices.length > 1 ? <label>Result branch<select class="field" disabled={busy} value={tree.name} onChange={e => setSelected(e.currentTarget.value)}>{choices.map(choice => <option key={choice.name} value={choice.name}>{choice.name}</option>)}</select></label> : null}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
-    {journey ? <ScenarioEvidence key={`${run.id}/${tree.branch}`} journey={journey} runId={run.id} branch={tree.branch} appUrl={server?.status === "running" ? server.url : undefined} /> : null}
-    <VisualComparison key={`${run.id}/${tree.branch}`} appUrl={server?.status === "running" ? server.url : undefined} />
-    {!run.projectTeam ? <Alternatives run={run} branch={tree.branch} head={head} /> : null}
+    <details class="result-more"><summary>More options</summary>
+      {run.testRun || run.source?.kind === "pr" || run.prs[tree.branch] ? <button class="btn small" onClick={() => navigate({ view: "review", id: run.id, branch: tree.branch })}>{run.testRun ? "Review test changes" : "Review local changes"}</button> : null}
+      {!run.testRun ? <button class="link result-test-label" disabled={busy} onClick={async () => { setBusy(true); try { await post(`/api/runs/${run.id}/test-run`, { testRun: { reason: "This run was marked as a test. Keep its results as evidence and archive it when finished." } }); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }}>Mark as test run</button> : <button class="link result-test-label" disabled={busy} onClick={async () => { setBusy(true); try { await post(`/api/runs/${run.id}/test-run`, { testRun: null }); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }}>Remove test label</button>}
+      <details><summary>Preview settings</summary><p class="help">Preview detects the app's launch command. When setup is needed, the agent prepares it in chat and the preview opens when ready.</p><label>App command<input class="field" placeholder="Detected automatically" value={command} onInput={e => setCommand(e.currentTarget.value)} /></label><button class="btn small" disabled={busy} onClick={tryResult}>Start preview</button></details>
+      <details><summary>Record your assessment</summary><p class="help">Optional feedback on this commit. {workingChanges ? "Ask the agent to commit the working changes first. " : ""}Accepting does not publish or merge. Needs more work opens the review to write feedback for the agent.</p><div class="experience-actions"><button class="btn small" disabled={busy || !head || workingChanges} onClick={() => void rate("accepted")}>Accept result</button><button class="btn small" disabled={busy || !head || workingChanges} onClick={() => void rate("needs-work")}>Needs more work</button></div>
+      {run.outcome ? <p class="help">{run.outcome.decision === "accepted" ? "Accepted" : "Needs more work"} at {run.outcome.head.slice(0, 12)}{head && (run.outcome.head !== head || run.outcome.branch !== tree.branch) ? " · previous result; assess this commit separately" : ""}.</p> : null}</details>
+      {journey ? <ScenarioEvidence key={`${run.id}/${tree.branch}`} journey={journey} runId={run.id} branch={tree.branch} appUrl={server?.status === "running" ? server.url : undefined} /> : null}
+      <VisualComparison key={`${run.id}/${tree.branch}`} appUrl={server?.status === "running" ? server.url : undefined} />
+      {!run.projectTeam ? <Alternatives run={run} branch={tree.branch} head={head} /> : null}
+    </details>
   </section>;
 }
 function Alternatives({ run, branch, head }: { run: RunSummary; branch: string; head: string }) {

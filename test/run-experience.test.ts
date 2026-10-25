@@ -1,9 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checksLabel, executionLabel, nextRunAction, agentReviewLabel } from "../ui/run-experience.js";
-import type { RunSummary } from "../ui/types.js";
+import { checksLabel, executionLabel, nextRunAction, agentReviewLabel, resultAgent } from "../ui/run-experience.js";
+import type { Run, RunSummary } from "../ui/types.js";
 
 const run = (patch: Partial<RunSummary> = {}) => ({ status: "done", loop: { check: "npm test" }, artifacts: [{ branch: "result", stat: "1 file changed" }], worktrees: [{ branch: "result" }], ...patch }) as RunSummary;
+
+test("result actions choose the team lead for integration and preserve the current Agent provider", () => {
+  const adaptive = { pattern: "auto-team", roles: { coordinator: ["claude"] }, steps: [{ kind: "agent", worktree: "member-one", agent: "codex", mode: "write" }] } as unknown as Run;
+  assert.equal(resultAgent(adaptive, "integration"), "claude");
+  assert.equal(resultAgent(adaptive, "member-one"), "codex");
+  assert.equal(resultAgent(adaptive, "unknown"), undefined);
+  assert.equal(resultAgent(null, "integration"), undefined);
+  const solo = { ...adaptive, pattern: "solo", roles: { agent: ["claude"] }, conversationAgent: "agy" } as Run;
+  assert.equal(resultAgent(solo, "solo"), "agy");
+});
 
 test("finished execution never implies successful checks or human review", () => {
   const finished = run();
@@ -51,4 +61,15 @@ test("historical agent approval never labels a revised result approved", () => {
   const revised = run({ findings: { result: { reviewer: "agy", round: 1, verdict: "approve", findings: [], at: 1, head: "old", stale: true } } as RunSummary["findings"] });
   assert.equal(agentReviewLabel(revised, "result"), "Review outdated");
   assert.equal(agentReviewLabel({ ...revised, status: "running" }, "result"), "Pending");
+});
+
+test("passing tests do not label blocking or outdated agent review ready", () => {
+  for (const review of [
+    { reviewer: "claude", round: 1, verdict: "request_changes", findings: [{ blocking: true }], at: 1 },
+    { reviewer: "claude", round: 1, verdict: "approve", findings: [], stale: true, at: 1 },
+  ]) {
+    const action = nextRunAction(run({ verdict: "passed", findings: { result: review } as RunSummary["findings"] }));
+    assert.equal(action?.title, "Changes need attention");
+    assert.match(action!.detail, /revision in chat/);
+  }
 });

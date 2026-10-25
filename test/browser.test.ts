@@ -2,6 +2,7 @@
 // believed, how pins read as a message, and where pins can be sent. ui/browser.tsx is bundled
 // with esbuild, with the UI modules it imports (state, lib, icons, side-chat) stubbed out, so
 // only its own code and panel-bits run.
+import { parseBrowserMessage } from "../ui/browser-context.js";
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -53,7 +54,7 @@ before(async () => {
         setup(b) {
           b.onResolve({ filter: /^\.\/[\w-]+\.js$/ }, (args) => {
             const name = args.path.slice(2, -3);
-            return name === "panel-bits" ? undefined : { path: name, namespace: "stub" };
+            return ["panel-bits", "browser-context"].includes(name) ? undefined : { path: name, namespace: "stub" };
           });
           b.onLoad({ filter: /.*/, namespace: "stub" }, (args) => ({ contents: STUBS[args.path] ?? "module.exports = {};", loader: "js", resolveDir: root }));
         },
@@ -87,8 +88,10 @@ test("Browser: pins on different pages say where each was, and each lot's snapsh
   type Pin = Parameters<typeof browser.pinsMessage>[0][number];
   const pin = (n: number, url: string, image?: string): Pin => ({ n, id: `d1:${n}`, kind: "element", selector: `#b${n}`, text: "", rect: { x: 0, y: 0, w: 10, h: 10 }, url, viewport: { w: 1200, h: 800 }, image, comment: `fix ${n}` });
   const first = browser.pinsMessage([pin(1, "http://localhost:3000/dashboard", "data:image/png;base64,AAAA"), pin(2, "http://localhost:3000/settings", "data:image/png;base64,BBBB")], [], 1);
-  assert.match(first.text, /^From the app in the browser \(http:\/\/localhost:3000\/dashboard, 1200px wide\):\n1\. `#b1`: fix 1\n   Snapshot: pin-1-1\.png\n/);
-  assert.match(first.text, /\n2\. `#b2`: fix 2\n   On: http:\/\/localhost:3000\/settings\n   Snapshot: pin-1-2\.png/);
+  assert.deepEqual(parseBrowserMessage(first.text).contexts.map(c => [c.url, c.selector, c.comment, c.snapshot]), [
+    ["http://localhost:3000/dashboard", "#b1", "fix 1", "pin-1-1.png"],
+    ["http://localhost:3000/settings", "#b2", "fix 2", "pin-1-2.png"],
+  ]);
   assert.deepEqual(
     first.images.map((i) => [i.name, i.data]),
     [
@@ -98,7 +101,7 @@ test("Browser: pins on different pages say where each was, and each lot's snapsh
   );
   // A second lot for the same message box numbers its pins from 1 again, but its snapshots aren't the first lot's.
   const second = browser.pinsMessage([pin(1, "http://localhost:3000/dashboard", "data:image/png;base64,CCCC")], [], 2);
-  assert.match(second.text, /Snapshot: pin-2-1\.png/);
+  assert.equal(parseBrowserMessage(second.text).contexts[0]?.snapshot, "pin-2-1.png");
   assert.deepEqual(second.images.map((i) => i.name), ["pin-2-1.png"]);
 });
 

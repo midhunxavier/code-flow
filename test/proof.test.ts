@@ -72,6 +72,22 @@ const result = (output: string, exitCode: number | null, extra: Partial<CheckRes
   ...extra,
 });
 
+test("unchanged passing Agent and repair-team results need no fail-to-pass proof", async () => {
+  for (const pattern of ["solo", "fix-review"]) {
+    const inRepo = newRepo({ "existing.test.mjs": 'import { test } from "node:test";\ntest("existing behavior", () => {});\n' });
+    const roles = pattern === "solo" ? { agent: ["codex"] } : { builder: ["codex"], reviewer: ["claude"] };
+    const r = await withEnv({ FAKE_NOOP_VENDOR: "codex" }, () => run(pattern, roles, { loop: { check: "node --test" } }, inRepo));
+    assert.equal(r.status, "done", r.error);
+    assert.equal(r.verdict, "passed");
+    assert.equal(r.lastCheck?.ok, true, "the configured check still runs");
+    assert.equal(execFileSync("git", ["rev-parse", r.artifacts[0]!.branch], { cwd: inRepo }).toString().trim(), r.baseRef);
+    assert.equal(proofOf(r), undefined, "no repair must not produce an unproven-repair warning");
+    assert.equal(r.facts?.proof, undefined);
+    assert.ok(!r.steps.some((s) => /Proof:|Add a test that fails/.test(s.title)), "do not rerun the identical baseline or invent edits");
+    if (pattern === "fix-review") assert.ok(r.steps.some((s) => s.role === "reviewer" && s.status === "done"), "independent review remains required");
+  }
+});
+
 test("what a run on the base code proves", () => {
   assert.equal(proofOutcome(result("# pass 3", 0)).status, "unproven");
   const failing = proofOutcome(result("not ok 1 - parses dates\n  AssertionError: expected 2 to equal 3\n# fail 1", 1));
@@ -209,7 +225,7 @@ test("pipeline: the builder is asked once for a test that fails without the chan
   assert.equal(r.facts?.proof, "proven");
   assert.match(r.summary!, /Approved, and `node --test` passes[\s\S]*Proven: `node --test` fails without the change/);
   const prompts = recorded(dir);
-  assert.ok(prompts.some((p) => p.includes("Implement the plan") && p.includes("## Prove it")), "the builder hears about the proof up front");
+  assert.ok(prompts.some((p) => p.includes("## Plan from the planner") && p.includes("## Prove it")), "the builder hears about the proof up front");
   assert.ok(prompts.some((p) => p.includes('"verdict": "approve" | "changes_requested"') && p.includes("## Fail-to-pass: proven (run by code-flow)")), "the reviewer sees the proof");
 });
 
@@ -328,3 +344,15 @@ test("setup runs once in the proof checkout, which is removed when the run ends"
 function recorded(dir: string): string[] {
   return readdirSync(dir).map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")).prompt as string);
 }
+
+
+test("fix & review keeps host checks and fail-to-pass proof without a planning invocation", async () => {
+  const r = await run("fix-review", { builder: ["codex"], reviewer: ["claude"] }, { loop: { check: "node --test", prove: true } });
+  assert.equal(r.status, "done", r.error);
+  assert.equal(r.verdict, "passed");
+  assert.equal(r.facts?.approved, true);
+  assert.equal(proofOf(r)?.status, "proven");
+  assert.ok(r.steps.some(step => step.kind === "check"));
+  assert.ok(r.steps.some(step => step.role === "reviewer"));
+  assert.ok(!r.steps.some(step => step.title === "Plan"));
+});

@@ -1,3 +1,5 @@
+import { BrowserDraftCards } from "./browser-context-cards.js";
+import { browserImageNames, editBrowserText, parseBrowserMessage } from "./browser-context.js";
 import { TaskTeamControl } from "./task-team.js";
 import type { TaskTeamConfig } from "../src/task-team.js";
 import { WorkerModelCatalog, discoveredCatalogs } from "./model-catalog.js";
@@ -304,19 +306,7 @@ export function Composer() {
         </div>
       ) : null}
 
-      {repoConfig.value?.found ? (
-        <div class={`config-note ${repoConfig.value.error ? "bad" : ""}`}>
-          {repoConfig.value.error ? (
-            <>⚠ {repoConfig.value.error}</>
-          ) : (
-            <>
-              <Icon name="sliders" />
-              Using <code>.codeflow/config.json</code>
-              {configSummary(repoConfig.value.config)}
-            </>
-          )}
-        </div>
-      ) : null}
+      {repoConfig.value?.found && repoConfig.value.error ? <div class="config-note bad" role="alert">⚠ {repoConfig.value.error}</div> : null}
 
       {externalSource.value ? <div class="banner"><p>External context: {externalSource.value.provider} {externalSource.value.kind} {externalSource.value.key} · {externalSource.value.title}</p><p class="help">This source remains untrusted. The run uses Safe permissions and isolated checks.</p><button class="btn small" onClick={() => { externalSource.value = null; }}>Remove source</button></div> : null}
       {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
@@ -348,8 +338,6 @@ export function Composer() {
         <span><b>Computer</b> {computerLabel()}{remoteWorker ? ` · Agent worker: ${remoteWorker.workerId}` : ""}</span>
         <span><b>Project</b> {target.value.project?.name ?? "Choose project"}</span>
         <span><b>Repository</b> {repo.value ? baseName(repo.value) : "Choose repository"} · {baseRef.value || repoInfo.value?.current || "HEAD"}</span>
-        <span><b>{single ? "Agent" : p?.id === "auto-team" ? "Team" : "Template"}</b> {p ? teamSentence(p, roles) : "Choose workflow"}</span>
-        <span><b>Checks</b> {profileLoading ? "Detecting checks…" : verificationProfile ? verificationProfile.checks.map(gate => gate.command).join(" · ") || "No runnable gates" : checkCmd.value.trim() || "Not configured"}</span>
         <span><b>Limit</b> {restored?.loop.maxInvocations ?? limits.value.maxSteps} calls · {limits.value.maxMinutes} minutes</span>
         {problem ? <span class="composer-problem" role="status">{problem}</span> : null}
         {trust.value === "full" ? <span class="warn">Full access · no provider sandbox</span> : null}
@@ -359,10 +347,11 @@ export function Composer() {
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
       <details class="composer-options compact" open={moreOptions} onToggle={(event) => setMoreOptions(event.currentTarget.open)}>
         <summary>Run options <span>Agents, context, checks and limits for this task</span></summary>
+      {repoConfig.value?.found && !repoConfig.value.error ? <div class="config-note"><Icon name="sliders" />Using <code>.codeflow/config.json</code>{configSummary(repoConfig.value.config)}</div> : null}
       <AcceptanceEditor />
 
       <div class="section">
-        {p && !single ? <p class="pattern-why">{teamSentence(p, roles)}</p> : null}
+        {p ? <p class="pattern-why">{teamSentence(p, roles)}</p> : null}
         {trust.value === "full" ? <p class="full-warn" role="alert"><b>Full access: no sandbox.</b> Agents can run commands and change files outside their worktree with your credentials. Review permissions in Advanced agent settings.</p> : null}
         {p && CHECKPOINTS[p.id] && (p.id !== "debate" || roles.builder?.length) ? (
           <label class="checkpoint">
@@ -795,9 +784,9 @@ function TaskBox({ onStart, improve, controls }: { onStart: () => void; improve:
         ref={area}
         aria-label="Task"
         placeholder="e.g. Add rate limiting to the /login endpoint, with tests…"
-        value={task.value}
+        value={parseBrowserMessage(task.value).text}
         aria-busy={!!improve.busy}
-        onInput={(e) => setTask(e.currentTarget.value)}
+        onInput={(e) => setTask(editBrowserText(task.value, e.currentTarget.value))}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
@@ -805,6 +794,7 @@ function TaskBox({ onStart, improve, controls }: { onStart: () => void; improve:
           }
         }}
       />
+      <BrowserDraftCards text={task.value} onText={setTask} images={attachments.value} onImages={value => { attachments.value = value; }} />
       <ContextChips />
       <div class="bar">
         <button class="btn ghost small" title="Attach files from your computer" onClick={() => fileInput.current?.click()}>
@@ -886,7 +876,7 @@ function ContextChips() {
           </button>
         </span>
       ))}
-      {attachments.value.map((a, i) => (
+      {attachments.value.filter(a => !browserImageNames(task.value).has(a.name)).map((a, i) => (
         <span key={`a${i}`} class="chip-ctx" title={a.name}>
           <Icon name="attach" />
           <span class="n">
@@ -1081,7 +1071,7 @@ function configSummary(config: Record<string, any>): string {
  * Model and effort for each agent in a role, right under its pills (e.g. Opus to plan, Sonnet to
  * review). Empty means the agent's own setting from Settings, or the CLI's default.
  */
-function RoleModels({ p, roleId, roleLabel, agents: ids, remote }: { p: PatternInfo; roleId: string; roleLabel: string; agents: AgentId[]; remote?: boolean }) {
+export function RoleModels({ p, roleId, roleLabel, agents: ids, remote }: { p: PatternInfo; roleId: string; roleLabel: string; agents: AgentId[]; remote?: boolean }) {
   const current = roleModels.value[p.id]?.[roleId] ?? {};
   return <div class="role-models">{ids.map(id => {
     const s = current[id] ?? {};

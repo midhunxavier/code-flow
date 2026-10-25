@@ -135,6 +135,7 @@ npm run dev          # deterministic demo agents; no real provider work
 npm run dev:real     # installed real CLIs; sign in to each CLI first
 npm run typecheck
 npm test
+node node_modules/playwright-core/cli.js install ffmpeg # once, for test recordings
 npm run test:e2e     # browser acceptance tests; requires Chrome
 ```
 

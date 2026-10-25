@@ -110,7 +110,7 @@ after(async () => {
 
 let result: Run;
 test("repository readiness is reachable before launch and validates the selected setup and check", { timeout: 45_000 }, async () => {
-  await page.locator(".composer-summary").getByText("Checks", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Edit run options", exact: true }).waitFor();
   await page.getByRole("button", { name: "Edit run options", exact: true }).click();
   await page.getByLabel("Worktree setup command", { exact: true }).fill('node -e "process.exit(0)"');
   await page.locator(".readiness > summary").click();
@@ -154,6 +154,8 @@ test("a successful launch opens its run while the history refresh is stalled", {
 
 test("needs-work feedback opens branch review, survives a rejected send, and leads to a checked revision and PR", { timeout: 60_000 }, async () => {
   const studio = page.getByRole("region", { name: "Try and assess the result" });
+  await studio.getByText("More options", { exact: true }).click();
+  await studio.getByText("Record your assessment", { exact: true }).click();
   await studio.getByRole("button", { name: "Needs more work", exact: true }).click();
   const branch = result.artifacts[0]!.branch;
   await page.waitForURL(url => url.hash === `#/review/${result.id}/${branch}`);
@@ -183,9 +185,10 @@ test("needs-work feedback opens branch review, survives a rejected send, and lea
   assert.equal(result.followUps[0]!.status, "done", result.followUps[0]!.result);
   assert.match(result.followUps[0]!.message, /handle the empty case/);
   assert.equal(result.verdict, "passed");
-  await page.getByRole("region", { name: "Try and assess the result" }).getByRole("button", { name: "Inspect changes", exact: true }).click();
+  await page.getByRole("region", { name: "Try and assess the result" }).getByRole("button", { name: "Review changes", exact: true }).click();
   assert.equal(await page.getByLabel("Overall comment", { exact: true }).inputValue(), "");
   await page.getByText("Publish changes", { exact: true }).click();
+  await page.locator(".review-delivery .artifact-actions > summary").click();
   await page.getByRole("button", { name: "Open PR…", exact: true }).click();
   await page.getByRole("button", { name: "Push & open PR", exact: true }).click();
   const published = await until(() => api(`/api/runs/${result.id}`), run => !!run.prs[branch]);

@@ -112,7 +112,7 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   const resultId = team.opportunities[0].result.runId;
   const deletion = await fetch(`${base}/api/runs/${resultId}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } });
   assert.equal(deletion.status, 409, "managed result history cannot be deleted out from under its opportunity");
-  assert.match((await deletion.json()).error, /Standing project teams retain/);
+  assert.match((await deletion.json()).error, /awaiting approval or shipping/);
   await page.getByRole("button", { name: "Approve this commit" }).click();
   await page.getByText("Approved. Open the result to publish a PR or merge using the existing review controls.").waitFor();
   const tab = await context.newPage(); await tab.goto(`${base}/#/project/${id}/automation/missions`); await tab.getByRole("button", { name: "Preview next cycle" }).waitFor();
@@ -129,7 +129,7 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   const rail = tab.getByRole("navigation", { name: "Runs", exact: true });
   await rail.getByRole("button", { name: "Select runs", exact: true }).click();
   await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
-  assert.equal(await rail.getByRole("button", { name: "Delete…", exact: true }).isEnabled(), false);
+  assert.equal(await rail.getByRole("button", { name: "Delete…", exact: true }).isEnabled(), true, "the server checks each selected mission run at deletion time");
   assert.equal(await rail.getByRole("button", { name: "Archive", exact: true }).isEnabled(), true);
   const stale = await api(`/api/project-teams/${team.id}`, { operationId: "stale", revision: 1, status: "paused" }); assert.equal(stale.status, 409);
   const injection = await api("/api/runs", { projectTeam: { teamId: team.id }, pattern: "auto-team", repo, task: "bypass" }); assert.equal(injection.status, 400);
@@ -216,5 +216,91 @@ test("reusable teams attach without losing mission history and owner tasks survi
   mkdirSync(join(root, "output/playwright"), { recursive: true });
   await page.screenshot({ path: join(root, "output/playwright/project-agent-team-phone.png") });
   assert.deepEqual(pageErrors, [], errors.join("\n"));
+  await context.close();
+});
+
+test("orphaned mission runs offer individual and bulk deletion after project removal", async () => {
+  const team = (await api("/api/project-teams")).body.teams[0];
+  const ids = team.cycles.flatMap((cycle: { launches: { runId: string }[] }) => cycle.launches.map(launch => launch.runId));
+  assert.ok(ids.length >= 2);
+  const resultId = team.opportunities[0].result.runId;
+  const context = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
+  const page = await context.newPage();
+  const pageErrors: string[] = []; page.on("pageerror", error => pageErrors.push(error.message));
+  await page.goto(`${base}/?token=${token}#/run/${resultId}`);
+  const main = page.getByRole("main");
+  await main.getByText(/Standing team implementation/).waitFor();
+  const removed = await fetch(`${base}/api/projects/${team.projectId}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } });
+  assert.equal(removed.status, 200);
+  await page.reload();
+  await main.getByRole("button", { name: "More run actions", exact: true }).click();
+  await main.getByRole("menuitem", { name: "Delete…", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete this run?", exact: true });
+  await dialog.getByText("The mission's saved records and budget accounting are kept.", { exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.equal((await api(`/api/runs/${resultId}`)).status, 200);
+
+  const rail = page.getByRole("navigation", { name: "Runs", exact: true });
+  await rail.getByRole("button", { name: "Run actions", exact: true }).first().click();
+  const rowDelete = rail.getByRole("menuitem", { name: "Delete…", exact: true });
+  assert.equal(await rowDelete.isEnabled(), true);
+  await rowDelete.click();
+  await page.getByRole("dialog", { name: "Delete this run?", exact: true }).getByRole("button", { name: "Delete run", exact: true }).click();
+  await page.getByRole("dialog").waitFor({ state: "detached" });
+  assert.equal((await Promise.all(ids.map((id: string) => api(`/api/runs/${id}`)))).filter(value => value.status === 404).length, 1);
+
+  await rail.getByRole("button", { name: "Select runs", exact: true }).click();
+  await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
+  assert.equal(await rail.getByRole("button", { name: "Delete…", exact: true }).isEnabled(), true);
+  await rail.getByRole("button", { name: "Delete…", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: /^Delete \d+ runs?$|^Delete run$/ }).click();
+  await page.getByRole("dialog").waitFor({ state: "detached" });
+  for (const id of ids) assert.equal((await api(`/api/runs/${id}`)).status, 404);
+  const retained = (await api(`/api/project-teams/${team.id}`)).body.team;
+  assert.deepEqual(retained.cycles, team.cycles);
+  assert.deepEqual(retained.decisions, team.decisions);
+  assert.deepEqual(pageErrors, []);
+  await context.close();
+});
+
+test("a stopped, settled mission run is deletable without removing its project", async () => {
+  const mission = (await api("/api/project-teams")).body.teams[0].mission;
+  const stoppedRepo = join(home, "stopped-repo");
+  execFileSync("git", ["clone", "-q", "--no-hardlinks", repo, stoppedRepo]);
+  const project = (await api("/api/projects", { name: "Stopped mission project", repos: [stoppedRepo] })).body;
+  const created = await api("/api/project-teams", { operationId: "deletable-create", name: "Stopped discovery", projectId: project.id, repo: stoppedRepo, mission });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const draft = created.body;
+  const activated = await api(`/api/project-teams/${draft.id}`, { operationId: "deletable-activate", revision: draft.revision, status: "active" });
+  assert.equal(activated.status, 200);
+  const admitted = (await api(`/api/project-teams/${draft.id}/cycle`, { operationId: "deletable-cycle" })).body;
+  const id = admitted.cycles[0].launches[0].runId;
+  await api(`/api/runs/${id}/cancel`, {});
+  let team;
+  for (let i = 0; i < 150; i++) {
+    team = (await api(`/api/project-teams/${draft.id}`)).body.team;
+    if (team.cycles[0].endedAt && team.cycles[0].launches[0].usage) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(team.cycles[0].status, "blocked");
+  assert.ok(team.cycles[0].launches[0].usage);
+  const context = await browser.newContext({ viewport: { width: 1115, height: 785 } });
+  const page = await context.newPage();
+  await page.goto(`${base}/?token=${token}#/run/${id}`);
+  const row = page.locator(".rail-run-row", { has: page.locator(".run-item.active") });
+  await row.getByRole("button", { name: "Run actions", exact: true }).click();
+  assert.equal(await row.getByRole("menuitem", { name: "Delete…", exact: true }).isEnabled(), true);
+  await row.getByRole("menuitem", { name: "Delete…", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete this run?", exact: true });
+  await dialog.getByText("The mission's saved records and budget accounting are kept.", { exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.equal((await api(`/api/runs/${id}`)).status, 200);
+  await page.getByRole("main").getByRole("button", { name: "More run actions", exact: true }).click();
+  await page.getByRole("main").getByRole("menuitem", { name: "Delete…", exact: true }).click();
+  await dialog.getByRole("button", { name: "Delete run", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  assert.equal((await api(`/api/runs/${id}`)).status, 404);
+  assert.ok((await api("/api/projects")).body.some((item: { id: string }) => item.id === project.id));
+  assert.deepEqual((await api(`/api/project-teams/${team.id}`)).body.team.cycles, team.cycles);
   await context.close();
 });

@@ -130,6 +130,7 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
 /** The project and run the panel is showing, and the pin that keeps it there while you open others. */
 function ScopeHeader({ popped }: { popped: boolean }) {
   const s = sideScope.value;
+  const browser = sideTab.value === "browser";
   const thing = s.run ? "run" : "project";
   const where = s.project?.name ?? (s.repo ? baseName(s.repo) : "");
   const task = s.run ? s.run.task.split("\n")[0] || "(no task)" : "";
@@ -165,8 +166,9 @@ function ScopeHeader({ popped }: { popped: boolean }) {
           Follow
         </button>
       ) : (
-        <button type="button" class="icon-btn" aria-label={`Pin the panel to this ${thing}`} title={`Pin: keep the panel on this ${thing} while you open others`} disabled={!s.repo} onClick={() => pinSide(true)}>
+        <button type="button" class={browser ? "btn ghost small scope-keep" : "icon-btn"} aria-label={browser ? "Keep open when switching runs" : `Pin the panel to this ${thing}`} title={`Keep this ${browser ? "browser and panel" : "panel"} on this ${thing} while you open others`} disabled={!s.repo} onClick={() => pinSide(true)}>
           <Icon name="pin" />
+          {browser ? "Keep open" : null}
         </button>
       )}
       {popped ? null : (

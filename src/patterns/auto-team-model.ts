@@ -32,16 +32,23 @@ export const TEMPLATE_TEAM_PLAN_SCHEMA = obj({ ...TEAM_PLAN_SCHEMA.properties, t
 const reply = obj({ requestId: str, body: str, evidence: strings });
 export const TASK_OUTCOME_SCHEMA = obj({
   taskId: str, memberId: str, status: { type: "string", enum: ["submitted", "needs_info", "failed"], description: "submitted means the assigned artifact is ready for engine integration and verification; it does not claim final checks or review passed" }, checkpoint: str, handover: str,
-  artifacts: strings, unresolvedRequirements: strings,
+  artifacts: { ...strings, description: "Evidence references: changed file paths for implementation, or existing file/line references, observed command results and URLs for investigation. Investigation does not require creating a file." }, unresolvedRequirements: strings,
   questions: array(obj({ id: identifier, recipient: str, body: str, blocking: { type: "boolean" } })), replies: array(reply),
   findings: array(obj({ title: str, body: str, evidence: strings, paths: strings })),
 });
 /** Browser URLs are evidence references, never repository path ownership. */
-export function normalizeTaskOutcomeEvidence(outcome: TaskOutcome): TaskOutcome {
-  return { ...outcome, findings: outcome.findings.map(finding => {
+export function normalizeTaskOutcomeEvidence(outcome: TaskOutcome, kind?: TeamTask["kind"]): TaskOutcome {
+  const findings = outcome.findings.map(finding => {
     const urls = finding.paths.filter(path => /^https?:\/\//i.test(path));
     return urls.length ? { ...finding, paths: finding.paths.filter(path => !urls.includes(path)), evidence: [...new Set([...finding.evidence, ...urls])] } : finding;
-  }) };
+  });
+  // Providers may put a read-only investigation's references in findings instead of
+  // repeating them in artifacts. Retain those references for review and dependencies;
+  // the normal finding validation still rejects empty or malformed evidence.
+  const artifacts = kind === "investigation" && !outcome.artifacts.length
+    ? [...new Set(findings.flatMap(finding => finding.evidence).filter(nonempty))].slice(0, 24)
+    : outcome.artifacts;
+  return { ...outcome, artifacts, findings };
 }
 
 export function taskOutcomeSchema(requirementIds: string[]) {
@@ -114,7 +121,7 @@ export function planProblem(plan: TeamPlan, policy: TeamPolicy, retainedMembers:
     const model = provider.models?.find((model) => model.id === (m.model || provider.catalog?.defaultModel) || model.aliases?.includes(m.model));
     if (provider.catalog && !model) return `${m.id} chose a model whose availability in this environment is unknown`;
     if (provider.catalog && m.effort && !model?.efforts?.includes(m.effort)) return `${m.id} chose an unsupported effort for this exact model`;
-    if (m.role === "coordinator" && (m.model !== (settings.model ?? "") || m.effort !== (settings.effort ?? ""))) return "The coordinator model settings and effort must remain unchanged";
+    if (m.role === "coordinator" && (m.model !== (settings.model ?? "") || m.effort !== (settings.effort ?? ""))) return `The coordinator model settings and effort must remain unchanged: copy model ${JSON.stringify(settings.model ?? "")} and effort ${JSON.stringify(settings.effort ?? "")} exactly (including empty strings and aliases)`;
     const variants = m.role !== "coordinator" && "variants" in settings ? settings.variants : undefined;
     // A selected pool is an allowlist of model/effort pairs, not permission to use every catalog model.
     const choices = variants?.length ? [settings, ...variants] : [settings];

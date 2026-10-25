@@ -59,6 +59,7 @@ import { listTree, readRepoFile, searchFiles } from "./repo-tree.js";
 import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig, type Trust } from "./repo-config.js";
 import { openFolder } from "./serve.js";
+import { appCommand } from "./app-command.js";
 import { inspectFramePolicy } from "./frame-policy.js";
 import { LaunchProfiles, LaunchProfileError, readLaunchProfiles } from "./launch-profiles.js";
 import { TeamRerunError } from "./team-reruns.js";
@@ -771,6 +772,7 @@ async function startSweep(body: Record<string, any>) {
   if (items.length > MAX_SWEEP) throw new HttpError(400, `Pick at most ${MAX_SWEEP} items; the rest can go in a later sweep`);
   const repo = (await buildStartInput({ ...base, task: items[0]!.task })).repo; // same checks as one run, before any starts
   const root = await repoRoot(repo);
+  const currentList = await listSweep(root, kind, manager.list());
   const schedule = body.schedule ? await attempt(async () => validateSchedule(body.schedule)) : undefined;
   const id = `s-${randomBytes(4).toString("hex")}`;
   const saved = schedule
@@ -780,6 +782,7 @@ async function startSweep(body: Record<string, any>) {
   const outcome = await runSweep({
     repo: root,
     items,
+    list: currentList,
     runs: manager.list(),
     start: (item) => startFromBody({ ...base, task: item.task, source: item.source }, { trigger }),
   });
@@ -921,6 +924,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
     teamTemplate,
     task,
     intent: taskIntent(body.intent),
+    testRun: body.testRun === undefined ? parent?.testRun : body.testRun,
     journeyId: typeof body.journeyId === "string" ? body.journeyId : undefined,
     repo,
     project: typeof body.project === "string" && body.project ? body.project : undefined,
@@ -2462,6 +2466,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (req.method === "POST") { const body = await readJson(req); return send(res, 200, await attempt(() => manager.recordFileReview(run.id, body))); }
     }
     if (parts[3] === "outcome" && parts.length === 4 && req.method === "POST") { const body = await readJson(req); return send(res, 200, await attempt(() => manager.recordOutcome(run.id, body))); }
+    if (parts[3] === "test-run" && parts.length === 4 && req.method === "POST") { const body = await readJson(req); return send(res, 200, await attempt(async () => manager.setTestRun(run.id, body.testRun))); }
+    if (parts[3] === "delivery" && parts.length === 4) {
+      if (req.method === "GET") return send(res, 200, await attempt(() => manager.resultDelivery(run.id, url.searchParams.get("branch") ?? "")));
+      if (req.method === "POST") {
+        const body = await readJson(req), input = { branch: String(body.branch ?? ""), expectedHead: String(body.expectedHead ?? "") };
+        if (body.action === "update") return send(res, 200, await attempt(() => manager.updateResultPr(run.id, input)));
+        if (body.action === "merge" && MERGE_METHODS.includes(body.method)) return send(res, 200, await attempt(() => manager.mergeResultPr(run.id, { ...input, method: body.method })));
+        throw new HttpError(400, "Choose update or merge with an allowed merge method");
+      }
+    }
     if (parts[3] === "human-rework" && req.method === "POST") { const body = await readJson(req); return send(res, 201, await attempt(() => manager.recordHumanRework(run.id, body))); }
     if (parts[3] === "launch-profiles") {
       const body = req.method === "POST" ? await readJson(req) : {};
@@ -2595,22 +2609,26 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         return send(res, 200, { openedWith: await attempt(() => openFolder(wt.path, target)) });
       }
       if (parts[5] === "serve" && parts[6] === "ready" && parts.length === 7 && req.method === "GET") return send(res, 200, { ready: await manager.devServers.ready(key), status: manager.devServers.get(key)?.status ?? "missing" });
-      if (parts[5] === "serve") {
+      if (parts[5] === "serve" && parts[6] === "config" && parts.length === 7 && req.method === "GET") return send(res, 200, await appCommand(wt.path, run.app) ?? null);
+      if (parts[5] === "serve" && parts.length === 6) {
         if (req.method === "GET") return send(res, 200, manager.devServers.get(key) ?? null);
         if (req.method === "DELETE") return send(res, 200, { stopped: manager.devServers.stop(key) });
         if (req.method === "POST") {
           const body = await readJson(req);
-          const command = (typeof body.command === "string" && body.command.trim()) || run.app?.command;
-          if (!command) throw new HttpError(400, 'Say how to run the app (e.g. "npm run dev"), or add "run" to .codeflow/config.json');
+          const explicit = typeof body.command === "string" && body.command.trim();
+          const configured = explicit ? undefined : await appCommand(wt.path, run.app);
+          const command = explicit || configured?.command;
+          if (!command) throw new HttpError(400, "No web preview is configured yet. Ask the agent to set up a preview in chat.");
           if (/[\r\n]/.test(command)) throw new HttpError(400, "The command must be a single line");
-          if (body.port !== undefined && (!Number.isInteger(body.port) || body.port < 1 || body.port > 65_535 || [PORT, REMOTE_PORT].includes(body.port))) throw new HttpError(400, "Choose a valid app port other than code-flow's ports");
+          const port = body.port ?? configured?.port ?? run.app?.port;
+          if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65_535 || [PORT, REMOTE_PORT].includes(port))) throw new HttpError(400, "Choose a valid app port other than code-flow's ports");
           // A locked-down run's code is an outsider's, and the app runs on this machine, never in
           // Docker: the same confirmation its checks would need.
           if (run.lockdown && body.allowUntrusted !== true) {
             throw Object.assign(new HttpError(409, `${run.lockdown}. Run app starts that code on this machine, outside any sandbox or container.`), { confirm: "allowUntrusted" });
           }
           manager.noteActivity(); // the app is the repo's code running on this machine
-          return send(res, 200, await manager.devServers.start(key, wt.path, command, body.port ?? run.app?.port));
+          return send(res, 200, await manager.devServers.start(key, wt.path, command, port));
         }
       }
     }

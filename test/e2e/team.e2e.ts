@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createServer, type AddressInfo } from "node:net";
 import { chromium, type Browser, type BrowserContext, type Page, type Route } from "playwright-core";
 import axe from "axe-core";
+import type { Board, TaskSummary } from "../../src/collab/model.js";
 
 /**
  * The team board in a browser (docs/team-collaboration.md): this computer is its own team server. The owner finds
@@ -112,7 +113,7 @@ test("Settings → Team defines a repository key and maps it; the board form cre
   await planned.getByRole("button", { name: /\(you\)/ }).waitFor(); // the owner, shown as "<name> (you)"
   assert.equal(await card.locator("code").textContent(), "app");
   await page.getByText("Not connected to a team server").waitFor({ state: "hidden" }); // the callout stops once the board holds a task
-  assert.equal(await page.getByRole("status").filter({ hasText: /^1 of 1 tasks/ }).count(), 1);
+  assert.equal(await page.getByRole("status").filter({ hasText: /^1 task$/ }).count(), 1);
   await card.click();
   await page.waitForURL(/#\/team\/task\/(t-[a-f0-9]{16})$/); taskId = /#\/team\/task\/(t-[a-f0-9]{16})$/.exec(page.url())![1]!;
   assert.deepEqual(errors, []);
@@ -148,9 +149,11 @@ test("the task page takes a comment, a decision and a blocker, and comes back to
   assert.deepEqual(errors, []);
 });
 
-test("the board, the task page and Settings → Team pass axe in light, dark and phone layouts", async () => {
+test("the board, task creation, the task page and Settings → Team pass axe in light, dark and phone layouts", async () => {
+  mkdirSync(join(root, "output/playwright"), { recursive: true });
   const screens: [string, string, () => Promise<void>][] = [
     ["/team", "board", () => page.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }).waitFor()],
+    ["/team", "new task", async () => { await page.getByRole("button", { name: "New task", exact: true }).click(); await page.getByRole("form", { name: "New task", exact: true }).waitFor(); }],
     [`/team/task/${taskId}`, "task", () => page.locator(".team-comment-text").filter({ hasText: OWNER_COMMENT }).waitFor()],
     ["/settings/team", "settings team", () => page.getByRole("button", { name: "Save repositories", exact: true }).waitFor()],
   ];
@@ -158,13 +161,79 @@ test("the board, the task page and Settings → Team pass axe in light, dark and
     await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
     for (const [route, name, ready] of screens) {
       await page.goto(`${base}/#${route}`); await ready();
-      for (const width of [1440, 390]) { await page.setViewportSize({ width, height: 1000 }); await audit(page, `${colorScheme} ${name} ${width}`); if (width === 390) assert.equal(await fits(page), true, `${colorScheme} ${name} overflows at 390 px`); }
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: 1000 }); await audit(page, `${colorScheme} ${name} ${width}`);
+        if (width === 390) assert.equal(await fits(page), true, `${colorScheme} ${name} overflows at 390 px`);
+        if (name === "new task") {
+          const form = page.getByRole("form", { name: "New task", exact: true });
+          if (width === 1440) await form.getByLabel("Title", { exact: true }).fill("Draft retained while resizing");
+          await form.getByRole("combobox", { name: "Reviewer", exact: true }).scrollIntoViewIfNeeded();
+          await page.screenshot({ path: join(root, `output/playwright/new-task-${colorScheme}-${width}.png`) });
+          assert.equal(await form.getByRole("button", { name: "Create task", exact: true }).isVisible(), true);
+          assert.equal(await form.getByLabel("Title", { exact: true }).inputValue(), "Draft retained while resizing");
+        }
+      }
       await page.setViewportSize({ width: 1440, height: 1000 });
     }
   }
   await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
   assert.deepEqual(violations, []);
   assert.deepEqual(errors, []);
+});
+
+test("board cards preserve status details, keyboard access and filters across desktop and phone layouts", async () => {
+  mkdirSync(join(root, "output/playwright"), { recursive: true });
+  const snapshot = await api<Board>("/api/team/board"), original = snapshot.tasks.find(entry => entry.id === taskId)!;
+  const now = Date.now(), teammate = { userId: "alex", displayName: "Alex Morgan" };
+  const card = (id: string, title: string, status: TaskSummary["status"], extra: Partial<TaskSummary> = {}): TaskSummary => ({ ...original, id, title, status, updatedAt: now - 3_600_000, owner: teammate, reviewState: "none", ...extra });
+  const tasks: TaskSummary[] = [
+    { ...original, updatedAt: now - 120_000 },
+    card("planned-long", "Clarify development setup and document how teammates run checks on their own computers", "planned", { owner: undefined, repository: "a-repository-name-long-enough-to-test-card-overflow" }),
+    card("working", "Add progress updates to the task timeline", "working", { attempt: { id: "preview-attempt", state: "running", runnerName: "Alex’s laptop", user: teammate, lastHeartbeatAt: now, progress: { stage: "Running the browser checks", updatedAt: now } } }),
+    card("blocked", "Connect the staging environment", "blocked", { blocker: "Waiting for the team’s staging credentials before verifying the connection." }),
+    card("review", "Make project navigation easier to scan", "review", { reviewer: snapshot.me, reviewState: "pending", unreadMentions: 1 }),
+    card("done", "Keep task drafts when switching layouts", "done", { owner: snapshot.me, reviewState: "approved", updatedAt: now - 86_400_000 }),
+  ];
+  const boardRoute = (url: URL) => url.pathname === "/api/team/board";
+  await page.route(boardRoute, route => route.fulfill({ json: { ...snapshot, tasks } }));
+  try {
+    await page.goto(`${base}/#/team`); await page.reload();
+    const columns = page.getByRole("region", { name: "Task board", exact: true });
+    await columns.getByText("Connect the staging environment", { exact: true }).waitFor();
+    for (const colorScheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
+      for (const width of [1680, 1100, 390]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await audit(page, `${colorScheme} populated board ${width}`);
+        if (!(await fits(page))) {
+          await page.screenshot({ path: join(root, `output/playwright/board-overflow-${width}.png`) });
+          assert.fail(`populated board overflows at ${width} px: ${JSON.stringify(await page.evaluate(() => [document.documentElement, ...document.querySelectorAll("#main-content, .team-page, .team-board, .team-columns")].map(element => ({ tag: element.className || element.id || element.tagName, width: element.clientWidth, scroll: element.scrollWidth, left: element.getBoundingClientRect().left, right: element.getBoundingClientRect().right }))))}`);
+        }
+        await columns.getByText(TITLE, { exact: true }).scrollIntoViewIfNeeded();
+        const rows = await columns.locator(".team-column").evaluateAll(elements => elements.map(element => element.getBoundingClientRect().top));
+        if (width > 390) assert.ok(rows.every(top => top === rows[0]), "desktop stages keep their workflow order in one row");
+        else assert.ok(rows.every((top, index) => !index || top > rows[index - 1]!), "phone stages stack without horizontal scrolling");
+        await page.screenshot({ path: join(root, `output/playwright/board-cards-${colorScheme}-${width}.png`) });
+      }
+    }
+    assert.equal(await columns.getByText("Running the browser checks", { exact: true }).count(), 1);
+    assert.equal(await columns.getByText(tasks[3]!.blocker!, { exact: true }).count(), 1);
+    assert.equal(await columns.getByText("Needs you", { exact: true }).count(), 1);
+    await page.getByRole("combobox", { name: "Status", exact: true }).selectOption("review");
+    assert.equal(await columns.locator(".team-column").count(), 1);
+    assert.equal(await columns.getByRole("button").count(), 1);
+    await page.getByRole("button", { name: "Mine", exact: true }).click();
+    assert.equal(await columns.getByText("Make project navigation easier to scan", { exact: true }).count(), 1, "review assignments remain in Mine");
+    await page.getByRole("combobox", { name: "Status", exact: true }).selectOption("");
+    await columns.getByRole("button", { name: new RegExp(TITLE) }).press("Enter");
+    await page.waitForURL(new RegExp(`/team/task/${taskId}$`));
+    assert.deepEqual(violations, []); assert.deepEqual(errors, []);
+  } finally {
+    await page.unroute(boardRoute);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
+    await page.reload();
+  }
 });
 
 test("a shared contributor signs in, finds the task under Team and comments, with no execution controls", async () => {

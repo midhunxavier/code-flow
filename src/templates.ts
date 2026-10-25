@@ -1,3 +1,4 @@
+import { ciRepairTask, issueRepairTask } from "./repair-strategy.js";
 import type { SweepKind } from "./sweeps.js";
 
 /**
@@ -24,19 +25,19 @@ export const templates: Template[] = [
   {
     id: "fix-issue",
     name: "Fix an issue",
-    description: "Plan, build and review a fix for a GitHub issue; the PR closes it.",
-    pattern: "pipeline",
+    description: "Diagnose and fix an issue, then run checks and independent review. You approve the pull request.",
+    pattern: "fix-review",
     needs: "issue",
-    task: "Fix issue #{number}. Add a test that fails without the fix.",
+    task: issueRepairTask("issue #{number}"),
   },
   {
     id: "fix-ci",
     name: "Fix failing CI",
     description: "Hand a PR's failing checks and their logs to an agent; push the fix to the PR.",
-    pattern: "pipeline",
+    pattern: "fix-review",
     needs: "pr",
     ciLogs: true,
-    task: "Make CI pass on pull request #{number}. The failing checks and their logs are below. Fix the cause; don't disable, skip or weaken tests.",
+    task: ciRepairTask("pull request #{number}"),
   },
   {
     id: "review-pr",
@@ -56,19 +57,19 @@ export const templates: Template[] = [
   {
     id: "sweep-issues",
     name: "Fix open issues",
-    description: "List the open issues, pick the ones to fix, and start one Plan → Build → Review run each. Results wait in your inbox.",
-    pattern: "pipeline",
+    description: "Pick issues to fix. Each gets a focused repair, checks and independent review. Results wait in your inbox.",
+    pattern: "fix-review",
     sweep: "issues",
-    task: "Fix the GitHub issue below. Add a test that fails without the fix.",
+    task: issueRepairTask("the GitHub issue below"),
   },
   {
     id: "sweep-dependabot",
     name: "Fix Dependabot PRs",
-    description: "Every Dependabot PR whose CI fails gets a run that fixes it; approving pushes the fix to the PR. Green ones are left for you to merge.",
-    pattern: "pipeline",
+    description: "Fix failing dependency updates with a focused repair, checks and independent review. Passing PRs need no repair.",
+    pattern: "fix-review",
     sweep: "dependabot",
     ciLogs: true,
-    task: "Make CI pass on the Dependabot pull request below by adapting the code to the new version. Don't pin it back, and don't disable, skip or weaken tests.",
+    task: ciRepairTask("the Dependabot pull request below", true),
   },
   {
     id: "sweep-alerts",

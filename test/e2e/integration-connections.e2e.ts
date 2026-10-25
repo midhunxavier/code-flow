@@ -67,7 +67,9 @@ test("project setup guides authentication, handles failures, and saves a tested 
   await connectionsPage();
   for (const name of ["GitHub", "GitLab", "Bitbucket", "Linear", "Jira", "Slack", "Webhooks"]) await card(name).waitFor();
   await card("GitLab").getByText(/Administrator-managed/).waitFor();
-  assert.equal(await card("GitLab").getByRole("button", { name: "Disconnect", exact: true }).count(), 0);
+  await card("GitLab").getByRole("button", { name: "Manage Administrator source connection", exact: true }).click();
+  assert.equal(await card("GitLab").getByRole("menuitem", { name: "Disconnect", exact: true }).count(), 0);
+  await page.keyboard.press("Escape");
   await card("GitLab").getByRole("button", { name: "Connect another", exact: true }).click();
   await wizard().getByLabel("Access token", { exact: true }).fill("invalid-secret-token"); await wizard().getByRole("button", { name: "Continue", exact: true }).click();
   await wizard().getByLabel("Connection name", { exact: true }).fill("Project GitLab"); await wizard().getByLabel("Repository on the service").fill("group/repo");
@@ -83,6 +85,22 @@ test("project setup guides authentication, handles failures, and saves a tested 
   assert.doesNotMatch(JSON.stringify(state), /private-project-source-token|credentialRef|SOURCE_IMPORT_KEY/);
   assert.doesNotMatch(await readFile(join(home, "integration-secrets/connections.enc"), "utf8"), /private-project-source-token|Project GitLab/);
   assert.doesNotMatch(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage })), /private-project-source-token/);
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await card("GitLab").scrollIntoViewIfNeeded(); await audit();
+      await page.screenshot({ path: join(root, `output/playwright/connections-cards-${theme}-${width}.png`), fullPage: true });
+      const manage = card("GitLab").getByRole("button", { name: "Manage Project GitLab connection", exact: true });
+      await manage.focus(); await page.keyboard.press("Enter");
+      const menu = page.getByRole("menu", { name: "Manage Project GitLab connection", exact: true });
+      await menu.getByRole("menuitem", { name: "Test connection", exact: true }).waitFor(); await audit();
+      await page.keyboard.press("End"); assert.equal(await page.locator(":focus").innerText(), "Disconnect");
+      await page.keyboard.press("Escape"); assert.equal(await manage.getAttribute("aria-expanded"), "false");
+      assert.equal(await page.locator(":focus").getAttribute("aria-label"), "Manage Project GitLab connection");
+    }
+  }
+  await page.evaluate(() => document.documentElement.dataset.theme = "light"); await page.setViewportSize({ width: 1440, height: 1000 });
 });
 
 test("issue import retains project, repository and untrusted source through a real agent task", { timeout: 60_000 }, async () => {
@@ -125,11 +143,11 @@ test("project notification setup starts off, explicitly tests delivery and sends
 });
 
 test("reconnect preserves a working credential after failure, restart restores connections, and disconnect removes bindings", { timeout: 60_000 }, async () => {
-  await connectionsPage(); await card("GitLab").getByRole("button", { name: "Reconnect", exact: true }).click(); await wizard().getByLabel("Access token", { exact: true }).fill("invalid-secret-token"); await wizard().getByRole("button", { name: "Continue", exact: true }).click(); await wizard().getByRole("button", { name: "Test connection", exact: true }).click(); await wizard().getByRole("alert").filter({ hasText: "HTTP 401" }).waitFor();
+  await connectionsPage(); await card("GitLab").getByRole("button", { name: "Manage Project GitLab connection", exact: true }).click(); await card("GitLab").getByRole("menuitem", { name: "Reconnect", exact: true }).click(); await wizard().getByLabel("Access token", { exact: true }).fill("invalid-secret-token"); await wizard().getByRole("button", { name: "Continue", exact: true }).click(); await wizard().getByRole("button", { name: "Test connection", exact: true }).click(); await wizard().getByRole("alert").filter({ hasText: "HTTP 401" }).waitFor();
   await api(`/api/integration-connections/${connection}/test`, {});
   await wizard().getByRole("button", { name: "Back", exact: true }).click(); await wizard().getByLabel("Access token", { exact: true }).fill(""); await wizard().getByRole("button", { name: "Continue", exact: true }).click(); await wizard().getByRole("button", { name: "Test connection", exact: true }).click(); await wizard().getByRole("status").waitFor(); await wizard().getByRole("button", { name: "Reconnect", exact: true }).click(); await wizard().waitFor({ state: "hidden" });
   await stop(); await start(); await connectionsPage(); await card("GitLab").getByText("Project GitLab", { exact: true }).waitFor(); assert.equal((await api("/api/notifications")).find((t: any) => t.id === webhook).settings.enabled, true);
-  await card("GitLab").getByRole("button", { name: "Disconnect", exact: true }).click(); await until(() => api("/api/integration-connections"), data => !data.connections.some((c: any) => c.id === connection));
+  await card("GitLab").getByRole("button", { name: "Manage Project GitLab connection", exact: true }).click(); await card("GitLab").getByRole("menuitem", { name: "Disconnect", exact: true }).click(); await until(() => api("/api/integration-connections"), data => !data.connections.some((c: any) => c.id === connection));
   const state = await api(`/api/integration-connections/projects/${project}?repository=${encodeURIComponent(repo)}`); assert.ok(!state.bindings.some((b: any) => b.connectionId === connection)); assert.ok(state.connections.some((c: any) => c.id === "admin-source" && c.administratorManaged));
   await api("/api/integrations/admin-source/items?kind=issue");
   assert.deepEqual(errors, []);

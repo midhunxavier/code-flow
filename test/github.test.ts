@@ -1,7 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -561,4 +561,122 @@ test("Merge PR merges the branch's pull request on GitHub, only while it's the b
   assert.ok(again.merged && again.already);
   assert.equal(run.merges.length, 1);
   assert.equal(run.archived, true);
+});
+
+
+test("requested screenshots and recordings are included in new PRs and existing PR evidence comments", async () => {
+  const localManager = new RunManager(findPattern);
+  const newRun = await localManager.start({ pattern: findPattern("fix-review")!, task: "Fix the UI and attach screenshots and a screen recording", repo, roles: { builder: ["codex"], reviewer: ["claude"] }, options: {}, loop: { check: "true" } });
+  while (newRun.status === "running") await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(newRun.status, "done", newRun.error);
+  const tree = newRun.worktrees[0]!;
+  mkdirSync(join(tree.path, ".codeflow/evidence"), { recursive: true });
+  writeFileSync(join(tree.path, ".codeflow/evidence/result.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6LkAAAAASUVORK5CYII=", "base64"));
+  writeFileSync(join(tree.path, ".codeflow/evidence/flow.webm"), Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+  sh(tree.path, "add", ".codeflow/evidence"); sh(tree.path, "commit", "-qm", "capture evidence");
+  const head = sh(tree.path, "rev-parse", "HEAD");
+  const url = await localManager.pullRequest(newRun.id, { branch: tree.branch, into: "main" });
+  const number = Number(url.split("/").pop());
+  assert.match(state().prs[number].body, /## Visual evidence/);
+  assert.ok(state().prs[number].body.includes(`/blob/${head}/.codeflow/evidence/result.png?raw=true`));
+  assert.match(state().prs[number].body, /Watch recording/);
+  // The same publication path used by a Dependabot repair updates the source PR.
+  newRun.source = { kind: "pr", number, url, title: "Fixture PR", body: "", headRefName: tree.branch, baseRefName: "main", trusted: true };
+  writeFileSync(join(tree.path, ".codeflow/evidence/result.png"), Buffer.concat([Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6LkAAAAASUVORK5CYII=", "base64"), Buffer.from([0])]));
+  sh(tree.path, "add", ".codeflow/evidence"); sh(tree.path, "commit", "-qm", "refresh capture");
+  const pushed = await localManager.pushToPr(newRun.id, { branch: tree.branch });
+  assert.equal(pushed.warning, undefined);
+  assert.equal(state().prs[number].comments.length, 1);
+  assert.match(state().prs[number].comments[0].body, /## Visual evidence/);
+  assert.ok(state().prs[number].comments[0].body.includes(pushed.sha));
+  await localManager.pushToPr(newRun.id, { branch: tree.branch });
+  assert.equal(state().prs[number].comments.length, 1, "retrying the same push does not duplicate the evidence comment");
+  writeFileSync(join(tree.path, ".codeflow/evidence/README.md"), "Re-tested the latest result.\n");
+  sh(tree.path, "add", ".codeflow/evidence"); sh(tree.path, "commit", "-qm", "record test steps");
+  setState(s => { s.commentError = true; });
+  try {
+    const partial = await localManager.pushToPr(newRun.id, { branch: tree.branch });
+    assert.match(partial.warning!, /fix was pushed, but visual evidence could not be added/);
+    assert.equal(originHead(tree.branch), partial.sha, "a comment failure must not be reported as a failed push");
+    assert.notEqual(newRun.visualEvidencePosted?.[tree.branch], partial.sha);
+  } finally { setState(s => { delete s.commentError; }); }
+  await localManager.pushToPr(newRun.id, { branch: tree.branch });
+  assert.equal(state().prs[number].comments.length, 2);
+  await localManager.shutdown();
+});
+
+test("result card updates an unchanged source PR, waits for new checks and merges the current head", async () => {
+  const deliveryManager = new RunManager(findPattern);
+  sh(origin, "update-ref", "refs/pull/1/head", originHead("feature"));
+  setState(s => { Object.assign(s.prs[1], { failOn: [], pending: false, state: "OPEN", mergeStateStatus: "BEHIND" }); });
+  process.env.FAKE_NOOP_VENDOR = "codex";
+  let run: Run;
+  try {
+    run = await deliveryManager.start({ pattern: findPattern("solo")!, task: "Verify the PR without edits", repo, checkpointOnFinish: true, source: { kind: "pr", number: 1 }, roles: { agent: ["codex"] }, options: {}, loop: { check: "true" }, approvals: { plan: false } });
+    while (run.status === "running") await new Promise(resolve => setTimeout(resolve, 20));
+  } finally { delete process.env.FAKE_NOOP_VENDOR; }
+  assert.equal(run!.status, "done", run!.error);
+  const branch = run!.artifacts[0]!.branch, tree = run!.worktrees.find(t => t.branch === branch)!;
+  const local = git("rev-parse", branch), base = originHead("main");
+  setState(s => { Object.assign(s.prs[1], { failOn: [], pending: false, state: "OPEN", mergeStateStatus: "BEHIND" }); });
+  const input = { branch, expectedHead: local };
+  assert.equal((await deliveryManager.resultDelivery(run!.id, branch)).action, "update");
+  await assert.rejects(deliveryManager.mergeResultPr(run!.id, { ...input, method: "squash" }), /latest main/);
+  await assert.rejects(deliveryManager.updateResultPr(run!.id, { ...input, expectedHead: "0".repeat(40) }), /PR changed/);
+  setState(s => { s.updateError = "HTTP 403: not allowed"; });
+  await assert.rejects(deliveryManager.updateResultPr(run!.id, input), /not allowed/);
+  assert.equal(run!.prBranchUpdates, undefined);
+  setState(s => { delete s.updateError; s.updatePending = true; });
+  await deliveryManager.updateResultPr(run!.id, input);
+  assert.equal((await deliveryManager.resultDelivery(run!.id, branch)).action, "wait", "202 accepted does not mean the branch is updated yet");
+  await assert.rejects(deliveryManager.updateResultPr(run!.id, input), /Waiting for the new commit/);
+  // Retry is possible if GitHub never advances the branch.
+  run!.prBranchUpdates![branch]!.at -= 130000;
+  setState(s => { delete s.updatePending; });
+  await deliveryManager.updateResultPr(run!.id, input);
+  let result = await deliveryManager.resultDelivery(run!.id, branch);
+  assert.equal(result.action, "wait"); assert.equal(result.changedSinceRun, true);
+  assert.equal(git("rev-parse", branch), local, "updating GitHub leaves local results intact");
+  assert.equal(originHead("main"), base, "update is not merge");
+  const current = { branch, expectedHead: result.pr!.headRefOid, method: "squash" as const };
+  await assert.rejects(deliveryManager.mergeResultPr(run!.id, current), /Checks are running/);
+  setState(s => { s.prs[1].pending = false; s.prs[1].reviewDecision = "REVIEW_REQUIRED"; });
+  await assert.rejects(deliveryManager.mergeResultPr(run!.id, current), /requires an approval/);
+  setState(s => { s.prs[1].reviewDecision = ""; });
+  writeFileSync(join(tree.path, "unsaved.txt"), "user work");
+  await assert.rejects(deliveryManager.mergeResultPr(run!.id, current), /uncommitted/);
+  sh(tree.path, "add", "unsaved.txt"); sh(tree.path, "commit", "-qm", "new local work");
+  assert.equal((await deliveryManager.resultDelivery(run!.id, branch)).action, "review");
+  sh(tree.path, "reset", "--hard", local);
+  await assert.rejects(deliveryManager.mergeResultPr(run!.id, { ...current, expectedHead: local }), /PR changed/);
+  assert.equal((await deliveryManager.resultDelivery(run!.id, branch)).action, "merge");
+  setState(s => { s.prs[1].queued = true; });
+  assert.equal((await deliveryManager.mergeResultPr(run!.id, current)).merged, false);
+  assert.equal(run!.merges.length, 0, "queued is not merged");
+  assert.equal((await deliveryManager.resultDelivery(run!.id, branch)).title, "Merge requested");
+  run!.prMergeRequests![branch]!.at -= 130000;
+  setState(s => { delete s.prs[1].queued; });
+  assert.equal((await deliveryManager.mergeResultPr(run!.id, current)).merged, true);
+  assert.equal(run!.merges.length, 1);
+  assert.equal((await deliveryManager.resultDelivery(run!.id, branch)).action, "archive");
+});
+
+test("explicit test runs can be reviewed and archived but cannot be published", async () => {
+  const run = await idle(await manager.start({ pattern: findPattern("solo")!, task: "Replay the closed issue", testRun: { reason: "Already fixed upstream; regression replay only." }, repo, checkpointOnFinish: true, roles: { agent: ["codex"] }, options: {}, loop: { check: "true" } }));
+  const branch = run.artifacts[0]!.branch;
+  assert.equal((await manager.resultDelivery(run.id, branch)).kind, "test");
+  for (const action of [
+    () => manager.pullRequest(run.id, { branch, into: "main" }),
+    () => manager.merge(run.id, { branch, into: "main" }),
+    () => manager.pushToPr(run.id, { branch }),
+    () => manager.mergePr(run.id, { branch, method: "squash" }),
+    () => manager.mergeResultPr(run.id, { branch, method: "squash", expectedHead: run.baseRef }),
+    () => manager.updateResultPr(run.id, { branch, expectedHead: run.baseRef }),
+  ]) await assert.rejects(action, /test run/);
+  await manager.archive(run.id, { cleanup: false, deleteBranches: false });
+  assert.equal(run.archived, true);
+  assert.ok(readFileSync(join(run.worktrees[0]!.path, "README.md"), "utf8"));
+  assert.ok(git("rev-parse", branch));
+  manager.setTestRun(run.id, null);
+  assert.equal(run.testRun, undefined);
 });

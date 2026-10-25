@@ -228,9 +228,9 @@ export function TriageActions({ run }: { run: RunSummary }) {
     if (decision === "reject" && !await confirmAction("Reject this result? Its worktrees and branches are deleted.", {"title":"Reject this result?","confirmLabel":"Reject result","danger":true})) return;
     setBusy(decision);
     try {
-      await post(`/api/runs/${run.id}/triage`, { decision, note, ...(decision === "revise" ? { budget: { maxSteps: calls, maxInvocations: calls, maxMinutes: minutes } } : {}), ...extra });
+      const result = await post<RunSummary>(`/api/runs/${run.id}/triage`, { decision, note, ...(decision === "revise" ? { budget: { maxSteps: calls, maxInvocations: calls, maxMinutes: minutes } } : {}), ...extra });
       showToast(
-        decision === "approve"
+        decision === "approve" && extra.pushPr && result.triage?.note?.startsWith("The fix was pushed, but") ? result.triage.note : decision === "approve"
           ? extra.pushPr
             ? `Approved — pushed to PR #${run.source?.number}`
             : extra.openPr

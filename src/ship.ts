@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { envNumber, timerMs } from "./config.js";
 import {
   assertWorktree,
@@ -15,6 +17,7 @@ import {
   type GitCwd,
   type GitFailure,
   type GitResult,
+  type GitOptions,
 } from "./git.js";
 import { createPullRequest } from "./github.js";
 import { logWarn } from "./log.js";
@@ -40,11 +43,29 @@ const MAX_PATCH = 200_000;
 
 /** Changes on `branch` since `base`, split per file. */
 export async function branchDiff(repo: GitCwd, base: string, branch: string): Promise<DiffFile[]> {
-  const range = `${base}..${branch}`;
-  const safeDiff = ["-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv"];
-  const numstat = await gitOrThrow([...safeDiff, "--numstat", "-M", "-z", range], repo);
-  const status = await gitOrThrow([...safeDiff, "--name-status", "-M", "-z", range], repo);
-  const patch = await gitOrThrow([...safeDiff, "--no-color", "-M", range], repo);
+  return diffFiles(repo, [`${base}..${branch}`]);
+}
+
+/** Include working files and new files without staging, committing, or running repository programs. */
+export async function workspaceDiff(repo: GitCwd, base: string): Promise<DiffFile[]> {
+  const temporary = await mkdtemp(join(tmpdir(), "codeflow-review-index-"));
+  try {
+    const filters = await git(["config", "-z", "--name-only", "--get-regexp", "^filter\\..*\\.(clean|process|required)$"], repo);
+    if (filters.code !== 0 && filters.code !== 1) throw new Error("Could not inspect repository filter settings");
+    const config = filters.stdout.split("\0").filter(Boolean).flatMap(key => ["-c", `${key}=${key.endsWith(".required") ? "false" : ""}`]);
+    const options = { env: { GIT_INDEX_FILE: join(temporary, "index") } };
+    await gitOrThrow([...config, "read-tree", "HEAD"], repo, options);
+    const paths = [".", ":(glob,exclude)**/.codeflow-context/**"];
+    await gitOrThrow([...config, "add", "-N", "-A", "--", ...paths], repo, options);
+    return await diffFiles(repo, [base, "--", ...paths], options, config);
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+}
+
+async function diffFiles(repo: GitCwd, range: string[], options?: GitOptions, config: string[] = []): Promise<DiffFile[]> {
+  const safeDiff = [...config, "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv"];
+  const numstat = await gitOrThrow([...safeDiff, "--numstat", "-M", "-z", ...range], repo, options);
+  const status = await gitOrThrow([...safeDiff, "--name-status", "-M", "-z", ...range], repo, options);
+  const patch = await gitOrThrow([...safeDiff, "--no-color", "-M", ...range], repo, options);
 
   // --name-status -z: STATUS\0path\0 (renames: R100\0old\0new\0)
   const statusTokens = status.split("\0").filter((t) => t !== "");
@@ -450,8 +471,8 @@ function shortError(res: GitResult): string {
   return kind === "other" ? last.replace(/^(fatal|error):\s*/, "") || "git failed" : describeGitFailure(kind);
 }
 
-async function gitOrThrow(args: string[], cwd: GitCwd): Promise<string> {
-  const res = await git(args, cwd);
+async function gitOrThrow(args: string[], cwd: GitCwd, options?: GitOptions): Promise<string> {
+  const res = await git(args, cwd, options);
   if (res.code !== 0) throw new Error(`git ${args[0]} failed: ${res.stderr.trim() || res.stdout.trim()}`);
   return res.stdout;
 }

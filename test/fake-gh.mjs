@@ -115,6 +115,22 @@ if (alertPath) {
     }
     print(alert);
   }
+} else if (group === "api" && /\/pulls\/\d+\/update-branch$/.test(command)) {
+  const pr = prOf(command.match(/\/pulls\/(\d+)\//)[1]);
+  const input = JSON.parse(readFileSync(0, "utf8"));
+  if (flag("--method") !== "PUT" || input.expected_head_sha !== headOf(pr)) fail("HTTP 422: head changed");
+  if (state.updateError) fail(state.updateError);
+  if (!state.updatePending) {
+    const originDir = execFileSync("git", ["remote", "get-url", "origin"]).toString().trim();
+    const og = (...a) => execFileSync("git", a, { cwd: originDir }).toString().trim();
+    const head = headOf(pr), base = og("rev-parse", `refs/heads/${pr.baseRefName}`);
+    const tree = og("merge-tree", "--write-tree", head, base).split("\n")[0];
+    const commit = og("-c", "user.name=gh", "-c", "user.email=gh@example.com", "commit-tree", tree, "-p", head, "-p", base, "-m", "Update branch");
+    og("update-ref", `refs/heads/${pr.headRefName}`, commit);
+    Object.assign(pr, { mergeStateStatus: "CLEAN", pending: true });
+  }
+  (state.updates ??= []).push({ number: pr.number, ...input }); save();
+  print({ message: "Updating pull request branch." });
 } else if (group === "api" && command === "user") print({ login: process.env.FAKE_GH_USER ?? "me" });
 else if (group === "api" && /^repos\/\{owner\}\/\{repo\}\/pulls\/\d+\/comments\?/.test(command)) {
   const number = command.match(/\/pulls\/(\d+)\//)[1];
@@ -147,8 +163,8 @@ else if (group === "issue" && command === "view") {
 }
 else if (group === "pr" && command === "view") {
   const pr = prOf(target);
-  print({ ...pr, headRefOid: headOf(pr), reviews: pr.reviews ?? [], statusCheckRollup: rollup(pr) });
-} else if (group === "repo" && command === "view") print(state.repo ?? { mergeCommitAllowed: true, squashMergeAllowed: true, rebaseMergeAllowed: true });
+  print({ mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", ...pr, headRefOid: headOf(pr), reviews: pr.reviews ?? [], statusCheckRollup: rollup(pr) });
+} else if (group === "repo" && command === "view") print(state.repo ?? { url: "https://github.com/o/r", mergeCommitAllowed: true, squashMergeAllowed: true, rebaseMergeAllowed: true });
 else if (group === "pr" && command === "merge") {
   const pr = prOf(target);
   if (pr.state !== "OPEN") fail(`X Pull request #${pr.number} was already ${pr.state === "MERGED" ? "merged" : "closed"}`);
@@ -180,8 +196,9 @@ else if (group === "pr" && command === "merge") {
   print(checks);
   process.exit(failing || pr.pending ? 1 : 0);
 } else if (group === "run" && command === "view" && args.includes("--log-failed")) {
-  process.stdout.write(`test\tRun npm test\tAssertionError: expected 1 to equal 2 (run ${target})\n`);
+  process.stdout.write(state.ciLogs?.[target] ?? `test\tRun npm test\tAssertionError: expected 1 to equal 2 (run ${target})\n`);
 } else if (group === "pr" && command === "comment") {
+  if (state.commentError) { process.stderr.write("GitHub comment permission denied\n"); process.exit(1); }
   const pr = prOf(target);
   pr.comments.push({ id: `c${Date.now()}`, author: { login: "me" }, authorAssociation: "OWNER", body: readFileSync(0, "utf8"), createdAt: new Date().toISOString() });
   save();

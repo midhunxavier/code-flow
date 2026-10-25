@@ -45,3 +45,10 @@ test("race and supervisor keep their independent judge and reviewer", () => {
   assert.deepEqual(independentRoles("supervisor", { supervisor: ["claude"], workers: ["claude"], reviewer: ["claude"] }, {}, [...ALL]).reviewer, ["codex"]);
   assert.deepEqual(independentRoles("supervisor", { supervisor: ["claude"], workers: ["claude"], reviewer: [] }, {}, [...ALL]).reviewer, ["codex"]);
 });
+
+
+test("fix & review suggests another available vendor while preserving explicit choices", () => {
+  const roles = { builder: ["codex" as const], reviewer: ["codex" as const] };
+  assert.deepEqual(independentRoles("fix-review", roles, {}, ["codex", "claude"]).reviewer, ["claude"]);
+  assert.deepEqual(independentRoles("fix-review", roles, { reviewer: ["codex"] }, ["codex", "claude"]).reviewer, ["codex"]);
+});

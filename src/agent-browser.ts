@@ -246,6 +246,9 @@ export class AgentBrowser {
     this.annotationScript = (await cdp.send("Page.addScriptToEvaluateOnNewDocument", {source:annotationSource(),worldName:annotationWorld,runImmediately:true}, this.session)).identifier;
     await cdp.send("Emulation.setDeviceMetricsOverride", {width:this.width,height:this.height,deviceScaleFactor:1,mobile:false}, this.session);
     await cdp.send("Page.setInterceptFileChooserDialog",{enabled:true},this.session);
+    // Attaching does not activate an existing target. A static background page
+    // may otherwise never emit a screencast frame when selected after a new tab.
+    await cdp.send("Page.bringToFront", {}, this.session);
     await this.cast();
   }
   private async execute(name: string, args: Record<string, any>, signal: AbortSignal, workspace?:string) {

@@ -201,6 +201,20 @@ test("browser URLs become evidence without gaining repository path authority", (
   assert.ok(value.findings[0]!.paths.includes("https://example.test/result"), "original evidence is immutable");
 });
 
+test("investigation findings supply evidence artifacts without inventing changed files", () => {
+  const s = state(), member = s.members[1]!, task = s.tasks[0]!;
+  task.kind = "investigation";
+  const value: TaskOutcome = { taskId: task.id, memberId: member.id, status: "submitted", checkpoint: "Verified the dependency upgrade", handover: "No changes needed; final host checks and independent review remain pending", artifacts: [], unresolvedRequirements: [], questions: [], replies: [], findings: [{ title: "Dependency verified", body: "The requested version is present in both manifests", evidence: ["package.json:61", "package-lock.json:26", "package.json:61"], paths: ["package.json", "package-lock.json"] }] };
+  const normalized = normalizeTaskOutcomeEvidence(value, task.kind);
+  assert.deepEqual(normalized.artifacts, ["package.json:61", "package-lock.json:26"]);
+  assert.equal(outcomeProblem(normalized, task, member, s), undefined);
+  assert.deepEqual(value.artifacts, [], "keep the provider response unchanged for audit");
+  assert.deepEqual(normalizeTaskOutcomeEvidence(value, "implementation").artifacts, [], "this must not create implementation artifacts");
+  assert.match(outcomeProblem(normalizeTaskOutcomeEvidence({ ...value, findings: [] }, task.kind), task, member, s)!, /evidence-bearing/);
+  const invalid = { ...value, findings: [{ ...value.findings[0]!, paths: ["../private"] }] };
+  assert.match(outcomeProblem(normalizeTaskOutcomeEvidence(invalid, task.kind), task, member, s)!, /safe repository paths/);
+});
+
 
 test("provider replacement chooses a reported model when role settings and CLI default are empty, preserving pins", () => {
   const provider = { id: "agy" as const, available: true, quotaKnown: false, settingsByRole: { reviewer: {} }, models: [{ id: "reported" }] };

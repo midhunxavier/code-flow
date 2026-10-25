@@ -1,3 +1,4 @@
+import { browserContextMessage } from "./browser-context.js";
 import { JourneyRecorder, recording, recordAction } from "./journeys.js";
 import { signal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -230,31 +231,16 @@ export function destinations(s: SideScope): { key: string; label: string; sub: s
  * Snapshot names carry the batch: a second lot added to the same message box starts at 1 again.
  */
 export function pinsMessage(pins: Pin[], console: ConsoleLine[], batch: string | number, onSnap?: { name: string; snap: Pick<Snap, "url" | "width" | "height" | "full"> }): { text: string; images: Attachment[] } {
-  const url = pins[0]?.url ?? "";
   const snapshot = (p: Pin) => `pin-${batch}-${p.n}.png`;
-  const lines = pins.map((p) => {
-    const what =
-      p.source === "snapshot"
-        ? `an area ${p.rect.w}×${p.rect.h} at ${p.rect.x},${p.rect.y} on the snapshot${onSnap ? ` (box ${p.n} on ${onSnap.name})` : ""}`
-        : p.kind === "box"
-          ? `an area ${p.rect.w}×${p.rect.h} at ${p.rect.x},${p.rect.y} (around \`${p.selector}\`)`
-          : `\`${p.selector}\``;
-    const parts = [`${p.n}. ${what}: ${p.comment.trim() || "(no comment)"}`];
-    if (p.url !== url) parts.push(`   On: ${p.url}`);
-    if (p.text) parts.push(`   Text: "${p.text.slice(0, 120)}"`);
-    if (p.html) parts.push(`   HTML: ${p.html.replace(/\s+/g, " ").slice(0, 240)}`);
-    if (p.tried && Object.values(p.tried).some(Boolean)) parts.push(`   Tried in the browser: ${Object.entries(p.tried).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join("; ")}`);
-    if (p.image) parts.push(`   Snapshot: ${snapshot(p)}`);
-    return parts.join("\n");
-  });
-  const errors = console.filter((c) => c.level !== "warn").slice(-20);
-  const head =
-    onSnap && pins.every((p) => p.source === "snapshot")
-      ? `From a snapshot of ${onSnap.snap.url} (${onSnap.snap.width}px wide${onSnap.snap.full ? ", the whole page" : ""}, as a signed-out visitor sees it); the boxes are numbered on ${onSnap.name}:`
-      : url
-        ? `From the app in the browser (${url}${pins[0] ? `, ${pins[0].viewport.w}px wide` : ""}):`
-        : "From the app in the browser:";
-  const text = [head, ...lines, errors.length ? `Console errors and failed requests:\n${errors.map((e) => `- ${e.text.split("\n")[0]!.slice(0, 300)}`).join("\n")}` : ""].filter(Boolean).join("\n");
+  const errors = console.filter(c => c.level !== "warn").slice(-20).map(e => e.text.split("\n")[0]!.slice(0, 300));
+  const text = pins.map((p, index) => browserContextMessage({
+    version: 1, comment: p.comment.trim(), url: p.url, selector: p.selector,
+    text: p.text.slice(0, 120), html: p.html?.replace(/\s+/g, " ").slice(0, 240),
+    viewport: p.viewport, rect: p.rect, tried: p.tried, source: p.source,
+    snapshot: p.image ? snapshot(p) : onSnap?.name,
+    selection: p.n, snapshotPage: p.source === "snapshot" ? onSnap?.snap : undefined,
+    console: index === 0 && errors.length ? errors : undefined,
+  })).join("\n\n");
   const images = pins
     .filter((p) => p.image)
     .map((p) => {
@@ -303,7 +289,7 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
         setSideChat(id);
         openSide("chat");
       }
-      showToast(`Added to the message box${scope.run?.id === id ? there : ""}: add a line if you like, then send`);
+      showToast(`Added to chat${scope.run?.id === id ? there : ""}. Add a message, then send.`);
     } else if (to.startsWith("side:")) {
       draftTo(to, text, images);
       setSideChat(to === "side:new" ? null : to);
@@ -322,7 +308,7 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
             <span class="pin-n">{p.n}</span>
             <div class="pin-main">
               <div class="pin-what" title={p.html ?? p.selector}>
-                {p.kind === "box" ? <span class="pin-label">Area {p.rect.w}×{p.rect.h}</span> : <span class="pin-label pin-sel">{p.selector}</span>}
+                {p.kind === "box" ? <span class="pin-label">Area {p.rect.w}×{p.rect.h}</span> : <span class="pin-label pin-sel">{p.text || "Selected element"}</span>}
                 {p.image ? <img class="pin-thumb" src={p.image} alt={`Snapshot of pin ${p.n}`} /> : <span class="help"> · no snapshot</span>}
               </div>
               <input class="field" aria-label={`What about pin ${p.n}?`} placeholder="What's wrong, or what should change?" value={p.comment} onInput={(e) => update(p.n, { comment: e.currentTarget.value })} />
@@ -394,7 +380,7 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
           )}
         </Menu>
         <button type="button" class="btn primary small" disabled={!state.pins.length} onClick={() => void sendTo(primary.key)}>
-          Add to {primary.key.startsWith("main:") && primary.label === "Main chat" ? "main chat" : primary.key === "composer" ? "a new run" : primary.label.toLowerCase().startsWith("side chat") ? "side chat" : primary.label}
+          Add to {primary.key.startsWith("main:") && primary.label === "Main chat" ? "chat" : primary.key === "composer" ? "a new run" : primary.label.toLowerCase().startsWith("side chat") ? "side chat" : primary.label}
         </button>
       </div>
     </div>

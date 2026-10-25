@@ -1,3 +1,4 @@
+import { visualEvidenceFiles, visualEvidenceMarkdown, VISUAL_EVIDENCE_GUIDANCE, wantsVisualEvidence } from "./visual-evidence.js";
 import { steeringTargets, type TeamSteeringRequest } from "./team-steering.js";
 import { TaskTeamConflict, prepareTaskReconciliation, reconciliationFile, resolveTaskReconciliation, type ConflictChoice, taskTeamControl, taskTeamQuestionReply, taskTeamRoute, validateTaskTeam, taskCheckpoint, applyTaskTeamResult, type TaskTeamConfig, type TaskTeamTurn } from "./task-team.js";
 import { chatTaskId } from "./chat-family.js";
@@ -98,7 +99,7 @@ import {
 } from "./git.js";
 import { appendLine, deleteRunHistory, flushWrites, journalEntry, listDeletedRunIds, listRunIds, loadJournal, readJsonLines, rewriteLines, waitForRunWrites, RUNS_DIR } from "./store.js";
 import { compactRunLog, decodeRunLog, RunLogWriter } from "./run-log.js";
-import { branchDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, type DiffFile } from "./ship.js";
+import { branchDiff, workspaceDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
 import { projectOf, type Project, type Projects } from "./projects.js";
@@ -121,10 +122,12 @@ import { autoTeamEnabled } from "./config.js";
 import type { ReplayMeasurement } from "./team-evaluation.js";
 import { memoryAuthorityForRun, projectMemoryForRun, projectMemoryFromManifest, proposeProjectMemories, type ProjectMemoryFinding } from "./team-memory.js";
 import {
+  githubRepositoryUrl,
   commentOnPr,
   loadSource,
   mergeBase,
   mergePullRequest,
+  updatePullRequestBranch,
   prMergeInfo,
   pushBranch,
   sourcePrompt,
@@ -133,6 +136,7 @@ import {
   type RunSource,
   type SourceInput,
 } from "./github.js";
+import { localDeliveryProblem, prDelivery, validateTestRun, type ResultDelivery, type TestRun } from "./result-delivery.js";
 
 /** How many agent CLIs, and how many check/setup commands, may run at once across all runs. */
 const agentSlots = new Slots(Math.max(1, Number(process.env.CODEFLOW_MAX_AGENTS) || 6));
@@ -353,6 +357,10 @@ export interface Artifact {
 }
 
 export interface Run {
+  /** Explicit user metadata; never inferred from issue text or a task mentioning tests. */
+  testRun?: TestRun;
+  prMergeRequests?: Record<string, { url: string; head: string; at: number }>;
+  prBranchUpdates?: Record<string, { url: string; localHead: string; previousHead: string; at: number }>;
   /** The unfinished logical call, not historical failures used by later decisions. */
   providerRecovery?: { identity: string; resume: number; providers: AgentId[] };
   conversationAgent?: AgentId;
@@ -519,6 +527,8 @@ export interface Run {
   error?: string;
   steps: Step[];
   artifacts: Artifact[];
+  /** Latest visual-evidence revision published for each result branch. */
+  visualEvidencePosted?: Record<string, string>;
 }
 
 export type RunSummary = Omit<Run, "steps"> & { cold?: true; detailAvailable?: true; deleted?: true };
@@ -750,6 +760,11 @@ export interface Pattern {
 }
 
 export interface AskParams {
+  /** Allocate the initial team/plan revision from supplied context and local read tools.
+   * Browser/computer work and live collaboration belong to the resulting tasks. */
+  planning?: boolean;
+  /** A final explanation of a saved team receipt; no live browser/computer tools needed. */
+  receiptOnly?: boolean;
   teamResponseFor?: string;
   leadQuestion?: boolean;
   /** Engine-only retry at the explicitly resumed provider recovery frontier. */
@@ -870,7 +885,7 @@ export class TeamContext {
   private checkRunsHere?: Promise<string | null>;
   /** Whether the run's check passed in each worktree, at which commit, and how many tests ran. */
   private readonly lastChecks = new Map<string, { head?: string; ok: boolean; tests?: number }>();
-  private readonly reusableChecks = new Map<string, { profile: string; result: CheckResult; verification: VerificationReport & { head?: string; branch?: string } }>();
+  private readonly reusableChecks = new Map<string, { profile: string; head: string; branch: string; result: CheckResult; verification?: VerificationReport & { head?: string; branch?: string } }>();
   /** Proofs made in this attempt, by `base..head`: the same change is proven once. */
   private readonly proofCache = new Map<string, Promise<Proof>>();
   /** Repros run in this attempt, by commit and repro: the same test on the same code runs once. */
@@ -1156,11 +1171,11 @@ export class TeamContext {
     return modelCatalogStore.get(provider, { context });
   }
 
-  async teamInventory(previous?: TeamInventory, settings = this.run.agentSettings): Promise<TeamInventory> {
+  async teamInventory(previous?: TeamInventory, settings = this.run.agentSettings, options: { models?: boolean } = {}): Promise<TeamInventory> {
     const remote = this.run.loop.remoteWorker;
     const availability = remote ? (await this.manager.remoteInventory(remote)).providers : await agentAvailability();
     const catalogs = await Promise.all(availability.map(async ({ id, available }) => {
-      if (!available) return undefined;
+      if (!available || options.models === false) return undefined;
       if (this.run.modelRouting) {
         const catalog = await this.capabilityCatalog(id);
         const configured = [settings[id], this.run.roleSettings.coordinator?.[id], this.run.roleSettings.pool?.[id]];
@@ -1612,20 +1627,23 @@ export class TeamContext {
       try {
         const at = await assertWorktree(this.run.repo, wt), integrity = await verificationIntegrity(at, this.signal);
         const untracked = await git(["ls-files", "--others", "--exclude-standard", "-z"], at);
-        if (integrity.head === cached.verification.head && untracked.code === 0 && !untracked.stdout) {
+        if (integrity.head === cached.head && wt.branch === cached.branch && untracked.code === 0 && !untracked.stdout) {
           await integrity.assert("reusing checks");
-          this.run.verification = structuredClone(cached.verification);
+          if (cached.verification) this.run.verification = structuredClone(cached.verification);
           this.log(`Reused passing checks for unchanged commit ${integrity.head.slice(0, 12)}`);
           return cached.result;
         }
       } catch (error) { if (!(error instanceof VerificationIntegrityError)) throw error; }
     }
+    // A failed or changed recheck must not leave an older passing result reusable.
+    this.reusableChecks.delete(wt.name);
     const result = await this.remember(
       "check",
       `${wt.name}|${title}|${command}`,
-      async (): Promise<CheckResult & { head?: string; verification?: Run["verification"] }> => {
+      async (): Promise<CheckResult & { head?: string; reuseHead?: string; verification?: Run["verification"] }> => {
         let result: CheckResult;
         let verification: Run["verification"];
+        let reuseHead: string | undefined;
         const at = await this.gitAt(wt);
         const head = await resolveCommit(at).catch(() => undefined);
         if (doneWhen && this.run.loop.verification) {
@@ -1655,11 +1673,31 @@ export class TeamContext {
           const primary = verification.checks.find((gate) => gate.check.command === command)?.attempts[0];
           result = { ...(primary ?? { command, exitCode: null, timedOut: false, output: "", durationMs: 0 }), command, ok: verification.state === "verified", output: [...verification.checks.map((gate) => `[${gate.check.id}: ${gate.diagnosis}]\n${gate.attempts.at(-1)?.output ?? gate.reason ?? ""}`), ...verification.skipped.map((gate) => `[${gate.check.id}: blocked]\n${gate.reason}`)].join("\n\n"), durationMs: verification.endedAt - verification.startedAt };
           this.run.verification = verification;
-        } else result = await this.command("check", title, wt, command);
+        } else {
+          // Ordinary done-when commands need the same integrity evidence as named
+          // verification profiles before their passing result can be reused.
+          let integrity: Awaited<ReturnType<typeof verificationIntegrity>> | undefined;
+          if (doneWhen) {
+            try {
+              integrity = await verificationIntegrity(await assertWorktree(this.run.repo, wt), this.signal);
+              const untracked = await git(["ls-files", "--others", "--exclude-standard", "-z"], at);
+              if (untracked.code || untracked.stdout) integrity = undefined;
+            } catch (error) { if (!(error instanceof VerificationIntegrityError)) throw error; }
+          }
+          result = await this.command("check", title, wt, command);
+          if (result.ok && integrity) {
+            try {
+              await assertWorktree(this.run.repo, wt);
+              await integrity.assert("completion");
+              const untracked = await git(["ls-files", "--others", "--exclude-standard", "-z"], at);
+              if (!untracked.code && !untracked.stdout) reuseHead = integrity.head;
+            } catch (error) { if (!(error instanceof VerificationIntegrityError)) throw error; }
+          }
+        }
         this.run.usage.checks++;
         this.run.lastCheck = { ok: result.ok, command, worktree: wt.name, at: Date.now() };
         this.manager.emitRun(this.run);
-        return { ...result, head: verification?.head ?? await this.gitAt(wt).then(resolveCommit).catch(() => undefined), verification };
+        return { ...result, head: verification?.head ?? await this.gitAt(wt).then(resolveCommit).catch(() => undefined), reuseHead, verification };
 
       },
       (recorded) => !options.reuse && (!recorded.head || !head || recorded.head === head),
@@ -1681,7 +1719,8 @@ export class TeamContext {
       }
     }
     const verified = (result as CheckResult & { verification?: Run["verification"] }).verification;
-    if (doneWhen && result.ok && verified?.state === "verified" && verified.head && verified.branch === wt.branch) this.reusableChecks.set(wt.name, { profile: JSON.stringify(this.run.loop.verification), result, verification: structuredClone(verified) });
+    const reusableHead = verified?.state === "verified" && verified.branch === wt.branch ? verified.head : !this.run.loop.verification ? result.reuseHead : undefined;
+    if (doneWhen && result.ok && reusableHead) this.reusableChecks.set(wt.name, { profile: JSON.stringify(this.run.loop.verification), head: reusableHead, branch: wt.branch, result, ...(verified ? { verification: structuredClone(verified) } : {}) });
     return result;
   }
 
@@ -1751,7 +1790,7 @@ export class TeamContext {
    * change's tests, with their fixtures and the runner's settings, are put onto the base code and
    * the check runs there. It should fail: a test that passes without the change doesn't show the
    * change does anything. Meant for a change whose check passes. Recorded on the run by result
-   * branch. Null when there's nothing to prove it with (no check that runs here, or proofs off).
+   * branch. Null when the result is unchanged, no check runs here, or proofs are off.
    * `known` is the check's result on the base code, reused when the change touches no tests.
    */
   async prove(wt: Worktree, opts: { from?: string; known?: CheckResult | null } = {}): Promise<Proof | null> {
@@ -1759,6 +1798,16 @@ export class TeamContext {
     this.checkCancelled();
     const from = opts.from ?? wt.base;
     const head = this.heads.get(wt.name) ?? (await resolveCommit(await this.gitAt(wt)));
+    // A green PR or an already-fixed issue may correctly produce no edits. Rechecking
+    // identical code cannot establish a regression and must not manufacture a warning
+    // (or trigger a repair round asking the agent to invent a test/change).
+    if (from === head || !(await changedFiles(await this.gitAt(wt), from, head)).length) {
+      if (this.run.proofs?.[wt.branch]) {
+        const { [wt.branch]: _gone, ...rest } = this.run.proofs;
+        this.run.proofs = Object.keys(rest).length ? rest : undefined;
+      }
+      return null;
+    }
     const key = `${from}..${head}`;
     let proving = this.proofCache.get(key);
     const fresh = !proving;
@@ -2393,6 +2442,7 @@ export class TeamContext {
     // decisions were made from them, and it retries a failed task as a new attempt.
     // Explicitly resuming a conversation after a CLI/configuration repair must not replay
     // a compatibility failure forever, including failures journaled by older versions.
+    if (params.mode === "write" && !params.receiptOnly && wantsVisualEvidence([this.run.task, ...this.run.notes.map(note => note.text), ...this.run.followUps.map(turn => turn.message ?? "")].join("\n"))) params = { ...params, prompt: params.prompt + "\n\n## Visual evidence when requested\n" + VISUAL_EVIDENCE_GUIDANCE };
     const retryCompatibility = (outcome: StepOutcome) => !outcome.ok && this.run.pattern === "solo" && !this.run.checkpointOnFinish && !this.run.trigger && failureKind(outcome, !!params.resume) === "cli_incompatible";
     const keep = (outcome: StepOutcome) => !retryCompatibility(outcome) && (outcome.ok || !!this.run.team || !UNRECORDED.has(failureKind(outcome, !!params.resume)));
     const identity = `${params.role}|${params.agent}|${params.cwd.name}|${params.identity ?? params.title}`;
@@ -2471,12 +2521,14 @@ export class TeamContext {
     const config = this.manager.get(chatTaskId(this.run))?.taskTeam;
     // Verified work is frozen while the lead explains the receipt. Turning Team
     // off explicitly hands unfinished work back to the normal writable Agent.
-    if (config?.enabled) params = { ...params, agent: config.coordinator, settings: config.settings[config.coordinator] ?? {}, mode: "read", resume: undefined, fresh: undefined,
-      prompt: `Answer from the saved Team result in read-only mode. Do not edit files, run mutating commands, or repeat browser/computer actions. If work is incomplete, explain the blocker and the next recovery action. Earlier instructions to implement work have already been delegated.\n\n${params.prompt}\n\nConversation reference:\n${await portableConversation(this.run, params.cwd.path)}` };
+    if (config?.enabled) params = { ...params, agent: config.coordinator, settings: config.settings[config.coordinator] ?? {}, mode: "read", receiptOnly: true, resume: undefined, fresh: undefined,
+      prompt: `Explain the saved Team result directly and briefly from the execution receipt below. Its status, applied revision, checks and review are host-observed evidence; worker prose alone is not proof. No tools or further investigation are needed to summarize this receipt. Do not revalidate completed work, edit files, run checks, or repeat browser/computer actions. If work is incomplete, report the blocker and recovery action without claiming completion. Earlier implementation instructions have already been delegated.\n\n${params.prompt}\n\nConversation reference:\n${await portableConversation(this.run, params.cwd.path)}` };
     const providers = [...new Set([params.agent, ...(config?.providers ?? []), ...(config ? [config.coordinator] : [])])];
     let last: StepOutcome | undefined;
     for (const agent of providers) {
-      const inventory = await this.teamInventory();
+      // Final-answer admission needs fresh availability/permission/quota checks, not
+      // another model-catalog probe for every installed provider. ask validates its pins.
+      const inventory = await this.teamInventory(undefined, undefined, { models: false });
       if (!inventory.providers.some(provider => provider.id === agent && provider.available && !provider.blockedReason)) continue;
       const switched = agent !== params.agent;
       // Use visible history and existing context files, never another provider's native session.
@@ -2782,12 +2834,12 @@ export class TeamContext {
         return activeTurn && !turnSignal.aborted && this.run.status === "running" && !!currentMember && currentMember.status !== "retired" &&
           (!params.taskId || !!currentTask && currentTask.owner === currentMember.id && currentTask.attempts === attempt);
       };
-      const grant = member && (params.agent !== "agy" || effective?.externalTools === "task-scoped" || effective?.implementation === "agy-native-v1") && !params.agent.startsWith("plugin:") && !params.agent.startsWith("acp:") && !this.run.loop.agentContainer && !remote ? await teamToolBridge.issue({
+      const grant = !params.planning && member && (params.agent !== "agy" || effective?.externalTools === "task-scoped" || effective?.implementation === "agy-native-v1") && !params.agent.startsWith("plugin:") && !params.agent.startsWith("acp:") && !this.run.loop.agentContainer && !remote ? await teamToolBridge.issue({
         identity: { runId: this.run.id, memberId: member.id, taskId: params.taskId, attempt, stepId: step.id, attemptId: logicalAttemptId },
         handler: (request, identity) => this.teamTool(request, identity, params.cwd, activeCapability), signal: turnSignal, ttlMs: STEP_TIMEOUT_MS,
         isActive: activeCapability,
       }) : undefined;
-      const agentGrant = !params.leadQuestion && (this.run.pattern === "solo" || !!this.run.taskExecution || this.run.pattern === "auto-team") && !this.run.checkpointOnFinish && !this.run.trigger && !this.run.loop.agentContainer && !remote && ["claude", "codex", "agy"].includes(params.agent) && effective?.externalTools !== "disabled" ? await agentToolBridge.issue({
+      const agentGrant = !params.planning && !params.receiptOnly && !params.leadQuestion && (this.run.pattern === "solo" || !!this.run.taskExecution || this.run.pattern === "auto-team") && !this.run.checkpointOnFinish && !this.run.trigger && !this.run.loop.agentContainer && !remote && ["claude", "codex", "agy"].includes(params.agent) && effective?.externalTools !== "disabled" ? await agentToolBridge.issue({
         runId: this.run.id, browserId: `run:${chatTaskId(this.run)}`, resourceOwner: member?.name ?? params.agent, workspace: params.cwd.path, signal: turnSignal, mode: params.mode, full: turnTrust === "full" && !effective?.required.includes("workspace-writes") && !effective?.required.includes("no-command-network"),
         active: () => activeTurn && !turnSignal.aborted && this.run.status === "running" && (!member || activeCapability()),
         actionScope: chatTaskId(this.run),
@@ -3047,6 +3099,7 @@ function knowledgePrompt(run: Run): string {
 // ---------------------------------------------------------------------------
 
 export interface StartRunInput {
+  testRun?: TestRun;
   taskTeam?: TaskTeamConfig;
   taskExecution?: Run["taskExecution"];
   teamTemplate?: TemplateSelection;
@@ -3108,9 +3161,11 @@ const QUOTA_FILE = join(CODEFLOW_HOME, "quota.json");
 export class RunManager {
   private projectTeamShippingGuard?: (run: Run, branch: string) => Promise<void>;
   setProjectTeamShippingGuard(guard: (run: Run, branch: string) => Promise<void>) { this.projectTeamShippingGuard = guard; }
-  private async managedShipping(run: Run, branch: string) { if (run.projectTeam) { if (!this.projectTeamShippingGuard) throw new Error("Project team service unavailable"); await this.projectTeamShippingGuard(run, branch); } }
+  private async managedShipping(run: Run, branch: string) { if (run.testRun) throw new Error("This is a test run. Archive it instead of publishing or merging its changes."); if (run.projectTeam) { if (!this.projectTeamShippingGuard) throw new Error("Project team service unavailable"); await this.projectTeamShippingGuard(run, branch); } }
   private projectTeamGuard?: (run: Run) => Promise<void>;
   setProjectTeamGuard(guard: (run: Run) => Promise<void>) { this.projectTeamGuard = guard; }
+  private projectTeamDeletionGuard?: (run: Run) => void;
+  setProjectTeamDeletionGuard(guard: (run: Run) => void) { this.projectTeamDeletionGuard = guard; }
   private managedContinuation(run: Run) { if (run.projectTeam) throw new Error("Continue this result through its project team so its scope, budget and independent review are preserved"); }
   private readonly mergeValidating = new Map<string, AbortController>();
   private readonly mergeValidationWork = new Map<string, Promise<MergeValidation>>();
@@ -3483,8 +3538,9 @@ export class RunManager {
 
   /** Running, or claimed by a resume that's about to start it. */
   private readonly followUpClaims = new Set<string>();
-  private busyRun(run: Run): boolean {
-    return this.followUpClaims.has(run.id) || run.status === "running" || this.starting.has(run.id) || this.mergeValidating.has(run.id);
+  private readonly deliveryActions = new Set<string>();
+  private busyRun(run: Run, duringDelivery = false): boolean {
+    return (!duringDelivery && this.deliveryActions.has(run.id)) || this.followUpClaims.has(run.id) || run.status === "running" || this.starting.has(run.id) || this.mergeValidating.has(run.id);
   }
 
   isRepositoryIdle(repo: string): boolean {
@@ -3554,8 +3610,12 @@ export class RunManager {
   /** Delete conversation history only. Repository files, worktrees and branches remain owned by Git. */
   async deleteRun(id: string) {
     const run = this.require(id);
-    if (run.projectTeam) throw new RunConflictError("Standing project teams retain run history for cycle recovery and result approvals. Archive this run instead.");
     if (this.busyRun(run) || this.active.has(id) || this.coldMutations.has(id)) throw new RunConflictError("Finish or stop the run before deleting it");
+    if (run.projectTeam) {
+      if (!this.projects?.available || !this.projectTeamDeletionGuard) throw new RunConflictError("Project mission history could not be checked. Restore access to projects and missions before deleting this run.");
+      try { this.projectTeamDeletionGuard(run); }
+      catch (error) { throw new RunConflictError((error as Error).message); }
+    }
     if (this.allSummaries().some(other => other.chatLink?.workspaceId === id || other.taskExecution?.taskId === id || other.taskExecution?.chatId === id)) throw new RunConflictError("This chat owns a shared workspace. Archive it to retain the other tabs, or delete the related chats first.");
     this.deletedRuns.add(id);
     try {
@@ -3686,6 +3746,10 @@ export class RunManager {
     const run = this.get(id); if (!run) throw new Error("Run not found");
     if (!run.worktrees.some((w) => w.branch === branch) && !run.artifacts.some((a) => a.branch === branch)) {
       throw new Error("That branch doesn't belong to this run");
+    }
+    const tree = run.worktrees.find(tree => tree.branch === branch);
+    if (run.pattern === "solo" && !run.checkpointOnFinish && tree && existsSync(tree.path)) {
+      return workspaceDiff(await worktreeGit(run.repo, tree.path), last ? "HEAD" : run.baseRef);
     }
     if (!last) return branchDiff(run.repo, run.baseRef, branch);
     // Never further back than where the run started: a branch with no commits of its own has no last step.
@@ -4045,7 +4109,7 @@ export class RunManager {
       turn.reviewStale = true;
       const review = await this.start({ pattern: this.findPattern("task-review")!, repo: run.repo, project: run.project, baseRef: checkpoint,
         context: await chatHandoffContext(run, checkpoint, false),
-        task: `${run.task}\n\n${run.followUps.filter(turn => !turn.side).map(turn => turn.message).join("\n\n")}\n\nLatest user corrections (take precedence over earlier instructions):\n${run.notes.filter(note => !note.control).map(note => note.text).join("\n\n")}\n\nReview the full combined workspace including the user's edits. Previous team report (historical evidence):\n${turn.report ?? ""}`,
+        task: `Current delegated task to review:\n${execution.task}\n\nLatest user corrections (take precedence over earlier instructions):\n${run.notes.filter(note => !note.control).map(note => note.text).join("\n\n")}\n\nReview the full combined workspace including the user's edits. Previous team report (historical evidence):\n${turn.report ?? ""}\n\nEarlier conversation (historical context; preserve applicable ongoing constraints, but turn-local requests such as a no-tools acknowledgement belong to their original replies):\n${JSON.stringify([run.task, ...run.followUps.filter(turn => !turn.side).map(turn => turn.message)])}`,
         roles: { reviewer: providers }, options: {}, agentSettings: config.settings, trust: run.trust, antigravityExecution: run.permissions?.antigravityExecution,
         approvals: { plan: false, tools: !!run.approvals.tools }, loop: { ...run.loop, setup: undefined, check: undefined, verification: undefined, maxSteps: 6, maxInvocations: 6, maxMinutes: config.maxMinutes },
         parentRunId: run.id, taskExecution: { taskId: chatTaskId(run), chatId: run.id, key: `review:${turn.key}` },
@@ -4221,13 +4285,16 @@ export class RunManager {
     const files = await branchDiff(run.repo, run.baseRef, head);
     const review = run.humanReview?.[branch];
     const reviewed = review?.head === head ? review.files : [];
-    return { head, files: files.map((file) => file.path), reviewed, coverage: reviewCoverage(files.map((file) => file.path), reviewed), risk: assessChangeRisk(files), stale: !!review && review.head !== head, rework: (run.humanRework ?? []).filter((item) => item.branch === branch) };
+    const tree = run.worktrees.find(tree => tree.branch === branch)!;
+    const workingChanges = run.pattern === "solo" && !run.checkpointOnFinish && existsSync(tree.path) && (await workspaceDiff(await worktreeGit(run.repo, tree.path), head)).length > 0;
+    return { head, workingChanges, files: files.map((file) => file.path), reviewed, coverage: reviewCoverage(files.map((file) => file.path), reviewed), risk: assessChangeRisk(files), stale: !!review && review.head !== head, rework: (run.humanRework ?? []).filter((item) => item.branch === branch) };
   }
 
   async recordFileReview(id: string, input: { branch: string; expectedHead: string; path: string; reviewed: boolean }, actor = "owner", authorize: () => void = () => {}) {
     if (typeof actor !== "string" || actor.length > 200 || !/^(?:owner|shared:[a-zA-Z0-9_-]+:[a-zA-Z0-9_.-]+)$/.test(actor)) throw new Error("A server-authenticated review identity is required");
     const run = this.require(id);
     const current = await this.reviewCoverage(id, input.branch);
+    if (current.workingChanges) throw new RunConflictError("Commit the workspace changes before recording review coverage.");
     if (input.expectedHead !== current.head || await resolveCommit(run.repo, `refs/heads/${input.branch}`) !== current.head) throw new RunConflictError("This branch changed. Review the current file before recording coverage.");
     if (!current.files.includes(input.path) || typeof input.reviewed !== "boolean") throw new Error("Choose a changed file and its review state");
     const existing = run.humanReview?.[input.branch];
@@ -4246,6 +4313,7 @@ export class RunManager {
     if (this.busyRun(run)) throw new Error("Wait for the run to finish before assessing its result");
     if (!["accepted", "needs-work"].includes(input.decision)) throw new Error("Choose accepted or needs-work");
     const current = await this.reviewCoverage(id, input.branch);
+    if (current.workingChanges) throw new RunConflictError("Commit the workspace changes before recording your assessment.");
     if (input.expectedHead !== current.head || await resolveCommit(run.repo, `refs/heads/${input.branch}`) !== current.head) throw new RunConflictError("The branch changed. Refresh before recording your decision");
     if (this.busyRun(run)) throw new RunConflictError("The run resumed. Wait for it to finish before assessing its result");
     run.outcome = { decision: input.decision, branch: input.branch, head: current.head, at: Date.now() };
@@ -4309,7 +4377,74 @@ export class RunManager {
     return outcome;
   }
 
-  /** A result branch's pull request, as merging it needs to know it. */
+  /** Explicit run purpose, kept with the conversation and enforced at publication. */
+  setTestRun(id: string, value: unknown) {
+    const run = this.require(id);
+    if (this.busyRun(run)) throw new Error("Wait for the run to finish before changing its purpose");
+    run.testRun = validateTestRun(value);
+    this.emitRun(run);
+    return run.testRun ?? null;
+  }
+
+  async resultDelivery(id: string, branch: string, duringDelivery = false): Promise<ResultDelivery> {
+    const run = this.readRun(id);
+    if (run.testRun) return { kind: "test", title: "Test complete — archive this run", detail: run.testRun.reason, action: "archive", label: "Archive test run" };
+    const tree = run.worktrees.find(tree => tree.branch === branch);
+    if (!tree || !run.artifacts.some(artifact => artifact.branch === branch)) throw new Error("Choose a result branch from this run");
+    const url = run.prs[branch] ?? (run.source?.kind === "pr" ? run.source.url : undefined);
+    if (!url) return { kind: "result", title: "Ready to review", detail: "Review the changes, or ask for a revision in chat. Publishing is available in the review.", action: "review", label: "Review changes" };
+    const pr = await prMergeInfo(run.repo, url);
+    const localHead = await resolveCommit(run.repo, `refs/heads/${branch}`);
+    const status = await git(["status", "--porcelain"], await worktreeGit(run.repo, tree.path));
+    if (status.code) throw new Error("Couldn't check the result's working files. Open its review before publishing.");
+    const update = run.prBranchUpdates?.[branch];
+    const trackedUpdate = update?.url === url && update.localHead === localHead;
+    const problem = this.busyRun(run, duringDelivery) ? "Wait for the run to finish before publishing." : status.stdout.trim() ? "There are uncommitted changes. Ask the agent to commit and check them before publishing." : localHead !== pr.headRefOid && !trackedUpdate ? "The local result and the PR have different commits. Review and push your changes, or inspect the newer PR on GitHub." : localDeliveryProblem(run, branch);
+    if (!problem && trackedUpdate && update.previousHead === pr.headRefOid && Date.now() - update.at < 120000 && pr.state === "OPEN") return { kind: "pr", title: "Updating the PR branch", detail: "GitHub accepted the update. Waiting for the new commit and its checks.", action: "wait", label: "Updating branch…", pr, localHead };
+    const pendingMerge = run.prMergeRequests?.[branch];
+    if (!problem && pr.state === "OPEN" && pendingMerge?.url === url && pendingMerge.head === pr.headRefOid && Date.now() - pendingMerge.at < 120000) return { kind: "pr", title: "Merge requested", detail: "GitHub accepted the request. Waiting for it to confirm the merge; branches and files are kept.", action: "wait", label: "Waiting for GitHub…", pr, localHead };
+    return { ...prDelivery(pr, problem), localHead, changedSinceRun: localHead !== pr.headRefOid };
+  }
+
+  private async withDeliveryAction<T>(id: string, action: () => Promise<T>): Promise<T> {
+    if (this.busyRun(this.require(id))) throw new RunConflictError("Wait for the current run operation to finish");
+    this.deliveryActions.add(id);
+    try { return await action(); } finally { this.deliveryActions.delete(id); }
+  }
+
+  async updateResultPr(id: string, input: { branch: string; expectedHead: string }) {
+    return this.withDeliveryAction(id, async () => {
+      const run = this.require(id);
+      await this.managedShipping(run, input.branch);
+      const delivery = await this.resultDelivery(id, input.branch, true);
+      if (!delivery.pr || delivery.pr.headRefOid !== input.expectedHead) throw new RunConflictError("The PR changed. Refresh its status before updating.");
+      if (delivery.action !== "update") throw new Error(delivery.detail);
+      await updatePullRequestBranch(run.repo, delivery.pr.url, input.expectedHead);
+      (run.prBranchUpdates ??= {})[input.branch] = { url: delivery.pr.url, localHead: delivery.localHead!, previousHead: input.expectedHead, at: Date.now() };
+      this.emitRun(run);
+      return { requested: true };
+    });
+  }
+
+  async mergeResultPr(id: string, input: { branch: string; expectedHead: string; method: MergeMethod }) {
+    return this.withDeliveryAction(id, async () => {
+      const run = this.require(id);
+      await this.managedShipping(run, input.branch);
+      const delivery = await this.resultDelivery(id, input.branch, true);
+      const pr = delivery.pr;
+      if (!pr || pr.headRefOid !== input.expectedHead) throw new RunConflictError("The PR changed. Review the current commit before merging.");
+      if (delivery.action !== "merge") throw new Error(delivery.detail);
+      if (!pr.methods.includes(input.method)) throw new Error("Choose a merge method allowed by this repository");
+      await mergePullRequest(run.repo, pr.url, input.method, input.expectedHead);
+      (run.prMergeRequests ??= {})[input.branch] = { url: pr.url, head: input.expectedHead, at: Date.now() };
+      this.emitRun(run);
+      // A queue or a lost status response is not proof of a completed merge.
+      const after = await prMergeInfo(run.repo, pr.url);
+      if (after.state === "MERGED") this.recordPrMerge(run, input.branch, after);
+      return { merged: after.state === "MERGED", url: pr.url };
+    });
+  }
+
   async prMergeInfo(id: string, branch: string): Promise<PrMergeInfo> {
     const run = this.readRun(id);
     const url = run.prs[branch];
@@ -4379,6 +4514,8 @@ export class RunManager {
     if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
     const title = run.task.split("\n")[0]!.slice(0, 72) || `code-flow run ${run.id}`;
     const agents = [...new Set(Object.values(run.roles).flat())].join(", ");
+    const visual = await visualEvidenceFiles(run.repo, run.baseRef, input.branch);
+    const visualBody = visual.files.length ? visualEvidenceMarkdown(await githubRepositoryUrl(run.repo), visual.head, visual.files) : "";
     const body = [
       run.projectTeam ? run.task.split("\n")[0]! : run.task,
       run.source?.kind === "issue" ? `\nCloses #${run.source.number}` : run.source?.kind === "alert" ? `\nFixes ${run.source.url}` : "",
@@ -4387,8 +4524,10 @@ export class RunManager {
       `Made by a code-flow team (${this.findPattern(run.pattern)?.name ?? run.pattern}; agents: ${agents}).`,
       run.loop.check ? `Check: \`${run.loop.check}\` — ${run.verdict === "passed" ? "passing" : run.verdict === "failing" ? "failing" : run.checkCantRun ? `can't run here (${run.checkCantRun.reason})` : "not run"}.` : "",
       "",
+      visualBody,
       run.summary ?? "",
     ].join("\n");
+    const existingPr = run.prs[input.branch];
     const { url, caughtUp, note } = await openPullRequest(run.repo, input.branch, input.into, title, body, run.baseRef, run.projectTeam ? { expectedHead: run.verification!.head! } : undefined);
     if (note) this.emit(run, { type: "log", level: "warn", text: note });
     if (caughtUp) {
@@ -4399,6 +4538,12 @@ export class RunManager {
       });
     }
     run.prs[input.branch] = url;
+    if (visualBody && existingPr && run.visualEvidencePosted?.[input.branch] !== visual.head) {
+      this.emitRun(run);
+      try { await commentOnPr(run.repo, url, visualBody); }
+      catch (error) { throw new Error(`Changes were pushed, but visual evidence could not be added to the PR: ${(error as Error).message}`); }
+    }
+    if (visualBody) (run.visualEvidencePosted ??= {})[input.branch] = visual.head;
     this.emit(run, { type: "log", level: "info", text: `Opened pull request ${url}` });
     this.emitRun(run);
     return url;
@@ -4420,10 +4565,20 @@ export class RunManager {
     if (source?.kind !== "pr") throw new Error("This run didn't start from a pull request");
     if (source.isCrossRepository) throw new Error("This pull request comes from a fork, so code-flow can't push to it");
     if (!run.worktrees.some((w) => w.branch === input.branch)) throw new Error("That branch doesn't belong to this run");
+    const visual = await visualEvidenceFiles(run.repo, run.baseRef, input.branch);
+    const visualBody = visual.files.length ? visualEvidenceMarkdown(source.url.replace(/\/pull\/\d+\/?$/, ""), visual.head, visual.files) : "";
     const sha = await pushBranch(run.repo, input.branch, source.headRefName!);
     run.prs[input.branch] = source.url;
     this.emit(run, { type: "log", level: "info", text: `Pushed ${input.branch} to ${source.headRefName} (${sha.slice(0, 8)}), updating ${source.url}` });
     this.emitRun(run);
+    if (visualBody && sha === visual.head && run.visualEvidencePosted?.[input.branch] !== sha) {
+      try { await commentOnPr(run.repo, source.url, visualBody); (run.visualEvidencePosted ??= {})[input.branch] = sha; this.emitRun(run); }
+      catch (error) {
+        const warning = `The fix was pushed, but visual evidence could not be added to the PR: ${(error as Error).message}`;
+        this.emit(run, { type: "log", level: "warn", text: warning });
+        return { url: source.url, sha, warning };
+      }
+    }
     return { url: source.url, sha };
   }
 
@@ -4933,6 +5088,7 @@ export class RunManager {
   }
 
   private async startResolved(input: StartRunInput): Promise<Run> {
+    validateTestRun(input.testRun);
     if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
     const filePolicies = await this.assertExecutionAllowed(input.repo, undefined, "run startup");
     if (input.taskTeam) {
@@ -5100,6 +5256,7 @@ export class RunManager {
       templateCatalog: input.pattern.id === "auto-team" ? (await teamTemplateStore.list(placed?.project.id)).templates.filter(t => t.autoEnabled && !t.workflow && JSON.stringify(t).length <= 16000).sort((a, b) => a.id.localeCompare(b.id)).slice(0, 6).map(t => structuredClone(t)) : undefined,
       teamTemplate: input.teamTemplate ? { template: validateTeamTemplate(input.teamTemplate.template), inputs: { ...input.teamTemplate.inputs } } : undefined,
       task: input.task,
+      testRun: validateTestRun(input.testRun),
       taskTeam: input.taskTeam ? validateTaskTeam(input.taskTeam) : undefined,
       taskExecution: input.taskExecution ? { ...input.taskExecution } : undefined,
       intent: input.intent,
@@ -5420,24 +5577,28 @@ export class RunManager {
   }
 
   /**
-   * An automation finished: results wait in the inbox for you to approve, revise or reject. A
-   * run that changed nothing is archived (worktrees and branches removed) so the inbox stays
-   * about real work. Nothing is ever merged automatically.
+   * An automation finished: results wait in the inbox for you to approve, revise or reject.
+   * A successful run that changed nothing is archived so the inbox stays about real work.
+   * Its branches survive cleanup so a later reply can reopen the workspace.
    */
   private async toInbox(run: Run) {
     // Managed cycles own publication; discovery reports are valuable with an empty diff.
     if (run.projectTeam) return;
     if (run.status === "cancelled" || run.status === "interrupted") return;
-    if (run.triage && run.triage.state !== "pending") return; // you already decided
-    // A check that can't run is news even when nothing changed: you need to set it up. A run
-    // with no result branches (a design-only debate) has its result in the summary.
-    const empty = run.status === "done" && !run.review && !run.checkCantRun && run.artifacts.length > 0 && (await unchanged(run));
+    if (run.triage && !["pending", "empty"].includes(run.triage.state)) return; // you already decided; automatic archives can be revisited
+    // "done" describes the agent's turn, not its checks. Failed, timed-out or missing
+    // verification still needs attention even when the result has no code changes.
+    const checksPassed = !run.checkCantRun && run.verdict !== "failing" && run.lastCheck?.ok !== false
+      && (!run.loop.check || run.lastCheck?.ok === true)
+      && (!run.loop.verification || run.verification?.state === "verified");
+    // A run with no result branches (a design-only debate) has its result in the summary.
+    const empty = run.status === "done" && !run.review && checksPassed && run.artifacts.length > 0 && (await unchanged(run));
     if (empty) {
       run.triage = { state: "empty", at: Date.now() };
       run.archived = true;
-      const removed = await removeWorktrees(run.repo, run.worktrees, true).catch((err: Error) => ({ removed: [], deletedBranches: [], failed: [err.message] }));
+      const removed = await removeWorktrees(run.repo, run.worktrees, false).catch((err: Error) => ({ removed: [], deletedBranches: [], failed: [err.message] }));
       const clean = !removed.failed.length;
-      this.emit(run, { type: "log", level: clean ? "info" : "warn", text: `No changes, so the run was archived${clean ? " and its worktrees and branches removed" : `; couldn't remove: ${removed.failed.join("; ")}`}` });
+      this.emit(run, { type: "log", level: clean ? "info" : "warn", text: `No changes, so the run was archived${clean ? " and its worktrees removed; branches kept for replies" : `; branches kept; couldn't remove: ${removed.failed.join("; ")}`}` });
       return;
     }
     run.triage = { state: "pending", at: Date.now(), note: run.triage?.note };
@@ -5476,16 +5637,18 @@ export class RunManager {
       return run;
     }
     let pr: string | undefined;
+    let publicationWarning: string | undefined;
     if (input.pushPr) {
       const artifact = run.artifacts.find((a) => a.stat?.trim());
       if (!artifact) throw new Error("There's no change to push");
-      pr = (await this.pushToPr(id, { branch: artifact.branch })).url;
+      const published = await this.pushToPr(id, { branch: artifact.branch });
+      pr = published.url; publicationWarning = published.warning;
     } else if (input.openPr) {
       const artifact = run.artifacts.find((a) => a.stat?.trim());
       if (!artifact) throw new Error("There's no change to open a pull request for");
       pr = await this.pullRequest(id, { branch: artifact.branch, into: await this.pullRequestTarget(id) });
     }
-    run.triage = { state: "approved", at: Date.now(), note: input.note?.trim() || undefined };
+    run.triage = { state: "approved", at: Date.now(), note: publicationWarning || input.note?.trim() || undefined };
     run.seen = true;
     this.emit(run, { type: "log", level: "info", text: `You approved the result${pr ? (input.pushPr ? ` and pushed it to ${pr}` : ` and opened ${pr}`) : ""}` });
     this.emitRun(run);

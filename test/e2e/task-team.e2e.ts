@@ -44,7 +44,7 @@ for (const [lead, worker] of (live ? [["claude", "codex"], ["codex", "agy"], ["a
   await main.getByRole("button", { name: "Advanced", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "AI team setup" });
   await dialog.getByRole("switch", { name: "Enable AI team" }).check();
-  await dialog.getByLabel("Team template", { exact: true }).selectOption("build-review");
+  await dialog.getByLabel("Team template", { exact: true }).selectOption(live ? "adaptive" : "build-review");
   if (!live) await dialog.getByLabel("Team template", { exact: true }).selectOption("saved:saved-transition-team");
   await dialog.getByLabel("Team lead", { exact: true }).selectOption(lead!);
   for (const [id, name] of [["claude", "Claude Code"], ["codex", "Codex"], ["agy", "Antigravity CLI"]]) {
@@ -84,10 +84,43 @@ for (const [lead, worker] of (live ? [["claude", "codex"], ["codex", "agy"], ["a
   await main.getByText("What token did I give you? Read result.txt and draft.txt and report their contents. Answer directly without changing any files.", { exact: true }).waitFor();
   run = await done(first.id); assert.equal(run.teamTurns.length, 1); assert.equal(run.taskTeam.enabled, false); if (live) assert.match(run.summary, /cobalt-731/);
   await page.screenshot({ path: join(root, `output/playwright/task-team-${lead}${live ? "-live" : ""}.png`), fullPage: true });
-  evidence.push({ lead, worker, task: first.id, execution: child.id, teamStatus: child.status, check: child.lastCheck, sameWorkspace: true, unchangedHead: true, draftPreserved: true, singleAgain: true });
+  const plans = child.steps.filter((step: any) => step.title === "Plan Auto team"), plan = plans[0];
+  const planning = plan ? { provider: plan.agent, model: plan.settings?.model, attempts: plans.length,
+    durationMs: plans.reduce((total: number, step: any) => total + step.endedAt - step.startedAt, 0),
+    elapsedMs: plans.at(-1).endedAt - plan.startedAt, contextInput: plan.contextInput } : undefined;
+  console.log(lead, "planning measurement", JSON.stringify(planning));
+  evidence.push({ lead, worker, preset: run.taskTeam.preset, task: first.id, execution: child.id, teamStatus: child.status, planning, check: child.lastCheck, sameWorkspace: true, unchangedHead: true, draftPreserved: true, singleAgain: true });
   const rail = page.getByRole("navigation", { name: "Runs", exact: true }); assert.equal(await rail.locator(".run-item").count(), evidence.length);
 });
 
+
+test("team setup explains incompatible providers and lets saved selections be repaired", { skip: live, timeout: 60000 }, async () => {
+  const context = await browser.newContext(), setupPage = await context.newPage();
+  try {
+    await setupPage.addInitScript(({ repo }) => {
+      localStorage.setItem("repo", repo); localStorage.setItem("pattern", "solo"); localStorage.setItem("sideOpen", "0");
+      localStorage.setItem("taskTeamPreferences", JSON.stringify({ enabled: false, preset: "adaptive", coordinator: "claude", providers: ["claude", "agy"], settings: {}, maxMembers: 3, maxCalls: 20, maxMinutes: 5, approvePlan: false }));
+    }, { repo });
+    await setupPage.route("**/api/doctor", async route => {
+      const response = await route.fetch(), diagnostic = await response.json();
+      await route.fulfill({ response, json: diagnostic.map((entry: any) => entry.id === "agy" ? { ...entry, installed: true, compatible: true, signedIn: true, managedCompatible: false } : entry) });
+    });
+    await setupPage.goto(`${base}/?token=${token}`);
+    await setupPage.getByRole("switch", { name: "AI team", exact: true }).click();
+    await setupPage.getByRole("button", { name: "Advanced", exact: true }).click();
+    const dialog = setupPage.getByRole("dialog", { name: "AI team setup" });
+    await dialog.getByText("This Antigravity version or login is not compatible with AI teams", { exact: true }).waitFor();
+    assert.equal(await dialog.getByRole("button", { name: "Apply team settings" }).isEnabled(), false);
+    assert.notEqual(await dialog.getByLabel("Team lead", { exact: true }).locator('option[value="agy"]').getAttribute("disabled"), null);
+    const agy = dialog.getByRole("checkbox", { name: "Use Antigravity CLI", exact: true });
+    assert.equal(await agy.isChecked(), true);
+    await agy.uncheck();
+    assert.equal(await agy.isDisabled(), true, "an incompatible provider cannot be selected again");
+    assert.equal(await dialog.getByRole("button", { name: "Apply team settings" }).isEnabled(), true);
+    await setupPage.screenshot({ path: join(root, "output/playwright/team-provider-compatibility.png") });
+    await dialog.getByRole("button", { name: "Apply team settings" }).click(); await dialog.waitFor({ state: "hidden" });
+  } finally { await context.close(); }
+});
 
 test("main-chat corrections update an awaiting team without exposing its execution details", { skip: live, timeout: 120000 }, async () => {
   const configuration = { enabled: true, preset: "adaptive", coordinator: "claude", providers: ["claude", "codex"], settings: {}, maxMembers: 3, maxCalls: 20, maxMinutes: 5, approvePlan: true };

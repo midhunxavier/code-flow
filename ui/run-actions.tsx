@@ -36,6 +36,7 @@ export function DeleteRunsDialog({ runs, onClose, onDeleted }: { runs: RunSummar
       <div class="dialog-body">
         {single ? <p class="delete-run-name">{pending[0]?.task.split("\n")[0]}</p> : <ul class="delete-run-list">{pending.map(run => <li key={run.id}>{run.task.split("\n")[0] || "Untitled run"}</li>)}</ul>}
         <p>This permanently deletes {single ? "the conversation and run history" : "these conversations and their run history"}. It cannot be undone.</p>
+        {runs.some(run => run.projectTeam) ? <p class="help">The mission's saved records and budget accounting are kept.</p> : null}
         <p class="help">Git branches, worktrees and repository files are kept. Archive instead if you want to keep {single ? "the conversation" : "the conversations"}.</p>
         {error ? <div class="err" role="alert">{error}</div> : null}
       </div>
