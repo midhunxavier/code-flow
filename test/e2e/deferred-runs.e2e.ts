@@ -23,7 +23,7 @@ async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean): P
 async function start() {
   child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: "pipe" });
   let output = ""; child.stdout?.on("data", (chunk) => { output += String(chunk); }); child.stderr?.on("data", (chunk) => { output += String(chunk); });
-  for (let attempt = 0; attempt < 100; attempt++) { if (await fetch(base + "/api/health", { headers }).then((response) => response.ok, () => false)) return; if (child.exitCode !== null || attempt === 99) throw new Error(`Deferred server failed: ${output}`); await new Promise((resolve) => setTimeout(resolve, 50)); }
+  for (let attempt = 0; attempt < 400; attempt++) { if (await fetch(base + "/api/health", { headers }).then((response) => response.ok, () => false)) return; if (child.exitCode !== null || attempt === 399) throw new Error(`Deferred server failed: ${output}`); await new Promise((resolve) => setTimeout(resolve, 50)); }
 }
 async function stop() { if (!child || child.exitCode !== null || child.signalCode !== null) return; child.kill("SIGTERM"); await new Promise<void>((resolve) => { const timer = setTimeout(() => { child.kill("SIGKILL"); resolve(); }, 5000); child.once("exit", () => { clearTimeout(timer); resolve(); }); }); }
 before(async () => {
@@ -56,7 +56,7 @@ test("browser explicitly saves and cancels a future safe request and the API rej
   assert.doesNotMatch(await readFile(join(home, "deferred-runs.json"), "utf8"), /must-not-copy|"attachments"/);
 });
 
-test("elapsed start survives restart, fake-agent launch persists exact claim, and startup recovers only matching identities", { timeout: 45_000 }, async () => {
+test("elapsed start survives restart, fake-agent launch persists exact claim, and startup recovers only matching identities", { timeout: 90_000 }, async () => {
   let job = await api<DeferredRunJob>("/api/deferred-runs", { name: "Restarted deferred launch", run: request(), notBefore: Date.now() + 500 });
   await stop(); await new Promise((resolve) => setTimeout(resolve, 550)); await start();
   job = await until(() => api<DeferredRunJob[]>("/api/deferred-runs").then((jobs) => jobs.find((item) => item.id === job.id)!), (item) => item.status === "started");

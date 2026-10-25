@@ -196,7 +196,10 @@ test("reusable teams attach without losing mission history and owner tasks survi
   let scheduled = (await api(`/api/project-teams/${team.id}`)).body.team;
   assert.equal(scheduled.missionRevision, team.missionRevision); assert.deepEqual(scheduled.opportunities, team.opportunities);
   assert.deepEqual(scheduled.cycles, team.cycles, "schedule edits preserve all prior usage receipts");
+  const approvalResponse = page.waitForResponse(response => response.request().method() === "POST" && response.url().includes(`/api/project-teams/${team.id}/opportunities/`));
   await page.getByRole("button", { name: "Approve this commit", exact: true }).click();
+  const approved = await approvalResponse;
+  assert.equal(approved.ok(), true, await approved.text());
   await page.getByRole("button", { name: "Approve this commit", exact: true }).waitFor({ state: "detached" });
   await stopServer(); await startServer(); await page.reload();
   await page.getByText("Reusable engineering · team version 1", { exact: false }).waitFor();

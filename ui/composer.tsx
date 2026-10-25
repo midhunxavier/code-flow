@@ -382,7 +382,7 @@ export function Composer() {
           <option value="auto-team">Team — dynamic plan</option><option value="solo">Agent — one agent</option>
           {patterns.value.filter(entry => !["solo", "auto-team"].includes(entry.id)).map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
         </select>
-        <TeamTemplateLibrary />
+        {advancedOpen ? <TeamTemplateLibrary /> : null}
         {p?.id === "auto-team" ? <WorkerModelCatalog remote={!!remoteWorker || containerEnabled} nativeAntigravity={nativeAntigravity} /> : null}
         <fieldset class="section"><legend>Antigravity execution</legend>
           <label class="checkpoint"><input type="checkbox" checked={nativeAntigravity} onChange={e => setNativeAntigravity(e.currentTarget.checked)} /><span>Use unrestricted Antigravity with my existing login</span></label>
