@@ -2638,7 +2638,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
           const command = explicit || configured?.command;
           if (!command) throw new HttpError(400, "No web preview is configured yet. Ask the agent to set up a preview in chat.");
           if (/[\r\n]/.test(command)) throw new HttpError(400, "The command must be a single line");
-          const port = body.port ?? (command === configured?.command ? configured.port : undefined) ?? run.app?.port;
+          const port = body.port ?? (command === configured?.command ? configured?.port : undefined) ?? run.app?.port;
           if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65_535 || [PORT, REMOTE_PORT].includes(port))) throw new HttpError(400, "Choose a valid app port other than code-flow's ports");
           // A locked-down run's code is an outsider's, and the app runs on this machine, never in
           // Docker: the same confirmation its checks would need.
