@@ -269,7 +269,7 @@ function Crumbs() {
     );
   } else if (r.view === "project") {
     trail = (
-      <><a class="crumb" href={`#/project/${encodeURIComponent(r.id)}`} aria-current={!r.section ? "page" : undefined}>{projects.value.find((p) => p.id === r.id)?.name ?? "Project"}</a>{r.section ? <>{sep}<span class="crumb here" aria-current="page">{{ runs: "Runs", repositories: "Repositories", settings: "Project settings", board: "Board", people: "People", automation: "Automation", connections: "Connections" }[r.section]}</span></> : null}</>
+      <><a class="crumb" href={`#/project/${encodeURIComponent(r.id)}`} aria-current={!r.section ? "page" : undefined}>{projects.value.find((p) => p.id === r.id)?.name ?? "Project"}</a>{r.section ? <>{sep}<span class="crumb here" aria-current="page">{{ runs: "Runs", repositories: "Repositories", settings: "Project settings", board: "Board", people: "People", automation: "Automation", connections: "Connections", ml: "ML" }[r.section]}</span></> : null}</>
     );
   } else if (r.view === "team" || r.view === "team-task" || r.view === "team-people") {
     // The board, or a task under it: its title comes from the open task, else from the board's card.
