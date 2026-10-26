@@ -1,4 +1,4 @@
-import { before, after, test } from "node:test";
+import { before, after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, realpath, readFile, writeFile, chmod, readdir } from "node:fs/promises";
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { chromium, type Browser, type Page } from "playwright-core";
 const root = fileURLToPath(new URL("..", import.meta.url)), token = "qa-automation-records", headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
-const evidence = process.env.QA_ARTIFACT_DIR;
+const evidence = process.env.QA_ARTIFACT_DIR ?? join(root, "output/playwright/qa-automation-records");
 let dir: string, home: string, repo: string, project: string, base: string, port: number, child: ChildProcess, browser: Browser, page: Page, logs = "";
 const errors: string[] = [], expected: string[] = [];
 const run = () => ({ repo, project, pattern: "solo", task: "Automation records fixture", roles: { agent: ["claude"] }, loop: { check: "true", maxSteps: 4, maxMinutes: 1 } });
@@ -43,6 +43,7 @@ before(async () => {
   page.on("response", r => { if (r.url().includes("/api/") && r.status() >= 500) (r.status() === 503 && r.url().endsWith("/api/automations") ? expected : errors).push(`${r.status()} ${r.request().method()} ${r.url()}`); });
   console.log(JSON.stringify({ dir, base, repo, evidence }));
 });
+afterEach(async t => { if ((t as { error?: unknown }).error) { await mkdir(evidence, { recursive: true }); await page.screenshot({ path: join(evidence, "failed.png"), fullPage: true }); await writeFile(join(evidence, "failed-page.txt"), await page.locator("body").innerText()); } });
 after(async () => { await stop(); await browser?.close(); if (evidence) { await writeFile(join(evidence, "server.log"), logs); await writeFile(join(evidence, "browser-errors.json"), JSON.stringify({ errors, expected }, null, 2)); } assert.deepEqual(errors, []); });
 
 test("global automation routes reject bad purposes and extra path segments; valid and legacy routes work", { timeout: 60_000 }, async () => {

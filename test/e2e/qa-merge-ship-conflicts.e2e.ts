@@ -3,7 +3,7 @@
 // and names the gate that failed, says when a conflict resolution failed (and nothing was
 // committed), and shows git's warning when a merge's hook outlasted it. After a resolution the
 // Review labels the files that came in from the target, and Merge… asks before merging lines that
-// look like conflict markers. Fake agents; agy's write turns fail (FAKE_FAIL_VENDOR), and a merge
+// look like conflict markers. Fake agents; Codex write turns fail (FAKE_FAIL_VENDOR), and a merge
 // in a checkout may take 2 s.
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -45,7 +45,7 @@ before(async () => {
   const port = await new Promise<number>((resolve) => { const probe = createServer().listen(0, "127.0.0.1", () => { const port = (probe.address() as AddressInfo).port; probe.close(() => resolve(port)); }); });
   base = `http://127.0.0.1:${port}`;
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
-  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: join(directory, "home"), CODEFLOW_TOKEN: token, CODEFLOW_MERGE_TIMEOUT_SEC: "2", FAKE_FAIL_VENDOR: "agy", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: "pipe" });
+  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: join(directory, "home"), CODEFLOW_TOKEN: token, CODEFLOW_MERGE_TIMEOUT_SEC: "2", FAKE_FAIL_VENDOR: "codex", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: "pipe" });
   let output = ""; server.stdout?.on("data", (chunk) => { output += chunk; }); server.stderr?.on("data", (chunk) => { output += chunk; });
   for (let attempt = 0; attempt < 150; attempt++) { if (await fetch(base + "/api/health", { headers }).then((res) => res.ok, () => false)) break; if (attempt === 149 || server.exitCode !== null) throw new Error(`Server failed to start: ${output}`); await new Promise((resolve) => setTimeout(resolve, 100)); }
   browser = await chromium.launch({ channel: "chrome", headless: true });
@@ -118,7 +118,7 @@ test("the Merge… panel tells the truth about targets, validation, a failed res
   await panel.getByLabel(/Archive the run afterwards/).uncheck();
   await panel.getByRole("button", { name: "Merge into theirs", exact: true }).click();
   await panel.getByText("Merging would conflict in 1 file: shared.txt").waitFor();
-  await panel.getByLabel("Agent", { exact: true }).selectOption("agy");
+  await panel.getByLabel("Agent", { exact: true }).selectOption("codex");
   await panel.getByRole("button", { name: "Ask to resolve", exact: true }).click();
   const resolved = await until(() => api(`/api/runs/${run.id}`), (value) => value.status !== "running" && value.followUps.some((f: any) => f.kind === "resolve-conflicts" && f.status !== "pending"));
   const f = resolved.followUps.at(-1);
@@ -126,7 +126,7 @@ test("the Merge… panel tells the truth about targets, validation, a failed res
   assert.equal(git("rev-parse", branch), head);
   assert.doesNotMatch(git("show", `${branch}:shared.txt`), /^<{7}/m);
   panel = await openMerge(run.id, branch);
-  await panel.getByText(/Resolving the conflicts with theirs failed: agy's turn failed .*code-flow undid the merge and committed nothing/).waitFor();
+  await panel.getByText(/Resolving the conflicts with theirs failed: codex's turn failed .*code-flow undid the merge and committed nothing/).waitFor();
 
   // Stopped in a slow post-merge hook: merged, and the warning is shown where you look.
   const hook = join(repo, ".git", "hooks", "post-merge");

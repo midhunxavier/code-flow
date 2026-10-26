@@ -13,6 +13,7 @@ test("a preview browser survives a second viewer and reconnect while preserving 
     stop = browser.watch(e => events.push(e)); const state = await browser.call("browser_ui", { action: "state" }, signal);
     const selected = state.tabs.find((t: any) => t.id === state.selected); assert.equal(selected.url, url); assert.equal(selected.title, "Reconnect preview");
     const snapshot = await browser.call("browser_snapshot", {}, signal); assert.ok(snapshot.snapshot.some((n: any) => n.name === "Usable"));
+    const deadline = Date.now() + 10000; while (!events.some(e => e.type === "frame") && Date.now() < deadline) await new Promise(r => setTimeout(r, 50));
     assert.equal(events.filter(e => e.type === "error").length, 0, JSON.stringify(events.filter(e => e.type === "error"))); assert.ok(events.some(e => e.type === "frame"));
   } finally { other?.(); stop(); await browser.close(); site.closeAllConnections(); await new Promise<void>(r => site.close(() => r())); }
 });

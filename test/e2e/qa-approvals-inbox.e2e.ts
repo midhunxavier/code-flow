@@ -189,7 +189,7 @@ test("a request answered in another window disarms the card that takes its place
 
 test("the card leaves the New run composer's Send usable, and Hide folds it out of the way of a run's own Send", { timeout: 60_000 }, async () => {
   // A worktree path that wrapped onto four lines, and a task that wrapped onto three, made the card cover Send.
-  const deep = join(directory, "a-folder-with-a-long-name-so-the-worktree-path-wraps", "and-another-one-nested-under-it-to-make-sure", "repo");
+  const deep = join(directory, "a-folder-with-a-long-name-so-the-worktree-path-wraps", "and-another-one-nested-under-it-to-make-sure", "long-path-segment-for-consistent-approval-wrapping-across-platforms", "repo");
   await makeRepo(deep);
   const task = "ASK-APPROVAL seventh chat: clean the build folder, with a task long enough that its title would wrap onto a second and a third line";
   const run = await start(task, deep);

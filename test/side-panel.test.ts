@@ -211,7 +211,9 @@ const shown = (events: any[], hello: any) =>
     .filter((e) => e.type === "output")
     .map((e) => e.text)
     .join("")
-    .replace(/\x1b\[\?2004[hl]\r?/g, "");
+    .replace(/\x1b\[\?2004[hl]\r?/g, "")
+    // Linux login shells emit invisible systemd OSC 3008 context around command output.
+    .replace(/\x1b\]3008;[^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
 const gone = (pid: number) => {
   try {
     process.kill(pid, 0);

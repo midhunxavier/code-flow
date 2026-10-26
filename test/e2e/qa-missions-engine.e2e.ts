@@ -1,5 +1,5 @@
 import { reserveQaPorts } from "../qa-port-block.js";
-import { test, before, after } from "node:test";
+import { test, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "playwright-core";
 const qaPorts = await reserveQaPorts(2, process.env.QA_MISSIONS_ENGINE_PORT);
+afterEach(async t => { if ((t as { error?: unknown }).error && page && !page.isClosed()) { await page.screenshot({ path: join(shots, "failed.png"), fullPage: true }); writeFileSync(join(shots, "failed-page.txt"), await page.locator("body").innerText()); } });
 after(() => qaPorts.release());
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const port = qaPorts.port, base = `http://127.0.0.1:${port}`, token = "qa-missions-engine-token";
@@ -163,8 +164,9 @@ test("a restart settles interrupted discovery without a resume dead end and pres
   for (let i = 0; i < 100; i++) { const run = (await api(`/api/runs/${runId}`)).body; if (run.steps.some((s: any) => s.kind === "agent" && s.status === "running")) break; await new Promise(r => setTimeout(r, 50)); }
   await page.goto("about:blank"); await stop(); await start(); await open();
   t = await readyTeam(); assert.match(t.cycles.at(-1).reason, /interrupted because Code Flow stopped/);
-  await page.getByText(/Cycle history \(1\)/, { exact: true }).click();
-  await page.getByText(/interrupted because Code Flow stopped/).first().waitFor();
+  const history = page.locator("details").filter({ has: page.getByText("Cycle history (1)", { exact: true }) });
+  await history.locator(":scope > summary").click();
+  await history.getByText(/interrupted because Code Flow stopped/).waitFor();
   await page.goto(`${base}/#/run/${runId}`); await page.getByRole("link", { name: "Open the mission", exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Resume work", exact: true }).count(), 0);
   const launch = t.cycles.at(-1).launches[0]; assert.equal(launch.usedCalls, launch.calls);
