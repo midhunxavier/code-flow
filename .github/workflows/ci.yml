@@ -111,7 +111,7 @@ jobs:
         env:
           QA_SHARD: ${{ matrix.shard }}
         run: |
-          mapfile -t files < <(rg --files test/e2e -g '*.e2e.ts' | sort)
+          files=(test/e2e/*.e2e.ts)
           selected=()
           for i in "${!files[@]}"; do
             if (( i % 3 == QA_SHARD )); then selected+=("${files[$i]}"); fi
