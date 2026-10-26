@@ -216,14 +216,14 @@ test("commits made on a detached HEAD that no branch holds keep the worktree; on
 
 // An archived run kept on disk (RunColdStore) is in the run list without being in memory.
 const settled = async () => {
-  const deadline = Date.now() + 45000;
+  const deadline = Date.now() + 15000;
   while (manager.inspectStorage().pending && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
   await new Promise((resolve) => setTimeout(resolve, 50));
   while (manager.inspectStorage().pending && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
 };
 const onDisk = (id: string) => manager.list().find((r) => r.id === id)?.cold === true;
 const coldNow = async (run: Run) => {
-  const deadline = Date.now() + 45000;
+  const deadline = Date.now() + 15000;
   while (!onDisk(run.id) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(onDisk(run.id), `${run.task} is kept on disk once archived`);
 };

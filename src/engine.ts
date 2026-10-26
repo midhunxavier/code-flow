@@ -3361,6 +3361,7 @@ export class RunManager {
   private readonly runIdentities = new Map<string, WeakRef<Run>>();
   private readonly coldRuns = new RunColdStore();
   private readonly coldWrites = new Map<string, Promise<void>>();
+  private readonly coldUpdates = new Set<string>();
   private logCompaction: Promise<void> = Promise.resolve();
   /** Async mutations retain their adopted live object while an older cold write settles. */
   private readonly coldMutations = new Map<string, number>();
@@ -3593,10 +3594,21 @@ export class RunManager {
       else this.coldRuns.drop(run.id);
     }
   }
-  private scheduleCold(run: Run) {
-    if (!coldEligible(run) || this.coldWrites.has(run.id)) return;
-    const work = this.coolRun(run).catch((error: Error) => logWarn(`Couldn't cache archived run ${run.id}; its log remains authoritative`, { error: error.message })).finally(() => this.coldWrites.delete(run.id));
+  private scheduleCold(run: Run): Promise<void> | undefined {
+    if (!coldEligible(run)) return;
+    const pending = this.coldWrites.get(run.id);
+    if (pending) { this.coldUpdates.add(run.id); return pending; }
+    const work = this.coolRun(run).catch((error: Error) => logWarn(`Couldn't cache archived run ${run.id}; its log remains authoritative`, { error: error.message })).finally(() => {
+      this.coldWrites.delete(run.id);
+      // A concurrent emit invalidates the saved snapshot. Coalesce its replacement and
+      // include that write in the original promise so shutdown waits for it as well.
+      if (this.coldUpdates.delete(run.id)) {
+        const current = this.runs.get(run.id);
+        if (current) return this.scheduleCold(current);
+      }
+    });
     this.coldWrites.set(run.id, work);
+    return work;
   }
   private holdColdMutation(run: Run): () => void {
     this.coldMutations.set(run.id, (this.coldMutations.get(run.id) ?? 0) + 1);
